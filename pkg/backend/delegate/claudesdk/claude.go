@@ -179,6 +179,7 @@ func configToProcess(cfg *config) processConfig {
 		OutputFormat:           cfg.outputFormat,
 		AddDirs:                cfg.addDirs,
 		SettingSources:         cfg.settingSources,
+		SettingsJSON:           cfg.settingsJSON,
 	}
 
 	if len(cfg.agents) > 0 {

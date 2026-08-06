@@ -1598,9 +1598,14 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would
 		// reach stdout but never the persisted run.log.
-		Logger:      logger,
-		StoreDir:    r.cfg.WorkDir,
-		BotID:       msg.BotID,
+		Logger:   logger,
+		StoreDir: r.cfg.WorkDir,
+		BotID:    msg.BotID,
+		// The launch-time decision, carried on the wire. Without it the pod
+		// would resolve auto-memory from the workflow and its own (empty)
+		// environment, so an operator's `--auto-memory off` on a bot whose
+		// DSL says `on` would run with memory on — the knob failing open.
+		AutoMemory:  msg.AutoMemory,
 		MemoryStore: r.cfg.MemoryStore,
 	})
 	if err != nil {

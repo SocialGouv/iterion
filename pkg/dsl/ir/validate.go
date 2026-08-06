@@ -44,6 +44,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateCursorInvocations(w)
 	c.validateReviewGates(w)
 	c.validateCompress(w)
+	c.validateAutoMemory(w)
 	c.validateResources(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)

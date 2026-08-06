@@ -164,8 +164,10 @@ func (m *Manager) EnsureServers(ctx context.Context, registry *tool.Registry, se
 }
 
 // HealthCheck verifies that each listed server is reachable by connecting and
-// sending an MCP ping. Connections are cached, so a subsequent EnsureServers
-// call reuses the same client (no double-spawn for stdio servers).
+// sending a liveness probe (an MCP ping, or tools/list on protocol revisions
+// that removed ping — see sdkClient.Ping). Connections are cached, so a
+// subsequent EnsureServers call reuses the same client (no double-spawn for
+// stdio servers).
 //
 // Pings run in parallel — sequential dispatch with a global ctx
 // deadline would let an early slow server consume the whole budget

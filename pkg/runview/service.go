@@ -83,6 +83,10 @@ type LaunchSpec struct {
 	// inherits the workflow/node `compress:` DSL then ITERION_COMPRESS. Highest
 	// priority input to rewrite.Resolve. See docs/plugins.md.
 	Compress string
+	// AutoMemory is the run-level auto-memory (MEMORY.md) override ("", "on",
+	// "off") from the studio Launch toggle. "" inherits the workflow/node
+	// `auto_memory:` DSL then ITERION_AUTO_MEMORY.
+	AutoMemory string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny") from the studio Launch toggle. ""
 	// inherits the workflow/node `permission:` DSL then
@@ -308,6 +312,12 @@ type ResumeSpec struct {
 	Answers map[string]any // answers for human nodes; ignored for failed_resumable
 	Force   bool           // skip workflow hash check
 	Timeout time.Duration  // 0 disables
+	// AutoMemory re-states the run-level auto-memory override ("", "on",
+	// "off"). It is not inherited from the original launch: overrides are not
+	// persisted on the run, so a resume that said nothing would silently fall
+	// back to the workflow's own value — turning memory on for a run the
+	// operator had launched hermetically.
+	AutoMemory string
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

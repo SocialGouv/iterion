@@ -133,9 +133,13 @@ func buildResumeExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		RunFallback:     runFallback,
-		ModelOverrides:  modelOverrides,
-		LocalSecrets:    localStore,
-		LocalSealer:     localSealer,
+		AutoMemory:      opts.AutoMemory,
+		// Same resolution the studio resume path uses, so the two surfaces
+		// key a bot's memory identically.
+		BotID:          runview.BotIDForRun(r),
+		ModelOverrides: modelOverrides,
+		LocalSecrets:   localStore,
+		LocalSealer:    localSealer,
 	})
 	if err != nil {
 		return nil, err

@@ -58,9 +58,10 @@ const (
 	// capabilities that silently override (and differ from) the manifest's.
 	DiagFrontmatterCapsOverride Code = "C221"
 
-	// DiagBundleNameTripleMismatch: a node opts into per-bot memory
-	// (visibility: bot) but the manifest name, workflow name, and bundle dir
-	// name disagree, so the bot's memory tree splits across launch paths.
+	// DiagBundleNameTripleMismatch: the bundle carries per-bot memory — a node
+	// with `memory: visibility: bot`, or `auto_memory: on` — but the manifest
+	// name, workflow name, and bundle dir name disagree, so the bot's memory
+	// tree splits across launch paths.
 	DiagBundleNameTripleMismatch Code = "C230"
 
 	// Skill-authoring routability (C231–C234). A bundle's skills/*.md are
@@ -340,7 +341,7 @@ func checkBundleNameStability(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow,
 		Severity: SeverityError,
 		Field:    "name",
 		Message: fmt.Sprintf(
-			"per-bot memory (visibility: bot) requires manifest name == workflow name == bundle dir so the memory tree is stable across CLI and dispatcher launches; got manifest=%q workflow=%q dir=%q",
+			"per-bot memory (`memory: visibility: bot` or `auto_memory: on`) requires manifest name == workflow name == bundle dir so the memory tree is stable across CLI, studio, dispatcher and cloud launches; got manifest=%q workflow=%q dir=%q",
 			m.Name, w.Name, dirName,
 		),
 		Hint: "make all three identical (rename the bundle dir, the `workflow NAME:`, or the manifest name:)",
@@ -408,12 +409,25 @@ func checkSkills(diags *[]Diag, skills []SkillDoc) {
 
 // usesPerBotMemory reports whether any node opts into per-bot memory.
 func usesPerBotMemory(w *ir.Workflow) bool {
+	// `auto_memory:` is per-bot memory too — one space per (bot, repo), which
+	// the run resolves from whichever name the launching surface happens to
+	// know: the manifest's, the bundle directory's, or the workflow's. They
+	// only ever refer to one space while the three agree, which is exactly
+	// what this check exists to require. Without it a bot could carry
+	// auto-memory with three divergent names and quietly keep three memories,
+	// while a bot using the `memory:` block was protected.
+	if strings.EqualFold(strings.TrimSpace(w.AutoMemory), "on") {
+		return true
+	}
 	for _, n := range w.Nodes {
 		ln, ok := n.(ir.LLMNode)
 		if !ok {
 			continue
 		}
 		if mem := ln.GetMemory(); mem != nil && mem.Visibility == "bot" {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(ln.GetAutoMemory()), "on") {
 			return true
 		}
 	}

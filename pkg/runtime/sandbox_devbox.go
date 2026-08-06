@@ -282,6 +282,54 @@ func devboxInstallSnippet(projects []devboxProject) string {
 
 	var b strings.Builder
 	b.WriteString("# iterion: devbox provisioning\n")
+	// Le profil Nix est RATTACHE au $HOME du conteneur avant d'appeler devbox.
+	//
+	// Le bac a sable remappe HOME sur le chemin de l'HOTE (sandbox_mounts.go :
+	// `spec.Env["HOME"] = homeDir`), pour que les binds ~/.claude et ~/.iterion
+	// restent a leur place. Les images, elles, installent Nix en
+	// mono-utilisateur sous le home de l'IMAGE :
+	//
+	//     /home/devbox/.nix-profile -> ~/.local/state/nix/profiles/profile
+	//                               -> /nix/store/...-user-environment
+	//
+	// Apres remappage, devbox cherche `$HOME/.nix-profile` a la nouvelle
+	// adresse, ne trouve rien, et rend « unable to source Nix profile ». Le run
+	// continue alors SANS aucun paquet declare — ni ceux du bot, ni ceux du
+	// depot. Mesure : un bot dont le seul role est de lire un contrat YAML a
+	// rendu FINISHED sans executer un seul lot, faute de `yq`.
+	//
+	// Le maillon final survit : il est dans /nix, monte en volume et amorce
+	// depuis l'image. Le rattacher suffit, et c'est verifie —
+	//
+	//   docker run --tmpfs /home/devbox:... <image> sh -c 'devbox install ...'
+	//     -> Error: unable to source Nix profile
+	//   ... puis `ln -sfn /nix/store/*-user-environment $HOME/.nix-profile`
+	//     -> Finished installing packages.
+	//
+	// Rien n'est ecrase : on ne cree le lien que si $HOME n'en porte aucun.
+	b.WriteString("if [ ! -e \"$HOME/.nix-profile\" ]; then\n")
+	b.WriteString("  for _ue in /nix/store/*-user-environment; do\n")
+	b.WriteString("    if [ -d \"$_ue\" ]; then ln -sfn \"$_ue\" \"$HOME/.nix-profile\"; break; fi\n")
+	b.WriteString("  done\n")
+	b.WriteString("fi\n")
+	// Nix mono-utilisateur en conteneur : PAS de groupe de comptes de build.
+	//
+	// Les images installent Nix en mode mono-utilisateur, dont la configuration
+	// reference un groupe `nixbld` qui n'existe pas dans le conteneur. Les
+	// paquets simplement SUBSTITUES depuis le cache passent — le message n'est
+	// qu'un avertissement — mais tout paquet qu'il faut CONSTRUIRE echoue, et
+	// les greffons devbox (bases de donnees, par exemple) generent precisement
+	// des flakes a construire. Vider le reglage fait construire sous
+	// l'utilisateur courant.
+	//
+	// L'espace avant `=` est OBLIGATOIRE : `build-users-group=` est une erreur
+	// de syntaxe pour nix, qui cesse alors d'imprimer sa version — et devbox
+	// refuse de demarrer sur un « Your version is . » qui ne ressemble en rien
+	// a sa cause.
+	//
+	// Pose seulement si l'appelant n'a rien decide : un depot ou un bot qui
+	// declare son propre NIX_CONFIG garde la main.
+	b.WriteString("if [ -z \"${NIX_CONFIG:-}\" ]; then NIX_CONFIG=\"build-users-group =\"; export NIX_CONFIG; fi\n")
 	b.WriteString("if command -v devbox >/dev/null 2>&1; then\n")
 	// devbox prompts before writing a lockfile on some paths; a
 	// post-create hook has nobody to answer.

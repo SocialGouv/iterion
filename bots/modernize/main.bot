@@ -162,9 +162,30 @@ tool plan_read:
            "exit_gate": "", "base_sha": "", "refs_dir": "", "notice": ""}
 
     def emit(notice):
+        """A legitimate no-op: there is genuinely nothing to carry out."""
         out["notice"] = notice
         print(json.dumps(out))
         raise SystemExit(0)
+
+    def refuse(notice):
+        """NOT a no-op: the contract could not be READ.
+
+        These two outcomes were one, and collapsing them is the blind judge
+        this programme exists to refuse. "No plan exists" is nothing to do.
+        "The plan will not parse" and "the tool that reads the plan is missing"
+        are failures to LOOK, and reporting them as success means a bot that
+        carried out no lot finishes green — which is exactly what happened:
+        yq was absent from PATH, the reader emitted nothing_to_do, the graph
+        routed straight to done, and the run reported FINISHED having done
+        nothing at all.
+
+        A bot whose whole job is to execute a declared lot must refuse when it
+        cannot read what was declared.
+        """
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("modernize: %s\n" % notice)
+        raise SystemExit(1)
 
     if not os.path.isfile(plan_path):
         emit("no programme contract at %s — nothing to carry out. Write one "
@@ -173,13 +194,50 @@ tool plan_read:
 
     # No YAML parser in the standard library, and adding a dependency to read a
     # config file is a poor trade. yq ships in the bundle and converts to JSON.
+    # yq est CHERCHE, pas suppose sur le PATH.
+    #
+    # Il est declare dans le devbox.json de ce bundle, ce qui dit quelle version
+    # doit servir — pas que l'environnement sera realise pour CE noeud. Mesure :
+    # un run entier s'est termine « FINISHED » sans executer un seul lot parce
+    # que `yq` etait introuvable ici. Le profil du bundle est donc consulte en
+    # second, avant de refuser.
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        # Le profil du DEPOT CIBLE, et non celui du bundle.
+        #
+        # Ce qui sert reellement est l'environnement du depot sur lequel le bot
+        # travaille : c'est ainsi que `golden-master` obtient python3, jq et
+        # poppler — il n'embarque pas ces outils, il tourne dedans. Les paquets
+        # declares dans le devbox.json d'un bundle disent quelle version doit
+        # servir ; rien ne les realise pour autant.
+        #
+        # Meme idiome que `env/baseline/_paths.sh` et `ci/verify-pipeline.sh`
+        # du depot cible, pour la meme raison : rester appelable hors d'un
+        # `devbox run` parent.
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    yq = find_yq()
+    if not yq:
+        refuse("yq is not on PATH and was not found in this bundle's devbox "
+               "profile, so the contract at %s cannot be read. It is declared in "
+               "the bundle's devbox.json — being declared says which version "
+               "should serve, not that the environment was realised for this "
+               "node." % plan_path)
     try:
-        raw = subprocess.run(["yq", "-o=json", plan_path], capture_output=True,
+        raw = subprocess.run([yq, "-o=json", plan_path], capture_output=True,
                              text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
-        emit("cannot run yq to read the contract: %s" % e)
+        refuse("cannot run yq to read the contract at %s: %s. yq is declared in "
+               "this bundle's devbox.json; if it is not on PATH the environment "
+               "was not realised for this node." % (plan_path, e))
     if raw.returncode != 0:
-        emit("the contract at %s is not parseable: %s" % (plan_path, raw.stderr[-800:]))
+        refuse("the contract at %s is not parseable: %s" % (plan_path, raw.stderr[-800:]))
     plan = json.loads(raw.stdout)
 
     oracle = plan.get("oracle") or {}

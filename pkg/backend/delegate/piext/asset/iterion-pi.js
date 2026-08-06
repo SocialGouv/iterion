@@ -66,6 +66,8 @@ var Ctrl = class {
     this.identity = identity;
     this.timeoutMs = timeoutMs;
   }
+  identity;
+  timeoutMs;
   seq = 0;
   /**
    * Send a request and await the host's reply.
@@ -280,6 +282,8 @@ var McpClient = class {
     this.timeoutMs = timeoutMs;
     transport.onMessage((m) => this.handle(m));
   }
+  transport;
+  timeoutMs;
   nextId = 0;
   pending = /* @__PURE__ */ new Map();
   closed = false;
@@ -427,6 +431,9 @@ var HttpTransport = class {
     this.headers = headers;
     this.timeoutMs = timeoutMs;
   }
+  url;
+  headers;
+  timeoutMs;
   handler = () => {
   };
   sessionId;
@@ -522,6 +529,9 @@ var SseTransport = class {
     this.headers = headers;
     this.timeoutMs = timeoutMs;
   }
+  url;
+  headers;
+  timeoutMs;
   handler = () => {
   };
   endpoint;
@@ -614,6 +624,10 @@ var StdioTransport = class {
     this.env = env2;
     this.log = log;
   }
+  command;
+  args;
+  env;
+  log;
   handler = () => {
   };
   child;

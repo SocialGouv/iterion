@@ -198,6 +198,7 @@ export function useLaunchSubmit({
           Object.keys(attachmentsPayload).length > 0 ? attachmentsPayload : undefined,
         backend: overrides.backendOverride || undefined,
         compress: overrides.compressOverride || undefined,
+      auto_memory: overrides.autoMemoryOverride || undefined,
         permission: overrides.permissionOverride || undefined,
         review_mode:
           overrides.reviewModeOverride && overrides.reviewModeOverride !== "auto"

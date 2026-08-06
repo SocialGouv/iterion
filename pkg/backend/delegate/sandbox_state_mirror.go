@@ -30,6 +30,24 @@ import (
 // Drivers that share the host filesystem (docker bind mount, noop) see the host
 // write directly and deliberately do not implement the interface, so this is a
 // no-op for them — the type assertion is the driver-fact oracle, not a name.
+// SandboxCopiesWorkspace reports whether the run's sandbox works on a COPY of
+// the host workspace rather than the same inode.
+//
+// The type assertion is the driver-fact oracle, not a name: a driver that
+// bind-mounts (docker) or runs on the host (noop) deliberately does not
+// implement the refresh interface, because it does not need to.
+//
+// A caller that hands the agent a host DIRECTORY it will keep reading and
+// writing throughout the node — rather than a file written once before the
+// spawn — cannot use the mirror above: there is a push seam but no per-file
+// pull seam, so the agent's edits stay in the pod until teardown, long after
+// the node needed them. Such a caller must refuse the feature visibly instead
+// of running a half-cycle whose only symptom is memory that is always empty.
+func SandboxCopiesWorkspace(task Task) bool {
+	_, copyBased := task.Sandbox.(sandbox.WorkspaceFileRefresher)
+	return copyBased
+}
+
 func mirrorStateFileIntoSandbox(ctx context.Context, task Task, absPath string, value []byte) error {
 	refresher, copyBased := task.Sandbox.(sandbox.WorkspaceFileRefresher)
 	if !copyBased {

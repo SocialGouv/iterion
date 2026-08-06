@@ -74,6 +74,7 @@ type RemoteRunsLaunchOptions struct {
 	Timeout       string
 	Backend       string
 	Compress      string
+	AutoMemory    string
 	Permission    string
 	ReviewMode    string
 	MergeInto     string
@@ -114,6 +115,7 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		"timeout":        opts.Timeout,
 		"backend":        opts.Backend,
 		"compress":       opts.Compress,
+		"auto_memory":    opts.AutoMemory,
 		"permission":     opts.Permission,
 		"review_mode":    opts.ReviewMode,
 		"merge_into":     opts.MergeInto,

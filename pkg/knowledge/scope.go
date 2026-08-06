@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"fmt"
+	gopath "path"
 	"strings"
 )
 
@@ -148,21 +149,49 @@ var ErrInvalidDocPath = fmt.Errorf("knowledge: invalid document path")
 // Scope; this is the shared check so the cloud adapter and the REST
 // boundary enforce the SAME rule (a "../" path must be rejected
 // everywhere, not silently stored as a weird Mongo key).
-func ValidateDocPath(path string) error {
-	if path == "" {
+//
+// A path must also be CANONICAL — one document, one spelling. "./MEMORY.md",
+// "topics//deploy.md" and "MEMORY.md/" all address what "MEMORY.md" and
+// "topics/deploy.md" address, and a store that accepts every spelling keeps
+// several keys for one document.
+//
+// That is not cosmetic. The two adapters disagree about it: the FS one
+// normalises on the way in (its Scope resolves through filepath.Clean) while
+// the cloud one keeps the key verbatim. So the same write produces a
+// round-trippable path on a laptop and a permanently odd one in Mongo — and
+// a consumer that materialises a document through the FILESYSTEM (which
+// canonicalises) and then matches what it walked back against the key the
+// store handed it finds nothing, concludes the file was deleted, and deletes
+// it on both sides. Rejecting here is what makes the two adapters agree, at
+// the one boundary every writer already passes through.
+func ValidateDocPath(docPath string) error {
+	if docPath == "" {
 		return fmt.Errorf("%w: path is required", ErrInvalidDocPath)
 	}
-	if strings.ContainsRune(path, 0) {
-		return fmt.Errorf("%w: %q contains a NUL byte", ErrInvalidDocPath, path)
+	if strings.ContainsRune(docPath, 0) {
+		return fmt.Errorf("%w: %q contains a NUL byte", ErrInvalidDocPath, docPath)
 	}
-	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) ||
-		(len(path) >= 2 && path[1] == ':') { // drive-letter / Windows abs
-		return fmt.Errorf("%w: %q must be relative", ErrInvalidDocPath, path)
+	if strings.HasPrefix(docPath, "/") || strings.HasPrefix(docPath, `\`) ||
+		(len(docPath) >= 2 && docPath[1] == ':') { // drive-letter / Windows abs
+		return fmt.Errorf("%w: %q must be relative", ErrInvalidDocPath, docPath)
 	}
-	for _, seg := range strings.Split(strings.ReplaceAll(path, `\`, "/"), "/") {
+	for _, seg := range strings.Split(strings.ReplaceAll(docPath, `\`, "/"), "/") {
 		if seg == ".." {
-			return fmt.Errorf("%w: %q escapes the space root", ErrInvalidDocPath, path)
+			return fmt.Errorf("%w: %q escapes the space root", ErrInvalidDocPath, docPath)
 		}
+	}
+	// "." is the space itself, not a document in it. It survives every check
+	// above — path.Clean(".") is "." so it is even canonical — and then names
+	// the space DIRECTORY, which a consumer materialising documents onto disk
+	// tries to open as a file.
+	if docPath == "." {
+		return fmt.Errorf("%w: %q is the space itself, not a document", ErrInvalidDocPath, docPath)
+	}
+	// Slash semantics deliberately, on the string as given: a backslash is a
+	// plain character here (it is only a separator for the traversal check
+	// above), so a Windows-shaped path is not newly rejected.
+	if clean := gopath.Clean(docPath); clean != docPath {
+		return fmt.Errorf("%w: %q is not canonical — use %q", ErrInvalidDocPath, docPath, clean)
 	}
 	return nil
 }

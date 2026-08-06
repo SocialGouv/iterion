@@ -70,6 +70,9 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // command-output-compression override for this run ("" inherits the
   // workflow/node `compress:` DSL then ITERION_COMPRESS).
   const [compressOverride, setCompressOverride] = useState<string>("");
+  // auto-memory (MEMORY.md) override for this run ("" inherits the
+  // workflow/node `auto_memory:` DSL then ITERION_AUTO_MEMORY; default off).
+  const [autoMemoryOverride, setAutoMemoryOverride] = useState<string>("");
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
@@ -137,6 +140,8 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
     backendOverride,
     setBackendOverride,
     compressOverride,
+    autoMemoryOverride,
+    setAutoMemoryOverride,
     setCompressOverride,
     permissionOverride,
     setPermissionOverride,

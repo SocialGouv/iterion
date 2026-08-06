@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
 	clawrt "github.com/SocialGouv/claw-code-go/pkg/runtime"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -22,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -96,6 +98,25 @@ type ClawExecutor struct {
 	compressOverride   string
 	compressEnvDefault string
 	chain              *rewrite.Chain
+
+	// Backend auto-memory (MEMORY.md). Same precedence shape as compression:
+	// run override (CLI --auto-memory / studio) > node DSL > workflow DSL >
+	// ITERION_AUTO_MEMORY > off. autoMemStore is the space backend the
+	// mirror persists through — nil falls back to the local filesystem store,
+	// and a cloud runner injects the Mongo one so a pod's ephemeral disk
+	// stops being where the memory lives.
+	wfAutoMemory         string
+	autoMemoryOverride   string
+	autoMemoryEnvDefault string
+	autoMemStore         knowledge.MemoryStore
+	// The space, its materialisation directory and the state-root guards are
+	// fixed for the whole run, so they are resolved on the first node that
+	// needs them and reused — including a failure, so a refused state root
+	// does not re-refuse (and re-log) on every later node.
+	autoMemoryOnce sync.Once
+	autoMemoryRef  knowledge.SpaceRef
+	autoMemoryDir  string
+	autoMemoryErr  error
 
 	// Tool-permission gate (anti-prompt-injection boundary). wfPermission
 	// + wfPerm{Allow,Ask,Deny} are the workflow-level `permission:` DSL
@@ -350,6 +371,20 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 // It is the highest-priority input to rewrite.Resolve.
 func WithCompressOverride(mode string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.compressOverride = mode }
+}
+
+// WithAutoMemoryOverride sets the run-level auto-memory override (CLI
+// --auto-memory / studio Launch toggle): on|off, or "" for "unset, defer to
+// DSL/env". Highest-priority input to automemory.Resolve.
+func WithAutoMemoryOverride(mode string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.autoMemoryOverride = mode }
+}
+
+// WithAutoMemoryStore injects the knowledge store the auto-memory mirror
+// persists through. nil leaves the local filesystem default; cloud runners
+// pass the Mongo store, which is what makes MEMORY.md survive the pod.
+func WithAutoMemoryStore(ms knowledge.MemoryStore) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.autoMemStore = ms }
 }
 
 // WithRewriteChain sets the active rewriter chain (the enabled rewriter
@@ -621,18 +656,21 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		defaultBackend:     wf.DefaultBackend,
 		wfCompress:         wf.Compress,
 		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
-		wfPermission:       wf.Permission,
-		wfPermAllow:        wf.PermissionAllow,
-		wfPermAsk:          wf.PermissionAsk,
-		wfPermDeny:         wf.PermissionDeny,
-		permEnvDefault:     os.Getenv("ITERION_PERMISSION"),
-		wfCompaction:       wf.Compaction,
-		wfCapabilities:     wf.Capabilities,
-		wfSkills:           wf.Skills,
-		botID:              wf.Name,
-		sessions:           newNodeSessionStore(),
-		vars:               seed,
-		detector:           detect.NewCachedDetector(5 * time.Minute),
+
+		wfAutoMemory:         wf.AutoMemory,
+		autoMemoryEnvDefault: os.Getenv(automemory.ModeEnv),
+		wfPermission:         wf.Permission,
+		wfPermAllow:          wf.PermissionAllow,
+		wfPermAsk:            wf.PermissionAsk,
+		wfPermDeny:           wf.PermissionDeny,
+		permEnvDefault:       os.Getenv("ITERION_PERMISSION"),
+		wfCompaction:         wf.Compaction,
+		wfCapabilities:       wf.Capabilities,
+		wfSkills:             wf.Skills,
+		botID:                wf.Name,
+		sessions:             newNodeSessionStore(),
+		vars:                 seed,
+		detector:             detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)

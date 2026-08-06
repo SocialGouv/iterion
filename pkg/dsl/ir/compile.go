@@ -520,6 +520,7 @@ func (c *compiler) compile() *Workflow {
 		Interaction:     interaction,
 		Worktree:        defaultWorktreeMode(wf.Worktree),
 		Compress:        wf.Compress,
+		AutoMemory:      wf.AutoMemory,
 		Permission:      wf.Permission,
 		PermissionAllow: wf.Allow,
 		PermissionAsk:   wf.Ask,
@@ -836,6 +837,7 @@ func (c *compiler) compileAgents() {
 			Cursors:           compileCursorInvocation(a.Cursors),
 			Fallbacks:         compileFallbacks(a.Fallbacks),
 			Compress:          a.Compress,
+			AutoMemory:        a.AutoMemory,
 			Permission:        a.Permission,
 			Needs:             a.Needs,
 		}
@@ -872,6 +874,7 @@ func (c *compiler) compileJudges() {
 			Cursors:           compileCursorInvocation(j.Cursors),
 			Fallbacks:         compileFallbacks(j.Fallbacks),
 			Compress:          j.Compress,
+			AutoMemory:        j.AutoMemory,
 			Permission:        j.Permission,
 			Needs:             j.Needs,
 		}

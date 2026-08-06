@@ -836,3 +836,130 @@ func TestFinalizeWorktree_WipBankResidueOnTopOfCommits(t *testing.T) {
 		t.Fatalf("main moved to %s — must stay at %s", mainTip, originalTip)
 	}
 }
+
+// TestSetupWorktree_AnchorsOnTheLaunchCheckout pins the tree a run actually
+// describes. `iterion run` launched from a LINKED worktree used to anchor on
+// the MAIN checkout's HEAD, because the repo root is deliberately resolved up
+// to the main repository and `HEAD` was then read there.
+//
+// The failure mode is the dangerous kind: the run succeeds. It reads the main
+// branch's files, does whatever they imply, and reports done — while the
+// operator is looking at another branch. Nothing in the output said which
+// tree was used.
+func TestSetupWorktree_AnchorsOnTheLaunchCheckout(t *testing.T) {
+	main, firstSHA := initBareishRepo(t)
+
+	// A linked worktree pinned to the FIRST commit, on its own branch.
+	linked := filepath.Join(t.TempDir(), "linked")
+	mustRun(t, main, "git", "worktree", "add", "-b", "side", linked, firstSHA)
+
+	// main moves on. The two checkouts now disagree, which is the whole point.
+	secondSHA := addCommit(t, main, "moved.txt", "on main only\n", "second")
+	if secondSHA == firstSHA {
+		t.Fatalf("the fixture did not move main: %s", secondSHA)
+	}
+
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-anchor", linked, nil)
+	if err != nil {
+		t.Fatalf("setupWorktree from a linked worktree: %v", err)
+	}
+	defer cleanup()
+
+	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	if got != firstSHA {
+		t.Errorf("run worktree anchored at %s, want the launch checkout's %s (main is at %s)",
+			shortSHA(got), shortSHA(firstSHA), shortSHA(secondSHA))
+	}
+	if wc.originalBranch != "side" {
+		t.Errorf("originalBranch = %q, want %q — finalize would fast-forward the wrong branch", wc.originalBranch, "side")
+	}
+	if wc.originalTip != firstSHA {
+		t.Errorf("originalTip = %s, want %s", shortSHA(wc.originalTip), shortSHA(firstSHA))
+	}
+	if !samePath(wc.anchor(), linked) {
+		t.Errorf("anchor() = %q, want the launch checkout %q", wc.anchor(), linked)
+	}
+	// The file that exists only on main must NOT be there: that is the
+	// observable form of "this is the tree you asked for".
+	if _, statErr := os.Stat(filepath.Join(wc.wtPath, "moved.txt")); statErr == nil {
+		t.Errorf("the run worktree carries main's file — it was checked out from the wrong tree")
+	}
+}
+
+// TestSetupWorktree_SingleCheckoutUnchanged is the other half: with no linked
+// worktree in play, the anchor IS the repo root and nothing about the previous
+// behaviour moves.
+func TestSetupWorktree_SingleCheckoutUnchanged(t *testing.T) {
+	main, firstSHA := initBareishRepo(t)
+
+	wc, cleanup, err := setupWorktree(t.TempDir(), "run-plain", main, nil)
+	if err != nil {
+		t.Fatalf("setupWorktree: %v", err)
+	}
+	defer cleanup()
+
+	if !samePath(wc.anchor(), wc.repoRoot) {
+		t.Errorf("anchor() = %q, repoRoot = %q — they must coincide for a single checkout", wc.anchor(), wc.repoRoot)
+	}
+	got := strings.TrimSpace(string(mustOutput(t, wc.wtPath, "git", "rev-parse", "HEAD")))
+	if got != firstSHA {
+		t.Errorf("run worktree at %s, want %s", shortSHA(got), shortSHA(firstSHA))
+	}
+	if wc.originalBranch != "main" {
+		t.Errorf("originalBranch = %q, want %q", wc.originalBranch, "main")
+	}
+}
+
+// TestRunOutputPaths_IgnoresIterionsOwnScaffolding pins which dirty paths count
+// as run output. Getting this wrong is expensive and silent: a dirty tree makes
+// finalize bank a wip commit, and a wip-banked HEAD is never merged — so a lot
+// whose gate converged does not land, because of files iterion itself mirrored
+// into the worktree at run start.
+func TestRunOutputPaths_IgnoresIterionsOwnScaffolding(t *testing.T) {
+	cases := []struct {
+		name      string
+		porcelain string
+		want      []string
+	}{
+		{
+			name: "only the mirrored bundle scaffolding",
+			porcelain: "?? .claude/skills/modernize-lots.md\n" +
+				"?? .claude/skills/plan-contract/SKILL.md\n" +
+				"?? .claude/skills/.iterion-managed/plan-contract.md.sha256\n",
+			want: nil,
+		},
+		{
+			name:      "real work is still seen",
+			porcelain: "?? .claude/skills/modernize-lots.md\n M build.gradle\n",
+			want:      []string{"build.gradle"},
+		},
+		{
+			name:      "a rename is judged on its destination",
+			porcelain: "R  old/name.txt -> src/new/name.txt\n",
+			want:      []string{"src/new/name.txt"},
+		},
+		{
+			name:      "a quoted non-ascii path survives the filter",
+			porcelain: "?? \"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf\"\n",
+			want:      []string{"src/main/resources/static/doc/fiche-r\\303\\251sum\\303\\251.pdf"},
+		},
+		{
+			name:      "nothing at all",
+			porcelain: "",
+			want:      nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runOutputPaths(tc.porcelain)
+			if len(got) != len(tc.want) {
+				t.Fatalf("runOutputPaths() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("path %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

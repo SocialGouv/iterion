@@ -12,6 +12,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -32,7 +33,13 @@ import (
 // message loudly rather than run the workflow WITHOUT the skills it was
 // launched with — a run missing its deploy/platform skill still "succeeds"
 // while doing the wrong thing, which is the exact façade this field prevents.
-const SchemaVersion = 5
+// v=6 (2026-08-05): added AutoMemory so a launch-time `--auto-memory` decision
+// reaches the runner. Bumped for the same reason again, and here the direction
+// matters: dropping the field makes the run fall back to the workflow's own
+// value, so an operator who asked for `off` on a bot whose DSL says `on` gets a
+// run that reads and writes shared memory anyway — the one thing the knob
+// exists to prevent, failing OPEN and in silence.
+const SchemaVersion = 6
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -68,11 +75,15 @@ type RunMessage struct {
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
 	// cloud ceiling, so a tenant can only lower the effective caps.
-	Budget         *BudgetOverrides `json:"budget,omitempty"`
-	BackendConfig  BackendConfig    `json:"backend"`
-	Resume         *ResumeSpec      `json:"resume,omitempty"`
-	Trace          TraceContext     `json:"trace"`
-	PublishedAtRFC string           `json:"published_at"`
+	Budget *BudgetOverrides `json:"budget,omitempty"`
+	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
+	// wire half of the knob's strongest precedence level. Empty means the
+	// caller expressed nothing and the workflow/env decide.
+	AutoMemory     string        `json:"auto_memory,omitempty"`
+	BackendConfig  BackendConfig `json:"backend"`
+	Resume         *ResumeSpec   `json:"resume,omitempty"`
+	Trace          TraceContext  `json:"trace"`
+	PublishedAtRFC string        `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted
@@ -209,6 +220,18 @@ type TraceContext struct {
 	SpanID  string `json:"span_id,omitempty"`
 }
 
+// ErrSchemaVersion marks the one decode failure that is TRANSIENT rather than
+// terminal: the message was published by a newer server than this consumer.
+//
+// It matters because the two failures deserve opposite handling. A malformed
+// payload will never decode, on any consumer, so terminating it is right. A
+// version this build does not know is the ordinary state of a rolling upgrade
+// — the server is deployed first, deliberately — and a consumer that
+// terminates it destroys a run no one can recover: the queue entry is gone
+// while the run document sits `queued` forever, with the refusal visible only
+// in one pod's logs. Observed in production during exactly such a rollout.
+var ErrSchemaVersion = errors.New("queue: schema version")
+
 // Validate enforces the invariants a runner must rely on before
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
@@ -219,7 +242,7 @@ func (m *RunMessage) Validate() error {
 		return fmt.Errorf("queue: nil RunMessage")
 	}
 	if m.V != SchemaVersion {
-		return fmt.Errorf("queue: schema version %d unsupported (want %d)", m.V, SchemaVersion)
+		return fmt.Errorf("%w: %d unsupported (want %d)", ErrSchemaVersion, m.V, SchemaVersion)
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")

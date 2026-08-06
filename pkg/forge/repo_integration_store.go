@@ -55,6 +55,15 @@ type RepoIntegration struct {
 	// zero-touch lane below.
 	HoldLabels []string `bson:"hold_labels,omitempty" json:"hold_labels,omitempty"`
 
+	// LabelAllowlist narrows the issue-labeled lane to the labels this repo
+	// treats as "dispatch the implementer" (e.g. ["implement"]); empty means
+	// ANY freshly-applied label launches it. It lives here, not only on the
+	// webhook config, for the same reason as HoldLabels: Provision rebuilds
+	// that config from the manifests, so a narrowing set only on the config is
+	// wiped by the next enable — and that regression is both silent and
+	// fail-OPEN, turning every triage label back into a feature-dev campaign.
+	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
+
 	// AutoFixOnGateFailure opts this repo into the ZERO-TOUCH lane: when a review
 	// leaves the merge gate red, the enabled bot that consumes reviews is
 	// launched on that head to answer the findings, with no human command.

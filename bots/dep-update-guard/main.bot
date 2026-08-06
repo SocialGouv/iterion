@@ -319,6 +319,14 @@ prompt verify_system:
 prompt verify_user:
   Repository to verify: {{vars.workspace_dir}}
 
+  Precheck feedback (empty on the first pass): {{input.precheck_feedback}}
+  If non-empty, your PREVIOUS verify.sh was rejected by the deterministic
+  precheck for exactly that reason. AMEND the existing script at
+  `{{vars.scratch_dir}}/verify.sh` to fix precisely what it names (do not
+  start over, do not relax anything else). §1b gates are repo-wide: they
+  are NEVER scoped out by bump relevance — a studio-only bump still runs
+  the repo's Go/openapi drift gate.
+
   Capture the repo's real build + bump-relevant tests into
   `{{vars.scratch_dir}}/verify.sh` (out-of-tree — see the
   `verify-build` + `dependency-pr-guard` skills). The deterministic
@@ -329,6 +337,15 @@ prompt verify_user:
   a drift-check task, test -z on git status --porcelain), verify.sh
   MUST mirror it — run the regen command(s), then fail on drift; the
   deterministic precheck rejects a gateless verify.sh otherwise.
+
+  EQUALLY MANDATORY (skill section 1c): mirror CI's exact STRICTNESS —
+  never stricter, never looser. Copy the CI step's invocation flags
+  verbatim (prefer the repo's own umbrella target, e.g. `task check`);
+  do NOT invent thresholds CI does not enforce (no --max-warnings 0 on
+  a lint CI tolerates warnings from, no promoting advisories to
+  failures). Before any exit-relevant line, ask: "would the repo's CI
+  be red on this exact tree for this reason?" — if you cannot name the
+  CI step that fails, your script must not fail there.
 
 prompt commit_system:
   You commit the code ALIGNMENT produced for this dependency bump onto
@@ -465,6 +482,9 @@ schema escalate_output:
   decision: string
   guidance: string
 
+schema verify_feedback_input:
+  precheck_feedback: string
+
 schema verify_plan:
   prepared: bool
   summary: string
@@ -478,6 +498,8 @@ schema verify_result:
   skipped: bool
   exit_code: int
   log_tail: string
+  precheck_rejected: bool
+  precheck_reason: string
 
 schema validate_gate_output:
   stable: bool
@@ -719,7 +741,10 @@ human escalate:
   interaction: llm_or_human
   ## The LLM half (auto-answers a routine question); a genuine
   ## architectural choice still pauses for a human.
-  model: "${VETTY_MODEL_ESCALATE:-claude-opus-5}"
+  ## provider/model-id, NOT a bare model name: a human node's llm half runs
+  ## through the direct claw generation path, which has no backend to infer
+  ## the provider from (an agent node's claude_code backend does).
+  model: "${VETTY_MODEL_ESCALATE:-anthropic/claude-opus-5}"
 
 ## verify_build — adaptive capture of the repo's build+tests into the
 ## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
@@ -727,6 +752,7 @@ agent verify_build:
   backend: "claude_code"
   model: "${VETTY_MODEL_VALIDATE:-claude-opus-5}"
   reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
+  input: verify_feedback_input
   output: verify_plan
   system: verify_system
   user: verify_user
@@ -748,7 +774,7 @@ except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 1, 'log_tail': 'verify_build produced no verify.sh -- refusing to commit an unverified alignment (fail-closed: this gate is the only path to commit).'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 1, 'precheck_rejected': False, 'precheck_reason': '', 'log_tail': 'verify_build produced no verify.sh -- refusing to commit an unverified alignment (fail-closed: this gate is the only path to commit).'}))
     raise SystemExit(0)
 def tree_state():
     try:
@@ -761,6 +787,7 @@ def tree_state():
 pre = tree_state()
 rc = 0
 out = ''
+reason = ''
 try:
     p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1200)
     out = p.stdout or ''
@@ -807,7 +834,8 @@ if rc == 0:
             vs = ''
         if not has_drift_gate(vs):
             rc = 3
-            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+            reason = 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+            out = out + chr(10) + reason
     if rc == 0 and pre is not None:
         post = tree_state()
         if post is not None:
@@ -820,7 +848,7 @@ try:
         lf.write(out)
 except OSError:
     pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': out[-4000:]}))
 "`
   output: verify_result
 
@@ -1358,8 +1386,12 @@ workflow dep_update_guard:
   ## not a performance target; the cost cap is the real spend bound.
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 20
+    ## 4h: the heavy go case measured 73m for ONE audit→align→verify pass,
+    ## a fix_verify cycle re-runs verify_build+verify_run (30–50m each), and
+    ## commit/publish still need room after two of them. The duration cap is
+    ## a runaway guard, not a target; $25 is the spend bound.
+    max_duration: "4h"
+    max_cost_usd: 25
 
   ## Scanners + build toolchain live in the sec sandbox image. One
   ## sandbox for the whole run; network open by default so the auditors
@@ -1398,7 +1430,7 @@ workflow dep_update_guard:
     human_question: "{{outputs.align.human_question}}",
     breaking_summary: "{{outputs.align.breaking_summary}}"
   }
-  align_gate -> verify_build when not needs_human
+  align_gate -> verify_build when not needs_human with { precheck_feedback: "" }
 
   ## Escalation → comment with the open decision (no commit).
   escalate -> post_feedback with {
@@ -1410,7 +1442,15 @@ workflow dep_update_guard:
   }
 
   verify_build -> verify_run
-  verify_run -> validate_gate
+  ## The precheck rejecting verify.sh (rc=3: a CI drift gate the script
+  ## does not mirror) is an AUTHORSHIP defect, not a red build — feed the
+  ## exact rejection back so the agent amends its script in-loop instead
+  ## of the whole alignment being discarded at the verdict. Bounded; on
+  ## exhaustion the else edge falls through to the hold path as before.
+  verify_run -> verify_build as fix_verify(2) when precheck_rejected with {
+    precheck_feedback: "{{outputs.verify_run.precheck_reason}}"
+  }
+  verify_run -> validate_gate else
 
   ## Green → commit the alignment onto the PR branch.
   validate_gate -> commit when stable with {

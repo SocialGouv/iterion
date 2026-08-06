@@ -54,6 +54,12 @@ func secretRules() []Rule {
 			re:       regexp.MustCompile(`\b(?:ghu|ghs)_[A-Za-z0-9]{36}\b`),
 		},
 		&regexRule{
+			name:     "github_fine_grained_pat",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}`),
+		},
+		&regexRule{
 			name:     "github_refresh",
 			category: "secret",
 			score:    1.0,
@@ -105,11 +111,18 @@ func secretRules() []Rule {
 			score:    1.0,
 			re:       regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`),
 		},
+		// Anchored on the KEY MATERIAL, not on the `"type": "service_account"`
+		// marker. That marker is the string Google's own documentation uses to
+		// describe the file format, so at this score it refused every note and
+		// masked every tool output that so much as explained what a service
+		// account key is — a blocking filter firing on prose about itself.
+		// A file carrying the private_key field is the credential; a file
+		// naming its own type is not.
 		&regexRule{
 			name:     "gcp_service_account",
 			category: "secret",
 			score:    0.95,
-			re:       regexp.MustCompile(`"type"\s*:\s*"service_account"`),
+			re:       regexp.MustCompile(`"private_key"\s*:\s*"-----BEGIN`),
 		},
 
 		// PEM / SSH
@@ -128,11 +141,69 @@ func secretRules() []Rule {
 
 		// JWT — three base64url segments separated by dots, the first
 		// two start with `eyJ` (the base64 of `{"`).
+		//
+		// Each segment carries a LENGTH FLOOR, because the shape alone is
+		// common in prose: `{"alg":"HS256"}` is the shortest header any real
+		// token can carry and encodes to exactly 20 characters, while the
+		// base64 of a toy object like `{"foo":"bar"}` is 18. Without the
+		// floor a one-character-per-segment match was enough, so every
+		// tutorial showing two small base64 blobs — and `eyJa.eyJb.c` — was
+		// refused as a credential. The signature floor is far under the 43
+		// characters HMAC-SHA256 produces.
 		&regexRule{
 			name:     "jwt",
 			category: "secret",
 			score:    0.95,
-			re:       regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b`),
+			re:       regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{17,}\.eyJ[A-Za-z0-9_\-]{17,}\.[A-Za-z0-9_\-]{20,}\b`),
+		},
+
+		// LLM provider keys. No leading `\b`: the sub-prefix (`sk-ant-…`,
+		// `sk-proj-…`) or the 48-character body is already tight enough to
+		// identify, and requiring a word boundary loses a real key wrapped in
+		// an ANSI colour sequence — `\x1b[32m` ends in a letter, and agents
+		// capture coloured shell output routinely.
+		&regexRule{
+			name:     "anthropic_api_key",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`sk-ant-[a-z]{3}[0-9]{2}-[A-Za-z0-9_\-]{24,}`),
+		},
+		&regexRule{
+			name:     "openai_api_key",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}`),
+		},
+		// The legacy form has no distinguishing sub-prefix — `sk-` plus 48
+		// alphanumerics is also a Kubernetes secret name, a git branch, a cache
+		// key, a truncated hash. Shape alone cannot tell them apart, so this one
+		// carries the entropy gate the other structurally-ambiguous rules use:
+		// a real key is random (~5.9 bits/char), the look-alikes repeat.
+		&regexRule{
+			name:     "openai_api_key_legacy",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`sk-[A-Za-z0-9]{48}`),
+			postFilter: func(match string) bool {
+				return shannonEntropy(match) >= 4.5
+			},
+		},
+
+		// AWS temporary credentials. Same published shape as AKIA, and it was
+		// covered before the catalogue took over this job.
+		&regexRule{
+			name:     "aws_temp_key",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`\bASIA[0-9A-Z]{16}\b`),
+		},
+
+		// GitLab
+		&regexRule{
+			name:     "gitlab_pat",
+			category: "secret",
+			score:    1.0,
+			re:       regexp.MustCompile(`\bglpat-[A-Za-z0-9_\-]{20,}`),
 		},
 
 		// Package registry tokens

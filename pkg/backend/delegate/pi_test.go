@@ -822,7 +822,7 @@ func TestPiPrintModeAllowsAnUngatedNode(t *testing.T) {
 func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 	t.Run("workspace-relative dir is self-ignored", func(t *testing.T) {
 		work := t.TempDir()
-		piHideWorkspaceSessionDir(Task{WorkDir: work, Sandbox: &recordingRun{}}, testLogger())
+		hideWorkspaceStateDir(work, testLogger(), "pi", "session files")
 
 		got, err := os.ReadFile(filepath.Join(work, ".iterion", ".gitignore"))
 		if err != nil {
@@ -842,7 +842,7 @@ func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 		if err := os.WriteFile(guard, []byte("!keep-me\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		piHideWorkspaceSessionDir(Task{WorkDir: work, Sandbox: &recordingRun{}}, testLogger())
+		hideWorkspaceStateDir(work, testLogger(), "pi", "session files")
 
 		got, _ := os.ReadFile(guard)
 		if strings.TrimSpace(string(got)) != "!keep-me" {
@@ -855,8 +855,8 @@ func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 	// <WorkDir>/.iterion/pi/, so the guard is needed there too. Keying it on
 	// the session dir left exactly those two files exposed to a `git add -A`.
 	t.Run("guards the workspace even when sessions live in the store", func(t *testing.T) {
-		work, store := t.TempDir(), t.TempDir()
-		piHideWorkspaceSessionDir(Task{WorkDir: work, StoreDir: store}, testLogger())
+		work := t.TempDir()
+		hideWorkspaceStateDir(work, testLogger(), "pi", "session files")
 
 		got, err := os.ReadFile(filepath.Join(work, ".iterion", ".gitignore"))
 		if err != nil {
@@ -868,7 +868,7 @@ func TestPiHidesWorkspaceSessionDirFromGit(t *testing.T) {
 	})
 
 	t.Run("no write without a workspace", func(t *testing.T) {
-		piHideWorkspaceSessionDir(Task{StoreDir: t.TempDir()}, testLogger())
+		hideWorkspaceStateDir("", testLogger(), "pi", "session files")
 	})
 }
 
@@ -1007,7 +1007,7 @@ func TestPiHideWorkspaceSessionDirRefusesASymlinkedGuard(t *testing.T) {
 		if err := os.Symlink(target, filepath.Join(work, ".iterion", ".gitignore")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, nil)
+		hideWorkspaceStateDir(work, nil, "pi", "session files")
 		if _, err := os.Stat(target); err == nil {
 			t.Error("created a host file at the symlink's target")
 		}
@@ -1026,7 +1026,7 @@ func TestPiHideWorkspaceSessionDirRefusesASymlinkedGuard(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 		var buf bytes.Buffer
-		piHideWorkspaceSessionDir(Task{NodeID: "n", WorkDir: work}, iterlog.New(iterlog.LevelWarn, &buf))
+		hideWorkspaceStateDir(work, iterlog.New(iterlog.LevelWarn, &buf), "pi", "session files")
 		if !strings.Contains(buf.String(), "not a regular file") {
 			t.Errorf("log = %q — the workspace is unguarded and nothing says so", buf.String())
 		}

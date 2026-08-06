@@ -20,6 +20,7 @@ Kubernetes gave cloud workloads a declarative control plane. Iterion brings that
 ## Table of Contents
 
 - [Why Iterion?](docs/why-iterion.md) — origin + recipe + asymptote + lab
+- [Philosophy](docs/philosophy.md) — maximum power, modularity, cloud-nativeness, git-native first class, product-open
 - [Current state](docs/current-state.md) — as-built capabilities, architecture, defaults, and limits
 - [What is Iterion?](#what-is-iterion)
 - [Features](#features)

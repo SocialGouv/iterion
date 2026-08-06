@@ -150,6 +150,7 @@ llm_prop = "description" ":" STRING_LIT NEWLINE
          | "interaction_model" ":" STRING_LIT NEWLINE
          | "await" ":" await_mode NEWLINE
          | "compress" ":" compress_mode NEWLINE
+         | "auto_memory" ":" auto_memory_mode NEWLINE
          | "permission" ":" permission_mode NEWLINE
          | "needs" ":" needs_value NEWLINE
          | mcp_config_block | compaction_block | memory_block
@@ -162,6 +163,7 @@ reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
 await_mode = "wait_all" | "best_effort" ;
 interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" ;
 compress_mode = "off" | "on" | "ultra" ;
+auto_memory_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
 
 compaction_block = "compaction" ":" NEWLINE INDENT
@@ -300,6 +302,7 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "interaction" ":" interaction_mode NEWLINE
                 | "worktree" ":" worktree_mode NEWLINE
                 | "compress" ":" compress_mode NEWLINE
+                | "auto_memory" ":" auto_memory_mode NEWLINE
                 | "permission" ":" permission_mode NEWLINE
                 | "allow" ":" string_list NEWLINE
                 | "ask" ":" string_list NEWLINE

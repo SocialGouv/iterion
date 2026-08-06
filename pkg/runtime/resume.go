@@ -862,7 +862,29 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 	execCtx := model.WithLoopIteration(ctx, iter)
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	if err != nil {
-		return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
+		// The llm half of llm_or_human is an OPTIMIZATION — it auto-answers
+		// the routine case so a human is only pulled in for a real decision.
+		// When that helper itself cannot run (no credential for the direct
+		// generation path, a provider outage, a bad model spec), killing the
+		// run inverts the node's whole purpose: it exists to hand over, and
+		// the failure hits at the exact moment a hand-over was warranted.
+		// Observed in production (2026-08-04): Vetty's first-ever escalation
+		// died on a 401 instead of asking the operator. So degrade to the
+		// human half — the same pause the LLM produces when it declines to
+		// answer. Cancellation still propagates: a run being stopped is not
+		// a helper failure.
+		if ctx.Err() != nil {
+			return false, e.failRunWithCheckpoint(rs, nodeID, fmt.Sprintf("human node %q auto_or_pause execution failed: %v", nodeID, err))
+		}
+		e.logger.Warn("human node %q: llm half failed (%v) — falling back to a human pause", nodeID, err)
+		_ = e.emit(rs.ctx, rs.runID, store.EventNodeRecovery, nodeID, map[string]any{
+			"strategy": "llm_or_human_fallback",
+			"reason":   err.Error(),
+		})
+		if perr := e.persistPause(rs, nodeID); perr != nil {
+			return false, perr
+		}
+		return true, nil
 	}
 
 	// Record budget usage.

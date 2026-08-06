@@ -14,6 +14,7 @@ import { Select } from "@/components/ui/Select";
 export interface RunSettingsSectionProps {
   backendOverride: string;
   compressOverride: string;
+  autoMemoryOverride: string;
   permissionOverride: string;
   reviewModeOverride: string;
   backendReport: BackendDetectReport | null;
@@ -23,6 +24,7 @@ export interface RunSettingsSectionProps {
   effective?: PreviewEffectiveSettings | null;
   onBackendChange: (value: string) => void;
   onCompressChange: (value: string) => void;
+  onAutoMemoryChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
   onReviewModeChange: (value: string) => void;
   /** True when the bot's parsed doc declares a `review_mode` var — the
@@ -55,12 +57,14 @@ function knobCaption(override: string, knob: PreviewEffectiveKnob | undefined) {
 export default function RunSettingsSection({
   backendOverride,
   compressOverride,
+  autoMemoryOverride,
   permissionOverride,
   reviewModeOverride,
   backendReport,
   effective,
   onBackendChange,
   onCompressChange,
+  onAutoMemoryChange,
   onPermissionChange,
   onReviewModeChange,
   showReviewMode,
@@ -137,6 +141,30 @@ export default function RunSettingsSection({
               (its binary on the host PATH); choose <code>off</code> to disable
               for this run. Tool nodes stay opt-in via the bot&apos;s{" "}
               <code>compress:</code> field.
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+          <div>
+            <div className="text-xs font-medium font-mono">auto_memory</div>
+            <div className="text-caption text-fg-subtle">MEMORY.md</div>
+          </div>
+          <div>
+            <Select
+              value={autoMemoryOverride}
+              onChange={(e) => onAutoMemoryChange(e.currentTarget.value)}
+            >
+              <option value="">default — off unless the bot asks for it</option>
+              <option value="on">on — carry memory across runs</option>
+              <option value="off">off — hermetic run</option>
+            </Select>
+            {knobCaption(autoMemoryOverride, effective?.auto_memory)}
+            <div className="mt-1 text-caption text-fg-subtle">
+              Lets agent/judge nodes read and maintain a persistent{" "}
+              <code>MEMORY.md</code> shared by every run of this bot on this
+              project — what it learned, where it left off. Off by default so a
+              run stays hermetic. Honoured by <code>claude_code</code>,{" "}
+              <code>claw</code> and <code>pi</code>.
             </div>
           </div>
         </div>

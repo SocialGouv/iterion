@@ -60,3 +60,21 @@ func OperatingPosture() string {
 func BuildSystemContext(workDir string, cfg PromptConfig) string {
 	return clawctx.NewAssemblerWithOptions(workDir, cfg.AssembleOptions()).Assemble()
 }
+
+// BuildAutoMemorySection renders ONLY the auto-memory section — the memory
+// directory's path, the maintenance instructions, and the current MEMORY.md
+// content — against an explicit directory.
+//
+// It exists for hosts that compose their own system prompt and want the
+// memory half without the rest of BuildSystemContext: environment, git status
+// and CLAUDE.md are things such a host typically already supplies (or
+// deliberately withholds), so taking them as a package deal would duplicate
+// or override its own decisions. The explicit dir is the point — see
+// [context.LoadAutoMemorySectionAt] for why deriving it from the working
+// directory is wrong when that directory changes per session.
+//
+// Returns "" for an empty dir. Read-only: the directory is never created —
+// the agent's file tools do that on first write.
+func BuildAutoMemorySection(dir string) string {
+	return clawctx.LoadAutoMemorySectionAt(dir)
+}

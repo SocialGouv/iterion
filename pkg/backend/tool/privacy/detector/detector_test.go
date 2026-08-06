@@ -331,3 +331,53 @@ func readNonEmptyLines(t *testing.T, path string) []string {
 	}
 	return out
 }
+
+// A corpus line must be caught by the rule its PREFIX claims, not merely by
+// some rule.
+//
+// TestRules_PositiveCorpus only asks whether a line produces a span, and the
+// generic entropy rules catch almost any long random token — so a fixture with
+// the wrong length for the vendor shape it imitates still passes while proving
+// nothing about the rule it was written for. Two lines were exactly that: a
+// `ghp_` token with 38 body characters where GitHub issues 36, and a `ghr_`
+// with 74 where the format is 76. Both were only ever matched by
+// generic_high_entropy_string, so the rules they were meant to exercise were
+// untested.
+func TestRules_PositiveCorpusLinesMatchTheRuleTheirPrefixClaims(t *testing.T) {
+	byPrefix := map[string]string{
+		"ghp_":        "github_pat",
+		"gho_":        "github_oauth",
+		"ghu_":        "github_app_token",
+		"ghs_":        "github_app_token",
+		"ghr_":        "github_refresh",
+		"github_pat_": "github_fine_grained_pat",
+		"glpat-":      "gitlab_pat",
+		"npm_":        "npm_token",
+		"AIza":        "google_api_key",
+		"AKIA":        "aws_access_key",
+		"ASIA":        "aws_temp_key",
+		"sk_live_":    "stripe_live_key",
+		"sk_test_":    "stripe_test_key",
+		"sk-ant-":     "anthropic_api_key",
+		"sk-proj-":    "openai_api_key",
+		"pypi-":       "pypi_token",
+	}
+	for _, line := range readNonEmptyLines(t, "testdata/secrets_positive.txt") {
+		for prefix, rule := range byPrefix {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			matched := false
+			for _, s := range New().Scan(line, Options{Categories: []string{"secret"}}) {
+				if s.Rule == rule {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Errorf("%q starts with %q but rule %q does not match it — check the length against the vendor's published shape",
+					line, prefix, rule)
+			}
+		}
+	}
+}

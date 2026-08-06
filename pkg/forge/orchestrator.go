@@ -149,6 +149,10 @@ type ProvisionRequest struct {
 	// HoldLabels is the operator's per-repo automation pause. Nil means "keep
 	// what the repo already has" — the same rule as LaunchVars.
 	HoldLabels []string
+	// LabelAllowlist narrows which freshly-applied issue label dispatches the
+	// implementer. Nil means "keep what the repo already has"; a non-nil empty
+	// slice widens it back to any label — the same rule as HoldLabels.
+	LabelAllowlist []string
 
 	// AutoFix opts the repo into the zero-touch lane (a red merge gate launches
 	// the repo's fixer). A nil pointer means "leave the repo's current choice
@@ -210,18 +214,56 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		desiredBots = dedupSorted(append(append([]string{}, existing.BotIDs...), req.BotIDs...))
 	}
 
+	// The provisioned config is where these settings are ENFORCED, and it can
+	// legitimately hold a value the integration does not: hold labels and the
+	// label allowlist were webhook-config PATCHes before they lived on the
+	// integration, and that is still what the webhook API accepts. Read it once
+	// — the adoption backfills below and the idempotent path's divergence check
+	// both need it.
+	var prevCfg webhooks.Config
+	hasPrevCfg := false
+	if hasExisting && existing.WebhookID != "" {
+		prev, gerr := o.Webhooks.Get(ctx, existing.WebhookID)
+		switch {
+		case gerr == nil:
+			prevCfg, hasPrevCfg = prev, true
+		case errors.Is(gerr, webhooks.ErrNotFound):
+			// The integration points at a config that is gone; the rebuild
+			// below recreates it, and there is nothing to adopt.
+		default:
+			// Any other failure is transient or unknown, and carrying on would
+			// rebuild the config from the manifests WITHOUT the operator
+			// settings it still carries — losing the repo's narrowing silently
+			// and fail-OPEN, which is the very defect this path exists to
+			// prevent. Refuse rather than guess.
+			return ProvisionResult{}, fmt.Errorf("forge: read webhook %s (the repo's operator settings live there): %w", existing.WebhookID, gerr)
+		}
+	}
+
 	// Operator overrides survive a re-provision: Provision rewrites the whole
 	// webhook config from the manifests, so anything PATCHed onto the webhook
 	// is lost at the next enable. A nil request map means "leave them alone",
 	// not "clear them" — enabling one more bot must not silently drop the
 	// repo's own settings.
+	// Each of the four resolves the same way — request, then the integration,
+	// then the config that still enforces the repo's choice. The last step is
+	// what keeps a setting made the documented way (a webhook PATCH) from
+	// being rebuilt away, and it is required of EVERY field the write block
+	// below stamps: one that skipped it would be re-written from an empty
+	// integration and dropped the moment any other field changes.
 	operatorVars := req.LaunchVars
 	if operatorVars == nil && hasExisting {
 		operatorVars = existing.LaunchVars
+		if len(operatorVars) == 0 && hasPrevCfg {
+			operatorVars = prevCfg.OperatorLaunchVars
+		}
 	}
 	operatorOverlap := req.Overlap
 	if operatorOverlap == "" && hasExisting {
 		operatorOverlap = existing.Overlap
+		if operatorOverlap == "" && hasPrevCfg {
+			operatorOverlap = prevCfg.Overlap
+		}
 	}
 	operatorHold := req.HoldLabels
 	if operatorHold == nil && hasExisting {
@@ -230,10 +272,19 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		// they lived here, and that is still what the webhook API PATCHes. A
 		// provision that read only the integration would wipe a pause an
 		// operator had set the documented way — so adopt it instead.
-		if len(operatorHold) == 0 {
-			if prev, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
-				operatorHold = prev.HoldLabels
-			}
+		if len(operatorHold) == 0 && hasPrevCfg {
+			operatorHold = prevCfg.HoldLabels
+		}
+	}
+	operatorLabels := req.LabelAllowlist
+	if operatorLabels == nil && hasExisting {
+		operatorLabels = existing.LabelAllowlist
+		// Same backfill as the pause above: narrowing the issue lane was a
+		// webhook-config PATCH before it lived here, and that is still the
+		// documented gesture. Dropping it on re-provision fails OPEN — the repo
+		// silently returns to "any label dispatches the implementer".
+		if len(operatorLabels) == 0 && hasPrevCfg {
+			operatorLabels = prevCfg.LabelAllowlist
 		}
 	}
 	operatorAutoFix := hasExisting && existing.AutoFixOnGateFailure
@@ -285,25 +336,49 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 		// A changed operator override is a real mutation even when the bot set
 		// is not — without this the short-circuit would silently ignore it.
-		if !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
-			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) {
+		// Compared against BOTH stores, which is only sound because every field
+		// resolved above ends at the config when the integration says nothing:
+		// a silent request therefore already equals the config value and
+		// signals no difference to erase. What the config half catches is the
+		// EXPLICIT request that happens to match an empty integration while the
+		// config still enforces the old value — `label_allowlist: []` sent to
+		// widen a lane narrowed the documented way. Without it the call returns
+		// 200 having written nothing, and the operator reads an open lane back
+		// from an API whose enforcement surface still filters.
+		changed := !maps.Equal(operatorVars, existing.LaunchVars) || operatorOverlap != existing.Overlap ||
+			operatorAutoFix != existing.AutoFixOnGateFailure || !slices.Equal(operatorHold, existing.HoldLabels) ||
+			!slices.Equal(operatorLabels, existing.LabelAllowlist)
+		if hasPrevCfg {
+			changed = changed || !slices.Equal(operatorLabels, prevCfg.LabelAllowlist) ||
+				!slices.Equal(operatorHold, prevCfg.HoldLabels) ||
+				operatorOverlap != prevCfg.Overlap ||
+				!maps.Equal(operatorVars, prevCfg.OperatorLaunchVars)
+		}
+		if changed {
+			// The config is the enforcement half, so it cannot be skipped:
+			// writing only the integration would leave the repo running the
+			// previous settings while the API reports the new ones.
+			if !hasPrevCfg {
+				return ProvisionResult{}, fmt.Errorf("forge: integration %s claims webhook %q, which does not exist — cannot apply the repo's operator settings", existing.ID, existing.WebhookID)
+			}
 			existing.LaunchVars = operatorVars
 			existing.Overlap = operatorOverlap
 			existing.HoldLabels = operatorHold
+			existing.LabelAllowlist = operatorLabels
 			existing.AutoFixOnGateFailure = operatorAutoFix
 			existing.UpdatedAt = o.clock()
 			if uerr := o.Integrations.Update(ctx, existing); uerr != nil {
 				return ProvisionResult{}, fmt.Errorf("forge: update integration launch vars: %w", uerr)
 			}
-			if cfg, gerr := o.Webhooks.Get(ctx, existing.WebhookID); gerr == nil {
-				cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
-				cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
-				cfg.Overlap = operatorOverlap
-				cfg.HoldLabels = operatorHold
-				cfg.UpdatedAt = o.clock()
-				if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
-					return ProvisionResult{}, fmt.Errorf("forge: update webhook launch vars: %w", uerr)
-				}
+			cfg := prevCfg
+			cfg.LaunchVars = nilIfEmpty(manifestLaunchVars(desiredBots, frByBot))
+			cfg.OperatorLaunchVars = nilIfEmpty(maps.Clone(operatorVars))
+			cfg.Overlap = operatorOverlap
+			cfg.HoldLabels = operatorHold
+			cfg.LabelAllowlist = operatorLabels
+			cfg.UpdatedAt = o.clock()
+			if uerr := o.Webhooks.Update(ctx, cfg); uerr != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: update webhook operator settings: %w", uerr)
 			}
 		}
 		// Backfill the per-bot routing table onto a config provisioned before
@@ -441,6 +516,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		ProjectAllowlist:   []string{req.RepoFullName},
 		EventAllowlist:     nativeEvents,
 		AuthorAllowlist:    authorAllowlist,
+		LabelAllowlist:     operatorLabels,
 		ReviewOnSync:       reviewOnSync,
 		ForgeBaseURL:       conn.BaseURL(),
 		RateLimit:          webhooks.Rate{Rate: 1, Burst: 10},
@@ -466,9 +542,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	createdConfig := false
 	if hasExisting && existing.WebhookID != "" {
-		if old, gerr := o.Webhooks.Get(ctx, webhookID); gerr == nil {
-			cfg.CreatedAt = old.CreatedAt
-			cfg.CreatedBy = old.CreatedBy
+		if hasPrevCfg {
+			cfg.CreatedAt = prevCfg.CreatedAt
+			cfg.CreatedBy = prevCfg.CreatedBy
 		}
 		cfg.RotatedAt = &now
 		if err := o.Webhooks.Update(ctx, cfg); err != nil {
@@ -514,6 +590,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		LaunchVars:           nilIfEmpty(maps.Clone(operatorVars)),
 		Overlap:              operatorOverlap,
 		HoldLabels:           operatorHold,
+		LabelAllowlist:       operatorLabels,
 		AutoFixOnGateFailure: operatorAutoFix,
 		CreatedBy:            req.ActorID,
 		CreatedAt:            now,

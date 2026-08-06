@@ -378,6 +378,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			"CURL_CA_BUNDLE",      // curl
 			"GIT_SSL_CAINFO",      // git
 			"REQUESTS_CA_BUNDLE",  // python requests
+			"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
 		} {
 			args = append(args, "--env", caEnv+"="+caContainerPath)
 		}

@@ -257,7 +257,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenMemory, TokenEnabled, TokenScope, TokenAutoload, TokenRead, TokenWrite, TokenPreCompactInject,
 		TokenWorktree,
-		TokenCompress,
+		TokenCompress, TokenAutoMemory,
 		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
 		TokenSandbox,
 		TokenCursor, TokenCursors, TokenValues, TokenBands,

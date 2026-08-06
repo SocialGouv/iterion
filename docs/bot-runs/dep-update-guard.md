@@ -7,6 +7,107 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-04/05 — the backlog majors + the Vite 8 alignment: capability proven, and the verify seam found its shape
+
+- Status: **capability validated; landing required four bot/engine fixes found
+  in stride.** Of the 6 pre-group major PRs `/vetty`'d: **#239, #38, #32
+  merged by the loop** (#38 dissolved the App-workflows-permission fear — on a
+  queue repo the QUEUE merges, not the App; #32's recreated branch re-audited
+  `clean` with a pro-grade risk trade-off: the one introduced sidecar HIGH has
+  an upstream fix while holding would keep a CRITICAL JetStream auth-bypass);
+  **#20, #21, #33 closed on grounded hold verdicts** (a self-contradictory
+  Dependabot recreate — trailer 6.0.3 vs diff 7.0.2; typescript-eslint peers
+  capping TS <6.1; Bitnami Secure Images mutable-`latest` posture). The
+  escalate lane ran its full arc live: bare-model-spec crash (fix 2.6.2 +
+  fleet lint) → 401 on a forfait-only deployment (engine fix: llm_or_human
+  degrades to a HUMAN PAUSE, #367) → a real operator answer resumed the run
+  through `iterion remote runs resume --answers`.
+- **Vite 8 (PR #19), the alignment objective jo set explicitly:** the aligner
+  performed the toolchain migration REPEATEDLY and correctly — first as
+  manualChunks object→function, then (recreated branch) as Rolldown's
+  `output.codeSplitting.groups` with the three named chunks verified, plus
+  plugin-react `^5.2.0` chosen as the minimal peer move, lockfile regenerated,
+  `import.meta.dirname` for the CJS `__dirname` deprecation. GitHub CI went
+  fully green on the migrated head. What kept discarding the work was the
+  VERIFY seam, three ways in one day: an env-dependent cost test (fix #368 —
+  recovered from the orphaned cross-branch commit), a verify.sh omitting the
+  repo's CI drift gate (the agent scopes "bump-relevant" and rationalises
+  away repo-wide gates), and a verify.sh stricter than CI (eslint failing on
+  534 pre-existing warnings / 0 errors).
+- Fixes shipped: **#368** (hermetic cost tests), **#369** (skill §1c: mirror
+  CI's exact strictness — never stricter, never looser; the litmus "name the
+  CI step that reds on it"), **#370** (the drift-gate precheck LOOPS BACK
+  into verify_build with the exact rejection — an authorship defect self-heals
+  in-loop instead of discarding the alignment at verdict time; budget 4h/$25
+  for the looped heavy case). #370 took three Revi rounds: R1acb67 (budget vs
+  loop, real), then Rc24903 (my rc=4 loop-back would have permanently
+  defeated a DELTA gate whose baseline swallows first-pass leftovers on
+  retry — accepted and reverted). Revi's blocking gate caught in review what
+  none of my local tests did, twice.
+- Lessons: an agent-authored verify script is the least deterministic node in
+  a deterministic pipeline — pin it three ways (mirror CI exactly §1c, never
+  scope out repo-wide gates §1b, and loop the precheck back instead of
+  judging at verdict time); a delta-based gate must never sit inside a retry
+  loop; suggestions in a review are hypotheses, not fixes — adopting Revi's
+  rc=4 idea without thinking its semantics cost one full round.
+
+## 2026-08-04 — the retest: all 3 PRs merged by the system, every recovery lane exercised live
+
+- Status: **validated end-to-end.** After the fix waves below shipped (#357
+  reconciler+relaunch, #358 per-bot claim, #361 budget terminal-ack; Vetty
+  2.6.1, `arm_automerge` flipped on the iterion integration), one `/vetty` per
+  PR was the only human act. Final: **#353 merged 10:57, #362 (recreation of
+  #355) merged 14:27, #354 merged 15:30** — each through Vetty's own arm →
+  merge-queue path.
+- Versions: bot 2.6.0→2.6.1 · iterion prod `f272e2306` puis `5f64a87c0` ·
+  runs `019fcc30-*` (first pass ×3), `019fcc7a`/`019fccc0`/`019fcd0c` (#354
+  chain), `019fcca9`/`019fccd8` (#362 chain).
+- What each PR proved:
+  - **#353** — arm-first on a merge-queue repo: Vetty's
+    `enablePullRequestAutoMerge` auto-enqueued the audited head at green
+    (`added_to_merge_queue` 10:24:33); the queue survived two merge-group
+    rebuilds caused by concurrent release pushes and merged. The
+    merge-now-first ordering of 2.5.0 could never have landed this.
+  - **#354** — the full recovery gauntlet, unplanned and perfect: run 1 died
+    on the 75m budget mid-verify → **reconciler posted the synthetic
+    `failure` with the budget reason** + run link, **relaunch lane fired in
+    12s** (run 019fcc7a) → that run died on 75m too (verify ~30% slower on
+    cold nix) → second death **relaunched again under the per-bot key**
+    (post-#358 deploy, run 019fccc0, now 2h budget) → **aligned the MCP
+    go-sdk 1.7.0 break with a root-cause fix** (`fix(mcp): probe liveness
+    with tools/list on protocol revisions without ping` — revision
+    2026-07-28 / SEP-2575 removed ping; the health-check now probes
+    `tools/list` on ≥ that revision; no test weakened) → push
+    self-superseded → final run 019fcd0c re-audited, `test`+`race` went
+    green on the aligned head, gate success, armed, queue, merged.
+  - **#355→#362** — the maintenance lesson: **Dependabot refuses to rebase a
+    branch Vetty has pushed to** ("edited by someone other than Dependabot"),
+    so the post-merge conflict path for a Vetty-touched PR is
+    `@dependabot recreate`. The recreation (down to 5 bumps — #353's lockfile
+    regen had absorbed the rest) re-triggered the whole loop from PR-open:
+    audit → align (esbuild bundle re-staled, recommitted) → self-supersede →
+    re-audit → arm → queue → merged.
+- Engine defects found live and fixed in stride: the per-node budget checks
+  produced an unwrapped RuntimeError, so a budget death was naked back to
+  JetStream — six ~40s resume/refail turns, each re-provisioning a sandbox
+  (#361, sentinel Cause + code match in the runner carve-out). Budget 75m
+  killed the go workload at its LAST node twice → 2h (2.6.1): the duration
+  cap is a runaway guard, not a performance target.
+- Fresh HOLD case validated fail-closed: one run's sandbox lost the nix
+  substituter → deterministic verify failed → `hold_unstable`, arm refused
+  ("verdict hold_unstable is not green") even though the agent's own
+  host-toolchain checks were green. Correct behavior, environmental cause —
+  board ticket filed (verify should distinguish env-provisioning failure).
+- Still open: run cost reads `None` on all these runs (the delegate
+  cost-signal chantier); the board-escalation lane (second death, same head,
+  claim spent) armed twice but never had to complete — unit-tested, not yet
+  live-proven.
+- Lessons: the recovery loop turns "a required gate makes every death a trap"
+  into "every death is one relaunch away from a verdict"; supersede-on-push
+  means the FINAL head is always the audited one — accept the double pass as
+  the price of that guarantee; cold nix caches are the real duration driver
+  (30-46 min verify_build), fix the cache before tightening any budget.
+
 ## 2026-08-03/04 — first Dependabot batch on iterion itself: 2 exemplary audits, 1 silent death, 0 merges
 
 - Status: **partial — the audits were the best this bot has produced; everything

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -90,6 +91,11 @@ type RunOptions struct {
 	// DSL then the ITERION_COMPRESS env default. It is the highest-priority
 	// input to rewrite.Resolve. See docs/plugins.md.
 	Compress string
+
+	// AutoMemory is the run-level auto-memory (MEMORY.md) override
+	// ("", "on", "off"). "" inherits the workflow/node `auto_memory:` DSL
+	// then ITERION_AUTO_MEMORY; the default is off.
+	AutoMemory string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"). "" inherits the workflow/node
 	// `permission:` DSL then the ITERION_PERMISSION env default.
@@ -162,6 +168,10 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		// Managed-runner mode: no TTY available in the spawned
 		// subprocess, and prompts would deadlock.
 		opts.NoInteractive = true
+	}
+
+	if err := automemory.ValidateMode(opts.AutoMemory); err != nil {
+		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
 	}
 
 	if opts.BranchName != "" {
@@ -268,7 +278,8 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if telemetry.prometheus != nil {
 		exporterHooks = telemetry.prometheus
 	}
-	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks)
+	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
+		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile))
 	if err != nil {
 		return err
 	}
@@ -452,6 +463,7 @@ func buildRunExecutor(
 	runID, storeDir string,
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
+	botID string,
 ) (runtime.NodeExecutor, error) {
 	if opts.Executor != nil {
 		return opts.Executor, nil
@@ -465,13 +477,18 @@ func buildRunExecutor(
 		return nil, err
 	}
 	execSpec := runview.ExecutorSpec{
-		Workflow:        wf,
-		Vars:            opts.Vars,
-		Store:           s,
-		RunID:           runID,
-		Logger:          logger,
-		StoreDir:        storeDir,
-		Compress:        opts.Compress,
+		Workflow:   wf,
+		Vars:       opts.Vars,
+		Store:      s,
+		RunID:      runID,
+		Logger:     logger,
+		StoreDir:   storeDir,
+		Compress:   opts.Compress,
+		AutoMemory: opts.AutoMemory,
+		// Empty for a standalone .bot, where the executor falls back to the
+		// workflow name. Set for a bundle, so this run keys its bot-scoped
+		// memory on the same id the studio and the cloud use.
+		BotID:           botID,
 		Permission:      opts.Permission,
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
@@ -545,7 +562,8 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
-		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil)
+		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
+			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath))
 		if err != nil {
 			return nil, err
 		}
@@ -810,4 +828,16 @@ func ParseAnswersFile(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("cannot parse answers file: %w", err)
 	}
 	return answers, nil
+}
+
+// bundleManifestName is the bundle's own declared id, or "" for a plain .bot.
+//
+// It has to win over anything derived from the path: a `.botz` archive is
+// extracted into a cache slot named after its CONTENT HASH, so the path would
+// key this bot's memory on a name that changes with every edit to the bundle.
+func bundleManifestName(b *bundle.Bundle) string {
+	if b == nil {
+		return ""
+	}
+	return b.Manifest.Name
 }

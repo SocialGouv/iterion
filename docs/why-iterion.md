@@ -92,3 +92,7 @@ variants run side-by-side without touching code, and the same file that runs on
 your laptop runs unchanged on the cloud runner.
 
 See the [current as-built state](current-state.md), then [install](install.md).
+For *how we decide* when a design question is open — power without artificial
+limits, modularity, cloud-nativeness, and the two settled arbitrations
+(git-native stays first class; product-oriented views are additive) — read the
+[philosophy](philosophy.md).

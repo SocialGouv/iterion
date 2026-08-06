@@ -94,6 +94,32 @@ red-in-CI. This is not optional whenever the repo commits generated artifacts:
   `<the repo's regen command> && git diff --exit-code -- <the generated
   paths>` — a non-empty diff means stale, which is a real red.
 
+## 1c. Mirror CI's exact strictness — never stricter, never looser
+
+CI is the reference in BOTH directions. Copying CI's *commands* but changing
+their *thresholds* produces a verify.sh that disagrees with the repo's own
+definition of green, and both signs of that disagreement have shipped a wrong
+verdict in production:
+
+- **Never stricter.** Do not invent failure thresholds the repo's CI does not
+  enforce: no `--max-warnings 0` on a lint step whose CI run tolerates
+  warnings, no promoting `go vet`/lint advisories to failures, no `-Werror`
+  the build doesn't set. A tree with 500 pre-existing lint warnings that CI
+  passes MUST pass verify.sh too — a stricter script red-flags a bump for
+  debt it did not create (observed live: a vite bump held `hold_unstable`
+  because verify.sh failed eslint on 534 pre-existing warnings / **0
+  errors**, while the repo's CI on the same tree was fully green). Copy the
+  exact invocation — flags included — from the CI step or the task-runner
+  target CI calls; when in doubt, run the repo's own umbrella target
+  (`task check`, `make ci`) INSTEAD of hand-assembling steps.
+- **Never looser** is §1b: every gate CI enforces (drift, fmt, lint-as-error
+  where CI makes it one) must be present — the precheck rejects a gateless
+  script.
+
+Litmus test before writing `exit`-relevant lines: "would the repo's CI, on
+this exact tree, be red for this reason?" If you cannot point at the CI step
+that fails, your script must not fail there either.
+
 If you changed code that feeds a generator (a new HTTP route, a new exported
 type in a schema-bearing package), regenerating and committing the output is
 part of the work — the gate is here to force it. (iterion specifically:

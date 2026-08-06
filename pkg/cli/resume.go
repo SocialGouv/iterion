@@ -57,6 +57,12 @@ type ResumeOptions struct {
 	PermissionAllow []string
 	PermissionAsk   []string
 	PermissionDeny  []string
+	// AutoMemory re-states the run-level auto-memory (MEMORY.md) override on
+	// resume. Run-level overrides are not persisted on the run, so a resume
+	// that says nothing falls back to the workflow's own value — which for a
+	// bot whose DSL says `on` silently un-does a hermetic `--auto-memory off`
+	// launch.
+	AutoMemory string
 	// ModelFor / BackendFor re-apply the launch-time per-node/-group model+
 	// backend overrides on resume (repeatable --model / --backend,
 	// "selector=value" or bare "value"). Resume does NOT persist the original
@@ -260,6 +266,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			PermissionAllow: opts.PermissionAllow,
 			PermissionAsk:   opts.PermissionAsk,
 			PermissionDeny:  opts.PermissionDeny,
+			AutoMemory:      opts.AutoMemory,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,

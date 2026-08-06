@@ -357,6 +357,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		spec.Env["ITERION_ARTIFACT_FILES_DIR"] = runFilesContainerPath
 	}
+	seedDefaultLocale(spec)
 	bundleContainerPath := addOptionalBindMount(spec, p.BundleHostDir, p.BundleContainerPath, "/run/iterion/bundle", "bundle", true, logger)
 	sharedStateDir := applyHostStateMounts(spec, p.Workflow, p, emitEvent, logger)
 	// Back ${PROJECT_SCRATCH_DIR} with a host dir so a parent and its

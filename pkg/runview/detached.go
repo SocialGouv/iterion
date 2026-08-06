@@ -74,6 +74,11 @@ type detachedSpec struct {
 	Timeout    time.Duration
 	MergeInto  string // worktree finalization, Launch only
 	BranchName string // worktree finalization, Launch only
+	// AutoMemory forwards the run-level auto-memory override as the CLI's
+	// --auto-memory flag. The subprocess re-resolves the knob from scratch,
+	// so anything not passed here is silently replaced by the workflow's own
+	// value — which for `off` means running with memory ON.
+	AutoMemory string
 	// Budget forwards launch-time budget overrides as the CLI's
 	// --max-* flags, so the detached runner applies the same caps the
 	// in-process path would. Launch only; nil = no override.
@@ -97,6 +102,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.BranchName != "" {
 			args = append(args, "--branch-name", spec.BranchName)
 		}
+		if spec.AutoMemory != "" {
+			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
 		if b := spec.Budget; b != nil {
 			if b.MaxCostUSD > 0 {
 				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
@@ -116,6 +124,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
+		if spec.AutoMemory != "" {
+			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
 		if spec.Force {
 			args = append(args, "--force")
 		}
@@ -312,6 +323,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Timeout:    spec.Timeout,
 		MergeInto:  spec.MergeInto,
 		BranchName: spec.BranchName,
+		AutoMemory: spec.AutoMemory,
 		Budget:     spec.Budget,
 	})
 	if err != nil {
@@ -348,13 +360,14 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*Laun
 	}
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:  runnerCommandResume,
-		RunID:    spec.RunID,
-		FilePath: spec.FilePath,
-		Answers:  answers,
-		StoreDir: s.storeDir,
-		Force:    spec.Force,
-		Timeout:  spec.Timeout,
+		Command:    runnerCommandResume,
+		RunID:      spec.RunID,
+		FilePath:   spec.FilePath,
+		Answers:    answers,
+		StoreDir:   s.storeDir,
+		AutoMemory: spec.AutoMemory,
+		Force:      spec.Force,
+		Timeout:    spec.Timeout,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

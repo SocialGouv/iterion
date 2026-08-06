@@ -51,7 +51,22 @@ func AutoMemoryDir(workDir string) string {
 // Read-only: never creates the directory — the model's file tools do that on
 // first write.
 func LoadAutoMemorySection(workDir string) string {
-	dir := AutoMemoryDir(workDir)
+	return LoadAutoMemorySectionAt(AutoMemoryDir(workDir))
+}
+
+// LoadAutoMemorySectionAt is LoadAutoMemorySection against an EXPLICIT memory
+// directory, for hosts that own where a session's memory lives.
+//
+// The workDir-derived default fingerprints the working directory, which is
+// wrong for any host that runs an agent in a fresh directory per session (a
+// git worktree, an ephemeral container): the fingerprint changes, so the
+// agent starts from an empty memory every time and the mechanism silently
+// does nothing. Such a host resolves the directory from its own identity —
+// project, agent, tenant — and passes it here.
+//
+// An empty dir returns "", matching LoadAutoMemorySection's contract for an
+// unresolvable directory.
+func LoadAutoMemorySectionAt(dir string) string {
 	if dir == "" {
 		return ""
 	}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -216,6 +218,143 @@ func (c *compiler) validateCompress(w *Workflow) {
 					kind, n.NodeID(), compress)
 			}
 		})
+}
+
+// validateAutoMemory enforces that every auto_memory value (workflow-level +
+// every agent/judge node) is one of the accepted barewords, and warns when a
+// node asks for it on a backend that cannot deliver it. A typo would silently
+// read as "inherit" — i.e. off — so an invalid value is an ERROR. Empty ("")
+// means unset/inherit and is always valid; the comparison is case-insensitive
+// and whitespace-trimmed.
+//
+// The accepted values are kept inline (pkg/backend/model would cycle), but
+// the BACKEND allowlist is not: it comes from automemory.SupportsBackend, so
+// the warning and the engine can never disagree about who honours the knob.
+func (c *compiler) validateAutoMemory(w *Workflow) {
+	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+	valid := func(v string) bool {
+		switch norm(v) {
+		case "", "on", "off":
+			return true
+		}
+		return false
+	}
+	if !valid(w.AutoMemory) {
+		c.errorf(DiagInvalidAutoMemory,
+			"workflow %q has invalid auto_memory %q; valid values are on, off",
+			w.Name, w.AutoMemory)
+	}
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		kind, value := nn.NodeKind().String(), nn.GetAutoMemory()
+		if !valid(value) {
+			c.errorf(DiagInvalidAutoMemory,
+				"%s %q has invalid auto_memory %q; valid values are on, off",
+				kind, n.NodeID(), value)
+			continue
+		}
+		// The workflow default reaches every node, so a mixed-backend
+		// workflow would warn on each node that cannot honour it. Only an
+		// explicit per-node `on` is worth a diagnostic.
+		if norm(value) != "on" {
+			continue
+		}
+		// The EFFECTIVE backend, mirroring the runtime's resolution: a node
+		// with no `backend:` inherits the workflow's `default_backend:`.
+		// Reading the node's own field alone missed the likeliest shape by
+		// far — the backend declared once at the workflow level rather than
+		// repeated on every node — and the author then got nothing at all:
+		// no warning here, and a runtime that (correctly) skips the mirror in
+		// silence. An empty effective backend is left alone: the resolver
+		// falls through to env and host credential detection, so the compiler
+		// genuinely cannot know.
+		backend := nn.GetLLMFields().Backend
+		if backend == "" {
+			backend = w.DefaultBackend
+		}
+		if backend != "" && !automemory.SupportsBackend(backend) {
+			c.warnf(DiagAutoMemoryNotSupported,
+				"%s %q: auto_memory: on has NO effect on backend=%q — MEMORY.md is wired for claude_code, claw and pi only",
+				kind, n.NodeID(), backend)
+		}
+	}
+	c.warnIfWorkflowAutoMemoryIsInert(w)
+}
+
+// warnIfWorkflowAutoMemoryIsInert covers the one shape the per-node rule above
+// deliberately stays silent on: `auto_memory: on` declared ONCE at the
+// workflow level, where no node can honour it.
+//
+// The per-node rule fires only on an explicit per-node `on`, because a
+// workflow default reaches every node and a mixed-backend workflow would warn
+// on each one that cannot use it — noise that trains an author to ignore the
+// diagnostic. But the same silence covers the case where the author's single
+// `on` does nothing at all, anywhere, and the runtime then skips the mirror
+// without a word: memory is simply always empty, with nothing to search for.
+//
+// So the warning is emitted only when NOTHING in the workflow could honour the
+// setting — one message about the workflow, not one per node. A node whose
+// effective backend is unresolved counts as "could": the resolver falls
+// through to env and host credential detection, so the compiler genuinely
+// cannot know, and guessing would produce a false warning on a workflow that
+// works.
+func (c *compiler) warnIfWorkflowAutoMemoryIsInert(w *Workflow) {
+	if strings.ToLower(strings.TrimSpace(w.AutoMemory)) != "on" {
+		return
+	}
+	// The two ways a node can fail to use the setting are counted apart,
+	// because they need different words. "No backend supports it" is a wiring
+	// fact; "every node opted out" is the author's own `auto_memory: off` on a
+	// backend that would have honoured it — telling them their backends are
+	// unsupported there sends them looking for a problem that is not real,
+	// which is how a diagnostic teaches people to ignore diagnostics.
+	unsupported, optedOut := 0, 0
+	for _, n := range w.Nodes {
+		nn, ok := n.(LLMNode)
+		if !ok {
+			continue
+		}
+		backend := nn.GetLLMFields().Backend
+		if backend == "" {
+			backend = w.DefaultBackend
+		}
+		// Unresolved: the runtime falls through to env and host credential
+		// detection, so the compiler genuinely cannot know and must not guess.
+		supported := backend == "" || automemory.SupportsBackend(backend)
+		if strings.ToLower(strings.TrimSpace(nn.GetAutoMemory())) == "off" {
+			if supported {
+				optedOut++
+			}
+			continue
+		}
+		if supported {
+			return // something honours it; the setting is doing its job
+		}
+		unsupported++
+	}
+	switch {
+	case unsupported > 0 && optedOut > 0:
+		// Both causes at once. Naming only the first would contradict itself —
+		// "MEMORY.md is wired for claw only" is a strange thing to read on a
+		// workflow that HAS a claw node, and it points the author at the
+		// backends when half the answer is their own per-node `off`.
+		c.warnf(DiagAutoMemoryNotSupported,
+			"workflow %q sets auto_memory: on but nothing honours it: %d agent/judge node(s) override it with auto_memory: off, and the remaining %d are on a backend that ignores it (MEMORY.md is wired for claude_code, claw and pi only)",
+			w.Name, optedOut, unsupported)
+	case unsupported > 0:
+		c.warnf(DiagAutoMemoryNotSupported,
+			"workflow %q sets auto_memory: on but NO agent/judge node can honour it — MEMORY.md is wired for claude_code, claw and pi only",
+			w.Name)
+	case optedOut > 0:
+		c.warnf(DiagAutoMemoryNotSupported,
+			"workflow %q sets auto_memory: on but every agent/judge node overrides it with auto_memory: off — the workflow default has no effect",
+			w.Name)
+	}
+	// Neither: the workflow has no agent/judge node at all. Nothing to honour
+	// it either way, and nothing worth telling the author.
 }
 
 // forEachAgentJudgeToolValue visits every agent/judge/tool node in the

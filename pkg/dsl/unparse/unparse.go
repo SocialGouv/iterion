@@ -205,7 +205,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
+			Compress: a.Compress, AutoMemory: a.AutoMemory, Permission: a.Permission, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -240,7 +240,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
+			Compress: j.Compress, AutoMemory: j.AutoMemory, Permission: j.Permission, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -602,6 +602,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "compress", wf.Compress)
 		}
 
+		if wf.AutoMemory != "" {
+			writeProp(&w.b, "auto_memory", wf.AutoMemory)
+		}
+
 		if wf.Permission != "" {
 			writeProp(&w.b, "permission", wf.Permission)
 		}
@@ -907,6 +911,7 @@ type llmFields struct {
 	InteractionPrompt, InteractionModel string
 	Await                               ast.AwaitMode
 	Compress                            string
+	AutoMemory                          string
 	Permission                          string
 	Needs                               []string
 }
@@ -994,6 +999,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Compress != "" {
 		writeProp(b, "compress", f.Compress)
+	}
+	if f.AutoMemory != "" {
+		writeProp(b, "auto_memory", f.AutoMemory)
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)

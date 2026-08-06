@@ -80,6 +80,10 @@ type launchRunRequest struct {
 	// ("on"|"ultra"|"off"). Empty inherits the workflow/node compress: DSL
 	// then ITERION_COMPRESS. See runview.LaunchSpec.Compress.
 	Compress string `json:"compress,omitempty"`
+	// AutoMemory is the run-level auto-memory (MEMORY.md) override
+	// ("on"|"off"). Empty inherits the workflow/node auto_memory: DSL then
+	// ITERION_AUTO_MEMORY. See docs/memory-and-knowledge.md.
+	AutoMemory string `json:"auto_memory,omitempty"`
 	// Permission is the run-level tool-permission-gate mode override
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
@@ -375,6 +379,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		AttachmentPromote: promote,
 		Backend:           req.Backend,
 		Compress:          req.Compress,
+		AutoMemory:        req.AutoMemory,
 		Permission:        req.Permission,
 		ReviewMode:        req.ReviewMode,
 		// The manual path resolves the retry chain like every automated

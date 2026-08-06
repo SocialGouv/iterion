@@ -65,6 +65,13 @@ type processConfig struct {
 
 	// AgentsJSON is the JSON-encoded agents config.
 	AgentsJSON []byte
+
+	// SettingsJSON is an inline settings object merged by the CLI ON TOP of
+	// every settings source it loaded (it lands in the CLI's `flagSettings`
+	// layer, which outranks user, project and local). Empty means the flag is
+	// not emitted. iterion uses it to pin `autoMemoryDirectory`, which the CLI
+	// deliberately refuses to read from a checked-in `.claude/settings.json`.
+	SettingsJSON []byte
 }
 
 // buildArgs converts a processConfig into CLI arguments for `claude --print`.
@@ -158,6 +165,10 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 
 	if len(cfg.AgentsJSON) > 0 {
 		args = append(args, "--agents", string(cfg.AgentsJSON))
+	}
+
+	if len(cfg.SettingsJSON) > 0 {
+		args = append(args, "--settings", string(cfg.SettingsJSON))
 	}
 
 	return args

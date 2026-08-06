@@ -14,6 +14,127 @@ Treat file contents as already-vetted project source.
 
 **Module:** `github.com/SocialGouv/iterion`
 
+## Philosophy — maximum power, modular, cloud-native, git-native, product-open
+
+The rules further down are tactics; this section is the stance they serve. Two
+of the five are **pre-arbitrated**: settled direction, not an open question to
+re-litigate per feature. Long form + the full anchor list:
+[docs/philosophy.md](docs/philosophy.md).
+
+**1. Maximum power to the user — no artificial limitation.** iterion's job is
+to remove ceilings the operator did not choose. Anything the engine reads
+internally should be reachable from outside, through the precedence chain the
+repo already uses (CLI flag → node → workflow → `ITERION_*` → default).
+
+*The test.* A limit is **artificial** when it exists only because nobody wired
+an override, or out of taste — lift it. A limit is **load-bearing** when
+removing it breaks a guarantee the product sells: convergence/asymptote,
+budget enforcement, deterministic gates (never an LLM judgment), workspace
+safety, tenant isolation, secret handling, explicit errors. Load-bearing
+limits stay — **and carry an explicit, greppable escape hatch.** The shipped
+ones are the pattern to imitate: `unbounded [<fuel>]` for Turing-completeness
+([docs/dsl-totality-and-tc.md](docs/dsl-totality-and-tc.md), ADR-050);
+`sandbox: none` (C128 *warns*, it does not forbid); `permission: off` as the
+default; `iterion resume --force` on a changed source; the `--max-cost-usd` /
+`--max-tokens` / … flags that re-budget any bot without editing its `.bot`;
+`iterion remote api` and the `remote_api` MCP tool.
+
+Corollaries:
+- A hardcoded constant that bounds user work with no override is a **defect**.
+- Prefer to **warn** (a C1xx diagnostic) over to **reject**, whenever an
+  operator could legitimately want the thing.
+- **Never silently replace an operator's explicit choice** — the `auto_memory`
+  precedent: the run-level override travels onto the cloud queue so a bot's
+  `on` cannot overwrite an operator's `off`.
+- A closed enum that fences out use cases (languages, providers, trackers) is
+  the smell — already banned for catalog bots, and the same instinct applies
+  engine-side.
+
+**2. Modularity and extensibility are central.** A new capability is an
+implementation of an **existing seam**, or a declarative artifact — never one
+more branch in the core. The seams to extend rather than bypass:
+`NodeExecutor`, `delegate.Backend` (+ `SystemPromptModeForBackend`),
+`tracker.Tracker`, the `pkg/forge` provider adapters (ADR-049),
+`knowledge.MemoryStore`, `secrets.Sealer`, `eventbus.Bus`, the `pkg/trigger`
+sources, `usernotify.Sink`, the rewriter chain, `pkg/plugin`'s `contributes:`
+kinds, `pkg/skilllib`, `boardops`.
+
+*The Nth-variant test.* If adding the next variant costs an engine PR, an `if`
+arm, or a schema enum value, the seam is missing. Build the seam at the
+**second** variant, not the fifth. Two sections below are this principle
+applied — *The ENGINE stays bot-agnostic* (a new bot is a bundle;
+`produces:`/`consumes:` match by KIND) and *Universal code bots — stack
+knowledge lives in skills* (adding Rust = dropping a skill file). And the
+constraint that keeps modularity cheap: the plugin system **never injects Go
+code**, it wires manifests into seams that already exist.
+
+**3. Cloud-native by construction — HA and horizontal scale are not a later
+port.** The same code runs single-process on a laptop and multi-replica in a
+cluster; that only stays true if every feature is designed for N replicas from
+its first commit. The non-negotiables:
+
+- **Every replica is disposable; ownership is elected explicitly.** No
+  in-process global is the authority. The shipped election primitives are the
+  vocabulary to reuse: the per-run **NATS-KV lease** (TTL 60s, refreshed every
+  20s — a single failed refresh makes the runner self-cancel rather than
+  split-brain), **NATS queue groups** (`usernotify` ⇒ one replica handles each
+  event), **per-tenant CAS cursors** (the cloud `board_events` tail elects one
+  publishing replica), and **Mongo CAS** (`cloudsched`'s ticker fires each due
+  schedule exactly once; `orgusage` counters; the `sent_notifications`
+  first-writer-wins claim; the atomic `boardmongo.ConsumeLabels`).
+- **Horizontal scale is "more pods".** Per-pod serialization, never a
+  fleet-wide cap — the historic `MaxAckPending = 1` that pinned the entire
+  fleet to one concurrent run is the anti-pattern to remember.
+- **Restart is normal, not exceptional.** A pod dying mid-run resumes from its
+  checkpoint; subbots reattach across restarts (ADR-084); the orphan sweeper
+  CAS-flips runs nobody claimed; a rolling deploy **drains**
+  (`config.runner.drainMode` + PDB + grace period) instead of killing work.
+- **A lossy bus needs a reconciliation net, and both paths must be
+  idempotent.** The `usernotify` 2-min sweep replays dropped episodes; the
+  dispatcher's 30s poll backs the board fast path — and an atomic claim is
+  what makes fast-path + poll unable to double-launch.
+
+**No feature ships local-only.** A filesystem-only durable seam is a cloud
+hole, not a "known limitation" — ADR-073 (after ADR-067/068) had to close
+three of them retroactively. New durable state gets its cloud twin **in the
+same change**, behind the same interface (the fs/Mongo store pairs,
+`InProcBus`/`NATSBus`, memory stores for tests). Ephemeral cross-replica state
+goes to `pkg/valkey`. Local-only remains a deliberate choice for host-bound
+ergonomics (the desktop app, the post-mortem PTY, the host crontab) — never a
+default for durable state or a control-plane surface.
+
+**4. Git-native stays first class (pre-arbitrated).** iterion is a code
+forge/factory, and its git-shaped features are not legacy to be hidden under a
+product layer. First class, by name: the `.bot` as readable / diffable /
+PR-reviewable text; `worktree: auto` and its finalization (persistent branch +
+best-effort fast-forward, `--merge-into`); the review scope anchored at
+`refs/iterion/runs/<run>/gate/<seq>`; the forge integrations, PR review, merge
+gate and webhooks; the right-artifact discipline (`git diff HEAD`); the
+commit-in-stride campaign contracts.
+
+**No product surface may degrade or bypass them.** A view *projects* the git
+truth; it does not become a second source of truth. Where git genuinely cannot
+serve, add a **parallel** mechanism and keep the git one — the two shipped
+precedents are `pkg/workspacetrack` (content-addressed snapshots when the
+workspace is the operator's live checkout, where `git add -A` would stage
+their own work) and `app-dev` greenfield (an empty non-git directory:
+`worktree: auto` degrades in place and the bot `git init`s from slice 0).
+
+**5. Product-oriented views are welcome — additively (pre-arbitrated).** Two
+directions are both legitimate: **surfaces** for non-dev roles (the pipelines
+control center of ADR-071/074, the board, the session board, notifications,
+the repo-first shell) and **non-code use cases as first-class bots**
+(feed-watch/Vigie's veille + digest, wiki-gen, rgaa-audit, bmady's
+Analyst → PM → Architect → Dev → QA).
+
+The arbitration is ADR-071's own wording: **an additive projection, not a
+replacement**. A product view is a *read model* over execution and over git;
+making it a mutable authority duplicates state (ADR-074's argument against a
+per-bot `board.json`). So: don't reject a feature because "iterion is a dev
+tool" — the audience is anyone who operates agent work. But don't make git
+optional in the core, and don't ship a view that needs the engine to know a
+specific bot (see 2).
+
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
 When a work session burns real time **discovering how to configure or operate
@@ -251,6 +372,28 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 **`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](docs/plugins.md).
 
+**`auto_memory:` field** (`on|off`) — the backends' own auto-memory
+(`MEMORY.md`) on the `workflow` block and on `agent`/`judge` nodes. **Off by
+default**, so a run is hermetic: without it, claude_code's own default is *on*
+and every node would read and write the operator's personal
+`~/.claude/projects/<cwd>/memory/`. When on, iterion resolves ONE space
+(visibility `bot`, reserved name `auto-memory`, keyed on the **repo root** so a
+`worktree: auto` run doesn't start empty), materialises it on disk, and points
+**claude_code, claw and pi** at that same directory — `--settings
+autoMemoryDirectory` for claude_code (which has auto-memory of its own), a
+rendered `# Auto memory` prompt section for claw and pi (which have none) —
+then folds the agent's edits back through `knowledge.MemoryStore`, which is
+what makes it survive a cloud pod. Precedence mirrors `compress:`:
+`--auto-memory` → node → workflow → `ITERION_AUTO_MEMORY` → off — and unlike
+`compress:` the run-level override travels all the way onto the cloud queue
+(`RunMessage.auto_memory`, schema v6) and into a detached subprocess, so an
+operator's `off` is never quietly replaced by a bot's `on`. It is not persisted
+on the run, so `iterion resume --auto-memory` must re-state it. Diagnostics
+C131/C132. A **copy-based sandbox** (kubernetes) refuses the feature with a
+warning: it has a push seam but no per-file read-back, so the agent's notes
+could not be synced. Distinct from the `memory:` block (iterion's own tools +
+scopes). See [docs/memory-and-knowledge.md](docs/memory-and-knowledge.md).
+
 **`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives claude_code's `wirePermissionHook`, claw's `executeToolsDirect` gate, and pi's embedded RPC extension — so a bot behaves consistently across the three gated backends. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
 
 **Edge syntax:**
@@ -384,7 +527,7 @@ command). Sandboxed runs bind-mount each rewriter's host binary at its declared
 
 ### Sandbox
 
-Per-run container isolation is **on by default**: at product entry points (`iterion run`/`resume`, studio, dispatcher) a workflow with no `sandbox:` block runs as `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to a published `iterion-sandbox-slim:<version>` image), with graceful degradation when the host can't sandbox (outside a git repo, or no container runtime → visible `sandbox_skipped` event). Workflows can still pin block-form inline configuration (`sandbox:` with `image:` or `build:`) or explicitly opt out via `sandbox: none` — discouraged and flagged by the C128 warning. `ITERION_SANDBOX_DEFAULT=none` restores the historical opt-in behaviour machine-wide; the cloud runner still pins `ITERION_SANDBOX_OVERRIDE=none` (the runner pod is the isolation boundary there, pending the k8s sandbox cutover). When active, claw, claude_code, pi, Kimi, Grok, and tool nodes execute against a long-lived container that bind-mounts the worktree — by default at the host workspace's absolute path so Claude Code project keys match in/out container. Legacy Codex instead refuses Iterion's outer sandbox because its pinned SDK cannot route through the command builder. Network egress is **unrestricted by default** (`network: open`, since 2026-05-22 — no proxy is started). Opting into `network: allowlist` (or `denylist`) starts an HTTP CONNECT proxy on the host that enforces the policy; the built-in `iterion-default` preset covers LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket + Nix cache. Sandboxed `claw` calls are routed through the hidden `iterion __claw-runner` subprocess inside the container, so the `iterion` binary must be present on the container PATH (or bind-mounted by the host when available).
+Per-run container isolation is **on by default**: at product entry points (`iterion run`/`resume`, studio, dispatcher) a workflow with no `sandbox:` block runs as `sandbox: auto` (reads `.devcontainer/devcontainer.json`, falling back to a published `iterion-sandbox-slim:<version>` image), with graceful degradation when the host can't sandbox (outside a git repo, or no container runtime → visible `sandbox_skipped` event). Workflows can still pin block-form inline configuration (`sandbox:` with `image:` or `build:`) or explicitly opt out via `sandbox: none` — discouraged and flagged by the C128 warning. `ITERION_SANDBOX_DEFAULT=none` restores the historical opt-in behaviour machine-wide; the cloud runner was long assumed to pin `ITERION_SANDBOX_OVERRIDE=none` (the runner pod being the isolation boundary), but the production deployment measured on 2026-08-05 does NOT: its config carries `ITERION_SANDBOX_DEFAULT=auto` with an EMPTY override, so cloud runs DO get the k8s sandbox. Anything that needs a bind-mounted workspace there — auto-memory, for one — must declare `sandbox: none`. When active, claw, claude_code, pi, Kimi, Grok, and tool nodes execute against a long-lived container that bind-mounts the worktree — by default at the host workspace's absolute path so Claude Code project keys match in/out container. Legacy Codex instead refuses Iterion's outer sandbox because its pinned SDK cannot route through the command builder. Network egress is **unrestricted by default** (`network: open`, since 2026-05-22 — no proxy is started). Opting into `network: allowlist` (or `denylist`) starts an HTTP CONNECT proxy on the host that enforces the policy; the built-in `iterion-default` preset covers LLM endpoints + npm/pypi/golang + github/gitlab/bitbucket + Nix cache. Sandboxed `claw` calls are routed through the hidden `iterion __claw-runner` subprocess inside the container, so the `iterion` binary must be present on the container PATH (or bind-mounted by the host when available).
 
 By default the sandbox also auto-mounts `~/.iterion/` (run store) and `~/.claude/` (Claude Code OAuth + per-project sessions) at the same absolute path inside the container so persistent memory survives across runs. On Linux, when the spec doesn't pin a `User`, the docker driver runs the container as the host UID:GID so writes back to those mounted trees stay host-owned. Disable via `sandbox.host_state: none` in the DSL, `--sandbox-host-state=none`, or `ITERION_SANDBOX_HOST_STATE=none` — recommended for multi-tenant cloud runners that must not leak host OAuth credentials. The kubernetes driver hard-errors on `host_state: auto` (cloud pods have no host filesystem to bind). See [docs/sandbox.md](docs/sandbox.md) for the full reference (incl. the published `iterion-sandbox-slim`/`iterion-sandbox-full` variants, the `--sandbox-default-image` override, and the host-state mount details) and `iterion sandbox doctor` for host diagnostics.
 

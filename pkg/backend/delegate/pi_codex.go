@@ -235,7 +235,7 @@ func piCodexSeedRoot(task Task) (string, error) {
 	// case now that the shared mount is preferred, plus every store/global case
 	// — there is nothing to defend and nothing runs.
 	if loc == StateInCheckout {
-		if err := refuseSymlinkedPath(task.WorkDir, root); err != nil {
+		if err := refuseSymlinkedPath(task.WorkDir, root, "pi backend", "the pi credential"); err != nil {
 			return "", err
 		}
 	}
@@ -310,7 +310,7 @@ func relBelow(base, target string) (walkBase, rel string) {
 //
 // base itself is not inspected: it is iterion's own worktree path, and a
 // symlink there is the engine's business, not the repo's.
-func refuseSymlinkedPath(base, target string) error {
+func refuseSymlinkedPath(base, target, backend, subject string) error {
 	// Containment is the CALLER's decision (Task.StateDir), and it answers on
 	// resolved paths — so a target that is genuinely in the tree can still be
 	// spelled outside the base lexically, e.g. a workspace reached through a
@@ -337,8 +337,8 @@ func refuseSymlinkedPath(base, target string) error {
 			return fmt.Errorf("inspect %s: %w", cur, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to seed the pi credential through %s: it is a symlink, "+
-				"and the workspace is a checkout of the target repository", cur)
+			return fmt.Errorf("%s: refusing to write %s through %s: it is a symlink, "+
+				"and the workspace is a checkout of the target repository", backend, subject, cur)
 		}
 	}
 	return nil

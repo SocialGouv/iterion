@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
 )
 
 // memStore is a minimal in-memory MemoryStore for exercising the
@@ -198,14 +201,14 @@ func TestExportImportRoundTrip(t *testing.T) {
 func TestExportRefusesLiteralSecrets(t *testing.T) {
 	ctx := context.Background()
 	src := newMemStore()
-	src.docs["notes.md"] = []byte("token: ghp_abcdef0123456789")
+	src.docs["notes.md"] = []byte("token: ghp_0123456789abcdefghijklmnopqrstuvwxyz") // the real PAT shape: ghp_ + 36
 
 	_, err := ExportSpace(ctx, src, testRef(), &bytes.Buffer{})
 	var secretErr *ErrSecretInExport
 	if !errors.As(err, &secretErr) {
 		t.Fatalf("err = %v, want *ErrSecretInExport", err)
 	}
-	if secretErr.Path != "notes.md" || !strings.Contains(secretErr.Reason, "ghp_") {
+	if secretErr.Path != "notes.md" || !strings.Contains(secretErr.Reason, "github") {
 		t.Errorf("secret error = %+v", secretErr)
 	}
 
@@ -223,16 +226,21 @@ func TestScanForSecret(t *testing.T) {
 		want    bool
 	}{
 		{"clean", "just some markdown", false},
-		{"openai key", "OPENAI_API_KEY=sk-proj-xyz", true},
-		{"aws akia mid-text", "arn AKIA0000EXAMPLE more", true},
-		{"gitlab pat", "glpat-something", true},
+		{"openai key", "OPENAI_API_KEY=sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4", true},
+		// A real AWS access key id is exactly AKIA + 16 upper-case
+		// alphanumerics. The fixture used to be an 11-character stand-in,
+		// which the shape rule (added so "EMEA_ASIA_PACIFIC_REGION" stops
+		// being refused) correctly does not treat as a key.
+		{"aws akia mid-text", "arn AKIAIOSFODNN7EXAMPLE more", true},
+		{"aws-shaped word in an identifier", "the EMEA_ASIA_PACIFIC_REGION constant", false},
+		{"gitlab pat", "glpat-A1b2C3d4E5f6G7h8I9j0", true},
 		{"placeholder ok", "__ITERION_SECRET_X__", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := scanForSecret([]byte(tc.content)) != ""
+			got := ScanForSecret([]byte(tc.content)) != ""
 			if got != tc.want {
-				t.Errorf("scanForSecret(%q) hit = %v, want %v", tc.content, got, tc.want)
+				t.Errorf("ScanForSecret(%q) hit = %v, want %v", tc.content, got, tc.want)
 			}
 		})
 	}
@@ -317,7 +325,7 @@ func TestImportStrategies(t *testing.T) {
 
 func TestImportRejectsSecretBody(t *testing.T) {
 	archive := buildArchive(t, []tarEntry{
-		{name: "docs/x.md", body: []byte("key AKIA0000EXAMPLE")},
+		{name: "docs/x.md", body: []byte("key AKIAIOSFODNN7EXAMPLE")}, // a real AWS key id is AKIA + 16
 	})
 	_, err := ImportSpace(context.Background(), newMemStore(), testRef(), archive, ImportSkip)
 	var secretErr *ErrSecretInExport
@@ -396,4 +404,118 @@ func TestImportPathHandling(t *testing.T) {
 			t.Errorf("err = %v, want gzip error", err)
 		}
 	})
+}
+
+// A bare substring test is unusable on prose. These are notes an agent
+// legitimately writes about its own work, and every one of them was refused
+// before the prefix gained a word boundary and a minimum body length —
+// silently dropping the note, with a model as the only witness.
+func TestScanForSecret_ProseIsNotACredential(t *testing.T) {
+	for _, content := range []string{
+		"run the task-runner before shipping",
+		"see the task-list in docs/",
+		"GitHub PATs start with ghp_ — revoke them in settings",
+		"the sk-modal component uses a portal",
+		"prefixes to watch for: sk-, ghp_, glpat-",
+		"ASIA is the region grouping used by the billing export",
+		"the EMEA_ASIA_PACIFIC_REGION constant",
+		"risk-register and desk-check are both overdue",
+		"nothing sensitive at all here",
+	} {
+		if reason := ScanForSecret([]byte(content)); reason != "" {
+			t.Errorf("refused a legitimate note %q: %s", content, reason)
+		}
+	}
+}
+
+// …and the real shapes must still be refused — including a secret pasted
+// straight behind a separator or a word, which is how one actually arrives in
+// a note. Scoping the mid-word skip to `sk-` alone (the only prefix that
+// occurs inside English words) is what closed these; a blanket letter rule let
+// every one of them through.
+func TestScanForSecret_RealTokenShapesStillRefused(t *testing.T) {
+	for _, content := range []string{
+		// Every fixture is the provider's PUBLISHED shape. A truncated
+		// stand-in certifies nothing — three of these used to "pass" against
+		// a guard that was matching a bare prefix.
+		"ANTHROPIC_API_KEY=sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6",
+		"token ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+		"aws id AKIAIOSFODNN7EXAMPLE in the runbook",
+		"slack xoxb-1234567890-0987654321-A1b2C3d4E5f6G7h8I9j0K1l2",
+		"glpat-A1b2C3d4E5f6G7h8I9j0",
+		"github_pat_11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456",
+		// An ANSI colour sequence must not hide a key: agents capture
+		// coloured shell output routinely, and an SGR code ends in a letter.
+		"\x1b[32msk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6\x1b[0m",
+	} {
+		if ScanForSecret([]byte(content)) == "" {
+			t.Errorf("a credential-shaped string was NOT refused: %q", content)
+		}
+	}
+}
+
+// mayContainSecret decides whether a document is worth the full catalogue
+// scan, so a rule whose literal is missing from it is a rule that never fires
+// on this path — a silent, permanent miss. The shared positive corpus is the
+// authority: every string the catalogue is meant to catch must survive the
+// pre-filter.
+func TestMayContainSecret_CoversEveryCatalogueRule(t *testing.T) {
+	corpus, err := os.ReadFile("../backend/tool/privacy/detector/testdata/secrets_positive.txt")
+	if err != nil {
+		t.Fatalf("read the shared positive corpus: %v", err)
+	}
+	lines := make([]string, 0, 64)
+	for _, line := range strings.Split(string(corpus), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			lines = append(lines, line)
+		}
+	}
+
+	// Part 1 — the pre-filter must not hide anything from the scan this
+	// package actually performs.
+	//
+	// Ask the CATALOGUE, not ScanForSecret: ScanForSecret consults the
+	// pre-filter itself, so using it here would make the test agree with
+	// whatever the pre-filter happens to do and certify nothing.
+	for _, line := range lines {
+		spans := secretDetector.Scan(line, detector.Options{
+			Categories: []string{"secret"},
+			MinScore:   minSecretScore,
+		})
+		if len(spans) == 0 {
+			continue // not a secret-category entry, or below the score floor
+		}
+		if !mayContainSecret(line) {
+			t.Errorf("the pre-filter would skip a document the catalogue catches (rule %s): %q", spans[0].Rule, line)
+		}
+	}
+
+	// Part 2 — every rule must have a corpus line, or part 1 silently did not
+	// check it. That is not hypothetical: aws_secret_key had no line, so
+	// nothing noticed the pre-filter enumerated three of the eight casings of
+	// "key" while the rule behind it is (?i) — a real 40-character key in
+	// `aws_secret_kEy = "…"` skipped the scan entirely and was persisted into
+	// a space every later run of the bot reads.
+	//
+	// Each rule is asked IN ISOLATION, because Scan merges overlapping spans
+	// and keeps the first rule declared: ssh_private_key is entirely subsumed
+	// by pem_private_key at equal score, so through the full catalogue it can
+	// never appear and would read as "no corpus line" when the line is right
+	// there.
+	for _, r := range detector.BuiltinRules() {
+		if r.Category() != "secret" {
+			continue
+		}
+		alone := detector.NewWithRules([]detector.Rule{r})
+		exercised := false
+		for _, line := range lines {
+			if len(alone.Scan(line, detector.Options{Categories: []string{"secret"}})) > 0 {
+				exercised = true
+				break
+			}
+		}
+		if !exercised {
+			t.Errorf("rule %q is never exercised by the positive corpus, so part 1 never checked it — add a line in the vendor's PUBLISHED shape to testdata/secrets_positive.txt", r.Name())
+		}
+	}
 }

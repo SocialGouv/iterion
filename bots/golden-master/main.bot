@@ -1303,7 +1303,15 @@ tool oracle_run:
             dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
                                    capture_output=True, text=True)
             if dirty.returncode == 0 and dirty.stdout.strip():
-                paths = [l[3:] for l in dirty.stdout.strip().splitlines()]
+                # Decoupe AVANT tout strip global. `git status --porcelain`
+                # ecrit `XY <chemin>`, et X vaut ' ' pour une modification non
+                # indexee : strip() sur la sortie entiere mange alors l'espace
+                # de tete de la PREMIERE ligne seulement, qui se decale d'un
+                # cran et perd son premier caractere (`build.gradle` ->
+                # `uild.gradle`). Les suivantes, intactes, donnent une liste ou
+                # une seule entree est fausse — et quand un seul fichier est
+                # sale, c'est la seule nommee.
+                paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
                 report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + (
                     "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                     "these changes are destroyed during the run and the verdict below describes "

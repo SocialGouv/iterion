@@ -182,12 +182,18 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		Backend:        spec.Backend,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
 		RunFallback:    toRunFallback(spec.Fallback),
-		BotID:          spec.BotID,
-		BoardRegister:  s.boardRegister,
-		Compress:       spec.Compress,
-		Permission:     spec.Permission,
-		LocalSecrets:   s.localSecrets,
-		LocalSealer:    s.localSealer,
+		// Resolved, not taken raw: spec.BotID is empty whenever the caller
+		// launched by path (the studio's own file picker), and the executor
+		// would then fall back to the workflow name — while a RESUME of that
+		// same run derives the id from the path and lands on a different
+		// memory space. Same rule on both sides, so the two cannot diverge.
+		BotID:         ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
+		BoardRegister: s.boardRegister,
+		Compress:      spec.Compress,
+		AutoMemory:    spec.AutoMemory,
+		Permission:    spec.Permission,
+		LocalSecrets:  s.localSecrets,
+		LocalSealer:   s.localSealer,
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -392,13 +398,20 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	_, runLogger := s.prepareRunLog(spec.RunID)
 
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow:      wf,
-		Store:         s.store,
-		RunID:         spec.RunID,
-		Logger:        runLogger,
-		StoreDir:      s.storeDir,
-		Inbox:         s.inboxBinder(),
-		AsyncAsk:      s.asyncAskBinder(),
+		Workflow: wf,
+		Store:    s.store,
+		RunID:    spec.RunID,
+		Logger:   runLogger,
+		StoreDir: s.storeDir,
+		Inbox:    s.inboxBinder(),
+		AsyncAsk: s.asyncAskBinder(),
+		// Resolved, not read raw: only a cloud launch persists BotID, so a
+		// studio-launched bundle would otherwise fall back to the workflow
+		// name here and aim the resumed run at a different space than its own
+		// earlier nodes wrote to — an empty memory, and notes landing where
+		// nothing will read them again.
+		BotID:         BotIDForRun(r),
+		AutoMemory:    spec.AutoMemory,
 		BoardRegister: s.boardRegister,
 		LocalSecrets:  s.localSecrets,
 		LocalSealer:   s.localSealer,

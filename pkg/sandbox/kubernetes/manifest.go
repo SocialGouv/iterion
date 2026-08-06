@@ -392,6 +392,7 @@ func caInjection(secretName string, envSlice *[]any) (volumes, volumeMounts []an
 		"CURL_CA_BUNDLE",      // curl
 		"GIT_SSL_CAINFO",      // git
 		"REQUESTS_CA_BUNDLE",  // python requests
+		"NIX_SSL_CERT_FILE",   // nix : sa propre variable, il n'honore pas SSL_CERT_FILE
 	} {
 		*envSlice = upsertEnv(*envSlice, name, caContainerPath)
 	}
