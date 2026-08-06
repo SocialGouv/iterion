@@ -1,5 +1,11 @@
 # E2E coverage matrix
 
+> **Superseded as the inventory** by
+> [docs/e2e-coverage-matrix.md](e2e-coverage-matrix.md), the single
+> feature×coverage table (families, statuses, cited tests). This page is kept
+> for its claw-code-go-specific detail and the deliberate-gap rationales, which
+> the matrix cites rather than repeats.
+
 Where each iterion + claw-code-go feature is exercised. Scope is the
 combined codebase: iterion's workflow engine + claw-code-go (vendored
 via go.mod replace).
