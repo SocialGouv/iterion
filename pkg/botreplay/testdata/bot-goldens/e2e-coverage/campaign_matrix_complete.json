@@ -1,0 +1,21 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "e2e-coverage",
+  "scenario": "campaign_matrix_complete",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-5",
+  "recorded_at": "2026-08-06T00:00:00Z",
+  "vars": {},
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "coverage_complete": true,
+    "commits_this_pass": 3,
+    "coverage_gaps_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Closed the three uncovered feature rows in scope: resume after a mid-pipeline failure (test(e2e): resume replays from the checkpointed node — TestResumeFromCheckpoint), the CLI's machine-output mode (test(e2e): --json emits a parseable run summary — TestRunJSONOutput), and the queue consumer's poison-message path (test(e2e): malformed message lands in the DLQ without stalling the consumer — TestConsumerPoisonMessage). Each commit carries the test plus its matrix row flip; suite green after each. Marked util.slug-normalise unit-only (pure function, fully asserted in its unit table) with the justification in Notes."
+  }
+}

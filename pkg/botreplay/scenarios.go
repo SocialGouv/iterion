@@ -61,6 +61,7 @@ func Scenarios() []Scenario {
 		campaignScenario("branch-improve-loop", "campaign_branch_clean"),
 		campaignScenario("feature-gap-fill", "campaign_gap_closed"),
 		campaignScenario("test-coverage", "campaign_coverage_complete"),
+		campaignScenario("e2e-coverage", "campaign_matrix_complete"),
 		campaignScenario("adr-cartograph", "campaign_adrs_aligned"),
 	}
 	featureDev := campaignScenario("feature-dev", "campaign_feature_complete")

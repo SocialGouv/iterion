@@ -263,6 +263,7 @@ dispatcher routes on it), never the persona.
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
+| Endy | `e2e-coverage` |
 | Evoly | `evolve` |
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
@@ -527,6 +528,51 @@ doc-verification-checklist, forge-mr-create.
   DOCS only (never code logic) and commits.
 - **Vars**: `base_ref` (string), `bundle_self_path` (string), `diff_since` (string), `dismissed_path` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `source_branch` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
+
+### `e2e-coverage` — Endy
+
+Autonomous end-to-end coverage completion — one capable agent, its
+natural flow, minimal framing. Points at an application (or one
+feature family of it via `target`), inventories its FEATURES from the
+outside (docs, CLI surface, API routes, configuration, grammar),
+maintains a committed feature×coverage MATRIX, and closes each gap
+with a real, deterministic e2e test written in the repo's OWN harness
+and conventions — one `test(e2e):` commit per feature, the matrix row
+flipped in the same commit.
+
+Anti-façade by design: the success metric is NOT a green table — it
+is features whose regression would fail a test before shipping. The
+campaign's contract enforces the feature-level mutation test (break
+the feature ⇒ the test must fail) and forbids stub-echo tests,
+harness-only tests, no-invariant tests and borrowed claims; a
+deterministic gate re-runs the repo's own suite AND parses the
+matrix, grep-verifying every covered row's cited test (an orphan
+claim is a red gate). Deterministic-first: a CI-runnable test beats
+an opt-in/live one; features that genuinely need a live external are
+marked covered-live or excluded WITH the reason — never silently
+skipped.
+
+Stack-agnostic: how to enumerate features, find the repo's own e2e
+harness, and write each test lives in the bot's skills, not in the
+workflow — so adding a language or harness style needs no DSL edit.
+
+- **Use when**:
+  Use when an application needs its e2e/anti-regression net completed —
+  a repo with features that only have unit tests (or none), a grown
+  codebase whose e2e suite lags the feature surface, or as a recurring
+  audit that keeps a feature×coverage matrix honest. Endy writes and
+  commits deterministic e2e tests plus the matrix; it does not change
+  product behaviour.
+  
+  Do NOT use to deepen unit/integration coverage of a code area (that
+  is Testy / test-coverage), to review a branch (Billy), or to build a
+  behavioural golden-master oracle for an existing app's outputs (that
+  is Goldy / golden-master — reference recordings, not feature e2e
+  tests). Endy's axis is the FEATURE-level e2e completeness of the
+  whole application, made checkable by the matrix.
+- **Triggers**: e2e, e2e-coverage, end-to-end, coverage-matrix, e2e-tests, regression-net, feature-coverage
+- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
+- **Path**: `bots/e2e-coverage/main.bot`
 
 ### `evolve` — Evoly
 
