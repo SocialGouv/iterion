@@ -254,7 +254,7 @@ func TestValkeyCrossReplica_BoardTokenMintedOnAAuthorizesWriteOnB(t *testing.T) 
 		t.Fatalf("ungranted board.move was not refused on replica B: %s", moved)
 	}
 	after, _ := r.board.Get(iss.ID)
-	if after == nil || string(after.State) == "done" {
+	if after == nil || after.State == "done" {
 		t.Fatalf("ungranted move actually moved the card: %+v", after)
 	}
 
