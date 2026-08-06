@@ -405,11 +405,22 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 			continue
 		}
 		// A terminal candidate never supersedes the dispatcher's pointer —
-		// except a fork: it is the card's recovery path, and when it ends
-		// it IS the card's latest outcome. Nothing else ever updates the
-		// pointer for it (the dispatcher only knows its own attempts), so
-		// skipping it would pin the card on the dead parent forever.
-		if candidate.Status.IsTerminal() && candidate.ForkedFrom == "" {
+		// except a fork that ACTUALLY ran: it is the card's recovery path,
+		// and when it ends it IS the card's latest outcome. Nothing else
+		// ever updates the pointer for it (the dispatcher only knows its
+		// own attempts), so skipping it would pin the card on the dead
+		// parent forever.
+		//
+		// FinishedAt discriminates "ran and ended" from "parked shell":
+		// Fork() parks every child as `cancelled` — itself a terminal
+		// status — via SaveRun, which never stamps FinishedAt; only a real
+		// status transition (applyStatusTransition) does. Without the gate,
+		// a never-resumed fork would hijack the card the instant it is
+		// created: the parent's failure message — the very reason the
+		// operator is forking — would vanish from the card, and the
+		// restart slot the failed parent holds (pipelineReservedSet reuses
+		// this function) would be silently released.
+		if candidate.Status.IsTerminal() && (candidate.ForkedFrom == "" || candidate.FinishedAt == nil) {
 			continue
 		}
 		current = candidate

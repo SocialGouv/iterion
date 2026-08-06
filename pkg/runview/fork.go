@@ -126,14 +126,23 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	child.ForkedFrom = parent.ID
 	child.ParentRunID = parent.ID
 	// A fork REPLACES the parent's future — it is the recovery path for a
-	// run that can no longer continue — so it inherits the originating
-	// Source (typically the board issue the parent was dispatched from).
-	// Without this the pipeline card keeps pointing at the dead parent
-	// forever, with no way to re-attach the live fork. Copy the struct:
-	// aliasing the parent's pointer would couple two persisted records.
+	// run that can no longer continue — so it inherits the ISSUE
+	// provenance (typically the board issue the parent was dispatched
+	// from). Without this the pipeline card keeps pointing at the dead
+	// parent forever, with no way to re-attach the live fork.
+	//
+	// Only the issue fields travel. ScheduleID/ScheduleName are
+	// deliberately dropped: the schedgate overlap gate queries ScheduleID
+	// (ListRunsBySchedule), so a live recovery fork would otherwise
+	// silently skip every subsequent tick of its schedule (overlap: skip,
+	// the default) — or be cancelled by it (overlap: supersede).
 	if parent.Source != nil {
-		src := *parent.Source
-		child.Source = &src
+		child.Source = &store.RunSource{
+			Kind:            parent.Source.Kind,
+			IssueID:         parent.Source.IssueID,
+			IssueIdentifier: parent.Source.IssueIdentifier,
+			IssueTitle:      parent.Source.IssueTitle,
+		}
 	}
 	child.ForkAnchor = &store.ForkAnchor{
 		NodeID:     spec.NodeID,

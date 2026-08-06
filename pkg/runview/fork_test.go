@@ -42,12 +42,18 @@ func TestFork_HappyPath(t *testing.T) {
 	parent.Status = store.RunStatusCancelled
 	// The parent was dispatched from a board issue: the fork must carry
 	// the same source edge, or the pipeline card keeps pointing at the
-	// dead parent with no way to re-attach the live fork.
+	// dead parent with no way to re-attach the live fork. The schedule
+	// fields are deliberately set too — to prove they do NOT travel:
+	// ScheduleID feeds the schedgate overlap gate, so inheriting it
+	// would wire the recovery fork into the schedule's skip/supersede
+	// decisions.
 	parent.Source = &store.RunSource{
 		Kind:            store.RunSourceKindDispatcher,
 		IssueID:         "native:issue-1",
 		IssueIdentifier: "issue-1",
 		IssueTitle:      "Ship it",
+		ScheduleID:      "nightly",
+		ScheduleName:    "Nightly",
 	}
 	if err := st.SaveRun(context.Background(), parent); err != nil {
 		t.Fatalf("save parent: %v", err)
@@ -107,6 +113,10 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if child.Source.IssueID != "native:issue-1" || child.Source.Kind != store.RunSourceKindDispatcher {
 		t.Errorf("child.Source = %+v, want dispatcher source on native:issue-1", child.Source)
+	}
+	if child.Source.ScheduleID != "" || child.Source.ScheduleName != "" {
+		t.Errorf("child.Source inherited the schedule identity (%q/%q) — the schedgate overlap gate must not see the fork",
+			child.Source.ScheduleID, child.Source.ScheduleName)
 	}
 	children, err := svc.ListChildren(context.Background(), parentID)
 	if err != nil {

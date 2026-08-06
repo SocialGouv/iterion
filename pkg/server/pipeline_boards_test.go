@@ -785,12 +785,58 @@ func TestPipelineBoardTerminalForkSupersedesFailedParent(t *testing.T) {
 		run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issue.ID}
 		run.ForkedFrom = "run-parent"
 		run.ParentRunID = "run-parent"
+		// A run that really ended carries FinishedAt (stamped by the
+		// status transition). A parked, never-resumed fork does not —
+		// see TestPipelineBoardParkedForkKeepsFailedParent.
+		ended := run.CreatedAt.Add(10 * time.Minute)
+		run.FinishedAt = &ended
 	})
 
 	projection := env.projection(t)
 	card := findPipelineCard(t, projection.Cards, "run:run-fork")
 	if card.IssueID != issue.ID {
 		t.Errorf("finished fork card issue = %q, want %q — the fork is the card's latest outcome", card.IssueID, issue.ID)
+	}
+}
+
+// A fork that was created but never resumed is parked in `cancelled` —
+// itself a terminal status — and must NOT supersede the failed parent:
+// the parent's failure is the very reason the operator is forking, and
+// the fork may be abandoned before it ever runs. FinishedAt (stamped
+// only by real status transitions, never by Fork's initial SaveRun)
+// discriminates the parked shell from a fork that actually ended.
+func TestPipelineBoardParkedForkKeepsFailedParent(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Dispatch me", Bot: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-time.Hour)
+	env.seedRun(t, "run-parent", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issue.ID}
+		run.CreatedAt = older
+	})
+	if err := env.board.SetLastRun(issue.ID, "run-parent", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	// The parked fork: status cancelled (how Fork() parks every child),
+	// FinishedAt nil because it never executed.
+	env.seedRun(t, "run-fork", "review", store.RunStatusCancelled, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issue.ID}
+		run.ForkedFrom = "run-parent"
+		run.ParentRunID = "run-parent"
+	})
+
+	projection := env.projection(t)
+	if hasPipelineCard(projection.Cards, "run:run-fork") {
+		t.Error("a parked, never-resumed fork must not become the card root")
+	}
+	// The failed parent stays the card's visible outcome.
+	card := findPipelineCard(t, projection.Cards, "task:"+issue.ID)
+	if len(card.Attempts) == 0 || card.Attempts[len(card.Attempts)-1].RunID != "run-parent" {
+		t.Errorf("attempts = %+v, want the failed parent kept as the card's latest attempt", card.Attempts)
 	}
 }
 
