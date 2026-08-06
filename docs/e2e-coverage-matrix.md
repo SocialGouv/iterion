@@ -147,7 +147,7 @@ sandbox/container surface).
 | cli.run | `iterion run` executes a `.bot` and persists the run | cli | covered-deterministic | TestRun_Success (pkg/cli/cli_test.go) | |
 | cli.run-vars | `iterion run --var key=value` overrides workflow vars | cli | covered-deterministic | TestRun_WithVars (pkg/cli/cli_test.go) | |
 | cli.run-preset | `iterion run --preset` applies an in-source preset, `--var` wins over it | cli | uncovered | | preset resolution is unit-covered (pkg/dsl/ir/presets_test.go) but buildRunInputs — the precedence the operator actually sees — has no test. Plan: run a `.bot` with presets and assert the values the nodes received |
-| cli.run-budget-override | `iterion run --max-*` re-budgets the workflow for this run | cli | uncovered | | ir.ApplyBudgetOverrides is unit-covered; nothing asserts the CLI actually applies it to a real run. Plan: same `.bot`, once with and once without a lowered cap |
+| cli.run-budget-override | `iterion run --max-*` re-budgets the workflow for this run | cli | covered-deterministic | TestRunBudgetOverrideCapsTheRun (e2e/cli_budget_override_test.go) | |
 | cli.run-model-backend-override | `iterion run --model/--backend selector=…` re-target nodes | cli | uncovered | | overrides are consumed inside the real `ClawExecutor` (runview.BuildExecutor), so a stub executor cannot observe them; plan: an executor-level e2e or a live test. Parsing is unit-covered by pkg/backend/model/model_override_test.go |
 | cli.run-human-pause | `iterion run` returns at a human pause (`--no-interactive`) | cli | covered-deterministic | TestRun_HumanPause (pkg/cli/cli_test.go) | |
 | cli.run-json | `--json` machine output mode for run | cli | covered-deterministic | TestRun_SuccessJSON (pkg/cli/cli_test.go) | |
