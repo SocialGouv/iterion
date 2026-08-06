@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -129,12 +130,17 @@ func TestEveryExecutorConstructionDecidesTheBotIdentity(t *testing.T) {
 			switch d.Name() {
 			case "vendor", "node_modules", ".git", ".iterion", "studio", "testdata":
 				return filepath.SkipDir
-			// Nested checkouts an operator keeps on disk (git worktrees under
-			// .claude/, sibling repos under .works/) are not part of THIS
-			// tree — none of their files are tracked here, and their older
-			// copies would report as offenders of a rule they predate.
-			case ".claude", ".works":
-				return filepath.SkipDir
+			}
+			// A directory carrying its own .git is a NESTED CHECKOUT — a git
+			// worktree or a sibling clone an operator keeps on disk. Its files
+			// belong to another tree (none are tracked here), and its older
+			// copies would report as offenders of a rule they predate. Detect
+			// them by that marker rather than by directory name: where someone
+			// parks their checkouts is their business, not this test's.
+			if path != repoRoot {
+				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
