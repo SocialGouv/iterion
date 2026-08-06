@@ -1,0 +1,43 @@
+## report_mini.bot — fixture for `iterion report`: a short but
+## representative run (agent → tool → judge, two published artifacts, a
+## conditional terminal edge) so the generated report has a real
+## chronology, a real artifact table and a real outcome to render.
+
+## `summary:` is the conventional field `iterion report` lifts into its
+## artifact table — the fixture uses it so the rendered report carries
+## real per-node content, not just node names.
+schema note:
+  value: string
+  summary: string
+
+schema check:
+  value: string
+  summary: string
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+  publish: survey_notes
+
+tool build:
+  command: "echo built"
+  output: note
+
+judge verify:
+  model: "claude-opus-4-7"
+  output: check
+  publish: verdict
+
+workflow report_mini:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  budget:
+    max_iterations: 10
+
+  survey -> build
+  build -> verify
+  verify -> done when ok
+  verify -> fail
