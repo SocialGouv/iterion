@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -117,5 +118,37 @@ func TestLogSkippedRunDoesNotMemoizeTransientErrors(t *testing.T) {
 	svc.logSkippedRun("run-transient", errors.New("store: decode run run-transient: invalid character"))
 	if !strings.Contains(buf.String(), "⚠️") {
 		t.Errorf("a later corrupt document for the same id must still Warn\nlog:\n%s", buf.String())
+	}
+}
+
+// The Warn dedup is time-boxed, not once-forever: a transient blip
+// (mongo server-selection, EMFILE) that marked an id must not silence
+// its diagnostic for the process lifetime — after the interval, the
+// same unreadable run warns again.
+func TestLogSkippedRunRelogsWarnAfterInterval(t *testing.T) {
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelDebug, &buf)
+	svc := &Service{logger: logger}
+
+	decodeErr := errors.New("store: decode run run-x: invalid character")
+	svc.logSkippedRun("run-x", decodeErr)
+	svc.logSkippedRun("run-x", decodeErr) // inside the interval — deduped
+	warnCount := func() int {
+		n := 0
+		for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+			if strings.Contains(line, "run-x") && strings.Contains(line, "⚠️") {
+				n++
+			}
+		}
+		return n
+	}
+	if got := warnCount(); got != 1 {
+		t.Fatalf("warn count inside the interval = %d, want 1", got)
+	}
+	// Simulate the interval elapsing (the map holds the last-log time).
+	svc.skipRunLogged.Store("corrupt:run-x", time.Now().Add(-skipWarnRelogAfter-time.Second))
+	svc.logSkippedRun("run-x", decodeErr)
+	if got := warnCount(); got != 2 {
+		t.Errorf("warn count after the interval = %d, want 2 (the diagnostic re-arms)", got)
 	}
 }
