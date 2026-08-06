@@ -1,0 +1,31 @@
+## model_backend_override_mini.bot — fixture for `iterion run --backend`.
+##
+## Every node names a backend that CANNOT resolve, and each name is unique, so
+## the run's failure text says exactly WHICH backend value reached the real
+## ClawExecutor. An unknown backend fails at delegate-registry resolution —
+## before any provider credential is read or any byte leaves the process — so
+## the fixture is deterministic and credential-free.
+##
+## `reviewer` is downstream of `survey` and never executes: it exists so a
+## selector that targets it can be shown NOT to re-target `survey`.
+
+schema note:
+  value: string
+
+agent survey:
+  backend: "dsl_backend_absent"
+  model: "dslprovider/dsl-model"
+  output: note
+
+agent reviewer:
+  backend: "reviewer_backend_absent"
+  model: "dslprovider/dsl-model"
+  output: note
+
+workflow model_backend_override_mini:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  survey -> reviewer
+  reviewer -> done

@@ -1,0 +1,21 @@
+## model_override_claw_mini.bot — fixture for `iterion run --model`.
+##
+## The node pins the in-process `claw` backend with a model spec whose PROVIDER
+## does not exist. claw rejects it while resolving the spec — no network, no
+## credential — and the failure text quotes the model spec verbatim, which is
+## what makes the value that actually reached the executor observable.
+
+schema note:
+  value: string
+
+agent gen:
+  backend: "claw"
+  model: "dslprovider/dsl-model"
+  output: note
+
+workflow model_override_claw_mini:
+  worktree: none
+  sandbox: none
+  entry: gen
+
+  gen -> done
