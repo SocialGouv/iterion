@@ -226,7 +226,7 @@ sandbox/container surface).
 | sandbox.docker-driver | docker driver: container lifecycle, workspace bind-mount | sandbox | covered-live | e2e/live_feat_sandbox_net_test.go | needs a container runtime; the deterministic half is spec construction (pkg/sandbox/spec_test.go) |
 | sandbox.spec-resolution | sandbox spec resolution (auto / devcontainer / image / none) | sandbox | covered-deterministic | pkg/sandbox/spec_test.go, pkg/sandbox/factory_test.go | |
 | sandbox.network-policy | `network: allowlist/denylist` CONNECT proxy enforcement | sandbox | covered-live | e2e/live_feat_sandbox_net_test.go | enforcement requires a live proxy + container; policy parsing is in pkg/sandbox/spec_test.go |
-| sandbox.host-state | `host_state: auto|none` mounts of `~/.iterion` and `~/.claude` | sandbox | covered-deterministic | pkg/sandbox/spec_test.go | |
+| sandbox.host-state | `host_state:` auto / none mounts of `~/.iterion` and `~/.claude` | sandbox | covered-deterministic | pkg/sandbox/spec_test.go | |
 | sandbox.kubernetes-driver | kubernetes driver for cloud runner pods | sandbox | excluded | | needs a live cluster + registry; no fake apiserver harness exists in this repo |
 | sandbox.buildkit | `sandbox.build:` via docker buildx on the local driver | sandbox | excluded | | needs a Docker daemon with BuildKit; rejected by design on the k8s driver |
 | plugins.registry | plugin discovery, enable state, builtin embedding | plugins | covered-deterministic | pkg/plugin/plugin_test.go, pkg/plugin/inspect_test.go | |
