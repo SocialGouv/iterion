@@ -40,8 +40,14 @@ This file supersedes the three partial coverage docs it reconciles:
 - **cli** — `cli.Run*` entry points with a real store and (where an LLM would
   be involved) a stub `runtime.NodeExecutor` injected at the documented seam.
 - **server-api / cloud** — `httptest` against the real wired handler.
-- **studio-ui** — no browser harness exists in this repo; UI rows are honest
-  gaps rather than silent skips.
+- **studio-ui** — Playwright (`studio/e2e/`, `task test:e2e:ui`) drives a real
+  Chromium against the REAL server: the built `iterion` binary serving the
+  embedded SPA over a throwaway store that `studio/e2e/serve.mjs` seeds with
+  genuine artifacts — runs the engine actually executed (tool + compute
+  fixtures, no LLM credential) and a board card created through the CLI. The
+  suite asserts rendered content and interactions, never HTTP status codes.
+  It is deliberately NOT wired into the blocking CI job yet (the browser
+  download is opt-in; `task test:e2e:ui` skips cleanly without it).
 
 ## Scope of the current campaign
 
@@ -66,9 +72,9 @@ terminal end to end**. Each turned out to have a deterministic front door:
 Everything still `uncovered` is deliberate backlog for later scoped runs,
 family by family. What is left, and why it is not a quick win:
 
-- **studio-ui** (9 rows) — no browser harness exists in this repo. Closing
-  the family means introducing one (Playwright against a `iterion studio`
-  boot), which is its own scoped run.
+Pass 5 introduced the browser harness the **studio-ui** family was waiting on
+and closed its rows (see the family note above).
+
 Pass 4 closed the three remaining **cloud** rows — `dlq`, `migrate-blobs`,
 `valkey-state` — which earlier passes had written off as needing a live
 Mongo/S3/Valkey. Each had a deterministic front door after all:
@@ -360,7 +366,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | bots.review-topology | mono/dual review topology injected only into opting-in bots | bots | covered-deterministic | TestReviewTopology_MonoClaudeSingleFamily (e2e/review_topology_test.go) | |
 | bots.verify-gate | the deterministic verify_build/verify_run gate resists drift | bots | covered-deterministic | bots/verify_run_drift_test.go, bots/verify_probe_wiring_test.go | |
 | bots.remaining-catalog | the remaining catalog bots (evolve, adr-*, rgaa-audit, bmady, devbox-setup, modernize, wiki-gen, app-dev, supply-shield*, smoke, revi-converse, feature-gap-fill, test-coverage) | bots | covered-live | e2e/live_bot_adr_cartograph_test.go, e2e/live_bot_evolve_test.go, e2e/live_bot_rgaa_audit_test.go, e2e/live_bot_bmady_test.go, e2e/live_bot_devbox_setup_test.go, e2e/live_bot_feature_gap_fill_test.go, e2e/live_bot_test_coverage_test.go | these bots' value IS the LLM work product (a review, an ADR map, an accessibility audit); they have no deterministic graph gate to assert against, so the live layer + quality panel is the honest coverage. Their graphs are compile-checked by bots.catalog-compiles |
-| studio-ui.run-console | run console view: timeline, node detail, diffs, chat | studio-ui | uncovered | | vitest covers the API/hook layer (studio/src/api/runs.lifecycle.test.ts); there is no browser harness in this repo. Plan: introduce Playwright against `iterion studio` and cover the console flow first |
+| studio-ui.run-console | run console view: timeline, node detail, diffs, chat | studio-ui | covered-deterministic | studio/e2e/specs/run-console.spec.ts | Playwright against the real server: the seeded run's IR graph (node ids, kinds, per-node status incl. the never-reached `fail`), its declared budget, its replayed edge-selection log lines and a published artifact's real payload all render. Chat needs a live agent — out of this row's deterministic reach |
 | studio-ui.launch-modal | Launch modal: bot picker, vars, overrides, target repo | studio-ui | uncovered | | same gap as studio-ui.run-console |
 | studio-ui.board | `/board` kanban with drag-and-drop | studio-ui | uncovered | | same gap; the underlying REST is covered by server-api.board |
 | studio-ui.pipelines | `/pipelines` control-center board + concurrency cap | studio-ui | uncovered | | vitest covers studio/src/api/pipelineBoards.test.ts; no browser flow test |

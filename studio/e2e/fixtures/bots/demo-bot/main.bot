@@ -1,0 +1,36 @@
+## Deterministic studio-UI fixture: a tool node and a compute node, so a
+## REAL run can be produced with no LLM credential and no network. Its
+## persisted events, artifacts and graph are what the run console, the
+## runs list and the pipeline board render in the e2e suite.
+
+schema note:
+  value: string
+  summary: string
+
+schema check:
+  ok: bool
+  summary: string
+
+tool collect_facts:
+  command: "echo iterion-ui-fixture"
+  output: note
+  publish: collected_facts
+
+compute decide:
+  output: check
+  publish: decision
+  expr:
+    ok: "true"
+    summary: "'the deterministic fixture converged'"
+
+workflow ui_fixture:
+  worktree: none
+  sandbox: none
+  entry: collect_facts
+
+  budget:
+    max_iterations: 5
+
+  collect_facts -> decide
+  decide -> done when ok
+  decide -> fail

@@ -96,6 +96,30 @@ tasks:
       ## package past the old 120s budget.
       - go test -v -timeout 240s ./e2e/...
 
+  test:e2e:ui:
+    desc: Run the studio UI end-to-end tests (Playwright against the real server; skips when chromium isn't installed)
+    dir: studio
+    deps: [build]
+    cmds:
+      - corepack pnpm install --prefer-offline
+      ## The suite needs a Playwright browser build, which is a ~120 MB
+      ## download nobody should pay for implicitly. Without it the target
+      ## reports how to install it and succeeds, so `task check` stays
+      ## usable on a bare machine.
+      - |
+        if ! node e2e/guard.mjs; then
+          echo "task: [test:e2e:ui] skipped — no Playwright browser installed"
+          exit 0
+        fi
+        ./node_modules/.bin/playwright test {{.CLI_ARGS}}
+
+  test:e2e:ui:install:
+    desc: Download the Playwright chromium build the studio UI e2e suite needs
+    dir: studio
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - ./node_modules/.bin/playwright install chromium
+
   test:goldens:
     desc: Run bot golden replay tests (schema + invariant checks on recorded LLM fixtures; no API keys)
     cmds:
