@@ -396,7 +396,10 @@ schema verify_plan:
 ## exceptions + every covered-* row citing at least one test that
 ## resolves in the tree (an ORPHAN CLAIM is matrix_ok=false).
 ## `uncovered_rows` counts the `uncovered` rows left in the WHOLE
-## matrix (scope-blind — the compute gate applies the scope rule).
+## matrix. `scoped` is the run's scope predicate computed on the
+## TRIMMED target (a whitespace-only target is NOT a scope — the
+## expression language compares strings verbatim, so this belongs
+## here, deterministically, not in the compute).
 ## `new_test_code` is observability only (see the header comment).
 ## `skipped` is true only when no verify script was produced (treated
 ## as pass but surfaced loudly, never a silent façade).
@@ -406,6 +409,7 @@ schema verify_result:
   matrix_ok: bool
   matrix_rows: int
   uncovered_rows: int
+  scoped: bool
   new_test_code: bool
   exit_code: int
   log_tail: string
@@ -464,11 +468,15 @@ agent verify_build:
 ## capture; double-quote-free body, no backslashes (uses [.] and
 ## chr()) so it survives the .bot string + sh -c layers (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} MATRIX={{vars.matrix_path}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} MATRIX={{vars.matrix_path}} TARGET={{vars.target}} python3 -c "
 import os, re, json, subprocess
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
 matrix_rel = os.environ.get('MATRIX', 'docs/e2e-coverage-matrix.md')
+# The scope predicate is computed HERE, not in the compute gate: a
+# whitespace-only target ('' vs ' ') must not read as scoped, and the
+# expression language compares strings verbatim.
+scoped = bool(os.environ.get('TARGET', '').strip())
 
 def git(args):
     try:
@@ -559,10 +567,21 @@ else:
     except OSError:
         pass
 
+# Universal test-file naming conventions (case-insensitive, no language
+# enum). Used BOTH by the claims check (a cited test must live in a file
+# that is actually a test file) and by the new_test_code signal below.
+rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|/test/|/tests/|/__tests__/|/spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
+# A cited NAME must look like a test identifier, not an arbitrary word: a
+# 1-char citation greps every source file in the tree.
+name_rx = re.compile('(test|spec|scenario|should|it_)', re.I)
+
 # 2) Matrix contract (the bot-specific anti-facade floor): file present +
 # marker + parseable table + allowed statuses + justified exceptions + every
 # covered-* row citing at least one test that RESOLVES in the tree. An
 # orphan claim (cited test not found) is a red matrix.
+#
+# EVERY unparseable/ambiguous shape is an ERROR, never a silent skip: a row
+# the parser cannot read is a feature the operator believes is accounted for.
 matrix_ok = True
 matrix_rows = 0
 uncovered = 0
@@ -582,23 +601,43 @@ if mtext and 'e2e-coverage-matrix' not in mtext:
     matrix_ok = False
     problems.append('matrix contract marker missing -- the file must carry the literal marker e2e-coverage-matrix (see the coverage-matrix skill)')
 if mtext:
-    lines = mtext.splitlines()
+    # Blank out fenced code blocks first: the coverage-matrix skill itself
+    # ships an EXAMPLE table in a fence, and a doc that pastes one must not
+    # have it mistaken for the matrix.
+    fence = chr(96) * 3
+    lines = []
+    in_fence = False
+    for l in mtext.splitlines():
+        st = l.strip()
+        if st.startswith(fence) or st.startswith('~~~'):
+            in_fence = not in_fence
+            lines.append('')
+            continue
+        lines.append('' if in_fence else l)
+    contract_cols = ['id', 'feature', 'family', 'status', 'tests', 'notes']
     hdr = -1
     cols = {}
+    candidates = 0
     for i, l in enumerate(lines):
         s = l.strip()
-        if s.startswith('|'):
-            cells = [c.strip().lower() for c in s.strip('|').split('|')]
-            if 'feature' in cells and 'status' in cells:
+        if not s.startswith('|'):
+            continue
+        cells = [c.strip().lower() for c in s.strip('|').split('|')]
+        if 'feature' in cells and 'status' in cells:
+            candidates += 1
+            if hdr < 0 and cells == contract_cols:
                 hdr = i
                 for j, c in enumerate(cells):
-                    if c not in cols:
-                        cols[c] = j
-                break
+                    cols[c] = j
     if hdr < 0:
         matrix_ok = False
-        problems.append('no matrix table found (the header row must contain Feature and Status columns; see the coverage-matrix skill)')
-    else:
+        problems.append('no contract matrix table found -- the header row must be exactly | ID | Feature | Family | Status | Tests | Notes | (see the coverage-matrix skill)')
+    if candidates > 1:
+        # A decoy/summary table carrying Feature+Status ahead of the real one
+        # is how a matrix silently stops being the matrix.
+        matrix_ok = False
+        problems.append('the file has ' + str(candidates) + ' tables with Feature+Status columns; the contract allows exactly ONE matrix table (give legends/summaries a different column set)')
+    if hdr >= 0:
         def ref_resolves(ref):
             ref = ref.strip().strip(chr(96)).strip()
             if not ref:
@@ -609,22 +648,26 @@ if mtext:
                 k = ref.rindex('(')
                 name = ref[:k].strip().strip(chr(96)).strip()
                 path = ref[k+1:-1].strip().strip(chr(96)).strip()
-            if path:
-                fp = os.path.join(ws, path)
-                if not os.path.exists(fp):
+            def usable_file(rel):
+                # A claim resolves against a real TEST FILE only: a directory,
+                # a non-test file, or the matrix citing itself proves nothing.
+                if not rel or matrix_rel in rel:
                     return False
-                if not name:
-                    return True
+                return os.path.isfile(os.path.join(ws, rel)) and bool(rx.search(rel))
+            if path:
+                if not name or not usable_file(path):
+                    return False
                 try:
-                    return name in open(fp, encoding='utf-8', errors='replace').read()
+                    return name in open(os.path.join(ws, path), encoding='utf-8', errors='replace').read()
                 except OSError:
                     return False
-            if os.path.exists(os.path.join(ws, name)):
+            if usable_file(name):
                 return True
+            if len(name) < 4 or not name_rx.search(name):
+                return False
             hits = git(['grep', '-I', '-l', '-F', '--untracked', name])
             for h in hits.splitlines():
-                h = h.strip()
-                if h and matrix_rel not in h:
+                if usable_file(h.strip()):
                     return True
             return False
         allowed = ['covered-deterministic', 'covered-live', 'unit-only', 'excluded', 'uncovered']
@@ -634,11 +677,19 @@ if mtext:
         while i < len(lines):
             s = lines[i].strip()
             i += 1
+            # A blank line does NOT end the table: truncating there would hide
+            # every row after it (uncovered rows included).
+            if s == '':
+                continue
             if not s.startswith('|'):
                 break
             if s.replace('|', '').replace('-', '').replace(':', '').replace(' ', '') == '':
                 continue
             cells = [c.strip() for c in s.strip('|').split('|')]
+            if len(cells) < len(contract_cols):
+                matrix_ok = False
+                problems.append('malformed row (' + str(len(cells)) + ' cells, contract needs ' + str(len(contract_cols)) + ' -- an unescaped pipe splits a row): ' + s[:110])
+                continue
             def cell(key):
                 j = cols.get(key, -1)
                 if j < 0 or j >= len(cells):
@@ -646,12 +697,10 @@ if mtext:
                 return cells[j]
             rid = cell('id') or cell('feature') or ('row ' + str(i))
             status = cell('status').strip(chr(96)).strip().lower()
-            if status == '':
-                continue
             matrix_rows += 1
             if status not in allowed:
                 matrix_ok = False
-                problems.append(rid + ': invalid status ' + status + ' (allowed: ' + ', '.join(allowed) + ')')
+                problems.append(rid + ': invalid status ' + (status or '(empty)') + ' (allowed: ' + ', '.join(allowed) + ')')
                 continue
             if status == 'uncovered':
                 uncovered += 1
@@ -666,7 +715,7 @@ if mtext:
                     problems.append(rid + ': ' + status + ' without any test reference')
                 elif not any(ref_resolves(r) for r in refs):
                     matrix_ok = False
-                    problems.append(rid + ': ORPHAN CLAIM -- none of the cited tests resolve in the tree: ' + tcell[:120])
+                    problems.append(rid + ': ORPHAN CLAIM -- no cited test resolves to a real test file in the tree: ' + tcell[:120])
         if matrix_rows == 0:
             matrix_ok = False
             problems.append('matrix table has no feature rows')
@@ -677,7 +726,6 @@ if uncovered > 0:
 
 # 3) new_test_code -- OBSERVABILITY only (see the workflow header): did new
 # test code land vs the RUN BASE (reflog-oldest; in-stride commits count)?
-rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|/test/|/tests/|/__tests__/|/spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
 reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
 diff_base = reflog[-1] if reflog else 'HEAD'
 added = 0
@@ -697,7 +745,7 @@ new_test_code = added > 0 or untracked_test
 if not new_test_code:
     out = out + chr(10) + '[gate] note: no new test code detected vs the run base (fine for a pure inventory/mapping pass; otherwise your tests never landed -- git add -A and commit).'
 
-print(json.dumps({'passed': passed, 'skipped': skipped, 'matrix_ok': matrix_ok, 'matrix_rows': matrix_rows, 'uncovered_rows': uncovered, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
+print(json.dumps({'passed': passed, 'skipped': skipped, 'matrix_ok': matrix_ok, 'matrix_rows': matrix_rows, 'uncovered_rows': uncovered, 'scoped': scoped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
 "`
   output: verify_result
 
@@ -712,7 +760,7 @@ print(json.dumps({'passed': passed, 'skipped': skipped, 'matrix_ok': matrix_ok, 
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.verify_run.matrix_ok && outputs.campaign.coverage_complete && (vars.target != '' || outputs.verify_run.uncovered_rows == 0)"
+    converged: "outputs.verify_run.passed && outputs.verify_run.matrix_ok && outputs.campaign.coverage_complete && (outputs.verify_run.scoped || outputs.verify_run.uncovered_rows == 0)"
     fail_log: "if(outputs.verify_run.passed && outputs.verify_run.matrix_ok, '', outputs.verify_run.log_tail)"
 
 ## ─── Workflow ────────────────────────────────────────────────────

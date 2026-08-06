@@ -38,6 +38,7 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		MatrixOK      bool   `json:"matrix_ok"`
 		MatrixRows    int    `json:"matrix_rows"`
 		UncoveredRows int    `json:"uncovered_rows"`
+		Scoped        bool   `json:"scoped"`
 		NewTestCode   bool   `json:"new_test_code"`
 		ExitCode      int    `json:"exit_code"`
 		LogTail       string `json:"log_tail"`
@@ -45,11 +46,20 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 
 	const matrixRel = "docs/e2e-coverage-matrix.md"
 
-	run := func(t *testing.T, ws, scratch string) verifyResult {
+	// The engine substitutes a var through shellEscapeValue, which always
+	// wraps the value in single quotes (pkg/backend/model/executor_tool.go
+	// shellEscape). `target` is free text — reproduce that quoting here or
+	// the harness would test a shape production never produces.
+	shellQuote := func(s string) string {
+		return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	}
+
+	runTarget := func(t *testing.T, ws, scratch, target string) verifyResult {
 		t.Helper()
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		cmd = strings.ReplaceAll(cmd, "{{vars.matrix_path}}", matrixRel)
+		cmd = strings.ReplaceAll(cmd, "{{vars.target}}", shellQuote(target))
 		out, err := exec.Command("sh", "-c", cmd).Output()
 		if err != nil {
 			t.Fatalf("verify_run command failed to execute: %v (out %q)", err, out)
@@ -59,6 +69,13 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 			t.Fatalf("verify_run output is not the verify_result JSON: %v (out %q)", uerr, out)
 		}
 		return res
+	}
+
+	// The whole-application shape (no target) is the strict one: the gate's
+	// own uncovered count, not the agent's claim, decides convergence.
+	run := func(t *testing.T, ws, scratch string) verifyResult {
+		t.Helper()
+		return runTarget(t, ws, scratch, "")
 	}
 
 	gitWorkspace := func(t *testing.T) string {
@@ -213,6 +230,155 @@ func TestE2ECoverageMatrixGate(t *testing.T) {
 		res := run(t, ws, scratch)
 		if res.MatrixOK || !strings.Contains(res.LogTail, "no feature rows") {
 			t.Fatalf("a matrix with zero feature rows must be red: %+v", res)
+		}
+	})
+
+	// ---------------------------------------------------------------
+	// Bypass regressions. Each case below was an EXECUTED false-green
+	// against the first cut of this gate (adversarial review, 2026-08-06):
+	// the matrix proved nothing, or did not count what it claimed, or was
+	// not even the table the operator was reading — and the gate said OK.
+	// ---------------------------------------------------------------
+
+	t.Run("bypass_directory_citation_is_not_a_test", func(t *testing.T) {
+		// `.` (or any existing directory) satisfied a plain os.path.exists.
+		for _, ref := range []string{".", "..", "e2e", "docs"} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, "e2e/keep.txt", "x") // make e2e/ exist
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Thing | a | covered-deterministic | "+ref+" | |\n")
+			res := run(t, ws, scratch)
+			if res.MatrixOK {
+				t.Fatalf("citation %q resolved to a directory/non-test and passed: %+v", ref, res)
+			}
+		}
+	})
+
+	t.Run("bypass_non_test_file_citation", func(t *testing.T) {
+		// A real file that is not a test file proves nothing.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "README.md", "docs, not a test")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | README.md | |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || !strings.Contains(res.LogTail, "ORPHAN CLAIM") {
+			t.Fatalf("a non-test file must not resolve a coverage claim: %+v", res)
+		}
+	})
+
+	t.Run("bypass_matrix_citing_itself", func(t *testing.T) {
+		// Both citation forms pointed at the matrix itself; the Feature cell
+		// then supplies the "name" the parenthesised form looks for.
+		for _, ref := range []string{matrixRel, "(" + matrixRel + ")", "Payment (" + matrixRel + ")"} {
+			ws, scratch := gitWorkspace(t), t.TempDir()
+			greenVerify(t, scratch)
+			writeFile(t, ws, matrixRel, header+
+				"| a.b | Payment | a | covered-deterministic | "+ref+" | |\n")
+			res := run(t, ws, scratch)
+			if res.MatrixOK {
+				t.Fatalf("the matrix citing itself must not resolve (%q): %+v", ref, res)
+			}
+		}
+	})
+
+	t.Run("bypass_short_bare_name_greps_anything", func(t *testing.T) {
+		// `a` matched almost every source file through git grep.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/thing_test.go", "package e2e // unrelated content with a\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | a | |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK {
+			t.Fatalf("a 1-char citation must not resolve: %+v", res)
+		}
+	})
+
+	t.Run("bypass_short_row_hides_a_feature", func(t *testing.T) {
+		// A row with too few cells read as status="" and was skipped
+		// silently — the feature vanished from the accounting entirely.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | uncovered | | plan |\n"+
+			"| ghost | Payment feature never tested |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK || !strings.Contains(res.LogTail, "malformed row") {
+			t.Fatalf("a short row must be an explicit error, never a silent skip: %+v", res)
+		}
+	})
+
+	t.Run("bypass_blank_line_truncates_the_table", func(t *testing.T) {
+		// The row scan stopped at the first blank line, hiding every row
+		// after it — uncovered rows included.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, "e2e/real_test.go", "package e2e\n\nfunc TestReal(t *testing.T) {}\n")
+		writeFile(t, ws, matrixRel, header+
+			"| a.b | Thing | a | covered-deterministic | TestReal (e2e/real_test.go) | |\n"+
+			"\n"+
+			"| hidden1 | Payment | a | uncovered | | plan |\n"+
+			"| hidden2 | Auth | a | uncovered | | plan |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixRows != 3 || res.UncoveredRows != 2 {
+			t.Fatalf("rows after a blank line must still be counted (want 3 rows / 2 uncovered): %+v", res)
+		}
+	})
+
+	t.Run("bypass_decoy_table_before_the_matrix", func(t *testing.T) {
+		// A summary table carrying Feature+Status ahead of the real one
+		// became "the matrix": 1 row, 0 uncovered, green.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel,
+			"<!-- e2e-coverage-matrix: v1 -->\n\n"+
+				"| Feature | Status | Notes |\n|---|---|---|\n| Decoy | excluded | out of scope |\n\n"+
+				"# Real matrix\n\n"+
+				"| ID | Feature | Family | Status | Tests | Notes |\n|---|---|---|---|---|---|\n"+
+				"| real1 | Payment | a | uncovered | | plan |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixOK {
+			t.Fatalf("a second Feature+Status table must be rejected, not silently preferred: %+v", res)
+		}
+	})
+
+	t.Run("bypass_fenced_example_table", func(t *testing.T) {
+		// The coverage-matrix skill itself ships an example table in a
+		// fence; pasted above the real one it used to become the matrix.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		fence := strings.Repeat("`", 3)
+		writeFile(t, ws, matrixRel,
+			"<!-- e2e-coverage-matrix: v1 -->\n\n"+fence+"\n"+
+				"| ID | Feature | Family | Status | Tests | Notes |\n|---|---|---|---|---|---|\n"+
+				"| example | Example | a | excluded | | illustration |\n"+fence+"\n\n"+
+				"# Real matrix\n\n"+
+				"| ID | Feature | Family | Status | Tests | Notes |\n|---|---|---|---|---|---|\n"+
+				"| real1 | Payment | a | uncovered | | plan |\n"+
+				"| real2 | Auth | a | uncovered | | plan |\n")
+		res := run(t, ws, scratch)
+		if res.MatrixRows != 2 || res.UncoveredRows != 2 {
+			t.Fatalf("a fenced example table must be ignored and the real one parsed (want 2/2): %+v", res)
+		}
+	})
+
+	t.Run("whitespace_target_is_not_a_scope", func(t *testing.T) {
+		// `--var target=" "` (stray space, template rendering to blank) used
+		// to read as a scoped run in the compute gate's `target != ''`,
+		// waiving the zero-uncovered requirement of a whole-app run.
+		ws, scratch := gitWorkspace(t), t.TempDir()
+		greenVerify(t, scratch)
+		writeFile(t, ws, matrixRel, header+"| a.b | Thing | a | uncovered | | plan |\n")
+		if res := runTarget(t, ws, scratch, " "); res.Scoped {
+			t.Fatalf("a whitespace-only target must not count as a scope: %+v", res)
+		}
+		if res := runTarget(t, ws, scratch, ""); res.Scoped {
+			t.Fatalf("an empty target must not count as a scope: %+v", res)
+		}
+		if res := runTarget(t, ws, scratch, "the cli family"); !res.Scoped {
+			t.Fatalf("a real target must count as a scope: %+v", res)
 		}
 	})
 
