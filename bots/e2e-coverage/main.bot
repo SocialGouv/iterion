@@ -330,7 +330,12 @@ prompt verify_system:
      the suite(s) containing the campaign's new e2e tests (the e2e
      suite itself — do not skip it for speed; scope OUT unrelated
      slow suites like real-credential/live layers), and exits
-     non-zero on any failure.
+     non-zero on any failure. ALWAYS OVERWRITE any pre-existing
+     verify.sh — the scratch dir is shared across runs and a previous
+     run's script may point at a dead worktree. The gate executes the
+     script with the repo root as its working directory, so use
+     $PWD-relative commands and NEVER embed an absolute workspace
+     path.
   3. PRE-EXISTING failures: scope `verify.sh` so a red base tree
      can't absorb the run — the gate measures THIS run's tests. List
      any excluded pre-existing failures in your summary.
