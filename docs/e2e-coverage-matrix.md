@@ -173,7 +173,7 @@ sandbox/container surface).
 | cli.marketplace | `iterion marketplace submit/install/uninstall` (bot + plugin kinds) | cli | covered-deterministic | TestMarketplaceCLI_SubmitInstallUninstall_KindAware (pkg/cli/marketplace_test.go) | |
 | cli.plugin | `iterion plugin list/enable/disable/install/uninstall/config` | cli | covered-deterministic | pkg/plugin/install_test.go, pkg/plugin/config_test.go | |
 | cli.skill-library | `iterion skill list/show/add/rm/import/export` | cli | uncovered | | the library store is covered (pkg/skilllib), the `iterion skill` command wrapper is not. Plan: add/list/export round-trip against a temp library root |
-| cli.secret | `iterion secret set/list/rm` local sealed-secret lifecycle | cli | uncovered | | the sealer and stores are covered (pkg/secrets); the `iterion secret` lifecycle is not. Plan: set → list (name+last4, never the value) → rm against a temp $ITERION_HOME |
+| cli.secret | `iterion secret set/list/rm` local sealed-secret lifecycle | cli | covered-deterministic | TestSecretSetListRemoveRoundTrip (e2e/cli_secret_test.go), TestSecretProjectScopeOverridesGlobal (e2e/cli_secret_test.go) | |
 | cli.memory | `iterion memory export/import/du` | cli | uncovered | | the memory store is covered (pkg/memory); the CLI wrapper is not. Plan: export → import round-trip into a temp `$ITERION_HOME` |
 | cli.models | `iterion models` resolves capabilities and their source | cli | covered-deterministic | TestRunModels_JSONSingleModel (pkg/cli/models_test.go) | |
 | cli.openapi | `iterion openapi` emits this build's OpenAPI 3.1 spec offline | cli | covered-deterministic | pkg/server/openapi_test.go | |
