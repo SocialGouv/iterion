@@ -253,8 +253,11 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 			continue
 		}
 		// Adopt the fork as the current attempt so the pointer converges
-		// with what the card already shows.
-		if err := board.SetLastRun(iss.ID, fork.ID, ""); err != nil {
+		// with what the card already shows. The fork's own workdir is
+		// stamped too — unlike launch-time call sites passing "", the run
+		// has already executed, and LastWorkdir feeds the studio's
+		// inspect-the-diff link.
+		if err := board.SetLastRun(iss.ID, fork.ID, fork.WorkDir); err != nil {
 			s.logger.Warn("pipeline admission: adopt finished fork %s for ticket %s: %v", fork.ID, iss.ID, err)
 			continue
 		}
