@@ -395,14 +395,25 @@ func (s *chainSpend) add(r delegate.Result) {
 }
 
 // applyTo folds the accumulated spend into the winning result.
+//
+// Both Result.Tokens and Output["_tokens"] are updated: the runtime's
+// budget enforcement (extractUsage) reads the map, not the struct, and
+// every shipped backend already populates `_tokens` via Annotate — so
+// leaving the map at the last route's figure alone would under-report
+// the chain's true cost to max_cost_usd / org caps / donor ledgers.
 func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
 	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 {
 		return r
 	}
 	r.Tokens += s.tokens
 	r.Duration += s.duration
-	if s.costUSD > 0 && r.Output != nil {
-		r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
+	if r.Output != nil {
+		if s.tokens > 0 {
+			r.Output["_tokens"] = r.Tokens
+		}
+		if s.costUSD > 0 {
+			r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
+		}
 	}
 	return r
 }
@@ -643,6 +654,11 @@ func (e *ClawExecutor) dispatchChain(
 			// not veto the elements after it.
 			err = buildErr
 			causes = append(causes, buildErr)
+			// A build spends nothing of its own. Zero the terminal
+			// result so a prior failed-execute that already sits in
+			// `spent` is not applied twice when the walk ends on a
+			// trailing build error (R5180a7).
+			result = delegate.Result{}
 			if !fallbackRemains {
 				break
 			}
@@ -680,24 +696,29 @@ func (e *ClawExecutor) dispatchChain(
 		if !fallbackRemains {
 			break
 		}
-		// Accumulate only once this route is definitively abandoned. The
-		// terminal `result` is folded with `spent` on the way out, so
-		// adding the last route here too would count it twice — and on a
-		// single-route node that is a plain doubling of what the
-		// delegate_error event reports.
-		spent.add(result)
 		next := chain[i+1]
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		if !elementAccepts(next, cat) {
 			// The author declared what may route here, and this is not
 			// it. Stopping is the point: a budget cap or a schema-shape
 			// failure re-fails identically on every element.
+			//
+			// Do NOT spend.add here: the terminal `result` is this
+			// element, and the tail folds it with `spent.applyTo` —
+			// adding it first would count its tokens twice (R5180a7).
 			if e.logger != nil {
 				e.logger.Warn("[%s#%d/%s] %q failed (%s); next element %q does not accept that condition — stopping the chain",
 					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat, stepLabel(next))
 			}
 			break
 		}
+		// Accumulate only once this route is definitively abandoned AND
+		// another route will try. The terminal `result` is folded with
+		// `spent` on the way out, so adding a route that is also the
+		// final result would count it twice — and on a single-route
+		// node that is a plain doubling of what the delegate_error
+		// event reports.
+		spent.add(result)
 		// Drop the failed element's conversation before another
 		// backend/provider sees it. The session store is keyed
 		// (runID, nodeID) with no provider fingerprint and captures a

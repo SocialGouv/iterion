@@ -377,6 +377,51 @@ func TestUsageWindow_KeepsRetryBudgetWhenNextRouteRejectsIt(t *testing.T) {
 	}
 }
 
+// TestFilterStopDoesNotDoubleCountSpend: when the next route's `on:`
+// filter refuses the failure category, the walk stops with the failed
+// element as the terminal result. That element must NOT also sit in
+// `spent` — applyTo would then count its tokens twice (R5180a7).
+func TestFilterStopDoesNotDoubleCountSpend(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode, fail: &delegate.ErrTransient{Reason: "boom"},
+		tokens: 1000, costUSD: 0.40,
+	}
+	// Tail is never reached: its On filter rejects transient/unclassified
+	// failures (only accepts usage_window).
+	tail := &backendScriptedBackend{
+		name:   delegate.BackendClaw,
+		tokens: 500, costUSD: 0.20,
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "review"}, nil
+		})
+	out, err := e.dispatchChain(context.Background(), "review", []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5",
+			On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+	}, "claude-opus-5", build)
+	if err == nil {
+		t.Fatal("expected the chain to stop on the filter")
+	}
+	if len(tail.tasks) != 0 {
+		t.Fatalf("tail ran %d times, want 0 (filter refused)", len(tail.tasks))
+	}
+	// Head burned 1000 tokens; it is the terminal result and must appear
+	// exactly once — not once in spent and once in result.
+	if got, want := out.Result.Tokens, 1000; got != want {
+		t.Errorf("tokens = %d, want %d (filter-stop must not double-count the last route)", got, want)
+	}
+	if got, _ := out.Result.Output["_cost_usd"].(float64); got != 0.40 {
+		t.Errorf("_cost_usd = %v, want 0.40", got)
+	}
+}
+
 // TestExhaustedChainCarriesEverySpend: an exhausted chain still burned
 // what its routes burned. Dropping it under-reports whole agentic
 // sessions to max_cost_usd, the org monthly cap and a donor's ledger.
