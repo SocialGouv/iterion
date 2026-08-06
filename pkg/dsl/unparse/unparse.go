@@ -1237,7 +1237,11 @@ func writeFallbacksBlock(b *strings.Builder, fbs []*ast.FallbackDecl, indent str
 	}
 	fmt.Fprintf(b, "%sfallbacks:\n", indent)
 	for _, fb := range fbs {
-		if fb == nil {
+		if fb == nil || strings.TrimSpace(fb.Name) == "" {
+			// A route with no name has no `<name>:` header to emit: it
+			// would serialise as a bare `  :` the parser rejects
+			// (R4a40d3). Skip rather than produce a .bot that cannot
+			// re-parse — the studio saves every edit through unparse.
 			continue
 		}
 		fmt.Fprintf(b, "%s  %s:\n", indent, fb.Name)

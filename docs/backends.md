@@ -311,6 +311,10 @@ cap or a schema-shape failure re-fails identically on every route, and
 human rather than being automated around. Both remain available
 explicitly.
 
+`on:` is a **per-route filter**, not a chain terminator: a middle route
+that refuses the category is skipped so a later route that accepts it
+still runs. The walk ends only when no remaining route accepts.
+
 An **unclassifiable** failure always routes, whatever the filter says.
 Refusing it would strand a run on exactly the failures iterion could not
 describe — a sandboxed `claw` route flattens its errors to a string at

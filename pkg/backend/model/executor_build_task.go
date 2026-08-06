@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -377,9 +378,18 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			// alternate-backend task. Re-running applyAutoMemory per
 			// element would create a second Mirror that owns a second
 			// directory and race the first on SyncBack.
-			if task.AutoMemoryDir != "" {
+			//
+			// Re-render the prompt section for THIS backend (R949ec5):
+			// claude_code uses a native settings flag so AutoMemoryPrompt
+			// is empty on the primary; claw/pi have no native mechanism
+			// and the prompt section IS how they learn the directory
+			// exists. Copying the primary's empty prompt would leave a
+			// claw fall-through with a dir but no instruction to use it.
+			if task.AutoMemoryDir != "" && automemory.SupportsBackend(bn) {
 				built.AutoMemoryDir = task.AutoMemoryDir
-				built.AutoMemoryPrompt = task.AutoMemoryPrompt
+				if automemory.NeedsPromptSection(bn) {
+					built.AutoMemoryPrompt = automemory.PromptSection(task.AutoMemoryDir)
+				}
 			}
 			return &built, nil
 		})

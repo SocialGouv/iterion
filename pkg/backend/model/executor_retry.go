@@ -307,14 +307,24 @@ func providerFallbackEligible(backendName string) bool {
 // re-shape the task. That is exactly the legacy `provider:` chain
 // (ADR-004), and exactly the case where re-running an identical call on
 // a hint-ignoring backend is pure waste.
+// elementIsHintOnly reports whether an element is only a `provider:`
+// credential hint — no named backend/label of its own. Shared by
+// chainIsHintOnly and collapseHintOnlyChain so the two cannot drift
+// (R6df672).
+func elementIsHintOnly(el chainElement) bool {
+	// A named element came from a `fallbacks:` block, i.e. the author
+	// declared a distinct route on purpose. Even one that only varies
+	// the model is meaningful on claw, which derives its provider from
+	// the model-spec prefix — so a named element is never collapsed away.
+	return el.Backend == "" && el.Label == ""
+}
+
+// chainIsHintOnly reports whether every element is a pure provider-hint
+// (no named `fallbacks:` route). The discriminator for the legacy
+// collapse path; collapseHintOnlyChain walks the same predicate.
 func chainIsHintOnly(chain []chainElement) bool {
 	for _, el := range chain {
-		// A named element came from a `fallbacks:` block, i.e. the
-		// author declared a distinct route on purpose. Even one that
-		// only varies the model is meaningful on claw, which derives
-		// its provider from the model-spec prefix — so a named element
-		// is never collapsed away.
-		if el.Backend != "" || el.Label != "" {
+		if !elementIsHintOnly(el) {
 			return false
 		}
 	}
@@ -337,7 +347,7 @@ func collapseHintOnlyChain(chain []chainElement, backendName string) []chainElem
 	}
 	prefix := 0
 	for _, el := range chain {
-		if el.Backend != "" || el.Label != "" {
+		if !elementIsHintOnly(el) {
 			break
 		}
 		prefix++
@@ -371,6 +381,31 @@ func elementAccepts(el chainElement, cat delegate.FallbackCategory) bool {
 		}
 	}
 	return false
+}
+
+// anyElementAccepts reports whether at least one element in the rest of
+// the chain would accept a failure of this category. Used by the
+// usage-window retry carve-out: skip the in-place budget only when a
+// later route can actually take the failure (Re50c7d — `on:` is a
+// per-route filter, not a chain terminator).
+func anyElementAccepts(rest []chainElement, cat delegate.FallbackCategory) bool {
+	for _, el := range rest {
+		if elementAccepts(el, cat) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstAcceptingFrom returns the index of the first element in chain[from:]
+// that accepts cat, or -1 if none do.
+func firstAcceptingFrom(chain []chainElement, from int, cat delegate.FallbackCategory) int {
+	for i := from; i < len(chain); i++ {
+		if elementAccepts(chain[i], cat) {
+			return i
+		}
+	}
+	return -1
 }
 
 // chainSpend accumulates what the FAILED elements of a chain consumed,
@@ -633,10 +668,11 @@ func (e *ClawExecutor) dispatchChain(
 	}
 
 	var (
-		result delegate.Result
-		err    error
-		spent  chainSpend
-		causes []error
+		result      delegate.Result
+		err         error
+		spent       chainSpend
+		causes      []error
+		nextAllowed int // first index the walk may execute (skip filter)
 	)
 	effModel := func(el chainElement) string {
 		if el.Model != "" {
@@ -645,7 +681,13 @@ func (e *ClawExecutor) dispatchChain(
 		return baseModel
 	}
 	for i, el := range chain {
-		fallbackRemains := i < len(chain)-1
+		if i < nextAllowed {
+			// Skipped by an earlier `on:` filter (Re50c7d). These
+			// elements were never built or executed.
+			continue
+		}
+		rest := chain[i+1:]
+		fallbackRemains := len(rest) > 0
 
 		backendName, backend, task, buildErr := build(ctx, i, el)
 		if buildErr != nil {
@@ -666,13 +708,14 @@ func (e *ClawExecutor) dispatchChain(
 			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
 			continue
 		}
-		// Whether the NEXT route would take a given failure — the carve-out
-		// must not strip a retry budget the chain will not compensate for.
+		// Whether ANY remaining route would take a given failure — the
+		// carve-out must not strip a retry budget the chain will not
+		// compensate for. Scanning the whole rest (not just the next
+		// element) matches the skip semantics of `on:` (Re50c7d).
 		var accepts func(error) bool
 		if fallbackRemains {
-			next := chain[i+1]
 			accepts = func(failure error) bool {
-				return elementAccepts(next, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
+				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
 			}
 		}
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
@@ -696,21 +739,27 @@ func (e *ClawExecutor) dispatchChain(
 		if !fallbackRemains {
 			break
 		}
-		next := chain[i+1]
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
-		if !elementAccepts(next, cat) {
-			// The author declared what may route here, and this is not
-			// it. Stopping is the point: a budget cap or a schema-shape
-			// failure re-fails identically on every element.
-			//
-			// Do NOT spend.add here: the terminal `result` is this
-			// element, and the tail folds it with `spent.applyTo` —
-			// adding it first would count its tokens twice (R5180a7).
+		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
+		// A middle route that refuses the category is SKIPPED so a later
+		// route that accepts it (e.g. the shipped example's gpt route
+		// taking transient_exhausted after api's default set refuses it)
+		// still runs. The walk ends only when NO remaining route accepts.
+		j := firstAcceptingFrom(chain, i+1, cat)
+		if j < 0 {
 			if e.logger != nil {
-				e.logger.Warn("[%s#%d/%s] %q failed (%s); next element %q does not accept that condition — stopping the chain",
-					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat, stepLabel(next))
+				e.logger.Warn("[%s#%d/%s] %q failed (%s); no remaining route accepts that condition — stopping the chain",
+					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat)
 			}
+			// Do NOT spent.add: the terminal `result` is this element,
+			// and the tail folds it with `spent.applyTo` (R5180a7).
 			break
+		}
+		for k := i + 1; k < j; k++ {
+			if e.logger != nil {
+				e.logger.Warn("[%s#%d/%s] %q failed (%s); skipping %q (does not accept) — trying later routes",
+					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat, stepLabel(chain[k]))
+			}
 		}
 		// Accumulate only once this route is definitively abandoned AND
 		// another route will try. The terminal `result` is folded with
@@ -730,7 +779,9 @@ func (e *ClawExecutor) dispatchChain(
 		if fromModel == "" {
 			fromModel = effModel(el)
 		}
+		next := chain[j]
 		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, effModel(next), err)
+		nextAllowed = j
 	}
 
 	// An exhausted chain still spent what its routes burned: fold the

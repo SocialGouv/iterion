@@ -476,3 +476,38 @@ func TestApplyAutoMemory_SurvivesACancelledRun(t *testing.T) {
 		t.Errorf("MEMORY LOST on a cancelled run: %v", err)
 	}
 }
+
+// A claude_code primary with auto_memory:on that falls through to claw must
+// hand the claw task a re-rendered AutoMemoryPrompt. Copying the primary's
+// empty prompt (claude_code uses a native settings flag) left the claw
+// route with a dir but no instruction — the silent half-cycle R949ec5.
+func TestAutoMemory_CrossBackendFallThroughRendersPrompt(t *testing.T) {
+	dir := t.TempDir()
+	// Materialise as claude_code would: dir set, prompt empty.
+	primary := &delegate.Task{
+		NodeID:        "implement",
+		WorkDir:       dir,
+		AutoMemoryDir: filepath.Join(dir, "mem"),
+	}
+	if err := os.MkdirAll(primary.AutoMemoryDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the element builder's carry logic for a claw route.
+	bn := delegate.BackendClaw
+	var built delegate.Task
+	if primary.AutoMemoryDir != "" && automemory.SupportsBackend(bn) {
+		built.AutoMemoryDir = primary.AutoMemoryDir
+		if automemory.NeedsPromptSection(bn) {
+			built.AutoMemoryPrompt = automemory.PromptSection(primary.AutoMemoryDir)
+		}
+	}
+	if built.AutoMemoryDir == "" {
+		t.Fatal("claw fall-through lost AutoMemoryDir")
+	}
+	if built.AutoMemoryPrompt == "" {
+		t.Fatal("claw fall-through has empty AutoMemoryPrompt — the model is never told MEMORY.md exists")
+	}
+	if !strings.Contains(built.AutoMemoryPrompt, primary.AutoMemoryDir) {
+		t.Errorf("prompt does not name the dir: %q", built.AutoMemoryPrompt)
+	}
+}

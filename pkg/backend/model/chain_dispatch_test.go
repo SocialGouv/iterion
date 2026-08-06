@@ -204,11 +204,10 @@ func TestErrChainExhaustedPreservesEveryCause(t *testing.T) {
 	}
 }
 
-// TestChainStopsWhenNextElementRejectsCategory: `on:` is a closed
-// positive list. A budget cap or a schema-shape failure re-fails
-// identically on every element, so an element that does not accept the
-// condition must end the walk rather than burn another route.
-func TestChainStopsWhenNextElementRejectsCategory(t *testing.T) {
+// TestChainStopsWhenNoRemainingRouteAccepts: `on:` is a per-route
+// filter. When the only remaining route refuses the category, the walk
+// ends rather than burning a route that cannot help.
+func TestChainStopsWhenNoRemainingRouteAccepts(t *testing.T) {
 	head := &backendScriptedBackend{
 		name: delegate.BackendClaudeCode,
 		fail: &delegate.ErrAuthFailed{Provider: "claude_code", Detail: "invalid bearer token"},
@@ -229,10 +228,68 @@ func TestChainStopsWhenNextElementRejectsCategory(t *testing.T) {
 	}, "claude-opus-5", build)
 
 	if err == nil {
-		t.Fatal("expected the chain to stop on a condition its next element does not accept")
+		t.Fatal("expected the chain to stop when no remaining route accepts the category")
 	}
 	if len(tail.tasks) != 0 {
 		t.Errorf("the claw element ran %d times; it only accepts usage_window and the failure was auth", len(tail.tasks))
+	}
+}
+
+// TestChainSkipsNonAcceptingRouteAndTriesLater: `on:` is a per-route
+// filter, not a chain terminator (Re50c7d). The shipped example shape
+// (api with default [usage_window, unavailable], then gpt that also
+// accepts transient_exhausted) must reach gpt when the primary dies of
+// a transient that exhausted its budget — not stop at api.
+func TestChainSkipsNonAcceptingRouteAndTriesLater(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		// ClassifyFallback maps *ErrTransient with exhausted retries via
+		// the isDelegateRetryable path inside dispatchChain; force the
+		// category by using a plain error that the walker classifies
+		// after the retry loop reports exhaustion. Use ErrTransient so
+		// the retry loop runs, then fails as transient_exhausted.
+		fail:   &delegate.ErrTransient{Reason: "boom"},
+		tokens: 100, costUSD: 0.05,
+	}
+	// Middle route: default-style filter, refuses transient_exhausted.
+	middle := &backendScriptedBackend{name: "middle-unused", tokens: 1}
+	// Later route: explicitly accepts transient_exhausted (the gpt route).
+	// Register under claw so newElementBuilder can resolve it.
+	tail := &backendScriptedBackend{name: delegate.BackendClaw, tokens: 30, costUSD: 0.01}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register("middle-unused", middle)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("implement", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "implement"}, nil
+		})
+	out, err := e.dispatchChain(context.Background(), "implement", []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: "middle-unused", Model: "anthropic/claude-opus-5",
+			On: []delegate.FallbackCategory{delegate.FallbackUsageWindow, delegate.FallbackUnavailable}},
+		{Label: "gpt", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5",
+			On: []delegate.FallbackCategory{
+				delegate.FallbackUsageWindow, delegate.FallbackUnavailable, delegate.FallbackTransientExhausted,
+			}},
+	}, "claude-opus-5", build)
+	if err != nil {
+		t.Fatalf("expected gpt to serve after api was skipped: %v", err)
+	}
+	if len(middle.tasks) != 0 {
+		t.Errorf("api route ran %d times; it refuses transient_exhausted and must be skipped", len(middle.tasks))
+	}
+	if len(tail.tasks) != 1 {
+		t.Errorf("gpt route ran %d times, want 1", len(tail.tasks))
+	}
+	if out.ServedBy != "gpt" {
+		t.Errorf("ServedBy = %q, want gpt", out.ServedBy)
+	}
+	// Head's spend is folded into the winner (R5180a7 still holds).
+	if got, want := out.Result.Tokens, 130; got != want {
+		t.Errorf("tokens = %d, want %d (head 100 + gpt 30, api never ran)", got, want)
 	}
 }
 
