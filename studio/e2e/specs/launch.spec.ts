@@ -76,26 +76,16 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
   await expect(page.getByText("Sandbox: none")).toBeVisible();
 });
 
-// KNOWN BUG, found by this suite — product code deliberately untouched.
-// POST /api/runs/preview-cost answers `{"nodes": null, "notes":
-// ["no_llm_nodes"]}` for a workflow that declares no agent/judge node, and
-// CostPreviewChip dereferences `data.nodes.length` — so the WHOLE Launch
-// view falls into its error boundary and such a bot cannot be launched
-// from the studio at all. Reproduced with bots/demo-bot (tool + compute).
-//
-// It asserts the DEFECT, so it is deterministic (the error boundary is a
-// terminal state Playwright can wait for, unlike its absence) and it is a
-// tripwire: the day CostPreviewChip tolerates a null `nodes`, this test
-// goes red — which is the signal to replace it with the positive
-// assertion kept below in the comment.
-//
-//   await expect(page.getByRole("button", { name: "Launch" })).toBeVisible();
-test("KNOWN BUG — Launch view crashes for a workflow with no LLM nodes", async ({
+// A workflow with NO agent/judge node must still be launchable: the
+// cost-preview endpoint answers `{"nodes": null, "notes": ["no_llm_nodes"]}`
+// for it, and CostPreviewChip must tolerate the null and simply hide (the
+// chip is decoration, never a gate). This suite originally caught the
+// null-deref crashing the whole Launch view into its error boundary for
+// any tool+compute-only bot (reproduced with bots/demo-bot).
+test("a workflow with no LLM nodes still renders a launchable view", async ({
   page,
 }) => {
   await page.goto("/runs/new?file=bots/demo-bot/main.bot");
-  await expect(page.getByText("Launch view crashed")).toBeVisible();
-  await expect(
-    page.getByText("Cannot read properties of null (reading 'length')"),
-  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Launch" })).toBeVisible();
+  await expect(page.getByText("Launch view crashed")).toHaveCount(0);
 });
