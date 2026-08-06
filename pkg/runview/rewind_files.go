@@ -374,6 +374,14 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 		return nil, fmt.Errorf("runview: run %s has no recorded workspace", runID)
 	}
 	switch {
+	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
+		// Terminal and non-resumable: no engine can claim it, so there is
+		// nothing to race with. Checked FIRST: `failed` is in
+		// rewindableStatuses (a rewind re-anchors it), and matching the
+		// claim arm below would flip the run to `cancelled` and wipe
+		// run.Error — the only record of why it failed — for what is
+		// here a pure workspace operation.
+		return s.restoreBanked(run, snapshotID)
 	case isRewindableStatus(run.Status):
 		// CLAIM before touching the workspace, exactly as Rewind does and
 		// for the same reason: reading the status and acting on it leaves
@@ -394,10 +402,6 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 		if !claimed {
 			return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 		}
-		return s.restoreBanked(run, snapshotID)
-	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
-		// Terminal and non-resumable: no engine can claim it, so there is
-		// nothing to race with.
 		return s.restoreBanked(run, snapshotID)
 	}
 	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
