@@ -21,20 +21,27 @@ this contract are a **red gate**, so follow it exactly.
    <!-- e2e-coverage-matrix: v1 — machine-parsed; see the coverage-matrix skill of the e2e-coverage bot -->
    ```
 
-2. Exactly ONE matrix table in the file. Its header row must contain
-   `Feature` and `Status` columns (the gate locates the table by that);
-   use this exact column set, in this order:
+2. Exactly ONE matrix table in the file, with this **exact** column set,
+   in this order (the gate binds on the exact header — a near-miss header
+   is "no matrix table found"):
 
    ```markdown
    | ID | Feature | Family | Status | Tests | Notes |
    |---|---|---|---|---|---|
    ```
 
-3. Rows are **contiguous** — the table ends at the first non-table line.
-   Prose (scope, legend, exclusion policy, per-family commentary) lives
-   above or below the table, never between rows.
-4. No other table in the file may have both a `Feature` and a `Status`
-   column (the gate binds to the first such header).
+3. Every row carries all six cells. **Escape any `|` inside a cell**
+   (`auto \| none`, or reword) — an unescaped pipe splits the row, and a
+   short row is a hard error, never a silently skipped feature.
+4. Prose (scope, legend, exclusion policy, per-family commentary) lives
+   above or below the table. Blank lines between row groups are tolerated,
+   but a non-table line ends the table.
+5. **No other table in the file may have both a `Feature` and a `Status`
+   column** — a second one is an error, not a tie the gate breaks
+   silently. Give legends and summaries a different column set.
+6. An **example** table (like the one below) must stay inside a fenced
+   code block; the gate blanks fences before parsing so an illustration
+   can never be mistaken for the matrix.
 
 ## Statuses (the only allowed values)
 
@@ -62,10 +69,21 @@ Three accepted forms:
   (`git grep --untracked`) for it.
 
 At least one reference per `covered-*` row must resolve, or the row is
-an **ORPHAN CLAIM** and the gate is red. Resolution is existence-level
-only — citing a real-but-unrelated test passes the grep and violates the
-doctrine in [[e2e-coverage]]; pertinence is on your honour and on the
-operator's review of the matrix diff.
+an **ORPHAN CLAIM** and the gate is red. What the gate requires of a
+reference:
+
+- it must land in a **real test file** — a directory, a doc, a source
+  file, or the matrix citing itself resolves nothing;
+- a **bare name** must be at least 4 characters and read like a test
+  identifier (`test`/`spec`/`scenario`/`should`), and must be found
+  *inside* a test file — a one-word citation used to match half the tree.
+
+Resolution stays existence-level: citing a real-but-unrelated test passes
+the grep and violates the doctrine in [[e2e-coverage]]. Pertinence is on
+your honour and on the operator's review of the matrix diff — an audit of
+this matrix measured a 4-in-30 miss rate on that axis, so cite the test
+that would FAIL if the promise broke, not the nearest one that mentions
+the feature.
 
 ## Row lifecycle
 
