@@ -254,6 +254,13 @@ func autoResumeLoop(
 		}
 
 		delay := autoResumeBackoff(attempt - 1)
+		// `max_wait` is the operator's ceiling on ANY wait this loop takes,
+		// not just a usage-window one: an exponential backoff that outlived
+		// it would ignore the policy they set (and, in a test fixture,
+		// stretch a millisecond-scale run into minutes).
+		if max := cfg.Retry.MaxWaitDuration(); max > 0 && delay > max {
+			delay = max
+		}
 		if code == runtime.ErrCodeUsageLimitBlocked {
 			// Reset-aware wait: retrying inside the forfait window can
 			// never succeed, so the delay tracks the provider's reset

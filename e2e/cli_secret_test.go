@@ -119,12 +119,18 @@ func TestSecretSetListRemoveRoundTrip(t *testing.T) {
 
 	// --- sealed on disk --------------------------------------------------
 	// The whole point of the local store: the value must not be readable
-	// from the filesystem.
-	if hits := grepTree(t, store.GlobalIterionDataDir(), secretPlaintext); len(hits) > 0 {
-		t.Fatalf("plaintext found unsealed in the global store: %v", hits)
-	}
-	if hits := grepTree(t, projectDir, secretPlaintext); len(hits) > 0 {
-		t.Fatalf("plaintext found unsealed in the project store: %v", hits)
+	// from the filesystem. The sealed field is a []byte, which json writes
+	// as BASE64 — so grepping the raw plaintext alone would miss a store
+	// that skipped encryption entirely (measured: a Seal/Open pass-through
+	// mutation survived the raw grep).
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPlaintext))
+	for _, needle := range []string{secretPlaintext, b64, strings.TrimRight(b64, "=")} {
+		if hits := grepTree(t, store.GlobalIterionDataDir(), needle); len(hits) > 0 {
+			t.Fatalf("plaintext (as %q) found unsealed in the global store: %v", needle, hits)
+		}
+		if hits := grepTree(t, projectDir, needle); len(hits) > 0 {
+			t.Fatalf("plaintext (as %q) found unsealed in the project store: %v", needle, hits)
+		}
 	}
 
 	// --- list ------------------------------------------------------------
