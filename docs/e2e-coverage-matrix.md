@@ -45,10 +45,23 @@ This file supersedes the three partial coverage docs it reconciles:
 
 ## Scope of the current campaign
 
-Pass 1 built this inventory and closed the highest-value CLI quick wins.
+Pass 1 built this inventory and closed the highest-value CLI quick wins
+(`run --preset`, `run --max-*`, `secret`, `runs questions|answer`, `report`).
+Pass 2 closed the remaining CLI quick wins: `issue`, `diagram`, `skill`,
+`memory`, `run --recipe`.
+
 Everything still `uncovered` is deliberate backlog for later scoped runs,
-family by family (the biggest blocks: `studio-ui`, parts of `cloud`, and the
-sandbox/container surface).
+family by family. What is left, and why it is not a quick win:
+
+- **studio-ui** (9 rows) — no browser harness exists in this repo. Closing
+  the family means introducing one (Playwright against a `iterion studio`
+  boot), which is its own scoped run.
+- **cloud** (3 rows) — `dlq`, `migrate-blobs`, `valkey-state` need a live
+  Mongo/S3/Valkey backend or a fake that does not exist yet.
+- **cli** (3 rows) — `run --model/--backend` overrides are consumed inside
+  the real `ClawExecutor` (a stub cannot observe them); `--auto-resume`
+  needs an injectable clock to avoid a ≥15s sleep; `bench asymptote`
+  drives real runs.
 
 | ID | Feature | Family | Status | Tests | Notes |
 |---|---|---|---|---|---|
