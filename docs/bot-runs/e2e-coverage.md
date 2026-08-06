@@ -13,6 +13,15 @@ zero uncovered rows; scoped runs converge on scope-level completion.
 
 ---
 
+## 2026-08-06 — adversarial review, round 3 (converging: no new false-green, only a too-narrow domain)
+The round-3 signal is different in kind from rounds 1-2, and it is the convergence signal: **not one new false-green anywhere**. Every finding is the opposite failure — the hardening had narrowed what the gate ACCEPTS.
+
+- **Round 2 fixed a false positive and introduced two more, in the same place** (`2e8d7a784`). Extending the test-ish-name guard to the path form rejected DESCRIPTION-style citations (`charge_is_idempotent (spec/charge_spec.rb)`) — the natural shape for RSpec, Jest, Cypress, pytest-BDD — even though the cited FILE already proves it is a test. And "every citation must resolve" met a naive comma split, so a parametric name (`test_x[a=1, b=2]`) was torn into a live citation plus a bogus fragment reported as an orphan. Net effect: the gate had narrowed to *matrices whose citations look like Go test function names* — this repo's shape and almost nobody else's, which is precisely the "catalog bots are repo-agnostic" bar. Both fixed, plus operator prose (`N/A`) no longer reading as a dead reference, and a case-insensitive `test[.]` no longer claiming `latest.tsx` / `contest.py`.
+- **The product change of round 2 was refuted-then-confirmed by execution**: clamping the auto-resume backoff to `max_wait` is a no-op by default (measured: ~14 min over 5 attempts, identical before and after, since the default ceiling is 8 days and the backoff caps at 5 min) and bites only when an operator explicitly set a shorter wait. The platform ceiling was verified NOT to reach this path (it binds the cloud runner instead), so nothing shortens it behind the operator's back.
+- **The generated tests held again**: 5 of 7 designed mutations killed, nothing critical, high or medium.
+- **Third matrix sample (30 rows, 100 across three audits): zero façades.** The same helper-vs-wiring miss appeared twice more (`dsl.cursors`, `dsl.compress-field` — the row cited the helper's own test while the ONE line that invokes it had no cited coverage), and two documented surfaces had no row at all: the post-mortem shell (covered, now cited) and **`/api/me/oauth/*` — five wired endpoints, zero tests, on the BYOK/forfait credential path** (now an honest uncovered row).
+- Final: 309 rows / 9 uncovered. `task check` green except the pre-existing `TestProcessBoardCardCarriesPRLaunchContext` flake; Playwright 24/24.
+
 ## 2026-08-06 — adversarial review, round 2 (the round-1 fixes, re-attacked)
 The loop's own rule — *what surfaces at round N+1 is usually a regression of round N* — held on both surfaces that were rewritten.
 
