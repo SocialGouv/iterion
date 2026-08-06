@@ -1007,7 +1007,13 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	// same "cannot read worktree HEAD" warning every minute per deleted
 	// worktree. Skip quietly; an EXISTING worktree with an unreadable
 	// HEAD still warns from finalizeWorktree below.
-	if _, err := os.Stat(r.WorkDir); err != nil {
+	//
+	// Gated on ENOENT only: a stat failure on an existing path (EACCES
+	// on a parent, EIO/ESTALE on an unavailable mount) is recoverable —
+	// the run's commits may still be promotable once the mount or the
+	// permissions are fixed — so it falls through to finalizeWorktree's
+	// warning instead of vanishing silently.
+	if _, err := os.Stat(r.WorkDir); os.IsNotExist(err) {
 		return nil
 	}
 	// Finalize any terminally-stopped run that left work in the
