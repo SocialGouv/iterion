@@ -83,14 +83,19 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
 // view falls into its error boundary and such a bot cannot be launched
 // from the studio at all. Reproduced with bots/demo-bot (tool + compute).
 //
-// Marked `test.fail`, not skipped: it RUNS on every pass, stays green
-// while the bug is live, and turns red the moment CostPreviewChip starts
-// tolerating a null `nodes` — which is the signal to drop this marker.
-test("launch form renders for a workflow with no LLM nodes", async ({
+// It asserts the DEFECT, so it is deterministic (the error boundary is a
+// terminal state Playwright can wait for, unlike its absence) and it is a
+// tripwire: the day CostPreviewChip tolerates a null `nodes`, this test
+// goes red — which is the signal to replace it with the positive
+// assertion kept below in the comment.
+//
+//   await expect(page.getByRole("button", { name: "Launch" })).toBeVisible();
+test("KNOWN BUG — Launch view crashes for a workflow with no LLM nodes", async ({
   page,
 }) => {
-  test.fail(true, "CostPreviewChip crashes on a null `nodes` (no_llm_nodes)");
   await page.goto("/runs/new?file=bots/demo-bot/main.bot");
-  await expect(page.getByText("Launch view crashed")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Launch" })).toBeVisible();
+  await expect(page.getByText("Launch view crashed")).toBeVisible();
+  await expect(
+    page.getByText("Cannot read properties of null (reading 'length')"),
+  ).toBeVisible();
 });

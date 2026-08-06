@@ -15,12 +15,14 @@ test("runs list shows the seeded run with its workflow and status", async ({
   const { fixtureRunId } = seed();
   await page.goto("/runs");
 
-  const row = page.getByRole("row").filter({ hasText: "demo-bot" });
+  // The Run ID column truncates, so address the row by the prefix it
+  // renders — unique even between two runs seeded in the same second.
+  const row = page
+    .getByRole("row")
+    .filter({ hasText: fixtureRunId.slice(0, 13) });
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("/demo-bot/main.bot");
   await expect(row).toContainText("finished");
-  // The Run ID column truncates, so match the rendered prefix.
-  await expect(row).toContainText(fixtureRunId.slice(0, 13));
 });
 
 test("run console renders the executed graph, log and outcome", async ({

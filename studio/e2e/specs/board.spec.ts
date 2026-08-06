@@ -36,7 +36,10 @@ test("moving a card in the UI persists to the native store", async ({
   // the deterministic equivalent of the drag-and-drop gesture (same
   // mutation, same endpoint).
   await page.getByRole("button", { name: "Fixture card in inbox" }).click();
-  await page.getByLabel("Bulk move to column").selectOption("Ready");
+  // Backlog, not an eligible column: the dispatcher spec starts a real
+  // dispatcher later in the run, and a card parked in a claimable state
+  // would be launched out from under the other specs' assertions.
+  await page.getByLabel("Bulk move to column").selectOption("Backlog");
 
   // The store — not the client — is the source of truth.
   await expect(async () => {
@@ -44,7 +47,7 @@ test("moving a card in the UI persists to the native store", async ({
       `/api/v1/native/issues/${encodeURIComponent(issueId)}`,
     );
     expect(res.ok()).toBeTruthy();
-    expect((await res.json()).state).toBe("ready");
+    expect((await res.json()).state).toBe("backlog");
   }).toPass();
 
   // And a fresh load reads it back from that store: the column counters
@@ -58,9 +61,9 @@ test("moving a card in the UI persists to the native store", async ({
         has: page.getByRole("button", { name: `Manage ${column} column` }),
       })
       .last();
-  await expect(header("Ready")).toContainText("1");
+  await expect(header("Backlog")).toContainText("1");
   await expect(header("Inbox")).toContainText("0");
-  await expect(page.getByLabel("Select all in Ready")).toBeVisible();
+  await expect(page.getByLabel("Select all in Backlog")).toBeVisible();
   await expect(page.getByLabel("Select all in Inbox")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Fixture card in inbox" }),

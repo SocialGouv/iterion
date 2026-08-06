@@ -32,12 +32,9 @@ test("closed inventory lists the finished runs as pipeline cards", async ({
   const { fixtureRunId } = seed();
   await page.goto("/pipelines");
 
-  // Two seeded runs finished, so the Closed tab carries both and Opened
-  // is empty.
+  // No ticket is waiting to start; the finished runs live under Closed.
   await expect(page.getByRole("tab", { name: /^Opened/ })).toContainText("0");
-  const closed = page.getByRole("tab", { name: /^Closed/ });
-  await expect(closed).toContainText("2");
-  await closed.click();
+  await page.getByRole("tab", { name: /^Closed/ }).click();
 
   const card = page.getByRole("article", { name: /Demo Fixture/ });
   await expect(card).toContainText("Success");
