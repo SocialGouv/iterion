@@ -1461,9 +1461,8 @@ func TestSaveCheckpointRoundTrip(t *testing.T) {
 	}
 }
 
-// failed_resumable must RETAIN the checkpoint (the resume entry point) —
-// distinct from the plain `failed` path which clears it. This is the
-// behaviour that makes a failed run recoverable.
+// failed_resumable must RETAIN the checkpoint (the resume entry point).
+// This is the behaviour that makes a failed run recoverable.
 func TestFailRunResumable(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
@@ -1489,6 +1488,93 @@ func TestFailRunResumable(t *testing.T) {
 	}
 	if r.FinishedAt == nil {
 		t.Error("FinishedAt = nil, want set")
+	}
+}
+
+// A terminal `failed` run keeps its checkpoint too: the run is over (no
+// auto-resume) but the recovery point survives so an explicit rewind can
+// still pick it up. FailRunTerminal is the atomic write used by the DSL
+// fail-node path.
+func TestFailRunTerminal(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	mustCreateRun(t, s, "run-ft")
+
+	cp := &Checkpoint{NodeID: "node-f"}
+	if err := s.FailRunTerminal(ctx, "run-ft", cp, "workflow reached fail node"); err != nil {
+		t.Fatalf("FailRunTerminal: %v", err)
+	}
+
+	r, err := s.LoadRun(ctx, "run-ft")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != RunStatusFailed {
+		t.Errorf("Status = %q, want failed", r.Status)
+	}
+	if r.Error != "workflow reached fail node" {
+		t.Errorf("Error = %q, want %q", r.Error, "workflow reached fail node")
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "node-f" {
+		t.Errorf("Checkpoint = %+v, want preserved with NodeID node-f", r.Checkpoint)
+	}
+	if r.FinishedAt == nil {
+		t.Error("FinishedAt = nil, want set")
+	}
+}
+
+// An operator cancel outranks a terminal failure racing in behind it:
+// FailRunTerminal on a cancelled run is a no-op.
+func TestFailRunTerminalCancelledWins(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	mustCreateRun(t, s, "run-ft-cancel")
+	if err := s.UpdateRunStatus(ctx, "run-ft-cancel", RunStatusCancelled, "operator stop"); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+
+	if err := s.FailRunTerminal(ctx, "run-ft-cancel", &Checkpoint{NodeID: "node-f"}, "late failure"); err != nil {
+		t.Fatalf("FailRunTerminal: %v", err)
+	}
+	r, err := s.LoadRun(ctx, "run-ft-cancel")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != RunStatusCancelled {
+		t.Errorf("Status = %q, want cancelled (cancel outranks a late failure)", r.Status)
+	}
+}
+
+// UpdateRunStatus(failed) preserves an existing checkpoint, while the
+// running/finished transitions keep clearing it.
+func TestUpdateRunStatusFailedKeepsCheckpoint(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	mustCreateRun(t, s, "run-keep-cp")
+
+	if err := s.SaveCheckpoint(ctx, "run-keep-cp", &Checkpoint{NodeID: "node-a"}); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, "run-keep-cp", RunStatusFailed, "boom"); err != nil {
+		t.Fatalf("UpdateRunStatus(failed): %v", err)
+	}
+	r, err := s.LoadRun(ctx, "run-keep-cp")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "node-a" {
+		t.Errorf("Checkpoint = %+v after failed transition, want preserved", r.Checkpoint)
+	}
+
+	if err := s.UpdateRunStatus(ctx, "run-keep-cp", RunStatusFinished, ""); err != nil {
+		t.Fatalf("UpdateRunStatus(finished): %v", err)
+	}
+	r, err = s.LoadRun(ctx, "run-keep-cp")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint != nil {
+		t.Errorf("Checkpoint = %+v after finished transition, want cleared", r.Checkpoint)
 	}
 }
 

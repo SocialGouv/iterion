@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -364,6 +365,42 @@ func TestRewind_RejectsRunningRun(t *testing.T) {
 	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
 	if !errors.Is(err, ErrRewindNotRewindable) {
 		t.Fatalf("Rewind on a running run: err = %v, want ErrRewindNotRewindable", err)
+	}
+}
+
+// TestRewind_AcceptsFailedRun: a terminal `failed` run (the DSL fail-node
+// path) is rewindable. The run is over — no auto-resume — but its
+// checkpoint is a coherent recovery point, and rewind is exactly the
+// explicit operator action that uses it.
+func TestRewind_AcceptsFailedRun(t *testing.T) {
+	cp := &store.Checkpoint{NodeID: "verify", Outputs: outputsOf("survey", "plan", "implement", "verify")}
+	svc, st, runID := seedRun(t, linearBot, cp, store.RunStatusFailed)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.FromNode != "verify" || result.NodeID != "implement" {
+		t.Errorf("re-anchor = %q → %q, want verify → implement", result.FromNode, result.NodeID)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load rewound run: %v", err)
+	}
+	if run.Status != store.RunStatusCancelled {
+		t.Errorf("status = %q, want cancelled (parked, resumable)", run.Status)
+	}
+}
+
+// TestRewind_FailedRunWithoutCheckpoint: runs failed BEFORE the
+// checkpoint preservation existed carry no checkpoint and stay
+// unrecoverable — the rejection must say why, not blame the status.
+func TestRewind_FailedRunWithoutCheckpoint(t *testing.T) {
+	svc, _, runID := seedRun(t, linearBot, nil, store.RunStatusFailed)
+
+	_, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err == nil || !strings.Contains(err.Error(), "no checkpoint") {
+		t.Errorf("Rewind error = %v, want a no-checkpoint rejection", err)
 	}
 }
 

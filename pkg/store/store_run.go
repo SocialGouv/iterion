@@ -357,8 +357,13 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 		// stale terminal timestamp and freezes mid-run.
 		r.FinishedAt = nil
 	}
-	// Clear checkpoint when leaving paused state (preserved for failed_resumable and cancelled).
-	if status == RunStatusRunning || status == RunStatusFinished || status == RunStatusFailed {
+	// Clear checkpoint when leaving paused state (preserved for
+	// failed_resumable, cancelled, and failed). `failed` keeps its
+	// checkpoint on purpose: a run that reached the DSL fail node is
+	// terminal (no auto-resume) but stays rewindable on an explicit
+	// operator action — its on-disk state is coherent, there is no
+	// technical reason to destroy the recovery point.
+	if status == RunStatusRunning || status == RunStatusFinished {
 		r.Checkpoint = nil
 	}
 	return s.writeRun(r)
@@ -416,6 +421,33 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusFailedResumable
+	r.Error = runErr
+	t := time.Now().UTC()
+	r.UpdatedAt = t
+	r.FinishedAt = &t
+	return s.writeRun(r)
+}
+
+// FailRunTerminal atomically sets the checkpoint, error message, and status
+// to failed in a single write. Unlike FailRunResumable the run is terminal —
+// no auto-resume — but the checkpoint is preserved so the operator can still
+// rewind it explicitly (a run that reached the DSL fail node has a coherent
+// on-disk state worth recovering from).
+func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	// Same guard as FailRunResumable: an operator cancel is terminal and
+	// outranks a failure racing in behind it. Cancelled stands.
+	if r.Status == RunStatusCancelled {
+		return nil
+	}
+	r.Checkpoint = cp
+	r.Status = RunStatusFailed
 	r.Error = runErr
 	t := time.Now().UTC()
 	r.UpdatedAt = t

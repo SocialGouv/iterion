@@ -77,7 +77,7 @@ features can legitimately be absent.
 | `paused_waiting_human` | A durable interaction is waiting for answers. | Resume with answers. |
 | `paused_operator` | Soft operator or daily-spend-cap pause with no pending human form. | Runtime-restorable checkpoint; see [resume](resume.md). |
 | `finished` | Reached `done`. | Terminal. |
-| `failed` | Intentional `fail` or failure without resumable persisted state. | Terminal. |
+| `failed` | Intentional `fail` or failure without resumable persisted state. | Terminal (no auto-resume), but the checkpoint is preserved so an explicit `rewind` can recover it; runs failed before that preservation have none and stay unrecoverable. |
 | `failed_resumable` | Failure with a restart checkpoint, or an entry restart marker. | Resume without answers. |
 | `cancelled` | User interruption with state preserved when possible. | Resume without answers. |
 

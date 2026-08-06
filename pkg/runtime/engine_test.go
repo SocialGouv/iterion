@@ -2388,6 +2388,56 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 	}
 }
 
+// A run routed to the DSL fail node is terminal — status failed, no
+// auto-resume — but keeps its checkpoint: the graph abandoning a run is
+// not a crash, the on-disk state is coherent, and an explicit operator
+// rewind must stay possible.
+func TestFailNodePreservesCheckpoint(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "wf-fail-node",
+		Entry: "step",
+		Nodes: map[string]ir.Node{
+			"step": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step", To: "fail"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+	}
+
+	s := tmpStore(t)
+	exec := newStubExecutor()
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"value": "paid-for-output"}, nil
+	})
+	eng := New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "run-fail-node", nil)
+	if err == nil {
+		t.Fatal("expected a terminal error from the fail node, got nil")
+	}
+
+	r, loadErr := s.LoadRun(context.Background(), "run-fail-node")
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFailed {
+		t.Errorf("Status = %q, want failed (terminal, NOT failed_resumable)", r.Status)
+	}
+	if r.Checkpoint == nil {
+		t.Fatal("Checkpoint = nil after fail node, want preserved for rewind")
+	}
+	if r.Checkpoint.NodeID != "fail" {
+		t.Errorf("Checkpoint.NodeID = %q, want fail", r.Checkpoint.NodeID)
+	}
+	if got := r.Checkpoint.Outputs["step"]["value"]; got != "paid-for-output" {
+		t.Errorf("Checkpoint.Outputs[step].value = %v, want paid-for-output", got)
+	}
+}
+
 // sameJSON returns true when two JSON byte slices encode the same value
 // regardless of whitespace formatting (run.json round-trips through
 // MarshalIndent on disk).
