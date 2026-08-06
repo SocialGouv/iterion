@@ -48,7 +48,20 @@ This file supersedes the three partial coverage docs it reconciles:
 Pass 1 built this inventory and closed the highest-value CLI quick wins
 (`run --preset`, `run --max-*`, `secret`, `runs questions|answer`, `report`).
 Pass 2 closed the remaining CLI quick wins: `issue`, `diagram`, `skill`,
-`memory`, `run --recipe`.
+`memory`, `run --recipe`. Pass 3 closed the four CLI rows earlier passes had
+written off as needing a seam or a live model — **the `cli` family is now
+terminal end to end**. Each turned out to have a deterministic front door:
+
+- `run --model/--backend` — drive the REAL executor at fixtures whose
+  backend/model cannot resolve; the failure text quotes whichever value won
+  the resolution chain, offline.
+- `run --auto-resume` — the loop's only wait is the reset-aware
+  USAGE_LIMIT_BLOCKED delay, and the run's own retry policy clamps it, so a
+  1ms horizon removes the sleep without a clock seam.
+- `bench asymptote` — the command re-runs nothing; stub-driven runs of a
+  judge-in-a-loop fixture supply the exact events it parses.
+- `dispatch` — boot the daemon in-process on a loopback port, assert the
+  served surface, stop it with SIGTERM.
 
 Everything still `uncovered` is deliberate backlog for later scoped runs,
 family by family. What is left, and why it is not a quick win:
@@ -58,10 +71,6 @@ family by family. What is left, and why it is not a quick win:
   boot), which is its own scoped run.
 - **cloud** (3 rows) — `dlq`, `migrate-blobs`, `valkey-state` need a live
   Mongo/S3/Valkey backend or a fake that does not exist yet.
-- **cli** (3 rows) — `run --model/--backend` overrides are consumed inside
-  the real `ClawExecutor` (a stub cannot observe them); `--auto-resume`
-  needs an injectable clock to avoid a ≥15s sleep; `bench asymptote`
-  drives real runs.
 
 | ID | Feature | Family | Status | Tests | Notes |
 |---|---|---|---|---|---|
