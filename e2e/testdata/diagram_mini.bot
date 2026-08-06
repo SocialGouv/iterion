@@ -1,0 +1,48 @@
+## diagram_mini.bot — fixture for `iterion diagram`.
+##
+## Deliberately mixes the node kinds and edge forms whose rendering the
+## operator relies on: a conditional edge, a bounded loop edge, a data
+## mapping, a router fan-out, a tool node and a human gate. Never
+## executed — only compiled and rendered.
+
+vars:
+  attempts: int = 2
+
+schema verdict:
+  ok: bool
+  note: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: verdict
+
+router split:
+  mode: fan_out_all
+
+tool build:
+  command: "true"
+
+judge assess:
+  model: "claude-opus-4-7"
+  output: verdict
+  await: wait_all
+
+human sign_off:
+  output: verdict
+  interaction: human
+
+workflow diagram_mini:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  budget:
+    max_iterations: 10
+
+  survey -> split
+  split -> build
+  split -> assess with {note: "{{outputs.survey.note}}"}
+  build -> assess
+  assess -> survey when not ok as retry(3)
+  assess -> sign_off when ok
+  sign_off -> done
