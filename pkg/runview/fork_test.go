@@ -40,6 +40,15 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	parent.WorkflowHash = "hash-abc"
 	parent.Status = store.RunStatusCancelled
+	// The parent was dispatched from a board issue: the fork must carry
+	// the same source edge, or the pipeline card keeps pointing at the
+	// dead parent with no way to re-attach the live fork.
+	parent.Source = &store.RunSource{
+		Kind:            store.RunSourceKindDispatcher,
+		IssueID:         "native:issue-1",
+		IssueIdentifier: "issue-1",
+		IssueTitle:      "Ship it",
+	}
 	if err := st.SaveRun(context.Background(), parent); err != nil {
 		t.Fatalf("save parent: %v", err)
 	}
@@ -89,6 +98,15 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	if child.ParentRunID != parentID {
 		t.Errorf("child.ParentRunID = %q, want %q", child.ParentRunID, parentID)
+	}
+	if child.Source == nil {
+		t.Fatal("child.Source = nil, want inherited from the parent so the board card follows the fork")
+	}
+	if child.Source == parent.Source {
+		t.Error("child.Source aliases the parent's pointer, want an independent copy")
+	}
+	if child.Source.IssueID != "native:issue-1" || child.Source.Kind != store.RunSourceKindDispatcher {
+		t.Errorf("child.Source = %+v, want dispatcher source on native:issue-1", child.Source)
 	}
 	children, err := svc.ListChildren(context.Background(), parentID)
 	if err != nil {

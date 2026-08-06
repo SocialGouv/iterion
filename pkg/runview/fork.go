@@ -125,6 +125,16 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	}
 	child.ForkedFrom = parent.ID
 	child.ParentRunID = parent.ID
+	// A fork REPLACES the parent's future — it is the recovery path for a
+	// run that can no longer continue — so it inherits the originating
+	// Source (typically the board issue the parent was dispatched from).
+	// Without this the pipeline card keeps pointing at the dead parent
+	// forever, with no way to re-attach the live fork. Copy the struct:
+	// aliasing the parent's pointer would couple two persisted records.
+	if parent.Source != nil {
+		src := *parent.Source
+		child.Source = &src
+	}
 	child.ForkAnchor = &store.ForkAnchor{
 		NodeID:     spec.NodeID,
 		LoopIter:   turn.LoopIter,

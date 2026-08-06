@@ -387,7 +387,7 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 	// prefer a newer, non-terminal run sourced from this issue.
 	sourceCandidates := make([]*store.Run, 0, 1)
 	for _, run := range b.runs {
-		if run.Source != nil && run.Source.IssueID == issue.ID && pipelineParentRunID(run) == "" {
+		if run.Source != nil && run.Source.IssueID == issue.ID && pipelineCardEligible(run) {
 			sourceCandidates = append(sourceCandidates, run)
 		}
 	}
@@ -401,13 +401,33 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 		return sourceCandidates[len(sourceCandidates)-1]
 	}
 	for _, candidate := range sourceCandidates {
-		if current == nil || candidate.ID == current.ID || candidate.Status.IsTerminal() || !candidate.CreatedAt.After(baseline) {
+		if current == nil || candidate.ID == current.ID || !candidate.CreatedAt.After(baseline) {
+			continue
+		}
+		// A terminal candidate never supersedes the dispatcher's pointer —
+		// except a fork: it is the card's recovery path, and when it ends
+		// it IS the card's latest outcome. Nothing else ever updates the
+		// pointer for it (the dispatcher only knows its own attempts), so
+		// skipping it would pin the card on the dead parent forever.
+		if candidate.Status.IsTerminal() && candidate.ForkedFrom == "" {
 			continue
 		}
 		current = candidate
 		baseline = candidate.CreatedAt
 	}
 	return current
+}
+
+// pipelineCardEligible reports whether a run sourced from an issue may
+// become the card's current run. Child runs are excluded so fan-out
+// shards and subbot children don't pollute the card — they ADD to the
+// card's run. A fork is the opposite case: it REPLACES a run that can no
+// longer continue, so it stays eligible despite carrying a parent edge.
+func pipelineCardEligible(run *store.Run) bool {
+	if pipelineParentRunID(run) == "" {
+		return true
+	}
+	return run.ForkedFrom != ""
 }
 
 func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, current *store.Run) []PipelineBoardAttempt {
