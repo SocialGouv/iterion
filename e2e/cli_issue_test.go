@@ -179,11 +179,16 @@ func TestIssueCLILifecycleCreateMoveUpdateClose(t *testing.T) {
 
 	// --- show resolves a short prefix to the full card ---
 	{
+		// A partial id, the way an operator copies one off `issue list`.
+		// Keep enough of the uuid to stay unambiguous against the second
+		// card: the ids share the "native:" scheme prefix, so a truncation
+		// that keeps only a hex digit or two collides by chance.
+		prefix := idPrefix(t, card.ID, 8)
 		var buf bytes.Buffer
 		p := &cli.Printer{W: &buf, Format: cli.OutputJSON}
 		if err := cli.RunIssueShow(p, cli.IssueRefOptions{
 			IssueCommonOptions: common,
-			IDOrPrefix:         card.ID[:8],
+			IDOrPrefix:         prefix,
 		}); err != nil {
 			t.Fatalf("issue show by prefix: %v", err)
 		}
@@ -192,7 +197,7 @@ func TestIssueCLILifecycleCreateMoveUpdateClose(t *testing.T) {
 			t.Fatalf("decode shown issue: %v", err)
 		}
 		if shown.ID != card.ID {
-			t.Errorf("show %s resolved to %s, want %s", card.ID[:8], shown.ID, card.ID)
+			t.Errorf("show %s resolved to %s, want %s", prefix, shown.ID, card.ID)
 		}
 	}
 
@@ -301,6 +306,19 @@ func TestIssueCLILifecycleCreateMoveUpdateClose(t *testing.T) {
 			t.Errorf("audit trail for %s = %v, want %v in order", card.ID, seen, want)
 		}
 	}
+}
+
+// idPrefix truncates an issue id to its scheme plus n identifying
+// characters, and fails the test if that is not a STRICT prefix — a
+// "prefix" equal to the full id would silently stop exercising
+// Store.Resolve's prefix path.
+func idPrefix(t *testing.T, id string, n int) string {
+	t.Helper()
+	scheme := strings.Index(id, ":") + 1
+	if scheme <= 0 || len(id) <= scheme+n {
+		t.Fatalf("issue id %q is too short to truncate to a %d-char prefix", id, n)
+	}
+	return id[:scheme+n]
 }
 
 func hasLabel(labels []string, want string) bool {
