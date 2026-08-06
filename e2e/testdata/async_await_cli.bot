@@ -1,0 +1,42 @@
+## async_await_cli.bot — same shape as async_await_mini.bot (a parked
+## await_answers gate beside a free-running sibling branch) but with a
+## timeout wide enough for the CROSS-PROCESS release path: the answer is
+## written by `iterion runs answer` (no in-process doorbell), so the gate
+## only learns about it on its next level-poll of the interaction store.
+
+schema num:
+  n: int
+
+compute prep:
+  output: num
+  expr:
+    n: "21 + 21"
+
+router fork:
+  mode: fan_out_all
+
+compute side:
+  output: num
+  expr:
+    n: "outputs.prep.n"
+
+await_answers gate:
+  timeout: "90s"
+
+compute gather:
+  await: wait_all
+  output: num
+  publish: gathered
+  expr:
+    n: "outputs.side.n"
+
+workflow async_await_cli:
+  budget:
+    max_parallel_branches: 4
+  entry: prep
+  prep -> fork
+  fork -> side
+  fork -> gate
+  side -> gather
+  gate -> gather
+  gather -> done
