@@ -20,10 +20,12 @@ import (
 // the sweep's contract against a real filesystem board.
 
 // fakeSweepRunStore serves LoadRun from a map; everything else is unreachable
-// in these tests (nil via the embedded interface).
+// in these tests (nil via the embedded interface). listCalls counts the full
+// store scans — the sweep's contract is that an idle board pays none.
 type fakeSweepRunStore struct {
 	store.RunStore
-	runs map[string]*store.Run
+	runs      map[string]*store.Run
+	listCalls int
 }
 
 func (f *fakeSweepRunStore) LoadRun(_ context.Context, id string) (*store.Run, error) {
@@ -34,12 +36,11 @@ func (f *fakeSweepRunStore) LoadRun(_ context.Context, id string) (*store.Run, e
 	return r, nil
 }
 
-func (f *fakeSweepRunStore) ListRunsBySourceIssue(_ context.Context, issueID string) ([]string, error) {
-	var ids []string
-	for id, r := range f.runs {
-		if r.Source != nil && r.Source.IssueID == issueID {
-			ids = append(ids, id)
-		}
+func (f *fakeSweepRunStore) ListRuns(_ context.Context) ([]string, error) {
+	f.listCalls++
+	ids := make([]string, 0, len(f.runs))
+	for id := range f.runs {
+		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -229,5 +230,56 @@ func TestReconcileFinishedTickets_ParkedForkAloneDoesNotFile(t *testing.T) {
 	got, _ := board.Get(iss.ID)
 	if got.State != native.StateInProgress {
 		t.Fatalf("ticket state = %q, want in_progress (a parked fork delivered nothing)", got.State)
+	}
+}
+
+// The fork index is only built when a ticket is actually stuck on a
+// terminal pointer — an idle or in-flight board must not pay a full
+// store scan per admission tick (Rc2c8ed: K stuck tickets × one scan
+// per 2s tick, forever, on an IDLE board).
+func TestReconcileFinishedTickets_NoStuckTicketSkipsTheScan(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, _ := board.Create(native.Issue{Title: "epic", State: native.StateInProgress, Bot: "town-dev"})
+	if err := board.SetLastRun(iss.ID, "run-live", ""); err != nil {
+		t.Fatal(err)
+	}
+	rs := &fakeSweepRunStore{runs: map[string]*store.Run{
+		"run-live": {ID: "run-live", Status: store.RunStatusRunning},
+	}}
+
+	issues, _ := board.List(native.ListFilter{})
+	newSweepTestServer().reconcileFinishedTickets(context.Background(), board, rs, issues)
+	if rs.listCalls != 0 {
+		t.Errorf("ListRuns called %d times with no stuck ticket, want 0 (idle board pays no scan)", rs.listCalls)
+	}
+}
+
+// Two sweeps within the TTL share one index build, even with a stuck
+// ticket present.
+func TestReconcileFinishedTickets_ForkIndexIsMemoized(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, _ := board.Create(native.Issue{Title: "epic", State: native.StateInProgress, Bot: "town-dev"})
+	if err := board.SetLastRun(iss.ID, "run-parent", ""); err != nil {
+		t.Fatal(err)
+	}
+	rs := &fakeSweepRunStore{runs: map[string]*store.Run{
+		"run-parent": {
+			ID: "run-parent", Status: store.RunStatusFailed, CreatedAt: time.Now().Add(-time.Hour),
+			Source: &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: iss.ID},
+		},
+	}}
+
+	issues, _ := board.List(native.ListFilter{})
+	srv := newSweepTestServer()
+	srv.reconcileFinishedTickets(context.Background(), board, rs, issues)
+	srv.reconcileFinishedTickets(context.Background(), board, rs, issues)
+	if rs.listCalls != 1 {
+		t.Errorf("ListRuns called %d times over 2 sweeps, want 1 (index memoized within the TTL)", rs.listCalls)
 	}
 }

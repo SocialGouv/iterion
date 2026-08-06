@@ -1694,3 +1694,30 @@ func TestPipelineBoardPendingReviewLaterTurnWithoutInstructionsBlanks(t *testing
 		t.Fatalf("instructions = %q, want empty: the current turn carries none", got)
 	}
 }
+
+// With the parent's record gone (pruned/deleted), the current==nil early
+// return must apply the same shell gate: a never-resumed fork is not the
+// card's outcome.
+func TestPipelineBoardParkedForkWithoutParentRecord(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Dispatch me", Bot: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pointer names a run record the store no longer serves.
+	if err := env.board.SetLastRun(issue.ID, "run-gone", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	env.seedRun(t, "run-fork", "review", store.RunStatusCancelled, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Source = &store.RunSource{IssueID: issue.ID}
+		run.ForkedFrom = "run-gone"
+		run.ParentRunID = "run-gone"
+		// No FinishedAt: created by Fork() and never resumed.
+	})
+
+	projection := env.projection(t)
+	if hasPipelineCard(projection.Cards, "run:run-fork") {
+		t.Error("a parked fork shell must not become the card root even when the parent's record is gone")
+	}
+}

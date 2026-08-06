@@ -324,6 +324,17 @@ func pipelineTicketHoldsSlot(issue *native.Issue, root *store.Run, terminalState
 	if _, terminal := terminalStates[issue.State]; terminal {
 		return false
 	}
+	// A recovery fork EXECUTING for the ticket occupies the slot its dead
+	// parent held: forks start via Service.Resume, which never touches
+	// pipelineQueue, so nothing else accounts for them — without this the
+	// ticket reads 0 active + 0 reserved while the fork runs, and the
+	// admission loop over-admits past max-concurrent-pipelines. A
+	// terminal fork is out of the race: a parked shell never becomes the
+	// root (FinishedAt-gated in the projection) and a finished one
+	// closed the card.
+	if root.ForkedFrom != "" && !root.Status.IsTerminal() {
+		return true
+	}
 	if root.Status != store.RunStatusFailed && root.Status != store.RunStatusFailedResumable {
 		return false
 	}

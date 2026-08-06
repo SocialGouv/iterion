@@ -398,7 +398,15 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 		return sourceCandidates[i].CreatedAt.Before(sourceCandidates[j].CreatedAt)
 	})
 	if current == nil && len(sourceCandidates) > 0 {
-		return sourceCandidates[len(sourceCandidates)-1]
+		// The same shell gate as the loop below: with the parent's record
+		// gone (pruned/deleted) a never-resumed fork would otherwise
+		// become the card root unconditionally.
+		for i := len(sourceCandidates) - 1; i >= 0; i-- {
+			if !pipelineForkShell(sourceCandidates[i]) {
+				return sourceCandidates[i]
+			}
+		}
+		return nil
 	}
 	for _, candidate := range sourceCandidates {
 		if current == nil || candidate.ID == current.ID || !candidate.CreatedAt.After(baseline) {
@@ -439,6 +447,16 @@ func pipelineCardEligible(run *store.Run) bool {
 		return true
 	}
 	return run.ForkedFrom != ""
+}
+
+// pipelineForkShell reports a run that is a fork in name only so far:
+// created (and terminal-parked as `cancelled`) but never executed.
+// Fork()'s initial SaveRun stamps no FinishedAt; only a real status
+// transition (applyStatusTransition) does, so FinishedAt is what
+// discriminates the parked shell from a fork that actually ran and
+// ended.
+func pipelineForkShell(run *store.Run) bool {
+	return run.ForkedFrom != "" && run.Status.IsTerminal() && run.FinishedAt == nil
 }
 
 func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, current *store.Run) []PipelineBoardAttempt {
