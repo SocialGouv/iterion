@@ -30,7 +30,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
-	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -134,7 +133,7 @@ type Server struct {
 	credPoolLedger    credpool.Ledger
 	auditStore        audit.Store
 	pats              pat.Store
-	queue             *natsq.Conn
+	queue             QueueBackend
 	botBindings       secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
