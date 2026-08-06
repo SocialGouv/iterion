@@ -13,11 +13,13 @@ import (
 // endyState models the e2e-coverage (Endy) v2 campaign: ONE adaptive agent
 // inventories features into the committed matrix and closes gaps in stride;
 // the deterministic gate re-runs the suite AND enforces the matrix contract.
-// The stub drives the TWO properties the control flow depends on: the
+// The stub drives the properties the control flow depends on: the
 // campaign's coverage_complete claim and the gate's (passed, matrix_ok,
-// uncovered_rows) verdict — convergence additionally applies the scope rule
-// (a whole-app run demands zero uncovered rows; a scoped run trusts
-// scope-level completion).
+// uncovered_rows, scoped) verdict — convergence applies the scope rule (a
+// whole-app run demands zero uncovered rows; a scoped run trusts
+// scope-level completion). `scoped` is the GATE's verdict, not the raw
+// var: it is computed there on the trimmed target so a whitespace-only
+// target cannot pass for a scope.
 type endyState struct {
 	// completeBy: the campaign reports coverage_complete=true on/after this
 	// pass (1-based).
@@ -25,9 +27,11 @@ type endyState struct {
 	// uncoveredByPass returns the gate's uncovered_rows for a given verify
 	// pass (1-based); nil = always 0.
 	uncoveredByPass func(pass int) int
-	pass            int
-	verifyPass      int
-	failLogsSeen    []string
+	// scoped mirrors what the real gate computes from a non-blank target.
+	scoped       bool
+	pass         int
+	verifyPass   int
+	failLogsSeen []string
 }
 
 // stubEndyCampaign registers the baseline stubs for a green continuation:
@@ -68,7 +72,7 @@ func stubEndyCampaign(exec *scenarioExecutor, st *endyState) {
 		}
 		return map[string]any{
 			"passed": true, "skipped": false, "matrix_ok": true,
-			"matrix_rows": 12, "uncovered_rows": uncovered,
+			"matrix_rows": 12, "uncovered_rows": uncovered, "scoped": st.scoped,
 			"new_test_code": true, "exit_code": 0, "log_tail": "", "_tokens": 1,
 		}, nil
 	})
@@ -162,6 +166,7 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 	exec := newScenarioExecutor()
 	st := &endyState{
 		completeBy:      1,
+		scoped:          true,                       // the gate saw a real (non-blank) target
 		uncoveredByPass: func(int) int { return 7 }, // out-of-scope backlog
 	}
 	stubEndyCampaign(exec, st)
@@ -184,6 +189,37 @@ func TestE2ECoverage_ScopedRunConvergesWithUncoveredRows(t *testing.T) {
 	}
 }
 
+// TestE2ECoverage_BlankTargetIsNotAScope pins the workflow half of the
+// scope rule: the gate — not the raw var — decides whether a run is
+// scoped, so a target that is only whitespace behaves like a whole-app
+// run and cannot converge while uncovered rows remain. (The trimming
+// itself is proven at the gate in bots/e2e_coverage_matrix_gate_test.go.)
+func TestE2ECoverage_BlankTargetIsNotAScope(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "e2e-coverage/main.bot")
+	exec := newScenarioExecutor()
+	st := &endyState{
+		completeBy: 1,
+		scoped:     false, // what the gate computes from a blank target
+		uncoveredByPass: func(pass int) int {
+			if pass == 1 {
+				return 4
+			}
+			return 0
+		},
+	}
+	stubEndyCampaign(exec, st)
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	inputs := map[string]any{"target": "   "}
+	if err := eng.Run(context.Background(), "run-endy-blank", inputs); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (a whitespace-only target is no scope: uncovered rows must still force a pass)", got)
+	}
+}
+
 // TestE2ECoverage_MatrixProblemsRouteBackToCampaign pins the claims floor:
 // a red matrix contract (e.g. an ORPHAN CLAIM — a covered row citing a test
 // that does not resolve) must route back to the campaign WITH the composed
@@ -200,7 +236,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 		if verifyCalls == 1 {
 			return map[string]any{
 				"passed": true, "skipped": false, "matrix_ok": false,
-				"matrix_rows": 12, "uncovered_rows": 0, "new_test_code": true,
+				"matrix_rows": 12, "uncovered_rows": 0, "scoped": false, "new_test_code": true,
 				"exit_code": 0,
 				"log_tail":  "[gate] MATRIX PROBLEMS (1):\nruntime.resume: ORPHAN CLAIM -- none of the cited tests resolve in the tree: TestGhost (e2e/ghost_test.go)",
 				"_tokens":   1,
@@ -208,7 +244,7 @@ func TestE2ECoverage_MatrixProblemsRouteBackToCampaign(t *testing.T) {
 		}
 		return map[string]any{
 			"passed": true, "skipped": false, "matrix_ok": true,
-			"matrix_rows": 12, "uncovered_rows": 0, "new_test_code": true,
+			"matrix_rows": 12, "uncovered_rows": 0, "scoped": false, "new_test_code": true,
 			"exit_code": 0, "log_tail": "", "_tokens": 1,
 		}, nil
 	})
@@ -247,13 +283,13 @@ func TestE2ECoverage_RedSuiteRoutesBackWithFailLog(t *testing.T) {
 		if verifyCalls == 1 {
 			return map[string]any{
 				"passed": false, "skipped": false, "matrix_ok": true,
-				"matrix_rows": 12, "uncovered_rows": 0, "new_test_code": true,
+				"matrix_rows": 12, "uncovered_rows": 0, "scoped": false, "new_test_code": true,
 				"exit_code": 1, "log_tail": "stub suite failure: TestResume red", "_tokens": 1,
 			}, nil
 		}
 		return map[string]any{
 			"passed": true, "skipped": false, "matrix_ok": true,
-			"matrix_rows": 12, "uncovered_rows": 0, "new_test_code": true,
+			"matrix_rows": 12, "uncovered_rows": 0, "scoped": false, "new_test_code": true,
 			"exit_code": 0, "log_tail": "", "_tokens": 1,
 		}, nil
 	})
