@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -30,6 +32,17 @@ func (f *fakeSweepRunStore) LoadRun(_ context.Context, id string) (*store.Run, e
 		return nil, fmt.Errorf("run %s not found", id)
 	}
 	return r, nil
+}
+
+func (f *fakeSweepRunStore) ListRunsBySourceIssue(_ context.Context, issueID string) ([]string, error) {
+	var ids []string
+	for id, r := range f.runs {
+		if r.Source != nil && r.Source.IssueID == issueID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 func newSweepTestServer() *Server {
@@ -124,5 +137,97 @@ func TestReconcileFinishedTickets_SkipsUnlinkedAndMissingRuns(t *testing.T) {
 		if got.State != native.StateInProgress {
 			t.Fatalf("ticket %s state = %q, want in_progress (best-effort skip)", id, got.State)
 		}
+	}
+}
+
+// A dispatcher run that fails and is recovered via fork: the fork never
+// becomes LastRunID on its own, so without the adoption the ticket would
+// strand in in_progress (dependents parked in waiting_deps) while the
+// card already reads Closed. The sweep must adopt the newest fork that
+// ACTUALLY finished — a parked, never-resumed fork (cancelled, no
+// FinishedAt) has delivered nothing and must not qualify.
+func TestReconcileFinishedTickets_AdoptsFinishedFork(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, _ := board.Create(native.Issue{Title: "epic", State: native.StateInProgress, Bot: "town-dev"})
+	dependent, _ := board.Create(native.Issue{
+		Title: "next epic", State: native.StateWaitingDeps, Bot: "town-dev",
+		Blockers: []string{blocker.ID},
+	})
+	if err := board.SetLastRun(blocker.ID, "run-parent", ""); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(50 * time.Minute)
+	rs := &fakeSweepRunStore{runs: map[string]*store.Run{
+		"run-parent": {
+			ID: "run-parent", Status: store.RunStatusFailed, CreatedAt: older,
+			Source: &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: blocker.ID},
+		},
+		"run-fork": {
+			ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(30 * time.Minute),
+			FinishedAt: &ended, ForkedFrom: "run-parent",
+			Source: &store.RunSource{IssueID: blocker.ID},
+		},
+		// Newer but parked: cancelled via Fork()'s initial SaveRun, no
+		// FinishedAt — must not win over the fork that really finished.
+		"run-fork-parked": {
+			ID: "run-fork-parked", Status: store.RunStatusCancelled, CreatedAt: older.Add(40 * time.Minute),
+			ForkedFrom: "run-fork",
+			Source:     &store.RunSource{IssueID: blocker.ID},
+		},
+	}}
+
+	issues, err := board.List(native.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSweepTestServer().reconcileFinishedTickets(context.Background(), board, rs, issues)
+
+	got, _ := board.Get(blocker.ID)
+	if got.State != native.StateDone {
+		t.Fatalf("ticket state = %q, want done (the finished fork is the card's outcome)", got.State)
+	}
+	if got.LastRunID != "run-fork" {
+		t.Errorf("LastRunID = %q, want run-fork adopted as the current attempt", got.LastRunID)
+	}
+	dep, _ := board.Get(dependent.ID)
+	if dep.State != native.StateBacklog {
+		t.Fatalf("dependent state = %q, want backlog (auto-promoted)", dep.State)
+	}
+}
+
+// The parked-fork-only case: nothing actually finished, so the ticket
+// stays with the operator.
+func TestReconcileFinishedTickets_ParkedForkAloneDoesNotFile(t *testing.T) {
+	board, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, _ := board.Create(native.Issue{Title: "epic", State: native.StateInProgress, Bot: "town-dev"})
+	if err := board.SetLastRun(iss.ID, "run-parent", ""); err != nil {
+		t.Fatal(err)
+	}
+	older := time.Now().Add(-time.Hour)
+	rs := &fakeSweepRunStore{runs: map[string]*store.Run{
+		"run-parent": {
+			ID: "run-parent", Status: store.RunStatusFailed, CreatedAt: older,
+			Source: &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: iss.ID},
+		},
+		"run-fork-parked": {
+			ID: "run-fork-parked", Status: store.RunStatusCancelled, CreatedAt: older.Add(30 * time.Minute),
+			ForkedFrom: "run-parent",
+			Source:     &store.RunSource{IssueID: iss.ID},
+		},
+	}}
+
+	issues, _ := board.List(native.ListFilter{})
+	newSweepTestServer().reconcileFinishedTickets(context.Background(), board, rs, issues)
+
+	got, _ := board.Get(iss.ID)
+	if got.State != native.StateInProgress {
+		t.Fatalf("ticket state = %q, want in_progress (a parked fork delivered nothing)", got.State)
 	}
 }

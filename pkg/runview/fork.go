@@ -131,14 +131,19 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// from). Without this the pipeline card keeps pointing at the dead
 	// parent forever, with no way to re-attach the live fork.
 	//
-	// Only the issue fields travel. ScheduleID/ScheduleName are
-	// deliberately dropped: the schedgate overlap gate queries ScheduleID
-	// (ListRunsBySchedule), so a live recovery fork would otherwise
-	// silently skip every subsequent tick of its schedule (overlap: skip,
-	// the default) — or be cancelled by it (overlap: supersede).
-	if parent.Source != nil {
+	// Only the issue fields travel, and only when there IS an issue:
+	//   - Kind is the parent's TRIGGER classification, not provenance —
+	//     carrying it would make deriveSourceKind report the fork as
+	//     "dispatcher"/"schedule" instead of "fork" (the board-launch
+	//     path deliberately leaves it empty for the same reason, see
+	//     pkg/server/pipeline_admission.go);
+	//   - ScheduleID/ScheduleName feed the schedgate overlap gate
+	//     (ListRunsBySchedule), so a live recovery fork would otherwise
+	//     silently skip every subsequent tick of its schedule
+	//     (overlap: skip, the default) — or be cancelled by it
+	//     (overlap: supersede).
+	if parent.Source != nil && parent.Source.IssueID != "" {
 		child.Source = &store.RunSource{
-			Kind:            parent.Source.Kind,
 			IssueID:         parent.Source.IssueID,
 			IssueIdentifier: parent.Source.IssueIdentifier,
 			IssueTitle:      parent.Source.IssueTitle,

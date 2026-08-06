@@ -219,7 +219,26 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 			continue
 		}
 		if r.Status != store.RunStatusFinished {
-			continue
+			// The pointer may have been superseded by a recovery fork: a
+			// fork never becomes LastRunID on its own (the dispatcher only
+			// stamps its own attempts), so a finished one would strand the
+			// ticket in in_progress forever — the card reads Closed while
+			// every dependent parks in waiting_deps. Only look when the
+			// pointer's run is TERMINAL: a live one is still the attempt.
+			if !r.Status.IsTerminal() {
+				continue
+			}
+			fork := newestFinishedIssueFork(ctx, rs, iss, r)
+			if fork == nil {
+				continue
+			}
+			// Adopt the fork as the current attempt so the pointer
+			// converges with what the card already shows.
+			if err := board.SetLastRun(iss.ID, fork.ID, ""); err != nil {
+				s.logger.Warn("pipeline admission: adopt finished fork %s for ticket %s: %v", fork.ID, iss.ID, err)
+				continue
+			}
+			r = fork
 		}
 		if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
 			s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, iss.LastRunID, err)
@@ -227,6 +246,37 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 		}
 		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, iss.LastRunID)
 	}
+}
+
+// newestFinishedIssueFork returns the newest fork (ForkedFrom != "")
+// sourced from the issue that actually ran to completion — the card's
+// real outcome when the dispatcher's own pointer failed. FinishedAt must
+// be set: Fork() parks every child as cancelled via SaveRun without it,
+// and a parked shell has delivered nothing. Forks older than the run the
+// pointer names belong to a previous attempt chain and are ignored.
+// Returns nil when no such run exists.
+func newestFinishedIssueFork(ctx context.Context, rs store.RunStore, iss *native.Issue, current *store.Run) *store.Run {
+	ids, err := rs.ListRunsBySourceIssue(ctx, iss.ID)
+	if err != nil {
+		return nil
+	}
+	var best *store.Run
+	for _, id := range ids {
+		r, err := rs.LoadRun(ctx, id)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.ForkedFrom == "" || r.Status != store.RunStatusFinished || r.FinishedAt == nil {
+			continue
+		}
+		if !r.CreatedAt.After(current.CreatedAt) {
+			continue
+		}
+		if best == nil || r.CreatedAt.After(best.CreatedAt) {
+			best = r
+		}
+	}
+	return best
 }
 
 // warnAdmissionSkipOnce logs a ready ticket whose bot the current catalog

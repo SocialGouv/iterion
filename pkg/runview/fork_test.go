@@ -108,15 +108,26 @@ func TestFork_HappyPath(t *testing.T) {
 	if child.Source == nil {
 		t.Fatal("child.Source = nil, want inherited from the parent so the board card follows the fork")
 	}
-	if child.Source == parent.Source {
-		t.Error("child.Source aliases the parent's pointer, want an independent copy")
+	if child.Source.IssueID != "native:issue-1" {
+		t.Errorf("child.Source = %+v, want issue provenance on native:issue-1", child.Source)
 	}
-	if child.Source.IssueID != "native:issue-1" || child.Source.Kind != store.RunSourceKindDispatcher {
-		t.Errorf("child.Source = %+v, want dispatcher source on native:issue-1", child.Source)
+	if child.Source.Kind != "" {
+		t.Errorf("child.Source.Kind = %q, want empty — Kind is the parent's trigger classification; the fork's own is \"fork\" via ForkedFrom", child.Source.Kind)
 	}
 	if child.Source.ScheduleID != "" || child.Source.ScheduleName != "" {
 		t.Errorf("child.Source inherited the schedule identity (%q/%q) — the schedgate overlap gate must not see the fork",
 			child.Source.ScheduleID, child.Source.ScheduleName)
+	}
+	// The parent's own record must survive the inheritance untouched.
+	// Comparing pointers here could never fail — Fork loads its own copy
+	// of the parent from the store — so re-read the persisted parent.
+	parentAfter, err := st.LoadRun(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("reload parent: %v", err)
+	}
+	if parentAfter.Source == nil || parentAfter.Source.Kind != store.RunSourceKindDispatcher ||
+		parentAfter.Source.IssueID != "native:issue-1" || parentAfter.Source.ScheduleID != "nightly" {
+		t.Errorf("parent.Source = %+v, want the parent's own source left intact", parentAfter.Source)
 	}
 	children, err := svc.ListChildren(context.Background(), parentID)
 	if err != nil {
@@ -198,5 +209,61 @@ func TestFork_LatestTurn(t *testing.T) {
 	}
 	if result.ForkAnchor.TurnIndex != 2 {
 		t.Errorf("latest turn anchor = %d, want 2", result.ForkAnchor.TurnIndex)
+	}
+}
+
+// TestFork_IssueLessParentMintsNoSource: a parent whose Source carries no
+// IssueID (e.g. schedule-launched: Kind + ScheduleID only) gives the fork
+// NO Source at all. Inheriting a Kind-only shell would relabel the fork
+// as a scheduled run — provenance it does not have — and buy nothing for
+// the board fix, which keys on IssueID alone.
+func TestFork_IssueLessParentMintsNoSource(t *testing.T) {
+	dir := t.TempDir()
+	logger := iterlog.Nop()
+	st, err := store.New(dir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	parentID := "run-fork-sched"
+	if _, err := st.CreateRun(context.Background(), parentID, "wf", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	parent, _ := st.LoadRun(context.Background(), parentID)
+	parent.Checkpoint = &store.Checkpoint{NodeID: "nodeA", Outputs: map[string]map[string]any{}}
+	parent.Status = store.RunStatusCancelled
+	parent.Source = &store.RunSource{
+		Kind:         store.RunSourceKindSchedule,
+		ScheduleID:   "nightly",
+		ScheduleName: "Nightly",
+	}
+	if err := st.SaveRun(context.Background(), parent); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := st.WriteTurn(context.Background(), &store.TurnCheckpoint{
+		RunID:     parentID,
+		NodeID:    "nodeA",
+		Backend:   "claw",
+		WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("write turn: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	result, err := svc.Fork(context.Background(), ForkSpec{
+		RunID:     parentID,
+		NodeID:    "nodeA",
+		TurnIndex: -1,
+	})
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	child, err := st.LoadRun(context.Background(), result.NewRunID)
+	if err != nil {
+		t.Fatalf("load child: %v", err)
+	}
+	if child.Source != nil {
+		t.Errorf("child.Source = %+v, want nil for an issue-less parent (no phantom schedule provenance)", child.Source)
 	}
 }
