@@ -61,6 +61,7 @@ first bilan for a bot lands.
 | Billy | `branch-improve-loop` | branch-scoped review-fix loop (commits) | [branch-improve-loop.md](branch-improve-loop.md) |
 | Featurly | `feature-dev` | one-shot feature dev + review loop | [feature-dev.md](feature-dev.md) |
 | Testy | `test-coverage` | test-coverage augmentation + anti-façade review loop | [test-coverage.md](test-coverage.md) |
+| Endy | `e2e-coverage` | matrix-anchored e2e coverage completion (claims-verified gate) | [e2e-coverage.md](e2e-coverage.md) |
 | Doki | `docs-refresh` | docs↔code convergence loop | [docs-refresh.md](docs-refresh.md) |
 | Wikky | `wiki-gen` | navigable OKF wiki generator/maintainer | [wiki-gen.md](wiki-gen.md) |
 | Revi | `review-pr` | read-only reviewer (mono default; cross-family dual opt-in) | [review-pr.md](review-pr.md) |
