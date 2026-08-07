@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -676,6 +678,37 @@ func TestRecoverFinalize_SkipsNonWorktree(t *testing.T) {
 	}
 	if r.FinalCommit != "" || r.FinalBranch != "" {
 		t.Errorf("non-worktree path mutated state: %+v", r)
+	}
+}
+
+// TestRecoverFinalize_GoneWorktreeIsQuiet — a terminal run whose
+// worktree was removed (operator cleanup, `git worktree remove`, store
+// GC) has nothing left to promote, and that state is permanent: the
+// reconcile loop scans it on every tick, so the recovery must skip it
+// SILENTLY instead of re-logging "cannot read worktree HEAD" every
+// minute per deleted worktree.
+func TestRecoverFinalize_GoneWorktreeIsQuiet(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	r := &store.Run{
+		ID:       "run_gone_wt",
+		Status:   store.RunStatusFinished,
+		Worktree: true,
+		WorkDir:  filepath.Join(t.TempDir(), "removed"),
+		RepoRoot: t.TempDir(),
+	}
+	var buf bytes.Buffer
+	logger := iterlog.New(iterlog.LevelDebug, &buf)
+	// Three ticks, as the reconcile loop would do.
+	for i := 0; i < 3; i++ {
+		if err := RecoverFinalize(context.Background(), st, r, logger); err != nil {
+			t.Fatalf("gone-worktree path errored on tick %d: %v", i, err)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Errorf("gone worktree logged over repeated ticks, want silence; got:\n%s", buf.String())
+	}
+	if r.FinalCommit != "" || r.FinalBranch != "" {
+		t.Errorf("gone-worktree path mutated state: %+v", r)
 	}
 }
 

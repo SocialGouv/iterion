@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -105,9 +106,7 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 		r, err := s.store.LoadRun(ctx, id)
 		if err != nil {
 			// A single corrupt run.json shouldn't break the whole listing.
-			if s.logger != nil {
-				s.logger.Warn("runview: skip run %s: %v", id, err)
-			}
+			s.logSkippedRun(id, err)
 			continue
 		}
 		if !matchesFilter(r, f) {
@@ -128,6 +127,53 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 		out = out[:f.Limit]
 	}
 	return out, nil
+}
+
+// skipWarnRelogAfter bounds how often the same unreadable run is
+// re-reported. A memoise-forever Warn would silence a genuinely corrupt
+// document forever after ONE transient blip (mongo server-selection,
+// EMFILE/EACCES) marked its id; re-logging on an interval keeps the
+// diagnostic alive without letting a UI poll loop flood the log.
+const skipWarnRelogAfter = 10 * time.Minute
+
+// logSkippedRun reports a run id the listing had to skip, deduplicated
+// per (id, category). ListRuns keeps returning ids whose document is
+// gone (manual deletion, partial purge, migration), so without dedup
+// every UI poll re-logs the same line: several WARN lines per second,
+// indefinitely, drowning the instance log.
+//
+// A missing document (ErrRunNotFound) is a stale index entry, not a
+// corrupt run: Debug, once — it cannot heal without the id leaving the
+// listing anyway. Only an unreadable document rates a Warn, at most
+// once per skipWarnRelogAfter.
+func (s *Service) logSkippedRun(id string, err error) {
+	if s.logger == nil {
+		return
+	}
+	if errors.Is(err, store.ErrRunNotFound) {
+		if _, dup := s.skipRunLogged.LoadOrStore("gone:"+id, struct{}{}); !dup {
+			s.logger.Debug("runview: skip run %s (stale index entry, logged once): %v", id, err)
+		}
+		return
+	}
+	// A context error means the CALLER went away (or a deadline blew),
+	// not that this document is unreadable — and the listing loop keeps
+	// iterating, so ONE cancelled request would mark every remaining id
+	// "corrupt" (the mongo store honours the caller's ctx; cloud mode is
+	// exactly where the log flood was observed). Report it without
+	// memoising.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		s.logger.Debug("runview: skip run %s (store call interrupted): %v", id, err)
+		return
+	}
+	key := "corrupt:" + id
+	if last, ok := s.skipRunLogged.Load(key); ok {
+		if ts, ok := last.(time.Time); ok && time.Since(ts) < skipWarnRelogAfter {
+			return
+		}
+	}
+	s.skipRunLogged.Store(key, time.Now())
+	s.logger.Warn("runview: skip run %s: %v", id, err)
 }
 
 // ListCtx is the tenant-aware variant of List: propagates the caller's
