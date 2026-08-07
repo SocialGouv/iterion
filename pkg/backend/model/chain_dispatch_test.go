@@ -134,6 +134,50 @@ func TestChainReusesTaskWithinOneBackend(t *testing.T) {
 	}
 }
 
+// TestChainKeepsResumeContinuityWithinOneBackend guards a regression the
+// chain machinery introduced on the SHIPPED `provider:` path: resume
+// continuity was cleared on every fall-through, backend change or not.
+// It is not a lost cache — the operator's answer to an ask_user pause
+// travels in ResumeAnswer, so a credential swap on the same backend
+// silently dropped the human's input and made the node re-ask and
+// re-pause. Continuity belongs to the backend that captured it: keep it
+// across a same-backend swap, drop it only when the route changes
+// backend (replaying one provider's turn into another re-sends a turn it
+// never issued).
+func TestChainKeepsResumeContinuityWithinOneBackend(t *testing.T) {
+	// A hard (non-retryable) error so each element executes exactly once
+	// and the recorded tasks map 1:1 onto the chain.
+	head := &backendScriptedBackend{name: delegate.BackendClaudeCode, fail: errors.New("exit status 1")}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+
+	build := e.newElementBuilder("review", delegate.BackendClaudeCode, head,
+		func(context.Context, string) (*delegate.Task, error) {
+			return &delegate.Task{
+				NodeID:                 "review",
+				Model:                  "claude-opus-5",
+				ResumeConversation:     []byte(`[{"role":"user"}]`),
+				ResumePendingToolUseID: "toolu_1",
+				ResumeAnswer:           "yes, ship it",
+			}, nil
+		})
+	_, _ = e.dispatchChain(context.Background(), "review",
+		[]chainElement{{Provider: "zai"}, {Provider: "anthropic"}}, "claude-opus-5", build)
+
+	if len(head.tasks) != 2 {
+		t.Fatalf("head got %d calls, want 2 (both provider elements)", len(head.tasks))
+	}
+	second := head.tasks[1]
+	if second.ResumeAnswer != "yes, ship it" || second.ResumePendingToolUseID != "toolu_1" || len(second.ResumeConversation) == 0 {
+		t.Errorf("same-backend fall-through dropped resume continuity (answer=%q toolUse=%q conv=%d bytes) — the operator's answer is gone and the node will re-ask",
+			second.ResumeAnswer, second.ResumePendingToolUseID, len(second.ResumeConversation))
+	}
+}
+
+// (The cross-backend half — a route that CHANGES backend must start
+// fresh — is covered by TestChainDropsResumeContinuityOnFallThrough.)
+
 // TestChainAccumulatesFailedElementSpend: a discarded element's tokens
 // and cost are real money. With a same-model credential swap the loss
 // was bounded; with a cross-backend element it can be a whole agentic

@@ -510,20 +510,16 @@ func (e *ClawExecutor) dispatchWithProviderFallback(
 	task *delegate.Task,
 ) (delegate.Result, error) {
 	chain = collapseHintOnlyChain(chain, backendName)
-	baseModel := task.Model
-	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel,
-		func(_ context.Context, _ int, el chainElement) (string, delegate.Backend, *delegate.Task, error) {
-			task.ProviderHint = el.Provider
-			// An element without its own model restores the node
-			// baseline, so a model-less element after a model-bearing one
-			// does NOT inherit the previous element's override.
-			if el.Model != "" {
-				task.Model = el.Model
-			} else {
-				task.Model = baseModel
-			}
-			return backendName, backend, task, nil
-		})
+	// Share newElementBuilder with the two production dispatch sites
+	// rather than inlining a second, subtly different builder: the two
+	// drifted once already (the fall-through resume-continuity rule
+	// existed in one and not the other), which let a regression on the
+	// shipped path stay green in the tests that cover this wrapper.
+	// A `provider:` chain is hint-only, so every element resolves to
+	// backendName and `assemble` hands back the prebuilt task once.
+	out, err := e.dispatchChain(ctx, nodeID, chain, task.Model,
+		e.newElementBuilder(nodeID, backendName, backend,
+			func(context.Context, string) (*delegate.Task, error) { return task, nil }))
 	return out.Result, err
 }
 
@@ -599,13 +595,14 @@ func (e *ClawExecutor) newElementBuilder(
 		} else {
 			task.Model = baseModels[bn]
 		}
-		if index > 0 {
-			// A fall-through starts a fresh conversation. The resume
-			// continuity applied at build time (the operator's answer,
-			// the pending tool_use, the prior messages) belongs to the
-			// element that paused; replaying it into another backend
-			// re-sends one provider's turn to a provider that never
-			// issued it.
+		// Resume continuity belongs to the node's OWN backend: it was
+		// captured by that backend at the pause. A fall-through that
+		// STAYS on it (a legacy `provider:` credential swap) must keep
+		// it — dropping the operator's answer makes the node re-ask and
+		// re-pause, losing the human's input rather than just a cache.
+		// Only a route that CHANGES backend starts fresh: replaying one
+		// provider's turn into another re-sends a turn it never issued.
+		if index > 0 && bn != baseBackendName {
 			task.ResumeConversation = nil
 			task.ResumePendingToolUseID = ""
 			task.ResumeAnswer = ""
