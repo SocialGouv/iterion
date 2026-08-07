@@ -735,7 +735,7 @@ type Task struct {
 	//
 	// This carries a SINGLE hint per Execute call. When the DSL declares
 	// an ordered fallback chain (`provider: "anthropic,zai,openai"`), the
-	// executor (dispatchWithProviderFallback) re-issues the task with the
+	// executor (dispatchChain) re-issues the task with the
 	// next hint here after a hard failure beyond the retry budget — the
 	// backend itself stays chain-unaware.
 	ProviderHint string

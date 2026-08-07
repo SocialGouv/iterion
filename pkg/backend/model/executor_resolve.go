@@ -296,7 +296,7 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) string {
 // A comma-separated value (`provider: "anthropic,zai,openai"`) yields
 // the ordered list: the executor tries each provider in turn, falling
 // through to the next on a hard failure beyond the retry budget (see
-// dispatchWithProviderFallback). This generalises the single-node
+// dispatchChain). This generalises the single-node
 // RESCUE_PROVIDER escape hatch into a declarative chain.
 //
 // Each element may pin its own model with a `provider:model` token

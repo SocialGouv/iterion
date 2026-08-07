@@ -211,7 +211,7 @@ func stampFallbackMeta(output map[string]any, out chainOutcome) {
 	}
 }
 
-// dispatchWithObservability wraps dispatchWithProviderFallback with the
+// dispatchWithObservability wraps dispatchChain with the
 // 3-hook lifecycle every agent/judge/LLM-router call paid by hand:
 // OnDelegateStarted fires before dispatch; on error, OnDelegateError
 // receives a DelegateInfo with the backend-reported name (or the
@@ -786,8 +786,8 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		CompactThresholdRatio: compactRatio,
 		CompactPreserveRecent: compactPreserve,
 		Sandbox:               e.sandbox,
-		// ProviderHint is set per-attempt by dispatchWithProviderFallback
-		// as it walks the node's provider chain.
+		// ProviderHint is set per-element by newElementBuilder as
+		// dispatchChain walks the node's route chain.
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
