@@ -111,7 +111,13 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	}
 
 	engOpts := []runtime.EngineOption{runtime.WithLogger(logger)}
-	if spec.withWorkDir {
+	if spec.withWorkDir || bnd != nil {
+		// A bundle IMPLIES the workspace: the engine mirrors the bundle's
+		// skills into <workDir>/.claude/skills at run start, so without
+		// WithWorkDir it writes them somewhere else entirely and the agent
+		// finds nothing — the feature looks broken when only the harness
+		// was. (Every test that seeds a workspace passes one; making the
+		// bundle case imply it removes the trap for the next author.)
 		engOpts = append(engOpts, runtime.WithWorkDir(spec.workspaceDir))
 	}
 	if bnd != nil {

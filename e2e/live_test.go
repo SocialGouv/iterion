@@ -105,6 +105,17 @@ func newLiveExecutor(t *testing.T, wf *ir.Workflow, s store.RunStore, runID, wor
 	if err := tool.RegisterClawBuiltins(toolReg, workDir); err != nil {
 		t.Fatalf("RegisterClawBuiltins: %v", err)
 	}
+	// `todo_write` is not optional here even though no fixture asks for it:
+	// the executor APPENDS it to every claw node that restricts `tools:`
+	// (executor_build_task.go — it keeps the run's Tasks tab populated), so
+	// a registry without it fails to resolve the node's own tool list and
+	// the run dies before its first turn. Production registers the full set
+	// via RegisterClawAll; this harness registered only the builtins, and
+	// that gap alone was enough to make a live test look like a broken
+	// feature.
+	if err := tool.RegisterClawTodo(toolReg); err != nil {
+		t.Fatalf("RegisterClawTodo: %v", err)
+	}
 	// Register ask_user with an auto-answer so claw-backed nodes that
 	// have interaction:human don't block the test waiting for a real
 	// human prompt. The default RegisterAskUser handler raises
