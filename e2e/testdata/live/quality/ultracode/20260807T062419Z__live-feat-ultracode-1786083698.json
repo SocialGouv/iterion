@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "feature",
+  "name": "ultracode",
+  "run_id": "live-feat-ultracode-1786083698",
+  "at": "2026-08-07T06:24:19.36802355Z",
+  "iterion_sha": "dc6a88896",
+  "task": "Run a claude-opus-4-8 implementer at reasoning_effort: ultracode to add a CHANGELOG entry.",
+  "metrics": {
+    "cost_usd": 1.032677,
+    "tokens": 5405,
+    "duration_ms": 105493,
+    "iterations": 2,
+    "model_calls": 1,
+    "retries": 0
+  },
+  "aggregate": {
+    "verdicts": [
+      {
+        "model": "anthropic/claude-sonnet-4-6",
+        "family": "anthropic",
+        "same_family_as_bot": true,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.15,
+          "restraint": 0.4,
+          "value_for_money": 0
+        },
+        "narrative": "The task was unambiguous: add a CHANGELOG entry. The repository ends at the same two seed commits it started with; no CHANGELOG file exists anywhere and no new commit was created. The diff (seed..HEAD) contains only seed-deposited boilerplate (go.mod, main.go), which pre-dates the agent's run entirely. The timeline reveals a tool_error early in execution — the agent apparently hit a wall, made additional calls, then exited cleanly with 'finished / no error', a misleading status given zero work was delivered. Restraint scores marginally above zero only because no existing files were corrupted. Reliability is slightly penalised below the previous run due to the visible tool_error, which the previous run's public signal did not surface. At $1.03 for a completely empty result, value-for-money is as poor as possible.",
+        "relative_vs_prev": {
+          "overall": "same"
+        },
+        "relative_narrative": "Both runs failed identically: the task was to add a CHANGELOG entry, and neither produced one. The current run cost $0.21 less and used ~300 fewer tokens, but marginal cost reduction on a zero-output run carries no weight. The tool_error surfaced in the timeline is a new signal suggesting the agent hit a concrete obstacle that the previous run may have handled differently internally, but the outcome — no CHANGELOG, no commit — is indistinguishable. 'Same' is the only defensible verdict.",
+        "confidence": 0.97
+      }
+    ],
+    "mean_scores": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.15,
+      "restraint": 0.4,
+      "value_for_money": 0
+    },
+    "disagreement": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0,
+      "restraint": 0,
+      "value_for_money": 0
+    },
+    "note": "judge openai/gpt-5.5 errored: openai: API error 401: Provided authentication token is expired. Please try signing in again."
+  },
+  "evidence_digest": "## git log (oneline)\n02b1b27 chore: seed live fixture\nd26b470 chore: seed repo\n\n## diff (seed..HEAD)\ndiff --git a/go.mod b/go.mod\nnew file mode 100644\nindex 0000000..e43176f\n--- /dev/null\n+++ b/go.mod\n@@ -0,0 +1,3 @@\n+module iterion-live-fixture\n+\n+go 1.25\ndiff --git a/main.go b/main.go\nnew file mode 100644\nindex 0000000..38dd16d\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,3 @@\n+package main\n+\n+func main() {}\n\n## untracked files\nmetrics.json\nreport.md",
+  "prev_run_id": "live-feat-ultracode-1786083185",
+  "comparison": {
+    "prev_run_id": "live-feat-ultracode-1786083185",
+    "overall_delta": 0,
+    "value_delta": 0,
+    "per_dimension": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": -0.05000000000000002,
+      "restraint": 0,
+      "value_for_money": 0
+    },
+    "verdict": "same"
+  }
+}

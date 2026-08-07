@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "feature",
+  "name": "ultracode",
+  "run_id": "live-feat-ultracode-1786083185",
+  "at": "2026-08-07T06:15:46.679481022Z",
+  "iterion_sha": "dc6a88896",
+  "task": "Run a claude-opus-4-8 implementer at reasoning_effort: ultracode to add a CHANGELOG entry.",
+  "metrics": {
+    "cost_usd": 1.24099,
+    "tokens": 5719,
+    "duration_ms": 100252,
+    "iterations": 2,
+    "model_calls": 1,
+    "retries": 0
+  },
+  "aggregate": {
+    "verdicts": [
+      {
+        "model": "anthropic/claude-sonnet-4-6",
+        "family": "anthropic",
+        "same_family_as_bot": true,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.2,
+          "restraint": 0.4,
+          "value_for_money": 0
+        },
+        "narrative": "The task was explicitly to add a CHANGELOG entry. Inspection of the full repository reveals no CHANGELOG file of any kind, no new commits beyond the two seed commits, and nothing in the diff (seed..HEAD) attributable to the task. The only disk artifacts are the harness's own metrics.json and report.md. The implementer ran for ~90 seconds and made six tool calls (visible in the timeline), yet the concrete work product is a null set. The 'finished / no error' status is misleading — clean termination is not the same as task completion. At $1.24 and 5,719 tokens for zero deliverables, value-for-money is as poor as possible. Restraint scores slightly above zero only because the agent did not corrupt existing files.",
+        "relative_narrative": "No previous assessment to compare against.",
+        "confidence": 0.97
+      }
+    ],
+    "mean_scores": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.2,
+      "restraint": 0.4,
+      "value_for_money": 0
+    },
+    "disagreement": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0,
+      "restraint": 0,
+      "value_for_money": 0
+    },
+    "note": "judge openai/gpt-5.5 errored: openai: API error 401: Provided authentication token is expired. Please try signing in again."
+  },
+  "evidence_digest": "## git log (oneline)\nf15ee16 chore: seed live fixture\ndb3be75 chore: seed repo\n\n## diff (seed..HEAD)\ndiff --git a/go.mod b/go.mod\nnew file mode 100644\nindex 0000000..e43176f\n--- /dev/null\n+++ b/go.mod\n@@ -0,0 +1,3 @@\n+module iterion-live-fixture\n+\n+go 1.25\ndiff --git a/main.go b/main.go\nnew file mode 100644\nindex 0000000..38dd16d\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,3 @@\n+package main\n+\n+func main() {}\n\n## untracked files\nmetrics.json\nreport.md"
+}
