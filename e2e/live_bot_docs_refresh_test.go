@@ -70,7 +70,11 @@ Call it with exactly three integers.
 
 	// Reliability invariants: the advisory scan + the campaign must fire,
 	// and the convergence gate must have been evaluated.
-	assertNodesFinished(t, res.events, "scan_hints", "campaign", "scope_check", "verify_run", "gate")
+	// No verify_run here: docs-refresh deliberately dropped the build-verify
+	// gate (a docs-only campaign cannot break the build) and converges on
+	// scope_ok AND docs_aligned alone. The assertion outlived the bot and was
+	// failing runs that had actually succeeded.
+	assertNodesFinished(t, res.events, "scan_hints", "campaign", "scope_check", "gate")
 
 	// The drift should be corrected: either a doc commit landed, or the
 	// campaign honestly reports the docs aligned (already-aligned repo).
