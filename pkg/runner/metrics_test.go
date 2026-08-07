@@ -354,3 +354,56 @@ func TestMetricsEmitter_cliDelegateCostIsStillCounted(t *testing.T) {
 		t.Errorf("cost = %v, want 0.42", cost)
 	}
 }
+
+// A delegation that FAILED still burned tokens, and with a fallback
+// chain (ADR-087) what it burned is the fold of every route that ran
+// before the chain was exhausted — possibly several whole agentic
+// sessions on several credentials. Metering only the success reported $0
+// for exactly the expensive case, to both consumers of RunTotals: the
+// org monthly cost cap and a lending donor's ledger.
+func TestMetricsEmitter_failedDelegationIsStillCounted(t *testing.T) {
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	_, _ = usage.AppendEvent(context.Background(), "run-3", store.Event{
+		Type: store.EventDelegateError, RunID: "run-3", NodeID: "n1",
+		Data: map[string]any{
+			"backend":  "claude_code",
+			"tokens":   float64(1200),
+			"cost_usd": 0.77,
+			"error":    "fallback chain exhausted",
+		},
+	})
+	cost, inTok, _ := usage.RunTotals()
+	if cost != 0.77 {
+		t.Errorf("cost = %v, want 0.77 — an exhausted chain's spend is invisible to the org cap and the donor ledger", cost)
+	}
+	if inTok != 1200 {
+		t.Errorf("tokens = %d, want 1200", inTok)
+	}
+}
+
+// The claw carve-out applies to the failure path identically: claw
+// prices each step via llm_step_finished, so charging its delegation
+// total as well would bill every claw run twice.
+func TestMetricsEmitter_failedClawDelegationIsNotDoubleCharged(t *testing.T) {
+	ctx := context.Background()
+	usage := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	_, _ = usage.AppendEvent(ctx, "run-4", store.Event{
+		Type: store.EventLLMRequest, RunID: "run-4", NodeID: "n1",
+		Data: map[string]any{"model": "claude-sonnet-4-6"},
+	})
+	_, _ = usage.AppendEvent(ctx, "run-4", store.Event{
+		Type: store.EventLLMStepFinished, RunID: "run-4", NodeID: "n1",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(500)},
+	})
+	perStep, _, _ := usage.RunTotals()
+	if perStep <= 0 {
+		t.Fatalf("the step itself priced to %v — the test cannot show a double count", perStep)
+	}
+	_, _ = usage.AppendEvent(ctx, "run-4", store.Event{
+		Type: store.EventDelegateError, RunID: "run-4", NodeID: "n1",
+		Data: map[string]any{"backend": "claw", "tokens": float64(1500), "cost_usd": perStep},
+	})
+	if total, _, _ := usage.RunTotals(); total != perStep {
+		t.Errorf("cost = %v after the failed claw delegation, want %v — claw was charged twice", total, perStep)
+	}
+}

@@ -783,8 +783,16 @@ func (e *ClawExecutor) dispatchChain(
 
 	// An exhausted chain still spent what its routes burned: fold the
 	// accumulation in here too, or a 3-route failure under-reports two
-	// whole agentic sessions to max_cost_usd, the org monthly cap and a
-	// lending donor's ledger.
+	// whole agentic sessions.
+	//
+	// Where it lands: the caller discards the Result on error (the node
+	// failed, so there is no output), but dispatchWithObservability first
+	// hands this folded Result to OnDelegateError — which is what carries
+	// the tokens and cost onto the `delegate_error` event, and from there
+	// into the org monthly cap and a lending donor's ledger. It does NOT
+	// reach the engine's per-node `max_cost_usd` accounting: that runs on
+	// a node's successful output, and a failed node has none. Widening
+	// that is an engine-side change, not a chain-side one.
 	result = spent.applyTo(result)
 	if len(chain) > 1 {
 		return chainOutcome{Result: result}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}

@@ -779,6 +779,15 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		"tokens":      info.Tokens,
 		"exit_code":   info.ExitCode,
 	}
+	// A failed delegation still SPENT — and with a fallback chain
+	// (ADR-087) what it spent is the fold of every route that burned
+	// before the chain ran out, which can be several whole agentic
+	// sessions. Emitting it under the same key as onDelegateFinished is
+	// what lets the runner's metrics emitter meter it; omitted when zero,
+	// so an observer still tells "no cost data" from a measured $0.
+	if info.CostUSD > 0 {
+		data["cost_usd"] = info.CostUSD
+	}
 	if info.Error != nil {
 		data["error"] = info.Error.Error()
 	}

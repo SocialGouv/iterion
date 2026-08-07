@@ -212,7 +212,16 @@ func (m *metricsEmitter) observe(evt store.Event) {
 			m.sawAuthFailure = true
 			m.mu.Unlock()
 		}
-	case store.EventDelegateFinished:
+	// EventDelegateError is metered exactly like EventDelegateFinished:
+	// a delegation that FAILED still burned tokens, and the two are
+	// mutually exclusive (the dispatch emits one or the other), so there
+	// is no double count. Metering only the success was survivable while
+	// a failed node meant one wasted call; a fallback chain (ADR-087)
+	// makes it several whole agentic sessions on possibly several
+	// credentials, and an exhausted chain is precisely the expensive
+	// case. Left unmetered it reports $0 to the org monthly cost cap and
+	// to a lending donor's ledger — the two consumers of RunTotals.
+	case store.EventDelegateFinished, store.EventDelegateError:
 		backend, _ := evt.Data["backend"].(string)
 		if backend == "" {
 			backend = "delegate"
