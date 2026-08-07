@@ -464,6 +464,12 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 	if opts.OnStepFinish != nil {
 		opts.OnStepFinish(stepResult)
 	}
+	// A structured call is ONE turn, and it anchors the timeline and the
+	// Fork API exactly like a text turn does. Capturing only in
+	// GenerateTextDirect left every `output:`-bearing node — which is most
+	// of them in iterion — without a single TurnCheckpoint, so such a run
+	// showed an empty timeline and could not be forked at all.
+	captureFinalTurn(opts, messages, 1, stepResult)
 
 	// Find the synthetic tool_use block.
 	for _, tu := range agg.toolUses {
