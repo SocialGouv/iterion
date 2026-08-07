@@ -206,6 +206,13 @@ type resumeRunRequest struct {
 	// `file` field instead carries its upload inline in Answers as
 	// `{"upload_id": "..."}`. See runs_answer_uploads.go.
 	Attachments []string `json:"attachments,omitempty"`
+	// Fallback re-states the operator's run-level fallback route for the
+	// resumed run. It is not persisted on the run (same as the launch-time
+	// backend/permission overrides), so a resume that says nothing runs
+	// without one — and a resume is frequently the very moment the primary
+	// credential is still walled. The HTTP twin of `iterion resume
+	// --fallback`. Omitted = none. See ADR-087.
+	Fallback *runview.FallbackEntry `json:"fallback,omitempty"`
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -529,6 +536,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 			Source:   req.Source,
 			Answers:  answers,
 			Force:    req.Force,
+			Fallback: req.Fallback,
 		}); pfErr != nil {
 			s.writeResumeError(w, r, pfErr)
 			span.RecordError(pfErr)
@@ -556,6 +564,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		Answers:  answers,
 		Force:    req.Force,
 		Timeout:  timeout,
+		Fallback: req.Fallback,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
