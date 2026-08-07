@@ -39,7 +39,12 @@ import (
 // value, so an operator who asked for `off` on a bot whose DSL says `on` gets a
 // run that reads and writes shared memory anyway — the one thing the knob
 // exists to prevent, failing OPEN and in silence.
-const SchemaVersion = 6
+// v=7 (2026-08-07): added Fallback so a launch-time `--fallback` route
+// (ADR-087) reaches the runner. Same direction as v=6: dropping it silently
+// leaves the run with no alternative route, so the operator who set one
+// precisely to survive a forfait wall loses the 40-minute run to that wall
+// anyway — the flag's single purpose, failing in silence.
+const SchemaVersion = 7
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -79,11 +84,18 @@ type RunMessage struct {
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
-	AutoMemory     string        `json:"auto_memory,omitempty"`
-	BackendConfig  BackendConfig `json:"backend"`
-	Resume         *ResumeSpec   `json:"resume,omitempty"`
-	Trace          TraceContext  `json:"trace"`
-	PublishedAtRFC string        `json:"published_at"`
+	AutoMemory string `json:"auto_memory,omitempty"`
+	// Fallback is the operator's launch-time run-level fallback route
+	// (ADR-087) — the wire half of `--fallback` / the studio Launch row.
+	// Nil means the caller expressed none, and each node keeps whatever
+	// its own `fallbacks:` block declares. The runner materialises it
+	// onto the compiled workflow through the same ir.ApplyRunFallback the
+	// local path uses, so it passes the identical safety screen.
+	Fallback       *FallbackRoute `json:"fallback,omitempty"`
+	BackendConfig  BackendConfig  `json:"backend"`
+	Resume         *ResumeSpec    `json:"resume,omitempty"`
+	Trace          TraceContext   `json:"trace"`
+	PublishedAtRFC string         `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted
@@ -163,6 +175,17 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+}
+
+// FallbackRoute is the wire form of the operator's run-level fallback
+// route. A single route rather than a per-node chain, mirroring
+// runview.FallbackEntry and ir.Fallback's routable triple: the value is
+// "don't lose a long run to a forfait wall", which one alternative
+// delivers.
+type FallbackRoute struct {
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

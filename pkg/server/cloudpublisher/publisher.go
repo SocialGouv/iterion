@@ -774,6 +774,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Vars:           varsAsAny(spec.Vars),
 		SecretsRef:     creds.secretsRef,
 		AutoMemory:     spec.AutoMemory,
+		Fallback:       toQueueFallback(spec.Fallback),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:       tenantID,
@@ -960,6 +961,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		},
 		SecretsRef: creds.secretsRef,
 		AutoMemory: spec.AutoMemory,
+		Fallback:   toQueueFallback(spec.Fallback),
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
@@ -1280,6 +1282,17 @@ func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
 	}
+}
+
+// toQueueFallback folds the launch/resume entry into its wire form. A
+// nil or targetless entry yields nil, which the runner reads as "the
+// caller expressed no run-level route" — each node then keeps whatever
+// its own `fallbacks:` block declares.
+func toQueueFallback(e *runview.FallbackEntry) *queue.FallbackRoute {
+	if e == nil || (e.Backend == "" && e.Model == "" && e.Provider == "") {
+		return nil
+	}
+	return &queue.FallbackRoute{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
 }
 
 // varsAsAny upgrades a string-keyed map to interface{} so the wire

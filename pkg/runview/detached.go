@@ -79,6 +79,11 @@ type detachedSpec struct {
 	// so anything not passed here is silently replaced by the workflow's own
 	// value — which for `off` means running with memory ON.
 	AutoMemory string
+	// Fallback forwards the run-level fallback route as the CLI's
+	// --fallback flag, in its `<backend>:<model>` form. Same reason as
+	// AutoMemory: the subprocess re-resolves from scratch, so a route not
+	// passed here simply does not exist for that run.
+	Fallback string
 	// Budget forwards launch-time budget overrides as the CLI's
 	// --max-* flags, so the detached runner applies the same caps the
 	// in-process path would. Launch only; nil = no override.
@@ -105,6 +110,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
 		}
+		if spec.Fallback != "" {
+			args = append(args, "--fallback", spec.Fallback)
+		}
 		if b := spec.Budget; b != nil {
 			if b.MaxCostUSD > 0 {
 				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
@@ -126,6 +134,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
+		if spec.Fallback != "" {
+			args = append(args, "--fallback", spec.Fallback)
 		}
 		if spec.Force {
 			args = append(args, "--force")
@@ -324,6 +335,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		MergeInto:  spec.MergeInto,
 		BranchName: spec.BranchName,
 		AutoMemory: spec.AutoMemory,
+		Fallback:   fallbackFlagValue(spec.Fallback),
 		Budget:     spec.Budget,
 	})
 	if err != nil {
@@ -366,6 +378,7 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*Laun
 		Answers:    answers,
 		StoreDir:   s.storeDir,
 		AutoMemory: spec.AutoMemory,
+		Fallback:   fallbackFlagValue(spec.Fallback),
 		Force:      spec.Force,
 		Timeout:    spec.Timeout,
 	})
@@ -424,4 +437,22 @@ func resumeAnswersToStrings(answers map[string]any) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// fallbackFlagValue renders a run-level route back into the CLI's
+// `<backend>:<model>` form for a detached subprocess.
+//
+// It is the inverse of ir.ParseRunFallbackFlag, and deliberately returns
+// "" for a route with no backend: the flag parser rejects that form, and
+// a detached launch must not die on an argument the operator never
+// typed. A provider-only route has no flag spelling at all — the flag is
+// documented as backend:model — so it too yields "".
+func fallbackFlagValue(e *FallbackEntry) string {
+	if e == nil || e.Backend == "" {
+		return ""
+	}
+	if e.Model == "" {
+		return e.Backend
+	}
+	return e.Backend + ":" + e.Model
 }

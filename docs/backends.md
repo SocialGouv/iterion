@@ -423,6 +423,12 @@ the route: the scenario this feature exists for
 — a long run outliving a quota window — is precisely the one that
 resumes.
 
+The route travels onto the cloud queue (`RunMessage.fallback`, wire
+schema v7) and into a detached subprocess, so a run launched on iterion
+Cloud gets the route the operator set rather than silently running
+without it — the same treatment `auto_memory` gets, and for the same
+reason: a knob that fails open in silence is worse than no knob.
+
 One route rather than a per-node ordered list, deliberately: the value
 is "don't lose a long run to a forfait wall", which one alternative
 delivers, and the Launch form persists nothing between launches — a

@@ -318,6 +318,12 @@ type ResumeSpec struct {
 	// back to the workflow's own value — turning memory on for a run the
 	// operator had launched hermetically.
 	AutoMemory string
+	// Fallback re-states the run-level fallback route (ADR-087), for the
+	// same reason as AutoMemory: it is not persisted on the run, so a
+	// resume that said nothing would silently drop the alternative route
+	// the operator launched with — and a resume is frequently exactly the
+	// moment the primary credential is still walled. Nil = none.
+	Fallback *FallbackEntry
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

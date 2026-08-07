@@ -410,8 +410,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// name here and aim the resumed run at a different space than its own
 		// earlier nodes wrote to — an empty memory, and notes landing where
 		// nothing will read them again.
-		BotID:         BotIDForRun(r),
-		AutoMemory:    spec.AutoMemory,
+		BotID:      BotIDForRun(r),
+		AutoMemory: spec.AutoMemory,
+		// Re-stated by the caller, like AutoMemory: the route is not
+		// persisted on the run, and a resume is frequently the very
+		// moment the primary credential is still walled.
+		RunFallback:   toRunFallback(spec.Fallback),
 		BoardRegister: s.boardRegister,
 		LocalSecrets:  s.localSecrets,
 		LocalSealer:   s.localSealer,

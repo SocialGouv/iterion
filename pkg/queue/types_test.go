@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -167,8 +168,52 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=6 (2026-08-05) added AutoMemory so a launch-time `--auto-memory`
 	// decision reaches the runner instead of being replaced by the workflow's
 	// own value — a drop there turns a hermetic `off` into a run that reads
-	// and writes shared memory.
-	if SchemaVersion != 6 {
-		t.Errorf("SchemaVersion = %d, want 6 (bump intentionally)", SchemaVersion)
+	// and writes shared memory. v=7 (2026-08-07) added Fallback so a
+	// launch-time `--fallback` route (ADR-087) reaches the runner; dropped,
+	// the pod runs with no alternative and loses the run to the very forfait
+	// wall the operator set the route to survive.
+	if SchemaVersion != 7 {
+		t.Errorf("SchemaVersion = %d, want 7 (bump intentionally)", SchemaVersion)
+	}
+}
+
+// TestFallbackRouteSurvivesRoundTrip: the run-level fallback route only
+// exists on the wire — it is not persisted on the run document. If it
+// does not survive encode/decode, a cloud launch runs with no
+// alternative route and dies on the very forfait wall the operator set
+// it to survive, in silence. Absent = the caller expressed none, which
+// must decode as nil rather than an empty route (an empty route would
+// re-issue the identical call that just failed).
+func TestFallbackRouteSurvivesRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *FallbackRoute
+	}{
+		{"none", nil},
+		{"backend and model", &FallbackRoute{Backend: "claw", Model: "openai/gpt-5.5"}},
+		{"with provider hint", &FallbackRoute{Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(&RunMessage{V: SchemaVersion, Fallback: tc.in})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got RunMessage
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if tc.in == nil {
+				if got.Fallback != nil {
+					t.Fatalf("absent route decoded as %+v, want nil", got.Fallback)
+				}
+				if bytes.Contains(raw, []byte("fallback")) {
+					t.Errorf("no route set but the key was emitted: %s", raw)
+				}
+				return
+			}
+			if got.Fallback == nil || *got.Fallback != *tc.in {
+				t.Errorf("round-trip = %+v, want %+v", got.Fallback, tc.in)
+			}
+		})
 	}
 }

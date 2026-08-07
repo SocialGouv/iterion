@@ -1605,13 +1605,35 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
-		AutoMemory:  msg.AutoMemory,
+		AutoMemory: msg.AutoMemory,
+		// Same reasoning as AutoMemory: the operator's launch-time route
+		// only exists on the wire. Dropped, the pod runs with no
+		// alternative and loses the run to the very forfait wall the
+		// route was set to survive. BuildExecutor materialises it through
+		// ir.ApplyRunFallback, so it passes the identical safety screen
+		// the local path applies.
+		RunFallback: runFallbackFromMessage(msg.Fallback),
 		MemoryStore: r.cfg.MemoryStore,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return exec, usage, nil
+}
+
+// runFallbackFromMessage folds the wire route into the IR shape
+// BuildExecutor applies. A nil message field yields the zero value,
+// which ApplyRunFallback treats as "no run-level route".
+func runFallbackFromMessage(fb *queue.FallbackRoute) ir.Fallback {
+	if fb == nil {
+		return ir.Fallback{}
+	}
+	return ir.Fallback{
+		Name:     ir.RunFallbackName,
+		Backend:  fb.Backend,
+		Model:    fb.Model,
+		Provider: fb.Provider,
+	}
 }
 
 // stringifyVars converts the wire payload's free-form vars into the
