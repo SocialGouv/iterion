@@ -179,7 +179,11 @@ work**, which the current code deliberately preserves for compaction.
 
 `on:` filters on a category derived from the typed error. The default when
 omitted is `[usage_window, unavailable]`. Three sub-rules matter more than
-the list:
+the list — and one caveat: `unavailable` is **reserved, not live**. No
+backend constructs `delegate.ErrModelUnavailable` yet, so a model-refused
+failure arrives as unclassified and advances via the sub-rule below. The
+category is in the default set so that wiring it later widens nothing; a
+route scoped to `on: [unavailable]` alone narrows nothing today.
 
 - **An unclassifiable error advances the chain.** Today the loop falls
   through on any non-nil error; unclassifiable is the majority case for

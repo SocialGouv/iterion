@@ -128,7 +128,24 @@ var defaultFallbackTriggers = []delegate.FallbackCategory{
 // catalog bots document in their own comments.
 func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 	chain := e.resolveProviderChain(node)
+	forbidMetered := forbidMeteredFallback()
 	for _, fb := range nodeFallbacks(node) {
+		if fb.Metered && forbidMetered {
+			// The instance-wide half of the ADR-087 §12 consent pair:
+			// `metered: true` is the AUTHOR's consent to spend real
+			// money on a fall-through, and this is the OPERATOR's veto
+			// of it. It matters beyond one run — metered spend is
+			// charged to the parent org, so a chain that escapes onto a
+			// metered key can trip the monthly cost cap and deny other
+			// teams' launches. Pruning the route (rather than failing
+			// the node) keeps the rest of the chain usable: the run
+			// degrades to the routes the operator does allow.
+			if e.logger != nil {
+				e.logger.Warn("[%s] fallback route %q is metered and ITERION_FORBID_METERED_FALLBACK=1 — route dropped",
+					node.NodeID(), fb.Name)
+			}
+			continue
+		}
 		el := chainElement{
 			Label:    fb.Name,
 			Backend:  strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)),
@@ -142,6 +159,15 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		chain = append(chain, el)
 	}
 	return dedupeChain(chain, e.resolveBackendName(node), e.baselineModel(node))
+}
+
+// forbidMeteredFallback reports the operator's instance-wide refusal of
+// any `metered: true` route. It mirrors ITERION_FORBID_SUBSCRIPTION_OAUTH
+// in the opposite direction (that one refuses metered→subscription; this
+// one refuses forfait→metered) and is the greppable escape hatch a
+// load-bearing spend limit is required to carry.
+func forbidMeteredFallback() bool {
+	return strings.TrimSpace(os.Getenv("ITERION_FORBID_METERED_FALLBACK")) == "1"
 }
 
 // baselineModel is the model an element that pins none of its own runs:

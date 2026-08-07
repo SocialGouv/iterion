@@ -286,6 +286,16 @@ agent implement:
       metered: true
 ```
 
+`metered: true` is the **author's consent** that this route spends real
+money rather than a forfait already paid for. Its operator-side
+counterpart is `ITERION_FORBID_METERED_FALLBACK=1`, which drops every
+metered route from every chain instance-wide (a warning per dropped
+route; the rest of the chain still runs). It mirrors
+`ITERION_FORBID_SUBSCRIPTION_OAUTH` in the opposite direction and matters
+beyond one run: metered spend is charged to the parent **org**, so a
+chain that escapes onto a metered key can trip the monthly cost cap and
+deny other teams' launches.
+
 Routes are **named**, and the name is not decoration: it is the id the
 `model_fallback` event and the run report cite, so a bilan reads
 "fell through to `api`" rather than an ordinal. Declaration order is the
@@ -300,11 +310,17 @@ first, then each route.
 |---|---|---|
 | `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
 | `auth` | rejected or expired credential | `claude_code`, `pi` |
-| `unavailable` | model the credential cannot reach | `claude_code` |
+| `unavailable` | model the credential cannot reach | *not emitted yet — no backend constructs `ErrModelUnavailable`, so such failures classify as `unclassified` (which always routes)* |
 | `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
 | `any` | escape hatch — clears the filter | — |
 
 The default when `on:` is omitted is **`[usage_window, unavailable]`**.
+`unavailable` is reserved, not live: until a backend constructs
+`ErrModelUnavailable` a model-refused failure arrives as `unclassified`
+and routes through the escape hatch below — so a route scoped to
+`on: [unavailable]` alone filters nothing today. Do not rely on the
+category to *narrow* a route.
+
 Two omissions are deliberate: `any` is not the default because a budget
 cap or a schema-shape failure re-fails identically on every route, and
 `auth` is not, because a rejected credential deliberately pauses for a

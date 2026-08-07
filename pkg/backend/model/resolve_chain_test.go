@@ -169,3 +169,42 @@ func TestDedupeChain_KeepsDistinctRoutes(t *testing.T) {
 		t.Errorf("distinct routes were deduped: %+v", got)
 	}
 }
+
+// TestResolveChain_ForbidMeteredDropsMeteredRoutes is the operator half
+// of the ADR-087 §12 consent pair. `metered: true` is the AUTHOR saying
+// "this route spends real money"; ITERION_FORBID_METERED_FALLBACK is the
+// OPERATOR refusing it instance-wide. Without it the field was parsed,
+// compiled, unparsed and documented but read by nothing — a declared
+// spend acknowledgement with no guard behind it.
+func TestResolveChain_ForbidMeteredDropsMeteredRoutes(t *testing.T) {
+	t.Setenv("ITERION_FORBID_METERED_FALLBACK", "1")
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "", []ir.Fallback{
+		{Name: "api", Backend: delegate.BackendClaw, Model: "anthropic/claude-opus-5"},
+		{Name: "gpt", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5", Metered: true},
+	})
+	chain := e.resolveChain(node)
+	for _, el := range chain {
+		if el.Label == "gpt" {
+			t.Fatalf("metered route survived the operator veto: %+v", chain)
+		}
+	}
+	// The veto prunes the metered route only — the rest of the chain
+	// stays usable, so the run degrades instead of losing its fallbacks.
+	if len(chain) != 2 || chain[1].Label != "api" {
+		t.Errorf("chain = %+v, want the node's own route plus the non-metered one", chain)
+	}
+}
+
+// TestResolveChain_MeteredKeptByDefault: authoring `metered: true` is
+// consent, so the route runs unless the operator vetoes it.
+func TestResolveChain_MeteredKeptByDefault(t *testing.T) {
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "", []ir.Fallback{
+		{Name: "gpt", Backend: delegate.BackendClaw, Model: "openai/gpt-5.5", Metered: true},
+	})
+	chain := e.resolveChain(node)
+	if len(chain) != 2 || chain[1].Label != "gpt" {
+		t.Errorf("chain = %+v, want the metered route kept by default", chain)
+	}
+}
