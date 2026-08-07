@@ -85,6 +85,32 @@ func (e *Engine) emitRunFailedAndReturn(ctx context.Context, runID, nodeID, reas
 	return &RuntimeError{Code: code, Message: reason, NodeID: nodeID}
 }
 
+// failRunDeliberate handles the DSL FailNode: the graph routed here on
+// purpose, so the run is terminal — status failed, no auto-resume — but
+// the checkpoint is preserved. The state on disk is coherent (the fail
+// node is reached from a normal node boundary) and an explicit operator
+// rewind remains possible, same as a cancelled run. Falls back to a
+// plain checkpoint-less failure if the write fails.
+func (e *Engine) failRunDeliberate(rs *runState, nodeID, reason string) error {
+	cp := buildCheckpoint(rs, nodeID)
+	if storeErr := e.store.FailRunTerminal(rs.ctx, rs.runID, cp, reason); storeErr != nil {
+		e.logger.Error("failed to persist terminal failure: %v", storeErr)
+		return e.failRun(rs.ctx, rs.runID, nodeID, reason)
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
+		"error":      reason,
+		"code":       string(ErrCodeExecutionFailed),
+		"rewindable": true,
+	}); err != nil {
+		e.logger.Warn("failed to emit run_failed event: %v", err)
+	}
+	return &RuntimeError{
+		Code:    ErrCodeExecutionFailed,
+		Message: reason,
+		NodeID:  nodeID,
+	}
+}
+
 // failRunWithCheckpoint marks a run as failed_resumable with a checkpoint,
 // enabling resume from the last completed node. Falls back to a regular
 // (non-resumable) failure if the checkpoint write fails.

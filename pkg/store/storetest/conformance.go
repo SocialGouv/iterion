@@ -54,6 +54,7 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -964,6 +965,55 @@ func testStatusTransitions(t *testing.T, s store.RunStore) {
 	}
 	if r.FinishedAt == nil {
 		t.Errorf("FinishedAt: expected set on terminal status")
+	}
+}
+
+// testFailRunTerminal pins the checkpoint-preserving terminal failure on
+// BOTH store twins: status failed + checkpoint retained + FinishedAt set,
+// and the atomic cancelled-outranks guard. The DSL fail-node path depends
+// on this for rewind to stay possible on cloud deployments.
+func testFailRunTerminal(t *testing.T, s store.RunStore) {
+	t.Helper()
+	if _, err := s.CreateRun(testCtx(), "run_ft", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "node-f"}
+	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node"); err != nil {
+		t.Fatalf("FailRunTerminal: %v", err)
+	}
+	r, err := s.LoadRun(testCtx(), "run_ft")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != store.RunStatusFailed {
+		t.Errorf("Status: got %q, want failed", r.Status)
+	}
+	if r.Error != "workflow reached fail node" {
+		t.Errorf("Error: got %q, want the failure reason", r.Error)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "node-f" {
+		t.Errorf("Checkpoint: got %+v, want preserved with NodeID node-f", r.Checkpoint)
+	}
+	if r.FinishedAt == nil {
+		t.Errorf("FinishedAt: expected set on terminal status")
+	}
+
+	// An operator cancel outranks a terminal failure racing in behind it.
+	if _, err := s.CreateRun(testCtx(), "run_ft_cancel", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(testCtx(), "run_ft_cancel", store.RunStatusCancelled, "operator stop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure"); err != nil {
+		t.Fatalf("FailRunTerminal on a cancelled run: %v", err)
+	}
+	r, err = s.LoadRun(testCtx(), "run_ft_cancel")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Status != store.RunStatusCancelled {
+		t.Errorf("Status after a late failure: got %q, want cancelled", r.Status)
 	}
 }
 

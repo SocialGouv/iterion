@@ -122,7 +122,15 @@ type RewindResult struct {
 // `running` run is deliberately excluded: its engine owns the checkpoint
 // and would overwrite the rewind at its next node boundary. Cancel or
 // pause it first.
+//
+// `failed` is included: a run that reached the DSL fail node is terminal
+// (no auto-resume — the graph deliberately abandoned it, which is not the
+// same as "it crashed"), but its checkpoint is preserved, so an explicit
+// operator rewind can still recover it. Runs failed BEFORE that
+// preservation existed carry no checkpoint and are rejected one check
+// later with "nothing to rewind".
 var rewindableStatuses = []store.RunStatus{
+	store.RunStatusFailed,
 	store.RunStatusFailedResumable,
 	store.RunStatusCancelled,
 	store.RunStatusPausedOperator,

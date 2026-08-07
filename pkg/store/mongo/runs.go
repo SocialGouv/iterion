@@ -731,3 +731,35 @@ func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Check
 	}
 	return nil
 }
+
+// FailRunTerminal writes the checkpoint, flips status to failed, and
+// records the failure reason. The run is terminal — no auto-resume — but
+// the checkpoint is preserved so the operator can still rewind it
+// explicitly. Same atomic cancelled-guard as FailRunResumable.
+func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
+	now := time.Now().UTC()
+	update := bson.M{
+		"$set": bson.M{
+			"status":      store.RunStatusFailed,
+			"checkpoint":  cp,
+			"error":       runErr,
+			"updated_at":  now,
+			"finished_at": now,
+		},
+		"$inc": bson.M{"version": 1},
+	}
+	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("store/mongo: fail terminal %s: %w", id, err)
+	}
+	if res.MatchedCount == 0 {
+		// Either the run is gone, or it is already cancelled and stays so.
+		// Distinguish, since a genuine miss must still surface.
+		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
+			return nil
+		}
+		return fmt.Errorf("store/mongo: run %s not found", id)
+	}
+	return nil
+}

@@ -121,6 +121,10 @@ type RunStore interface {
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
 	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	// FailRunTerminal is FailRunResumable's terminal counterpart: status
+	// failed (no auto-resume) but the checkpoint is kept so the run stays
+	// rewindable on an explicit operator action.
+	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error
 
 	// Events (append-only, monotonic seq per run)
 	AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error)

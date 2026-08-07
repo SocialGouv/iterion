@@ -222,11 +222,18 @@ prompt, not the conversation the operator is trying to change).
 
 ### Preconditions and limits
 
-The run must be `failed_resumable`, `cancelled`, `paused_operator`,
+The run must be `failed`, `failed_resumable`, `cancelled`, `paused_operator`,
 `paused_waiting_human`, or `queued` — never `running`, whose engine owns the
 checkpoint and would overwrite the rewind at its next node boundary. Cancel or
 pause it first. The claim is a CAS, so a concurrent resume loses the race
 rather than being rewound out from under itself.
+
+`failed` stays semantically distinct from `failed_resumable`: the graph
+deliberately abandoned the run (no auto-resume), it did not crash. But the
+distinction no longer destroys the recovery point — a run that reaches the
+DSL `fail` node keeps its checkpoint, so an explicit rewind can still recover
+it. Runs that failed **before** that preservation existed carry no checkpoint
+and stay unrecoverable (`run ... has no checkpoint — nothing to rewind`).
 
 The run is parked in `cancelled`. That is the one resumable status a cloud
 runner treats as "explicit resume required"; `failed_resumable` and

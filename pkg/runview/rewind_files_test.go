@@ -422,3 +422,72 @@ func TestRewind_RefusesAStalePreSnapshot(t *testing.T) {
 		t.Errorf("docs/intro.md = %q, want pass 1's content left in place", got)
 	}
 }
+
+// TestRestoreWorkspaceSnapshot_FailedRunKeepsItsStatus is Revi's Rce9422.
+//
+// Adding `failed` to rewindableStatuses must not reroute a terminal
+// failed run through RestoreWorkspaceSnapshot's claim arm: a workspace
+// restore on such a run is a pure file operation (no engine can claim
+// it), and the claim would flip the run to `cancelled` — misreporting a
+// failure as an operator cancellation on every status surface — and
+// wipe run.Error, the only record of why the run failed.
+func TestRestoreWorkspaceSnapshot_FailedRunKeepsItsStatus(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-restore-failed"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc.workspaceTracker == nil {
+		t.Fatal("a filesystem-backed service must wire workspace versioning")
+	}
+	snap, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0")
+	if err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+
+	// The run wrote on, then reached the fail node.
+	writeFile(t, ws, "docs/intro.md", "intro v2 REWRITTEN\n")
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailed
+	run.Error = "workflow reached fail node"
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "fail",
+		Outputs: outputsOf("survey", "plan", "implement"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if _, err := svc.RestoreWorkspaceSnapshot(context.Background(), runID, snap.ID); err != nil {
+		t.Fatalf("RestoreWorkspaceSnapshot: %v", err)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the snapshot content restored", got)
+	}
+	after, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Status != store.RunStatusFailed {
+		t.Errorf("status = %q, want failed — a workspace restore must not reclassify the run", after.Status)
+	}
+	if after.Error != "workflow reached fail node" {
+		t.Errorf("run.Error = %q, want the failure message preserved", after.Error)
+	}
+}

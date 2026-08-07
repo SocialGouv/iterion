@@ -374,6 +374,30 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 		return nil, fmt.Errorf("runview: run %s has no recorded workspace", runID)
 	}
 	switch {
+	case run.Status == store.RunStatusFinished:
+		// Terminal and genuinely unclaimable: `finished` is in no
+		// resumable/rewindable path, so nothing can race the restore.
+		return s.restoreBanked(run, snapshotID)
+	case run.Status == store.RunStatusFailed:
+		// Terminal but REWINDABLE: a concurrent `rewind` + `resume` can
+		// claim the run and start an engine while the restore rewrites
+		// its workspace — so the old "nothing to race with" shortcut no
+		// longer holds. A real claim is not an option either: the CAS
+		// would flip the run to `cancelled` and wipe run.Error (the only
+		// record of why it failed) for what is here a pure workspace
+		// operation. Re-check at the last moment and refuse if the run
+		// moved; the sliver that remains — the restore itself — is the
+		// same exposure any external workspace mutation has, and the
+		// operator's own race to make.
+		fresh, lerr := s.store.LoadRun(ctx, runID)
+		if lerr != nil {
+			return nil, fmt.Errorf("reload run before restore: %w", lerr)
+		}
+		if fresh.Status != store.RunStatusFailed {
+			return nil, fmt.Errorf("%w: status changed under us (%s → %s) — reload and retry",
+				ErrRewindNotRewindable, run.Status, fresh.Status)
+		}
+		return s.restoreBanked(fresh, snapshotID)
 	case isRewindableStatus(run.Status):
 		// CLAIM before touching the workspace, exactly as Rewind does and
 		// for the same reason: reading the status and acting on it leaves
@@ -394,10 +418,6 @@ func (s *Service) RestoreWorkspaceSnapshot(ctx context.Context, runID, snapshotI
 		if !claimed {
 			return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 		}
-		return s.restoreBanked(run, snapshotID)
-	case run.Status == store.RunStatusFinished || run.Status == store.RunStatusFailed:
-		// Terminal and non-resumable: no engine can claim it, so there is
-		// nothing to race with.
 		return s.restoreBanked(run, snapshotID)
 	}
 	return nil, fmt.Errorf("%w: %s — stop the run before restoring its workspace", ErrRewindNotRewindable, run.Status)
