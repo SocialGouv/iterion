@@ -96,11 +96,13 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		kind, id := nn.NodeKind().String(), nn.NodeID()
 		nodeBackend := effectiveNodeBackend(f.Backend, w.DefaultBackend)
 
+		sandboxOff := sandboxExplicitlyOff(n, w)
+
 		seen := map[string]bool{}
 		for _, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, sandboxOff)
 		}
 	}
 }
@@ -149,21 +151,38 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // node's capabilities, using the same predicates the launch-time
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string) {
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, sandboxOff bool) {
 	// An env-ref backend is not knowable here; defer to the runtime.
 	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
 	}
 	label := fallbackLabel(fb)
+	permission := EffectivePermission(nn.GetPermission(), workflowPermission)
 
 	// The permission gate is the anti-prompt-injection boundary. Whether
 	// a ROUTE can enforce it is a property of the route's own backend,
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
+	if reason := ungatedCrossingReason(fb.Backend, permission); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
+	}
+
+	// claw enforces the gate IN-PROCESS only. Sandboxed, the policy does
+	// not survive the IPC boundary (delegate.IOTask carries no
+	// Permission field), so the backend REFUSES the node at execution
+	// rather than run it ungated. Without this note the compiler would
+	// green-light — via gateEnforcingBackends — precisely the route that
+	// hard-fails, and it would fail at the worst possible moment: the
+	// primary has just exhausted its quota and the chain is advancing.
+	// A warning, not an error: unsandboxed claw genuinely enforces the
+	// gate, and the sandbox default is applied outside the compiler
+	// (product entry points), so this cannot be decided here.
+	if !sandboxOff && permission != "" && permission != "off" && fb.Backend == clawBackendName {
+		c.warnfAt(DiagFallbackDrift, id, "",
+			"%s %q: fallback %s runs on claw, which can enforce the permission: %s gate only OUT of a sandbox; under the default `sandbox: auto` the route refuses at execution — declare `sandbox: none`, or route the fallback to claude_code/pi",
+			kind, id, label, permission)
 	}
 
 	// The remaining checks compare the two backends, so they need the
@@ -268,4 +287,29 @@ func fallbackLabel(fb Fallback) string {
 		return fmt.Sprintf("%q", fb.Name)
 	}
 	return fmt.Sprintf("%q", strings.TrimSpace(fb.Backend+" "+fb.Model))
+}
+
+// sandboxExplicitlyOff reports whether this node is known, from the
+// source alone, to run OUT of a sandbox — the node's own override if it
+// has one, else the workflow block.
+//
+// It answers only "did the author opt out", never "will there be a
+// sandbox": `sandbox: auto` is applied by the product entry points, not
+// by the compiler, so an absent block reads as "probably sandboxed".
+// That asymmetry is deliberate — a warning suppressed by a declaration
+// the author actually wrote is safe; one suppressed by a default the
+// compiler cannot see is not.
+func sandboxExplicitlyOff(n Node, w *Workflow) bool {
+	spec := w.Sandbox
+	switch nn := n.(type) {
+	case *AgentNode:
+		if nn.Sandbox != nil {
+			spec = nn.Sandbox
+		}
+	case *JudgeNode:
+		if nn.Sandbox != nil {
+			spec = nn.Sandbox
+		}
+	}
+	return spec != nil && strings.TrimSpace(spec.Mode) == "none"
 }

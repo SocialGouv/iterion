@@ -266,3 +266,46 @@ func TestFallbackDriftDoesNotLieAboutReasoningEffort(t *testing.T) {
 		t.Error("C177 must still fire for a backend that really has no dial")
 	}
 }
+
+// TestFallbackClawRouteOnGatedNodeWarnsUnderSandbox: gateEnforcingBackends
+// lists claw, so C176 green-lights a claw route on a `permission:` node —
+// but claw enforces the gate IN-PROCESS only, and sandboxed it REFUSES
+// the node (the IPC task carries no policy). Without a pre-flight note
+// the compiler blesses exactly the route that hard-fails, and it fails at
+// the worst possible moment: the primary has just exhausted its quota and
+// the chain is advancing.
+func TestFallbackClawRouteOnGatedNodeWarnsUnderSandbox(t *testing.T) {
+	src := fallbackWorkflow("  permission: deny\n  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("claw CAN enforce the gate unsandboxed, so this must not be C176: %+v", cr.Diagnostics)
+	}
+	if !hasDiag(cr.Diagnostics, DiagFallbackDrift) {
+		t.Fatalf("expected C177 warning that a sandboxed claw route refuses a gated node, got %+v", cr.Diagnostics)
+	}
+}
+
+// TestFallbackClawRouteOnGatedNodeSilentWhenSandboxOff: the warning is
+// about the sandbox, so an author who declared `sandbox: none` has
+// already answered it. Only a declaration the author actually wrote
+// suppresses it — never a default the compiler cannot see.
+func TestFallbackClawRouteOnGatedNodeSilentWhenSandboxOff(t *testing.T) {
+	src := fallbackWorkflow("  permission: deny\n  sandbox: none\n  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackDrift) {
+		t.Errorf("`sandbox: none` answers the warning; it must not still fire: %+v", cr.Diagnostics)
+	}
+}
+
+// TestFallbackClawRouteUngatedNodeIsSilent: no gate declared, nothing to
+// lose — the overwhelmingly common shape must stay quiet.
+func TestFallbackClawRouteUngatedNodeIsSilent(t *testing.T) {
+	src := fallbackWorkflow("  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackDrift) {
+		t.Errorf("an ungated node has no gate to lose: %+v", cr.Diagnostics)
+	}
+}
