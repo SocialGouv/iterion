@@ -23,5 +23,10 @@ agent reader:
   output: out
 
 workflow main:
+  ## The run must stay IN the seeded workspace: this fixture asserts the
+  ## bundle skill is mirrored there. With the default worktree: auto the
+  ## engine mirrors into the per-run worktree instead, which is correct
+  ## behaviour but a different directory than the one under test.
+  worktree: none
   entry: reader
   reader -> done

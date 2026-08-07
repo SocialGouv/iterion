@@ -1,0 +1,25 @@
+## Launch-form fixture: declares one required var, one var with a
+## default, and a single agent node so the Launch view renders its
+## inputs, its per-node model overrides and its cost estimate. NEVER
+## executed by the suite — only rendered, so no credential is needed.
+
+vars:
+  target_branch: string = "main"
+  mission: string
+
+schema verdict:
+  ok: bool
+  summary: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  system: "Survey {{vars.target_branch}} for {{vars.mission}}."
+  output: verdict
+
+workflow launch_fixture:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  survey -> done when ok
+  survey -> fail

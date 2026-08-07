@@ -1,5 +1,10 @@
 # Live e2e coverage + quality/value snapshots
 
+> This page is the reference for **running** the opt-in live layer (harness,
+> judge panel, env knobs, cost discipline). The authoritative
+> feature×coverage inventory — including which rows are `covered-live` and why
+> — is [docs/e2e-coverage-matrix.md](e2e-coverage-matrix.md).
+
 iterion ships an **optional, real-LLM** end-to-end layer that exercises
 every first-class bot and every engine feature against real models (real
 cost, real budget). It has two distinct signals:

@@ -1,0 +1,19 @@
+## Browser-pane fixture: a tool node emitting the `[iterion] preview_url=`
+## directive the runtime turns into a `preview_url_available` event, which
+## is what makes the run console's Browser pane appear. __PREVIEW_URL__ is
+## substituted by e2e/serve.mjs with the suite's own loopback origin, so
+## the pane's iframe never leaves the test server.
+
+schema note:
+  value: string
+
+tool serve_preview:
+  command: "echo '[iterion] preview_url=__PREVIEW_URL__ kind=app scope=external'"
+  output: note
+
+workflow preview_fixture:
+  worktree: none
+  sandbox: none
+  entry: serve_preview
+
+  serve_preview -> done

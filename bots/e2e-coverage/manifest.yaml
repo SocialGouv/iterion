@@ -1,0 +1,83 @@
+name: e2e-coverage
+display_name: Endy
+icon: 🕸️
+version: 0.1.0
+## 0.1.0 — initial release (ADR-058 v2 shape, sibling of test-coverage).
+## ONE adaptive `campaign` agent drives an application's FEATURE-level
+## e2e coverage to complete, anchored on a committed feature×coverage
+## MATRIX whose claims a deterministic gate verifies (every covered row
+## must cite a test that resolves in the tree — an orphan claim is a
+## red gate). Deterministic-first doctrine; live/opt-in tests only when
+## a feature cannot be exercised otherwise, and always justified in the
+## matrix.
+description: |
+  Autonomous end-to-end coverage completion — one capable agent, its
+  natural flow, minimal framing. Points at an application (or one
+  feature family of it via `target`), inventories its FEATURES from the
+  outside (docs, CLI surface, API routes, configuration, grammar),
+  maintains a committed feature×coverage MATRIX, and closes each gap
+  with a real, deterministic e2e test written in the repo's OWN harness
+  and conventions — one `test(e2e):` commit per feature, the matrix row
+  flipped in the same commit.
+
+  Anti-façade by design: the success metric is NOT a green table — it
+  is features whose regression would fail a test before shipping. The
+  campaign's contract enforces the feature-level mutation test (break
+  the feature ⇒ the test must fail) and forbids stub-echo tests,
+  harness-only tests, no-invariant tests and borrowed claims; a
+  deterministic gate re-runs the repo's own suite AND parses the
+  matrix, grep-verifying every covered row's cited test (an orphan
+  claim is a red gate). Deterministic-first: a CI-runnable test beats
+  an opt-in/live one; features that genuinely need a live external are
+  marked covered-live or excluded WITH the reason — never silently
+  skipped.
+
+  Stack-agnostic: how to enumerate features, find the repo's own e2e
+  harness, and write each test lives in the bot's skills, not in the
+  workflow — so adding a language or harness style needs no DSL edit.
+when_to_use: |
+  Use when an application needs its e2e/anti-regression net completed —
+  a repo with features that only have unit tests (or none), a grown
+  codebase whose e2e suite lags the feature surface, or as a recurring
+  audit that keeps a feature×coverage matrix honest. Endy writes and
+  commits deterministic e2e tests plus the matrix; it does not change
+  product behaviour.
+
+  Do NOT use to deepen unit/integration coverage of a code area (that
+  is Testy / test-coverage), to review a branch (Billy), or to build a
+  behavioural golden-master oracle for an existing app's outputs (that
+  is Goldy / golden-master — reference recordings, not feature e2e
+  tests). Endy's axis is the FEATURE-level e2e completeness of the
+  whole application, made checkable by the matrix.
+author: SocialGouv (devthejo) — e2e-coverage/main.bot
+schema_version: 1
+
+triggers:
+  - e2e
+  - e2e-coverage
+  - end-to-end
+  - coverage-matrix
+  - e2e-tests
+  - regression-net
+  - feature-coverage
+
+dispatch_vars:
+  target: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+invocations:
+  - kind: command
+    mode: board
+    args_var: target
+    command: { name: endy, aliases: [e2e-coverage], scope: any, min_replier_role: developer }
+  - kind: board
+
+enabled: true
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [target]

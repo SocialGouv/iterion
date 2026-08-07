@@ -1,0 +1,34 @@
+## asymptote_mini.bot — fixture for `iterion bench asymptote`.
+##
+## The minimal shape the benchmark reads: a judge inside a bounded refine
+## loop, so each pass through `review` leaves one verdict on the event stream
+## at a known iteration index. The benchmark reconstructs the quality curve
+## from those events alone — it never re-runs anything — so a stub-driven run
+## produces exactly the data an operator's real run would.
+
+schema draft:
+  content: string
+
+schema verdict:
+  approved: bool
+  notes: string
+
+agent work:
+  model: "claude-opus-4-7"
+  output: draft
+
+judge review:
+  model: "claude-opus-4-7"
+  output: verdict
+
+workflow asymptote_mini:
+  worktree: none
+  sandbox: none
+  entry: work
+
+  budget:
+    max_iterations: 20
+
+  work -> review
+  review -> done when approved
+  review -> work as refine(5)

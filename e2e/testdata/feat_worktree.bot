@@ -3,7 +3,10 @@
 ## worktree, so finalizeWorktree must produce a persistent FinalBranch.
 
 tool make_commit:
-  command: "cd \"${PROJECT_DIR}\" && printf 'hi\n' > created.txt && git add created.txt && git commit -m 'feat: add created.txt'"
+  ## No `cd`: a tool node already runs with the run workspace as its cwd
+  ## (executor cmd.Dir), and ${PROJECT_DIR} is only expanded in a bot var
+  ## default -- inside a command it stays literal and `cd ""` fails.
+  command: "printf 'hi\n' > created.txt && git add created.txt && git commit -m 'feat: add created.txt'"
 
 workflow main:
   worktree: auto

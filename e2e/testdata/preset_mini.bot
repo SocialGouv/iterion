@@ -1,0 +1,33 @@
+## preset_mini.bot — fixture for `iterion run --preset` and its
+## documented precedence (vars defaults < preset < --var).
+##
+## The single compute node echoes the resolved vars into a published
+## artifact, so what the operator's flags produced is readable from the
+## store. The defaults are deliberately recognisable ("default-*") so a
+## preset that never reached the run is visible, not merely absent.
+
+vars:
+  target: string = "default-target"
+  mode: string = "default-mode"
+
+schema pair:
+  target: string
+  mode: string
+
+presets:
+  staging:
+    target: "staging.example.com"
+    mode: "careful"
+
+compute echo:
+  output: pair
+  publish: resolved
+  expr:
+    target: "vars.target"
+    mode: "vars.mode"
+
+workflow preset_mini:
+  worktree: none
+  sandbox: none
+  entry: echo
+  echo -> done

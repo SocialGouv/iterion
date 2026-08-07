@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "feature",
+  "name": "ultracode",
+  "run_id": "live-feat-ultracode-1786087520",
+  "at": "2026-08-07T07:27:27.990002102Z",
+  "iterion_sha": "8ff0c6784",
+  "task": "Run a claude-opus-4-8 implementer at reasoning_effort: ultracode to add a CHANGELOG entry.",
+  "metrics": {
+    "cost_usd": 1.077248,
+    "tokens": 5549,
+    "duration_ms": 94188,
+    "iterations": 2,
+    "model_calls": 1,
+    "retries": 0
+  },
+  "aggregate": {
+    "verdicts": [
+      {
+        "model": "openai/gpt-5.5",
+        "family": "openai",
+        "same_family_as_bot": false,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.45,
+          "restraint": 0.35,
+          "value_for_money": 0
+        },
+        "narrative": "The stated task was to add a CHANGELOG entry, but the artifact contains no CHANGELOG file and no changelog modification. The only tracked changes are seed boilerplate files, go.mod and main.go, which are unrelated to the requested feature and therefore do not accomplish the task. Completeness is absent because the required deliverable is not present at all, not even as a partial entry. Output quality for the requested work is effectively zero; while the Go stub is syntactically plausible, it is irrelevant to the target. Restraint is only modest because there is no large churn, but the changes that do exist are off-target. The run finished without errors or retries, so reliability is somewhat positive procedurally, but it converged to a non-result. At about $1.08 for no CHANGELOG entry, value for money is essentially nil.",
+        "relative_vs_prev": {
+          "overall": "same"
+        },
+        "relative_narrative": "This is substantively the same as the previous assessed run: it still contains only seed boilerplate and no CHANGELOG entry. The cost and duration are slightly lower than before, but there is no genuine improvement in the real work product, so the relative outcome remains the same failure.",
+        "confidence": 0.96
+      },
+      {
+        "model": "anthropic/claude-sonnet-4-6",
+        "family": "anthropic",
+        "same_family_as_bot": true,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.28,
+          "restraint": 0.38,
+          "value_for_money": 0
+        },
+        "narrative": "The task was to add a CHANGELOG entry, but the artifact contains no CHANGELOG file and no new commits from the implementer. The diff is entirely seed boilerplate (go.mod, main.go), identical to the prior run's failure. The untracked files (metrics.json, report.md) are neither named CHANGELOG nor committed, so they cannot count as a deliverable even if one contained changelog-adjacent content. Restraint is low-to-moderate because there is no destructive churn, but the sole visible changes are irrelevant to the task. The run terminated with finished/no-error status and only 2 iterations, which is nominally stable, but converging to an empty result is not a meaningful reliability achievement. At $1.08 for zero task accomplishment, value for money is zero. The run is substantively indistinguishable from the previous failure.",
+        "relative_vs_prev": {
+          "overall": "same"
+        },
+        "relative_narrative": "Both runs failed identically: no CHANGELOG entry was produced, no new commits exist from the implementer, and the only visible changes are seed boilerplate. This run was marginally cheaper ($1.08 vs $1.14) and faster (94s vs 126s), but the core outcome is unchanged — zero task accomplishment. No improvement in substance warrants a 'better' verdict.",
+        "confidence": 0.97
+      }
+    ],
+    "mean_scores": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.365,
+      "restraint": 0.365,
+      "value_for_money": 0
+    },
+    "disagreement": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.16999999999999998,
+      "restraint": 0.030000000000000027,
+      "value_for_money": 0
+    }
+  },
+  "evidence_digest": "## git log (oneline)\nc4f70cd chore: seed live fixture\n05a841d chore: seed repo\n\n## diff (seed..HEAD)\ndiff --git a/go.mod b/go.mod\nnew file mode 100644\nindex 0000000..e43176f\n--- /dev/null\n+++ b/go.mod\n@@ -0,0 +1,3 @@\n+module iterion-live-fixture\n+\n+go 1.25\ndiff --git a/main.go b/main.go\nnew file mode 100644\nindex 0000000..38dd16d\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,3 @@\n+package main\n+\n+func main() {}\n\n## untracked files\nmetrics.json\nreport.md",
+  "prev_run_id": "live-feat-ultracode-1786086718",
+  "comparison": {
+    "prev_run_id": "live-feat-ultracode-1786086718",
+    "overall_delta": 0,
+    "value_delta": 0,
+    "per_dimension": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.08999999999999997,
+      "restraint": -0.010000000000000009,
+      "value_for_money": 0
+    },
+    "verdict": "same"
+  }
+}

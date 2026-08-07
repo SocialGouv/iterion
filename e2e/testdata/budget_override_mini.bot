@@ -1,0 +1,40 @@
+## budget_override_mini.bot — fixture for the at-run budget-override
+## flags (`iterion run --max-tokens/--max-cost-usd/...`).
+##
+## Four LLM nodes, each costing 10 tokens / $0.001 under the scenario
+## stub, against a deliberately TOO SMALL declared budget: the bot as
+## written cannot finish. Whether the run converges is therefore a
+## direct readout of whether the CLI override reached the workflow.
+
+schema note:
+  value: string
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  output: note
+
+agent wrap_up:
+  model: "claude-opus-4-7"
+  output: note
+
+workflow budget_override_mini:
+  worktree: none
+  sandbox: none
+  entry: survey
+
+  budget:
+    max_iterations: 20
+    max_tokens: 25
+
+  survey -> plan
+  plan -> implement
+  implement -> wrap_up
+  wrap_up -> done

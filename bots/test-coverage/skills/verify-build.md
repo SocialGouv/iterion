@@ -3,6 +3,11 @@ name: verify-build
 description: Detect and run a repository's OWN build + test so a deterministic gate can confirm the tree actually compiles and passes before the improve-loop commits. Stack-agnostic — read this when asked to verify a build.
 ---
 
+<!-- TODO(skill-dedup): duplicated across bundles — peers:
+     bots/e2e-coverage/skills/verify-build.md (and siblings in the loop
+     fleet). iterion has no skill-sharing primitive yet; keep copies in
+     sync when editing. -->
+
 # verify-build
 
 Your job: make the repository in front of you **build and test green using its

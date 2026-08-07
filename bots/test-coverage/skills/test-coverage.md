@@ -106,25 +106,25 @@ empty. When empty, *you* pick where coverage matters most:
 Never test generated code, vendored dependencies, or trivial getters
 with no logic just to move the number.
 
-## The workflow (how your phases fit together)
+## The workflow (v2 — one campaign, minimal framing)
 
-1. **plan** (you, read-only): read this skill + [[test-types]] +
-   [[verify-tests]]; detect the stack and the test layout; measure
-   current coverage if possible; identify the concrete gaps in `target`
-   (or pick areas); decide the test types; produce a plan listing the
-   specific behaviours/edge-cases each new test will assert.
-2. **act** (you, same session): write the tests next to the repo's
-   existing tests, in its style; make them pass with the repo's own
-   runner; write the re-runnable verify script (see [[verify-tests]]);
-   `git add -A` so new files are visible to review.
-3. **simplify**: dedupe setup, table-drive repetitive cases.
-4. **verify gate** (deterministic, no LLM): your verify script is
-   re-run; the suite must pass and your new test files must actually be
-   present in the diff. This is the floor — it cannot be argued with.
-5. **review loop** (cross-family Claude + GPT): reviewers apply the
-   mutation test above to every new test. Converge on real assertions;
-   do not re-litigate items a fixer already justified.
-6. **commit**: a semantic `test:` commit lands on cross-family approval.
+1. **Scan briefly**: read this skill + [[test-types]] + [[verify-tests]];
+   detect the stack, the runner, the test layout and house conventions;
+   measure current coverage only with a tool the repo already uses;
+   build a living todo of the concrete gaps in `target` (or pick areas).
+2. **The repeated unit**, one gap at a time: pick the behaviour → write
+   a mutation-proof test next to the repo's existing tests, in its
+   style → run the relevant tests with the repo's own runner → semantic
+   `test(<scope>):` commit (`git add -A` so new files land). Never
+   commit a test you have not seen pass; git is the durable state.
+3. **verify gate** (deterministic, no LLM): an out-of-tree `verify.sh`
+   capturing the repo's real build+test is re-run on its real exit
+   code, and the diff vs the run base must show genuinely-new test
+   code. This is the floor — it cannot be argued with; a red gate
+   loops you back with the failure log.
+4. **Report the termination contract** honestly (`coverage_complete`,
+   `commits_this_pass`, `coverage_gaps_remaining`): under-reporting
+   costs a pass; over-reporting lands you right back here.
 
 ## Safety
 

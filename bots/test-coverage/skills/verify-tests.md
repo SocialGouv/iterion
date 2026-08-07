@@ -3,6 +3,10 @@ name: verify-tests
 description: Detect and run a repository's OWN test suite (and coverage tool, if any) so a deterministic gate can confirm the new tests actually pass before Testy commits. Stack-agnostic — read this when adding tests or asked to verify them.
 ---
 
+<!-- TODO(skill-dedup): duplicated across bundles — peers:
+     bots/e2e-coverage/skills/verify-tests.md. iterion has no
+     skill-sharing primitive yet; keep copies in sync when editing. -->
+
 # verify-tests
 
 Your job: make the repository's tests — **including the ones you just
@@ -37,7 +41,7 @@ toolchain:
   environment already provides directly (e.g. plain `go test ./pkg/...`
   when Go is on PATH). A direct-toolchain verify
   script that genuinely runs the tests is better than a wrapper that can't
-  start. Put whatever finally worked into `.test_coverage.verify.sh`.
+  start. Put whatever finally worked into the verify script.
 - **Language defaults (only when there is no wrapper)** — pick the runner
   the repo already uses (look at existing tests + CI). See [[test-types]]
   for per-stack commands. When in doubt, read `.github/workflows/*` (or
@@ -60,11 +64,13 @@ to find under-tested code, not as the success criterion. If the repo has
 no coverage tooling, skip this — do not bolt on a new coverage framework
 just to produce a number.
 
-## 3. Write `.test_coverage.verify.sh`
+## 3. Write `verify.sh` to the scratch dir
 
-Write an executable POSIX-sh script at the **workspace root** that runs
-the build (compile) AND the relevant tests, and **exits non-zero on any
-failure**. Shape (adapt to the repo — illustration, not a fixed command):
+Write an executable POSIX-sh script at the exact **out-of-tree**
+`verify.sh` path your task prompt gives you (`<scratch_dir>/verify.sh` —
+never inside the target repo) that runs the build (compile) AND the
+relevant tests, and **exits non-zero on any failure**. Shape (adapt to
+the repo — illustration, not a fixed command):
 
 ```sh
 #!/bin/sh
@@ -108,5 +114,5 @@ guard it behind `git rev-parse --is-inside-work-tree` and note the skip —
 a gate that skips a few git-dependent tests with a loud note is correct;
 one that manufactures a repo to run them is not.
 
-The verify script + its log are bot scratch — they are gitignored by the
-target repo (or should be) and the commit step never stages them.
+The verify script + its log live in the out-of-tree scratch dir — they
+never enter the target repo and the commit step never stages them.

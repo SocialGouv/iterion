@@ -1,0 +1,5 @@
+name: demo-bot
+display_name: Demo Fixture
+description: A deterministic tool+compute fixture used by the studio UI e2e suite.
+version: 0.1.0
+enabled: true

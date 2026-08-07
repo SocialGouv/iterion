@@ -1,0 +1,27 @@
+## auto_resume_mini.bot — fixture for `iterion run --auto-resume N`.
+##
+## Two LLM nodes in sequence. The scenario stub fails `flaky` on its first
+## call, so the run exits failed_resumable at a node the CLI's auto-resume
+## loop is meant to re-drive. `settle` runs BEFORE it and must not be
+## re-executed by the resume — its call count is the readout of "the resume
+## started from the checkpoint, not from the entry".
+
+schema note:
+  value: string
+
+agent settle:
+  model: "claude-opus-4-7"
+  output: note
+
+agent flaky:
+  model: "claude-opus-4-7"
+  output: note
+  publish: recovery
+
+workflow auto_resume_mini:
+  worktree: none
+  sandbox: none
+  entry: settle
+
+  settle -> flaky
+  flaky -> done

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "feature",
+  "name": "ultracode",
+  "run_id": "live-feat-ultracode-1786086718",
+  "at": "2026-08-07T07:15:05.193327701Z",
+  "iterion_sha": "019c4f076",
+  "task": "Run a claude-opus-4-8 implementer at reasoning_effort: ultracode to add a CHANGELOG entry.",
+  "metrics": {
+    "cost_usd": 1.1450429999999998,
+    "tokens": 6809,
+    "duration_ms": 126091,
+    "iterations": 2,
+    "model_calls": 1,
+    "retries": 0
+  },
+  "aggregate": {
+    "verdicts": [
+      {
+        "model": "openai/gpt-5.5",
+        "family": "openai",
+        "same_family_as_bot": false,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.45,
+          "restraint": 0.35,
+          "value_for_money": 0
+        },
+        "narrative": "The requested feature was simply to add a CHANGELOG entry, but the artifact contains no CHANGELOG file or changelog modification at all. The diff only shows initial seed boilerplate files (go.mod and main.go), which do not address the task and provide no evidence of the implementer making the required change. Output quality for the requested deliverable is therefore effectively absent, despite the boilerplate itself being syntactically plausible Go. Restraint is low-to-moderate because there is no apparent destructive churn, but the only changed files are irrelevant to the stated task. The run terminated with a finished/no-error status and no retries, so reliability is better than a crashed run, but it still converged to an empty/nonfunctional result. At $1.145 for one model call and no task accomplishment, value for money is essentially zero. Compared with the previous assessment, this is substantively the same failure: no CHANGELOG entry and only seed boilerplate visible, with slightly higher cost and no meaningful improvement.",
+        "relative_vs_prev": {
+          "overall": "same"
+        },
+        "relative_narrative": "Same as the previous run: the concrete artifact still lacks any CHANGELOG entry or relevant modification. The cleaner finished status does not constitute genuine improvement because the actual deliverable remains absent, and the cost is slightly higher.",
+        "confidence": 0.98
+      },
+      {
+        "model": "anthropic/claude-sonnet-4-6",
+        "family": "anthropic",
+        "same_family_as_bot": true,
+        "scores": {
+          "completeness": 0,
+          "efficacy": 0,
+          "output_quality": 0,
+          "overall": 0,
+          "reliability": 0.1,
+          "restraint": 0.4,
+          "value_for_money": 0
+        },
+        "narrative": "The task required exactly one deliverable: a CHANGELOG entry committed to the repository. The git log after the run is identical to the seed state — only the two pre-existing seed commits exist, no CHANGELOG file appears anywhere in the tree, and the diff (seed..HEAD) contains only seed-deposited boilerplate that predates the agent's execution entirely. The timeline in report.md shows six tool-call pairs over ~2 minutes, confirming the agent was active, yet nothing landed in the repo. The run reported 'finished / no error', which is factually incorrect given the task's definition of done. Restraint is slightly above zero only because no existing files were modified or corrupted. At $1.14 for an empty result — 11% more expensive than the prior run's identical failure — value-for-money is as poor as possible. A façade masking complete non-delivery caps every meaningful dimension at zero.",
+        "relative_vs_prev": {
+          "overall": "same"
+        },
+        "relative_narrative": "Both this run and the previous run produced zero work product against the same task (add a CHANGELOG entry). The outcome is identical in every substantive dimension: no CHANGELOG created, no commit made, same misleading 'finished / no error' status. This run cost marginally more ($1.14 vs $1.03, +11%) for the same zero result, which edges slightly toward 'worse', but since both score 0.00 on overall efficacy and there is no meaningful quality difference between two identical failures, the verdict is 'same'.",
+        "confidence": 0.97
+      }
+    ],
+    "mean_scores": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.275,
+      "restraint": 0.375,
+      "value_for_money": 0
+    },
+    "disagreement": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.35,
+      "restraint": 0.050000000000000044,
+      "value_for_money": 0
+    }
+  },
+  "evidence_digest": "## git log (oneline)\n0efe917 chore: seed live fixture\nabe2ac5 chore: seed repo\n\n## diff (seed..HEAD)\ndiff --git a/go.mod b/go.mod\nnew file mode 100644\nindex 0000000..e43176f\n--- /dev/null\n+++ b/go.mod\n@@ -0,0 +1,3 @@\n+module iterion-live-fixture\n+\n+go 1.25\ndiff --git a/main.go b/main.go\nnew file mode 100644\nindex 0000000..38dd16d\n--- /dev/null\n+++ b/main.go\n@@ -0,0 +1,3 @@\n+package main\n+\n+func main() {}\n\n## untracked files\nmetrics.json\nreport.md",
+  "prev_run_id": "live-feat-ultracode-1786083698",
+  "comparison": {
+    "prev_run_id": "live-feat-ultracode-1786083698",
+    "overall_delta": 0,
+    "value_delta": 0,
+    "per_dimension": {
+      "completeness": 0,
+      "efficacy": 0,
+      "output_quality": 0,
+      "overall": 0,
+      "reliability": 0.12500000000000003,
+      "restraint": -0.025000000000000022,
+      "value_for_money": 0
+    },
+    "verdict": "same"
+  }
+}

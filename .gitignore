@@ -88,6 +88,11 @@ node_modules
 .env.*-bak
 studio/dist/
 studio/node_modules/
+# Studio UI e2e: throwaway workspace/store seeded per run, plus Playwright's
+# own output.
+studio/e2e/.tmp/
+studio/test-results/
+studio/playwright-report/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 # This is a pnpm workspace (see pnpm-workspace.yaml). Lockfiles from

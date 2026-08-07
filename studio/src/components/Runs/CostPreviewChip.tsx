@@ -36,7 +36,9 @@ export default function CostPreviewChip({ filePath, source }: Props) {
   });
 
   if (isLoading || error || !data) return null;
-  if (data.nodes.length === 0) return null;
+  // `nodes` is null (not []) when the workflow has no LLM node — the
+  // server answers {"nodes": null, "notes": ["no_llm_nodes"]}.
+  if (!data.nodes || data.nodes.length === 0) return null;
   if (data.notes?.includes("no_pricing_data")) return null;
 
   const range =
