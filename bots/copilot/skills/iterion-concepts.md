@@ -33,8 +33,9 @@ the only acceptable proof that a workflow is syntactically sound.
   run is inspectable after the fact.
 - The **catalog** is the set of bots discoverable in a workspace —
   conventionally `<workdir>/bots`, `<workdir>/examples`,
-  `<workdir>/.botz`. `iterion bots list` is the authoritative answer to
-  "what can I run here"; the answer differs per workspace.
+  `<workdir>/.botz`. The authoritative answer to "what can I run here"
+  is the manifests on disk (`iterion bots list` prints the same thing
+  for a human); the answer differs per workspace.
 - A **manifest** declares metadata the engine and the studio read
   without executing the bot: display name, description, `when_to_use`,
   triggers, capabilities, launch hints, dispatch vars, produces/consumes.
@@ -154,15 +155,18 @@ termination flag, closing a single bounded loop.
 
 ## Honest boundaries
 
-Iterion is large and moves. When asked about a flag, an endpoint or a
-field you are not certain of, check rather than assert:
+Iterion is large and moves, and **you cannot run anything** — no shell.
+So when asked about a flag, an endpoint or a field you are not certain
+of, do one of two things, never a third:
 
-```
-iterion <command> --help
-iterion bots list
-iterion models
-iterion version
-```
+1. **Read for it.** The workspace usually holds the answer: `Glob` and
+   `Grep` over the bot bundles, the `.bot` sources, the docs the repo
+   ships. A quoted line from a real file beats a recollection.
+2. **Hand the operator the check.** `iterion <command> --help`,
+   `iterion models`, `iterion bots list`, `iterion version` — say what
+   you expect it to show and ask them to paste it back.
 
-"I'm not sure, here is how to check" is a good answer. An invented flag
-is not.
+The third thing — asserting a flag you have not seen — is the failure
+mode this section exists to prevent. "I'm not sure, here is how to
+check" is a good answer; an invented flag is not, and it costs the
+operator more than the silence would have.

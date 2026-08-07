@@ -10,9 +10,11 @@ description: |
   postures the operator can switch mid-conversation — info (explain
   and orient), design (draft a workflow and prove it with
   `iterion validate`), debug (diagnose a run from its real events).
-  Read-only by construction: a `permission: deny` gate blocks Write,
-  Edit and every unlisted shell command, so Copi advises and names the
-  bot that does the work rather than doing it itself. Every turn ends
+  Read-only by construction: a `permission: deny` gate denies Bash,
+  Write, Edit and WebFetch outright — an allow-listed shell prefix is
+  not a boundary, since the matcher grants everything after it — so
+  Copi reads (files, run stores, manifests) and names the bot that does
+  the work rather than doing it itself. Every turn ends
   at a budget-free chat pause — the session stays reachable for days,
   and a rolling context_brief carries the conversation across server
   restarts, redeploys and cloud pod changes. Only an explicit "close"

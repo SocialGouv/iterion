@@ -8,17 +8,41 @@ description: Diagnosing an iterion run — the status ladder, what each pause an
 **Read before you conclude.** A diagnosis that cites no run id, no
 event and no `file:line` is a guess.
 
-## The commands you have
+## Where the evidence is
+
+You have **no shell**. You do not need one: everything a run persists is
+a file, and you have `Read`, `Glob` and `Grep`.
 
 ```
-iterion runs                              # recent runs
-iterion inspect --run-id <id>             # status, error, checkpoint
+<store-dir>/runs/<run-id>/
+  run.json          # status, error, inputs, and THE CHECKPOINT
+  events.jsonl      # one event per line, monotonic seq
+  artifacts/<node>/<version>.json
+  interactions/<id>.json
+  report.md         # present only if someone generated it
+```
+
+The store dir is anchored on the working directory: `<workspace>/.iterion`
+when the project has a managed store, otherwise
+`~/.iterion/projects/<encoded-workdir>/`. Glob for the run when you only
+have an id prefix:
+
+```
+Glob: **/.iterion/runs/019f8384*/run.json
+```
+
+For the commands themselves — which the **operator** runs, not you:
+
+```
+iterion inspect                           # list all runs
+iterion inspect --run-id <id>             # run-level summary
 iterion inspect --run-id <id> --events    # the event stream
 iterion report --run-id <id> --output /tmp/<id>.md   # full chronology
 ```
 
-`iterion report` reconstructs the whole run as prose at any time — it is
-the fastest way to see what actually happened, in order.
+Note `iterion runs` is a *management group* (`prune` / `questions` /
+`answer`) — invoked bare it prints its help and lists nothing. The
+command that lists runs is `iterion inspect` with no `--run-id`.
 
 ## Status ladder
 
