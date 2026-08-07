@@ -134,6 +134,23 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 	executor.Close()
 	t.Logf("[live] %s finished in %s", spec.runIDBase, elapsed.Round(time.Second))
 
+	// A dead credential is a MISSING PREREQUISITE, not a failing feature:
+	// skip, exactly as the requireX guards do when a credential is absent.
+	// Those guards check that a credential is PRESENT (a file, an env var)
+	// — they cannot tell it expired, so the run reaches the provider and
+	// fails on its 401.
+	//
+	// This runs BEFORE the acceptable-error boundary on purpose: that
+	// boundary maps ExecutionFailed to "likely context deadline" and
+	// ACCEPTS it, so an auth failure would sail past it and redden a
+	// downstream assertion instead — which is how six tests reported as
+	// feature failures when the only thing wrong was an expired token.
+	// Skipping (never accepting) keeps it honest: the test does not claim
+	// to have verified anything.
+	if why := deadCredentialReason(runErr); why != "" {
+		t.Skipf("live prerequisite unavailable — %s (re-authenticate, then re-run)", why)
+	}
+
 	acceptable, reason := liveRunResultAcceptable(runErr)
 	if spec.acceptPause && errors.Is(runErr, runtime.ErrRunPaused) {
 		acceptable, reason = true, "run paused (expected by acceptPause)"
@@ -166,6 +183,37 @@ func runBotLive(t *testing.T, spec liveSpec) liveResult {
 		elapsed:      elapsed,
 		reason:       reason,
 	}
+}
+
+// deadCredentialReason reports why a run failed on an unusable credential,
+// or "" when the failure is something else.
+//
+// The patterns are deliberately narrow — an expired/invalid/revoked token,
+// or a provider refusing to authenticate. A plain 403, a quota refusal or a
+// permission error is NOT here: those are real signals a live test should
+// keep reporting as failures. A usage/quota WALL is also excluded on
+// purpose: it means the credential works and the account ran out, which the
+// budget-and-retry paths are meant to surface, not hide.
+func deadCredentialReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	for _, p := range []struct{ needle, why string }{
+		{"authentication token is expired", "the provider's OAuth token has expired"},
+		{"please try signing in again", "the provider asked for a fresh sign-in"},
+		{"oauth token has expired", "the provider's OAuth token has expired"},
+		{"invalid_api_key", "the API key was rejected as invalid"},
+		{"incorrect api key", "the API key was rejected as invalid"},
+		{"invalid bearer token", "the bearer token was rejected"},
+		{"401 unauthorized", "the provider refused to authenticate the request"},
+		{"error 401", "the provider refused to authenticate the request"},
+	} {
+		if strings.Contains(msg, p.needle) {
+			return p.why
+		}
+	}
+	return ""
 }
 
 // compileLiveWorkflow compiles either a plain .bot fixture or a bundle dir.
