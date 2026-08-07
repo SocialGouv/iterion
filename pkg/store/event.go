@@ -166,6 +166,21 @@ const (
 	EventDelegateError    EventType = "delegate_error"
 	EventDelegateRetry    EventType = "delegate_retry"
 
+	// EventModelFallback is emitted once each time a node's fallback
+	// chain falls through from a failed element to the next one — a
+	// route change, not a failure: the run continues. Distinct from
+	// EventDelegateRetry, which re-issues against the SAME element.
+	//
+	// Data keys: from_backend, to_backend, from_model, to_model,
+	// from_provider, to_provider (the credential hints, "" = auto),
+	// reason (delegate.FallbackCategory), attempts (budget spent on the
+	// failed element), error.
+	//
+	// This is the only record that a run was served by something other
+	// than what it asked for; without it a degraded run is
+	// indistinguishable from a clean one after the fact.
+	EventModelFallback EventType = "model_fallback"
+
 	// EventSandboxSkipped is emitted at run start when the workflow or a
 	// node requested an active sandbox mode (auto/inline) but the
 	// resolved driver cannot honour it — typically the noop driver on a

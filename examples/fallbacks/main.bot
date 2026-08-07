@@ -1,0 +1,98 @@
+## Cross-backend fallback routes (ADR-087).
+##
+## The problem: a 40-minute run dies because one provider's subscription
+## window shut. `provider:` (ADR-004) can swap a CREDENTIAL on the same
+## backend, but it cannot continue on a different one — and the case that
+## actually hurts is a CLI forfait running out with a metered API key
+## sitting right there.
+##
+## `fallbacks:` declares complete alternative ROUTES. Nothing about a
+## fall-through is silent: it emits a `model_fallback` event, `_backend`
+## names what actually served, and `_fallback_used` / `_served_by` are
+## stamped so a deterministic gate downstream can fail closed on a
+## degraded input.
+##
+## Run it with:  iterion run examples/fallbacks/main.bot
+
+schema work_output:
+  summary: string
+  confident: bool
+
+schema verdict:
+  approved: bool
+  reason: string
+
+prompt implement_sys:
+  You are a careful implementer. Produce a short summary of what you
+  would do. Do not invent work you have not done.
+
+prompt implement_user:
+  Summarise how you would add a health-check endpoint to a web service.
+
+prompt review_sys:
+  You review an implementation summary and approve or reject it.
+
+prompt review_user:
+  Review this summary and decide whether it is specific enough to act on:
+
+  {{outputs.implement.summary}}
+
+## The headline case: a subscription-backed CLI agent that continues on a
+## metered API when its window shuts.
+##
+## `tools:` is declared explicitly and that is not incidental — an empty
+## list means the FULL native toolset on claude_code but ZERO tools on
+## claw, so crossing that boundary without one is refused (C176). On
+## claude_code the list is inert; it exists so the claw route is a real
+## agent rather than a schema-shaped narrator.
+agent implement:
+  backend: "claude_code"
+  model: "claude-opus-5"
+  system: implement_sys
+  user: implement_user
+  output: work_output
+  tools: [read_file, run_command]
+  fallbacks:
+    ## Same model, different instrument: the forfait is out, the API key
+    ## is not. `on:` is omitted, so this route takes the default
+    ## [usage_window, unavailable].
+    api:
+      backend: "claw"
+      model: "anthropic/claude-opus-5"
+      provider: "anthropic"
+    ## A different API family, and a route that costs real money — the
+    ## author says so out loud.
+    gpt:
+      backend: "claw"
+      model: "openai/gpt-5.5"
+      on: [usage_window, unavailable, transient_exhausted]
+      metered: true
+
+## A judge takes a chain only from its own block, never inherited. A
+## weaker reviewer still emits a well-formed verdict — only the content
+## changes — so the route here is a same-family model, and any gate
+## reading this node's output can consult `_fallback_used` before
+## trusting it.
+judge review:
+  backend: "claw"
+  model: "anthropic/claude-opus-5"
+  system: review_sys
+  user: review_user
+  output: verdict
+  tools: [read_file]
+  fallbacks:
+    second_opinion:
+      backend: "claw"
+      model: "openai/gpt-5.5"
+      on: [usage_window]
+
+workflow fallback_demo:
+  entry: implement
+
+  implement -> review
+  review -> done when approved
+  review -> fail else
+
+  budget:
+    max_duration: "20m"
+    max_cost_usd: 5

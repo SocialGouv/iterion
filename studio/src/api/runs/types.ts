@@ -351,6 +351,10 @@ export interface RunHeader {
   // report their resolved value, never "auto". Absent for tool/compute-
   // only runs (the header then renders no backend chip).
   backends_used?: BackendUsage[];
+  // fallbacks_used lists the nodes a fallback route served instead of
+  // their first choice (ADR-087). Empty on every clean run, so its
+  // presence always means something happened.
+  fallbacks_used?: FallbackUsage[];
   // deployment is the run's delivery outcome — live URL, running image,
   // source commit, and the traceability verdict — reducer-derived from
   // the deployment-report output contract (any node emitting the
@@ -415,6 +419,18 @@ export interface BackendUsage {
   backend: string;
   model?: string;
   node_count: number;
+}
+
+// FallbackUsage names one node that a fallback route served after its
+// primary failed.
+export interface FallbackUsage {
+  node_id: string;
+  // served_by is the route's declared name (a `fallbacks:` entry name,
+  // or "run-fallback" for the operator's launch-time route).
+  served_by?: string;
+  // backend / model are what actually ran, not what was requested.
+  backend?: string;
+  model?: string;
 }
 
 // RunLoopProgress reports a named loop's semantic progress: the current
@@ -712,6 +728,17 @@ export interface CreateRunRequest {
   // keyword "agent"|"judge") and wins over the node's DSL backend:/model:.
   // Composes with review_mode. See pkg/backend/model.ModelOverrides.
   model_overrides?: ModelOverrideEntry[];
+  // Run-level fallback route (ADR-087): one alternative taken when an
+  // agent node's primary fails. Applies only to agent nodes that
+  // declare no `fallbacks:` of their own, and never to judges.
+  fallback?: FallbackEntry;
+}
+
+// FallbackEntry is the operator's single run-level fallback route.
+export interface FallbackEntry {
+  backend?: string;
+  model?: string;
+  provider?: string;
 }
 
 // ModelOverrideEntry is one Launch-time per-node/-group model+backend

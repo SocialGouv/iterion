@@ -243,12 +243,14 @@ func TestResolveProvider_EmptyWhenUnset(t *testing.T) {
 	}
 }
 
-func equalProviderSteps(a, b []providerStep) bool {
+func equalProviderSteps(a, b []chainElement) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		// A legacy `provider:` chain never sets Backend/Label/On, so
+		// route equality is the whole comparison here.
+		if !sameRoute(a[i], b[i]) || a[i].Label != b[i].Label {
 			return false
 		}
 	}
@@ -263,27 +265,27 @@ func TestResolveProviderChain(t *testing.T) {
 		name     string
 		provider string
 		setEnv   map[string]string
-		want     []providerStep
+		want     []chainElement
 	}{
-		{"unset", "", nil, []providerStep{{}}},
-		{"single", "anthropic", nil, []providerStep{{Provider: "anthropic"}}},
-		{"auto normalises to blank", "auto", nil, []providerStep{{}}},
-		{"chain", "anthropic,zai,openai", nil, []providerStep{{Provider: "anthropic"}, {Provider: "zai"}, {Provider: "openai"}}},
-		{"chain with whitespace", "anthropic, zai , openai", nil, []providerStep{{Provider: "anthropic"}, {Provider: "zai"}, {Provider: "openai"}}},
-		{"trailing comma dropped", "anthropic,", nil, []providerStep{{Provider: "anthropic"}}},
-		{"leading comma dropped", ",anthropic", nil, []providerStep{{Provider: "anthropic"}}},
-		{"consecutive duplicates collapsed", "zai,zai,anthropic", nil, []providerStep{{Provider: "zai"}, {Provider: "anthropic"}}},
-		{"explicit auto kept as chain element", "auto,anthropic", nil, []providerStep{{}, {Provider: "anthropic"}}},
+		{"unset", "", nil, []chainElement{{}}},
+		{"single", "anthropic", nil, []chainElement{{Provider: "anthropic"}}},
+		{"auto normalises to blank", "auto", nil, []chainElement{{}}},
+		{"chain", "anthropic,zai,openai", nil, []chainElement{{Provider: "anthropic"}, {Provider: "zai"}, {Provider: "openai"}}},
+		{"chain with whitespace", "anthropic, zai , openai", nil, []chainElement{{Provider: "anthropic"}, {Provider: "zai"}, {Provider: "openai"}}},
+		{"trailing comma dropped", "anthropic,", nil, []chainElement{{Provider: "anthropic"}}},
+		{"leading comma dropped", ",anthropic", nil, []chainElement{{Provider: "anthropic"}}},
+		{"consecutive duplicates collapsed", "zai,zai,anthropic", nil, []chainElement{{Provider: "zai"}, {Provider: "anthropic"}}},
+		{"explicit auto kept as chain element", "auto,anthropic", nil, []chainElement{{}, {Provider: "anthropic"}}},
 		// Per-element model overrides (`provider:model`): the headline feature.
-		{"per-element model swap", "zai:glm-5.2,anthropic:claude-opus-4-8", nil, []providerStep{{Provider: "zai", Model: "glm-5.2"}, {Provider: "anthropic", Model: "claude-opus-4-8"}}},
-		{"mixed model and inherit", "zai:glm-5.2,anthropic", nil, []providerStep{{Provider: "zai", Model: "glm-5.2"}, {Provider: "anthropic"}}},
-		{"model with whitespace", "zai : glm-5.2", nil, []providerStep{{Provider: "zai", Model: "glm-5.2"}}},
-		{"model id with colon split on first", "zai:foo:bar", nil, []providerStep{{Provider: "zai", Model: "foo:bar"}}},
+		{"per-element model swap", "zai:glm-5.2,anthropic:claude-opus-4-8", nil, []chainElement{{Provider: "zai", Model: "glm-5.2"}, {Provider: "anthropic", Model: "claude-opus-4-8"}}},
+		{"mixed model and inherit", "zai:glm-5.2,anthropic", nil, []chainElement{{Provider: "zai", Model: "glm-5.2"}, {Provider: "anthropic"}}},
+		{"model with whitespace", "zai : glm-5.2", nil, []chainElement{{Provider: "zai", Model: "glm-5.2"}}},
+		{"model id with colon split on first", "zai:foo:bar", nil, []chainElement{{Provider: "zai", Model: "foo:bar"}}},
 		// Env expansion runs on the whole field BEFORE splitting, so an
 		// env default may itself carry the rest of the chain.
-		{"rescue head expands then chains", "${RESCUE_PROVIDER:-zai},anthropic", nil, []providerStep{{Provider: "zai"}, {Provider: "anthropic"}}},
-		{"rescue head overridden", "${RESCUE_PROVIDER:-zai},anthropic", map[string]string{"RESCUE_PROVIDER": "openai"}, []providerStep{{Provider: "openai"}, {Provider: "anthropic"}}},
-		{"env supplies whole chain", "${PROVIDERS:-anthropic,zai}", nil, []providerStep{{Provider: "anthropic"}, {Provider: "zai"}}},
+		{"rescue head expands then chains", "${RESCUE_PROVIDER:-zai},anthropic", nil, []chainElement{{Provider: "zai"}, {Provider: "anthropic"}}},
+		{"rescue head overridden", "${RESCUE_PROVIDER:-zai},anthropic", map[string]string{"RESCUE_PROVIDER": "openai"}, []chainElement{{Provider: "openai"}, {Provider: "anthropic"}}},
+		{"env supplies whole chain", "${PROVIDERS:-anthropic,zai}", nil, []chainElement{{Provider: "anthropic"}, {Provider: "zai"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

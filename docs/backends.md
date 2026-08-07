@@ -262,6 +262,181 @@ field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 Like the hint chain itself, per-element models only take effect on
 `claude_code` (the only backend that walks the chain today).
 
+## Cross-backend fallback routes (`fallbacks:`)
+
+`provider:` swaps a **credential** on one backend. `fallbacks:` declares
+complete alternative **routes** — a different backend, model and
+credential — for the case the `provider:` chain cannot serve: a CLI
+backend whose subscription forfait has shut, continuing on a metered API
+through `claw`. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md).
+
+```yaml
+agent implement:
+  backend: "claude_code"          # forfait
+  model: "claude-opus-5"
+  tools: [read_file, run_command]
+  fallbacks:
+    api:                          # same model, metered Anthropic key
+      backend: "claw"
+      model: "anthropic/claude-opus-5"
+      on: [usage_window]
+    gpt:                          # another API family
+      backend: "claw"
+      model: "openai/gpt-5.5"
+      metered: true
+```
+
+Routes are **named**, and the name is not decoration: it is the id the
+`model_fallback` event and the run report cite, so a bilan reads
+"fell through to `api`" rather than an ordinal. Declaration order is the
+try order. Both surfaces compose — the `provider:` hints are walked
+first, then each route.
+
+### When a route is taken
+
+`on:` filters which failure may route to an element:
+
+| Category | Meaning | Emitted by |
+|---|---|---|
+| `usage_window` | subscription 5h/weekly cap — waiting is the only cure for THIS credential | `claude_code`; `pi` when the provider echoes Anthropic-shaped prose |
+| `auth` | rejected or expired credential | `claude_code`, `pi` |
+| `unavailable` | model the credential cannot reach | `claude_code` |
+| `transient_exhausted` | a transient condition that survived the in-node retry budget | every backend |
+| `any` | escape hatch — clears the filter | — |
+
+The default when `on:` is omitted is **`[usage_window, unavailable]`**.
+Two omissions are deliberate: `any` is not the default because a budget
+cap or a schema-shape failure re-fails identically on every route, and
+`auth` is not, because a rejected credential deliberately pauses for a
+human rather than being automated around. Both remain available
+explicitly.
+
+`on:` is a **per-route filter**, not a chain terminator: a middle route
+that refuses the category is skipped so a later route that accepts it
+still runs. The walk ends only when no remaining route accepts.
+
+An **unclassifiable** failure always routes, whatever the filter says.
+Refusing it would strand a run on exactly the failures iterion could not
+describe — a sandboxed `claw` route flattens its errors to a string at
+the IPC boundary, and `kimi`/`grok` have no error channel at all.
+
+A `usage_window` failure **skips** the in-node retry budget when a route
+remains: retrying inside a shut window cannot succeed, and the whole
+chain runs under one per-node `timeout:`.
+
+### What a fall-through leaves behind
+
+Nothing about it is silent:
+
+- a `model_fallback` event in `events.jsonl` (from/to backend, model and
+  provider, the classified reason, attempts spent) plus a `run.log`
+  warning;
+- `_backend` / `_model` on the node output name the route that
+  **served**, not the one requested;
+- `_fallback_used` and `_served_by` are stamped so a bot's deterministic
+  gate can **fail closed on a degraded input** — the same posture it
+  already takes on an unreadable one. This matters most for a judge: a
+  weaker model still emits a well-formed verdict, and only the finding
+  count changes;
+- a failed route's tokens and cost fold into the node's totals, so
+  `max_cost_usd` and the org monthly cap see what was really spent;
+- an exhausted chain surfaces every route's error (`Unwrap() []error`),
+  so the run-level usage-window retry and the credential-pool donor
+  cooldown still find the cause they key on.
+
+A fall-through also **drops the failed route's conversation** — the
+session store carries no provider fingerprint, so replaying it would
+send one provider's signed turns to another.
+
+### Refusals
+
+Two crossings are compile-time **errors** (`C176`), because the degraded
+run would be silently wrong rather than merely worse:
+
+- a route on a backend that cannot enforce the node's `permission:` gate
+  (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
+  disappear at the moment the run is under stress;
+- a route crossing the claw⇄CLI boundary, because the `tools:` list
+  does not mean the same thing on both sides. The two directions are not
+  symmetric:
+  - **claw → CLI is refused outright**, whatever the list. Under the
+    always-on `bypassPermissions` a CLI agent ignores the lowercase
+    `tools:` list and carries the full native toolset, so a reviewer
+    restricted to `read_file` would gain Edit/Write the moment the chain
+    falls through — on a node the engine may already have admitted as a
+    read-only parallel branch.
+  - **CLI → claw is refused only when the list is empty**, which on claw
+    means *zero* tools. Declaring the tools explicitly is the documented
+    pattern: inert on the CLI primary, load-bearing on the claw route.
+
+A route that changes `backend:` must pin its own `model:` (`C173`):
+model specs are not portable (`claw` needs `provider/model`,
+`claude_code` accepts a bare id or an `anthropic/` prefix).
+
+### At launch, without editing the bot
+
+An operator can add **one** run-level route instead of authoring a
+block — the studio Launch form's "Fallback route" row, or:
+
+```sh
+iterion run bot.bot --fallback 'claw:openai/gpt-5.5'
+```
+
+It applies to **agent nodes that declare no `fallbacks:` of their own**,
+and **never to judges** — a weaker judge still emits a well-formed
+verdict, so a blanket launch setting must not reach one. An author who
+wrote a chain vetted where it may go, so their routes win rather than
+being extended. It takes the default `on:` set; anything finer belongs
+in the `.bot`.
+
+The route is **materialised onto the compiled workflow** at launch, not
+resolved privately at dispatch. That is what subjects it to the same
+refusals as an authored route — an ungated crossing or a claw⇄CLI
+crossing on a tools-less node is **dropped with a warning**, never
+silently taken — and what makes it visible to the three pre-run
+analyses (sandbox bind-mount, parallel-branch admission, the
+`fan_out_each` guard). Without that, a flag could reach exactly the
+crossings the compiler refuses in the `.bot`.
+
+The route does **not** propagate into a `subbot:` child. A subbot is a
+different bot with its own routes, its own judges and its own permission
+posture; the launch route applies to the run you launched, and a child
+that needs one declares it or is launched with its own. Launch rules are
+not persisted either, so repeat `--fallback` on `iterion resume` to keep
+the route: the scenario this feature exists for
+— a long run outliving a quota window — is precisely the one that
+resumes.
+
+One route rather than a per-node ordered list, deliberately: the value
+is "don't lose a long run to a forfait wall", which one alternative
+delivers, and the Launch form persists nothing between launches — a
+per-node chain would be rebuilt cell by cell on every launch of a
+15-node bot.
+
+Routes from all three sources (provider hints, authored routes, the
+launch route) are **deduped**: one resolving to the same backend +
+credential + model as the route before it is dropped rather than paying
+a second full retry budget to fail identically.
+
+### Scope
+
+`claude_code` → `claw` is the validated lane. `kimi` and `grok` sit on a
+CLI contract that structurally cannot return an error, so no typed
+trigger can fire for them; `codex` is frozen. A sandboxed `claw` route
+works — the trigger comes from the failing route, which `claude_code`
+types correctly — but its own failure is always unclassifiable, and it
+**cannot serve a node with `permission: ask|deny`**.
+
+> ⚠️ **Sandboxed `claw` cannot enforce the permission gate**, chain or no
+> chain. The IPC task the in-container `iterion __claw-runner` rebuilds
+> carries no policy, so `bash` / `file_edit` / `write_file` run ungated.
+> Since sandbox is on by default, a `permission:`-declaring claw node has
+> silently had no gate. That combination now **fails loudly at dispatch**
+> rather than running with an inert boundary — the same fail-not-degrade
+> posture `pi` already takes. Run the node unsandboxed, or route it to
+> `claude_code`/`pi`. Carrying the policy across the IPC boundary is a
+> named follow-on.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend

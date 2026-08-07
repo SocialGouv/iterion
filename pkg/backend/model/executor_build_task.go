@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -141,6 +142,15 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
+//
+// `backendName` is the REQUESTED backend and is only a fallback for the
+// stamp: `result.BackendName` — what actually served — wins whenever the
+// delegate reported it, which every shipped backend does. The
+// distinction is invisible on a single-backend node and load-bearing the
+// moment a fallback chain can cross backends (ADR-087): `_backend` feeds
+// the studio's backends_used chip and `iterion report`'s per-step tag,
+// so stamping the requested name would make both assert a false fact
+// about a degraded run.
 func stampDelegateOutputMeta(output map[string]any, result delegate.Result, backendName string) {
 	if output == nil {
 		return
@@ -148,7 +158,11 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	if output["_tokens"] == nil {
 		output["_tokens"] = result.Tokens
 	}
-	output["_backend"] = backendName
+	if result.BackendName != "" {
+		output["_backend"] = result.BackendName
+	} else {
+		output["_backend"] = backendName
+	}
 	if result.SessionID != "" {
 		output["_session_id"] = result.SessionID
 	}
@@ -175,6 +189,28 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 }
 
+// stampFallbackMeta records, on the node's own output, that the run was
+// served by something other than its first choice.
+//
+// This is the half of ADR-087's judge guardrail that a bot can act on.
+// A reviewer served by a weaker model still emits a well-formed verdict
+// — only the finding COUNT changes, and a deterministic merge gate reads
+// that count. `_fallback_used` lets such a gate fail closed on a
+// degraded input, the same posture it already takes on an unreadable
+// one; `_served_by` names the route so a bilan can say which.
+//
+// Nothing is written on the happy path, so an output that carries these
+// keys always means something actually happened.
+func stampFallbackMeta(output map[string]any, out chainOutcome) {
+	if output == nil || !out.FellThrough {
+		return
+	}
+	output["_fallback_used"] = true
+	if out.ServedBy != "" {
+		output["_served_by"] = out.ServedBy
+	}
+}
+
 // dispatchWithObservability wraps dispatchWithProviderFallback with the
 // 3-hook lifecycle every agent/judge/LLM-router call paid by hand:
 // OnDelegateStarted fires before dispatch; on error, OnDelegateError
@@ -185,33 +221,78 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 // caller propagates the wrapped error untouched. Extracted from
 // executeBackend / executeLLMRouterUnified — only the error wrap prefix
 // differs (`model: node` vs `model: llm router`).
+// `backendName` is the node's REQUESTED backend — what the lifecycle
+// pair is opened and (on failure) reported against. The element that
+// actually served comes back on the chainOutcome.
 func (e *ClawExecutor) dispatchWithObservability(
 	ctx context.Context,
 	nodeID, backendName, errPrefix string,
-	chain []providerStep,
-	backend delegate.Backend,
-	task *delegate.Task,
-) (delegate.Result, error) {
+	chain []chainElement,
+	baseModel string,
+	build elementBuilder,
+) (chainOutcome, error) {
 	if e.hooks.OnDelegateStarted != nil {
 		e.hooks.OnDelegateStarted(nodeID, backendName)
 	}
-	result, err := e.dispatchWithProviderFallback(ctx, nodeID, backendName, chain, backend, task)
+	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build)
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
-			bn := result.BackendName
-			if bn == "" {
-				bn = backendName
-			}
-			di := delegateInfoFromResult(bn, result)
+			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
+			di := delegateInfoFromResult(bn, out.Result)
 			di.Error = err
 			e.hooks.OnDelegateError(nodeID, di)
 		}
-		return result, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
+		return out, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
 	}
 	if e.hooks.OnDelegateFinished != nil {
-		e.hooks.OnDelegateFinished(nodeID, delegateInfoFromResult(result.BackendName, result))
+		e.hooks.OnDelegateFinished(nodeID, delegateInfoFromResult(out.Result.BackendName, out.Result))
 	}
-	return result, nil
+	return out, nil
+}
+
+// nodeBuildSession carries the state that must survive a per-element
+// task rebuild WITHOUT being repeated.
+//
+// A chain rebuilds the task once per element that changes backend, but
+// the node's observable effects belong to the node, not the attempt: a
+// 3-element chain must still write ONE llm_prompt event (the studio
+// timeline and the report would otherwise show three prompts that were
+// never three prompts) and hand out ONE board run token (the registry is
+// hard-capped at 1024 and silently disables board-emit when full).
+//
+// The zero value is usable; a nil *nodeBuildSession means "standalone
+// build, do everything", which is what the tests and any future
+// single-shot caller want.
+type nodeBuildSession struct {
+	promptEmitted bool
+	boardToken    string
+	boardMinted   bool
+}
+
+// claimPrompt reports whether THIS build should emit the node's prompt
+// event, and records that it did.
+func (s *nodeBuildSession) claimPrompt() bool {
+	if s == nil {
+		return true
+	}
+	if s.promptEmitted {
+		return false
+	}
+	s.promptEmitted = true
+	return true
+}
+
+// boardTokenFor returns the node's board run token, minting it on first
+// use and reusing it for every later element.
+func (s *nodeBuildSession) boardTokenFor(mint func() string) string {
+	if s == nil {
+		return mint()
+	}
+	if !s.boardMinted {
+		s.boardToken = mint()
+		s.boardMinted = true
+	}
+	return s.boardToken
 }
 
 // executeBackend is the unified execution path for agent and judge nodes.
@@ -248,7 +329,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 		return nil, fmt.Errorf("model: node %q: %w", f.id, err)
 	}
 
-	task, err := e.buildTask(ctx, node, f, input, backendName)
+	// The node's effects (its llm_prompt event, its board run token) fire
+	// once here however many chain elements the dispatch below walks.
+	sess := &nodeBuildSession{}
+	task, err := e.buildTask(ctx, node, f, input, backendName, sess)
 	if err != nil {
 		return nil, err
 	}
@@ -272,13 +356,58 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 
 	// Auto-memory brackets the dispatch: the space is materialised before the
 	// backend sees the task, and folded back after — deferred, so a node that
-	// fails AFTER the agent wrote its notes still keeps them.
+	// fails AFTER the agent wrote its notes still keeps them. Applied once
+	// against the primary backend; fall-through elements inherit the dir
+	// below so a route change does not drop MEMORY.md mid-node.
 	syncAutoMemory := e.applyAutoMemory(ctx, &task, f, backendName)
 	defer syncAutoMemory()
 
-	result, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", e.resolveProviderChain(node), backend, &task)
+	chain := collapseHintOnlyChain(e.resolveChain(node), backendName)
+	build := e.newElementBuilder(f.id, backendName, backend,
+		func(ctx context.Context, bn string) (*delegate.Task, error) {
+			// The base backend's task is already built above; only an
+			// element naming a DIFFERENT backend reaches the assembler.
+			if bn == backendName {
+				return &task, nil
+			}
+			built, err := e.buildTask(ctx, node, f, input, bn, sess)
+			if err != nil {
+				return nil, err
+			}
+			// Carry the already-materialised auto-memory mirror onto the
+			// alternate-backend task. Re-running applyAutoMemory per
+			// element would create a second Mirror that owns a second
+			// directory and race the first on SyncBack.
+			//
+			// Re-render the prompt section for THIS backend (R949ec5):
+			// claude_code uses a native settings flag so AutoMemoryPrompt
+			// is empty on the primary; claw/pi have no native mechanism
+			// and the prompt section IS how they learn the directory
+			// exists. Copying the primary's empty prompt would leave a
+			// claw fall-through with a dir but no instruction to use it.
+			if task.AutoMemoryDir != "" && automemory.SupportsBackend(bn) {
+				built.AutoMemoryDir = task.AutoMemoryDir
+				if automemory.NeedsPromptSection(bn) {
+					built.AutoMemoryPrompt = automemory.PromptSection(task.AutoMemoryDir)
+				}
+			}
+			return &built, nil
+		})
+	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
 		return nil, err
+	}
+	// Everything below acts on the element that SERVED, which is the
+	// node's own backend unless the chain fell through.
+	result := out.Result
+	servingBackendName := firstNonEmpty(out.BackendName, backendName)
+	servingBackend := out.Backend
+	if servingBackend == nil {
+		servingBackend = backend
+	}
+	servingTask := out.Task
+	if servingTask == nil {
+		servingTask = &task
 	}
 
 	// Flag if structured output parsing fell back to text wrapper.
@@ -287,7 +416,8 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	}
 
 	// Attach metadata.
-	stampDelegateOutputMeta(result.Output, result, backendName)
+	stampDelegateOutputMeta(result.Output, result, servingBackendName)
+	stampFallbackMeta(result.Output, out)
 
 	// Check for a backend interaction signal BEFORE schema validation.
 	// A `_needs_interaction` pause Result (e.g. an LLM ask_user call on a
@@ -315,10 +445,14 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
 			return nil, &ErrNeedsInteraction{
-				NodeID:           f.id,
-				Questions:        questions,
-				SessionID:        result.SessionID,
-				Backend:          backendName,
+				NodeID:    f.id,
+				Questions: questions,
+				SessionID: result.SessionID,
+				// The conversation on this pause belongs to whichever
+				// element served, so the checkpoint must name THAT
+				// backend — resuming against the requested one would
+				// hand a claw conversation to claude_code.
+				Backend:          servingBackendName,
 				Conversation:     result.PendingConversation,
 				PendingToolUseID: result.PendingToolUseID,
 			}
@@ -333,11 +467,19 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// IR regression or a programmatic schema-map mutation.
 	if f.outputSchema != "" {
 		if schema, ok := e.schemas[f.outputSchema]; ok {
-			validated, err := e.validateAndRetry(ctx, f, backendName, backend, &task, result, schema)
+			validated, err := e.validateAndRetry(ctx, f, servingBackendName, servingBackend, servingTask, result, schema)
 			if err != nil {
 				return nil, err
 			}
 			result = validated
+			// The schema retry (and the claw extraction fallback) hand
+			// back a FRESH output map, so the degraded-input marker has
+			// to be re-stamped or it is lost on exactly the correlated
+			// case: a weaker fallback model is the one most likely to
+			// emit output that needs the retry. Losing it makes a
+			// deterministic gate fail OPEN on a degraded verdict and
+			// erases the "fell back" row from the run header.
+			stampFallbackMeta(result.Output, out)
 		} else {
 			e.logger.Warn("[%s#%d/%s] node declares output schema %q but no schema with that name is registered — IR compiler should have rejected this; output passes through unvalidated",
 				f.id, task.Iteration, backendName, f.outputSchema)
@@ -567,14 +709,15 @@ func appendSchemaRetryFeedback(prompt, feedback string) string {
 // node's resolved fields, prompts, schema, reasoning effort, capabilities,
 // tool set, and session/resume continuity. Split out of executeBackend to
 // keep that method focused on dispatch + validation.
-func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]any, backendName string) (delegate.Task, error) {
+func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]any, backendName string, sess *nodeBuildSession) (delegate.Task, error) {
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
 	userText, userContent := e.buildUserPromptParts(f, input, td, backendName)
 
-	// Emit prompt content for observability.
-	if e.hooks.OnLLMPrompt != nil {
+	// Emit prompt content for observability — once per node execution,
+	// not once per chain element (see nodeBuildSession).
+	if e.hooks.OnLLMPrompt != nil && sess.claimPrompt() {
 		e.hooks.OnLLMPrompt(f.id, systemText, userText)
 	}
 
@@ -728,7 +871,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.AllowedTools = effectiveTools // CLI backends read this
 		task.HasTools = len(effectiveTools) > 0
 	}
-	e.applyBoardEndpoint(&task, effectiveCaps)
+	e.applyBoardEndpoint(&task, effectiveCaps, sess)
 	e.applyAskUserEndpoint(&task)
 
 	// Mark the tools the runtime opened for its OWN interaction/capability
@@ -1004,7 +1147,7 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 // exactly this node's board caps. Non-sandboxed runs use the stdio
 // __mcp-board server; CLI runs without a server leave
 // boardEndpoint/boardRegister unset → board-emit disabled (documented).
-func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []string) {
+func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []string, sess *nodeBuildSession) {
 	if !delegate.HasBoardCapability(effectiveCaps) || e.sandbox == nil || e.boardEndpoint == "" || e.boardRegister == nil {
 		return
 	}
@@ -1014,7 +1157,13 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 	// stdio (__mcp-board) and in-process (claw) paths do — otherwise a
 	// sandboxed planner publishes orphan tickets and the parent card
 	// loses its children counter.
-	task.BoardRunToken = e.boardRegister(effectiveCaps, e.sourceIssueID)
+	// Minted once per node execution and reused by every later chain
+	// element: the grant is scoped to the node's capabilities, so one
+	// token is both correct and the only way a chain does not multiply
+	// entries in a registry that silently disables board-emit when full.
+	task.BoardRunToken = sess.boardTokenFor(func() string {
+		return e.boardRegister(effectiveCaps, e.sourceIssueID)
+	})
 }
 
 // applyAskUserEndpoint wires the per-run ask-user MCP HTTP transport

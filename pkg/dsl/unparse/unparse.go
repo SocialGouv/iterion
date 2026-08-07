@@ -217,6 +217,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		if a.Cursors != nil {
 			writeCursorsBlock(&w.b, a.Cursors, "  ")
 		}
+		writeFallbacksBlock(&w.b, a.Fallbacks, "  ")
 	}
 }
 
@@ -251,6 +252,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		if j.Cursors != nil {
 			writeCursorsBlock(&w.b, j.Cursors, "  ")
 		}
+		writeFallbacksBlock(&w.b, j.Fallbacks, "  ")
 	}
 }
 
@@ -1218,6 +1220,45 @@ func writeCursorsBlock(b *strings.Builder, cb *ast.CursorBlock, indent string) {
 			fmt.Fprintf(b, "%s  %s: %s\n", indent, s.Key, s.Value)
 		} else {
 			fmt.Fprintf(b, "%s  %s: %q\n", indent, s.Key, s.Value)
+		}
+	}
+}
+
+// writeFallbacksBlock renders an agent/judge `fallbacks:` block
+// (ADR-087) as named entries, preserving declaration order — which IS
+// the try order.
+//
+// Omitting this would not merely lose formatting: the studio saves every
+// edit through parse → unparse, so an unserialised block is DELETED from
+// the .bot the next time anyone touches an unrelated field.
+func writeFallbacksBlock(b *strings.Builder, fbs []*ast.FallbackDecl, indent string) {
+	if len(fbs) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "%sfallbacks:\n", indent)
+	for _, fb := range fbs {
+		if fb == nil || strings.TrimSpace(fb.Name) == "" {
+			// A route with no name has no `<name>:` header to emit: it
+			// would serialise as a bare `  :` the parser rejects
+			// (R4a40d3). Skip rather than produce a .bot that cannot
+			// re-parse — the studio saves every edit through unparse.
+			continue
+		}
+		fmt.Fprintf(b, "%s  %s:\n", indent, fb.Name)
+		if fb.Backend != "" {
+			fmt.Fprintf(b, "%s    backend: %q\n", indent, fb.Backend)
+		}
+		if fb.Model != "" {
+			fmt.Fprintf(b, "%s    model: %q\n", indent, fb.Model)
+		}
+		if fb.Provider != "" {
+			fmt.Fprintf(b, "%s    provider: %q\n", indent, fb.Provider)
+		}
+		if len(fb.On) > 0 {
+			fmt.Fprintf(b, "%s    on: [%s]\n", indent, strings.Join(fb.On, ", "))
+		}
+		if fb.Metered {
+			fmt.Fprintf(b, "%s    metered: true\n", indent)
 		}
 	}
 }

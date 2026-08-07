@@ -72,6 +72,21 @@ func TestStampDelegateOutputMeta(t *testing.T) {
 			notKeys:  []string{"_context_window", "_context_used", "_max_output_tokens"},
 		},
 		{
+			// ADR-087: `_backend` must name what SERVED, not what was
+			// asked for. The two differ only after a fallback chain
+			// crosses backends — and that is exactly the run where the
+			// studio's backends_used chip and `iterion report`'s
+			// per-step tag would otherwise assert a false fact.
+			name: "backend reported by the delegate wins over the requested one",
+			result: delegate.Result{
+				Output:         map[string]any{},
+				BackendName:    "claw",
+				EffectiveModel: "openai/gpt-5.5",
+			},
+			backend:  "claude_code",
+			wantKeys: map[string]any{"_backend": "claw", "_model": "openai/gpt-5.5"},
+		},
+		{
 			name: "nil output map — no panic, no-op",
 			result: delegate.Result{
 				Output:         nil,

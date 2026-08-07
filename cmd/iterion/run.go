@@ -20,6 +20,7 @@ var runOpts struct {
 	varFlags            []string
 	modelFor            []string
 	backendFor          []string
+	fallback            string
 	background          bool
 	mergeInto           string
 	branchName          string
@@ -75,6 +76,7 @@ var runCmd = &cobra.Command{
 			ReviewMode:          runOpts.reviewMode,
 			ModelFor:            runOpts.modelFor,
 			BackendFor:          runOpts.backendFor,
+			Fallback:            runOpts.fallback,
 			AutoResume:          runOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          runOpts.maxCostUSD,
@@ -123,6 +125,7 @@ func init() {
 	f.StringArrayVar(&runOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked, even in ask mode. Additive to the workflow deny: list.")
 	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bots that opt into the mono/dual review-loop topology by declaring a review_mode var (ADR-052): \"mono\" (one model family, ~half the calls), \"dual\" (alternate two families), or \"auto\" (default: dual when two provider families are detected, else mono). The shipped catalog no longer declares it (ADR-058 v2 campaigns); the surface stays for third-party or future reviewer-loop bots. No-op otherwise.")
 	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
+	f.StringVar(&runOpts.fallback, "fallback", "", "Run-level fallback route \"<backend>:<model>\" taken when an agent node's primary fails (e.g. --fallback 'claw:openai/gpt-5.5'). Applies only to agent nodes that declare no fallbacks: of their own, and never to judges. Uses the default trigger set (usage_window, unavailable); author a fallbacks: block for anything finer. See ADR-087.")
 	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model; wins over the node's DSL backend:.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
 	registerAutoResumeFlag(f, &runOpts.autoResume)

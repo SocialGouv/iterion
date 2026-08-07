@@ -124,6 +124,12 @@ type RunOptions struct {
 	// in buildRunExecutor. See model_override.go.
 	ModelFor   []string
 	BackendFor []string
+	// Fallback is the operator's run-level fallback route
+	// (`--fallback <backend>:<model>`, empty = none). It applies to agent
+	// nodes that declare no `fallbacks:` of their own, and never to
+	// judges — a weaker judge still emits a well-formed verdict, so a
+	// blanket launch setting must not reach one. See ADR-087.
+	Fallback string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -466,6 +472,10 @@ func buildRunExecutor(
 	if err != nil {
 		return nil, err
 	}
+	runFallback, err := ir.ParseRunFallbackFlag(opts.Fallback)
+	if err != nil {
+		return nil, err
+	}
 	execSpec := runview.ExecutorSpec{
 		Workflow:   wf,
 		Vars:       opts.Vars,
@@ -484,6 +494,7 @@ func buildRunExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
+		RunFallback:     runFallback,
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.

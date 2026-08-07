@@ -111,9 +111,6 @@ func unrestrictedCLIBackendCanWrite(
 	defaultBackend string,
 	resolver effectiveBackendResolver,
 ) bool {
-	if len(tools) > 0 {
-		return false
-	}
 	backend := strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend))
 	if backend == "" {
 		backend = strings.TrimSpace(ir.ExpandEnvWithDefault(defaultBackend))
@@ -123,10 +120,58 @@ func unrestrictedCLIBackendCanWrite(
 			backend = effective
 		}
 	}
+	// A claw→CLI route un-restricts the node's tool set WHATEVER it
+	// declared: under the always-on bypassPermissions, claude_code
+	// ignores the lowercase `tools:` list entirely and always carries
+	// the full native toolset. So this is checked BEFORE the
+	// list-based early return — a `tools: [read_file]` claw node with a
+	// CLI route still gains Edit/Write on fall-through, and admission
+	// happens once, before the run.
+	if backend == "claw" && fallbacksReachCLIBackend(node) {
+		return true
+	}
+	if len(tools) > 0 {
+		return false
+	}
 	if backend == "" || backend == "auto" {
 		return false
 	}
-	return backend != "claw"
+	if backend != "claw" {
+		return true
+	}
+	// The node resolves to claw, where an empty tools list means ZERO
+	// tools. But a `fallbacks:` route (ADR-087) on a CLI backend would
+	// run that same empty list as the FULL unrestricted native toolset
+	// under bypassPermissions — so a node admitted here as read-only
+	// could start writing the moment its chain falls through.
+	//
+	// Admission is decided ONCE, before the run, so it must be
+	// pessimistic over the WHOLE chain: mutating if ANY route would be.
+	// The cost is real and accepted — a tools-less claw node that
+	// declares a CLI route stops being eligible for parallel read-only
+	// fan-out — and it is the right trade against N concurrent writers
+	// racing on one worktree with every guard already passed.
+	return fallbacksReachCLIBackend(node)
+}
+
+// fallbacksReachCLIBackend reports whether any of a node's `fallbacks:`
+// routes runs on a backend where an empty `tools:` list means the full
+// native toolset rather than none.
+func fallbacksReachCLIBackend(node ir.Node) bool {
+	llm, ok := node.(ir.LLMNode)
+	if !ok {
+		return false
+	}
+	for _, fb := range llm.GetFallbacks() {
+		b := strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend))
+		if b == "" || b == "auto" {
+			continue // inherits the node's backend, which is claw here
+		}
+		if b != "claw" {
+			return true
+		}
+	}
+	return false
 }
 
 // branchContainsMutation walks from startNodeID to globalConvergence (or to a

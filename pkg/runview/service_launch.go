@@ -181,6 +181,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		AsyncAsk:       s.asyncAskBinder(),
 		Backend:        spec.Backend,
 		ModelOverrides: toModelOverrides(spec.ModelOverrides),
+		RunFallback:    toRunFallback(spec.Fallback),
 		// Resolved, not taken raw: spec.BotID is empty whenever the caller
 		// launched by path (the studio's own file picker), and the executor
 		// would then fall back to the workflow name — while a RESUME of that

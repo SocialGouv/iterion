@@ -107,10 +107,22 @@ supervisor_prop = "watches" ":" ident_list NEWLINE
 
 (* ---------- LLM nodes ---------- *)
 
+(* A node's ordered fallback routes (ADR-087). Entries are NAMED rather
+   than an anonymous sequence because the lexer has no list-item token,
+   and because the name is the stable id a fall-through is reported by. *)
+fallbacks_block = "fallbacks" ":" NEWLINE INDENT { fallback_entry } DEDENT ;
+fallback_entry  = IDENT ":" NEWLINE INDENT { fallback_prop } DEDENT ;
+fallback_prop   = "backend" ":" STRING_LIT NEWLINE
+                | "model" ":" STRING_LIT NEWLINE
+                | "provider" ":" STRING_LIT NEWLINE
+                | "on" ":" ident_list NEWLINE
+                | "metered" ":" BOOL_LIT NEWLINE ;
+
 agent_decl = "agent" IDENT ":" NEWLINE INDENT { llm_prop } DEDENT ;
 judge_decl = "judge" IDENT ":" NEWLINE INDENT { llm_prop } DEDENT ;
 
 llm_prop = "description" ":" STRING_LIT NEWLINE
+         | fallbacks_block
          | "model" ":" STRING_LIT NEWLINE
          | "backend" ":" STRING_LIT NEWLINE
          | "provider" ":" STRING_LIT NEWLINE

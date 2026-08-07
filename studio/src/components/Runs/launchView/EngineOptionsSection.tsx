@@ -8,6 +8,7 @@ import type { VarField } from "@/api/types";
 import { useBackendDetectStore } from "@/store/backendDetect";
 
 import BudgetSection from "./BudgetSection";
+import FallbackSection from "./FallbackSection";
 import ModelOverridesSection, { type LLMNode } from "./ModelOverridesSection";
 import OptionsDisclosure from "./OptionsDisclosure";
 import RunSettingsSection from "./RunSettingsSection";
@@ -39,7 +40,8 @@ export default function EngineOptionsSection({
   // Option count surfaced on the collapsed toggle: the three run-settings
   // knobs (+ review topology when declared), per-node model overrides,
   // five budget caps, four worktree fields.
-  const count = 3 + (showReviewMode ? 1 : 0) + llmNodes.length + 5 + 4;
+  // …plus the one run-level fallback row.
+  const count = 3 + (showReviewMode ? 1 : 0) + llmNodes.length + 5 + 4 + 1;
 
   return (
     <OptionsDisclosure
@@ -74,6 +76,14 @@ export default function EngineOptionsSection({
             [name]: { ...prev[name], ...patch },
           }))
         }
+      />
+      <FallbackSection
+        backend={overrides.fallbackBackend}
+        model={overrides.fallbackModel}
+        backendReport={backendReport}
+        cloud={cloud}
+        onBackendChange={overrides.setFallbackBackend}
+        onModelChange={overrides.setFallbackModel}
       />
       <BudgetSection
         show={overrides.showBudget}

@@ -286,7 +286,7 @@ func TestDispatchProviderFallback_ContextCancelledNoFallthrough(t *testing.T) {
 	cancel() // already cancelled
 
 	task := delegate.Task{NodeID: "n"}
-	_, err := e.dispatchWithProviderFallback(ctx, "n", delegate.BackendClaudeCode, []providerStep{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
+	_, err := e.dispatchWithProviderFallback(ctx, "n", delegate.BackendClaudeCode, []chainElement{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
@@ -312,7 +312,7 @@ func TestDispatchProviderFallback_CollapsesChainForHintIgnoringBackend(t *testin
 	fake := &providerScriptedBackend{} // no failures
 
 	task := delegate.Task{NodeID: "n"}
-	out, err := e.dispatchWithProviderFallback(context.Background(), "n", delegate.BackendClaw, []providerStep{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
+	out, err := e.dispatchWithProviderFallback(context.Background(), "n", delegate.BackendClaw, []chainElement{{Provider: "zai"}, {Provider: "anthropic"}}, fake, &task)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
 
@@ -149,14 +150,55 @@ func retryReason(err error) string {
 	return "transient backend error"
 }
 
+// shouldRetryInPlace decides whether a failed delegate call is worth
+// re-issuing against the SAME chain element. It is isDelegateRetryable
+// with one carve-out: a provider usage WINDOW (the subscription 5h or
+// weekly cap) cannot be cured by waiting a few seconds, so when the node
+// still has a fallback element left to try, the in-place budget is
+// skipped entirely and the chain advances immediately.
+//
+// Without the carve-out every element pays a full backed-off budget
+// inside a window where success is impossible by construction. That is
+// not merely slow: the whole chain runs under ONE per-node timeout
+// context, so a multi-element chain can hit the node deadline mid-walk
+// and surface context.DeadlineExceeded instead of the typed
+// *ErrRateLimited that the run-level usage-window retry and the
+// credential-pool donor cooldown both key on.
+//
+// The carve-out applies only when the next route would ACTUALLY take
+// this failure — not merely when one exists. A node whose only route
+// declares `on: [unavailable]` would otherwise lose its in-place retry
+// budget on a usage window AND then stop at the filter, ending up worse
+// off than before the chain existed. On the last element, likewise:
+// with nowhere better to go, retrying and surfacing the typed error
+// upward is exactly right.
+func shouldRetryInPlace(err error, fallbackAccepts func(error) bool) bool {
+	if delegate.IsUsageWindow(err) && fallbackAccepts != nil && fallbackAccepts(err) {
+		return false
+	}
+	return isDelegateRetryable(err)
+}
+
 // retryDelegateLoop retries a backend execution call with exponential backoff.
 // The attempt budget is error-adaptive: a network/connectivity failure gets
 // the larger transient budget (rides out a multi-second outage), while a
 // deterministic-but-retryable error (signal kill, idle hang) keeps the
 // standard budget.
+//
+// This is the no-fallback form: callers with no further chain element
+// (the schema-validation retry, direct one-shot dispatch) use it and get
+// the historical behaviour unchanged.
 func (e *ClawExecutor) retryDelegateLoop(ctx context.Context, nodeID string, backendName string, fn func() (delegate.Result, error)) (delegate.Result, error) {
+	return e.retryDelegateLoopChain(ctx, nodeID, backendName, nil, fn)
+}
+
+// retryDelegateLoopChain is retryDelegateLoop with knowledge of whether
+// the caller has a fallback route that would take THIS failure, which
+// lets it skip a budget that cannot succeed (see shouldRetryInPlace).
+// A nil predicate means "no route will take it".
+func (e *ClawExecutor) retryDelegateLoopChain(ctx context.Context, nodeID string, backendName string, fallbackAccepts func(error) bool, fn func() (delegate.Result, error)) (delegate.Result, error) {
 	result, err := fn()
-	for attempt := 1; err != nil && isDelegateRetryable(err); attempt++ {
+	for attempt := 1; err != nil && shouldRetryInPlace(err, fallbackAccepts); attempt++ {
 		maxAttempts := e.retry.effectiveMaxAttempts(err)
 		if attempt >= maxAttempts {
 			break
@@ -208,21 +250,31 @@ func providerLabel(p string) string {
 	return p
 }
 
-// stepLabel renders a chain element for logs: "zai" when it inherits the
-// node model, "zai/glm-5.2" when it pins its own. The empty "auto" hint
-// maps to a readable token.
-func stepLabel(s providerStep) string {
+// stepLabel renders a chain element for logs. A `fallbacks:` element is
+// named by its entry name — the whole reason entries are named, so a
+// report says `fell through to "api"` rather than an ordinal. A legacy
+// `provider:` element has no name and renders as "zai" (inherits the
+// node model) or "zai/glm-5.2" (pins its own).
+func stepLabel(s chainElement) string {
+	if s.Label != "" {
+		return s.Label
+	}
 	if s.Model == "" {
 		return providerLabel(s.Provider)
 	}
 	return providerLabel(s.Provider) + "/" + s.Model
 }
 
-// chainLabel renders a whole chain in its `provider:model` source form
-// for the exhausted-chain error, e.g. "zai:glm-5.2,anthropic:claude-opus-4-8".
-func chainLabel(chain []providerStep) string {
+// chainLabel renders a whole chain in its source form for the
+// exhausted-chain error, e.g. "zai:glm-5.2,anthropic:claude-opus-4-8"
+// for a legacy chain or "primary,api,gpt" for a named one.
+func chainLabel(chain []chainElement) string {
 	parts := make([]string, len(chain))
 	for i, s := range chain {
+		if s.Label != "" {
+			parts[i] = s.Label
+			continue
+		}
 		p := providerLabel(s.Provider)
 		if s.Model != "" {
 			p += ":" + s.Model
@@ -234,20 +286,202 @@ func chainLabel(chain []providerStep) string {
 
 // providerFallbackEligible reports whether a backend actually consumes
 // the per-node provider hint, and therefore whether walking a
-// multi-element provider chain is meaningful. Only claude_code honours
-// ProviderHint today (anthropic ↔ z.ai ↔ Anthropic-compatible facades);
-// claw derives its provider from the model-spec prefix and codex ignores
-// the hint entirely, so for those a multi-provider chain would re-run an
+// HINT-ONLY chain is meaningful. Only claude_code honours ProviderHint
+// (anthropic ↔ z.ai ↔ Anthropic-compatible facades); claw derives its
+// provider from the model-spec prefix and codex ignores the hint
+// entirely, so for those a multi-provider chain would re-run an
 // identical call and waste a second retry budget. Compile-time C088
-// warns the author; here we collapse the chain to its head so the run
+// warns the author; collapseHintOnlyChain trims the chain so the run
 // never pays for a no-op fall-through.
 //
-// Centralised + named so wiring a future hint-honouring backend (e.g.
-// teaching claw to switch provider+model per element) is a one-line
-// change.
+// This says nothing about a chain whose elements pin their OWN backend
+// (ADR-087 `fallbacks:`): there, every element is a different call by
+// construction, so the collapse must not apply. chainIsHintOnly is the
+// discriminator.
 func providerFallbackEligible(backendName string) bool {
 	return backendName == delegate.BackendClaudeCode
 }
+
+// chainIsHintOnly reports whether every element defers to the node's
+// resolved backend — i.e. the chain can only swap a credential, never
+// re-shape the task. That is exactly the legacy `provider:` chain
+// (ADR-004), and exactly the case where re-running an identical call on
+// a hint-ignoring backend is pure waste.
+// elementIsHintOnly reports whether an element is only a `provider:`
+// credential hint — no named backend/label of its own. Shared by
+// chainIsHintOnly and collapseHintOnlyChain so the two cannot drift
+// (R6df672).
+func elementIsHintOnly(el chainElement) bool {
+	// A named element came from a `fallbacks:` block, i.e. the author
+	// declared a distinct route on purpose. Even one that only varies
+	// the model is meaningful on claw, which derives its provider from
+	// the model-spec prefix — so a named element is never collapsed away.
+	return el.Backend == "" && el.Label == ""
+}
+
+// chainIsHintOnly reports whether every element is a pure provider-hint
+// (no named `fallbacks:` route). The discriminator for the legacy
+// collapse path; collapseHintOnlyChain walks the same predicate.
+func chainIsHintOnly(chain []chainElement) bool {
+	for _, el := range chain {
+		if !elementIsHintOnly(el) {
+			return false
+		}
+	}
+	return true
+}
+
+// collapseHintOnlyChain trims the leading run of hint-only elements to
+// its head when the resolved backend ignores the hint. Callers apply it
+// before dispatch, where the node's backend is known.
+//
+// It collapses the PREFIX rather than refusing whole-chain when a named
+// route exists: a node carrying both `provider: "a,b"` and a
+// `fallbacks:` block would otherwise re-issue an identical call with a
+// second full retry budget on claw/codex — exactly the waste
+// providerFallbackEligible and C088 exist to prevent — merely because
+// an unrelated route was declared further down.
+func collapseHintOnlyChain(chain []chainElement, backendName string) []chainElement {
+	if len(chain) < 2 || providerFallbackEligible(backendName) {
+		return chain
+	}
+	prefix := 0
+	for _, el := range chain {
+		if !elementIsHintOnly(el) {
+			break
+		}
+		prefix++
+	}
+	if prefix < 2 {
+		return chain
+	}
+	return append(chain[:1:1], chain[prefix:]...)
+}
+
+// elementAccepts reports whether a failure of the PREVIOUS element may
+// route to this one.
+//
+// A nil/empty On list accepts everything — that is the legacy
+// `provider:` chain, which has always fallen through on any error, and
+// changing that would silently regress every shipped chain.
+//
+// An UNCLASSIFIED failure always routes, even against an explicit
+// filter. Refusing it would strand a run on precisely the failures
+// iterion failed to describe — sandboxed claw flattens every error to a
+// string at the IPC boundary, and kimi/grok have no error channel at
+// all — turning a missing classifier into a dead end rather than a
+// fall-through.
+func elementAccepts(el chainElement, cat delegate.FallbackCategory) bool {
+	if len(el.On) == 0 || cat == delegate.FallbackUnclassified {
+		return true
+	}
+	for _, want := range el.On {
+		if want == cat {
+			return true
+		}
+	}
+	return false
+}
+
+// anyElementAccepts reports whether at least one element in the rest of
+// the chain would accept a failure of this category. Used by the
+// usage-window retry carve-out: skip the in-place budget only when a
+// later route can actually take the failure (Re50c7d — `on:` is a
+// per-route filter, not a chain terminator).
+func anyElementAccepts(rest []chainElement, cat delegate.FallbackCategory) bool {
+	for _, el := range rest {
+		if elementAccepts(el, cat) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstAcceptingFrom returns the index of the first element in chain[from:]
+// that accepts cat, or -1 if none do.
+func firstAcceptingFrom(chain []chainElement, from int, cat delegate.FallbackCategory) int {
+	for i := from; i < len(chain); i++ {
+		if elementAccepts(chain[i], cat) {
+			return i
+		}
+	}
+	return -1
+}
+
+// chainSpend accumulates what the FAILED elements of a chain consumed,
+// so the winning element's Result can carry the node's true cost.
+//
+// Dropping it is not a rounding error under ADR-087: with a same-model
+// credential swap the discarded work was bounded, but a cross-backend
+// element can be a whole agentic session — invisible to max_cost_usd,
+// to the org monthly cap, and to a lending donor's ledger. The
+// precedent is validateAndRetry, whose comment records that dropping
+// the first attempt's usage "broke budget enforcement at the margins".
+type chainSpend struct {
+	tokens   int
+	duration time.Duration
+	costUSD  float64
+}
+
+func (s *chainSpend) add(r delegate.Result) {
+	s.tokens += r.Tokens
+	s.duration += r.Duration
+	s.costUSD += cost.USDFromOutput(r.Output)
+}
+
+// applyTo folds the accumulated spend into the winning result.
+//
+// Both Result.Tokens and Output["_tokens"] are updated: the runtime's
+// budget enforcement (extractUsage) reads the map, not the struct, and
+// every shipped backend already populates `_tokens` via Annotate — so
+// leaving the map at the last route's figure alone would under-report
+// the chain's true cost to max_cost_usd / org caps / donor ledgers.
+func (s chainSpend) applyTo(r delegate.Result) delegate.Result {
+	if s.tokens == 0 && s.duration == 0 && s.costUSD == 0 {
+		return r
+	}
+	r.Tokens += s.tokens
+	r.Duration += s.duration
+	if r.Output != nil {
+		if s.tokens > 0 {
+			r.Output["_tokens"] = r.Tokens
+		}
+		if s.costUSD > 0 {
+			r.Output["_cost_usd"] = cost.USDFromOutput(r.Output) + s.costUSD
+		}
+	}
+	return r
+}
+
+// ErrChainExhausted is the terminal error of a fallback chain whose
+// every element failed. It carries EVERY element's error, not just the
+// last one.
+//
+// That is the whole point of the type. Two independent mechanisms
+// errors.As on what a node surfaces — the run-level usage-window retry
+// (pkg/runner/usage_retry.go) and the credential-pool donor cooldown
+// (pkg/runner/loop_spend.go) — and both look for
+// *delegate.ErrRateLimited{usage_window}. A chain that starts on an
+// exhausted forfait and ends on an unrelated 401 would, if it surfaced
+// only the last error, silently disarm both: the run is never parked
+// until the window reopens, and the donor whose subscription is shut
+// keeps being handed to the next run.
+type ErrChainExhausted struct {
+	Chain string  // the chain in its source form, for the message
+	Errs  []error // one per element, in walk order
+}
+
+func (e *ErrChainExhausted) Error() string {
+	last := ""
+	if n := len(e.Errs); n > 0 && e.Errs[n-1] != nil {
+		last = e.Errs[n-1].Error()
+	}
+	return fmt.Sprintf("all routes in chain %s failed; last error: %s", e.Chain, last)
+}
+
+// Unwrap exposes every element's error so errors.Is / errors.As traverse
+// the whole set rather than the last element alone.
+func (e *ErrChainExhausted) Unwrap() []error { return e.Errs }
 
 // dispatchWithProviderFallback runs backend.Execute across the node's
 // provider chain, transparently falling through to the next provider on
@@ -271,71 +505,347 @@ func providerFallbackEligible(backendName string) bool {
 func (e *ClawExecutor) dispatchWithProviderFallback(
 	ctx context.Context,
 	nodeID, backendName string,
-	chain []providerStep,
+	chain []chainElement,
 	backend delegate.Backend,
 	task *delegate.Task,
 ) (delegate.Result, error) {
-	if len(chain) == 0 {
-		chain = []providerStep{{}}
-	}
-	// Backends that ignore the provider hint gain nothing from walking
-	// the chain — collapse to the preferred provider to avoid a wasted
-	// second retry budget on an identical call.
-	if len(chain) > 1 && !providerFallbackEligible(backendName) {
-		chain = chain[:1]
-	}
-
+	chain = collapseHintOnlyChain(chain, backendName)
 	baseModel := task.Model
-	effectiveModel := func(s providerStep) string {
-		if s.Model != "" {
-			return s.Model
+	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel,
+		func(_ context.Context, _ int, el chainElement) (string, delegate.Backend, *delegate.Task, error) {
+			task.ProviderHint = el.Provider
+			// An element without its own model restores the node
+			// baseline, so a model-less element after a model-bearing one
+			// does NOT inherit the previous element's override.
+			if el.Model != "" {
+				task.Model = el.Model
+			} else {
+				task.Model = baseModel
+			}
+			return backendName, backend, task, nil
+		})
+	return out.Result, err
+}
+
+// elementBuilder resolves the backend and builds a FRESH delegate.Task
+// for one chain element. index is the element's position; anything > 0
+// is a fall-through, and the builder is responsible for not letting it
+// inherit the previous element's backend-specific continuity.
+//
+// Passing a builder rather than a prebuilt (backend, task) pair is what
+// makes a cross-backend chain possible at all: buildTask bakes at least
+// seven backend-shaped fields (SystemPromptMode, UserContent,
+// AllowedTools, ToolDefs, MCPServers, the model-spec format, Hooks), so
+// re-issuing a claude_code-shaped task on claw produces a TOOL-LESS
+// agent that still carries an output schema — a schema-valid verdict it
+// never verified.
+type elementBuilder func(ctx context.Context, index int, el chainElement) (string, delegate.Backend, *delegate.Task, error)
+
+// newElementBuilder wires the per-element plumbing both dispatch sites
+// share: resolve-and-cache the backend, build-and-cache one task per
+// backend, apply the element's provider/model, and drop resume
+// continuity on a fall-through.
+//
+// `assemble` is the only part that differs — the agent/judge path calls
+// buildTask, the LLM router assembles its own literal — and it is called
+// AT MOST ONCE PER BACKEND. That is what keeps a legacy `provider:`
+// chain free: every element resolves to the same backend, so the task is
+// built once and only ProviderHint/Model change between attempts, which
+// is byte-for-byte the pre-ADR-087 behaviour. A rebuild happens exactly
+// when an element names a different backend — the case where reusing the
+// task would silently change what the node can DO.
+func (e *ClawExecutor) newElementBuilder(
+	nodeID, baseBackendName string,
+	baseBackend delegate.Backend,
+	assemble func(ctx context.Context, backendName string) (*delegate.Task, error),
+) elementBuilder {
+	backends := map[string]delegate.Backend{}
+	if baseBackend != nil {
+		backends[baseBackendName] = baseBackend
+	}
+	tasks := map[string]*delegate.Task{}
+	baseModels := map[string]string{}
+
+	return func(ctx context.Context, index int, el chainElement) (string, delegate.Backend, *delegate.Task, error) {
+		bn := baseBackendName
+		if el.Backend != "" {
+			bn = el.Backend
 		}
-		return baseModel
+		backend, ok := backends[bn]
+		if !ok {
+			if e.backendRegistry == nil {
+				return "", nil, nil, fmt.Errorf("model: node %q uses backend %q but no backend registry configured", nodeID, bn)
+			}
+			resolved, err := e.backendRegistry.Resolve(bn)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("model: node %q: %w", nodeID, err)
+			}
+			backend = resolved
+			backends[bn] = resolved
+		}
+		task, ok := tasks[bn]
+		if !ok {
+			built, err := assemble(ctx, bn)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			task = built
+			tasks[bn] = task
+			baseModels[bn] = built.Model
+		}
+		task.ProviderHint = el.Provider
+		if el.Model != "" {
+			task.Model = el.Model
+		} else {
+			task.Model = baseModels[bn]
+		}
+		if index > 0 {
+			// A fall-through starts a fresh conversation. The resume
+			// continuity applied at build time (the operator's answer,
+			// the pending tool_use, the prior messages) belongs to the
+			// element that paused; replaying it into another backend
+			// re-sends one provider's turn to a provider that never
+			// issued it.
+			task.ResumeConversation = nil
+			task.ResumePendingToolUseID = ""
+			task.ResumeAnswer = ""
+		}
+		return bn, backend, task, nil
+	}
+}
+
+// chainOutcome names the element that actually SERVED a node, alongside
+// its result. Everything downstream of dispatch — the schema-validation
+// retry, an ask_user pause's checkpoint, the output stamp — must act on
+// the serving element, not on the one the node asked for. Before
+// ADR-087 the two could not differ, so the executor carried a single
+// backendName; a chain that can cross backends makes that variable a
+// lie the moment it falls through.
+type chainOutcome struct {
+	Result      delegate.Result
+	BackendName string           // backend that served
+	Backend     delegate.Backend // its handle, for the schema retry
+	Task        *delegate.Task   // the task it ran, for the schema retry
+	// ServedBy names the element that served, and FellThrough reports
+	// whether it was anything but the node's first choice. They exist so
+	// a bot's DETERMINISTIC gate can fail closed on a degraded input —
+	// the same posture as an unreadable output. A reviewer served by a
+	// weaker model still emits a well-formed verdict; the count it
+	// produces is the only thing that changes, and nothing else in the
+	// run would record why.
+	ServedBy    string
+	FellThrough bool
+}
+
+// dispatchChain walks a node's fallback chain, building each element
+// fresh and returning the first success — or an ErrChainExhausted
+// carrying every element's error once the chain runs out.
+//
+// "Failure" is any non-nil error from the retry loop: a non-retryable
+// error, or a retryable one that exhausted its budget. Context
+// cancellation / deadline is NOT an element failure — it is terminal for
+// the whole node, so it aborts the walk rather than thrashing through
+// every remaining element.
+//
+// Each fall-through evicts the node's in-process conversation, emits one
+// log note and one OnProviderFallback hook, and accumulates what the
+// failed element spent. The operator sees a route change, not a failure.
+// baseModel is the node's own `model:` — what an element that pins none
+// of its own runs. It is reported on the fall-through event so the
+// operator reads the model that WILL run rather than a blank field, and
+// it makes the inheritance rule explicit: an element without a model
+// restores the baseline instead of inheriting its predecessor's
+// override.
+func (e *ClawExecutor) dispatchChain(
+	ctx context.Context,
+	nodeID string,
+	chain []chainElement,
+	baseModel string,
+	build elementBuilder,
+) (chainOutcome, error) {
+	if len(chain) == 0 {
+		chain = []chainElement{{}}
 	}
 
 	var (
-		result delegate.Result
-		err    error
+		result      delegate.Result
+		err         error
+		spent       chainSpend
+		causes      []error
+		nextAllowed int // first index the walk may execute (skip filter)
 	)
-	for i, step := range chain {
-		task.ProviderHint = step.Provider
-		task.Model = effectiveModel(step)
-		result, err = e.retryDelegateLoop(ctx, nodeID, backendName, func() (delegate.Result, error) {
+	effModel := func(el chainElement) string {
+		if el.Model != "" {
+			return el.Model
+		}
+		return baseModel
+	}
+	for i, el := range chain {
+		if i < nextAllowed {
+			// Skipped by an earlier `on:` filter (Re50c7d). These
+			// elements were never built or executed.
+			continue
+		}
+		rest := chain[i+1:]
+		fallbackRemains := len(rest) > 0
+
+		backendName, backend, task, buildErr := build(ctx, i, el)
+		if buildErr != nil {
+			// A build failure is this element's failure, not the node's:
+			// an unresolvable backend or an uncredentialed element must
+			// not veto the elements after it.
+			err = buildErr
+			causes = append(causes, buildErr)
+			// A build spends nothing of its own. Zero the terminal
+			// result so a prior failed-execute that already sits in
+			// `spent` is not applied twice when the walk ends on a
+			// trailing build error (R5180a7).
+			result = delegate.Result{}
+			if !fallbackRemains {
+				break
+			}
+			next := chain[i+1]
+			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
+			continue
+		}
+		// Whether ANY remaining route would take a given failure — the
+		// carve-out must not strip a retry budget the chain will not
+		// compensate for. Scanning the whole rest (not just the next
+		// element) matches the skip semantics of `on:` (Re50c7d).
+		var accepts func(error) bool
+		if fallbackRemains {
+			accepts = func(failure error) bool {
+				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
+			}
+		}
+		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
 		if err == nil {
-			return result, nil
+			return chainOutcome{
+				Result:      spent.applyTo(result),
+				BackendName: backendName,
+				Backend:     backend,
+				Task:        task,
+				ServedBy:    stepLabel(el),
+				FellThrough: i > 0,
+			}, nil
 		}
-		// A cancelled / timed-out context is terminal for the whole
-		// node, not a provider-specific failure: don't fall through.
+		causes = append(causes, err)
+
 		if ctx.Err() != nil {
-			return result, err
+			return chainOutcome{Result: result, BackendName: backendName}, err
 		}
-		if i < len(chain)-1 {
-			next := chain[i+1]
+		if !fallbackRemains {
+			break
+		}
+		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
+		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
+		// A middle route that refuses the category is SKIPPED so a later
+		// route that accepts it (e.g. the shipped example's gpt route
+		// taking transient_exhausted after api's default set refuses it)
+		// still runs. The walk ends only when NO remaining route accepts.
+		j := firstAcceptingFrom(chain, i+1, cat)
+		if j < 0 {
 			if e.logger != nil {
-				e.logger.Warn("[%s#%d/%s] provider %q failed beyond retry budget; falling through to %q: %v",
-					nodeID, LoopIterationFromContext(ctx), backendName,
-					stepLabel(step), stepLabel(next), err)
+				e.logger.Warn("[%s#%d/%s] %q failed (%s); no remaining route accepts that condition — stopping the chain",
+					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat)
 			}
-			if e.hooks.OnProviderFallback != nil {
-				e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
-					BackendName: backendName,
-					From:        step.Provider,
-					To:          next.Provider,
-					FromModel:   effectiveModel(step),
-					ToModel:     effectiveModel(next),
-					Attempts:    e.retry.maxAttempts(),
-					Err:         err,
-				})
+			// Do NOT spent.add: the terminal `result` is this element,
+			// and the tail folds it with `spent.applyTo` (R5180a7).
+			break
+		}
+		for k := i + 1; k < j; k++ {
+			if e.logger != nil {
+				e.logger.Warn("[%s#%d/%s] %q failed (%s); skipping %q (does not accept) — trying later routes",
+					nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el), cat, stepLabel(chain[k]))
 			}
 		}
+		// Accumulate only once this route is definitively abandoned AND
+		// another route will try. The terminal `result` is folded with
+		// `spent` on the way out, so adding a route that is also the
+		// final result would count it twice — and on a single-route
+		// node that is a plain doubling of what the delegate_error
+		// event reports.
+		spent.add(result)
+		// Drop the failed element's conversation before another
+		// backend/provider sees it. The session store is keyed
+		// (runID, nodeID) with no provider fingerprint and captures a
+		// FAILED attempt's messages, so replaying them into the next
+		// element re-sends one provider's signed thinking blocks to
+		// another — a 400 at best, a mangled conversation at worst.
+		e.evictNodeSessionForFallback(ctx, nodeID)
+		fromModel := result.EffectiveModel
+		if fromModel == "" {
+			fromModel = effModel(el)
+		}
+		next := chain[j]
+		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, effModel(next), err)
+		nextAllowed = j
 	}
-	// Whole chain exhausted. Annotate with the chain when it had real
-	// alternatives so the surfaced error explains the multi-provider
-	// attempt; a single-element chain keeps the bare backend error.
+
+	// An exhausted chain still spent what its routes burned: fold the
+	// accumulation in here too, or a 3-route failure under-reports two
+	// whole agentic sessions to max_cost_usd, the org monthly cap and a
+	// lending donor's ledger.
+	result = spent.applyTo(result)
 	if len(chain) > 1 {
-		return result, fmt.Errorf("all providers in chain %s failed; last error: %w", chainLabel(chain), err)
+		return chainOutcome{Result: result}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
-	return result, err
+	return chainOutcome{Result: result}, err
+}
+
+// noteFallback emits the one log line and the one hook that make a
+// route change visible.
+func (e *ClawExecutor) noteFallback(
+	ctx context.Context,
+	nodeID string,
+	from, to chainElement,
+	backendName string,
+	fromModel, toModel string,
+	err error,
+) {
+	fromBackend := from.Backend
+	if fromBackend == "" {
+		fromBackend = backendName
+	}
+	toBackend := to.Backend
+	if toBackend == "" {
+		toBackend = backendName
+	}
+	if e.logger != nil {
+		e.logger.Warn("[%s#%d/%s] %q failed beyond retry budget; falling through to %q: %v",
+			nodeID, LoopIterationFromContext(ctx), backendName,
+			stepLabel(from), stepLabel(to), err)
+	}
+	if e.hooks.OnProviderFallback == nil {
+		return
+	}
+	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
+		BackendName: backendName,
+		From:        from.Provider,
+		To:          to.Provider,
+		FromModel:   fromModel,
+		ToModel:     toModel,
+		FromBackend: fromBackend,
+		ToBackend:   toBackend,
+		Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
+		Attempts:    e.retry.maxAttempts(),
+		Err:         err,
+	})
+}
+
+// evictNodeSessionForFallback drops the node's in-process claw
+// conversation so the next chain element starts fresh.
+//
+// The cost is stated plainly: the failed attempt's work is discarded,
+// which the steady-state path deliberately preserves for compaction.
+// Keeping it would be worse — the store has no provider fingerprint, so
+// the preserved conversation would be replayed into whatever runs next.
+func (e *ClawExecutor) evictNodeSessionForFallback(ctx context.Context, nodeID string) {
+	runID, sessions := runtimeContextFrom(ctx)
+	if runID == "" || sessions == nil {
+		return
+	}
+	sessions.evict(runID, nodeID)
 }

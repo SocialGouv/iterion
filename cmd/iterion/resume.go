@@ -23,6 +23,7 @@ var resumeOpts struct {
 	permissionDeny  []string
 	modelFor        []string
 	backendFor      []string
+	fallback        string
 
 	maxCostUSD          float64
 	maxTokens           int
@@ -53,6 +54,7 @@ var resumeCmd = &cobra.Command{
 			PermissionDeny:  resumeOpts.permissionDeny,
 			ModelFor:        resumeOpts.modelFor,
 			BackendFor:      resumeOpts.backendFor,
+			Fallback:        resumeOpts.fallback,
 			AutoResume:      resumeOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          resumeOpts.maxCostUSD,
@@ -91,6 +93,7 @@ func init() {
 	f.StringArrayVar(&resumeOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls pause for approval.")
 	f.StringArrayVar(&resumeOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked.")
 	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Re-apply a per-node/-group model override on resume (repeatable): \"selector=model\" or a bare \"model\". Resume does NOT persist the launch overrides, so pass the same --model flags used at run to keep e.g. reviewers on their chosen model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
+	f.StringVar(&resumeOpts.fallback, "fallback", "", "Re-apply the run-level fallback route on resume: \"<backend>:<model>\". Resume does NOT persist launch rules, and a long run outliving a quota window is exactly the case that resumes — pass the same --fallback used at run or the route stops applying silently.")
 	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model.")
 	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
 	registerAutoResumeFlag(f, &resumeOpts.autoResume)

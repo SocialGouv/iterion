@@ -104,6 +104,11 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // Per-node model/backend overrides, keyed by node name. Empty fields =
   // inherit the bot's DSL default. Folded into createRun.model_overrides.
   const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
+  // Run-level fallback route (ADR-087): one alternative applied to agent
+  // nodes that declare no `fallbacks:` of their own, never to judges.
+  // Empty backend = off, which is the default.
+  const [fallbackBackend, setFallbackBackend] = useState<string>("");
+  const [fallbackModel, setFallbackModel] = useState<string>("");
 
   // Auto-open the worktree-finalization block once the document loads
   // and the workflow uses worktree:auto. Done in an effect so it only
@@ -114,6 +119,10 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   }, [worktreeOn]);
 
   return {
+    fallbackBackend,
+    setFallbackBackend,
+    fallbackModel,
+    setFallbackModel,
     mergeInto,
     setMergeInto,
     branchName,

@@ -1260,3 +1260,42 @@ func TestSnapshotReducer_DeploymentTraceAloneIsDropped(t *testing.T) {
 		t.Errorf("Deployment = %+v, want nil when no delivery was reported", d)
 	}
 }
+
+// A node inside a declared loop that falls back on each iteration must
+// produce ONE FallbacksUsed entry, not N — otherwise the studio header
+// renders N identical chips with colliding React keys (R546ddc).
+func TestSnapshotReducer_FallbacksUsedDedupesByNode(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	fallbackOut := map[string]any{
+		"output": map[string]any{
+			"_backend":       "claw",
+			"_model":         "openai/gpt-5.5",
+			"_fallback_used": true,
+			"_served_by":     "api",
+		},
+	}
+	// Three loop iterations of the same node, each stamped as served by
+	// a fallback route — the dominant shape in review/fix loops.
+	for i := int64(0); i < 3; i++ {
+		b.Apply(evt(i*2, store.EventNodeStarted, "", "review", map[string]any{"kind": "agent"}))
+		b.Apply(evt(i*2+1, store.EventNodeFinished, "", "review", fallbackOut))
+	}
+	// A different node falling back must still get its own entry.
+	b.Apply(evt(10, store.EventNodeFinished, "", "implement", map[string]any{
+		"output": map[string]any{
+			"_backend": "claw", "_model": "openai/gpt-5.5",
+			"_fallback_used": true, "_served_by": "run-fallback",
+		},
+	}))
+
+	got := b.Snapshot().Run.FallbacksUsed
+	if len(got) != 2 {
+		t.Fatalf("FallbacksUsed = %d entries, want 2 (one per node, not per iteration): %+v", len(got), got)
+	}
+	if got[0].NodeID != "review" || got[0].ServedBy != "api" {
+		t.Errorf("first = %+v, want review/api (first-seen route)", got[0])
+	}
+	if got[1].NodeID != "implement" || got[1].ServedBy != "run-fallback" {
+		t.Errorf("second = %+v, want implement/run-fallback", got[1])
+	}
+}

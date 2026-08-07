@@ -193,29 +193,39 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 		expanded = defaultRouterModel
 	}
 
-	task := delegate.Task{
-		NodeID:           node.ID,
-		Iteration:        LoopIterationFromContext(ctx),
-		SystemPrompt:     systemText,
-		SystemPromptMode: delegate.SystemPromptModeForBackend(backendName),
-		UserPrompt:       userText,
-		OutputSchema:     jsonSchema,
-		Model:            expanded,
-		WorkDir:          e.workDir,
-		// wireEffort collapses the "ultracode" mode to xhigh so the raw token
-		// never reaches the provider; identity for every other level. Routers
-		// don't get the orchestration prerogative (they route, not orchestrate).
-		ReasoningEffort: wireEffort(resolveReasoningEffort(node.ReasoningEffort, input)),
-		Sandbox:         e.sandbox,
-		// ProviderHint is set per-attempt by dispatchWithProviderFallback
-		// as it walks the node's provider chain.
-		InboxDrain: e.bindInboxDrain(ctx),
+	// Assembled per backend rather than once: SystemPromptMode is a pure
+	// function of the backend, and a router that fell through to claw
+	// while carrying claude_code's AppendToNative mode would decide its
+	// route with NO operating posture at all (claw has no native system
+	// prompt to append to). A wrong route is a silently wrong RUN, not a
+	// failed node.
+	assemble := func(ctx context.Context, bn string) (*delegate.Task, error) {
+		return &delegate.Task{
+			NodeID:           node.ID,
+			Iteration:        LoopIterationFromContext(ctx),
+			SystemPrompt:     systemText,
+			SystemPromptMode: delegate.SystemPromptModeForBackend(bn),
+			UserPrompt:       userText,
+			OutputSchema:     jsonSchema,
+			Model:            expanded,
+			WorkDir:          e.workDir,
+			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
+			// never reaches the provider; identity for every other level. Routers
+			// don't get the orchestration prerogative (they route, not orchestrate).
+			ReasoningEffort: wireEffort(resolveReasoningEffort(node.ReasoningEffort, input)),
+			Sandbox:         e.sandbox,
+			// ProviderHint is set per-attempt by the chain walker.
+			InboxDrain: e.bindInboxDrain(ctx),
+		}, nil
 	}
 
-	result, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", e.resolveProviderChain(node), backend, &task)
+	chain := collapseHintOnlyChain(e.resolveProviderChain(node), backendName)
+	out, err := e.dispatchWithObservability(ctx, node.ID, backendName, "model: llm router", chain, expanded,
+		e.newElementBuilder(node.ID, backendName, backend, assemble))
 	if err != nil {
 		return nil, err
 	}
+	result := out.Result
 
 	output := result.Output
 
