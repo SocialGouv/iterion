@@ -598,6 +598,59 @@ def collect_a11y(session, entry, browser):
         return p.stdout.encode()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+def collect_canvas(session, entry, browser):
+    """Ce qu'un canevas a réellement peint, sur la page telle que ce persona la voit.
+
+    Cette lane couvre une surface qu'AUCUNE autre n'atteint. Le HTML servi
+    contient une balise vide ; le DOM ne bouge plus une fois l'image peinte ;
+    l'audit d'accessibilité le dit lui-même — une donnée rendue uniquement en
+    couleur ou en canevas n'est pas restituée. Un graphique qui cesserait
+    complètement de se dessiner laisserait donc toutes les autres références
+    identiques à l'octet près.
+
+    Même plomberie que la lane d'accessibilité, et pour la même raison : les
+    cookies de la session sont remis au navigateur, sinon la lane mesurerait le
+    canevas de la page de connexion sous le nom d'un écran d'administration.
+    """
+    browser.start()
+    cookies = []
+    for c in session.jar:
+        cookies.append({"name": c.name, "value": c.value,
+                        "domain": c.domain or "127.0.0.1",
+                        "path": c.path or "/"})
+    tmp = tempfile.mkdtemp(prefix="gm-canvas-")
+    try:
+        cookie_file = os.path.join(tmp, "cookies.json")
+        with open(cookie_file, "w", encoding="utf-8") as f:
+            json.dump(cookies, f)
+        script = os.path.join(browser.gm_dir, "canvas", "run-canvas.mjs")
+        shared = os.path.join(browser.gm_dir, "browser", "cdp.mjs")
+        for path in (script, shared):
+            if not os.path.isfile(path):
+                raise SystemExit(
+                    "the canvas lane needs %s, which is missing. It reads pixels "
+                    "out of a real browser: without it the lane cannot exist, and "
+                    "a lane that silently degraded to reading markup would report "
+                    "a clean result about a surface it never looked at." % path)
+        url = session.base_url + urllib.parse.quote(entry["path"], safe="/?&=%")
+        load_timeout = int(os.environ.get("GM_A11Y_LOAD_TIMEOUT_S", "240"))
+        # Le raster peut mettre jusqu'à vingt secondes à se stabiliser (voir
+        # `run-canvas.mjs`), et cette attente SUIT le chargement. Le plafond du
+        # sous-processus couvre les deux, sinon c'est lui qui tombe le premier et
+        # le message parle d'un script tué au lieu d'une image qui bouge encore.
+        p = subprocess.run(
+            ["node", script, str(browser.port), url, cookie_file, str(load_timeout)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=load_timeout + 180)
+        if p.returncode != 0:
+            raise SystemExit("canvas probe of %s failed: %s\n%s"
+                             % (entry["id"], (p.stderr or "").strip()[-800:],
+                                browser.why_it_died()))
+        return p.stdout.encode()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def capture(config, corpus, canon, ids=None):
     """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
     sessions = open_sessions(config)
@@ -618,6 +671,8 @@ def capture(config, corpus, canon, ids=None):
                 status, headers, body = 200, {}, collect_assets(s, jar_path, e)
             elif surface == "a11y":
                 status, headers, body = 200, {}, collect_a11y(s, e, browser)
+            elif surface == "canvas":
+                status, headers, body = 200, {}, collect_canvas(s, e, browser)
             else:
                 status, headers, body = s.fetch(
                     e.get("method", "GET"), e["path"], fields=e.get("fields"),
@@ -907,6 +962,38 @@ def control_ids(corpus, targets, seed):
     return pool[seed % max(1, step)::step][:CONTROL_SAMPLE]
 
 
+def diff_excerpt(left, right, ids, left_label, right_label, entries=4):
+    """Les premieres lignes qui different, par entree.
+
+    Nommer une entree sans montrer son ecart envoie chercher a l'aveugle — et
+    quand l'instabilite ne se reproduit pas sur la machine qui lit le rapport,
+    « 038 diverge » est une impasse. Quelques centaines d'octets remplacent une
+    hypothese par un fait.
+
+    Extrait ici plutot que recopie : le controle negatif l'avait, la sonde de
+    stabilite ne l'avait pas, et rien ne justifiait l'asymetrie — c'est la sonde
+    qui s'exprime en PREMIER quand les deux echouent, puisqu'elle interrompt le
+    run avant que le controle negatif ne tourne.
+    """
+    detail = {}
+    for i in list(ids)[:entries]:
+        a = (left.get(i) or "").splitlines()
+        b = (right.get(i) or "").splitlines()
+        lines = []
+        for k in range(max(len(a), len(b))):
+            av = a[k] if k < len(a) else "<absente>"
+            bv = b[k] if k < len(b) else "<absente>"
+            if av != bv:
+                lines.append("      %s -%s" % (left_label, av[:140]))
+                lines.append("      %s +%s" % (right_label, bv[:140]))
+            if len(lines) >= 8:
+                break
+        detail[i] = "\n".join(lines) or "(aucune ligne differente : longueurs seules)"
+    return detail
+
+
+# ─── Stability ──────────────────────────────────────────────────────────────
+
 def score_mutant(meta, config, corpus, canon, refs, ws, seed):
     """Apply → capture → compare → revert. Returns a per-mutant verdict dict."""
     targets = list(meta.get("targets") or [])
@@ -951,6 +1038,26 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
     # to that class of change — which is exactly how the consultancy shipped four public
     # search fixtures that could not see a changed offer.
     verdict["undetected_targets"] = [t for t in targets if t not in moved]
+    # DETECTE PAR QUELLE SURFACE, et pas seulement « detecte ».
+    #
+    # Un mutant declare la surface qu'il vient SONDER. La detection, elle, etait
+    # creditee des qu'une cible bougeait — sans regarder si cette entree relevait
+    # de cette surface. Un jeu tenu a l'ecart tire CONTRE une lane pouvait donc
+    # afficher 100 % pendant que la lane n'avait rien vu.
+    #
+    # Mesure du dixieme cycle : sept mutants tires contre la lane des canevas,
+    # tous modifiant le meme fichier de script. Ce fichier est une ressource
+    # servie, donc son empreinte bouge dans le MANIFESTE a chaque fois, quelle
+    # que soit la consequence sur le produit. Le manifeste les a tous vus : 7/7.
+    # La lane visee en a vu DEUX. Le chiffre publie etait vrai et trompeur.
+    #
+    # `blind_lanes` ne pouvait pas le dire : il ne parcourt que les mutants
+    # visibles.
+    surface_of = {e["id"]: e.get("surface", "http") for e in corpus["entries"]}
+    verdict["moved_surfaces"] = sorted({surface_of.get(t, "?") for t in moved})
+    declared_surface = meta.get("surface")
+    verdict["detected_on_surface"] = bool(
+        declared_surface and declared_surface in verdict["moved_surfaces"])
     # Collateral is usually not a harness fault but an under-declared blast
     # radius: the mutant really does move that response. Naming the entries is
     # what makes the finding actionable instead of a bare count.
@@ -1005,7 +1112,25 @@ def score_noop(config, corpus, canon, refs, ws, seed):
     app_restart(config, ws)
     captured = capture(config, corpus, canon)
     noisy = diverged(refs, captured, ids)
-    return {"silent": not noisy, "noisy_entries": noisy}
+    # L'ETAT DE LA DONNEE, releve UNIQUEMENT quand le controle echoue.
+    #
+    # Le rapport nommait les entrees et montrait leur ecart, jamais ce que la
+    # base contenait — et c'est le seul fait qui separe « le filet est
+    # instable » de « l'etat a derive ». Sans lui, l'analyse d'un rouge qui ne se
+    # reproduit pas se fait par elimination sur des journaux : le pipeline
+    # `63384` a coute une session entiere pour une cause qui n'a jamais ete
+    # etablie.
+    #
+    # La sonde est DECLAREE par la configuration, jamais devinee : le harnais ne
+    # sait pas quelles colonnes ce produit rend, et une requete codee ici cesserait
+    # d'etre universelle. Absente, le champ est vide et rien ne change.
+    state = None
+    if noisy and config.get("state_probe"):
+        code, out = run(config["state_probe"], ws, timeout=120)
+        state = out.strip() if code == 0 else "state_probe a echoue (%s):\n%s" % (code, out.strip()[:600])
+    return {"silent": not noisy, "noisy_entries": noisy,
+            "state_probe": state,
+            "noisy_detail": diff_excerpt(refs, captured, noisy, "ref", "obs")}
 
 
 # ─── Stability ──────────────────────────────────────────────────────────────
@@ -1045,6 +1170,7 @@ def main():
               "noop_silent": False, "revert_clean": True, "collateral": 0,
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
+              "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
               "runner_replayable": False,
               "holdout_reused": [],
@@ -1241,7 +1367,25 @@ def main():
             blind_lanes=blind,
             holdout_total=len([v for v in held if v.get("valid")]),
             holdout_detected=len([v for v in held if v.get("valid") and v.get("detected")]),
+            # Le chiffre qui compte vraiment : combien ont ete vus PAR LA LANE
+            # QU'ILS SONDENT. Toujours inferieur ou egal au precedent, et l'ecart
+            # entre les deux est exactement ce qu'un « 100 % » cachait.
+            holdout_detected_on_surface=len(
+                [v for v in held if v.get("valid") and v.get("detected_on_surface")]),
+            score_on_surface_pct=int(
+                100 * len([v for v in valid if v.get("detected_on_surface")]) / len(valid)
+            ) if valid else 0,
         )
+        off = [v["id"] for v in held
+               if v.get("valid") and v.get("detected") and not v.get("detected_on_surface")]
+        if off:
+            report["notice"] = (
+                (report.get("notice") or "") +
+                (" | " if report.get("notice") else "") +
+                "%d held-out mutant(s) were detected by a lane OTHER than the one they "
+                "probe: %s. The net saw the change; the lane they were drawn against did "
+                "not. Citing the aggregate alone would report the resemblance."
+                % (len(off), ", ".join(off)))
         if mode == "selfcheck":
             # Withheld, not zero-because-failed. The two numbers are made
             # DELIBERATELY UNEQUAL: the gate converges on
@@ -1253,9 +1397,18 @@ def main():
 
         problems = []
         if not report["noop_silent"]:
-            problems.append("NEGATIVE CONTROL FAILED: the no-op mutation made %s diverge. "
-                            "A comparator that fires without a change proves nothing when it "
-                            "fires with one." % noop["noisy_entries"][:8])
+            detail = noop.get("noisy_detail") or {}
+            problems.append(
+                "NEGATIVE CONTROL FAILED: the no-op mutation made %s diverge. "
+                "A comparator that fires without a change proves nothing when it "
+                "fires with one.\n%s"
+                % (noop["noisy_entries"][:8],
+                   "\n".join("    %s :\n%s" % (i, detail[i]) for i in sorted(detail))))
+            if noop.get("state_probe"):
+                problems.append(
+                    "ETAT DE LA DONNEE au moment de l'echec (sonde declaree par la "
+                    "configuration) — c'est ce qui separe un filet instable d'un etat "
+                    "qui a derive :\n%s" % noop["state_probe"])
         for v in verdicts:
             if not v.get("valid"):
                 problems.append("mutant %s is INVALID: %s" % (v["id"], v.get("reason", "")))

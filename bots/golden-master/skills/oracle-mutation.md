@@ -81,9 +81,38 @@ must exist and be detected.
    "recipe":"stop the build from producing one asset, by editing the build's own configuration rather than deleting the output"},
   {"surface":"a11y","archetype":"violation_added","required":true,
    "catches":"an audit that ran against something other than the page under test — a browser error page, a login redirect, or a half-built DOM — which produces a well-formed, stable, page-independent result",
-   "recipe":"remove one accessible name: detach a label from its control, or drop an image's alternative text"}
+   "recipe":"remove one accessible name: detach a label from its control, or drop an image's alternative text"},
+  {"surface":"canvas","archetype":"content_empty","required":true,
+   "catches":"THE blind judge in its canvas form — a chart that declares its whole configuration and paints nothing. No served byte and no DOM node moves, so every other lane stays green",
+   "recipe":"let the chart build normally, then clear its canvas once the entry animation completes; go through the OPTIONS so the declared type, labels, values and colours stay identical"},
+  {"surface":"canvas","archetype":"render_drift","required":true,
+   "catches":"a raster signature too coarse to see a figure change, or a lane that reads the library's declaration and calls it a measurement",
+   "recipe":"change one purely visual option the declaration does not carry — a doughnut's hole, a bar's orientation — so the data are untouched and only the drawing moves"}
 ]
 -->
+
+**A note on the `canvas` surface.** It exists because nothing else can see a canvas: the served
+document carries an empty tag, and the DOM stops changing once the image is painted. An
+accessibility audit is explicit about it — a datum rendered only as colour or as canvas is not
+restituted. A chart that stopped drawing entirely would therefore leave every reference in the
+repository identical to the byte.
+
+Three assertions, never aggregated, because each can be true while the others are false: the count
+of painted pixels (zero is the blind case, and only this kills it — a library keeps its data in
+memory even when its rendering fails), what the library declares it draws, and a coarse signature
+of the image (which catches a render drawing something other than what it declares).
+
+Two traps, both measured on a real target rather than imagined:
+
+* **Point the lane at a canvas that is not rendered and it is blind for ever.** Applications
+  commonly serve several panels in one document and display one. A canvas in a hidden panel
+  measures 0×0 and paints nothing, which is normal — so RENDERED and HIDDEN must be distinguished,
+  and only a rendered canvas that painted nothing counts as blank. The first version of this lane
+  was aimed at the one panel carrying no chart, and reported a stable, plausible result about
+  nothing.
+* **Wait for the RASTER to settle, not the DOM.** A chart animates by repainting its canvas: no
+  request, no mutation. The network-quiet and DOM-quiet observers are already satisfied while the
+  image is still moving, and a capture taken there differs on every pass.
 
 **A note on the `asset` surface.** Inventory from the BUILD OUTPUT — the archive or directory
 the build produced — and never from the worktree. Assets are commonly gitignored, so a repository
