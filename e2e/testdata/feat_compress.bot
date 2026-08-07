@@ -6,7 +6,9 @@
 
 tool compress_probe:
   compress: on
-  command: "cd \"${PROJECT_DIR}\" && git status"
+  ## No `cd`: see feat_worktree.bot -- the node already runs in the run
+  ## workspace, and ${PROJECT_DIR} does not expand inside a command.
+  command: "git status"
 
 workflow main:
   entry: compress_probe
