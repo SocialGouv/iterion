@@ -46,20 +46,26 @@ func (m *pipelineReservedMemo) invalidate() {
 
 // pipelineReservedSet reports the ticket ids currently holding a slot.
 //
-// The predicate mirrors pipelineLaneForRoot exactly — a card that reserves
-// without rendering in the needs-attention lane would be an invisible held
+// The predicate mirrors pipelineLaneForRoot as closely as possible — a card
+// that reserves without rendering its holder would be an invisible held
 // slot, which is the worst way this feature can fail. A ticket reserves iff:
 //
 //   - it names a bot (otherwise it is a plain backlog item, not a pipeline);
-//   - its current run's status is failed or failed_resumable;
 //   - its ticket state is NOT terminal (Close files the ticket, which is how
 //     the reservation is released);
-//   - nothing in its run tree is parked on a human review (the tree is alive
-//     and already holds a real slot);
+//   - its current run's status is failed or failed_resumable, OR its
+//     current run is a NON-TERMINAL recovery fork: a fork starts via
+//     Resume, which never enters pipelineQueue, so nothing else accounts
+//     for it — and the fork inherits the slot its dead parent held (the
+//     card shows it in In progress, ReservesSlot set, so the holder stays
+//     visible);
 //   - the failure was not caused by iterion itself — a drain or the boot
 //     orphan sweep flips every in-flight run at once, and reserving for those
 //     would wedge the board on every restart, i.e. on every .go save under
-//     `task studio:dev`.
+//     `task studio:dev`;
+//   - nothing in its run tree is parked on a human review (the tree is alive
+//     and already holds a real slot) — UNLESS the root is a non-terminal
+//     fork, which holds no queue slot and must keep the reservation.
 func (s *Server) pipelineReservedSet(boardStore native.BoardStore, runs *runview.Service) map[string]struct{} {
 	return s.pipelineReservedSetMemo(s.currentPipelineReservedMemo(), boardStore, runs)
 }
@@ -140,7 +146,14 @@ func (s *Server) pipelineReservedSetMemo(
 		if !pipelineTicketHoldsSlot(issue, root, terminal) {
 			continue
 		}
-		if pipelineTreeAwaitingHuman(issue, runIndex) {
+		// The awaiting-human release assumes the live tree already holds
+		// a real queue slot — FALSE for a fork, which starts via Resume
+		// and never enters pipelineQueue. A fork parked on a human gate
+		// (or forked from a parent stuck paused_waiting_human, which the
+		// tree walk also sees) would otherwise lose the slot again and
+		// over-admit past max-concurrent-pipelines. Keep the reservation
+		// whenever the resolved root is a non-terminal fork.
+		if pipelineTreeAwaitingHuman(issue, runIndex) && (root == nil || root.ForkedFrom == "" || root.Status.IsTerminal()) {
 			continue
 		}
 		set[issue.ID] = struct{}{}

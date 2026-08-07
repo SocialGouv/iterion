@@ -95,6 +95,15 @@ type Server struct {
 	pipelineReservedMu sync.RWMutex
 	pipelineReserved   *pipelineReservedMemo
 
+	// finishedForks memoizes the by-issue index of finished recovery forks
+	// used by reconcileFinishedTickets' fork adoption (see
+	// pipeline_admission.go). Without it a board with K tickets stuck on a
+	// failed pointer would pay K full run-store scans per admission tick —
+	// the index costs one scan per finishedForksIndexTTL instead.
+	finishedForksMu sync.Mutex
+	finishedForksAt time.Time
+	finishedForks   map[string][]*store.Run
+
 	// finalOutputMemo caches finished runs' resolved board output. A finished
 	// run is terminal, so its final_answer/latest-artifact output never
 	// changes — computing it once per run (instead of on every 3s poll, each

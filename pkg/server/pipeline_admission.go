@@ -210,6 +210,12 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 	if rs == nil {
 		return
 	}
+	// First pass: file tickets whose pointer run finished, and collect
+	// the stuck ones (in_progress with a TERMINAL-but-not-finished
+	// pointer) for fork adoption. One LoadRun per ticket — the
+	// pre-existing per-tick cost, NOT a store scan.
+	var stuck []*native.Issue
+	pointers := map[string]*store.Run{}
 	for _, iss := range issues {
 		if iss == nil || iss.State != native.StateInProgress || iss.LastRunID == "" {
 			continue
@@ -219,14 +225,118 @@ func (s *Server) reconcileFinishedTickets(ctx context.Context, board native.Boar
 			continue
 		}
 		if r.Status != store.RunStatusFinished {
+			if r.Status.IsTerminal() {
+				stuck = append(stuck, iss)
+				pointers[iss.ID] = r
+			}
 			continue
 		}
-		if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
-			s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, iss.LastRunID, err)
-			continue
-		}
-		s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, iss.LastRunID)
+		s.fileFinishedTicket(board, iss, r.ID)
 	}
+	if len(stuck) == 0 {
+		// No stuck ticket means no fork adoption is possible. Bailing
+		// here keeps an idle board at ZERO store scans per tick — the
+		// same guard admitReadyPipelines applies below, and it must hold
+		// even though this sweep runs before it.
+		return
+	}
+	// The pointer may have been superseded by a recovery fork: a fork
+	// never becomes LastRunID on its own (the dispatcher only stamps
+	// its own attempts), so a finished one would strand the ticket in
+	// in_progress forever — the card reads Closed while every dependent
+	// parks in waiting_deps. The index is shared by every stuck ticket
+	// and rebuilt at most once per finishedForksIndexTTL.
+	forks := s.finishedForksByIssue(ctx, rs)
+	for _, iss := range stuck {
+		fork := newestFinishedIssueFork(forks[iss.ID], pointers[iss.ID])
+		if fork == nil {
+			continue
+		}
+		// Adopt the fork as the current attempt so the pointer converges
+		// with what the card already shows. The fork's own workdir is
+		// stamped too — unlike launch-time call sites passing "", the run
+		// has already executed, and LastWorkdir feeds the studio's
+		// inspect-the-diff link.
+		if err := board.SetLastRun(iss.ID, fork.ID, fork.WorkDir); err != nil {
+			s.logger.Warn("pipeline admission: adopt finished fork %s for ticket %s: %v", fork.ID, iss.ID, err)
+			continue
+		}
+		s.fileFinishedTicket(board, iss, fork.ID)
+	}
+}
+
+// fileFinishedTicket moves the ticket to done (cascading the waiting_deps
+// promotion of its dependents) and logs the run the ticket was ACTUALLY
+// filed for — after a fork adoption that is the fork, not the dead
+// parent iss.LastRunID still names (the board mutates its own copy of
+// the issue on SetLastRun).
+func (s *Server) fileFinishedTicket(board native.BoardStore, iss *native.Issue, runID string) {
+	if _, err := board.SetState(iss.ID, native.StateDone); err != nil {
+		s.logger.Warn("pipeline admission: file finished ticket %s (run %s): %v", iss.ID, runID, err)
+		return
+	}
+	s.logger.Info("pipeline admission: ticket %s finished cleanly (run %s) — filed as done", iss.ID, runID)
+}
+
+// finishedForksIndexTTL bounds how often the by-issue index of finished
+// recovery forks is rebuilt while at least one ticket is stuck on a
+// failed pointer: one full store scan per TTL instead of one per stuck
+// ticket per 2s admission tick.
+const finishedForksIndexTTL = 30 * time.Second
+
+// finishedForksByIssue indexes every fork (ForkedFrom != "") that
+// ACTUALLY ran to completion, keyed by its Source.IssueID. FinishedAt
+// must be set: Fork() parks every child as cancelled via SaveRun without
+// it, and a parked shell has delivered nothing. Memoized for
+// finishedForksIndexTTL; the caller's stuck-ticket bail keeps an idle
+// board from ever reaching here.
+func (s *Server) finishedForksByIssue(ctx context.Context, rs store.RunStore) map[string][]*store.Run {
+	s.finishedForksMu.Lock()
+	defer s.finishedForksMu.Unlock()
+	if s.finishedForks != nil && time.Since(s.finishedForksAt) < finishedForksIndexTTL {
+		return s.finishedForks
+	}
+	byIssue := map[string][]*store.Run{}
+	ids, err := rs.ListRuns(ctx)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("pipeline admission: list runs for the fork index: %v", err)
+		}
+		return byIssue
+	}
+	for _, id := range ids {
+		r, err := rs.LoadRun(ctx, id)
+		if err != nil || r == nil {
+			continue
+		}
+		if r.ForkedFrom == "" || r.Source == nil || r.Source.IssueID == "" {
+			continue
+		}
+		if r.Status != store.RunStatusFinished || r.FinishedAt == nil {
+			continue
+		}
+		byIssue[r.Source.IssueID] = append(byIssue[r.Source.IssueID], r)
+	}
+	s.finishedForks = byIssue
+	s.finishedForksAt = time.Now()
+	return byIssue
+}
+
+// newestFinishedIssueFork picks the newest candidate newer than the run
+// the ticket's pointer names — anything older belongs to a previous
+// attempt chain. Candidates are pre-filtered by finishedForksByIssue.
+// Returns nil when no fork qualifies.
+func newestFinishedIssueFork(candidates []*store.Run, current *store.Run) *store.Run {
+	var best *store.Run
+	for _, r := range candidates {
+		if !r.CreatedAt.After(current.CreatedAt) {
+			continue
+		}
+		if best == nil || r.CreatedAt.After(best.CreatedAt) {
+			best = r
+		}
+	}
+	return best
 }
 
 // warnAdmissionSkipOnce logs a ready ticket whose bot the current catalog

@@ -387,7 +387,7 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 	// prefer a newer, non-terminal run sourced from this issue.
 	sourceCandidates := make([]*store.Run, 0, 1)
 	for _, run := range b.runs {
-		if run.Source != nil && run.Source.IssueID == issue.ID && pipelineParentRunID(run) == "" {
+		if run.Source != nil && run.Source.IssueID == issue.ID && pipelineCardEligible(run) {
 			sourceCandidates = append(sourceCandidates, run)
 		}
 	}
@@ -398,16 +398,65 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 		return sourceCandidates[i].CreatedAt.Before(sourceCandidates[j].CreatedAt)
 	})
 	if current == nil && len(sourceCandidates) > 0 {
-		return sourceCandidates[len(sourceCandidates)-1]
+		// The same shell gate as the loop below: with the parent's record
+		// gone (pruned/deleted) a never-resumed fork would otherwise
+		// become the card root unconditionally.
+		for i := len(sourceCandidates) - 1; i >= 0; i-- {
+			if !pipelineForkShell(sourceCandidates[i]) {
+				return sourceCandidates[i]
+			}
+		}
+		return nil
 	}
 	for _, candidate := range sourceCandidates {
-		if current == nil || candidate.ID == current.ID || candidate.Status.IsTerminal() || !candidate.CreatedAt.After(baseline) {
+		if current == nil || candidate.ID == current.ID || !candidate.CreatedAt.After(baseline) {
+			continue
+		}
+		// A terminal candidate never supersedes the dispatcher's pointer —
+		// except a fork that ACTUALLY ran: it is the card's recovery path,
+		// and when it ends it IS the card's latest outcome. Nothing else
+		// ever updates the pointer for it (the dispatcher only knows its
+		// own attempts), so skipping it would pin the card on the dead
+		// parent forever.
+		//
+		// FinishedAt discriminates "ran and ended" from "parked shell":
+		// Fork() parks every child as `cancelled` — itself a terminal
+		// status — via SaveRun, which never stamps FinishedAt; only a real
+		// status transition (applyStatusTransition) does. Without the gate,
+		// a never-resumed fork would hijack the card the instant it is
+		// created: the parent's failure message — the very reason the
+		// operator is forking — would vanish from the card, and the
+		// restart slot the failed parent holds (pipelineReservedSet reuses
+		// this function) would be silently released.
+		if candidate.Status.IsTerminal() && (candidate.ForkedFrom == "" || candidate.FinishedAt == nil) {
 			continue
 		}
 		current = candidate
 		baseline = candidate.CreatedAt
 	}
 	return current
+}
+
+// pipelineCardEligible reports whether a run sourced from an issue may
+// become the card's current run. Child runs are excluded so fan-out
+// shards and subbot children don't pollute the card — they ADD to the
+// card's run. A fork is the opposite case: it REPLACES a run that can no
+// longer continue, so it stays eligible despite carrying a parent edge.
+func pipelineCardEligible(run *store.Run) bool {
+	if pipelineParentRunID(run) == "" {
+		return true
+	}
+	return run.ForkedFrom != ""
+}
+
+// pipelineForkShell reports a run that is a fork in name only so far:
+// created (and terminal-parked as `cancelled`) but never executed.
+// Fork()'s initial SaveRun stamps no FinishedAt; only a real status
+// transition (applyStatusTransition) does, so FinishedAt is what
+// discriminates the parked shell from a fork that actually ran and
+// ended.
+func pipelineForkShell(run *store.Run) bool {
+	return run.ForkedFrom != "" && run.Status.IsTerminal() && run.FinishedAt == nil
 }
 
 func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, current *store.Run) []PipelineBoardAttempt {
