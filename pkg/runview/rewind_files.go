@@ -629,56 +629,62 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 		// operator to different next steps.
 		return nil, nil, false
 	}
-	// Walk from the boundary back to the target, keeping the boundary
-	// snapshots (newest first). Bounded by `seen`: a manifest is on-disk
-	// JSON unmarshalled bare, so a self-referential Parent must not spin.
-	var stack []*workspacetrack.Snapshot
+	// Walk from the boundary back to the target, diffing each consecutive
+	// pair of boundary snapshots as it goes, so only TWO manifests are
+	// live at a time. Retaining the whole range instead would hold one
+	// Entry per captured file per boundary — DefaultMaxFiles is 50,000,
+	// and this runs inside the long-lived studio/server process as well
+	// as the CLI. Bounded by `seen`: a manifest is on-disk JSON
+	// unmarshalled bare, so a self-referential Parent must not spin.
+	changed, parkedSet := map[string]bool{}, map[string]bool{}
+	// The walk goes newest → oldest, so `newer` is the pair member seen
+	// FIRST and `older` the one loaded next. StatusBetween is symmetric
+	// in membership, so direction only matters for reading it.
+	var newer *workspacetrack.Snapshot
 	seen := map[string]bool{}
 	reached := false
 	for id := boundaryID; id != "" && !seen[id]; {
 		seen[id] = true
-		snap, err := s.workspaceTracker.Load(runID, id)
+		older, err := s.workspaceTracker.Load(runID, id)
 		if err != nil {
 			return nil, nil, false
 		}
-		if id == targetID {
-			stack = append(stack, snap)
+		atTarget := id == targetID
+		if atTarget || isBoundarySnapshot(older) {
+			if newer != nil {
+				// An interval in which nothing of the run was executing.
+				// Whatever moved inside it was moved by someone else: an
+				// editor, a build, a second run. Claiming it as this run's
+				// production is exactly the false authorship a scoped
+				// restore exists to stop, so it is excluded from the scope
+				// and reported instead.
+				into := changed
+				if closesStopWindow(newer) {
+					into = parkedSet
+				}
+				for _, c := range workspacetrack.StatusBetween(older, newer) {
+					into[c.Path] = true
+				}
+				// StatusBetween compares content hashes, so a node that
+				// only ran `chmod +x deploy.sh` moves nothing it can see —
+				// and the restore's own chmod branch would then never be
+				// reached for that path. Executable-bit flips are routine
+				// output of build and scaffold nodes, so the mode is part
+				// of what the run changed.
+				for _, p := range modeOnlyChanges(older, newer) {
+					into[p] = true
+				}
+			}
+			newer = older
+		}
+		if atTarget {
 			reached = true
 			break
 		}
-		if isBoundarySnapshot(snap) {
-			stack = append(stack, snap)
-		}
-		id = snap.Parent
+		id = older.Parent
 	}
 	if !reached {
 		return nil, nil, false
-	}
-	changed, parkedSet := map[string]bool{}, map[string]bool{}
-	// stack is newest → oldest, so consecutive pairs walk the range
-	// backwards; StatusBetween is symmetric in membership.
-	for i := len(stack) - 1; i > 0; i-- {
-		older, newer := stack[i], stack[i-1]
-		// An interval in which nothing of the run was executing. Whatever
-		// moved inside it was moved by someone else: an editor, a build,
-		// a second run. Claiming it as this run's production is exactly
-		// the false authorship a scoped restore exists to stop, so it is
-		// excluded from the scope and reported instead.
-		into := changed
-		if closesStopWindow(newer) {
-			into = parkedSet
-		}
-		for _, c := range workspacetrack.StatusBetween(older, newer) {
-			into[c.Path] = true
-		}
-		// StatusBetween compares content hashes, so a node that only ran
-		// `chmod +x deploy.sh` moves nothing it can see — and the restore's
-		// own chmod branch would then never be reached for that path.
-		// Executable-bit flips are routine output of build and scaffold
-		// nodes, so the mode is part of what the run changed.
-		for _, p := range modeOnlyChanges(older, newer) {
-			into[p] = true
-		}
 	}
 	// A path the run demonstrably touched is the run's, even if it also
 	// moved during a pause; the reverse would let one parked interval

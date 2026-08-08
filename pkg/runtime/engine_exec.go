@@ -959,27 +959,40 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
 	_, hasPre := e.workspaceTracker.Resolve(rs.runID, label)
-	if hasPre {
-		// A pre-execution boundary for this (node, iteration) already
-		// exists, from its first attempt. NEVER overwrite it — that is
-		// the state a rewind to this node restores, and by now the
-		// workspace has moved: triaging is what an operator does while a
-		// run is stopped, so re-pointing the label would silently
-		// redefine "what this node started from" as "whatever is on disk
-		// now", and erase with it the evidence that the interval since
-		// the stop was not the run's.
-		//
-		// With no remembered anchor we are picking back up, so record the
-		// boundary that CLOSES that interval instead. With one, the
-		// boundary is already where it belongs and there is nothing to do.
-		if head == "" {
-			e.captureWorkspace(rs, nodeID, workspacetrack.PhaseResume)
+	if rs.resumed {
+		// The run is picking back up, and THIS is the boundary that
+		// closes the interval it was stopped in — the only interval a
+		// scoped rewind can prove is not the run's own work. Keyed on the
+		// explicit resume flag, never on `head == ""`: two mid-run paths
+		// clear that too, and with a colliding loop-iteration label
+		// either would mint a spurious `resume:` and launder a fan-out's
+		// real production out of the scope.
+		rs.resumed = false
+		e.captureWorkspace(rs, nodeID, workspacetrack.PhaseResume)
+		if !hasPre && rs.lastWorkspaceSnapshot != "" {
+			// The run stopped BEFORE this node was bracketed — an
+			// operator pause is checked at the top of the iteration, so
+			// it lands between two nodes. Point the node's pre-boundary
+			// at the state it is actually about to execute against;
+			// without it the node has none at all and a rewind to it has
+			// nothing to restore to.
+			if err := e.workspaceTracker.Alias(rs.runID, label, rs.lastWorkspaceSnapshot); err != nil && e.logger != nil {
+				e.logger.Warn("workspace pre-marker after resume: node %q iter %d: %v", nodeID, loopIter, err)
+			}
 		}
 		return
 	}
+	if hasPre {
+		// A pre-execution boundary for this (node, iteration) already
+		// exists. NEVER overwrite it — that is the state a rewind to this
+		// node restores, and by now the workspace may have moved, so
+		// re-pointing the label would silently redefine "what this node
+		// started from" as "whatever is on disk now".
+		return
+	}
 	if head == "" {
-		// First node of a fresh run, or a resume into a node that never
-		// started: capture, since there is no earlier boundary to point at.
+		// First node of a fresh run: capture, since there is no earlier
+		// boundary to point at.
 		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePre)
 		return
 	}

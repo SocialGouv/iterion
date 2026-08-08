@@ -587,6 +587,15 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// just built.
 	e.pushExecutorVars(rs.vars)
 
+	// This runState came from a RESUME, so its first workspace boundary
+	// closes the window in which the run was stopped. An empty
+	// lastWorkspaceSnapshot is NOT proof of that on its own: two mid-run
+	// paths clear it too (after every special dispatch, and after a
+	// failed capture), and with a colliding loop-iteration label either
+	// would otherwise mint a spurious `resume:` boundary and launder real
+	// production out of a rewind's scope.
+	rs.resumed = true
+
 	return rs, sandboxCleanup, nil
 }
 
@@ -675,6 +684,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)
 	rs.isWorktree = r.Worktree
+	// Same as the paused-resume builder: this state came from a RESUME, so
+	// its first workspace boundary closes the interval the run was stopped
+	// in. The failure path has its own runState constructor, which is
+	// exactly how it was missed once already.
+	rs.resumed = true
 
 	e.pushExecutorVars(rs.vars)
 

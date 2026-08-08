@@ -327,7 +327,12 @@ type runState struct {
 	// failure path — the one place a run is least able to afford it.
 	// Same tree, hence the same snapshot; only the walk is duplicated.
 	stopCaptured map[string]bool
-	budget       *SharedBudget // shared across branches, nil if no budget
+	// resumed marks a runState rebuilt by a RESUME, and is cleared by the
+	// first workspace boundary that consumes it. That boundary is the one
+	// closing the interval in which the run was stopped — the only
+	// interval a scoped rewind can prove is not the run's own work.
+	resumed bool
+	budget  *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all
