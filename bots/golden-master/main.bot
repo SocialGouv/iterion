@@ -1493,7 +1493,7 @@ tool oracle_run:
             if mode == "record":
                 snap = capture(config, corpus, canon)
                 for k, v in snap.items():
-                    with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8") as f:
+                    with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8", newline="") as f:
                         f.write(v)
                 # Record mode returns the gate skeleton with its default values, so
                 # `noop_silent: false, score_pct: 0` reads exactly like a failed gate
@@ -1509,7 +1509,17 @@ tool oracle_run:
                 p = os.path.join(refs_dir, e["id"] + ".txt")
                 if not os.path.isfile(p):
                     bail("no reference for entry %s — record before gating" % e["id"])
-                with open(p, encoding="utf-8") as f:
+                # `newline=""` DES DEUX COTES, et c'est la seule facon d'ecrire celui-ci :
+                # l'ecriture par defaut ne traduit rien sous Linux et laisse partir les CR
+                # bruts, la lecture par defaut active les universal newlines et remplace
+                # `\r\n` par `\n`. Une reference dont le texte canonique porte un CR ne se
+                # reproduit donc JAMAIS elle-meme, des l'instant ou elle est enregistree,
+                # sans qu'aucun code n'ait bouge. Et le symptome ne nomme pas sa cause :
+                # `splitlines()` traite les deux fins de ligne de la meme facon, donc la
+                # comparaison ligne a ligne ne voit rien et publie sa phrase de repli —
+                # « aucune ligne differente : longueurs seules ». C'est un ANGLE MORT :
+                # toute reponse servie contenant un CR brut est invisible au filet.
+                with open(p, encoding="utf-8", newline="") as f:
                     refs[e["id"]] = f.read()
 
             # Width is a property of what the net can SEE, so it is counted on
