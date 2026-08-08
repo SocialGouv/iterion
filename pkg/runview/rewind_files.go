@@ -21,8 +21,11 @@ type FileRevertResult struct {
 	RevertCommit string `json:"revert_commit,omitempty"`
 	BackupRef    string `json:"backup_ref,omitempty"`
 	SkipReason   string `json:"skip_reason,omitempty"`
-	// Scope is the restore breadth actually applied ("produced" | "full").
-	// Empty for the git/worktree path, which has only one breadth.
+	// Scope is the restore breadth actually applied — always one of
+	// "produced", "full" or "none", never empty once a rewind reached the
+	// workspace half. A `worktree: auto` run always reports "full": git
+	// has one breadth, and `produced` is refused up front rather than
+	// silently widened (see ErrRewindScopeUnavailable).
 	Scope string `json:"scope,omitempty"`
 	// ScopeCount is how many workspace paths the scope admitted — the
 	// blast radius, stated as a number before any of it is listed.
@@ -87,21 +90,6 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// LIVE CHECKOUT, so the default breadth is `produced` — the
 		// restore stays inside what the run is recorded to have changed.
 		return s.revertViaTracker(run, wf, cp, pivot, sourcePath, scope.orDefault(RestoreScopeProduced))
-	}
-	if scope == RestoreScopeProduced {
-		// Refused, never silently widened. git is the mechanism for a
-		// worktree run and it has exactly one breadth — `read-tree --reset`
-		// plus `clean -fd` is the whole tree — so honouring this request is
-		// not possible here, and quietly substituting the MAXIMAL blast
-		// radius for an explicitly-requested minimal one is the single
-		// behaviour this feature must never have.
-		//
-		// Doing nothing is the safe answer: the operator asked for narrow,
-		// and a worktree can still hold work they care about (a post-mortem
-		// shell writes into it).
-		return &FileRevertResult{Scope: string(scope), SkipReason: fmt.Sprintf(
-			"--restore-scope produced is not available for a run with an isolated worktree (%q): git reverts the whole tree or none of it — "+
-				"rerun with --restore-scope full to revert it, or none to leave it", pivot)}, nil
 	}
 	ref, skip := findPreNodeRef(run, wf, cp, pivot)
 	if skip != "" {
@@ -586,12 +574,26 @@ func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]boo
 	return out
 }
 
-// pauseSnapshotIDs indexes the snapshots that OPEN a parked interval —
-// the state the run was in when it stopped waiting for a human.
-func pauseSnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
+// stoppedSnapshotIDs indexes the snapshots that OPEN an interval in
+// which NOTHING of the run executes.
+//
+// Two labels do that, and both must count. `pause:` is the obvious one —
+// the run is waiting on a human. `fail:` is the same window wearing a
+// different name: a failure, an operator cancel or a drain also stops the
+// run, and what follows is a RESUME, which recaptures a `pre:` boundary
+// before executing anything. So the interval between a stop and the next
+// boundary holds only what moved while the run was not running.
+//
+// Excluding only pauses left the ordinary recovery flow — fail, triage,
+// edit, resume, rewind — attributing the operator's triage edits to the
+// run and deleting them, silently: the bank and the last boundary agree
+// on those files, so neither warning set could see them either. Issue
+// #380 recurring through its own fix.
+func stoppedSnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
 	out := map[string]bool{}
 	for label, id := range tr.Labels(runID) {
-		if strings.HasPrefix(label, workspacetrack.PauseLabelPrefix) {
+		if strings.HasPrefix(label, workspacetrack.PauseLabelPrefix) ||
+			strings.HasPrefix(label, workspacetrack.FailLabelPrefix) {
 			out[id] = true
 		}
 	}
@@ -634,7 +636,7 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 		return nil, nil, false
 	}
 	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
-	paused := pauseSnapshotIDs(s.workspaceTracker, runID)
+	stopped := stoppedSnapshotIDs(s.workspaceTracker, runID)
 	// Walk from the boundary back to the target, keeping the boundary
 	// snapshots (newest first). Bounded by `seen`: a manifest is on-disk
 	// JSON unmarshalled bare, so a self-referential Parent must not spin.
@@ -665,14 +667,22 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 	// backwards; StatusBetween is symmetric in membership.
 	for i := len(stack) - 1; i > 0; i-- {
 		older, newer := stack[i], stack[i-1]
-		// An interval OPENED by a pause is the one interval in which
-		// nothing of the run was executing. Whatever moved inside it was
-		// moved by someone else — an editor, a build, a second run — so
-		// claiming it as this run's production is exactly the false
-		// authorship a scoped restore exists to stop. Excluded from the
-		// scope and reported instead.
+		// An interval in which nothing of the run was executing. Whatever
+		// moved inside it was moved by someone else: an editor, a build,
+		// a second run. Claiming it as this run's production is exactly
+		// the false authorship a scoped restore exists to stop, so it is
+		// excluded from the scope and reported instead.
+		//
+		// Read from BOTH ends, because a label alone is not enough. A
+		// label is a pointer and the engine re-points it: a node that
+		// fails, is resumed and fails again moves `fail:<node>:<iter>`
+		// onto the second stop, and the first interval loses its marker.
+		// A snapshot's own `Label` is written once at capture and never
+		// moves, so a snapshot CAPTURED as `resume:` is permanent proof
+		// that the run had stopped before it — which is the closing end
+		// of exactly the interval we must exclude.
 		into := changed
-		if paused[older.ID] {
+		if stopped[older.ID] || strings.HasPrefix(newer.Label, workspacetrack.ResumeLabelPrefix) {
 			into = parkedSet
 		}
 		for _, c := range workspacetrack.StatusBetween(older, newer) {

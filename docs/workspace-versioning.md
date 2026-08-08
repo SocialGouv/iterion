@@ -46,8 +46,8 @@ objects — see *Reclaiming disk*.
 
 Snapshots carry a `Parent`, so a run's captures form a chain — the node-by-node
 history of the workspace, readable without git. Labels name the boundaries:
-`pre:<node>:<iter>`, `post:<node>:<iter>`, `fail:<node>:<iter>` and
-`gate:<n>`. A rewind resolves the `pre:` label of its pivot for the state to
+`pre:<node>:<iter>`, `post:<node>:<iter>`, `fail:<node>:<iter>`,
+`pause:<node>:<iter>`, `resume:<node>:<iter>` and `gate:<n>`. A rewind resolves the `pre:` label of its pivot for the state to
 restore, and the newest boundary label for how far the run got.
 
 `fail:` is written when a node's execution does **not** complete — a failure,
@@ -60,11 +60,23 @@ operator's: `pre:` is an *alias* and does not advance the chain head, so a run
 that stops inside a node would otherwise end with its most recent recorded
 state being the one that node started from.
 
-`pause:` earns its own phase for a second reason: it opens the one interval in
-which **nothing of the run is executing**. A file that appears between a
-`pause:` boundary and the next one demonstrably did not come from this run — it
-came from the operator's editor, a watch process, a second run. That is the
-only place authorship is decidable, and a scoped rewind excludes it.
+`pause:` and `fail:` also OPEN the one kind of interval in which **nothing of
+the run is executing**, and `resume:` CLOSES it. A file that appears in that
+window demonstrably did not come from this run — it came from the operator's
+editor, a watch process, a second run. That is the only place authorship is
+decidable, and a scoped rewind excludes it.
+
+`resume:` exists because the alternative silently destroys evidence. Before it,
+a resume re-captured the node's `pre:` boundary, which redefined "what this node
+started from" as "whatever is on disk now" — and the disk has moved, because
+triaging a failure is exactly what an operator does between the stop and the
+resume.
+
+Read the interval from BOTH ends, and prefer the closing one: a **label** is a
+pointer the engine re-points (a node that fails, resumes and fails again moves
+`fail:<node>:<iter>` onto the second stop, and the first interval loses its
+marker), whereas a **snapshot's own `Label`** is written once at capture and
+never moves.
 
 ## Cost
 

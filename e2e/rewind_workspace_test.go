@@ -124,6 +124,103 @@ func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRewindAfterResumeKeepsTriageEdits covers the most ordinary
+// recovery flow there is — fail, triage, edit, resume, rewind — and the
+// one that reopened issue #380 through its own fix.
+//
+// A stop is a window in which nothing of the run executes, exactly like a
+// pause: what follows is a RESUME, which recaptures a `pre:` boundary
+// before running anything. Diffing that pair as if it were execution
+// attributes the operator's triage edits to the run and deletes them —
+// and silently, because the bank and the last boundary agree on those
+// files, so neither warning set can see them either.
+//
+// No unit test reaches this: it needs a real resume between the failure
+// and the rewind, which is what re-captures the boundary.
+func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
+
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWS(t, ws, "docs/intro.md", "intro v1\n")
+
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	tracker := workspacetrack.NewNative(storeDir)
+
+	exec := newScenarioExecutor()
+	exec.on("implement", func(_ map[string]any) (map[string]any, error) {
+		writeWS(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
+		return map[string]any{"value": "wrote the docs"}, nil
+	})
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return nil, errors.New("verify blew up")
+	})
+
+	const runID = "e2e-rewind-after-resume"
+	newEngine := func() *runtime.Engine {
+		return runtime.New(wf, st, exec,
+			runtime.WithLogger(iterlog.Nop()),
+			runtime.WithWorkDir(ws),
+			runtime.WithWorkspaceTracker(tracker),
+		)
+	}
+	if err := newEngine().Run(context.Background(), runID, nil); err == nil {
+		t.Fatal("expected the run to fail at verify")
+	}
+
+	// The operator triages: a file no node ever touched, written while the
+	// run sits in failed_resumable.
+	writeWS(t, ws, "src/human.go", "package main // MY TRIAGE EDIT\n")
+
+	// ...then resumes. THIS is what re-captures `pre:verify:0` onto a
+	// snapshot that already contains src/human.go.
+	if err := newEngine().Resume(context.Background(), runID, nil); err == nil {
+		t.Fatal("expected the resumed run to fail at verify again")
+	}
+
+	svc, err := runview.NewService(storeDir, runview.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	result, err := svc.Rewind(context.Background(), runview.RewindSpec{
+		RunID:      runID,
+		NodeID:     "implement",
+		SourcePath: filepath.Join("testdata", "rewind_mini.bot"),
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+
+	// The run's own production is still undone...
+	if got := readWS(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the state implement started from", got)
+	}
+	// ...and the triage edit, made while the run was stopped, is not the
+	// rewind's to take.
+	if _, serr := os.Stat(filepath.Join(ws, "src/human.go")); serr != nil {
+		t.Errorf("the operator's triage edit was deleted by the rewind (issue #380 via its own fix): %v", serr)
+	}
+	// And it is not silently absent from the report either: a path the
+	// rewind declined to touch is named, so the operator can see it was a
+	// decision rather than an oversight.
+	var named bool
+	for _, p := range result.Files.LeftInPlace {
+		if p == "src/human.go" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("LeftInPlace = %v, want src/human.go named", result.Files.LeftInPlace)
+	}
+}
+
 // TestRewindScopeCoversAFailedNodesDebris is the other half of the
 // contract, and the reason the engine gained a `fail:` boundary.
 //

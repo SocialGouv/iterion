@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -381,6 +382,12 @@ func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
 // none of it, so a worktree run cannot honour `produced`. Silently
 // substituting `full` — the MAXIMAL blast radius — for an explicitly
 // requested minimal one is the one behaviour this feature must not have.
+//
+// It fails the WHOLE rewind rather than skipping the file half: both
+// inputs are known before anything is claimed, and proceeding would
+// re-anchor the checkpoint while the worktree still held the node's own
+// production — a replay on top of itself, which is what a rewind exists
+// to prevent.
 func TestRewind_WorktreeRefusesProducedScope(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "verify",
@@ -397,17 +404,22 @@ func TestRewind_WorktreeRefusesProducedScope(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	result, err := svc.Rewind(context.Background(), RewindSpec{
+	_, err = svc.Rewind(context.Background(), RewindSpec{
 		RunID: runID, NodeID: "implement", RestoreScope: RestoreScopeProduced,
 	})
-	if err != nil {
-		t.Fatalf("Rewind: %v", err)
+	if !errors.Is(err, ErrRewindScopeUnavailable) {
+		t.Fatalf("Rewind err = %v, want ErrRewindScopeUnavailable", err)
 	}
-	if result.Files.Reverted {
-		t.Fatal("a worktree run silently performed a restore for an unhonourable scope")
+	// Nothing was claimed, so the operator can simply pick again.
+	after, lerr := svc.store.LoadRun(context.Background(), runID)
+	if lerr != nil {
+		t.Fatalf("load: %v", lerr)
 	}
-	if !strings.Contains(result.Files.SkipReason, "not available") {
-		t.Errorf("SkipReason = %q, want it to say produced is unavailable here", result.Files.SkipReason)
+	if after.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want the run untouched by a refused request", after.Status)
+	}
+	if after.Checkpoint == nil || after.Checkpoint.NodeID != "verify" {
+		t.Error("the checkpoint was re-anchored despite the refusal")
 	}
 }
 

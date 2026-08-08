@@ -323,7 +323,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 			// 409: the run is running or terminal — a state conflict the
 			// caller resolves by cancelling/pausing first, not a bad request.
 			s.httpErrorFor(w, r, http.StatusConflict, "rewind: %v", err)
-		case errors.Is(err, runview.ErrRewindNodeNotReached),
+		case errors.Is(err, runview.ErrRewindScopeUnavailable),
+			errors.Is(err, runview.ErrRewindNodeNotReached),
 			errors.Is(err, runview.ErrRewindNoSourceRecorded),
 			errors.Is(err, runview.ErrRewindNoChange),
 			errors.Is(err, runview.ErrRewindAmbiguous):

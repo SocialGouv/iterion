@@ -23,6 +23,13 @@ var ErrRewindNotRewindable = errors.New("runview: rewind: run is not in a rewind
 // to 400.
 var ErrRewindNodeNotReached = errors.New("runview: rewind: node was never reached by this run")
 
+// ErrRewindScopeUnavailable is returned when the requested restore scope
+// cannot be honoured for this run's shape. Callers map it to 400: the
+// request is well-formed but inapplicable, and the fix is to pick another
+// scope. Deliberately an error rather than a silent widening — see the
+// check in Rewind.
+var ErrRewindScopeUnavailable = errors.New("runview: rewind: restore scope unavailable for this run")
+
 // ArtifactLabelRewound marks the marker version appended over a
 // published artifact whose producing node was invalidated by a rewind.
 const ArtifactLabelRewound = "rewound"
@@ -249,6 +256,25 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	run, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
+	}
+	if run.Worktree && spec.RestoreScope == RestoreScopeProduced && !spec.KeepFiles {
+		// Refused UP FRONT, before anything is claimed or written. git is
+		// the mechanism for a worktree run and it has exactly one breadth
+		// — `read-tree --reset` plus `clean -fd` is the whole tree — so
+		// this request cannot be honoured, and quietly substituting the
+		// MAXIMAL blast radius for a request to narrow it is the one
+		// behaviour this feature must not have.
+		//
+		// Failing beats proceeding with the file half skipped: the
+		// checkpoint would be re-anchored and the artifacts invalidated
+		// while the worktree still held the node's own production, which
+		// is exactly the replay-on-top-of-itself a rewind exists to
+		// prevent. Both inputs are known here, so the operator can pick
+		// again with nothing to undo.
+		return nil, fmt.Errorf(
+			"%w: --restore-scope produced is not available for a run with an isolated worktree — "+
+				"git reverts the whole tree or none of it; use --restore-scope full to revert it, or none to leave it",
+			ErrRewindScopeUnavailable)
 	}
 	if !isRewindableStatus(run.Status) {
 		return nil, fmt.Errorf("%w: %s (rewindable: %s)",

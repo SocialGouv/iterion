@@ -82,12 +82,35 @@ const (
 	// demonstrably did not come from this run — so a scoped restore can
 	// exclude it rather than claim authorship of the operator's editor.
 	PhasePause = "pause"
+	// PhaseResume labels the workspace as a run picks back up, when the
+	// node it resumes into already has a `pre:` boundary from its first
+	// attempt.
+	//
+	// It exists so that boundary survives. Overwriting `pre:` on every
+	// resume redefines "what this node started from" as "whatever is on
+	// disk now" — and the disk has moved, because triaging a failure is
+	// what the operator does between the stop and the resume. Worse, it
+	// erases the stop label with it, so the interval that demonstrably
+	// belongs to nobody but the operator becomes indistinguishable from
+	// execution.
+	PhaseResume = "resume"
 )
 
-// PauseLabelPrefix is the prefix of a pause boundary's label. Exported
-// for the one consumer that must treat the interval a pause OPENS
-// differently from an execution interval (runview's scope computation).
-const PauseLabelPrefix = PhasePause + ":"
+// Label prefixes of the two boundaries that OPEN a non-executing
+// interval. Exported for the one consumer that must treat the window a
+// STOP opens differently from an execution interval (runview's scope
+// computation): both are followed by a resume, which recaptures a `pre:`
+// boundary before anything runs, so nothing between them is the run's.
+const (
+	PauseLabelPrefix = PhasePause + ":"
+	FailLabelPrefix  = PhaseFail + ":"
+	// ResumeLabelPrefix marks the CLOSING end of that interval, and is
+	// the load-bearing one: a label is a pointer the engine re-points (a
+	// node that fails, resumes and fails again moves `fail:<node>:<iter>`
+	// onto the second stop), whereas Snapshot.Label is written once at
+	// capture and never moves.
+	ResumeLabelPrefix = PhaseResume + ":"
+)
 
 // BoundaryPhases are the phases the ENGINE writes as it executes. A label
 // carrying one of these marks a state the run itself produced, as opposed
@@ -98,7 +121,7 @@ const PauseLabelPrefix = PhasePause + ":"
 // "the run's own most recent boundary" from it, and a hand-written prefix
 // test there would drift from what the engine writes here — and match
 // `pre-restore:` by accident, since it also begins with "pre".
-var BoundaryPhases = []string{PhasePre, PhasePost, PhaseFail, PhasePause}
+var BoundaryPhases = []string{PhasePre, PhasePost, PhaseFail, PhasePause, PhaseResume}
 
 // IsBoundaryLabel reports whether a label was written by the engine at a
 // node or gate boundary, rather than by a rewind banking state.

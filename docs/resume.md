@@ -362,19 +362,24 @@ leaves the same audit trail as a CLI one.
 
 To keep that honest the engine writes a **`fail:<node>:<iter>`** boundary when a
 node's execution does not complete — a failure, an interruption, an operator
-cancel — and a **`pause:<node>:<iter>`** one when it parks on a human gate.
+cancel — a **`pause:<node>:<iter>`** one when it parks on a human gate, and a
+**`resume:<node>:<iter>`** one when it picks back up into a node that already
+has a `pre:` boundary (rather than overwriting it, which used to redefine "what
+this node started from" as "whatever is on disk now").
 Without them a run that stopped *inside* a node would have nothing recorded
 after the state that node started from (`pre:` is an alias and does not advance
 the chain head), the scope would be empty, and the node's own debris would
 survive its rewind. When the scope *is* empty the rewind says so and restores
 nothing, rather than reporting a success it did not perform.
 
-`pause:` also brackets the one interval in which **nothing of the run is
-executing**, and the scope excludes it: a file that appears while the run waits
-for you came from your editor, not from a node — even though the fresh capture
-the resume takes would otherwise fold it into the next node's apparent output.
-That is the only place authorship is decidable; an edit made *while a node is
-running* is not, and lands in `files.overwritten` if the restore takes it.
+`pause:`/`fail:` open, and `resume:` closes, the one interval in which **nothing
+of the run is executing** — and the scope excludes it. A file that appears while
+a run waits for you, or between a failure and the resume you trigger after
+triaging it, came from your editor, not from a node; without the exclusion the
+capture the resume takes folds it into that node's apparent output and the
+rewind deletes it. That is the only place authorship is decidable. An edit made
+*while a node is running* is not, and lands in `files.overwritten` if the
+restore takes it.
 
 ## Human and agent interaction resume
 
