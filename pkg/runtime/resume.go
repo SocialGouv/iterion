@@ -1428,6 +1428,18 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // this, claw's stateless re-invocation would lose the question and the
 // LLM might call ask_user with the same question again.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
+	// CLOSE the stop window before re-invoking. This path does not go
+	// through markPreNodeBoundary — the node never re-enters the dispatch
+	// loop, it picks up mid-conversation — so without this the workspace
+	// has no boundary between the pause and the NEXT node's, and every
+	// file the agent writes after the operator answers falls inside the
+	// interval the pause opened. A scoped rewind then reads that whole
+	// interval as "changed while nothing was executing", leaves the
+	// agent's own production on disk, and the replay meets it again.
+	//
+	// `pre:<node>:<iter>` already exists here by construction (the node
+	// ran before it asked), so this records `resume:<node>:<iter>`.
+	e.markPreNodeBoundary(rs, nodeID)
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
 	for k, v := range answers {

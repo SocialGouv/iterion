@@ -546,7 +546,6 @@ func appendCappedPath(dst []string, p string) []string {
 // run's own history rather than from the disk: the whole point is to
 // separate what the run changed from what changed around it.
 func (s *Service) lastRecordedBoundary(runID string) (string, *workspacetrack.Snapshot) {
-	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
 	seen := map[string]bool{}
 	for id := s.workspaceTracker.Head(runID); id != "" && !seen[id]; {
 		seen[id] = true
@@ -554,7 +553,7 @@ func (s *Service) lastRecordedBoundary(runID string) (string, *workspacetrack.Sn
 		if err != nil {
 			return "", nil
 		}
-		if boundaries[id] {
+		if isBoundarySnapshot(snap) {
 			return id, snap
 		}
 		id = snap.Parent
@@ -562,61 +561,37 @@ func (s *Service) lastRecordedBoundary(runID string) (string, *workspacetrack.Sn
 	return "", nil
 }
 
-// boundarySnapshotIDs indexes the snapshot ids the engine labelled at a
-// node or gate boundary.
-func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
-	out := map[string]bool{}
-	for label, id := range tr.Labels(runID) {
-		if workspacetrack.IsBoundaryLabel(label) {
-			out[id] = true
-		}
-	}
-	return out
+// isBoundarySnapshot reports whether a snapshot was CAPTURED at an
+// engine boundary, as opposed to being a bank a rewind took.
+//
+// It reads the snapshot's OWN Label, never the run's label→id map, and
+// that distinction is the whole point. A label is a pointer the engine
+// re-points: stop labels carry no sequence, so a second pause at the same
+// (node, iteration) — the ordinary shape of `permission: ask`, one
+// pause+resume per approval — moves `pause:<node>:<iter>` onto the newer
+// snapshot and leaves the FIRST one carrying no label at all. Derived
+// from the map, that snapshot then vanishes from the chain walk, its
+// window merges into the surrounding interval, and everything the
+// operator wrote during it is claimed as the run's production and
+// restored away — reported by neither warning set, because the bank and
+// the last boundary agree on those files. Snapshot.Label is written once
+// at capture and never moves.
+func isBoundarySnapshot(snap *workspacetrack.Snapshot) bool {
+	return snap != nil && workspacetrack.IsBoundaryLabel(snap.Label)
 }
 
-// stoppedSnapshotIDs indexes the snapshots that OPEN an interval in
-// which NOTHING of the run executes.
+// closesStopWindow reports whether the interval ENDING at this snapshot
+// is one in which nothing of the run was executing.
 //
-// Two labels do that, and both must count. `pause:` is the obvious one —
-// the run is waiting on a human. `fail:` is the same window wearing a
-// different name: a failure, an operator cancel or a drain also stops the
-// run, and what follows is a RESUME, which recaptures a `pre:` boundary
-// before executing anything. So the interval between a stop and the next
-// boundary holds only what moved while the run was not running.
-//
-// Excluding only pauses left the ordinary recovery flow — fail, triage,
-// edit, resume, rewind — attributing the operator's triage edits to the
-// run and deleting them, silently: the bank and the last boundary agree
-// on those files, so neither warning set could see them either. Issue
-// #380 recurring through its own fix.
-func stoppedSnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
-	labels := tr.Labels(runID)
-	// A snapshot that ALSO carries a `resume:` label is where the window
-	// opened AND closed: the capture the resume took deduped onto it
-	// because nothing moved while the run was stopped — the ordinary
-	// human-gate answer. A window of zero width has nothing to exclude,
-	// and the interval that FOLLOWS such a snapshot is the resumed node
-	// EXECUTING. Marking it stopped would launder that node's own output
-	// out of the scope, leave it on disk, and hand it back to the replay:
-	// the exact failure this package exists to prevent, arrived at from
-	// the opposite direction.
-	resumed := map[string]bool{}
-	for label, id := range labels {
-		if strings.HasPrefix(label, workspacetrack.ResumeLabelPrefix) {
-			resumed[id] = true
-		}
-	}
-	out := map[string]bool{}
-	for label, id := range labels {
-		if resumed[id] {
-			continue
-		}
-		if strings.HasPrefix(label, workspacetrack.PauseLabelPrefix) ||
-			strings.HasPrefix(label, workspacetrack.FailLabelPrefix) {
-			out[id] = true
-		}
-	}
-	return out
+// Read from the closing end only, and that is sufficient rather than
+// merely convenient: every non-executing window ends with the capture the
+// resume takes, and when nothing moved inside it that capture dedupes
+// onto its parent — so a zero-width window produces no interval to
+// misjudge. Reading the OPENING end instead needs the same information
+// plus a special case for that dedupe, and gets it from a re-pointable
+// label.
+func closesStopWindow(snap *workspacetrack.Snapshot) bool {
+	return snap != nil && strings.HasPrefix(snap.Label, workspacetrack.ResumeLabelPrefix)
 }
 
 // recordedChanges returns every workspace path this run is RECORDED to
@@ -654,8 +629,6 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 		// operator to different next steps.
 		return nil, nil, false
 	}
-	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
-	stopped := stoppedSnapshotIDs(s.workspaceTracker, runID)
 	// Walk from the boundary back to the target, keeping the boundary
 	// snapshots (newest first). Bounded by `seen`: a manifest is on-disk
 	// JSON unmarshalled bare, so a self-referential Parent must not spin.
@@ -673,7 +646,7 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 			reached = true
 			break
 		}
-		if boundaries[id] {
+		if isBoundarySnapshot(snap) {
 			stack = append(stack, snap)
 		}
 		id = snap.Parent
@@ -691,17 +664,8 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []s
 		// a second run. Claiming it as this run's production is exactly
 		// the false authorship a scoped restore exists to stop, so it is
 		// excluded from the scope and reported instead.
-		//
-		// Read from BOTH ends, because a label alone is not enough. A
-		// label is a pointer and the engine re-points it: a node that
-		// fails, is resumed and fails again moves `fail:<node>:<iter>`
-		// onto the second stop, and the first interval loses its marker.
-		// A snapshot's own `Label` is written once at capture and never
-		// moves, so a snapshot CAPTURED as `resume:` is permanent proof
-		// that the run had stopped before it — which is the closing end
-		// of exactly the interval we must exclude.
 		into := changed
-		if stopped[older.ID] || strings.HasPrefix(newer.Label, workspacetrack.ResumeLabelPrefix) {
+		if closesStopWindow(newer) {
 			into = parkedSet
 		}
 		for _, c := range workspacetrack.StatusBetween(older, newer) {

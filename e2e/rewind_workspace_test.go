@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -218,6 +220,103 @@ func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
 	}
 	if !named {
 		t.Errorf("LeftInPlace = %v, want src/human.go named", result.Files.LeftInPlace)
+	}
+}
+
+// TestRewindScopeAfterDelegatePause splits a mid-node `ask_user` pause
+// into its two halves, which no other path exercises.
+//
+// A delegate pause does not re-enter the dispatch loop on resume: the
+// node picks back up mid-conversation through reInvokeBackend. So the
+// boundary that closes the parked window has to be written there, and
+// without it everything the agent writes AFTER the operator answers
+// falls inside the window the pause opened — excluded from the scope,
+// left on disk, and met again by the replay.
+//
+// Both halves are asserted: the operator's file survives, the agent's
+// post-answer file does not.
+func TestRewindScopeAfterDelegatePause(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "rewind_delegate_mini.bot")
+
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWS(t, ws, "docs/intro.md", "intro v1\n")
+
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	tracker := workspacetrack.NewNative(storeDir)
+
+	exec := newScenarioExecutor()
+	exec.on("implement", func(_ map[string]any) (map[string]any, error) {
+		if exec.callCount("implement") == 1 {
+			// Writes, then asks. A non-empty Backend is what marks this a
+			// DELEGATE pause, so the resume re-invokes the node.
+			writeWS(t, ws, "docs/intro.md", "intro v2 BEFORE THE QUESTION\n")
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:    "implement",
+				Questions: map[string]any{delegate.AskUserQuestionKey: "ship it?"},
+				SessionID: "sess-1",
+				Backend:   "stub",
+			}
+		}
+		writeWS(t, ws, "docs/after-answer.md", "written AFTER the operator answered\n")
+		return map[string]any{"value": "done"}, nil
+	})
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return nil, errors.New("verify blew up")
+	})
+
+	const runID = "e2e-rewind-delegate-pause"
+	newEngine := func() *runtime.Engine {
+		return runtime.New(wf, st, exec,
+			runtime.WithLogger(iterlog.Nop()),
+			runtime.WithWorkDir(ws),
+			runtime.WithWorkspaceTracker(tracker),
+		)
+	}
+	if err := newEngine().Run(context.Background(), runID, nil); !errors.Is(err, runtime.ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused at the ask_user, got: %v", err)
+	}
+
+	// The operator writes something of their own while deciding.
+	writeWS(t, ws, "notes/mine.md", "my note while deciding\n")
+
+	if err := newEngine().Resume(context.Background(), runID, map[string]any{
+		delegate.AskUserQuestionKey: "yes",
+	}); err == nil {
+		t.Fatal("expected the resumed run to fail at verify")
+	}
+	if got := exec.callCount("implement"); got != 2 {
+		t.Fatalf("implement called %d times, want 2 (re-invoked after the answer)", got)
+	}
+
+	svc, err := runview.NewService(storeDir, runview.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	result, err := svc.Rewind(context.Background(), runview.RewindSpec{
+		RunID:      runID,
+		NodeID:     "implement",
+		SourcePath: filepath.Join("testdata", "rewind_delegate_mini.bot"),
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(ws, "docs/after-answer.md")); !os.IsNotExist(serr) {
+		t.Errorf("the agent's post-answer output survived (LeftInPlace=%v) — the replay meets its own production",
+			result.Files.LeftInPlace)
+	}
+	if _, serr := os.Stat(filepath.Join(ws, "notes/mine.md")); serr != nil {
+		t.Errorf("the operator's file, written while the run was parked, was deleted: %v", serr)
+	}
+	if got := readWS(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the state implement started from", got)
 	}
 }
 

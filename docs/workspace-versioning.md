@@ -70,13 +70,26 @@ decidable, and a scoped rewind excludes it.
 a resume re-captured the node's `pre:` boundary, which redefined "what this node
 started from" as "whatever is on disk now" — and the disk has moved, because
 triaging a failure is exactly what an operator does between the stop and the
-resume.
+resume. It is written on **every** way back in, including the delegate path
+(`ask_user`, an approval): that one never re-enters the dispatch loop, so
+without it everything the agent writes after the answer falls inside the window
+the pause opened.
 
-Read the interval from BOTH ends, and prefer the closing one: a **label** is a
-pointer the engine re-points (a node that fails, resumes and fails again moves
-`fail:<node>:<iter>` onto the second stop, and the first interval loses its
-marker), whereas a **snapshot's own `Label`** is written once at capture and
-never moves.
+The window is read from its **closing** end, and from each snapshot's own
+`Label` rather than from the run's label→id map. Both halves matter:
+
+- **Closing end.** Every non-executing window ends with the capture the resume
+  takes, and when nothing moved inside it that capture dedupes onto its parent —
+  so a zero-width window produces no interval to misjudge at all. Reading the
+  opening end needs the same information *plus* a special case for that dedupe,
+  and gets it from a mutable source.
+- **`Snapshot.Label`, not `Labels()`.** A label is a pointer the engine
+  re-points: stop labels carry no sequence, so a second pause at the same
+  `(node, iteration)` — the ordinary shape of `permission: ask`, one pause and
+  one resume per approval — moves `pause:<node>:<iter>` onto the newer snapshot
+  and leaves the first carrying no label at all. Derived from the map, that
+  snapshot vanishes from the walk and its window merges into the surrounding
+  interval. `Snapshot.Label` is written once at capture and never moves.
 
 ## Cost
 

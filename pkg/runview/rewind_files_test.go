@@ -323,15 +323,20 @@ func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
 
 	// The engine's own label sequence for: implement runs, writes, then
 	// parks on a question; the operator edits while it waits; the run
-	// resumes into verify, which then fails.
+	// resumes back into implement, finishes it, and verify then fails.
+	//
+	// `resume:` rather than a re-captured `pre:` is what the engine now
+	// writes — the boundary that CLOSES the parked window. It is the
+	// whole discriminator, so the fixture has to speak it.
 	capture("pre:implement:0")
 	writeFile(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
 	capture("pause:implement:0")
 
 	writeFile(t, ws, "notes/human.md", "written while the run was parked\n")
 
-	capture("pre:verify:0") // the fresh capture a resume takes
-	writeFile(t, ws, "docs/report.md", "verify output\n")
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/report.md", "written after the answer\n")
+	capture("post:implement:0")
 	capture("fail:verify:0")
 
 	run, err := st.LoadRun(context.Background(), runID)
@@ -361,7 +366,7 @@ func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
 		t.Errorf("docs/intro.md = %q, want the pre-node content", got)
 	}
 	if _, err := os.Stat(filepath.Join(ws, "docs/report.md")); !os.IsNotExist(err) {
-		t.Error("a file written after the resume survived the restore")
+		t.Error("a file the node wrote AFTER the answer survived the restore — that half is execution, not the parked window")
 	}
 	// The operator's file, written while nothing was executing, is not.
 	if got := readWorkspaceFile(t, ws, "notes/human.md"); got != "written while the run was parked\n" {
@@ -375,6 +380,95 @@ func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
 	}
 	if !reported {
 		t.Errorf("LeftInPlace = %v, want notes/human.md named", result.Files.LeftInPlace)
+	}
+}
+
+// TestRewind_RepeatedStopsKeepTheirOwnWindows guards the pointer hazard
+// that made two earlier attempts at this wrong.
+//
+// Stop labels carry no sequence, so a SECOND pause at the same (node,
+// iteration) re-points `pause:<node>:<iter>` onto the newer snapshot and
+// leaves the first one carrying no label at all. Anything derived from
+// the run's label→id map therefore loses that snapshot entirely: the
+// chain walk steps over it, its window merges into the surrounding
+// interval, and the operator's edits inside it are claimed as the run's
+// production and deleted — reported by neither warning set, because the
+// bank and the last boundary agree on those files.
+//
+// This is the ordinary shape of `permission: ask`: one pause and one
+// resume per tool approval, all at iteration 0.
+func TestRewind_RepeatedStopsKeepTheirOwnWindows(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-repeated-stops"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	capture := func(label string) {
+		t.Helper()
+		if _, err := svc.workspaceTracker.Capture(runID, ws, label); err != nil {
+			t.Fatalf("capture %s: %v", label, err)
+		}
+	}
+
+	// Two approval round-trips, both at implement:0 — so both reuse the
+	// same label strings and each re-points the previous one.
+	capture("pre:implement:0")
+	writeFile(t, ws, "docs/a.md", "node work A\n")
+	capture("pause:implement:0")
+	writeFile(t, ws, "notes/first.md", "operator, first window\n")
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/b.md", "node work B\n")
+	capture("pause:implement:0")
+	writeFile(t, ws, "notes/second.md", "operator, second window\n")
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/c.md", "node work C\n")
+	capture("post:implement:0")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	// Every parked window is honoured, not only the last one.
+	for _, mine := range []string{"notes/first.md", "notes/second.md"} {
+		if _, serr := os.Stat(filepath.Join(ws, mine)); serr != nil {
+			t.Errorf("%s was deleted — an earlier stop window lost its marker: %v", mine, serr)
+		}
+	}
+	// ...and every execution interval is still undone.
+	for _, produced := range []string{"docs/a.md", "docs/b.md", "docs/c.md"} {
+		if _, serr := os.Stat(filepath.Join(ws, produced)); !os.IsNotExist(serr) {
+			t.Errorf("%s survived — the node's own production must be undone", produced)
+		}
 	}
 }
 
