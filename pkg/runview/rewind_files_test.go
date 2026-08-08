@@ -196,9 +196,21 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 		t.Fatalf("seed capture: %v", err)
 	}
 
-	// `implement` writes the doc set.
+	// `implement` writes the doc set and COMPLETES, which is what gives it
+	// a closing boundary. Without one the run's most recent recorded state
+	// is the one `implement` started from, and there is by definition
+	// nothing recorded between the two — see
+	// TestRewind_InPlaceEmptyScopeIsItsOwnOutcome.
 	writeFile(t, ws, "docs/intro.md", "intro v2 REWRITTEN\n")
 	writeFile(t, ws, "docs/api.md", "generated\n")
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "post:implement:0"); err != nil {
+		t.Fatalf("seed post capture: %v", err)
+	}
+
+	// A file the operator edited AFTER the run stopped, which no node ever
+	// touched. This is issue #380: a rewind used to force the whole tree
+	// back to the pivot's snapshot and take this with it.
+	writeFile(t, ws, "notes/human.md", "my own work\n")
 
 	run, err := st.LoadRun(context.Background(), runID)
 	if err != nil {
@@ -232,6 +244,22 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 	if got := readWorkspaceFile(t, ws, "docs/keep.md"); got != "untouched\n" {
 		t.Errorf("docs/keep.md = %q, want it left alone", got)
 	}
+	// The regression from issue #380: a path created after the run's last
+	// boundary, by a hand rather than by a node, survives — and is
+	// reported rather than silently skipped.
+	if got := readWorkspaceFile(t, ws, "notes/human.md"); got != "my own work\n" {
+		t.Errorf("notes/human.md = %q, want the operator's file untouched", got)
+	}
+	if result.Files.ScopeCount != 2 {
+		t.Errorf("ScopeCount = %d, want the 2 paths the run recorded changing", result.Files.ScopeCount)
+	}
+	if result.Files.LeftInPlaceCount != 1 || len(result.Files.LeftInPlace) != 1 || result.Files.LeftInPlace[0] != "notes/human.md" {
+		t.Errorf("LeftInPlace = %v (%d), want notes/human.md reported as not restored",
+			result.Files.LeftInPlace, result.Files.LeftInPlaceCount)
+	}
+	if result.Files.OverwrittenCount != 0 {
+		t.Errorf("OverwrittenCount = %d, want 0 — nothing outside the run's own production was taken", result.Files.OverwrittenCount)
+	}
 	// Nothing is destroyed: the pre-rewind state stays a resolvable
 	// snapshot, so the discarded work is recoverable.
 	if result.Files.BackupRef == "" {
@@ -249,6 +277,205 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 	}
 	if !hasAPI {
 		t.Error("the banked snapshot does not carry the work the rewind discarded")
+	}
+}
+
+// TestRewind_InPlaceEmptyScopeIsItsOwnOutcome pins the degenerate case
+// the scoped restore has to be honest about.
+//
+// `pre:<node>` is an Alias, and an Alias does not advance the chain head,
+// so a run that stops INSIDE a node ends with its most recent recorded
+// state being the one that node started from. There is then nothing
+// recorded between the two, and the correct answer is "I restored
+// nothing" — not a success line describing a restore that did not happen,
+// and not a silent fall back to putting the whole tree back, which is the
+// data loss the scoping exists to prevent.
+func TestRewind_InPlaceEmptyScopeIsItsOwnOutcome(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-empty-scope"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// The only boundary this run ever recorded: what `implement` started
+	// from. It then died mid-node, so no closing boundary exists.
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	writeFile(t, ws, "docs/half-written.md", "debris from the failed node, or my own file — indistinguishable\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	f := result.Files
+	if f.Reverted {
+		t.Errorf("Reverted = true with an empty scope — a restore that did not happen must not report success")
+	}
+	if !strings.Contains(f.SkipReason, "nothing was restored") {
+		t.Errorf("SkipReason = %q, want it to say nothing was restored", f.SkipReason)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/half-written.md"); got == "" {
+		t.Error("the unattributable file was deleted; an empty scope must touch nothing")
+	}
+	// Unattributable, and reported as such rather than silently dropped.
+	if f.LeftInPlaceCount != 1 || f.OverwrittenCount != 0 {
+		t.Errorf("LeftInPlace=%d Overwritten=%d, want the change reported as left in place",
+			f.LeftInPlaceCount, f.OverwrittenCount)
+	}
+}
+
+// TestRewind_InPlaceFullScopeRestoresEverything verifies the escape hatch:
+// an operator who knows the run owns the tree can still ask for the whole
+// snapshot back, and gets exactly the pre-scoping behaviour.
+func TestRewind_InPlaceFullScopeRestoresEverything(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-full-scope"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	writeFile(t, ws, "notes/unattributed.md", "no boundary records this\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", RestoreScope: RestoreScopeFull,
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want a completed restore", result.Files)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "notes/unattributed.md")); !os.IsNotExist(err) {
+		t.Error("--restore-scope full must put the whole snapshot back, deleting what it does not hold")
+	}
+}
+
+// TestRewind_WorktreeFallbackKeepsFullRestore guards the seam a worktree
+// run reaches when its git pre-ref is missing — routine after a resume
+// from a human pause, which writes tracker labels and no git refs. There
+// the workspace is iterion's own, holds no operator work, and must not
+// inherit a scoping rule written for a live checkout.
+func TestRewind_WorktreeFallbackKeepsFullRestore(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-worktree-fallback"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	// Debris with no closing boundary — the shape that yields an empty
+	// scope in place. In a worktree it must still be swept.
+	writeFile(t, ws, "docs/debris.md", "half-written by the failed node\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Worktree = true // declared, but no git refs exist for it
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want the tracker fallback to have restored", result.Files)
+	}
+	if got := result.Files.Scope; got != string(RestoreScopeFull) {
+		t.Errorf("Scope = %q, want %q for a worktree run", got, RestoreScopeFull)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "docs/debris.md")); !os.IsNotExist(err) {
+		t.Error("a worktree run's fallback restore must stay full — the debris survived")
 	}
 }
 

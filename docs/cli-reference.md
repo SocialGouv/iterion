@@ -196,9 +196,27 @@ rewinds to the earliest affected node — the bot-development loop in one step.
 `compute`, unlike fork's turn anchor); `--file` overrides the source the graph
 is read from. Budget accounting, loop counters, and `events.jsonl` are
 preserved; artifacts the dropped nodes published get a superseding `rewound`
-marker version. For a `worktree: auto` run the workspace is also restored to the
-state the pivot started from — `--keep-files` opts out — while an in-place run's
-files are left alone and it says so. See
+marker version.
+
+**The workspace is restored too, on BOTH run shapes** — a `worktree: auto` run
+through git, an in-place run through
+[workspace versioning](workspace-versioning.md). On an in-place run that
+workspace is your live checkout, so `--restore-scope` bounds what comes back:
+
+| value      | restores                                                     | default for |
+|------------|--------------------------------------------------------------|-------------|
+| `produced` | only paths this run recorded changing after the pivot started | in-place runs |
+| `full`     | every versioned path in the snapshot                          | `worktree: auto` runs |
+| `none`     | nothing; the node replays against the tree as it stands       | — (`--keep-files` is the old spelling) |
+
+`produced` is the in-place default because a rewind is launched right after you
+edit files — `--auto` derives the pivot from that edit — so putting the whole
+tree back would revert your own work along with the run's. What iterion cannot
+attribute it reports rather than guesses: paths it overwrote that had changed
+since the run last recorded its workspace, and paths it left in place for the
+same reason (which may be a failed node's partial output, or your editor).
+The pre-rewind state is banked first either way — `--list-snapshots` /
+`--restore-snapshot` is the way back, and it is deliberately full-tree. See
 [resume](resume.md#rewind-resume-from-an-earlier-node).
 
 ### `iterion runs prune`

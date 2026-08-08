@@ -880,6 +880,37 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 	}
 }
 
+// captureFailureBoundary records the workspace a node left behind when
+// its execution did NOT complete.
+//
+// snapshotAtNodeBoundary only runs on the success path, and
+// aliasWorkspacePre writes the pre-marker as an Alias — which does not
+// advance the chain head. So a run that stops INSIDE a node ends with its
+// most recent recorded boundary being the state that node started from,
+// and everything the node wrote before dying is on disk with nothing
+// recording that the run put it there.
+//
+// That is the common shape, not an edge case: the whole point of a rewind
+// is usually "this node misbehaved, back up and replay it". Without this
+// capture a scoped restore cannot distinguish the failed node's debris
+// from the operator's own files, so it must leave both — and the replayed
+// node builds on top of its own production, the one failure workspace
+// versioning exists to prevent.
+//
+// Best-effort, exactly like its success-path twin: the run has already
+// failed, and losing a boundary costs rewind fidelity, never the run.
+func (e *Engine) captureFailureBoundary(rs *runState, nodeID string) {
+	if e.workDir == "" || rs == nil || nodeID == "" {
+		return
+	}
+	if rs.isWorktree {
+		// git owns that shape; snapshotAtNodeBoundary's refs are its
+		// boundaries and the tracker is not consulted.
+		return
+	}
+	e.captureWorkspace(rs, nodeID, workspacetrack.PhaseFail)
+}
+
 // aliasWorkspacePre labels the state a node is about to execute against.
 // Nothing touches the workspace between the previous node's capture and
 // this call, so it is a label write rather than a second walk — the same

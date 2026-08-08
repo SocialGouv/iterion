@@ -168,7 +168,8 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | runtime.ask-user-conversation | ask_user relays prior Q/A and persists the conversation | runtime | covered-deterministic | TestInteractionAskUserPersistsConversation (pkg/runtime/engine_test.go) | |
 | runtime.worktree-finalize | `worktree: auto` creates a branch and fast-forwards the checkout | runtime | covered-deterministic | pkg/runtime/worktree_test.go | |
 | runtime.rewind | `iterion rewind` re-anchors a run and invalidates downstream state | runtime | covered-deterministic | TestRewindThenResume_SkipsUpstreamNodes (e2e/rewind_resume_test.go) | |
-| runtime.rewind-workspace | rewind restores workspace files for non-worktree runs | runtime | covered-deterministic | TestRewindRestoresWorkspaceEndToEnd (e2e/rewind_workspace_test.go) | |
+| runtime.rewind-workspace | rewind restores workspace files for non-worktree runs, scoped to what the run recorded changing (issue #380) | runtime | covered-deterministic | TestRewindRestoresWorkspaceEndToEnd (e2e/rewind_workspace_test.go) | |
+| runtime.rewind-workspace-failed-node | a node that dies mid-execution still has its debris undone, via the `fail:` boundary | runtime | covered-deterministic | TestRewindScopeCoversAFailedNodesDebris (e2e/rewind_workspace_test.go) | |
 | runtime.fork | fork a run at a prior LLM turn into a resumable child run | runtime | covered-deterministic | pkg/runview/fork_test.go | |
 | runtime.event-stream | event sequence coherence (ordering, pairing, monotonic seq) | runtime | covered-deterministic | TestEventSequenceCoherence (e2e/e2e_test.go) | |
 | runtime.artifact-versioning | repeated node executions version their artifacts | runtime | covered-deterministic | TestSingleModel_GlobalReloop (e2e/e2e_test.go) | |

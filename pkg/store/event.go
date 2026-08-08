@@ -135,7 +135,21 @@ const (
 	//     ref restored, the revert commit written on top of HEAD, and the
 	//     ref banking the pre-revert state
 	//   - files_skip_reason: why the workspace was left untouched (no
-	//     worktree, keep_files, or no recorded pre-boundary)
+	//     worktree, restore scope `none`, no recorded pre-boundary, an
+	//     unwalkable snapshot chain, or an empty scope — nothing this run
+	//     is recorded to have changed after the pivot started)
+	//   - files_restore_scope: the breadth applied ("produced" | "full" |
+	//     "none")
+	//   - files_scope_count: how many workspace paths the scope admitted
+	//   - files_overwritten: in-scope paths the restore took whose disk
+	//     content matched neither side of the run's recorded range — work
+	//     that arrived after the run stopped recording it
+	//   - files_left_in_place: paths that changed since the run's last
+	//     recorded boundary and were NOT restored
+	//
+	// The last four exist because a rewind driven over the API or by an
+	// agent never sees the CLI's stderr: without them the audit trail
+	// cannot answer "what did that rewind take from me".
 	EventRunRewound EventType = "run_rewound"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.

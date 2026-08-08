@@ -40,6 +40,26 @@ supervise a bot run, drive this cycle:
 4. **Re-run to prove the fix.** The cycle converges when a run completes
    with the expected artifacts (commits landed where announced, report
    written, board updated) — not when the fix "should work".
+
+   A full re-run is not always the cheapest proof. When the failure was
+   one node's configuration, `iterion rewind` replays from that node and
+   keeps the upstream nodes already paid for:
+
+   ```sh
+   # after editing the bot:
+   iterion rewind --run-id RUN --auto     # or --node <pivot>
+   iterion resume --run-id RUN --force
+   ```
+
+   **Know what it does to the files.** On a run with no `worktree: auto`
+   the workspace is the operator's LIVE CHECKOUT, and the rewind restores
+   it, not just the checkpoint. It is bounded — by default only the paths
+   the run is *recorded* to have changed (`--restore-scope produced`) —
+   but it still writes to a tree that may hold uncommitted human work.
+   Read the paths it prints; it names what it overwrote and what it left.
+   `--restore-scope none` skips the file half entirely, and the way back
+   is `iterion rewind --run-id RUN --list-snapshots` then
+   `--restore-snapshot <id>` (full-tree, and it banks first).
 5. **Land and close the loop:**
    - land the validated fixes (bot + engine) promptly;
    - move the tracking card/ticket to its rightful column;

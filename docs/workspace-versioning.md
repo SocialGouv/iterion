@@ -46,8 +46,18 @@ objects — see *Reclaiming disk*.
 
 Snapshots carry a `Parent`, so a run's captures form a chain — the node-by-node
 history of the workspace, readable without git. Labels name the boundaries:
-`pre:<node>:<iter>` and `post:<node>:<iter>`. A rewind resolves the `pre:` label
-of its pivot.
+`pre:<node>:<iter>`, `post:<node>:<iter>`, `fail:<node>:<iter>` and
+`gate:<n>`. A rewind resolves the `pre:` label of its pivot for the state to
+restore, and the newest boundary label for how far the run got.
+
+`fail:` is written when a node's execution does **not** complete — a failure,
+an interruption, an operator cancel. It is deliberately not `post:`, which two
+consumers read as "the node completed that iteration" (the rewind's staleness
+guard and the review panel's per-node attribution). But the files a dying node
+wrote are real, and without a boundary recording them nothing downstream can
+tell them from the operator's: `pre:` is an *alias* and does not advance the
+chain head, so a run that stops inside a node would otherwise end with its most
+recent recorded state being the one that node started from.
 
 ## Cost
 
@@ -107,10 +117,24 @@ iterion rewind --run-id RUN --list-snapshots      # newest first, with labels
 iterion rewind --run-id RUN --restore-snapshot <id>
 ```
 
+Every label a snapshot carries is listed, not only the one its manifest was
+created under — a bank routinely lands as a second label on an existing
+snapshot (an unchanged workspace dedupes against its parent), and a listing
+showing only `pre:`/`post:` rows would leave you unable to tell which id is
+your bank.
+
+`--restore-snapshot` is **full-tree by design**, unlike the rewind that
+produced the bank: "put my workspace back" cannot be served by a partial
+answer. It banks the current state first, so it is itself undoable — but it is
+the larger operation of the two, and the CLI says so at the point of use.
+
 This matters most for an in-place run, where the workspace is your live
-checkout: the deletion pass cannot tell a file a node created from one you
-wrote in your editor while the run was paused. If a restore swept up your own
-work, the bank is where it went.
+checkout. A rewind now bounds itself to what the run *recorded* changing
+(`--restore-scope`, see [resume](resume.md#how-much-comes-back---restore-scope)),
+which removes most of the exposure — but not all of it: an edit you make while
+the run is **paused** is swallowed by the next node's capture and becomes
+indistinguishable from that node's output. If a restore swept up your own work,
+the bank is where it went.
 
 ## Reclaiming disk
 

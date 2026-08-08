@@ -72,6 +72,14 @@ func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 		t.Fatalf("no %q boundary recorded — the engine and the rewind disagree on the label", preLabel)
 	}
 
+	// Between the failure and the rewind, the operator triages: they edit
+	// a file no node ever touched and drop a note beside it. This is
+	// issue #380 — a rewind used to force the whole tree back to the
+	// pivot's snapshot and take both with it, on the operator's LIVE
+	// checkout, with one line of output about it.
+	writeWS(t, ws, "src/human.go", "package main // MY EDIT, after the run died\n")
+	writeWS(t, ws, "notes/triage.md", "why did verify blow up\n")
+
 	svc, err := runview.NewService(storeDir, runview.WithLogger(iterlog.Nop()))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -93,6 +101,109 @@ func TestRewindRestoresWorkspaceEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "docs/api.md")); !os.IsNotExist(err) {
 		t.Error("the file implement created survived the rewind")
+	}
+
+	// ...and the operator's own work is still there. The scope is what
+	// the run RECORDED changing, so a path no boundary of this run ever
+	// mentions is not the rewind's to revert.
+	if got := readWS(t, ws, "src/human.go"); got != "package main // MY EDIT, after the run died\n" {
+		t.Errorf("src/human.go = %q, want the operator's edit untouched (issue #380)", got)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "notes/triage.md")); err != nil {
+		t.Errorf("the operator's note was deleted by the rewind (issue #380): %v", err)
+	}
+	// Loud, not silent: what was left behind is named, because iterion
+	// cannot prove whether it came from a hand or from a dying node.
+	if result.Files.LeftInPlaceCount != 2 {
+		t.Errorf("LeftInPlaceCount = %d, want the 2 unattributable paths reported",
+			result.Files.LeftInPlaceCount)
+	}
+	if result.Files.OverwrittenCount != 0 {
+		t.Errorf("OverwrittenCount = %d, want 0 — nothing outside the run's production was taken",
+			result.Files.OverwrittenCount)
+	}
+}
+
+// TestRewindScopeCoversAFailedNodesDebris is the other half of the
+// contract, and the reason the engine gained a `fail:` boundary.
+//
+// A node that dies never reaches its success-path snapshot, and the
+// `pre:` marker is an Alias that does not advance the chain head — so
+// without a boundary written at the failure, a run that stops inside a
+// node has NOTHING recorded after the state that node started from. The
+// scoped restore would then have no evidence at all, leave the node's
+// half-written files in place, and the replayed node would build on top
+// of its own production: the one failure workspace versioning exists to
+// prevent, re-introduced by the fix for issue #380.
+//
+// So: rewinding to the node that failed must still undo what it wrote.
+func TestRewindScopeCoversAFailedNodesDebris(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "rewind_mini.bot")
+
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWS(t, ws, "docs/intro.md", "intro v1\n")
+
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	tracker := workspacetrack.NewNative(storeDir)
+
+	exec := newScenarioExecutor()
+	// `implement` writes files and THEN fails — the shape an agent node
+	// takes when it dies mid-task.
+	exec.on("implement", func(_ map[string]any) (map[string]any, error) {
+		writeWS(t, ws, "docs/intro.md", "intro v2 HALF-WRITTEN\n")
+		writeWS(t, ws, "docs/debris.md", "partial output\n")
+		return nil, errors.New("implement blew up after writing")
+	})
+
+	const runID = "e2e-rewind-failed-node"
+	eng := runtime.New(wf, st, exec,
+		runtime.WithLogger(iterlog.Nop()),
+		runtime.WithWorkDir(ws),
+		runtime.WithWorkspaceTracker(tracker),
+	)
+	if err := eng.Run(context.Background(), runID, nil); err == nil {
+		t.Fatal("expected the run to fail at implement")
+	}
+
+	failLabel := workspacetrack.Label(workspacetrack.PhaseFail, "implement", 0)
+	if _, ok := tracker.Resolve(runID, failLabel); !ok {
+		t.Fatalf("no %q boundary recorded — a failing node leaves the scope no evidence to work from", failLabel)
+	}
+
+	// The operator triages before rewinding, as they always do.
+	writeWS(t, ws, "notes/triage.md", "mine\n")
+
+	svc, err := runview.NewService(storeDir, runview.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	result, err := svc.Rewind(context.Background(), runview.RewindSpec{
+		RunID:      runID,
+		NodeID:     "implement",
+		SourcePath: filepath.Join("testdata", "rewind_mini.bot"),
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.Files == nil || !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want the failed node's production undone", result.Files)
+	}
+	if got := readWS(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the state implement started from", got)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "docs/debris.md")); !os.IsNotExist(err) {
+		t.Error("the failed node's partial output survived the rewind")
+	}
+	if _, err := os.Stat(filepath.Join(ws, "notes/triage.md")); err != nil {
+		t.Errorf("the operator's triage note was swept up with the debris: %v", err)
 	}
 }
 

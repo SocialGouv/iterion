@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,13 +13,35 @@ import (
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
-// fileRevertResult reports what the workspace half of a rewind did.
-type fileRevertResult struct {
+// FileRevertResult reports what the workspace half of a rewind did.
+type FileRevertResult struct {
 	Reverted     bool   `json:"reverted"`
 	Ref          string `json:"ref,omitempty"`
 	RevertCommit string `json:"revert_commit,omitempty"`
 	BackupRef    string `json:"backup_ref,omitempty"`
 	SkipReason   string `json:"skip_reason,omitempty"`
+	// Scope is the restore breadth actually applied ("produced" | "full").
+	// Empty for the git/worktree path, which has only one breadth.
+	Scope string `json:"scope,omitempty"`
+	// ScopeCount is how many workspace paths the scope admitted — the
+	// blast radius, stated as a number before any of it is listed.
+	ScopeCount int `json:"scope_count,omitempty"`
+	// Overwritten names in-scope paths whose content on disk matched
+	// NEITHER the state being restored NOR the run's last recorded
+	// boundary: work that arrived after the run stopped recording, and
+	// that the restore therefore took. Almost always the operator's own.
+	// Capped; OverwrittenCount is exact.
+	Overwritten      []string `json:"overwritten,omitempty"`
+	OverwrittenCount int      `json:"overwritten_count,omitempty"`
+	// LeftInPlace names paths that changed since the run's last recorded
+	// boundary and were NOT restored, because no execution of this run is
+	// recorded as having touched them. Some are the operator's edits;
+	// some may be the partial output of a node that died before its
+	// boundary was written. iterion cannot tell those apart — which is
+	// exactly why it reports them instead of guessing. Capped;
+	// LeftInPlaceCount is exact.
+	LeftInPlace      []string `json:"left_in_place,omitempty"`
+	LeftInPlaceCount int      `json:"left_in_place_count,omitempty"`
 	// CoverageGap describes files the revert could NOT put back even
 	// though it ran (paths the capture never stored). Distinct from
 	// SkipReason, which means the workspace was not touched at all — the
@@ -51,14 +74,18 @@ type fileRevertResult struct {
 // rewind is still worth having, and the caller surfaces SkipReason so the
 // gap is loud rather than silent. A git command that FAILS is fatal —
 // "cannot" and "broke" are different answers.
-func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string) (*fileRevertResult, error) {
+func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string, scope RestoreScope) (*FileRevertResult, error) {
 	if run.WorkDir == "" {
-		return &fileRevertResult{SkipReason: "run has no recorded workspace"}, nil
+		return &FileRevertResult{SkipReason: "run has no recorded workspace"}, nil
 	}
 	if !run.Worktree {
 		// No isolated worktree: iterion's own versioning is the only
 		// mechanism that applies (git would stage the operator's work).
-		return s.revertViaTracker(run, wf, cp, pivot, sourcePath)
+		//
+		// This is also the shape where the workspace is the operator's
+		// LIVE CHECKOUT, so the default breadth is `produced` — the
+		// restore stays inside what the run is recorded to have changed.
+		return s.revertViaTracker(run, wf, cp, pivot, sourcePath, scope.orDefault(RestoreScopeProduced))
 	}
 	ref, skip := findPreNodeRef(run, wf, cp, pivot)
 	if skip != "" {
@@ -68,7 +95,18 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// independent, so it can succeed where git's refs are missing —
 		// and it carries the same staleness guard, so the fallback cannot
 		// smuggle in the older-iteration revert the git path just refused.
-		res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath)
+		//
+		// The DEFAULT breadth here is `full`, not `produced`: this run has
+		// an isolated worktree, so the workspace is iterion's own and
+		// holds no operator work to protect — the reason scoping exists
+		// does not apply, while the reason a full revert exists (replaying
+		// a node must not meet its own production) still does. An explicit
+		// --restore-scope is still honoured.
+		//
+		// The fallback is not exotic: a worktree run resumed from a human
+		// pause writes tracker labels and no git refs, so it lands here
+		// every time.
+		res, terr := s.revertViaTracker(run, wf, cp, pivot, sourcePath, scope.orDefault(RestoreScopeFull))
 		if terr != nil {
 			// A tracker restore that FAILED is not "nothing happened": its
 			// deletion pass runs to completion before the write-back, so
@@ -82,7 +120,7 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		if res.Reverted {
 			return res, nil
 		}
-		return &fileRevertResult{SkipReason: skip}, nil
+		return &FileRevertResult{SkipReason: skip}, nil
 	}
 
 	// Bank the current state — including uncommitted and untracked work —
@@ -120,7 +158,7 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 	if err != nil {
 		return nil, err
 	}
-	res := &fileRevertResult{Reverted: true, Ref: ref, BackupRef: backupRef}
+	res := &FileRevertResult{Reverted: true, Ref: ref, BackupRef: backupRef}
 	if tree == headTree {
 		// The committed history already matches the pre-node state; the
 		// worktree is restored and there is nothing to record.
@@ -263,9 +301,9 @@ func gitOut(workDir string, args ...string) (string, error) {
 // revertViaTracker restores the workspace through iterion's own
 // versioning — the path that covers a run with no isolated worktree,
 // which is the default shape and the majority of the catalog.
-func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string) (*fileRevertResult, error) {
+func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot, sourcePath string, scope RestoreScope) (*FileRevertResult, error) {
 	if s.workspaceTracker == nil {
-		return &fileRevertResult{SkipReason: "workspace versioning is not enabled on this store"}, nil
+		return &FileRevertResult{SkipReason: "workspace versioning is not enabled on this store"}, nil
 	}
 	snapshotID, ok := findPreNodeSnapshot(s.workspaceTracker, run, wf, cp, pivot)
 	if !ok {
@@ -283,43 +321,281 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 				// flag override, and the overflow latches in this run's
 				// index — so neither half of the old advice could rescue
 				// the run being rewound. Say what is actually true.
-				return &fileRevertResult{SkipReason: fmt.Sprintf(
+				return &FileRevertResult{SkipReason: fmt.Sprintf(
 					"this run's workspace exceeded the %d-file cap, so nothing was versioned for it — "+
 						"narrow the workspace with .iterionignore and relaunch; this run cannot be recovered",
 					workspacetrack.DefaultMaxFiles)}, nil
 			}
-			return &fileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
+			return &FileRevertResult{SkipReason: "this run captured no workspace snapshots at all — it was launched on a path that does not enable workspace versioning, or versioning was off"}, nil
 		}
-		return &fileRevertResult{SkipReason: fmt.Sprintf(
+		return &FileRevertResult{SkipReason: fmt.Sprintf(
 			"the run has workspace snapshots but none recorded before %q — that node kind does not mark a pre-execution boundary", pivot)}, nil
 	}
+	// Resolve the run's own most recent boundary BEFORE banking. The bank
+	// is labelled `rewind-backup:…`, which IsBoundaryLabel excludes, so
+	// order is not load-bearing for correctness — but reading the run's
+	// history before writing to it keeps the two apart at a glance.
+	boundaryID, boundary := s.lastRecordedBoundary(run.ID)
+
 	// Bank the current state first, so the restore destroys nothing: the
 	// pre-rewind workspace stays a resolvable snapshot.
-	backup, err := s.workspaceTracker.Capture(run.ID, run.WorkDir, "rewind-backup:"+pivot)
+	//
+	// Sequenced, like the git path's backup refs: a fixed key would let a
+	// second rewind to the same pivot re-point the label and leave the
+	// first bank on the chain with no name to reach it by — and under a
+	// scoped restore this bank is the ONLY record of the files the
+	// `overwritten` report names.
+	backupLabel := fmt.Sprintf("rewind-backup:%s:%d", pivot, nextTrackerBackupSeq(s.workspaceTracker, run.ID, pivot))
+	backup, err := s.workspaceTracker.Capture(run.ID, run.WorkDir, backupLabel)
 	if err != nil {
 		return nil, fmt.Errorf("bank the current workspace before reverting: %w", err)
 	}
+
+	res := &FileRevertResult{Ref: snapshotID, BackupRef: backup.ID, Scope: string(scope)}
+
+	// `produced` narrows the restore to what the run recorded; anything
+	// else forces every versioned path back to the snapshot, which is
+	// what a worktree — iterion's own tree — should get, and what an
+	// operator can still ask for explicitly.
+	var only []string
+	scoped := scope == RestoreScopeProduced
+	if scoped {
+		produced, ok := s.recordedChanges(run.ID, snapshotID, boundaryID)
+		if !ok {
+			// The chain could not be walked from the boundary back to the
+			// target. Refusing beats guessing: a wrong scope either leaves
+			// the node's production in place (a replay on top of itself)
+			// or reverts files with no evidence the run touched them.
+			res.SkipReason = fmt.Sprintf(
+				"could not resolve what this run changed after %q started (its snapshot chain does not reach that boundary) — "+
+					"rewind with --restore-scope full to put the whole versioned workspace back, or --restore-scope none to leave it alone", pivot)
+			return res, nil
+		}
+		only = produced
+		res.ScopeCount = len(produced)
+		if len(produced) == 0 {
+			// NOT a success with a zero report. The workspace was not
+			// touched, and saying "reverted" here would hand the operator
+			// a line describing a restore that did not happen — then let
+			// them resume onto whatever is actually on disk.
+			res.SkipReason = fmt.Sprintf(
+				"no execution of this run is recorded as having changed any file after %q started, so nothing was restored", pivot)
+			// An EMPTY set, not nil: nil means "everything was in scope"
+			// (the full restore), and passing it here would report every
+			// path that moved since the boundary as overwritten by a
+			// restore that never ran.
+			s.describeUnrestored(run.ID, res, boundary, backup, map[string]bool{})
+			return res, nil
+		}
+	}
+
 	// The workflow source is protected: a rewind exists to test an edit to
 	// it, so restoring the workspace must not revert that edit — the
 	// following `resume --force` would then recompile the OLD workflow and
 	// silently test nothing. Bites only when the .bot lives inside the
 	// workspace, which is the self-hosted dogfood shape.
-	report, err := s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID, sourcePath, run.FilePath)
+	var report *workspacetrack.RestoreReport
+	if scoped {
+		report, err = s.workspaceTracker.RestoreOnly(run.ID, run.WorkDir, snapshotID, only, sourcePath, run.FilePath)
+	} else {
+		report, err = s.workspaceTracker.Restore(run.ID, run.WorkDir, snapshotID, sourcePath, run.FilePath)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("restore workspace to %s: %w", snapshotID, err)
 	}
-	res := &fileRevertResult{
-		Reverted:  true,
-		Ref:       snapshotID,
-		BackupRef: backup.ID,
-		Restored:  report,
-	}
+	res.Reverted = true
+	res.Restored = report
 	if len(report.Skipped) > 0 {
 		res.CoverageGap = fmt.Sprintf(
 			"%d path(s) were never captured (too large, or unreadable at capture time) and were left as-is",
 			len(report.Skipped))
 	}
+	var inScope map[string]bool // nil = full restore: everything was in scope
+	if scoped {
+		inScope = make(map[string]bool, len(only))
+		for _, p := range only {
+			inScope[p] = true
+		}
+	}
+	s.describeUnrestored(run.ID, res, boundary, backup, inScope)
 	return res, nil
+}
+
+// describeUnrestored fills the two operator-facing sets: what the restore
+// took that the run had not recorded, and what it left behind.
+//
+// Both are derived from ONE comparison — the run's last recorded boundary
+// against the state on disk at rewind time — because that is the only
+// place where "the run put this here" and "someone else did" diverge.
+// Neither can be derived from the restore's own written/deleted lists: a
+// path can be rewritten with content identical to what was there, and a
+// path can be left alone for four different reasons.
+//
+// The honest part is that iterion cannot attribute the difference. A node
+// that died before its boundary was written and an operator editing in
+// another terminal produce the same evidence. So the sets are reported,
+// not acted on.
+func (s *Service) describeUnrestored(runID string, res *FileRevertResult, boundary, backup *workspacetrack.Snapshot, inScope map[string]bool) {
+	if boundary == nil || backup == nil || boundary.ID == backup.ID {
+		return
+	}
+	target, terr := s.workspaceTracker.Load(runID, res.Ref)
+	if terr != nil {
+		target = nil
+	}
+	stillDiffers := map[string]bool{}
+	if target != nil {
+		for _, c := range workspacetrack.StatusBetween(target, backup) {
+			stillDiffers[c.Path] = true
+		}
+	}
+	for _, c := range workspacetrack.StatusBetween(boundary, backup) {
+		switch {
+		case inScope == nil || inScope[c.Path]:
+			// In the blast radius. It only counts as taken if the disk
+			// also differed from what was restored — otherwise the file
+			// already held the target content and nothing moved.
+			if target != nil && !stillDiffers[c.Path] {
+				continue
+			}
+			res.OverwrittenCount++
+			res.Overwritten = appendCappedPath(res.Overwritten, c.Path)
+		default:
+			res.LeftInPlaceCount++
+			res.LeftInPlace = appendCappedPath(res.LeftInPlace, c.Path)
+		}
+	}
+}
+
+// appendCappedPath bounds a reported path list. The struct is returned
+// verbatim by the HTTP rewind endpoint, so an uncapped list is a full
+// workspace listing on the wire; the paired count stays exact.
+func appendCappedPath(dst []string, p string) []string {
+	if len(dst) >= workspacetrack.ReportPathCap {
+		return dst
+	}
+	return append(dst, p)
+}
+
+// lastRecordedBoundary resolves the newest snapshot this RUN produced, as
+// opposed to the banks a rewind takes on the operator's behalf.
+//
+// It is the "after" side of the scope range, and it must come from the
+// run's own history rather than from the disk: the whole point is to
+// separate what the run changed from what changed around it.
+func (s *Service) lastRecordedBoundary(runID string) (string, *workspacetrack.Snapshot) {
+	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
+	seen := map[string]bool{}
+	for id := s.workspaceTracker.Head(runID); id != "" && !seen[id]; {
+		seen[id] = true
+		snap, err := s.workspaceTracker.Load(runID, id)
+		if err != nil {
+			return "", nil
+		}
+		if boundaries[id] {
+			return id, snap
+		}
+		id = snap.Parent
+	}
+	return "", nil
+}
+
+// boundarySnapshotIDs indexes the snapshot ids the engine labelled at a
+// node or gate boundary.
+func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
+	out := map[string]bool{}
+	for label, id := range tr.Labels(runID) {
+		if workspacetrack.IsBoundaryLabel(label) {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// recordedChanges returns every workspace path this run is RECORDED to
+// have changed between the target snapshot and its last boundary — the
+// blast radius a scoped restore is allowed to touch.
+//
+// It is a UNION over consecutive boundaries, not a diff of the two
+// endpoints, and the difference is not academic: a path a node rewrote
+// and a later node put back is identical at both ends of the range while
+// having been, demonstrably, a file this run writes to. Endpoint-only
+// membership would exclude it, and a third, uncaptured write — the one a
+// dying node leaves behind — would then survive the rewind.
+//
+// Non-boundary snapshots inside the range (the banks of an earlier
+// rewind) are stepped OVER rather than diffed: their content is whatever
+// was on disk at that moment, operator edits included, and a bank is not
+// evidence that the run wrote anything.
+//
+// ok is false when the chain does not reach the target, which is the one
+// case where guessing is worse than refusing.
+func (s *Service) recordedChanges(runID, targetID, boundaryID string) ([]string, bool) {
+	if targetID == "" {
+		return nil, false
+	}
+	if boundaryID == "" || boundaryID == targetID {
+		// The target IS the run's most recent boundary: nothing was
+		// recorded after the pivot started. An empty scope, honestly.
+		return nil, true
+	}
+	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
+	// Walk from the boundary back to the target, keeping the boundary
+	// snapshots (newest first). Bounded by `seen`: a manifest is on-disk
+	// JSON unmarshalled bare, so a self-referential Parent must not spin.
+	var stack []*workspacetrack.Snapshot
+	seen := map[string]bool{}
+	reached := false
+	for id := boundaryID; id != "" && !seen[id]; {
+		seen[id] = true
+		snap, err := s.workspaceTracker.Load(runID, id)
+		if err != nil {
+			return nil, false
+		}
+		if id == targetID {
+			stack = append(stack, snap)
+			reached = true
+			break
+		}
+		if boundaries[id] {
+			stack = append(stack, snap)
+		}
+		id = snap.Parent
+	}
+	if !reached {
+		return nil, false
+	}
+	changed := map[string]bool{}
+	// stack is newest → oldest, so consecutive pairs walk the range
+	// backwards; StatusBetween is symmetric in membership.
+	for i := len(stack) - 1; i > 0; i-- {
+		for _, c := range workspacetrack.StatusBetween(stack[i], stack[i-1]) {
+			changed[c.Path] = true
+		}
+	}
+	out := make([]string, 0, len(changed))
+	for p := range changed {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, true
+}
+
+// nextTrackerBackupSeq counts the banks already taken for this (run,
+// pivot) so repeated rewinds each keep their own, mirroring the git
+// path's nextRewindBackupSeq.
+func nextTrackerBackupSeq(tr workspacetrack.Tracker, runID, pivot string) int {
+	prefix := "rewind-backup:" + pivot + ":"
+	max := -1
+	for label := range tr.Labels(runID) {
+		if !strings.HasPrefix(label, prefix) {
+			continue
+		}
+		if n, err := strconv.Atoi(label[len(prefix):]); err == nil && n > max {
+			max = n
+		}
+	}
+	return max + 1
 }
 
 // findPreNodeSnapshot resolves the pivot's pre-execution capture,

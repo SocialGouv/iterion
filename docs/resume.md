@@ -306,7 +306,7 @@ It is a **revert, not a reset**: the prior tree is committed on top of HEAD, so
 the run's own commits stay in `git log`, and the state at the instant of the
 rewind — uncommitted and untracked work included — is banked first under
 `refs/iterion/runs/<run>/rewind/<node>/<seq>`. Nothing the run ever had becomes
-unreachable. `--keep-files` opts out.
+unreachable. `--restore-scope none` (formerly `--keep-files`) opts out.
 
 A run **without** a worktree cannot use that path at all: its workspace is the
 operator's live checkout, and `git add -A` there would stage their own
@@ -321,6 +321,47 @@ mechanism per run and reports which one ran:
 | in-place (whole-improve-loop, modernize, review-pr…) | `pkg/workspacetrack` |
 | paths the ignore rules exclude, oversized files | neither — reported in `files.skip_reason` / `files.restored.skipped` |
 | paths outside the workspace | neither |
+| paths no execution of the run recorded changing (in place, default scope) | neither — reported in `files.left_in_place` |
+
+Out-of-tree scratch is untouched by any scope: `${PROJECT_SCRATCH_DIR}` resolves
+outside the workspace, so a campaign bot's `verify.sh` / `verify.log` survives a
+rewind. That is correct — but it does mean a replayed verify gate can meet a
+stale script.
+
+#### How much comes back: `--restore-scope`
+
+On an in-place run the workspace is **yours**, and a rewind is launched right
+after you edit it — `--auto` derives the pivot by diffing that very edit. So at
+the moment of every rewind the tree holds human work by construction, and
+forcing the whole tree back would revert it. `--restore-scope` is the dial:
+
+- **`produced`** (default in place) — only the paths this run is *recorded* to
+  have changed after the pivot started. That set is the union of the diffs
+  between consecutive boundaries in `[pre:<pivot> … the run's last boundary]`,
+  not a diff of the two endpoints: a file one node rewrote and a later node put
+  back is identical at both ends while demonstrably being a file this run
+  writes to, and excluding it would let a third, uncaptured write survive.
+- **`full`** (default in a worktree) — every versioned path in the snapshot.
+  "Versioned", not "the whole disk": ignored, protected and never-captured
+  paths are still untouched.
+- **`none`** — nothing; the node replays against the tree as it stands.
+
+**What iterion cannot attribute, it reports.** A node that dies before its
+boundary is written and an operator editing in another terminal leave identical
+evidence, so the rewind names both sets instead of guessing:
+`files.overwritten` (in-scope paths whose disk content matched neither side of
+the recorded range — work that arrived after the run stopped recording it) and
+`files.left_in_place` (changed since the run's last boundary, not restored).
+Both also land in the `run_rewound` event, so an API- or agent-driven rewind
+leaves the same audit trail as a CLI one.
+
+To keep that honest the engine writes a **`fail:<node>:<iter>`** boundary when a
+node's execution does not complete — a failure, an interruption, an operator
+cancel. Without it a run that stopped *inside* a node would have nothing
+recorded after the state that node started from (`pre:` is an alias and does not
+advance the chain head), the scope would be empty, and the node's own debris
+would survive its rewind. When the scope *is* empty the rewind says so and
+restores nothing, rather than reporting a success it did not perform.
 
 ## Human and agent interaction resume
 

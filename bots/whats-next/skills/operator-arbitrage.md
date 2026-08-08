@@ -17,6 +17,10 @@ both.
   batch of tickets is the operator's call).
 - Before any bulk action (≥3 issues) or destructive action (close,
   mass re-label, mass dispatch) — the playbook's guardrail.
+- Before `iterion rewind` on a run with no `worktree: auto`: it writes to
+  the operator's live checkout, not just to the run's state. It is
+  bounded to the paths the run recorded changing, and it banks first —
+  but "which files of mine may move" is the operator's call, not yours.
 - When routing is genuinely ambiguous (two bots fit a ticket 50/50).
 - When a blind spot needs a verdict (targeted audit / ticket / punt).
 
