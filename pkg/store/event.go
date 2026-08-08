@@ -141,11 +141,14 @@ const (
 	//   - files_restore_scope: the breadth applied ("produced" | "full" |
 	//     "none")
 	//   - files_scope_count: how many workspace paths the scope admitted
-	//   - files_overwritten: in-scope paths the restore took whose disk
-	//     content matched neither side of the run's recorded range — work
-	//     that arrived after the run stopped recording it
-	//   - files_left_in_place: paths that changed since the run's last
-	//     recorded boundary and were NOT restored
+	//   - files_overwritten / files_overwritten_paths: the count, and the
+	//     names (capped at workspacetrack.ReportPathCap), of in-scope
+	//     paths the restore took whose disk content matched neither side
+	//     of the run's recorded range — work that arrived after the run
+	//     stopped recording it
+	//   - files_left_in_place / files_left_in_place_paths: the same pair
+	//     for paths that changed since the run's last recorded boundary
+	//     and were NOT restored
 	//
 	// The last four exist because a rewind driven over the API or by an
 	// agent never sees the CLI's stderr: without them the audit trail

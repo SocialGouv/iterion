@@ -209,7 +209,8 @@ workspace is your live checkout, so `--restore-scope` bounds what comes back:
 | `full`     | every versioned path in the snapshot                          | `worktree: auto` runs |
 | `none`     | nothing; the node replays against the tree as it stands       | — (`--keep-files` is the old spelling) |
 
-`produced` is the in-place default because a rewind is launched right after you
+`produced` is refused on a `worktree: auto` run — git reverts the whole tree or
+none of it — rather than silently widened. It is the in-place default because a rewind is launched right after you
 edit files — `--auto` derives the pivot from that edit — so putting the whole
 tree back would revert your own work along with the run's. What iterion cannot
 attribute it reports rather than guesses: paths it overwrote that had changed

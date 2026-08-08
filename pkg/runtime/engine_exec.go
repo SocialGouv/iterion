@@ -900,7 +900,34 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 // Best-effort, exactly like its success-path twin: the run has already
 // failed, and losing a boundary costs rewind fidelity, never the run.
 func (e *Engine) captureFailureBoundary(rs *runState, nodeID string) {
-	if e.workDir == "" || rs == nil || nodeID == "" {
+	e.captureStopBoundary(rs, nodeID, workspacetrack.PhaseFail)
+}
+
+// capturePauseBoundary is the same thing for a node that PARKED rather
+// than died — a human gate, an ask_user question, a recovery pause.
+//
+// `paused_waiting_human` is a rewindable status, so the gap is identical:
+// an agent that writes ten files and then asks a question has left them
+// on disk with nothing recording that the run put them there. It also
+// opens the pause INTERVAL, which is the one window a scoped restore can
+// prove is not the run's — nothing of the run executes inside it.
+func (e *Engine) capturePauseBoundary(rs *runState, nodeID string) {
+	e.captureStopBoundary(rs, nodeID, workspacetrack.PhasePause)
+}
+
+// captureStopBoundary records the workspace when a node's execution ends
+// WITHOUT completing.
+//
+// Called inline, before the durable status write, never deferred: once
+// the run is persisted in a rewindable status an operator's `iterion
+// rewind` may claim it and start its own Capture on the same run, and
+// two concurrent captures of one run is not a contract this tracker
+// offers. The walk itself is bounded work on a local filesystem, and it
+// no-ops outright wherever versioning is off — cloud runners included,
+// which is where a termination grace period would otherwise argue for
+// the opposite order.
+func (e *Engine) captureStopBoundary(rs *runState, nodeID, phase string) {
+	if e.workDir == "" || rs == nil || nodeID == "" || e.workspaceTracker == nil {
 		return
 	}
 	if rs.isWorktree {
@@ -908,7 +935,15 @@ func (e *Engine) captureFailureBoundary(rs *runState, nodeID string) {
 		// boundaries and the tracker is not consulted.
 		return
 	}
-	e.captureWorkspace(rs, nodeID, workspacetrack.PhaseFail)
+	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, rs.loopCounters))
+	if rs.stopCaptured == nil {
+		rs.stopCaptured = make(map[string]bool)
+	}
+	if rs.stopCaptured[label] {
+		return
+	}
+	rs.stopCaptured[label] = true
+	e.captureWorkspace(rs, nodeID, phase)
 }
 
 // aliasWorkspacePre labels the state a node is about to execute against.

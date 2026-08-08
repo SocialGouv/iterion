@@ -168,8 +168,8 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 	// An operator cancel and a runner drain both stop the run INSIDE a
 	// node, so they leave the same unrecorded production a failure does —
 	// and `cancelled` is a rewindable status, so the rewind that follows
-	// needs the boundary just as much. Local filesystem work, not bounded
-	// by the detached store context below.
+	// needs the boundary just as much. Inline, ahead of the status write:
+	// see captureStopBoundary on why the order is that way round.
 	e.captureFailureBoundary(rs, nodeID)
 	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), 5*time.Second)
 	defer cancel()

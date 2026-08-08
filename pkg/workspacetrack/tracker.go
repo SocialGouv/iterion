@@ -72,7 +72,22 @@ const (
 	// run that stops inside a node ends with its newest boundary being the
 	// state that node STARTED from.
 	PhaseFail = "fail"
+	// PhasePause labels the workspace a node left behind when it PARKED —
+	// a human gate, an ask_user question, a recovery pause.
+	//
+	// Same reason as PhaseFail, and a separate phase because a pause is
+	// not a failure: the node is expected to resume and finish. It also
+	// opens the one interval in which NOTHING of the run is executing,
+	// which is the only window where a change to the workspace
+	// demonstrably did not come from this run — so a scoped restore can
+	// exclude it rather than claim authorship of the operator's editor.
+	PhasePause = "pause"
 )
+
+// PauseLabelPrefix is the prefix of a pause boundary's label. Exported
+// for the one consumer that must treat the interval a pause OPENS
+// differently from an execution interval (runview's scope computation).
+const PauseLabelPrefix = PhasePause + ":"
 
 // BoundaryPhases are the phases the ENGINE writes as it executes. A label
 // carrying one of these marks a state the run itself produced, as opposed
@@ -83,7 +98,7 @@ const (
 // "the run's own most recent boundary" from it, and a hand-written prefix
 // test there would drift from what the engine writes here — and match
 // `pre-restore:` by accident, since it also begins with "pre".
-var BoundaryPhases = []string{PhasePre, PhasePost, PhaseFail}
+var BoundaryPhases = []string{PhasePre, PhasePost, PhaseFail, PhasePause}
 
 // IsBoundaryLabel reports whether a label was written by the engine at a
 // node or gate boundary, rather than by a rewind banking state.

@@ -1649,6 +1649,18 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
+	// Record what the node leaves on disk BEFORE the run is persisted as
+	// paused. A paused run is rewindable, and an agent that writes ten
+	// files and then asks a question has left them there with nothing
+	// recording that the run put them there — so a scoped rewind would
+	// have to leave them, and the replayed node would meet its own
+	// production. It also opens the pause interval, the one window in
+	// which nothing of the run executes and a workspace change is
+	// therefore demonstrably not the run's.
+	//
+	// Free when the node wrote nothing: the capture dedupes against an
+	// identical parent, which is the ordinary case at a human gate.
+	e.capturePauseBoundary(rs, nodeID)
 	// Create one stable interaction per logical loop execution. A scalar
 	// max(loop counters) is insufficient when a human node belongs to
 	// multiple loops: {plan=2, kit=1} and {plan=2, kit=2} both collapse to

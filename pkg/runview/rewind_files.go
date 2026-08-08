@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,21 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		// restore stays inside what the run is recorded to have changed.
 		return s.revertViaTracker(run, wf, cp, pivot, sourcePath, scope.orDefault(RestoreScopeProduced))
 	}
+	if scope == RestoreScopeProduced {
+		// Refused, never silently widened. git is the mechanism for a
+		// worktree run and it has exactly one breadth — `read-tree --reset`
+		// plus `clean -fd` is the whole tree — so honouring this request is
+		// not possible here, and quietly substituting the MAXIMAL blast
+		// radius for an explicitly-requested minimal one is the single
+		// behaviour this feature must never have.
+		//
+		// Doing nothing is the safe answer: the operator asked for narrow,
+		// and a worktree can still hold work they care about (a post-mortem
+		// shell writes into it).
+		return &FileRevertResult{Scope: string(scope), SkipReason: fmt.Sprintf(
+			"--restore-scope produced is not available for a run with an isolated worktree (%q): git reverts the whole tree or none of it — "+
+				"rerun with --restore-scope full to revert it, or none to leave it", pivot)}, nil
+	}
 	ref, skip := findPreNodeRef(run, wf, cp, pivot)
 	if skip != "" {
 		// Fall back to iterion's own versioning: a worktree run may still
@@ -120,7 +136,7 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 		if res.Reverted {
 			return res, nil
 		}
-		return &FileRevertResult{SkipReason: skip}, nil
+		return &FileRevertResult{Scope: string(RestoreScopeFull), SkipReason: skip}, nil
 	}
 
 	// Bank the current state — including uncommitted and untracked work —
@@ -158,7 +174,7 @@ func (s *Service) revertWorkspace(run *store.Run, wf *ir.Workflow, cp *store.Che
 	if err != nil {
 		return nil, err
 	}
-	res := &FileRevertResult{Reverted: true, Ref: ref, BackupRef: backupRef}
+	res := &FileRevertResult{Reverted: true, Ref: ref, BackupRef: backupRef, Scope: string(RestoreScopeFull)}
 	if tree == headTree {
 		// The committed history already matches the pre-node state; the
 		// worktree is restored and there is nothing to record.
@@ -228,7 +244,7 @@ func findPreNodeRef(run *store.Run, wf *ir.Workflow, cp *store.Checkpoint, pivot
 			return "", fmt.Sprintf(
 				"%q completed iteration %d but only iteration %d has a pre-execution snapshot — "+
 					"reverting to it would discard work the checkpoint still claims, so the workspace was left as-is "+
-					"(rewind with --keep-files to skip the workspace deliberately)",
+					"(rewind with --restore-scope none to skip the workspace deliberately)",
 				pivot, iter, found)
 		}
 	}
@@ -357,10 +373,11 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 	// else forces every versioned path back to the snapshot, which is
 	// what a worktree — iterion's own tree — should get, and what an
 	// operator can still ask for explicitly.
-	var only []string
+	var only, parked []string
 	scoped := scope == RestoreScopeProduced
 	if scoped {
-		produced, ok := s.recordedChanges(run.ID, snapshotID, boundaryID)
+		produced, parkedChanges, ok := s.recordedChanges(run.ID, snapshotID, boundaryID)
+		parked = parkedChanges
 		if !ok {
 			// The chain could not be walked from the boundary back to the
 			// target. Refusing beats guessing: a wrong scope either leaves
@@ -384,7 +401,7 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 			// (the full restore), and passing it here would report every
 			// path that moved since the boundary as overwritten by a
 			// restore that never ran.
-			s.describeUnrestored(run.ID, res, boundary, backup, map[string]bool{})
+			s.describeUnrestored(run.ID, res, boundary, backup, map[string]bool{}, nil, parked)
 			return res, nil
 		}
 	}
@@ -417,8 +434,42 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 			inScope[p] = true
 		}
 	}
-	s.describeUnrestored(run.ID, res, boundary, backup, inScope)
+	// A path the restore REFUSED to touch was not taken from anyone, and
+	// naming it in the overwritten warning is worse than saying nothing:
+	// the protected `.bot` heads that list on every self-hosted rewind,
+	// steering the operator toward a --restore-snapshot that would undo
+	// the whole rewind to "recover" a file that never moved.
+	untouched := map[string]bool{sourcePath: true, run.FilePath: true}
+	for _, p := range relativeToWorkspace(run.WorkDir, sourcePath, run.FilePath) {
+		untouched[p] = true
+	}
+	for _, p := range report.Skipped {
+		untouched[p] = true
+	}
+	s.describeUnrestored(run.ID, res, boundary, backup, inScope, untouched, parked)
 	return res, nil
+}
+
+// relativeToWorkspace maps absolute protected paths onto the
+// workspace-relative form the snapshots speak, dropping anything outside
+// the workspace (which a restore could not have touched either).
+func relativeToWorkspace(workspaceDir string, paths ...string) []string {
+	var out []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(workspaceDir, abs)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	return out
 }
 
 // describeUnrestored fills the two operator-facing sets: what the restore
@@ -435,7 +486,28 @@ func (s *Service) revertViaTracker(run *store.Run, wf *ir.Workflow, cp *store.Ch
 // that died before its boundary was written and an operator editing in
 // another terminal produce the same evidence. So the sets are reported,
 // not acted on.
-func (s *Service) describeUnrestored(runID string, res *FileRevertResult, boundary, backup *workspacetrack.Snapshot, inScope map[string]bool) {
+func (s *Service) describeUnrestored(runID string, res *FileRevertResult, boundary, backup *workspacetrack.Snapshot, inScope, untouched map[string]bool, parked []string) {
+	seen := map[string]bool{}
+	report := func(overwritten bool, path string) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		if overwritten {
+			res.OverwrittenCount++
+			res.Overwritten = appendCappedPath(res.Overwritten, path)
+			return
+		}
+		res.LeftInPlaceCount++
+		res.LeftInPlace = appendCappedPath(res.LeftInPlace, path)
+	}
+	// Paths that moved while the run was PARKED are excluded from the
+	// scope by construction, so they belong in the left-in-place set even
+	// when the boundary comparison below cannot see them (a later node
+	// re-recorded them at the same content).
+	for _, p := range parked {
+		report(false, p)
+	}
 	if boundary == nil || backup == nil || boundary.ID == backup.ID {
 		return
 	}
@@ -451,6 +523,10 @@ func (s *Service) describeUnrestored(runID string, res *FileRevertResult, bounda
 	}
 	for _, c := range workspacetrack.StatusBetween(boundary, backup) {
 		switch {
+		case untouched[c.Path]:
+			// The restore declined this path (protected, or a coverage
+			// gap it holds no copy of). Nothing was taken; it was left.
+			report(false, c.Path)
 		case inScope == nil || inScope[c.Path]:
 			// In the blast radius. It only counts as taken if the disk
 			// also differed from what was restored — otherwise the file
@@ -458,11 +534,9 @@ func (s *Service) describeUnrestored(runID string, res *FileRevertResult, bounda
 			if target != nil && !stillDiffers[c.Path] {
 				continue
 			}
-			res.OverwrittenCount++
-			res.Overwritten = appendCappedPath(res.Overwritten, c.Path)
+			report(true, c.Path)
 		default:
-			res.LeftInPlaceCount++
-			res.LeftInPlace = appendCappedPath(res.LeftInPlace, c.Path)
+			report(false, c.Path)
 		}
 	}
 }
@@ -512,6 +586,18 @@ func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]boo
 	return out
 }
 
+// pauseSnapshotIDs indexes the snapshots that OPEN a parked interval —
+// the state the run was in when it stopped waiting for a human.
+func pauseSnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
+	out := map[string]bool{}
+	for label, id := range tr.Labels(runID) {
+		if strings.HasPrefix(label, workspacetrack.PauseLabelPrefix) {
+			out[id] = true
+		}
+	}
+	return out
+}
+
 // recordedChanges returns every workspace path this run is RECORDED to
 // have changed between the target snapshot and its last boundary — the
 // blast radius a scoped restore is allowed to touch.
@@ -530,16 +616,25 @@ func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]boo
 //
 // ok is false when the chain does not reach the target, which is the one
 // case where guessing is worse than refusing.
-func (s *Service) recordedChanges(runID, targetID, boundaryID string) ([]string, bool) {
+func (s *Service) recordedChanges(runID, targetID, boundaryID string) (scope []string, parked []string, ok bool) {
 	if targetID == "" {
-		return nil, false
+		return nil, nil, false
 	}
-	if boundaryID == "" || boundaryID == targetID {
+	if boundaryID == targetID {
 		// The target IS the run's most recent boundary: nothing was
 		// recorded after the pivot started. An empty scope, honestly.
-		return nil, true
+		return nil, nil, true
+	}
+	if boundaryID == "" {
+		// NOT the same thing, and it must not report as it. The target is
+		// itself a boundary and lies on the chain, so failing to find one
+		// means the walk broke — an unreadable manifest, a truncated
+		// chain. "I could not tell" and "there was nothing" lead the
+		// operator to different next steps.
+		return nil, nil, false
 	}
 	boundaries := boundarySnapshotIDs(s.workspaceTracker, runID)
+	paused := pauseSnapshotIDs(s.workspaceTracker, runID)
 	// Walk from the boundary back to the target, keeping the boundary
 	// snapshots (newest first). Bounded by `seen`: a manifest is on-disk
 	// JSON unmarshalled bare, so a self-referential Parent must not spin.
@@ -550,7 +645,7 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) ([]string,
 		seen[id] = true
 		snap, err := s.workspaceTracker.Load(runID, id)
 		if err != nil {
-			return nil, false
+			return nil, nil, false
 		}
 		if id == targetID {
 			stack = append(stack, snap)
@@ -563,22 +658,70 @@ func (s *Service) recordedChanges(runID, targetID, boundaryID string) ([]string,
 		id = snap.Parent
 	}
 	if !reached {
-		return nil, false
+		return nil, nil, false
 	}
-	changed := map[string]bool{}
+	changed, parkedSet := map[string]bool{}, map[string]bool{}
 	// stack is newest → oldest, so consecutive pairs walk the range
 	// backwards; StatusBetween is symmetric in membership.
 	for i := len(stack) - 1; i > 0; i-- {
-		for _, c := range workspacetrack.StatusBetween(stack[i], stack[i-1]) {
-			changed[c.Path] = true
+		older, newer := stack[i], stack[i-1]
+		// An interval OPENED by a pause is the one interval in which
+		// nothing of the run was executing. Whatever moved inside it was
+		// moved by someone else — an editor, a build, a second run — so
+		// claiming it as this run's production is exactly the false
+		// authorship a scoped restore exists to stop. Excluded from the
+		// scope and reported instead.
+		into := changed
+		if paused[older.ID] {
+			into = parkedSet
+		}
+		for _, c := range workspacetrack.StatusBetween(older, newer) {
+			into[c.Path] = true
+		}
+		// StatusBetween compares content hashes, so a node that only ran
+		// `chmod +x deploy.sh` moves nothing it can see — and the restore's
+		// own chmod branch would then never be reached for that path.
+		// Executable-bit flips are routine output of build and scaffold
+		// nodes, so the mode is part of what the run changed.
+		for _, p := range modeOnlyChanges(older, newer) {
+			into[p] = true
 		}
 	}
-	out := make([]string, 0, len(changed))
+	// A path the run demonstrably touched is the run's, even if it also
+	// moved during a pause; the reverse would let one parked interval
+	// launder a node's whole production out of the scope.
 	for p := range changed {
-		out = append(out, p)
+		delete(parkedSet, p)
+	}
+	return sortedKeys(changed), sortedKeys(parkedSet), true
+}
+
+// modeOnlyChanges lists paths present on both sides with the same content
+// and a different permission bit set.
+func modeOnlyChanges(base, head *workspacetrack.Snapshot) []string {
+	if base == nil || head == nil {
+		return nil
+	}
+	baseMap := make(map[string]workspacetrack.Entry, len(base.Entries))
+	for _, e := range base.Entries {
+		baseMap[e.Path] = e
+	}
+	var out []string
+	for _, h := range head.Entries {
+		if b, ok := baseMap[h.Path]; ok && b.Hash == h.Hash && b.Mode != h.Mode {
+			out = append(out, h.Path)
+		}
+	}
+	return out
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
 	sort.Strings(out)
-	return out, true
+	return out
 }
 
 // nextTrackerBackupSeq counts the banks already taken for this (run,

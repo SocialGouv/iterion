@@ -346,6 +346,11 @@ forcing the whole tree back would revert it. `--restore-scope` is the dial:
   paths are still untouched.
 - **`none`** — nothing; the node replays against the tree as it stands.
 
+`produced` is **refused, not silently widened, on a `worktree: auto` run**: git
+is the mechanism there and it reverts the whole tree or none of it, so the
+rewind says so and leaves the workspace alone rather than substituting the
+maximal blast radius for a request to narrow it.
+
 **What iterion cannot attribute, it reports.** A node that dies before its
 boundary is written and an operator editing in another terminal leave identical
 evidence, so the rewind names both sets instead of guessing:
@@ -357,11 +362,19 @@ leaves the same audit trail as a CLI one.
 
 To keep that honest the engine writes a **`fail:<node>:<iter>`** boundary when a
 node's execution does not complete — a failure, an interruption, an operator
-cancel. Without it a run that stopped *inside* a node would have nothing
-recorded after the state that node started from (`pre:` is an alias and does not
-advance the chain head), the scope would be empty, and the node's own debris
-would survive its rewind. When the scope *is* empty the rewind says so and
-restores nothing, rather than reporting a success it did not perform.
+cancel — and a **`pause:<node>:<iter>`** one when it parks on a human gate.
+Without them a run that stopped *inside* a node would have nothing recorded
+after the state that node started from (`pre:` is an alias and does not advance
+the chain head), the scope would be empty, and the node's own debris would
+survive its rewind. When the scope *is* empty the rewind says so and restores
+nothing, rather than reporting a success it did not perform.
+
+`pause:` also brackets the one interval in which **nothing of the run is
+executing**, and the scope excludes it: a file that appears while the run waits
+for you came from your editor, not from a node — even though the fresh capture
+the resume takes would otherwise fold it into the next node's apparent output.
+That is the only place authorship is decidable; an edit made *while a node is
+running* is not, and lands in `files.overwritten` if the restore takes it.
 
 ## Human and agent interaction resume
 

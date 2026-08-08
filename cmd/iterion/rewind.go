@@ -67,6 +67,8 @@ through iterion's own workspace versioning.
   full      every versioned path in the snapshot. The default for a worktree
             run, whose tree iterion owns. ("Versioned", not "the whole disk":
             ignored, protected and never-captured paths are untouched.)
+            It is also the ONLY breadth available there: git reverts the whole
+            tree or none of it, so "produced" is refused rather than widened.
   none      leave the workspace alone; replay the node against the tree as it
             stands. (--keep-files is the older spelling of this.)
 

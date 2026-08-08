@@ -893,7 +893,14 @@ func (n *Native) restore(runID, workspaceDir, snapshotID string, only map[string
 		for parent := filepath.Dir(dest); len(parent) > len(workspaceDir); parent = filepath.Dir(parent) {
 			info, derr := os.Lstat(parent)
 			if derr != nil {
-				break // does not exist yet: MkdirAll will create it
+				// Keep CLIMBING rather than concluding "does not exist yet".
+				// ENOTDIR here means a NON-DIRECTORY sits further up, and
+				// stopping at the first error let that case through the
+				// pre-flight and into the irreversible deletion pass — the
+				// half-restored workspace this whole block exists to prevent.
+				// ENOENT keeps climbing too and simply finds nothing, which
+				// is the correct answer for a tree MkdirAll will create.
+				continue
 			}
 			if !info.IsDir() {
 				rel, _ := filepath.Rel(workspaceDir, parent)

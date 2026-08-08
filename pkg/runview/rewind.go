@@ -238,6 +238,14 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if spec.NodeID == "" && !spec.Auto {
 		return nil, errors.New("runview: rewind: node_id is required (or set auto to derive it from the source diff)")
 	}
+	// Validated HERE, before anything is claimed or written, not only at
+	// the CLI and HTTP edges. An unrecognised value would otherwise fall
+	// through every equality test and land on the full restore — the
+	// widest blast radius, chosen by a typo, on the run shape where the
+	// workspace is the operator's own checkout.
+	if _, perr := ParseRestoreScope(string(spec.RestoreScope)); perr != nil {
+		return nil, perr
+	}
 	run, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
@@ -462,6 +470,13 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 			"files_scope_count":   files.ScopeCount,
 			"files_overwritten":   files.OverwrittenCount,
 			"files_left_in_place": files.LeftInPlaceCount,
+			// The NAMES too, not only the tallies: "3 files were
+			// overwritten" is not an answer to "what did that rewind take
+			// from me", and the CLI's stderr — where the names do appear —
+			// never runs for an API- or agent-driven rewind. Capped at
+			// ReportPathCap, the counts above stay exact.
+			"files_overwritten_paths":   files.Overwritten,
+			"files_left_in_place_paths": files.LeftInPlace,
 		},
 	}); err != nil && s.logger != nil {
 		// Best-effort: the state mutation already landed and is the

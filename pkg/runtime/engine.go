@@ -318,7 +318,16 @@ type runState struct {
 	// an orphan commit object. Same-key entries are dropped; a later loop
 	// iteration carries a different key and re-marks.
 	preMarked map[string]bool
-	budget    *SharedBudget // shared across branches, nil if no budget
+	// stopCaptured deduplicates captureStopBoundary per (phase, node,
+	// loopIter), for the same reason preMarked exists one field up: a
+	// single failure travels through several checkpoint-aware handlers
+	// (a node error surfaces at execLoopAfterExec, is returned, and the
+	// caller hands the same *RuntimeError to failRunErrWithCheckpoint
+	// again), and each pass would otherwise re-walk the workspace on the
+	// failure path — the one place a run is least able to afford it.
+	// Same tree, hence the same snapshot; only the walk is duplicated.
+	stopCaptured map[string]bool
+	budget       *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all

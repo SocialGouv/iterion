@@ -51,13 +51,20 @@ history of the workspace, readable without git. Labels name the boundaries:
 restore, and the newest boundary label for how far the run got.
 
 `fail:` is written when a node's execution does **not** complete — a failure,
-an interruption, an operator cancel. It is deliberately not `post:`, which two
-consumers read as "the node completed that iteration" (the rewind's staleness
-guard and the review panel's per-node attribution). But the files a dying node
-wrote are real, and without a boundary recording them nothing downstream can
-tell them from the operator's: `pre:` is an *alias* and does not advance the
-chain head, so a run that stops inside a node would otherwise end with its most
-recent recorded state being the one that node started from.
+an interruption, an operator cancel — and `pause:` when it parks on a human
+gate or an `ask_user` question. Neither is `post:`, which two consumers read as
+"the node completed that iteration" (the rewind's staleness guard and the
+review panel's per-node attribution). But the files such a node wrote are real,
+and without a boundary recording them nothing downstream can tell them from the
+operator's: `pre:` is an *alias* and does not advance the chain head, so a run
+that stops inside a node would otherwise end with its most recent recorded
+state being the one that node started from.
+
+`pause:` earns its own phase for a second reason: it opens the one interval in
+which **nothing of the run is executing**. A file that appears between a
+`pause:` boundary and the next one demonstrably did not come from this run — it
+came from the operator's editor, a watch process, a second run. That is the
+only place authorship is decidable, and a scoped rewind excludes it.
 
 ## Cost
 
