@@ -1,0 +1,54 @@
+## Sibling of rewind_mini.bot carrying a plain human gate between
+## `implement` and `verify`. That pause resumes through resumeFromPause
+## (the DEFAULT human-node shape), which is a different way back in from
+## the delegate path — the answers become the node output and control
+## moves straight to the next node, so the window the pause opened has
+## no closing boundary unless one is written for the gate itself.
+##
+## Original header:
+## Minimal fixture for the in-place rewind path (runview.Service.Rewind):
+## a straight survey -> plan -> implement -> verify chain, so a rewind to
+## `implement` has an unambiguous upstream (survey, plan — must survive)
+## and downstream (verify — must be invalidated). Exercised by
+## rewind_resume_test.go with the scenario stub: no LLM, no sandbox, no
+## tools.
+
+schema note:
+  value: string
+
+schema check:
+  value: string
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  output: note
+
+human gate:
+  output: note
+  interaction: human
+
+judge verify:
+  model: "claude-opus-4-7"
+  output: check
+
+workflow rewind_human_mini:
+  entry: survey
+
+  budget:
+    max_iterations: 20
+
+  survey -> plan
+  plan -> implement
+  implement -> gate
+  gate -> verify
+  verify -> done when ok
+  verify -> fail

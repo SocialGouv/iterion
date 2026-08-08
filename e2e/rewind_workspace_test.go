@@ -223,6 +223,86 @@ func TestRewindAfterResumeKeepsTriageEdits(t *testing.T) {
 	}
 }
 
+// TestRewindScopeAfterHumanGatePause is the same contract for the
+// DEFAULT pause shape, which reaches neither of the other two closers.
+//
+// A plain `interaction: human` gate resumes through resumeFromPause: the
+// answers become the node's output and control goes straight to the NEXT
+// node, whose own `pre:` boundary is a first one and is captured as
+// `pre:`, not `resume:`. So nothing closed the window the gate opened,
+// and every file the operator wrote while the run waited for them was
+// diffed as execution, landed in the scope, and was deleted — silently,
+// since the bank and the last boundary agree on those files.
+//
+// The review gate resumes the same way.
+func TestRewindScopeAfterHumanGatePause(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "rewind_human_mini.bot")
+
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	ws := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWS(t, ws, "docs/intro.md", "intro v1\n")
+
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	tracker := workspacetrack.NewNative(storeDir)
+
+	exec := newScenarioExecutor()
+	exec.on("implement", func(_ map[string]any) (map[string]any, error) {
+		writeWS(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
+		return map[string]any{"value": "wrote the docs"}, nil
+	})
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return nil, errors.New("verify blew up")
+	})
+
+	const runID = "e2e-rewind-human-gate"
+	newEngine := func() *runtime.Engine {
+		return runtime.New(wf, st, exec,
+			runtime.WithLogger(iterlog.Nop()),
+			runtime.WithWorkDir(ws),
+			runtime.WithWorkspaceTracker(tracker),
+		)
+	}
+	if err := newEngine().Run(context.Background(), runID, nil); !errors.Is(err, runtime.ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused at the gate, got: %v", err)
+	}
+
+	// The operator looks at the diff and writes a note before answering.
+	writeWS(t, ws, "notes/mine.md", "reviewing before I approve\n")
+
+	if err := newEngine().Resume(context.Background(), runID, map[string]any{
+		"value": "looks good",
+	}); err == nil {
+		t.Fatal("expected the resumed run to fail at verify")
+	}
+
+	svc, err := runview.NewService(storeDir, runview.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	result, err := svc.Rewind(context.Background(), runview.RewindSpec{
+		RunID:      runID,
+		NodeID:     "implement",
+		SourcePath: filepath.Join("testdata", "rewind_human_mini.bot"),
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(ws, "notes/mine.md")); serr != nil {
+		t.Errorf("the operator's file, written while the gate waited, was deleted (scope=%d, leftInPlace=%v): %v",
+			result.Files.ScopeCount, result.Files.LeftInPlace, serr)
+	}
+	if got := readWS(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the state implement started from", got)
+	}
+}
+
 // TestRewindScopeAfterDelegatePause splits a mid-node `ask_user` pause
 // into its two halves, which no other path exercises.
 //

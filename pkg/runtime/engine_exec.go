@@ -958,24 +958,28 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
 	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
-	if head == "" {
-		// No remembered anchor: either the first node of a fresh run, or
-		// a RESUME (resumeRebuildState starts from an empty runState). So
-		// capture — but only claim the `pre:` label when this node has no
-		// pre-execution boundary yet.
+	_, hasPre := e.workspaceTracker.Resolve(rs.runID, label)
+	if hasPre {
+		// A pre-execution boundary for this (node, iteration) already
+		// exists, from its first attempt. NEVER overwrite it — that is
+		// the state a rewind to this node restores, and by now the
+		// workspace has moved: triaging is what an operator does while a
+		// run is stopped, so re-pointing the label would silently
+		// redefine "what this node started from" as "whatever is on disk
+		// now", and erase with it the evidence that the interval since
+		// the stop was not the run's.
 		//
-		// On a resume it does, and overwriting it would erase the very
-		// state the rewind restores: the workspace has moved since the run
-		// stopped (an operator triaging a failure edits files, that is what
-		// the pause is FOR), so a re-captured `pre:` silently redefines
-		// "what this node started from" as "whatever is on disk now" — and
-		// erases, with it, the evidence that the interval since the stop
-		// was not the run's. A distinct label keeps both boundaries
-		// addressable and the interval between them honest.
-		if _, exists := e.workspaceTracker.Resolve(rs.runID, label); exists {
+		// With no remembered anchor we are picking back up, so record the
+		// boundary that CLOSES that interval instead. With one, the
+		// boundary is already where it belongs and there is nothing to do.
+		if head == "" {
 			e.captureWorkspace(rs, nodeID, workspacetrack.PhaseResume)
-			return
 		}
+		return
+	}
+	if head == "" {
+		// First node of a fresh run, or a resume into a node that never
+		// started: capture, since there is no earlier boundary to point at.
 		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePre)
 		return
 	}

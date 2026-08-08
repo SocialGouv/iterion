@@ -314,6 +314,21 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		return loopErr
 	}
 
+	// CLOSE the stop window for the node that was waiting, before any
+	// further execution. The plain human pause reaches neither of the
+	// other two closers: the answers become the node's output and control
+	// goes straight to the NEXT node, whose own `pre:` boundary is a
+	// first one and is therefore captured as `pre:`, not `resume:`.
+	//
+	// Without this the whole parked window — every file the operator
+	// wrote while the run waited for them — is diffed as if it were
+	// execution, lands in the scope, and is deleted by a later rewind.
+	// Silently, since the bank and the last boundary agree on those
+	// files. `interaction: human` is the DEFAULT for a human node and the
+	// review gate resumes the same way, so this is the common case, not
+	// an edge one.
+	e.markPreNodeBoundary(rs, humanNodeID)
+
 	// Select edge from the human node to find the next node.
 	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
 	if err != nil {
