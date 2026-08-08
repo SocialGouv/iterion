@@ -590,8 +590,27 @@ func boundarySnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]boo
 // on those files, so neither warning set could see them either. Issue
 // #380 recurring through its own fix.
 func stoppedSnapshotIDs(tr workspacetrack.Tracker, runID string) map[string]bool {
+	labels := tr.Labels(runID)
+	// A snapshot that ALSO carries a `resume:` label is where the window
+	// opened AND closed: the capture the resume took deduped onto it
+	// because nothing moved while the run was stopped — the ordinary
+	// human-gate answer. A window of zero width has nothing to exclude,
+	// and the interval that FOLLOWS such a snapshot is the resumed node
+	// EXECUTING. Marking it stopped would launder that node's own output
+	// out of the scope, leave it on disk, and hand it back to the replay:
+	// the exact failure this package exists to prevent, arrived at from
+	// the opposite direction.
+	resumed := map[string]bool{}
+	for label, id := range labels {
+		if strings.HasPrefix(label, workspacetrack.ResumeLabelPrefix) {
+			resumed[id] = true
+		}
+	}
 	out := map[string]bool{}
-	for label, id := range tr.Labels(runID) {
+	for label, id := range labels {
+		if resumed[id] {
+			continue
+		}
 		if strings.HasPrefix(label, workspacetrack.PauseLabelPrefix) ||
 			strings.HasPrefix(label, workspacetrack.FailLabelPrefix) {
 			out[id] = true

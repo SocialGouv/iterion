@@ -378,6 +378,89 @@ func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
 	}
 }
 
+// TestRewind_ResumedNodeProductionStaysInScope is the mirror of the
+// paused-interval exclusion, and the case where excluding too much is
+// the bug.
+//
+// When a run stops and resumes with the workspace UNCHANGED — the
+// ordinary human-gate answer — the resume's capture dedupes onto the
+// stop's own snapshot, so one id carries both labels. Reading that id as
+// "a stop opens here" then marks the interval that FOLLOWS it as parked;
+// but that interval is the resumed node executing, and its output would
+// be laundered out of the scope, left on disk, and met again by the
+// replay. The id where a window both opened and closed is not a window.
+func TestRewind_ResumedNodeProductionStaysInScope(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-resumed-production"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tr := svc.workspaceTracker
+	capture := func(label string) {
+		t.Helper()
+		if _, err := tr.Capture(runID, ws, label); err != nil {
+			t.Fatalf("capture %s: %v", label, err)
+		}
+	}
+
+	capture("pre:implement:0")
+	writeFile(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
+	capture("pause:implement:0")
+	// The operator answers without touching anything, so the resume's
+	// capture dedupes onto the pause snapshot: ONE id, both labels.
+	capture("resume:implement:0")
+	if tr.Labels(runID)["pause:implement:0"] != tr.Labels(runID)["resume:implement:0"] {
+		t.Fatal("fixture invalid: the resume capture did not dedupe onto the pause snapshot")
+	}
+	// ...and the resumed node then does its remaining work.
+	writeFile(t, ws, "docs/report.md", "written AFTER the resume\n")
+	capture("post:implement:0")
+	capture("fail:verify:0")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(ws, "docs/report.md")); !os.IsNotExist(serr) {
+		t.Errorf("the resumed node's own output survived the rewind (LeftInPlace=%v) — the replay meets its own production",
+			result.Files.LeftInPlace)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the pre-node content", got)
+	}
+}
+
 // TestRewind_WorktreeRefusesProducedScope: git reverts the whole tree or
 // none of it, so a worktree run cannot honour `produced`. Silently
 // substituting `full` — the MAXIMAL blast radius — for an explicitly
