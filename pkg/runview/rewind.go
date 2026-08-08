@@ -23,9 +23,76 @@ var ErrRewindNotRewindable = errors.New("runview: rewind: run is not in a rewind
 // to 400.
 var ErrRewindNodeNotReached = errors.New("runview: rewind: node was never reached by this run")
 
+// ErrRewindScopeUnavailable is returned when the requested restore scope
+// cannot be honoured for this run's shape. Callers map it to 400: the
+// request is well-formed but inapplicable, and the fix is to pick another
+// scope. Deliberately an error rather than a silent widening — see the
+// check in Rewind.
+var ErrRewindScopeUnavailable = errors.New("runview: rewind: restore scope unavailable for this run")
+
 // ArtifactLabelRewound marks the marker version appended over a
 // published artifact whose producing node was invalidated by a rewind.
 const ArtifactLabelRewound = "rewound"
+
+// RestoreScope is how much of the workspace a rewind puts back. It is an
+// ordered dial, safest first, in the shape the repo uses elsewhere
+// (`compress: on|ultra|off`, `permission: off|ask|deny`).
+type RestoreScope string
+
+const (
+	// RestoreScopeNone leaves the workspace exactly as it stands. The
+	// checkpoint is still re-anchored, so the replayed node runs against
+	// the files that are there now — "replay this node against the
+	// current tree".
+	RestoreScopeNone RestoreScope = "none"
+	// RestoreScopeProduced restores only the paths this run is RECORDED
+	// to have changed after the pivot started, and is the DEFAULT for a
+	// run with no isolated worktree.
+	//
+	// That default exists because of what such a run's workspace is: the
+	// operator's live checkout. A rewind's documented loop is "edit the
+	// .bot, THEN rewind, then resume" — `--auto` cannot work any other
+	// way, since it derives the pivot by diffing the edited source — so
+	// at the instant of every rewind the tree holds human work BY
+	// CONSTRUCTION. Putting the whole tree back therefore does not merely
+	// risk reverting the operator's files, it reverts the very edit the
+	// rewind was launched to test. Protecting the `.bot` alone conceded
+	// the principle and drew the line at one file.
+	//
+	// What it cannot do: attribute a change no boundary recorded. A node
+	// that dies before its boundary is written and an operator editing in
+	// another terminal leave identical evidence. iterion reports that set
+	// instead of guessing (FileRevertResult.LeftInPlace / .Overwritten).
+	RestoreScopeProduced RestoreScope = "produced"
+	// RestoreScopeFull forces every VERSIONED path back to the snapshot —
+	// ignored, protected and never-captured paths are still untouched, so
+	// it is "the whole snapshot", not "the whole disk". The default for a
+	// `worktree: auto` run, whose workspace iterion owns outright.
+	RestoreScopeFull RestoreScope = "full"
+)
+
+// ParseRestoreScope validates an operator-supplied value. The empty
+// string is the caller declining to choose, which resolves per run shape
+// (see orDefault) rather than to a fixed value.
+func ParseRestoreScope(v string) (RestoreScope, error) {
+	switch RestoreScope(v) {
+	case "", RestoreScopeNone, RestoreScopeProduced, RestoreScopeFull:
+		return RestoreScope(v), nil
+	}
+	return "", fmt.Errorf("invalid restore scope %q: want none, produced or full", v)
+}
+
+// orDefault resolves "the caller did not choose" against the default for
+// the run shape at hand. Deliberately not a package-level default: the
+// right answer differs between a live checkout and iterion's own
+// worktree, and collapsing them is how a worktree run would silently
+// inherit a scoping rule written for a workspace iterion does not own.
+func (sc RestoreScope) orDefault(def RestoreScope) RestoreScope {
+	if sc == "" {
+		return def
+	}
+	return sc
+}
 
 // RewindSpec describes an IN-PLACE rewind — "I misconfigured the bot,
 // back up and replay from here" — as opposed to Fork's
@@ -56,18 +123,25 @@ type RewindSpec struct {
 	Auto bool
 	// KeepFiles opts OUT of restoring the workspace.
 	//
-	// By default a rewind also undoes what the dropped nodes PRODUCED,
-	// not merely what they declared: the workspace is reverted to the
-	// state the pivot started from. For a bot whose real product is files
-	// — docs, code — the output map is only a summary, so rewinding the
+	// Deprecated: it is exactly RestoreScope == RestoreScopeNone, and is
+	// kept so existing API callers and scripts keep working. When set it
+	// wins over RestoreScope, since a caller asking for no restore at all
+	// cannot be served by any breadth.
+	KeepFiles bool
+	// RestoreScope selects how much of the workspace the rewind puts
+	// back. The zero value defers to the run's shape: `produced` for a
+	// run with no isolated worktree (the operator's live checkout),
+	// `full` for a `worktree: auto` run (iterion's own tree).
+	//
+	// By default a rewind undoes what the dropped nodes PRODUCED, not
+	// merely what they declared: for a bot whose real product is files —
+	// docs, code — the output map is only a summary, so rewinding the
 	// checkpoint alone would leave the half-written tree in place and the
 	// replayed node would build on top of itself.
 	//
-	// The revert is additive (the prior tree is committed on top of HEAD,
-	// and uncommitted work is banked first), so opting out is about
-	// intent — "replay this node against the current files" — never about
-	// safety.
-	KeepFiles bool
+	// The state at the instant of the rewind is banked first, so nothing
+	// becomes unreachable either way.
+	RestoreScope RestoreScope
 	// SourcePath overrides the workflow source to compute the graph
 	// from. Empty resolves the run's persisted FilePath (via the bot
 	// catalog when needed), exactly like the studio's workflow view.
@@ -102,7 +176,7 @@ type RewindResult struct {
 	// restored, to which snapshot, the revert commit, the backup ref
 	// banking the pre-revert state, and — importantly — why it was
 	// skipped when it was.
-	Files *fileRevertResult `json:"files,omitempty"`
+	Files *FileRevertResult `json:"files,omitempty"`
 	// Status is the run's status after the rewind (always resumable).
 	Status string `json:"status"`
 	// AutoTargeted reports that NodeID was derived from the source diff
@@ -171,9 +245,36 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	if spec.NodeID == "" && !spec.Auto {
 		return nil, errors.New("runview: rewind: node_id is required (or set auto to derive it from the source diff)")
 	}
+	// Validated HERE, before anything is claimed or written, not only at
+	// the CLI and HTTP edges. An unrecognised value would otherwise fall
+	// through every equality test and land on the full restore — the
+	// widest blast radius, chosen by a typo, on the run shape where the
+	// workspace is the operator's own checkout.
+	if _, perr := ParseRestoreScope(string(spec.RestoreScope)); perr != nil {
+		return nil, perr
+	}
 	run, err := s.store.LoadRun(ctx, spec.RunID)
 	if err != nil {
 		return nil, fmt.Errorf("load run: %w", err)
+	}
+	if run.Worktree && spec.RestoreScope == RestoreScopeProduced && !spec.KeepFiles {
+		// Refused UP FRONT, before anything is claimed or written. git is
+		// the mechanism for a worktree run and it has exactly one breadth
+		// — `read-tree --reset` plus `clean -fd` is the whole tree — so
+		// this request cannot be honoured, and quietly substituting the
+		// MAXIMAL blast radius for a request to narrow it is the one
+		// behaviour this feature must not have.
+		//
+		// Failing beats proceeding with the file half skipped: the
+		// checkpoint would be re-anchored and the artifacts invalidated
+		// while the worktree still held the node's own production, which
+		// is exactly the replay-on-top-of-itself a rewind exists to
+		// prevent. Both inputs are known here, so the operator can pick
+		// again with nothing to undo.
+		return nil, fmt.Errorf(
+			"%w: --restore-scope produced is not available for a run with an isolated worktree — "+
+				"git reverts the whole tree or none of it; use --restore-scope full to revert it, or none to leave it",
+			ErrRewindScopeUnavailable)
 	}
 	if !isRewindableStatus(run.Status) {
 		return nil, fmt.Errorf("%w: %s (rewindable: %s)",
@@ -274,9 +375,13 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 		return nil, fmt.Errorf("%w: status changed under us — reload and retry", ErrRewindNotRewindable)
 	}
 
-	files := &fileRevertResult{SkipReason: "keep_files requested"}
-	if !spec.KeepFiles {
-		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath)
+	scope := spec.RestoreScope
+	if spec.KeepFiles {
+		scope = RestoreScopeNone
+	}
+	files := &FileRevertResult{Scope: string(RestoreScopeNone), SkipReason: "restore scope is \"none\" — the workspace was left exactly as it stands"}
+	if scope != RestoreScopeNone {
+		files, err = s.revertWorkspace(run, wf, cp, pivot, sourcePath, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -383,6 +488,21 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 			"files_revert_commit":  files.RevertCommit,
 			"files_backup_ref":     files.BackupRef,
 			"files_skip_reason":    files.SkipReason,
+			// The audit trail has to answer "what did that rewind take
+			// from me". A remote or agent-driven rewind never sees the
+			// CLI's stderr, so counts that live only in the printer are
+			// counts nobody can go back to.
+			"files_restore_scope": files.Scope,
+			"files_scope_count":   files.ScopeCount,
+			"files_overwritten":   files.OverwrittenCount,
+			"files_left_in_place": files.LeftInPlaceCount,
+			// The NAMES too, not only the tallies: "3 files were
+			// overwritten" is not an answer to "what did that rewind take
+			// from me", and the CLI's stderr — where the names do appear —
+			// never runs for an API- or agent-driven rewind. Capped at
+			// ReportPathCap, the counts above stay exact.
+			"files_overwritten_paths":   files.Overwritten,
+			"files_left_in_place_paths": files.LeftInPlace,
 		},
 	}); err != nil && s.logger != nil {
 		// Best-effort: the state mutation already landed and is the

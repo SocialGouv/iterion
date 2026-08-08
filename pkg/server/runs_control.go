@@ -243,10 +243,17 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 // forkRunRequest: the wire shape must be free to diverge from the
 // service struct.
 type rewindRunRequest struct {
-	NodeID     string `json:"node_id"`
-	Auto       bool   `json:"auto,omitempty"`
-	KeepFiles  bool   `json:"keep_files,omitempty"`
-	SourcePath string `json:"source_path,omitempty"`
+	NodeID string `json:"node_id"`
+	Auto   bool   `json:"auto,omitempty"`
+	// KeepFiles is the legacy spelling of RestoreScope "none".
+	KeepFiles bool `json:"keep_files,omitempty"`
+	// RestoreScope is "none" | "produced" | "full". Omitted means "let
+	// the run's shape decide" — NOT "restore everything": a caller that
+	// does not know about the field must get the safe breadth, since the
+	// endpoint writes to the operator's live checkout on the default run
+	// shape.
+	RestoreScope string `json:"restore_scope,omitempty"`
+	SourcePath   string `json:"source_path,omitempty"`
 }
 
 // handleRewindRun re-anchors a run in place. Unlike fork it MUTATES the
@@ -277,6 +284,13 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "node_id is required (or auto:true)")
 		return
 	}
+	// Reject an unknown value rather than falling back: a caller sending
+	// restore_scope:"non" and expecting a no-op must not get a restore.
+	restoreScope, err := runview.ParseRestoreScope(req.RestoreScope)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "restore_scope: %v", err)
+		return
+	}
 	if s.logger != nil {
 		s.logger.Info("server: rewind run %q to node %q (auto=%v) from %s", id, req.NodeID, req.Auto, r.RemoteAddr)
 	}
@@ -296,11 +310,12 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 		sourcePath = resolved
 	}
 	result, err := s.runs.Rewind(r.Context(), runview.RewindSpec{
-		RunID:      id,
-		NodeID:     req.NodeID,
-		Auto:       req.Auto,
-		KeepFiles:  req.KeepFiles,
-		SourcePath: sourcePath,
+		RunID:        id,
+		NodeID:       req.NodeID,
+		Auto:         req.Auto,
+		KeepFiles:    req.KeepFiles,
+		RestoreScope: restoreScope,
+		SourcePath:   sourcePath,
 	})
 	if err != nil {
 		switch {
@@ -308,7 +323,8 @@ func (s *Server) handleRewindRun(w http.ResponseWriter, r *http.Request) {
 			// 409: the run is running or terminal — a state conflict the
 			// caller resolves by cancelling/pausing first, not a bad request.
 			s.httpErrorFor(w, r, http.StatusConflict, "rewind: %v", err)
-		case errors.Is(err, runview.ErrRewindNodeNotReached),
+		case errors.Is(err, runview.ErrRewindScopeUnavailable),
+			errors.Is(err, runview.ErrRewindNodeNotReached),
 			errors.Is(err, runview.ErrRewindNoSourceRecorded),
 			errors.Is(err, runview.ErrRewindNoChange),
 			errors.Is(err, runview.ErrRewindAmbiguous):

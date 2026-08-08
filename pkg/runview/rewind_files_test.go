@@ -2,6 +2,7 @@ package runview
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,9 +197,21 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 		t.Fatalf("seed capture: %v", err)
 	}
 
-	// `implement` writes the doc set.
+	// `implement` writes the doc set and COMPLETES, which is what gives it
+	// a closing boundary. Without one the run's most recent recorded state
+	// is the one `implement` started from, and there is by definition
+	// nothing recorded between the two — see
+	// TestRewind_InPlaceEmptyScopeIsItsOwnOutcome.
 	writeFile(t, ws, "docs/intro.md", "intro v2 REWRITTEN\n")
 	writeFile(t, ws, "docs/api.md", "generated\n")
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "post:implement:0"); err != nil {
+		t.Fatalf("seed post capture: %v", err)
+	}
+
+	// A file the operator edited AFTER the run stopped, which no node ever
+	// touched. This is issue #380: a rewind used to force the whole tree
+	// back to the pivot's snapshot and take this with it.
+	writeFile(t, ws, "notes/human.md", "my own work\n")
 
 	run, err := st.LoadRun(context.Background(), runID)
 	if err != nil {
@@ -232,6 +245,22 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 	if got := readWorkspaceFile(t, ws, "docs/keep.md"); got != "untouched\n" {
 		t.Errorf("docs/keep.md = %q, want it left alone", got)
 	}
+	// The regression from issue #380: a path created after the run's last
+	// boundary, by a hand rather than by a node, survives — and is
+	// reported rather than silently skipped.
+	if got := readWorkspaceFile(t, ws, "notes/human.md"); got != "my own work\n" {
+		t.Errorf("notes/human.md = %q, want the operator's file untouched", got)
+	}
+	if result.Files.ScopeCount != 2 {
+		t.Errorf("ScopeCount = %d, want the 2 paths the run recorded changing", result.Files.ScopeCount)
+	}
+	if result.Files.LeftInPlaceCount != 1 || len(result.Files.LeftInPlace) != 1 || result.Files.LeftInPlace[0] != "notes/human.md" {
+		t.Errorf("LeftInPlace = %v (%d), want notes/human.md reported as not restored",
+			result.Files.LeftInPlace, result.Files.LeftInPlaceCount)
+	}
+	if result.Files.OverwrittenCount != 0 {
+		t.Errorf("OverwrittenCount = %d, want 0 — nothing outside the run's own production was taken", result.Files.OverwrittenCount)
+	}
 	// Nothing is destroyed: the pre-rewind state stays a resolvable
 	// snapshot, so the discarded work is recoverable.
 	if result.Files.BackupRef == "" {
@@ -249,6 +278,547 @@ func TestRewind_RevertsWorkspaceWithoutWorktree(t *testing.T) {
 	}
 	if !hasAPI {
 		t.Error("the banked snapshot does not carry the work the rewind discarded")
+	}
+}
+
+// TestRewind_PausedIntervalIsNotTheRunsProduction is the sharpest case
+// the scope has to get right, and the one a snapshot delta alone gets
+// wrong.
+//
+// While a run is PARKED on a human gate, nothing of it is executing — so
+// a file that appears in that window demonstrably did not come from the
+// run. But the next node after the resume takes a fresh capture, which
+// swallows the operator's file and makes it look, to a plain
+// boundary-to-boundary diff, exactly like that node's own output. The
+// pause boundary is what tells the two apart.
+func TestRewind_PausedIntervalIsNotTheRunsProduction(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-paused-window"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tr := svc.workspaceTracker
+	capture := func(label string) {
+		t.Helper()
+		if _, err := tr.Capture(runID, ws, label); err != nil {
+			t.Fatalf("capture %s: %v", label, err)
+		}
+	}
+
+	// The engine's own label sequence for: implement runs, writes, then
+	// parks on a question; the operator edits while it waits; the run
+	// resumes back into implement, finishes it, and verify then fails.
+	//
+	// `resume:` rather than a re-captured `pre:` is what the engine now
+	// writes — the boundary that CLOSES the parked window. It is the
+	// whole discriminator, so the fixture has to speak it.
+	capture("pre:implement:0")
+	writeFile(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
+	capture("pause:implement:0")
+
+	writeFile(t, ws, "notes/human.md", "written while the run was parked\n")
+
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/report.md", "written after the answer\n")
+	capture("post:implement:0")
+	capture("fail:verify:0")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want a completed restore", result.Files)
+	}
+	// The run's own production, on both sides of the pause, is undone.
+	if got := readWorkspaceFile(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the pre-node content", got)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "docs/report.md")); !os.IsNotExist(err) {
+		t.Error("a file the node wrote AFTER the answer survived the restore — that half is execution, not the parked window")
+	}
+	// The operator's file, written while nothing was executing, is not.
+	if got := readWorkspaceFile(t, ws, "notes/human.md"); got != "written while the run was parked\n" {
+		t.Errorf("notes/human.md = %q, want the file written during the pause untouched", got)
+	}
+	var reported bool
+	for _, p := range result.Files.LeftInPlace {
+		if p == "notes/human.md" {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("LeftInPlace = %v, want notes/human.md named", result.Files.LeftInPlace)
+	}
+}
+
+// TestRewind_RepeatedStopsKeepTheirOwnWindows guards the pointer hazard
+// that made two earlier attempts at this wrong.
+//
+// Stop labels carry no sequence, so a SECOND pause at the same (node,
+// iteration) re-points `pause:<node>:<iter>` onto the newer snapshot and
+// leaves the first one carrying no label at all. Anything derived from
+// the run's label→id map therefore loses that snapshot entirely: the
+// chain walk steps over it, its window merges into the surrounding
+// interval, and the operator's edits inside it are claimed as the run's
+// production and deleted — reported by neither warning set, because the
+// bank and the last boundary agree on those files.
+//
+// This is the ordinary shape of `permission: ask`: one pause and one
+// resume per tool approval, all at iteration 0.
+func TestRewind_RepeatedStopsKeepTheirOwnWindows(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-repeated-stops"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	capture := func(label string) {
+		t.Helper()
+		if _, err := svc.workspaceTracker.Capture(runID, ws, label); err != nil {
+			t.Fatalf("capture %s: %v", label, err)
+		}
+	}
+
+	// Two approval round-trips, both at implement:0 — so both reuse the
+	// same label strings and each re-points the previous one.
+	capture("pre:implement:0")
+	writeFile(t, ws, "docs/a.md", "node work A\n")
+	capture("pause:implement:0")
+	writeFile(t, ws, "notes/first.md", "operator, first window\n")
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/b.md", "node work B\n")
+	capture("pause:implement:0")
+	writeFile(t, ws, "notes/second.md", "operator, second window\n")
+	capture("resume:implement:0")
+	writeFile(t, ws, "docs/c.md", "node work C\n")
+	capture("post:implement:0")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if _, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"}); err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	// Every parked window is honoured, not only the last one.
+	for _, mine := range []string{"notes/first.md", "notes/second.md"} {
+		if _, serr := os.Stat(filepath.Join(ws, mine)); serr != nil {
+			t.Errorf("%s was deleted — an earlier stop window lost its marker: %v", mine, serr)
+		}
+	}
+	// ...and every execution interval is still undone.
+	for _, produced := range []string{"docs/a.md", "docs/b.md", "docs/c.md"} {
+		if _, serr := os.Stat(filepath.Join(ws, produced)); !os.IsNotExist(serr) {
+			t.Errorf("%s survived — the node's own production must be undone", produced)
+		}
+	}
+}
+
+// TestRewind_ResumedNodeProductionStaysInScope is the mirror of the
+// paused-interval exclusion, and the case where excluding too much is
+// the bug.
+//
+// When a run stops and resumes with the workspace UNCHANGED — the
+// ordinary human-gate answer — the resume's capture dedupes onto the
+// stop's own snapshot, so one id carries both labels. Reading that id as
+// "a stop opens here" then marks the interval that FOLLOWS it as parked;
+// but that interval is the resumed node executing, and its output would
+// be laundered out of the scope, left on disk, and met again by the
+// replay. The id where a window both opened and closed is not a window.
+func TestRewind_ResumedNodeProductionStaysInScope(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-resumed-production"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tr := svc.workspaceTracker
+	capture := func(label string) {
+		t.Helper()
+		if _, err := tr.Capture(runID, ws, label); err != nil {
+			t.Fatalf("capture %s: %v", label, err)
+		}
+	}
+
+	capture("pre:implement:0")
+	writeFile(t, ws, "docs/intro.md", "intro v2 BY THE NODE\n")
+	capture("pause:implement:0")
+	// The operator answers without touching anything, so the resume's
+	// capture dedupes onto the pause snapshot: ONE id, both labels.
+	capture("resume:implement:0")
+	if tr.Labels(runID)["pause:implement:0"] != tr.Labels(runID)["resume:implement:0"] {
+		t.Fatal("fixture invalid: the resume capture did not dedupe onto the pause snapshot")
+	}
+	// ...and the resumed node then does its remaining work.
+	writeFile(t, ws, "docs/report.md", "written AFTER the resume\n")
+	capture("post:implement:0")
+	capture("fail:verify:0")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(ws, "docs/report.md")); !os.IsNotExist(serr) {
+		t.Errorf("the resumed node's own output survived the rewind (LeftInPlace=%v) — the replay meets its own production",
+			result.Files.LeftInPlace)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/intro.md"); got != "intro v1\n" {
+		t.Errorf("docs/intro.md = %q, want the pre-node content", got)
+	}
+}
+
+// TestRewind_WorktreeRefusesProducedScope: git reverts the whole tree or
+// none of it, so a worktree run cannot honour `produced`. Silently
+// substituting `full` — the MAXIMAL blast radius — for an explicitly
+// requested minimal one is the one behaviour this feature must not have.
+//
+// It fails the WHOLE rewind rather than skipping the file half: both
+// inputs are known before anything is claimed, and proceeding would
+// re-anchor the checkpoint while the worktree still held the node's own
+// production — a replay on top of itself, which is what a rewind exists
+// to prevent.
+func TestRewind_WorktreeRefusesProducedScope(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	svc, _, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+	run, err := svc.store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.Worktree = true
+	run.WorkDir = t.TempDir()
+	if err := svc.store.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	_, err = svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", RestoreScope: RestoreScopeProduced,
+	})
+	if !errors.Is(err, ErrRewindScopeUnavailable) {
+		t.Fatalf("Rewind err = %v, want ErrRewindScopeUnavailable", err)
+	}
+	// Nothing was claimed, so the operator can simply pick again.
+	after, lerr := svc.store.LoadRun(context.Background(), runID)
+	if lerr != nil {
+		t.Fatalf("load: %v", lerr)
+	}
+	if after.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want the run untouched by a refused request", after.Status)
+	}
+	if after.Checkpoint == nil || after.Checkpoint.NodeID != "verify" {
+		t.Error("the checkpoint was re-anchored despite the refusal")
+	}
+}
+
+// TestRewind_RejectsAnUnknownRestoreScope: an unrecognised value must not
+// fall through to the widest breadth, and must not park the run first.
+func TestRewind_RejectsAnUnknownRestoreScope(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	svc, _, runID := seedRun(t, linearBot, cp, store.RunStatusFailedResumable)
+
+	if _, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", RestoreScope: RestoreScope("Produced"),
+	}); err == nil {
+		t.Fatal("an unknown restore scope was accepted")
+	}
+	run, err := svc.store.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want the run untouched by a rejected request", run.Status)
+	}
+}
+
+// TestRewind_InPlaceEmptyScopeIsItsOwnOutcome pins the degenerate case
+// the scoped restore has to be honest about.
+//
+// `pre:<node>` is an Alias, and an Alias does not advance the chain head,
+// so a run that stops INSIDE a node ends with its most recent recorded
+// state being the one that node started from. There is then nothing
+// recorded between the two, and the correct answer is "I restored
+// nothing" — not a success line describing a restore that did not happen,
+// and not a silent fall back to putting the whole tree back, which is the
+// data loss the scoping exists to prevent.
+func TestRewind_InPlaceEmptyScopeIsItsOwnOutcome(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-empty-scope"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	// The only boundary this run ever recorded: what `implement` started
+	// from. It then died mid-node, so no closing boundary exists.
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	writeFile(t, ws, "docs/half-written.md", "debris from the failed node, or my own file — indistinguishable\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	f := result.Files
+	if f.Reverted {
+		t.Errorf("Reverted = true with an empty scope — a restore that did not happen must not report success")
+	}
+	if !strings.Contains(f.SkipReason, "nothing was restored") {
+		t.Errorf("SkipReason = %q, want it to say nothing was restored", f.SkipReason)
+	}
+	if got := readWorkspaceFile(t, ws, "docs/half-written.md"); got == "" {
+		t.Error("the unattributable file was deleted; an empty scope must touch nothing")
+	}
+	// Unattributable, and reported as such rather than silently dropped.
+	if f.LeftInPlaceCount != 1 || f.OverwrittenCount != 0 {
+		t.Errorf("LeftInPlace=%d Overwritten=%d, want the change reported as left in place",
+			f.LeftInPlaceCount, f.OverwrittenCount)
+	}
+}
+
+// TestRewind_InPlaceFullScopeRestoresEverything verifies the escape hatch:
+// an operator who knows the run owns the tree can still ask for the whole
+// snapshot back, and gets exactly the pre-scoping behaviour.
+func TestRewind_InPlaceFullScopeRestoresEverything(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-full-scope"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	writeFile(t, ws, "notes/unattributed.md", "no boundary records this\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{
+		RunID: runID, NodeID: "implement", RestoreScope: RestoreScopeFull,
+	})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want a completed restore", result.Files)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "notes/unattributed.md")); !os.IsNotExist(err) {
+		t.Error("--restore-scope full must put the whole snapshot back, deleting what it does not hold")
+	}
+}
+
+// TestRewind_WorktreeFallbackKeepsFullRestore guards the seam a worktree
+// run reaches when its git pre-ref is missing — routine after a resume
+// from a human pause, which writes tracker labels and no git refs. There
+// the workspace is iterion's own, holds no operator work, and must not
+// inherit a scoping rule written for a live checkout.
+func TestRewind_WorktreeFallbackKeepsFullRestore(t *testing.T) {
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "workspace")
+	writeFile(t, ws, "docs/intro.md", "intro v1\n")
+
+	botPath := filepath.Join(dir, "main.bot")
+	if err := os.WriteFile(botPath, []byte(linearBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	storeDir := filepath.Join(dir, "store")
+	st, err := store.New(storeDir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const runID = "run-worktree-fallback"
+	if _, err := st.CreateRun(context.Background(), runID, "linear", nil); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	svc, err := NewService(storeDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.workspaceTracker.Capture(runID, ws, "pre:implement:0"); err != nil {
+		t.Fatalf("seed capture: %v", err)
+	}
+	// Debris with no closing boundary — the shape that yields an empty
+	// scope in place. In a worktree it must still be swept.
+	writeFile(t, ws, "docs/debris.md", "half-written by the failed node\n")
+
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	run.FilePath = botPath
+	run.WorkDir = ws
+	run.Worktree = true // declared, but no git refs exist for it
+	run.Status = store.RunStatusFailedResumable
+	run.Checkpoint = &store.Checkpoint{
+		NodeID:  "verify",
+		Outputs: outputsOf("survey", "plan", "implement", "verify"),
+	}
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "implement"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if !result.Files.Reverted {
+		t.Fatalf("Files = %+v, want the tracker fallback to have restored", result.Files)
+	}
+	if got := result.Files.Scope; got != string(RestoreScopeFull) {
+		t.Errorf("Scope = %q, want %q for a worktree run", got, RestoreScopeFull)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "docs/debris.md")); !os.IsNotExist(err) {
+		t.Error("a worktree run's fallback restore must stay full — the debris survived")
 	}
 }
 

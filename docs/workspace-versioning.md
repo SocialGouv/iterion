@@ -46,8 +46,50 @@ objects — see *Reclaiming disk*.
 
 Snapshots carry a `Parent`, so a run's captures form a chain — the node-by-node
 history of the workspace, readable without git. Labels name the boundaries:
-`pre:<node>:<iter>` and `post:<node>:<iter>`. A rewind resolves the `pre:` label
-of its pivot.
+`pre:<node>:<iter>`, `post:<node>:<iter>`, `fail:<node>:<iter>`,
+`pause:<node>:<iter>`, `resume:<node>:<iter>` and `gate:<n>`. A rewind resolves the `pre:` label of its pivot for the state to
+restore, and the newest boundary label for how far the run got.
+
+`fail:` is written when a node's execution does **not** complete — a failure,
+an interruption, an operator cancel — and `pause:` when it parks on a human
+gate or an `ask_user` question. Neither is `post:`, which two consumers read as
+"the node completed that iteration" (the rewind's staleness guard and the
+review panel's per-node attribution). But the files such a node wrote are real,
+and without a boundary recording them nothing downstream can tell them from the
+operator's: `pre:` is an *alias* and does not advance the chain head, so a run
+that stops inside a node would otherwise end with its most recent recorded
+state being the one that node started from.
+
+`pause:` and `fail:` also OPEN the one kind of interval in which **nothing of
+the run is executing**, and `resume:` CLOSES it. A file that appears in that
+window demonstrably did not come from this run — it came from the operator's
+editor, a watch process, a second run. That is the only place authorship is
+decidable, and a scoped rewind excludes it.
+
+`resume:` exists because the alternative silently destroys evidence. Before it,
+a resume re-captured the node's `pre:` boundary, which redefined "what this node
+started from" as "whatever is on disk now" — and the disk has moved, because
+triaging a failure is exactly what an operator does between the stop and the
+resume. It is written on **every** way back in, including the delegate path
+(`ask_user`, an approval): that one never re-enters the dispatch loop, so
+without it everything the agent writes after the answer falls inside the window
+the pause opened.
+
+The window is read from its **closing** end, and from each snapshot's own
+`Label` rather than from the run's label→id map. Both halves matter:
+
+- **Closing end.** Every non-executing window ends with the capture the resume
+  takes, and when nothing moved inside it that capture dedupes onto its parent —
+  so a zero-width window produces no interval to misjudge at all. Reading the
+  opening end needs the same information *plus* a special case for that dedupe,
+  and gets it from a mutable source.
+- **`Snapshot.Label`, not `Labels()`.** A label is a pointer the engine
+  re-points: stop labels carry no sequence, so a second pause at the same
+  `(node, iteration)` — the ordinary shape of `permission: ask`, one pause and
+  one resume per approval — moves `pause:<node>:<iter>` onto the newer snapshot
+  and leaves the first carrying no label at all. Derived from the map, that
+  snapshot vanishes from the walk and its window merges into the surrounding
+  interval. `Snapshot.Label` is written once at capture and never moves.
 
 ## Cost
 
@@ -107,10 +149,24 @@ iterion rewind --run-id RUN --list-snapshots      # newest first, with labels
 iterion rewind --run-id RUN --restore-snapshot <id>
 ```
 
+Every label a snapshot carries is listed, not only the one its manifest was
+created under — a bank routinely lands as a second label on an existing
+snapshot (an unchanged workspace dedupes against its parent), and a listing
+showing only `pre:`/`post:` rows would leave you unable to tell which id is
+your bank.
+
+`--restore-snapshot` is **full-tree by design**, unlike the rewind that
+produced the bank: "put my workspace back" cannot be served by a partial
+answer. It banks the current state first, so it is itself undoable — but it is
+the larger operation of the two, and the CLI says so at the point of use.
+
 This matters most for an in-place run, where the workspace is your live
-checkout: the deletion pass cannot tell a file a node created from one you
-wrote in your editor while the run was paused. If a restore swept up your own
-work, the bank is where it went.
+checkout. A rewind now bounds itself to what the run *recorded* changing
+(`--restore-scope`, see [resume](resume.md#how-much-comes-back---restore-scope)),
+which removes most of the exposure — but not all of it: an edit you make while
+the run is **paused** is swallowed by the next node's capture and becomes
+indistinguishable from that node's output. If a restore swept up your own work,
+the bank is where it went.
 
 ## Reclaiming disk
 

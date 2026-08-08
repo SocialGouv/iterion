@@ -1,0 +1,50 @@
+## Sibling of rewind_mini.bot in which `implement` may ask a question
+## mid-node (`interaction: human`), so a DELEGATE pause — the shape
+## claude_code/claw take when the LLM calls ask_user — can be exercised.
+## The resume there re-invokes the node through reInvokeBackend rather
+## than re-entering the dispatch loop, which is the boundary the scoped
+## rewind depends on. Same straight chain otherwise.
+##
+## Original header:
+## Minimal fixture for the in-place rewind path (runview.Service.Rewind):
+## a straight survey -> plan -> implement -> verify chain, so a rewind to
+## `implement` has an unambiguous upstream (survey, plan — must survive)
+## and downstream (verify — must be invalidated). Exercised by
+## rewind_resume_test.go with the scenario stub: no LLM, no sandbox, no
+## tools.
+
+schema note:
+  value: string
+
+schema check:
+  value: string
+  ok: bool
+
+agent survey:
+  model: "claude-opus-4-7"
+  output: note
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: note
+
+agent implement:
+  model: "claude-opus-4-7"
+  interaction: human
+  output: note
+
+judge verify:
+  model: "claude-opus-4-7"
+  output: check
+
+workflow rewind_delegate_mini:
+  entry: survey
+
+  budget:
+    max_iterations: 20
+
+  survey -> plan
+  plan -> implement
+  implement -> verify
+  verify -> done when ok
+  verify -> fail

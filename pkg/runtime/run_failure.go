@@ -115,6 +115,7 @@ func (e *Engine) failRunDeliberate(rs *runState, nodeID, reason string) error {
 // enabling resume from the last completed node. Falls back to a regular
 // (non-resumable) failure if the checkpoint write fails.
 func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) error {
+	e.captureFailureBoundary(rs, nodeID)
 	cp := buildCheckpoint(rs, nodeID)
 	if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, reason); storeErr != nil {
 		e.logger.Error("failed to persist resumable failure: %v", storeErr)
@@ -127,6 +128,9 @@ func (e *Engine) failRunWithCheckpoint(rs *runState, nodeID, reason string) erro
 func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr error) error {
 	var rtErr *RuntimeError
 	if errors.As(origErr, &rtErr) {
+		// Only on this branch: the fallthrough below goes through
+		// failRunWithCheckpoint, which captures for itself.
+		e.captureFailureBoundary(rs, nodeID)
 		cp := buildCheckpoint(rs, nodeID)
 		if storeErr := e.store.FailRunResumable(rs.ctx, rs.runID, cp, rtErr.Message); storeErr != nil {
 			e.logger.Error("failed to persist resumable failure: %v", storeErr)
@@ -161,6 +165,12 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 // preserved but cancellation isn't. Bounded by a 5s timeout, well under the
 // typical k8s pod-termination grace period.
 func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ctxErr error) error {
+	// An operator cancel and a runner drain both stop the run INSIDE a
+	// node, so they leave the same unrecorded production a failure does —
+	// and `cancelled` is a rewindable status, so the rewind that follows
+	// needs the boundary just as much. Inline, ahead of the status write:
+	// see captureStopBoundary on why the order is that way round.
+	e.captureFailureBoundary(rs, nodeID)
 	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), 5*time.Second)
 	defer cancel()
 

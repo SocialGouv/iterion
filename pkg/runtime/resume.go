@@ -314,6 +314,21 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		return loopErr
 	}
 
+	// CLOSE the stop window for the node that was waiting, before any
+	// further execution. The plain human pause reaches neither of the
+	// other two closers: the answers become the node's output and control
+	// goes straight to the NEXT node, whose own `pre:` boundary is a
+	// first one and is therefore captured as `pre:`, not `resume:`.
+	//
+	// Without this the whole parked window — every file the operator
+	// wrote while the run waited for them — is diffed as if it were
+	// execution, lands in the scope, and is deleted by a later rewind.
+	// Silently, since the bank and the last boundary agree on those
+	// files. `interaction: human` is the DEFAULT for a human node and the
+	// review gate resumes the same way, so this is the common case, not
+	// an edge one.
+	e.markPreNodeBoundary(rs, humanNodeID)
+
 	// Select edge from the human node to find the next node.
 	nextNodeID, err := e.selectEdgeRS(rs, humanNodeID, answers)
 	if err != nil {
@@ -572,6 +587,15 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// just built.
 	e.pushExecutorVars(rs.vars)
 
+	// This runState came from a RESUME, so its first workspace boundary
+	// closes the window in which the run was stopped. An empty
+	// lastWorkspaceSnapshot is NOT proof of that on its own: two mid-run
+	// paths clear it too (after every special dispatch, and after a
+	// failed capture), and with a colliding loop-iteration label either
+	// would otherwise mint a spurious `resume:` boundary and launder real
+	// production out of a rewind's scope.
+	rs.resumed = true
+
 	return rs, sandboxCleanup, nil
 }
 
@@ -660,6 +684,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)
 	rs.isWorktree = r.Worktree
+	// Same as the paused-resume builder: this state came from a RESUME, so
+	// its first workspace boundary closes the interval the run was stopped
+	// in. The failure path has its own runState constructor, which is
+	// exactly how it was missed once already.
+	rs.resumed = true
 
 	e.pushExecutorVars(rs.vars)
 
@@ -1428,6 +1457,18 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // this, claw's stateless re-invocation would lose the question and the
 // LLM might call ask_user with the same question again.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
+	// CLOSE the stop window before re-invoking. This path does not go
+	// through markPreNodeBoundary — the node never re-enters the dispatch
+	// loop, it picks up mid-conversation — so without this the workspace
+	// has no boundary between the pause and the NEXT node's, and every
+	// file the agent writes after the operator answers falls inside the
+	// interval the pause opened. A scoped rewind then reads that whole
+	// interval as "changed while nothing was executing", leaves the
+	// agent's own production on disk, and the replay meets it again.
+	//
+	// `pre:<node>:<iter>` already exists here by construction (the node
+	// ran before it asked), so this records `resume:<node>:<iter>`.
+	e.markPreNodeBoundary(rs, nodeID)
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
 	for k, v := range answers {
@@ -1649,6 +1690,18 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
 func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
+	// Record what the node leaves on disk BEFORE the run is persisted as
+	// paused. A paused run is rewindable, and an agent that writes ten
+	// files and then asks a question has left them there with nothing
+	// recording that the run put them there — so a scoped rewind would
+	// have to leave them, and the replayed node would meet its own
+	// production. It also opens the pause interval, the one window in
+	// which nothing of the run executes and a workspace change is
+	// therefore demonstrably not the run's.
+	//
+	// Free when the node wrote nothing: the capture dedupes against an
+	// identical parent, which is the ordinary case at a human gate.
+	e.capturePauseBoundary(rs, nodeID)
 	// Create one stable interaction per logical loop execution. A scalar
 	// max(loop counters) is insufficient when a human node belongs to
 	// multiple loops: {plan=2, kit=1} and {plan=2, kit=2} both collapse to

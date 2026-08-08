@@ -713,6 +713,36 @@ func (n *Native) Load(runID, snapshotID string) (*Snapshot, error) {
 // work. Ignored paths are never read, rewritten or deleted: build output
 // and dependencies survive a restore exactly as they survive a checkout.
 func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...string) (*RestoreReport, error) {
+	return n.restore(runID, workspaceDir, snapshotID, nil, protected)
+}
+
+// RestoreOnly is Restore narrowed to `only` — see the Tracker interface.
+//
+// Scoping is implemented as a FILTER inside the one restore body rather
+// than as a second, leaner write-back, and that is not a style choice.
+// Everything Restore refuses to destroy it refuses for a reason it
+// learned the hard way: paths the capture skipped, files that have since
+// grown past the size cap, directories and symlinks the walk never
+// records, manifest entries that escape the workspace, an object pool
+// missing a blob the write-back will need. A parallel implementation
+// keyed off the manifest would inherit none of them, and would delete
+// bytes no bank holds.
+func (n *Native) RestoreOnly(runID, workspaceDir, snapshotID string, only []string, protected ...string) (*RestoreReport, error) {
+	// Literal, empty included — nil is NOT "everything". Overloading it
+	// would mean a caller whose scope computation legitimately came back
+	// empty gets the full-tree restore instead of the no-op it asked for,
+	// which is precisely the blast radius scoping exists to remove.
+	set := make(map[string]bool, len(only))
+	for _, p := range only {
+		set[p] = true
+	}
+	return n.restore(runID, workspaceDir, snapshotID, set, protected)
+}
+
+// restore is the shared body. `only == nil` means the whole workspace;
+// a non-nil set — empty included — restricts every pass to its members.
+func (n *Native) restore(runID, workspaceDir, snapshotID string, only map[string]bool, protected []string) (*RestoreReport, error) {
+	inScope := func(rel string) bool { return only == nil || only[rel] }
 	snap, err := n.Load(runID, snapshotID)
 	if err != nil {
 		return nil, err
@@ -738,7 +768,22 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	for _, p := range snap.Skipped {
 		preserve[p] = true
 	}
-	report := &RestoreReport{Skipped: snap.Skipped}
+	// A scoped restore reports the coverage gaps of ITS OWN scope. Seeding
+	// the report with the whole snapshot's Skipped list would make every
+	// scoped rewind on a repo holding one oversized file print "N path(s)
+	// were never captured" about paths it never intended to touch — and
+	// that warning is the loudest line the CLI prints. A warning that
+	// fires every time is a warning nobody reads.
+	skipped := snap.Skipped
+	if only != nil {
+		skipped = nil
+		for _, p := range snap.Skipped {
+			if only[p] {
+				skipped = append(skipped, p)
+			}
+		}
+	}
+	report := &RestoreReport{Skipped: skipped}
 
 	// Remove what the snapshot does not have.
 	var toDelete, oversized []string
@@ -781,6 +826,18 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		if _, keep := want[rel]; keep || preserve[rel] {
 			return nil
 		}
+		// Out of scope: this path is not one the run is recorded to have
+		// touched, so removing it would be the restore reaching past its
+		// own evidence. Checked BEFORE the oversized branch so an
+		// out-of-scope path is not reported as a coverage gap either.
+		//
+		// Note the candidates still come from the WALK, never from a
+		// manifest: that is what keeps every deletion physically inside
+		// the workspace and restricted to regular files, which a
+		// manifest-driven delete list would have to re-establish.
+		if !inScope(rel) {
+			return nil
+		}
 		// A file too large to capture is a file we hold no copy of.
 		// Deleting it as "absent from the snapshot" would destroy data
 		// that no backup can bring back — the target snapshot's Skipped
@@ -805,6 +862,9 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 	// the state it was being reverted to. Failing before the first
 	// os.Remove keeps the workspace exactly as it was.
 	for _, e := range snap.Entries {
+		if !inScope(e.Path) {
+			continue // not restored anyway — see the write-back loop
+		}
 		if !safeRelPath(e.Path) || ig.Match(e.Path, false) {
 			continue // not restored anyway — see the write-back loop
 		}
@@ -833,7 +893,14 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 		for parent := filepath.Dir(dest); len(parent) > len(workspaceDir); parent = filepath.Dir(parent) {
 			info, derr := os.Lstat(parent)
 			if derr != nil {
-				break // does not exist yet: MkdirAll will create it
+				// Keep CLIMBING rather than concluding "does not exist yet".
+				// ENOTDIR here means a NON-DIRECTORY sits further up, and
+				// stopping at the first error let that case through the
+				// pre-flight and into the irreversible deletion pass — the
+				// half-restored workspace this whole block exists to prevent.
+				// ENOENT keeps climbing too and simply finds nothing, which
+				// is the correct answer for a tree MkdirAll will create.
+				continue
 			}
 			if !info.IsDir() {
 				rel, _ := filepath.Rel(workspaceDir, parent)
@@ -850,6 +917,9 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 			return nil, fmt.Errorf("restore: remove %s: %w", p, err)
 		}
 		report.Deleted++
+		if rel, rerr := filepath.Rel(workspaceDir, p); rerr == nil {
+			report.DeletedPaths = appendCapped(report.DeletedPaths, filepath.ToSlash(rel))
+		}
 	}
 	if len(oversized) > 0 {
 		report.Skipped = append(append([]string(nil), report.Skipped...), oversized...)
@@ -858,6 +928,12 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 
 	// Write back what differs.
 	for _, e := range snap.Entries {
+		if !inScope(e.Path) {
+			// Silently, and deliberately: an out-of-scope path is not a
+			// coverage gap, it is a path this restore was never asked
+			// about. Reporting it would bury the real gaps.
+			continue
+		}
 		if !safeRelPath(e.Path) {
 			// A manifest entry is data; treat it as untrusted. Capture
 			// cannot emit an escaping path today, but Load is a bare
@@ -924,6 +1000,7 @@ func (n *Native) Restore(runID, workspaceDir, snapshotID string, protected ...st
 			return nil, fmt.Errorf("restore %s: %w", e.Path, err)
 		}
 		report.Written++
+		report.WrittenPaths = appendCapped(report.WrittenPaths, e.Path)
 	}
 
 	// Prune directories the deletions emptied, so an "undo" of a node that

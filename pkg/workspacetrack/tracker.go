@@ -59,7 +59,81 @@ const (
 	PhasePre = "pre"
 	// PhasePost labels the workspace a node left behind.
 	PhasePost = "post"
+	// PhaseFail labels the workspace a node left behind when its execution
+	// did NOT complete — a failure, an interruption, an operator cancel.
+	//
+	// It is deliberately not PhasePost: two consumers read `post:<node>:<n>`
+	// as "the node COMPLETED iteration n" — the rewind's staleness guard
+	// (runview.findPreNodeSnapshot) and the review panel's per-node
+	// attribution — and a failed node completed nothing. But the files it
+	// wrote before dying are real, and without a boundary recording them
+	// nothing downstream can tell them apart from the operator's own work:
+	// `pre:<node>` is an Alias that does not advance the chain head, so a
+	// run that stops inside a node ends with its newest boundary being the
+	// state that node STARTED from.
+	PhaseFail = "fail"
+	// PhasePause labels the workspace a node left behind when it PARKED —
+	// a human gate, an ask_user question, a recovery pause.
+	//
+	// Same reason as PhaseFail, and a separate phase because a pause is
+	// not a failure: the node is expected to resume and finish. It also
+	// opens the one interval in which NOTHING of the run is executing,
+	// which is the only window where a change to the workspace
+	// demonstrably did not come from this run — so a scoped restore can
+	// exclude it rather than claim authorship of the operator's editor.
+	PhasePause = "pause"
+	// PhaseResume labels the workspace as a run picks back up, when the
+	// node it resumes into already has a `pre:` boundary from its first
+	// attempt.
+	//
+	// It exists so that boundary survives. Overwriting `pre:` on every
+	// resume redefines "what this node started from" as "whatever is on
+	// disk now" — and the disk has moved, because triaging a failure is
+	// what the operator does between the stop and the resume. Worse, it
+	// erases the stop label with it, so the interval that demonstrably
+	// belongs to nobody but the operator becomes indistinguishable from
+	// execution.
+	PhaseResume = "resume"
 )
+
+// Label prefixes of the two boundaries that OPEN a non-executing
+// interval. Exported for the one consumer that must treat the window a
+// STOP opens differently from an execution interval (runview's scope
+// computation): both are followed by a resume, which recaptures a `pre:`
+// boundary before anything runs, so nothing between them is the run's.
+const (
+	PauseLabelPrefix = PhasePause + ":"
+	FailLabelPrefix  = PhaseFail + ":"
+	// ResumeLabelPrefix marks the CLOSING end of that interval, and is
+	// the load-bearing one: a label is a pointer the engine re-points (a
+	// node that fails, resumes and fails again moves `fail:<node>:<iter>`
+	// onto the second stop), whereas Snapshot.Label is written once at
+	// capture and never moves.
+	ResumeLabelPrefix = PhaseResume + ":"
+)
+
+// BoundaryPhases are the phases the ENGINE writes as it executes. A label
+// carrying one of these marks a state the run itself produced, as opposed
+// to the banks a rewind takes on the operator's behalf
+// ("rewind-backup:…", "pre-restore:…").
+//
+// Exported because the discriminator has to be shared: runview resolves
+// "the run's own most recent boundary" from it, and a hand-written prefix
+// test there would drift from what the engine writes here — and match
+// `pre-restore:` by accident, since it also begins with "pre".
+var BoundaryPhases = []string{PhasePre, PhasePost, PhaseFail, PhasePause, PhaseResume}
+
+// IsBoundaryLabel reports whether a label was written by the engine at a
+// node or gate boundary, rather than by a rewind banking state.
+func IsBoundaryLabel(label string) bool {
+	for _, p := range BoundaryPhases {
+		if strings.HasPrefix(label, p+":") {
+			return true
+		}
+	}
+	_, ok := ParseGateLabel(label)
+	return ok
+}
 
 // Label builds the boundary label for a node execution.
 //
@@ -152,6 +226,30 @@ type RestoreReport struct {
 	Deleted   int      `json:"deleted"`
 	Unchanged int      `json:"unchanged"`
 	Skipped   []string `json:"skipped,omitempty"`
+	// WrittenPaths / DeletedPaths name what the restore actually changed
+	// on disk, capped at ReportPathCap entries each (the counts above stay
+	// exact).
+	//
+	// They are the only honest basis for a "here is what I just took from
+	// you" report. Deriving that warning from a snapshot diff instead
+	// misses every path whose on-disk content differed from BOTH sides of
+	// the range — above all an operator edit made while the run was
+	// paused, which the next node boundary captures as if the run had
+	// produced it.
+	WrittenPaths []string `json:"written_paths,omitempty"`
+	DeletedPaths []string `json:"deleted_paths,omitempty"`
+}
+
+// ReportPathCap bounds the path lists a RestoreReport carries. The struct
+// is returned verbatim by the HTTP rewind endpoint and printed by the
+// CLI, so an uncapped list is a full workspace listing on both surfaces.
+const ReportPathCap = 100
+
+func appendCapped(dst []string, p string) []string {
+	if len(dst) >= ReportPathCap {
+		return dst
+	}
+	return append(dst, p)
 }
 
 // Tracker captures and restores workspace states for a run.
@@ -183,6 +281,24 @@ type Tracker interface {
 	// the workspace — above all the workflow source itself, since a
 	// rewind is launched precisely to test an edit to it.
 	Restore(runID, workspaceDir, snapshotID string, protected ...string) (*RestoreReport, error)
+	// RestoreOnly is Restore narrowed to a set of workspace-relative
+	// paths: everything outside `only` is neither read, rewritten nor
+	// removed, and never appears in the report.
+	//
+	// This is what makes a restore safe on a workspace iterion does not
+	// own. The default run shape has no isolated worktree, so the
+	// workspace IS the operator's live checkout, and a full-tree restore
+	// there reverts every file that moved since the snapshot — including
+	// files no node of the run ever wrote, and including the edit that
+	// motivated the rewind. The caller supplies the paths the run is
+	// RECORDED to have changed; this keeps the blast radius there.
+	//
+	// `only` is taken literally, empty included: an empty set restores
+	// nothing. It deliberately does NOT overload nil to mean "everything"
+	// — a caller that computed an empty scope and one that computed no
+	// scope must not silently get opposite blast radii. Ask Restore for
+	// the whole snapshot.
+	RestoreOnly(runID, workspaceDir, snapshotID string, only []string, protected ...string) (*RestoreReport, error)
 	// Forget releases the in-memory stat cache for a run. The cache is a
 	// few MiB per run on a real repository and a Tracker outlives every
 	// run in a studio process, so a long-lived one must be told when a run

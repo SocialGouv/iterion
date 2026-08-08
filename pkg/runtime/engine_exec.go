@@ -880,6 +880,72 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 	}
 }
 
+// captureFailureBoundary records the workspace a node left behind when
+// its execution did NOT complete.
+//
+// snapshotAtNodeBoundary only runs on the success path, and
+// aliasWorkspacePre writes the pre-marker as an Alias — which does not
+// advance the chain head. So a run that stops INSIDE a node ends with its
+// most recent recorded boundary being the state that node started from,
+// and everything the node wrote before dying is on disk with nothing
+// recording that the run put it there.
+//
+// That is the common shape, not an edge case: the whole point of a rewind
+// is usually "this node misbehaved, back up and replay it". Without this
+// capture a scoped restore cannot distinguish the failed node's debris
+// from the operator's own files, so it must leave both — and the replayed
+// node builds on top of its own production, the one failure workspace
+// versioning exists to prevent.
+//
+// Best-effort, exactly like its success-path twin: the run has already
+// failed, and losing a boundary costs rewind fidelity, never the run.
+func (e *Engine) captureFailureBoundary(rs *runState, nodeID string) {
+	e.captureStopBoundary(rs, nodeID, workspacetrack.PhaseFail)
+}
+
+// capturePauseBoundary is the same thing for a node that PARKED rather
+// than died — a human gate, an ask_user question, a recovery pause.
+//
+// `paused_waiting_human` is a rewindable status, so the gap is identical:
+// an agent that writes ten files and then asks a question has left them
+// on disk with nothing recording that the run put them there. It also
+// opens the pause INTERVAL, which is the one window a scoped restore can
+// prove is not the run's — nothing of the run executes inside it.
+func (e *Engine) capturePauseBoundary(rs *runState, nodeID string) {
+	e.captureStopBoundary(rs, nodeID, workspacetrack.PhasePause)
+}
+
+// captureStopBoundary records the workspace when a node's execution ends
+// WITHOUT completing.
+//
+// Called inline, before the durable status write, never deferred: once
+// the run is persisted in a rewindable status an operator's `iterion
+// rewind` may claim it and start its own Capture on the same run, and
+// two concurrent captures of one run is not a contract this tracker
+// offers. The walk itself is bounded work on a local filesystem, and it
+// no-ops outright wherever versioning is off — cloud runners included,
+// which is where a termination grace period would otherwise argue for
+// the opposite order.
+func (e *Engine) captureStopBoundary(rs *runState, nodeID, phase string) {
+	if e.workDir == "" || rs == nil || nodeID == "" || e.workspaceTracker == nil {
+		return
+	}
+	if rs.isWorktree {
+		// git owns that shape; snapshotAtNodeBoundary's refs are its
+		// boundaries and the tracker is not consulted.
+		return
+	}
+	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, rs.loopCounters))
+	if rs.stopCaptured == nil {
+		rs.stopCaptured = make(map[string]bool)
+	}
+	if rs.stopCaptured[label] {
+		return
+	}
+	rs.stopCaptured[label] = true
+	e.captureWorkspace(rs, nodeID, phase)
+}
+
 // aliasWorkspacePre labels the state a node is about to execute against.
 // Nothing touches the workspace between the previous node's capture and
 // this call, so it is a label write rather than a second walk — the same
@@ -892,8 +958,40 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
 	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
+	_, hasPre := e.workspaceTracker.Resolve(rs.runID, label)
+	if rs.resumed {
+		// The run is picking back up, and THIS is the boundary that
+		// closes the interval it was stopped in — the only interval a
+		// scoped rewind can prove is not the run's own work. Keyed on the
+		// explicit resume flag, never on `head == ""`: two mid-run paths
+		// clear that too, and with a colliding loop-iteration label
+		// either would mint a spurious `resume:` and launder a fan-out's
+		// real production out of the scope.
+		rs.resumed = false
+		e.captureWorkspace(rs, nodeID, workspacetrack.PhaseResume)
+		if !hasPre && rs.lastWorkspaceSnapshot != "" {
+			// The run stopped BEFORE this node was bracketed — an
+			// operator pause is checked at the top of the iteration, so
+			// it lands between two nodes. Point the node's pre-boundary
+			// at the state it is actually about to execute against;
+			// without it the node has none at all and a rewind to it has
+			// nothing to restore to.
+			if err := e.workspaceTracker.Alias(rs.runID, label, rs.lastWorkspaceSnapshot); err != nil && e.logger != nil {
+				e.logger.Warn("workspace pre-marker after resume: node %q iter %d: %v", nodeID, loopIter, err)
+			}
+		}
+		return
+	}
+	if hasPre {
+		// A pre-execution boundary for this (node, iteration) already
+		// exists. NEVER overwrite it — that is the state a rewind to this
+		// node restores, and by now the workspace may have moved, so
+		// re-pointing the label would silently redefine "what this node
+		// started from" as "whatever is on disk now".
+		return
+	}
 	if head == "" {
-		// First node of the run: capture, since there is no earlier
+		// First node of a fresh run: capture, since there is no earlier
 		// boundary to point at.
 		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePre)
 		return
