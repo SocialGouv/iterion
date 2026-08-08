@@ -330,5 +330,6 @@ Five questions, at the five moments they matter:
 
 Related reading: [Why Iterion?](why-iterion.md) ·
 [Architecture](architecture.md) ·
+[The ratchet](improvement-ratchet.md) ·
 [Workflow authoring pitfalls](workflow_authoring_pitfalls.md) ·
 [ADR index](adr/)

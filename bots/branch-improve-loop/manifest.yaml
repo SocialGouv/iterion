@@ -1,7 +1,19 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.1.0
+version: 1.1.1
+## 1.1.1 — an advisory block before the report (`Fit` / `Rot` / `Ratchet`,
+## the shape whole-improve-loop already carries): the last of the three asks
+## for the cheap deterministic check that would have caught the issue just
+## fixed, landed in the same commit or a follow-up one, NEVER by amending a
+## commit already banked (the branch may be pushed). A check that can fail on
+## code the branch did not touch goes in the summary instead. A check it
+## declines is not itself a remaining issue, so it stays out of
+## `issues_remaining` — but a fix shipped with no test at all still is one. A
+## check landed by an earlier pass is not re-opened as a weak test — that relay
+## is what fails to converge. Advisory only, and no new termination-contract field:
+## the gate stays `verify_run.passed ∧ branch_clean ∧ review.clean`.
+## See docs/improvement-ratchet.md.
 ## 1.1.0 — the operator picks where they sit in the loop (`pilot`: end reviews
 ## the result, middle arbitrates the plan before any edit), and the bot
 ## answers the review, and speaks for the head it pushes. Returns a

@@ -1,7 +1,19 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.0.1
+version: 2.0.2
+## 2.0.2 — third advisory question before the report: `Ratchet` — the cheap
+## deterministic check that would have caught the site it just fixed, landed
+## in the same commit or a follow-up one, NEVER by amending a commit already
+## banked. A check that can fail on code the pass did not touch (a lint rule,
+## any repo-wide gate) goes in the summary instead, since it would red the
+## deterministic gate on someone else's work. A check it declines is not
+## itself a remaining site, so it stays out of `sites_remaining`; the one
+## exception is an axis that IS about such checks, and even then the gate is
+## landed only together with the fixes it demands — never before the pass that
+## can green the tree with it. Advisory like `Fit` and `Rot`, and no new
+## termination-contract field: the gate stays `axis_complete ∧ green`.
+## See docs/improvement-ratchet.md.
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; gh/glab move to the bot's
 ## pinned devbox.json.

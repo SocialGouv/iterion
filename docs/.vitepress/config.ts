@@ -160,6 +160,7 @@ const sidebar = [
       { text: 'MCP server (drive from agents)', link: '/mcp-server' },
       { text: 'Why not prompt orchestration', link: '/why-not-prompt-orchestration' },
       { text: 'Asymptote bench', link: '/asymptote-bench' },
+      { text: 'The ratchet', link: '/improvement-ratchet' },
       { text: 'Thinking metrics', link: '/thinking-metrics' },
     ],
   },

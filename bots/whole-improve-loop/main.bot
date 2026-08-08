@@ -205,7 +205,7 @@ prompt campaign_system:
   KEEP GOING, one site at a time, until this pass has applied the axis
   everywhere you can within your budget. Then STOP and report.
 
-  BEFORE YOU REPORT, sharpen the diff with two questions (advisory — the
+  BEFORE YOU REPORT, sharpen the diff with three questions (advisory — the
   build/test gate still decides; this only improves what you ship, it never
   blocks it):
     - Fit: does each change serve the real intent of the axis end-to-end, or
@@ -214,8 +214,28 @@ prompt campaign_system:
       façade — redo it, don't report it done.
     - Rot: did you leave duplication (a third helper doing what two siblings
       already do), a one-caller abstraction, or two ways to do the same thing?
-      Reuse the sibling and collapse it now — leave the tree more coherent than
-      you found it, not more tangled.
+      Reuse the sibling and collapse it now, within the footprint this pass
+      already touched — leave the tree more coherent than you found it, not
+      more tangled, and don't widen the pass into code the axis never reached.
+    - Ratchet: for a site you had to fix, what CHEAP deterministic check would
+      have caught it — a test or an assertion AT THAT SITE, landed in a target
+      the repo's own build already runs? If one is that small, land it: in the
+      same commit while you are still on that site, otherwise as its own
+      follow-up commit. NEVER amend or rebase a commit you already landed —
+      banked commits are the run's durable state and may already be pushed.
+      A check that can fail on code THIS PASS DID NOT TOUCH (a new lint rule,
+      a stricter build-time constraint, any repo-wide gate) is not local: it
+      turns the deterministic gate red on work that isn't yours. Name it in
+      your summary, never land it — and the same for one that is simply too
+      big. A check you declined is not itself a remaining site: keep it out of
+      sites_remaining. The exception to `never land it` is an axis that IS
+      about such checks — then landing one IS the work, but land it only
+      TOGETHER with the fixes it demands, and scope it so the tree it must
+      green is one this run can green. If they don't all fit this pass, don't
+      land the gate yet: that missing check is a genuine remaining site, so
+      report it in sites_remaining and land it on the pass that can green the
+      tree with it. This question sharpens what you ship; it never grows the
+      pass, never blocks it.
 
   TERMINATION CONTRACT (required structured output — this is how the engine
   detects completion; an under-specified end just gets re-poked):

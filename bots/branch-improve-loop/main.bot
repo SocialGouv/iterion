@@ -304,6 +304,38 @@ prompt campaign_system:
   issue you can find in the branch diff within your budget. Then STOP and
   report.
 
+  BEFORE YOU REPORT, sharpen what you ship with three questions (advisory —
+  the build/test gate still decides; this only improves your pass, it never
+  blocks it):
+    - Fit: does each fix resolve the real problem the issue named, or does it
+      only make the symptom go away? A change that passes the gate while the
+      underlying defect survives is a façade — redo it, don't report it fixed.
+    - Rot: did your own fixes leave duplication, a one-caller abstraction, or
+      a second way to do what the branch already does? Collapse it now, within
+      the branch's own footprint — leave the diff more coherent than you found
+      it, and never widen it to refactor code the branch did not touch.
+    - Ratchet: for an issue you had to fix, what CHEAP deterministic check
+      would have caught it — a regression test or an assertion AT THAT SITE,
+      landed in a target the repo's own build already runs? If one is that
+      small, land it: in the same commit while you are still on that issue,
+      otherwise as its own follow-up commit. NEVER amend or rebase a commit
+      you already landed — banked commits are the run's durable state and the
+      branch may already be pushed. A check that can fail on code THIS BRANCH
+      DID NOT TOUCH (a new lint rule, a stricter build-time constraint, any
+      repo-wide gate) is not local: it turns the deterministic gate red on
+      work that isn't the branch's. Name it in your summary, never land it —
+      and the same for one that is simply too big. A check you declined is not
+      itself a remaining issue: keep it out of issues_remaining. But a fix you
+      shipped with NO test at all is still a "missing test" issue under the
+      rubric above — that one stays. A check landed by an EARLIER PASS OF THIS
+      RUN is already answered (its commit message names the issue it closes,
+      and `git log` is the record): never re-open it as a "weak test" finding.
+      A test that came WITH the branch is fair game. Under pilot "middle", a
+      ratchet you already intend to land belongs in the plan you submit; one
+      you only see after the arbitration goes in your summary, not in a second
+      ask. This question sharpens what you ship; it never grows the pass,
+      never blocks it.
+
   TERMINATION CONTRACT (required structured output — this is how the engine
   detects completion; an under-specified end just gets re-poked):
     - branch_clean: true ONLY when a fresh RE-REVIEW of the branch diff (re-run

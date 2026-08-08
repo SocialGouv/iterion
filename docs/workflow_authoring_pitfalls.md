@@ -290,7 +290,10 @@ An improvement/review loop must **converge to an asymptote** — settle
 into a stable approved state and stop. A slight, very occasional
 oscillation is acceptable; it must be the rare exception. **The rule is
 the asymptote**, never sustained oscillation. `iterion bench asymptote`
-(docs/asymptote-bench.md) measures it.
+(docs/asymptote-bench.md) is the empirical counterpart one scale up: it
+aggregates runs you already recorded and plots where the per-iteration
+verdict stabilises ACROSS sessions — the (model + recipe)'s reliability
+ceiling, not this single run's convergence.
 
 **The shipped mechanism (ADR-058 v2 — the whole loop fleet since
 2026-07-07):** one `campaign` agent + a deterministic verify gate + a
@@ -332,6 +335,10 @@ before diffing or a change that ADDS files reads as missing. The v2
 campaign contracts bake `git add -A` into the per-unit commit step.
 **When a loop won't converge, first confirm the judge is diffing the
 same, correct artifact.**
+
+The asymptote is what closes a run. What carries a gain from one run to
+the next — and what keeps a later run from re-earning it — is the
+**ratchet**: see [improvement-ratchet.md](improvement-ratchet.md).
 
 ---
 
