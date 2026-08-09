@@ -107,6 +107,46 @@ canonicalisation rules but never the existing mutants, so it cannot converge on 
 lens is a property of the check, not a decomposition of the work — the same reasoning that kept
 Seki's reviewer isolated under ADR-058.
 
+## `reanchor.bot` — repairing a mutant a modernisation lot invalidated
+
+A second, much smaller workflow in this bundle, meant to be run as a **subbot** from inside a
+modernisation lot's run (`modernize` wires it as `reanchor`).
+
+A lot is entitled to rename a method or restructure a template. When it does, a mutant that patched
+the old form stops patching anything: the harness calls it INVALID — correctly — and the surface it
+probed stops being covered. **Nothing goes red**: an invalid mutant is excluded from the score, so
+the figure looks no worse. That silence is what this workflow exists for.
+
+```
+reanchor_base → reanchor_campaign → reanchor_verify → reanchor_gate
+                        ⟳ repair_loop(max_passes)         └─ reanchor_result → done
+```
+
+The line it must not cross is **not** between bot and human — the child runs on the lot's own
+checkout, so anything it may write, the lot may write through it. The line is inside the net, and
+`reanchor_verify` holds it in git rather than in the prompt:
+
+| | |
+|---|---|
+| **re-anchor** a mutant | mechanical, and checkable: it must mutate something again (`GM_MODE=validate`, the harness's own rule) and still prove what it proved — same class, archetype and surface, no target dropped that the corpus still carries |
+| **re-record** a reference | never. Every path the run touched must sit under `mutants/`; a reference, the corpus, the canonicalisation, the configuration, the harness or any product file is refused, by name |
+
+Falsified in nine states on a real repository: nothing to repair and a legitimate committed repair
+are accepted; a re-recorded reference, a touched product file, a changed archetype, a target dropped
+while still in the corpus, a deleted mutant, an uncommitted repair and a mutant re-anchored onto
+nothing are each refused, each naming its own cause.
+
+## `GM_MODE=validate` — mechanical validity without a gate
+
+`probe_mutation` applies a mutant, fingerprints the tree and the data probe, and says
+mutated / inert / failed. `score_mutant` calls it, and so does `GM_MODE=validate`, which stops
+there: 23 mutants in **1.9s** against ~25min for the full gate.
+
+It establishes that a mutant CHANGES something. It deliberately establishes nothing about whether
+the net SEES it — that requires capturing and comparing, which only the gate does, and the mode says
+so in its own output. A check that lets itself be read as a stronger one is the defect this bot
+exists to catch.
+
 ## Output, in the target repository
 
 ```

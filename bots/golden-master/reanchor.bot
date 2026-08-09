@@ -1,0 +1,441 @@
+## ═══════════════════════════════════════════════════════════════════
+## reanchor — repair a mutant whose FOOTHOLD a lot legitimately removed.
+##
+## Run as a subbot from inside a modernisation lot's run. A lot is entitled to
+## rename a method, restructure a template, replace a library: when it does, a
+## mutant that patched the old form stops patching anything. The harness calls
+## that mutant INVALID — correctly, because a mutant that changes nothing can
+## neither prove nor disprove anything — and the surface it used to probe goes
+## uncovered IN SILENCE. Nothing goes red. The score is computed over the valid
+## mutants, so losing one makes the figure look no worse.
+##
+## THE LINE THIS BOT MUST NOT CROSS, and it is not between bot and human — it
+## runs inside the lot's own workspace, so anything it can write, the lot can
+## write through it:
+##
+##   RE-ANCHOR a mutant   → mechanical, and its result is verifiable: the
+##                          repaired mutant must mutate something again, judged
+##                          by the harness's own code.
+##   RE-RECORD a reference → NEVER. A reference that moved is a regression until
+##                          a human says otherwise, and this bot is not that
+##                          human. If it could rewrite one, the lot could pass
+##                          by rewriting what judges it.
+##
+## That line is held by `reanchor_verify` in git, not by the prompt: every path
+## this run touched must sit under the mutants directory. References, corpus,
+## canonicalisation, configuration, the harness itself and all product code are
+## out of bounds, and naming them is the failure.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  oracle_dir:    string = ".golden-master"
+  ## The harness's own verdict: [{"id": ..., "reason": ...}]. Passed in rather
+  ## than re-derived, because the party that decides a mutant is invalid is the
+  ## harness, and asking twice invites two answers.
+  invalid: json = "[]"
+  ## Which lot removed the footholds — context for the repair, never authority.
+  lot_id: string = ""
+  ## One repair pass, then a second only if the first was refused. A third pass
+  ## on the same refusal is an agent arguing with a deterministic check.
+  max_passes: int = 2
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt reanchor_system:
+  You repair mutants in a behavioural non-regression net. A mutant is a KNOWN
+  divergence injected on purpose, so that the net can be shown to see it.
+
+  Read the bundled skills first: `oracle-mutation` for what a mutant is, what
+  its archetype means and why the set must stay complete; `golden-master` for
+  the method the net rests on.
+
+  Each mutant you are given no longer changes anything: the code it patched has
+  moved. Your job is to find where that behaviour lives NOW and patch it there —
+  same class, same archetype, same surface, same entries probed.
+
+  Four rules override any instinct to make the check pass:
+
+  1. Touch NOTHING outside the mutants directory. Not the references, not the
+     corpus, not the canonicalisation, not the configuration, not the harness,
+     and not one line of the application. A deterministic check reads the diff
+     and refuses the run if you did — it names what you touched.
+  2. Keep what the mutant PROVES. `class`, `archetype` and `surface` in
+     `meta.json` say which comparator defect this mutant is the antidote to.
+     Changing them turns a repair into a substitution: the archetype it covered
+     becomes uncovered, and the required-archetype check is what would then have
+     to notice. Repair, do not re-scope.
+  3. Do not shrink `targets`. Every declared target MUST move when the mutant
+     applies; dropping the ones that are inconvenient is how a mutant becomes
+     easy to detect and stops proving anything. A target may go only if the
+     entry itself is gone from the corpus.
+  4. A mutant that never had a foothold is NOT repairable, and saying so is the
+     right answer. If the behaviour it probed no longer exists in the
+     application at all, report it as such rather than inventing an anchor: an
+     invented anchor is a mutant that tests nothing, dressed as one that does.
+
+  Commit your repair. Mutant reverts restore HEAD, so uncommitted work is
+  destroyed the moment anything is checked — including yours.
+
+prompt reanchor_user:
+  Repository: `{{vars.workspace_dir}}`. Net: `{{vars.oracle_dir}}`.
+
+  Lot `{{vars.lot_id}}` changed the application, and these mutants stopped
+  patching anything as a result:
+
+  {{input.invalid}}
+
+  Each entry carries the harness's own reason. Two of them mean different
+  things and lead to different work:
+
+  - "apply.sh left the tree and the data probe unchanged" — the script ran and
+    matched nothing. The anchor moved; find where it went.
+  - "apply.sh exited N" — the script itself failed. Read its output before
+    assuming the anchor is the problem.
+
+  For each one: read `meta.json`, understand which comparator defect the mutant
+  is the antidote to, find the behaviour in its new form, and re-anchor
+  `apply.sh` and `revert.sh` there. Then check your work the way the gate will:
+
+      GM_MODE=validate GM_MUTANTS=<ids> python3 {{vars.oracle_dir}}/harness.py
+
+  That is the harness deciding, in seconds, whether each mutant changes
+  something again. It says NOTHING about whether the net SEES the change — only
+  the full gate captures and compares, and it runs after you.
+
+  {{input.fail_log}}
+
+  Report ONE short line in `summary`. Anything longer belongs in the commit
+  message, which a human can read and diff.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema campaign_input:
+  invalid: string
+  fail_log: string
+
+## One field, and it is not believed. The deterministic check below is the sole
+## authority on whether the repair holds.
+schema campaign_output:
+  summary: string
+
+schema base_state:
+  head: string
+  dirty: string
+  wanted: string[]
+  notice: string
+
+## Not one field here is an opinion.
+schema verify_report:
+  committed: bool
+  scope_clean: bool
+  out_of_scope: string[]
+  intent_kept: bool
+  drifted: string[]
+  all_valid: bool
+  still_invalid: json
+  repaired: int
+  log_tail: string
+
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## What the parent reads back.
+schema reanchor_result:
+  converged: bool
+  repaired: int
+  notice: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+## reanchor_base — the commit this run starts from, and the list to repair.
+##
+## Captured BEFORE the agent, because the scope check compares against it.
+## Reading it afterwards would compare the work with itself and pass by
+## construction — the same defect the parent's reference check exists to avoid.
+tool reanchor_base:
+  output: base_state
+  language: py
+  script: |
+    import json
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    wanted = [m.get("id") for m in ({{vars.invalid}} or []) if m.get("id")]
+
+    head = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                          capture_output=True, text=True)
+    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                           capture_output=True, text=True)
+
+    notice = ""
+    if head.returncode != 0:
+        notice = "git cannot answer on %s: %s" % (ws, (head.stderr or "").strip())
+    elif dirty.returncode == 0 and dirty.stdout.strip():
+        # Said, not refused. The parent commits its lot before verifying, so a
+        # dirty tree here means something else is in flight — and the repair
+        # would be indistinguishable from it in the diff.
+        notice = ("the workspace was already dirty when this repair started (%d path(s)). "
+                  "The scope check below compares HEAD to the working tree, so those "
+                  "changes will be read as this repair's."
+                  % len([l for l in dirty.stdout.splitlines() if l.strip()]))
+
+    print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
+                      "wanted": wanted, "notice": notice}))
+
+agent reanchor_campaign:
+  backend: "claude_code"
+  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_GOLDEN_MASTER_EFFORT:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: reanchor_system
+  user: reanchor_user
+  session: fresh
+  skills: ["oracle-mutation", "golden-master"]
+
+## reanchor_verify — the whole verdict, deterministic, in one node.
+##
+## Four questions, and the order is the order of what a bad repair costs. Scope
+## first: a run that rewrote a reference has already done the damage the whole
+## programme exists to prevent, and nothing it did afterwards matters.
+tool reanchor_verify:
+  input: verify_input
+  output: verify_report
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    gm = {{vars.oracle_dir}}
+    base = {{input.head}}
+    wanted = list({{input.wanted}} or [])
+
+    report = {"committed": False, "scope_clean": False, "out_of_scope": [],
+              "intent_kept": False, "drifted": [], "all_valid": False,
+              "still_invalid": [], "repaired": 0, "log_tail": ""}
+    problems = []
+
+    def git(*args):
+        p = subprocess.run(["git", "-C", ws] + list(args),
+                           capture_output=True, text=True, timeout=120)
+        return p.returncode, p.stdout, p.stderr
+
+    # 1. Committed. Mutant reverts restore HEAD, so anything uncommitted is
+    #    destroyed the moment the harness applies its first mutant below — and
+    #    the verdict would then describe a tree that never existed.
+    code, out, err = git("status", "--porcelain")
+    if code != 0:
+        problems.append("git cannot answer on %s: %s" % (ws, err.strip()))
+    else:
+        report["committed"] = not out.strip()
+        if out.strip():
+            paths = sorted(l[3:] for l in out.splitlines() if l.strip())
+            problems.append(
+                "the repair is NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, "
+                "so this work is destroyed by the very check meant to accept it. Commit, "
+                "then verify." % (len(paths), ", ".join(paths[:12])))
+
+    # 2. Scope — THE line. Every path this run touched must sit under the
+    #    mutants directory. A reference, the corpus, the canonicalisation, the
+    #    configuration, the harness or any product file appearing here means the
+    #    lot has just moved what judges it, through this bot.
+    mutants_prefix = os.path.join(gm, "mutants") + "/"
+    code, out, err = git("diff", "--name-only", base, "HEAD")
+    if code != 0:
+        problems.append("cannot diff against %s: %s" % (base, err.strip()))
+    else:
+        touched = sorted(l.strip() for l in out.splitlines() if l.strip())
+        outside = [p for p in touched if not p.startswith(mutants_prefix)]
+        report["out_of_scope"] = outside
+        report["scope_clean"] = not outside
+        if outside:
+            problems.append(
+                "%d path(s) OUTSIDE the mutants directory were changed: %s. Re-anchoring a "
+                "mutant is mechanical and checkable; re-recording a reference is not, and "
+                "this bot runs inside the lot's own workspace — anything it may write, the "
+                "lot may write through it. A reference that moved is a regression until a "
+                "human says otherwise." % (len(outside), ", ".join(outside[:20])))
+
+    # 3. What each mutant PROVES must survive its repair. `class`, `archetype`
+    #    and `surface` name the comparator defect the mutant is the antidote to;
+    #    changing them turns a repair into a substitution, and the archetype it
+    #    covered silently stops being covered. `targets` is a contract that every
+    #    declared entry MOVES, so shrinking it is how a mutant becomes easy to
+    #    detect and stops proving anything — legal only when the entry itself is
+    #    gone from the corpus.
+    def metas(ref):
+        """Les meta.json d'un commit, INDEXES PAR LE NOM DU REPERTOIRE.
+
+        L'identifiant d'un mutant ne vit pas dans son meta.json : le harnais le
+        derive du repertoire qui le contient, et ne retient que les enfants
+        DIRECTS du dossier des mutants — `holdout/` et `audit/` sont plus
+        profonds et ne sont pas des mutants visibles. Cet index suit la meme
+        regle, sinon les deux ne parlent pas des memes objets.
+        """
+        found = {}
+        code, out, _ = git("ls-tree", "-r", "--name-only", ref, "--", mutants_prefix)
+        if code != 0:
+            return found
+        for path in out.splitlines():
+            path = path.strip()
+            if not path.startswith(mutants_prefix) or not path.endswith("/meta.json"):
+                continue
+            rest = path[len(mutants_prefix):].split("/")
+            if len(rest) != 2:
+                continue
+            c, body, _ = git("show", "%s:%s" % (ref, path))
+            if c != 0:
+                continue
+            try:
+                found[rest[0]] = json.loads(body)
+            except ValueError:
+                continue
+        return found
+
+    corpus_ids = set()
+    corpus_path = os.path.join(ws, gm, "corpus.json")
+    try:
+        with open(corpus_path, encoding="utf-8") as f:
+            corpus_ids = {e["id"] for e in json.load(f).get("entries", [])}
+    except (OSError, ValueError, KeyError) as e:
+        problems.append("cannot read %s (%s), so a dropped target cannot be told from a "
+                        "dropped entry." % (corpus_path, e))
+
+    before, after = metas(base), metas("HEAD")
+    drifted = []
+    for mid in wanted:
+        b, a = before.get(mid), after.get(mid)
+        if b is None or a is None:
+            drifted.append("%s: present at base=%s, present now=%s"
+                           % (mid, b is not None, a is not None))
+            continue
+        for field in ("class", "archetype", "surface"):
+            if b.get(field) != a.get(field):
+                drifted.append("%s: %s %r became %r" % (mid, field, b.get(field), a.get(field)))
+        lost = [t for t in (b.get("targets") or []) if t not in (a.get("targets") or [])]
+        still_there = [t for t in lost if t in corpus_ids]
+        if still_there:
+            drifted.append("%s: target(s) %s dropped while still in the corpus"
+                           % (mid, ", ".join(still_there)))
+    report["drifted"] = drifted
+    report["intent_kept"] = not drifted
+    if drifted:
+        problems.append(
+            "%d mutant(s) no longer prove what they proved: %s. A repair keeps the class, "
+            "the archetype, the surface and the entries probed; changing any of them is a "
+            "substitution wearing a repair's name, and the surface silently stops being "
+            "covered." % (len(drifted), " | ".join(drifted)))
+
+    # 4. Mechanical validity, decided by the HARNESS — the same code that will
+    #    decide it at the gate. Seconds, because nothing is captured: applied,
+    #    fingerprinted, reverted. It establishes that each mutant CHANGES
+    #    something again, and deliberately nothing more: whether the net SEES the
+    #    change is the gate's to say, and this bot must not be readable as having
+    #    said it.
+    harness = os.path.join(ws, gm, "harness.py")
+    if not os.path.isfile(harness):
+        problems.append("no harness at %s — the net has not been materialised in this "
+                        "repository, so nothing here can be checked by the code that "
+                        "judges it." % harness)
+    elif wanted:
+        env = dict(os.environ, GM_MODE="validate", GM_MUTANTS=",".join(wanted),
+                   GM_WORKSPACE=ws, GM_DIR=gm)
+        p = subprocess.run(["python3", harness], cwd=ws, env=env,
+                           capture_output=True, text=True, timeout=1800)
+        verdict = None
+        for line in reversed((p.stdout or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    verdict = json.loads(line)
+                except ValueError:
+                    verdict = None
+                break
+        if verdict is None:
+            problems.append("the harness produced no verdict (exit %d):\n%s"
+                            % (p.returncode, (p.stdout + p.stderr)[-2000:]))
+        else:
+            report["still_invalid"] = verdict.get("invalid") or []
+            missing = verdict.get("missing") or []
+            report["repaired"] = int(verdict.get("valid") or 0)
+            report["all_valid"] = not report["still_invalid"] and not missing
+            if report["still_invalid"]:
+                problems.append("%d mutant(s) still change nothing: %s"
+                                % (len(report["still_invalid"]),
+                                   json.dumps(report["still_invalid"], ensure_ascii=False)))
+            if missing:
+                problems.append(
+                    "%d mutant(s) asked for no longer exist: %s. Deleting a mutant is not a "
+                    "repair — it removes the probe along with the problem, and the surface it "
+                    "covered stops being covered without anything going red."
+                    % (len(missing), ", ".join(missing)))
+    else:
+        report["all_valid"] = True
+
+    report["log_tail"] = "\n".join(problems)[-6000:]
+    print(json.dumps(report))
+
+schema verify_input:
+  head: string
+  wanted: string[]
+
+## A pure CONJUNCTION, never an aggregate. A repair that is valid but out of
+## scope is not "mostly fine" — it is a lot that has just rewritten what judges
+## it and left a working mutant behind as cover.
+compute reanchor_gate:
+  output: gate_state
+  expr:
+    converged: "outputs.reanchor_verify.committed && outputs.reanchor_verify.scope_clean && outputs.reanchor_verify.intent_kept && outputs.reanchor_verify.all_valid"
+    fail_log: "outputs.reanchor_verify.log_tail"
+
+## What the parent reads back. `repaired` is the harness's count, never the
+## agent's claim.
+compute reanchor_result:
+  output: reanchor_result
+  publish: notice
+  expr:
+    converged: "outputs.reanchor_gate.converged"
+    repaired: "outputs.reanchor_verify.repaired"
+    notice: "if(outputs.reanchor_gate.converged, 'mutants re-anchored and mechanically valid again; whether the net SEES them is the gate to say', concat('the repair was REFUSED: ', outputs.reanchor_verify.log_tail))"
+
+workflow reanchor:
+  entry: reanchor_base
+
+  ## No `sandbox:` block (ADR-082): this runs inside the parent lot's workspace,
+  ## on the toolchain the target repository declares for itself.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "1h"
+    max_cost_usd: 20
+
+  reanchor_base -> reanchor_campaign with {
+    invalid:  "{{vars.invalid}}",
+    fail_log: ""
+  }
+
+  reanchor_campaign -> reanchor_verify with {
+    head:   "{{outputs.reanchor_base.head}}",
+    wanted: "{{outputs.reanchor_base.wanted}}"
+  }
+
+  reanchor_verify -> reanchor_gate
+  reanchor_gate -> reanchor_result when converged
+
+  ## Refused → one more pass, carrying the deterministic refusal so the agent
+  ## fixes the cause instead of re-deriving it.
+  reanchor_gate -> reanchor_campaign as repair_loop("{{vars.max_passes}}") with {
+    invalid:  "{{vars.invalid}}",
+    fail_log: "{{outputs.reanchor_gate.fail_log}}"
+  }
+
+  ## Loop exhausted → report the refusal rather than swallow it. The parent's
+  ## gate still runs, so an unrepaired mutant surfaces there as it did before:
+  ## this bot failing must never be quieter than this bot not existing.
+  reanchor_gate -> reanchor_result
+
+  reanchor_result -> done

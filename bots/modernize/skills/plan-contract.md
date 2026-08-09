@@ -122,7 +122,7 @@ such a lot, the lot overflowed, and finding that out is the point.
 This bot never re-baselines regardless. The flag documents intent for the
 humans and for the process that owns re-recording.
 
-## Re-anchoring a mutant is the NET's act, not this bot's — and the signal now exists
+## Re-anchoring a mutant is the NET's act, and this bot delegates it
 
 A lot may legitimately remove the thing a mutant hooks into. A security major
 withdraws the matcher idiom a mutant named; a front-end major replaces the
@@ -141,15 +141,35 @@ things wear that label:
 - **its anchor vanished under a change the lot was entitled to make** — it DID
   prove something and has stopped.
 
-Only the second is mechanically repairable, and repairing it is still **not this
-bot's to do**: a mutant belongs to the net, and the party that changes the code
-does not rewrite what judges it. Re-anchoring keeps the archetype, the surface
-and the targets identical and only moves the hook — but *keeping the nature
-identical* has to be demonstrated, not asserted, and that demonstration belongs
-to the authority that owns the net.
+Only the second is mechanically repairable, and repairing it is **not this bot's
+to do**: a mutant belongs to the net, and the party that changes the code does
+not rewrite what judges it. So the repair is DELEGATED — `reanchor` runs the
+net's own bot as a subbot, on this lot's checkout, and the verdict is then
+re-taken on the repaired net rather than patched.
 
-What this bot owes is the signal, named and structured, so the work is visible
-instead of being discovered three lots later.
+Where the line actually sits is worth stating, because it is not where one first
+looks for it. It is not between this bot and a human: the child runs inside this
+lot's workspace, so anything the child may write, this lot may write through it.
+The line is inside the net:
+
+- **re-anchor** a mutant → mechanical, and its result is verifiable. The repaired
+  mutant must mutate something again, judged by the harness's own code
+  (`GM_MODE=validate`), and it must still prove what it proved: same class, same
+  archetype, same surface, and no target dropped that the corpus still carries.
+- **re-record** a reference → never. The child's own deterministic check reads
+  the diff in git and refuses any path outside the mutants directory, naming it.
+
+The routing has one non-obvious property: the repair is attempted on EVERY
+outcome, including a converged lot. That is deliberate — an invalidated mutant
+does not fail the gate, its verdict is excluded from the score, so the figure
+looks no worse. A lot can go green while the net gets narrower, which is the one
+failure a green cannot report.
+
+The signal itself was written before it was readable: `lot_verify` printed
+`oracle_invalid` into its report while the `lot_report` schema did not declare
+the field, so no expression could reach it — and the validator refuses the
+reference outright (C031) rather than reading an empty default. A signal that
+exists in a log and not in the contract is not a signal.
 
 ## `depends_on`
 

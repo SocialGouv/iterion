@@ -1336,36 +1336,59 @@ tool oracle_run:
 
     # ─── Stability ──────────────────────────────────────────────────────────────
 
-    def score_mutant(meta, config, corpus, canon, refs, ws, seed):
-        """Apply → capture → compare → revert. Returns a per-mutant verdict dict."""
+    def probe_mutation(meta, ws):
+        """Apply the mutant and decide whether it CHANGED anything.
+
+        Returns (verdict, state) with state in {"mutated", "inert", "failed"}, and
+        leaves the mutant APPLIED when it mutated: the caller owns the revert,
+        because the gate has work to do in that state and this probe has none.
+
+        Extracted so that the gate and the cheap validity check decide by the SAME
+        code. Mechanical validity is what stops a no-op mutant from either inflating
+        or diluting the score, so two implementations of it would eventually
+        disagree about what counts as a mutation — and the one used to accept a
+        repair would be the lenient one.
+        """
         targets = list(meta.get("targets") or [])
+        base = {"id": meta["id"], "class": meta.get("class", "unknown"),
+                "archetype": meta.get("archetype", "unknown"),
+                "surface": meta.get("surface", "http"),
+                "targets_declared": targets}
+
         if not targets:
-            return {"id": meta["id"], "valid": False, "detected": False,
-                    "reason": "meta.json declares no targets"}
+            return dict(base, valid=False, detected=False,
+                        reason="meta.json declares no targets"), "failed"
 
         before_tree, before_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
 
         code, out = apply_mutant(meta, ws)
         if code != 0:
-            return {"id": meta["id"], "valid": False, "detected": False,
-                    "reason": "apply.sh exited %s: %s" % (code, out[-300:])}
+            return dict(base, valid=False, detected=False,
+                        reason="apply.sh exited %s: %s" % (code, out[-300:])), "failed"
 
         after_tree, after_data = tree_fingerprint(ws), data_fingerprint(meta, ws)
         mutated = (before_tree != after_tree) or (
             before_data is not None and before_data != after_data
         )
 
-        verdict = {"id": meta["id"], "class": meta.get("class", "unknown"),
-                   "archetype": meta.get("archetype", "unknown"),
-                   "surface": meta.get("surface", "http"),
-                   "targets_declared": targets, "valid": bool(mutated)}
-
         if not mutated:
             # A mutant that changes nothing is a measurement fault, not evidence.
-            verdict.update(detected=False,
-                           reason="apply.sh left the tree and the data probe unchanged")
+            return dict(base, valid=False, detected=False,
+                        reason="apply.sh left the tree and the data probe unchanged"), "inert"
+
+        return dict(base, valid=True), "mutated"
+
+
+    def score_mutant(meta, config, corpus, canon, refs, ws, seed):
+        """Apply → capture → compare → revert. Returns a per-mutant verdict dict."""
+        verdict, state = probe_mutation(meta, ws)
+        if state == "failed":
+            return verdict
+        if state == "inert":
             revert_mutant(meta, ws)
             return verdict
+
+        targets = verdict["targets_declared"]
 
         if meta.get("needs_restart", True):
             app_restart(config, ws)
@@ -1506,7 +1529,7 @@ tool oracle_run:
         # set somewhere the gate will not look, and two runs cannot share a pile.
         sealed_dir = sealed_dir_for(ws)
         floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
-        mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck
+        mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate
 
         report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
                   "noop_silent": False, "revert_clean": True, "collateral": 0,
@@ -1576,6 +1599,48 @@ tool oracle_run:
                     % (len(paths), ", ".join(sorted(paths)[:12]))))
 
         visible = load_mutants(gm_dir, holdout=False)
+
+        # MODE=validate — la validite MECANIQUE seule, sans application ni capture.
+        #
+        # Pourquoi ce mode existe : un lot de modernisation a le droit de supprimer
+        # le point d'appui d'un mutant (renommer une methode, changer un gabarit).
+        # Le mutant devient alors INVALIDE — il n'a plus rien a muter — et le filet
+        # perd en silence la surface qu'il couvrait. Le reparer est mecanique : on
+        # le re-ancre. L'accepter ne l'est pas, et c'est la que ce mode sert : il
+        # etablit qu'un mutant re-ancre MUTE de nouveau quelque chose, par le code
+        # meme qui en decidera a la porte, en quelques secondes plutot qu'en
+        # vingt-cinq minutes.
+        #
+        # CE QU'IL N'ETABLIT PAS, et la distinction est tout : que le filet VOIE le
+        # mutant. Voir se prouve en capturant et en comparant, ce que seule la porte
+        # fait. Un mode qui repondrait « valide » et se laisserait lire comme « la
+        # porte passera » serait precisement le controle qui annonce une chose et en
+        # etablit une autre.
+        if mode == "validate":
+            wanted = [i.strip() for i in os.environ.get("GM_MUTANTS", "").split(",") if i.strip()]
+            chosen = [m for m in visible if not wanted or m["id"] in wanted]
+            report["missing"] = sorted(set(wanted) - {m["id"] for m in chosen})
+            verdicts = []
+            for m in chosen:
+                v, state = probe_mutation(m, ws)
+                if state != "failed":
+                    revert_mutant(m, ws)
+                verdicts.append(v)
+            report["total"] = len(verdicts)
+            report["valid"] = len([v for v in verdicts if v.get("valid")])
+            report["invalid"] = [{"id": v["id"], "reason": v.get("reason", "")}
+                                 for v in verdicts if not v.get("valid")]
+            report["log_tail"] = (
+                "MODE=validate — %d mutant(s) applied, fingerprinted and reverted. This says "
+                "each one CHANGES something; it says NOTHING about whether the net sees it. "
+                "Only the gate captures and compares, and the zeroed fields above are defaults, "
+                "not a verdict." % len(verdicts))
+            if report["missing"]:
+                report["log_tail"] += (" %d requested mutant(s) do not exist: %s."
+                                       % (len(report["missing"]), ", ".join(report["missing"])))
+            print(json.dumps(report))
+            return
+
         if mode != "record":
             seal_holdout(gm_dir, sealed_dir)
             held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)

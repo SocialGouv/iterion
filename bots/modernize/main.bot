@@ -28,6 +28,11 @@ vars:
   ## Bounded repair loop for a single lot. Exhausting it ships what is banked
   ## and says so, rather than grinding.
   max_passes: int = 4
+  ## Repair a mutant whose foothold this lot legitimately removed, by running
+  ## the net's own bot as a subbot. Off leaves the invalidated mutants in the
+  ## report and the surface they probed uncovered — which is the status quo, and
+  ## which nothing goes red about.
+  reanchor: bool = true
   source_issue_ref: string = ""
 
 ## ─── Prompts ───────────────────────────────────────────────────────
@@ -123,6 +128,11 @@ schema lot_report:
   ## wall the agent has already described and proven is pure spend.
   lot_blocked: bool
   block_reason: string
+  ## Which mutants the oracle could no longer apply: [{"id", "reason"}]. The
+  ## tool wrote this field before the schema declared it, so the graph could not
+  ## read it and nothing ever did — a signal that exists in a log and not in the
+  ## contract is not a signal.
+  oracle_invalid: json
   log_tail: string
 
 schema gate_state:
@@ -130,6 +140,7 @@ schema gate_state:
   ## Converged OR declared blocked — both end the run, for opposite reasons.
   stop: bool
   fail_log: string
+  needs_reanchor: bool
 
 schema verify_input:
   lot_id: string
@@ -431,6 +442,39 @@ compute lot_gate:
     converged: "outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched"
     stop: "(outputs.lot_verify.gate_passed && outputs.lot_verify.oracle_passed && outputs.lot_verify.refs_untouched) || outputs.lot_verify.lot_blocked"
     fail_log: "outputs.lot_verify.log_tail"
+    ## Read on EVERY outcome, including a converged one, and that is the point.
+    ## An invalidated mutant does not fail the gate: its verdict is excluded
+    ## from the score, so the figure looks no worse and the surface it probed
+    ## stops being covered in silence. A lot can therefore go green while the
+    ## net gets narrower — which is the one failure mode a green cannot report.
+    needs_reanchor: "vars.reanchor && length(outputs.lot_verify.oracle_invalid) > 0"
+
+## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
+## invalidated.
+##
+## The child is `golden-master`'s, not this bundle's, and that placement is the
+## design: the format of a mutant, the archetypes it must cover and the skills
+## that explain both belong to the party that owns the net. A copy here would be
+## a second declaration of the same thing, and two declarations drift.
+##
+## `isolated:` is deliberately ABSENT. The child works on THIS lot's checkout —
+## that is what it is for — so the workspace-safety guard is right to treat it as
+## mutating and to serialise it. What keeps it honest is not isolation but its
+## own deterministic check: every path it touched must sit under the mutants
+## directory, verified in git. Anything it may write, this lot may write through
+## it, so the check is the boundary, not the prompt.
+subbot reanchor:
+  source: "../golden-master/reanchor.bot"
+  with {
+    invalid: "{{outputs.lot_verify.oracle_invalid}}",
+    lot_id:  "{{outputs.work_gate.lot_id}}"
+  }
+  output: reanchor_result
+
+schema reanchor_result:
+  converged: bool
+  repaired: int
+  notice: string
 
 workflow modernize:
   entry: plan_read
@@ -475,6 +519,24 @@ workflow modernize:
   }
 
   lot_verify -> lot_gate
+
+  ## Repair the net BEFORE deciding the lot, and on every outcome — a converged
+  ## lot is exactly the case where a lost mutant would never be noticed. Bounded
+  ## to a single attempt: the child has its own repair loop, and a second attempt
+  ## here would only re-run a full oracle to learn what the first one already
+  ## said.
+  lot_gate -> reanchor when needs_reanchor as reanchor_loop("1")
+
+  ## The verdict is re-taken on the repaired net, never patched. `oracle_invalid`
+  ## is part of that verdict, so reading it again is what stops a failed repair
+  ## from looking like a successful one.
+  reanchor -> lot_verify with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha:  "{{outputs.work_gate.base_sha}}",
+    refs_dir:  "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}"
+  }
 
   ## Converged, or declared blocked with a committed reason. Both end the run;
   ## looping against a wall the agent has already described and proven costs
