@@ -122,6 +122,35 @@ such a lot, the lot overflowed, and finding that out is the point.
 This bot never re-baselines regardless. The flag documents intent for the
 humans and for the process that owns re-recording.
 
+## Re-anchoring a mutant is the NET's act, not this bot's — and the signal now exists
+
+A lot may legitimately remove the thing a mutant hooks into. A security major
+withdraws the matcher idiom a mutant named; a front-end major replaces the
+configuration block a mutant edited. The patch stops applying, the harness marks
+the mutant **INVALID**, and an invalid mutant neither scores nor dilutes — it
+simply stops proving anything, quietly, on whichever lane it covered.
+
+That is a real cost and it is easy to miss: the gate can stay green while the
+counter-test that made one lane worth trusting has silently gone dark.
+
+`lot_verify` therefore surfaces `oracle_invalid` — the ids and reasons, read from
+the oracle's own report rather than matched out of a log. Two very different
+things wear that label:
+
+- **the mutant never mutated anything** — it proved nothing to begin with;
+- **its anchor vanished under a change the lot was entitled to make** — it DID
+  prove something and has stopped.
+
+Only the second is mechanically repairable, and repairing it is still **not this
+bot's to do**: a mutant belongs to the net, and the party that changes the code
+does not rewrite what judges it. Re-anchoring keeps the archetype, the surface
+and the targets identical and only moves the hook — but *keeping the nature
+identical* has to be demonstrated, not asserted, and that demonstration belongs
+to the authority that owns the net.
+
+What this bot owes is the signal, named and structured, so the work is visible
+instead of being discovered three lots later.
+
 ## `depends_on`
 
 Lot ids that must be `done` first. A lot whose dependencies are unmet is

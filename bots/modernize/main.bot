@@ -332,7 +332,8 @@ tool lot_verify:
     gate_cmds = [c for c in {{input.exit_gate}}.split("\n") if c.strip()]
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
-              "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": ""}
+              "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
+              "oracle_invalid": []}
     problems = []
 
     # Did the campaign declare this lot blocked? Read from the contract, which
@@ -376,6 +377,24 @@ tool lot_verify:
         report["oracle_passed"] = code == 0
         if code != 0:
             problems.append("the behavioural oracle went RED (exit %d):\n%s" % (code, log))
+        # WHICH mutants the oracle could no longer apply, read rather than
+        # guessed. A mutant goes invalid for two very different reasons: it
+        # mutates nothing — it never proved anything — or its anchor vanished
+        # under a change this lot was entitled to make, which means it DID prove
+        # something and has stopped. Only the second is mechanically repairable,
+        # and telling them apart requires reading the field instead of matching
+        # a phrase in a log.
+        #
+        # Repairing it is NOT this bot's to do: a mutant belongs to the net. The
+        # signal is surfaced so the party that owns the net can act on it.
+        for line in reversed((log or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    report["oracle_invalid"] = json.loads(line).get("invalid") or []
+                except ValueError:
+                    pass
+                break
 
     # 3. Did the oracle's references move? This is the separation of powers,
     #    and it is checked in git rather than trusted: the party that changes
