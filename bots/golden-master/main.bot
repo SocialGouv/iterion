@@ -1655,6 +1655,15 @@ tool oracle_run:
 
             valid = [v for v in verdicts if v.get("valid")]
             detected = [v for v in valid if v.get("detected")]
+            # LES INVALIDES, EN CLAIR ET STRUCTURES. Ils etaient deja dits, en texte
+            # libre au milieu du log. Un mutant devient invalide pour deux raisons
+            # tres differentes — il ne mute rien (il n'a jamais rien prouve), ou son
+            # point d'appui a disparu sous un changement legitime (il prouvait
+            # quelque chose et ne le prouve plus). Le second cas est mecanique et
+            # reparable ; le distinguer demande de pouvoir le LIRE, pas de le
+            # deviner dans une phrase.
+            report["invalid"] = [{"id": v["id"], "reason": v.get("reason", "")}
+                                 for v in verdicts if not v.get("valid")]
             report.update(
                 total=len(verdicts),
                 valid=len(valid),
