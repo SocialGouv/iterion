@@ -139,6 +139,50 @@ references, and the net becomes a rubber stamp.
 - A re-baseline touching more than a handful of references in one change is not a re-baseline. It
   is a regression wearing its clothes.
 
+## The `write` surface — the only one a read-only capture cannot reach
+
+Every other surface watches a response **served**. A corruption that happens
+when content is **stored** — a tag lost, an attribute normalised, an identifier
+drawn afresh on every save — moves no reference and passes the gate green.
+Measuring it takes a script outside the net, which is exactly where such proofs
+end up when the net cannot write.
+
+A `write` entry declares:
+
+```json
+{
+  "id": "065", "persona": "…", "surface": "write",
+  "method": "POST", "path": "/…/edit/6",
+  "fields": { "…": "…" },
+  "readback": "/…/edit/6",
+  "csrf_field": "_csrf"
+}
+```
+
+and the capture holds **two** things: what the write answered, and what the
+readback rendered. The second is the one that carries the verdict.
+
+Three rules, and each of them was learned by paying for it:
+
+1. **`restore` is not optional.** The configuration must declare a command that
+   puts the seed back, and the harness refuses to capture without it. A write
+   lane without a restore is not a lane, it is a contamination: the first entry
+   that posts leaves the world in another state, and every entry captured after
+   it describes something nobody seeded — silently, since each stays stable from
+   one pass to the next. Writes are captured LAST for the same reason.
+
+2. **Write to something the DOMAIN accepts.** A row invented for the lane, that
+   no other reference observes, is the tempting design and it can be refused by
+   the model itself — an enumerated key is not a free string, and an invented one
+   makes the edit screen answer 500 and the save 400. Worse, such a row left
+   behind breaks an unrelated page later, on a request that asked for nothing.
+   Prefer a real record, and let the fixture declare its content so the restore
+   is exact rather than approximate.
+
+3. **The payload is not decorative.** Put in it the shapes a migration or an
+   upgrade is known to lose: semantic tags that render like presentational ones,
+   attributes a renderer ignores, ordering. Those are what come back deformed.
+
 ## Honesty clause
 
 If the net cannot be made to see something, **write that down** rather than narrowing the corpus

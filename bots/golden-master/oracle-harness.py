@@ -77,6 +77,17 @@ REQUIRED_ARCHETYPES = {
     "screen": ["style_shift"],
     "asset":  ["content_change", "asset_missing"],
     "a11y":   ["violation_added"],
+    # `canvas` WAS DECLARED REQUIRED IN THE SKILL AND ENFORCED NOWHERE. A net
+    # carrying a canvas surface with no canvas mutant reported no gap and passed
+    # — the lane existed, its counter-test did not have to. A requirement
+    # written in one place and checked in none is the defect this harness exists
+    # to catch, one level up.
+    "canvas": ["content_empty", "render_drift"],
+    # `write` is the surface no read-only capture can reach. Its archetype is
+    # required for the same reason the binary one is: without it the lane can be
+    # present, green, and blind — a round trip that stores something other than
+    # what it was given, with every served byte identical.
+    "write":  ["roundtrip_corruption"],
 }
 
 CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
@@ -651,14 +662,46 @@ def collect_canvas(session, entry, browser):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def restore_world(config, ws):
+    """Puts the seed back after an entry that WRITES.
+
+    A write lane without a restore is not a write lane, it is a contamination:
+    the first entry that posts leaves the world in another state, and EVERY
+    entry captured afterwards describes something the fixture never seeded —
+    silently, since each of them stays stable from one pass to the next.
+
+    No quiet recovery. If the restore fails the capture stops: a net that
+    carries on over a world it can no longer name returns a verdict about
+    nothing.
+    """
+    cmd = config.get("restore")
+    if not cmd:
+        raise SystemExit(
+            "the corpus carries an entry of surface 'write' and the configuration "
+            "declares no `restore`. A write without a restore contaminates every "
+            "entry captured after it; the harness refuses to capture rather than "
+            "return a verdict about a world nobody seeded.")
+    code, out = run(cmd, ws, timeout=BOOT_TIMEOUT_S)
+    if code != 0:
+        raise SystemExit("config.restore failed (exit %s):\n%s" % (code, out[-2000:]))
+
+
 def capture(config, corpus, canon, ids=None):
     """Fetch and canonicalise the corpus. Returns {id: canonical_text}."""
     sessions = open_sessions(config)
     jar_path = None
     browser = Browser(config, os.environ.get("GM_DIR", ".golden-master"))
     out = {}
+    ws = os.environ.get("GM_WORKSPACE", ".")
+    # WRITES LAST, and the order is not a convenience: an entry that writes
+    # changes the world the others observe. Capturing them after everything
+    # else means a failed restore cannot silently contaminate the read-only
+    # corpus — it stops the capture, and what was already captured was
+    # captured on the seed.
+    entries = ([e for e in corpus["entries"] if e.get("surface") != "write"]
+               + [e for e in corpus["entries"] if e.get("surface") == "write"])
     try:
-        for e in corpus["entries"]:
+        for e in entries:
             if ids is not None and e["id"] not in ids:
                 continue
             s = sessions.get(e.get("persona", "anon"))
@@ -673,12 +716,49 @@ def capture(config, corpus, canon, ids=None):
                 status, headers, body = 200, {}, collect_a11y(s, e, browser)
             elif surface == "canvas":
                 status, headers, body = 200, {}, collect_canvas(s, e, browser)
+            elif surface == "write":
+                # THE ROUND TRIP, and it is the whole point of this surface.
+                # Every other entry watches a response SERVED. A corruption
+                # that happens when content is STORED — a tag lost, an
+                # attribute normalised, an id drawn at random — moves no
+                # reference and passes the gate green. Measuring it takes a
+                # script outside the net.
+                #
+                # A write entry therefore captures TWO things: what the write
+                # answers, and what the readback renders. The second is the one
+                # that counts — that is where content comes back deformed.
+                fields = dict(e.get("fields") or {})
+                # The token comes off the FORM. A security major can turn CSRF
+                # on for state-changing requests where it was off; without it
+                # the entry captures a refusal and yields a reference that can
+                # never fail again — the very defect family this net hunts.
+                tok_field = e.get("csrf_field")
+                if tok_field:
+                    _, _, form_body = s.fetch("GET", e["path"])
+                    tok = extract_input_value(form_body, tok_field)
+                    if tok:
+                        fields[tok_field] = tok
+                w_status, w_headers, _ = s.fetch(
+                    e.get("method", "POST"), e["path"], fields=fields,
+                    follow=not e.get("no_redirect", False),
+                )
+                rb = e.get("readback")
+                if not rb:
+                    raise SystemExit(
+                        "entry %s has surface 'write' and no `readback`: a write "
+                        "nothing is read back from establishes the status code, "
+                        "which is close to nothing" % e["id"])
+                r_status, r_headers, r_body = s.fetch("GET", rb)
+                status, headers = w_status, w_headers
+                body = (r_status, r_headers, r_body)
             else:
                 status, headers, body = s.fetch(
                     e.get("method", "GET"), e["path"], fields=e.get("fields"),
                     follow=not e.get("no_redirect", False),
                 )
             out[e["id"]] = canon.canonicalize(e, status, headers, body)
+            if surface == "write":
+                restore_world(config, ws)
     finally:
         browser.stop()
     return out

@@ -87,7 +87,10 @@ must exist and be detected.
    "recipe":"let the chart build normally, then clear its canvas once the entry animation completes; go through the OPTIONS so the declared type, labels, values and colours stay identical"},
   {"surface":"canvas","archetype":"render_drift","required":true,
    "catches":"a raster signature too coarse to see a figure change, or a lane that reads the library's declaration and calls it a measurement",
-   "recipe":"change one purely visual option the declaration does not carry — a doughnut's hole, a bar's orientation — so the data are untouched and only the drawing moves"}
+   "recipe":"change one purely visual option the declaration does not carry — a doughnut's hole, a bar's orientation — so the data are untouched and only the drawing moves"},
+  {"surface":"write","archetype":"roundtrip_corruption","required":true,
+   "catches":"a net that only ever READS — a corruption applied when content is stored moves no reference at all, so every entry stays green while each save degrades what is kept",
+   "recipe":"deform the content on the way IN, in a way that renders identically on the way out: swap a semantic tag for a presentational one with the same appearance, normalise an attribute, or drop one the renderer does not use"}
 ]
 -->
 
