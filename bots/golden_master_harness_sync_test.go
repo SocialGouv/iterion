@@ -3,6 +3,7 @@ package bots
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -16,51 +17,110 @@ import (
 // review passes, and the gate keeps running the old logic. Nothing reports it,
 // because the running copy is exactly the one nobody reads.
 //
-// Comparing the two verbatim is not possible — main.bot's copy is indented
-// inside a block scalar and carries a node preamble the standalone file has no
-// reason to have. So this pins what must not diverge: the set of top-level
-// functions, and the report fields the gate's conjunction reads.
+// This check compares the two BYTE FOR BYTE, and the strength of that is the
+// whole point. An earlier version pinned a PROXY — the set of top-level
+// function names and the report fields — on the stated grounds that verbatim
+// comparison was impossible. It was not impossible, it was merely not done: the
+// two copies then drifted by sixty-two lines while this test stayed green.
+// A check that establishes something NEAR what it claims, and reports the
+// resemblance, is the exact defect this bot exists to catch in others.
+//
+// Verbatim comparison is possible because the running copy is the reviewable
+// one, indented by four and preceded by a node preamble that binds the graph's
+// vars into the environment. Those two mechanical differences are undone here;
+// nothing else is allowed to differ.
 func TestGoldenMasterHarnessCopiesStayInSync(t *testing.T) {
 	bot := readHarnessFile(t, "golden-master/main.bot")
 	harness := readHarnessFile(t, "golden-master/oracle-harness.py")
 
-	// 1. Same top-level functions, checked in both directions. In main.bot the
-	//    harness sits in a block scalar indented by exactly four spaces, so
-	//    four spaces is what "top level" means there; anything deeper is a
-	//    method or a closure and has a counterpart nested in the other copy
-	//    too, which would make the comparison compare different things.
-	want := defNames(regexp.MustCompile(`(?m)^def (\w+)\(`), harness)
-	got := defNames(regexp.MustCompile(`(?m)^ {4}def (\w+)\(`), bot)
+	inlined := inlinedHarnessBody(t, bot)
+	standalone := standaloneHarnessBody(t, harness)
 
-	for name := range want {
-		if !got[name] {
-			t.Errorf("oracle-harness.py defines %s() but the inlined copy in main.bot does not: the copy that RUNS is missing it", name)
+	if inlined != standalone {
+		a, b := strings.Split(inlined, "\n"), strings.Split(standalone, "\n")
+		for i := 0; i < len(a) || i < len(b); i++ {
+			x, y := lineAt(a, i), lineAt(b, i)
+			if x != y {
+				t.Fatalf("the two copies of the harness have diverged at body line %d.\n"+
+					"  main.bot (the copy that RUNS):        %q\n"+
+					"  oracle-harness.py (the one REVIEWED): %q\n"+
+					"Regenerate the inlined copy from the standalone one: same body, indented by four, "+
+					"under the node preamble.", i+1, x, y)
+			}
 		}
-	}
-	for name := range got {
-		if !want[name] {
-			t.Errorf("main.bot's inlined copy defines %s() but oracle-harness.py does not: the copy that gets REVIEWED is missing it", name)
-		}
+		t.Fatalf("the two copies differ in length: %d lines inlined, %d standalone", len(a), len(b))
 	}
 
-	// 2. Every field the gate's conjunction reads must be DECLARED in both
-	//    copies' report skeleton. A field only one of them carries makes the
-	//    gate read a default and call it a verdict.
+	// Orthogonal, and it survives the identity check above because it pins a
+	// different contract: what the GRAPH reads must exist in the harness at all.
+	// Identical copies can still both be missing a field the gate consumes.
 	//
-	//    The check is on the skeleton declaration (`"field":`), not on the
-	//    name appearing somewhere: a first version tested mere presence and
-	//    was proven blind by a mutation — deleting the declaration left the
-	//    name alive inside a log message, and the test stayed green. Fitting,
-	//    for the bot whose whole point is that an oracle must be shown to see.
+	// The check is on the skeleton declaration (`"field":`), not on the name
+	// appearing somewhere: a first version tested mere presence and was proven
+	// blind by a mutation — deleting the declaration left the name alive inside
+	// a log message, and the test stayed green. Fitting, for the bot whose whole
+	// point is that an oracle must be shown to see.
 	for _, field := range gateFields(t, bot) {
 		declared := regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:`)
-		if !declared.MatchString(bot) {
-			t.Errorf("the gate reads outputs.oracle_run.%s but the inlined harness never declares it in its report: the gate would decide on a default", field)
-		}
 		if !declared.MatchString(harness) {
-			t.Errorf("the gate reads outputs.oracle_run.%s but oracle-harness.py never declares it in its report: the reviewable copy has drifted", field)
+			t.Errorf("the gate reads outputs.oracle_run.%s but the harness never declares it in its report: the gate would decide on a default", field)
 		}
 	}
+}
+
+func lineAt(lines []string, i int) string {
+	if i < len(lines) {
+		return lines[i]
+	}
+	return "<absent>"
+}
+
+// inlinedHarnessBody returns the runnable copy, dedented, with the node
+// preamble removed. The preamble is the part that CANNOT be shared: it binds
+// {{vars.*}} into the environment, which only means something inside the graph.
+func inlinedHarnessBody(t *testing.T, bot string) string {
+	t.Helper()
+	const preambleEnd = "os.environ['GM_MODE'] = 'gate'"
+
+	lines := strings.Split(bot, "\n")
+	start := -1
+	for i, l := range lines {
+		if strings.Contains(l, preambleEnd) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("main.bot: end of the oracle_run preamble (%q) not found — the node was restructured, fix this test", preambleEnd)
+	}
+
+	var out []string
+	for _, l := range lines[start:] {
+		if strings.TrimSpace(l) != "" && !strings.HasPrefix(l, "    ") {
+			break
+		}
+		out = append(out, strings.TrimPrefix(l, "    "))
+	}
+	if len(out) < 100 {
+		t.Fatalf("main.bot: only %d lines of harness body found after the preamble — the block scalar was not read correctly", len(out))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// standaloneHarnessBody drops the standalone header — shebang and module
+// docstring, which the block scalar has no use for — and returns the rest.
+func standaloneHarnessBody(t *testing.T, harness string) string {
+	t.Helper()
+	const bodyStart = "import hashlib"
+
+	lines := strings.Split(harness, "\n")
+	for i, l := range lines {
+		if l == bodyStart {
+			return strings.TrimSpace(strings.Join(lines[i:], "\n"))
+		}
+	}
+	t.Fatalf("oracle-harness.py: first body line (%q) not found — the imports were reordered, fix this test", bodyStart)
+	return ""
 }
 
 // gateFields extracts the report fields the conjunction reads, so the test
@@ -78,14 +138,6 @@ func gateFields(t *testing.T, bot string) []string {
 	}
 	if len(out) == 0 {
 		t.Fatal("no outputs.oracle_run.* reference found: the conjunction moved, fix this test")
-	}
-	return out
-}
-
-func defNames(re *regexp.Regexp, body string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range re.FindAllStringSubmatch(body, -1) {
-		out[m[1]] = true
 	}
 	return out
 }

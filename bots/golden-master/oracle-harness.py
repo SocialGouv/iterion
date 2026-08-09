@@ -2,7 +2,11 @@
 """Deterministic oracle harness — the bot-owned half of the golden-master bot.
 
 Copy kept standalone for review. The executable copy is inlined in main.bot's
-`oracle_run` tool node; keep the two in sync when either changes.
+`oracle_run` tool node, and the two bodies are held BYTE-IDENTICAL by
+`bots/golden_master_harness_sync_test.go` — edit either one and regenerate the
+other. An obligation stated in prose is an obligation that drifts: these two
+copies did, by sixty-two lines, while a test pinning only their function names
+stayed green.
 
 WHAT THIS PROGRAM DECIDES, AND WHY IT IS NOT THE AGENT'S TO WRITE
 -----------------------------------------------------------------
@@ -91,12 +95,29 @@ REQUIRED_ARCHETYPES = {
 }
 
 CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
+UP_LOG_LINES = 40           # lignes de `config.up` publiees dans le journal
 BOOT_TIMEOUT_S = 300
 CMD_TIMEOUT_S = 1800
 
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+def note(report, msg):
+    """Ajoute une notice SANS effacer celles deja posees.
+
+    Le champ etait ecrit par affectation a trois endroits et par concatenation a
+    deux autres. Consequence mesuree : l'avertissement « arbre non committe » —
+    celui qui previent que les reverts de mutants vont DETRUIRE le travail en
+    cours — etait ecrase par la notice « jeu held-out depense », posee plus tard
+    et par affectation. Comme le jeu est depense entre deux cycles, c'est-a-dire
+    la plupart du temps, l'avertissement le plus couteux a manquer etait celui
+    qui disparaissait le plus souvent.
+
+    La cause etait calculee, puis supprimee avant publication.
+    """
+    report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + msg
 
 
 def run(cmd, cwd, timeout=CMD_TIMEOUT_S):
@@ -224,6 +245,18 @@ def resolve_base_url(config, ws):
     """
     rel = config.get("base_url_file")
     if rel:
+        # Un chemin de configuration est DEVELOPPE avant d'etre resolu. L'etat
+        # mutable d'un depot cible (datadir, socket, port) est declare une fois,
+        # chez lui, et se surcharge par variable d'environnement pour que deux
+        # jobs concurrents ne le partagent pas. Un chemin relatif fige ici serait
+        # une SECONDE declaration de la meme chose — et deux declarations de la
+        # meme chose derivent. Mesure : l'etat deplace par variable a laisse ces
+        # chemins pointer sur l'ancien emplacement ; d'un cote le fichier n'y
+        # etait pas et la porte l'a dit, de l'autre il y etait ENCORE, perime,
+        # laisse par un job precedent sur le meme runner — et la porte a tourne
+        # sur une URL qu'elle croyait fraiche. Le second cas est le dangereux :
+        # il ne s'annonce pas.
+        rel = os.path.expandvars(rel)
         path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
         try:
             with open(path, encoding="utf-8") as f:
@@ -273,6 +306,7 @@ def resolve_artifact(config, ws):
             "without the artefact it would fall back to scanning the worktree, "
             "which is a different set — build outputs are gitignored, and stale "
             "ones from an earlier build stay behind.")
+    rel = os.path.expandvars(rel)   # meme raison que dans resolve_base_url
     path = rel if os.path.isabs(rel) else os.path.join(ws, rel)
     try:
         with open(path, encoding="utf-8") as f:
@@ -770,6 +804,28 @@ def app_up(config, ws):
     code, out = run(config["up"], ws, timeout=BOOT_TIMEOUT_S)
     if code != 0:
         raise SystemExit("config.up failed (exit %s):\n%s" % (code, out[-2000:]))
+    # Ce que `config.up` a dit de lui-meme, PUBLIE — pas seulement garde en cas
+    # d'echec.
+    #
+    # La sortie etait capturee et jetee des lors que la commande reussissait. Un
+    # journal de CI ne portait donc AUCUNE trace de l'environnement que le filet
+    # venait de mesurer : ni les versions, ni les ports, ni l'etat des donnees,
+    # ni les services annexes demarres. Mesure : un referentiel geographique
+    # local a ete ajoute au demarrage, et le fait qu'il ait servi ne pouvait se
+    # DEDUIRE que du vert de la porte — un raisonnement, pas une trace, ce que
+    # ce depot refuse partout ailleurs.
+    #
+    # Publie tel quel plutot que filtre : quelles lignes comptent est une
+    # propriete du depot cible, pas du harnais, et un filtre ecrit ici finirait
+    # par masquer l'annonce d'un service que personne n'a pense a lister.
+    lines = [l for l in out.splitlines() if l.strip()]
+    shown = lines[-UP_LOG_LINES:]
+    if len(lines) > UP_LOG_LINES:
+        log("config.up — %d dernieres lignes sur %d :" % (len(shown), len(lines)))
+    else:
+        log("config.up :")
+    for l in shown:
+        log("  | " + l)
     base = resolve_base_url(config, ws).rstrip("/")
     ready = config.get("ready_path", "/")
     deadline = time.time() + BOOT_TIMEOUT_S
@@ -1307,11 +1363,11 @@ def main():
             # intactes, donnent une liste ou une seule entree est fausse — et
             # quand un seul fichier est sale, c'est la seule nommee.
             paths = [l[3:] for l in dirty.stdout.splitlines() if l.strip()]
-            report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + (
+            note(report, (
                 "WORKSPACE NOT COMMITTED (%d path(s): %s). Mutant reverts restore HEAD, so "
                 "these changes are destroyed during the run and the verdict below describes "
                 "a tree that never existed. Commit, then gate."
-                % (len(paths), ", ".join(sorted(paths)[:12])))
+                % (len(paths), ", ".join(sorted(paths)[:12]))))
 
     visible = load_mutants(gm_dir, holdout=False)
     if mode != "record":
@@ -1332,12 +1388,12 @@ def main():
                 # evidence. The blindness proof was MADE and is replayable from
                 # mutants/audit/ — it is simply not being re-made here, and the
                 # report must say so rather than let 0 == 0 read as a pass.
-                report["notice"] = ("the held-out set for this cycle is SPENT and published "
-                                    "under mutants/audit/. This replay re-checks the visible "
-                                    "counter-test only; the held-out figure below is 0/0 and "
-                                    "proves nothing on its own. Draw a fresh set to harden "
-                                    "again — the gate refuses one that repeats a published "
-                                    "fingerprint.")
+                note(report, "the held-out set for this cycle is SPENT and published "
+                             "under mutants/audit/. This replay re-checks the visible "
+                             "counter-test only; the held-out figure below is 0/0 and "
+                             "proves nothing on its own. Draw a fresh set to harden "
+                             "again — the gate refuses one that repeats a published "
+                             "fingerprint.")
             else:
                 bail("the sealed held-out set is missing from %s and no longer in the "
                      "workspace. It was relocated by an earlier gate and the sealed "
@@ -1478,13 +1534,11 @@ def main():
         off = [v["id"] for v in held
                if v.get("valid") and v.get("detected") and not v.get("detected_on_surface")]
         if off:
-            report["notice"] = (
-                (report.get("notice") or "") +
-                (" | " if report.get("notice") else "") +
+            note(report, (
                 "%d held-out mutant(s) were detected by a lane OTHER than the one they "
                 "probe: %s. The net saw the change; the lane they were drawn against did "
                 "not. Citing the aggregate alone would report the resemblance."
-                % (len(off), ", ".join(off)))
+                % (len(off), ", ".join(off))))
         if mode == "selfcheck":
             # Withheld, not zero-because-failed. The two numbers are made
             # DELIBERATELY UNEQUAL: the gate converges on
@@ -1545,10 +1599,10 @@ def main():
                                report["corpus_total"],
                                json.dumps(report["duplicate_refs"], ensure_ascii=False)))
         if mode == "selfcheck":
-            report["notice"] = ("MODE=selfcheck — the held-out set was sealed but NOT scored; "
-                                "its result is withheld on purpose. Only the final gate scores "
-                                "it. An empty log_tail here means the VISIBLE set is clean, "
-                                "which is not the same as a green gate.")
+            note(report, "MODE=selfcheck — the held-out set was sealed but NOT scored; "
+                         "its result is withheld on purpose. Only the final gate scores "
+                         "it. An empty log_tail here means the VISIBLE set is clean, "
+                         "which is not the same as a green gate.")
         elif report["holdout_total"] and report["holdout_detected"] < report["holdout_total"]:
             problems.append("HELD-OUT set: %d/%d detected. The oracle was hardened against "
                             "the mutants it could see, not against divergence in general."
@@ -1591,11 +1645,11 @@ def main():
                 # is not, and the report says which of the two it has.
                 unanswerable.append(rel)
         if unanswerable:
-            report["notice"] = ((report["notice"] + " | ") if report["notice"] else "") + (
+            note(report, (
                 "git could not be asked whether %s are ignored — this workspace is not a "
                 "checkout (a copy, or no git available). They are PRESENT, which is what a "
                 "copy of tracked files proves; that they are TRACKED is verified only where "
-                "a checkout exists." % ", ".join(unanswerable))
+                "a checkout exists." % ", ".join(unanswerable)))
         # A held-out set that repeats an already-spent one is not held out at
         # all: its mutants are committed under mutants/audit/ where anyone,
         # including the hardening loop, can read them. Reuse is refused by

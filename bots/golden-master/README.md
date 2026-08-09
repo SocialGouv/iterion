@@ -51,8 +51,10 @@ non-vacuity.
 
 If one party owned both, a comparator returning "identical" for everything would score a perfect
 run. The harness is inlined in `main.bot` precisely so the campaign cannot edit it.
-`oracle-harness.py` is a reviewable standalone copy — **keep the two in sync**; the inlined one is
-the one that runs.
+`oracle-harness.py` is a reviewable standalone copy, held **byte-identical** to the inlined one by
+`bots/golden_master_harness_sync_test.go`. The inlined one is the one that runs — which is exactly
+why the obligation is a test and not a sentence: the copy that drifts unnoticed is the one nobody
+reads.
 
 ## Locks on the mutant set and the deliverable
 
