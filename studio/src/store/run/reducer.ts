@@ -649,6 +649,50 @@ export function reduceEvents(
         runStatusOverride = "cancelled";
         break;
       }
+      case "run_rewound": {
+        // Mirror of pkg/runview/snapshot.go::handleRunRewound. The
+        // rewind deleted the dropped nodes' outputs from the checkpoint,
+        // but the event log is append-only: their pre-rewind
+        // node_started / node_finished records still fold in, and
+        // without this the canvas keeps the dropped nodes' pre-rewind
+        // status / duration / error as if nothing had happened.
+        // Deleting the execs (rather than downgrading them) renders
+        // the nodes as never-run; the post-rewind resume recreates
+        // them via a fresh node_started.
+        // Rewind parks the run as `cancelled` (resumable) without
+        // emitting a run_cancelled event — reflect that immediately
+        // instead of waiting for the next run.json refetch.
+        runStatusOverride = "cancelled";
+        const dropped = new Set(evt.data?.dropped_nodes ?? []);
+        if (dropped.size === 0) break;
+        const removedExecIds: string[] = [];
+        for (const e of executionsById.values()) {
+          if (dropped.has(e.ir_node_id)) removedExecIds.push(e.execution_id);
+        }
+        // A pause form belonging to a dropped node is dead — the rewind
+        // retired the interaction server-side.
+        if (pendingHumanInput && dropped.has(pendingHumanInput.node_id ?? "")) {
+          pendingHumanInput = null;
+        }
+        if (removedExecIds.length === 0) break;
+        ensureExecCopy();
+        for (const id of removedExecIds) {
+          executionsById.delete(id);
+          clearInFlightFor(id);
+          clearTodosFor(id);
+        }
+        // Drop the (branch, node) → exec_id pointers of the dropped
+        // nodes so post-rewind events don't attribute to an execution
+        // that no longer exists. todoHistoryByExec is deliberately
+        // kept: it is the Session board's never-cleared journey record.
+        ensureLastExecIDCopy();
+        for (const [key, id] of lastExecIDByNode) {
+          if (dropped.has(key.split("\t")[1] ?? "") || !executionsById.has(id)) {
+            lastExecIDByNode.delete(key);
+          }
+        }
+        break;
+      }
       case "run_paused": {
         // The engine emits the same event type for every pause flavour.
         // Operator pause (POST /api/runs/:id/pause) tags reason=operator

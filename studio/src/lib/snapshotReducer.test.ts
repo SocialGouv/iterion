@@ -99,3 +99,111 @@ describe("snapshotReducer terminal run events", () => {
     expect(byNode.b?.status).toBe("failed");
   });
 });
+
+describe("snapshotReducer run_rewound", () => {
+  const rewindEvents = (): RunEvent[] => [
+    nodeStarted(1, "analyze"),
+    {
+      seq: 2,
+      timestamp: "2026-05-14T12:00:30Z",
+      type: "node_finished",
+      run_id: "r1",
+      branch_id: "main",
+      node_id: "analyze",
+    },
+    nodeStarted(3, "verify", "2026-05-14T12:01:00Z"),
+    {
+      seq: 4,
+      timestamp: "2026-05-14T12:01:30Z",
+      type: "node_finished",
+      run_id: "r1",
+      branch_id: "main",
+      node_id: "verify",
+    },
+    nodeStarted(5, "report", "2026-05-14T12:02:00Z"),
+    {
+      seq: 6,
+      timestamp: "2026-05-14T12:02:30Z",
+      type: "node_finished",
+      run_id: "r1",
+      branch_id: "main",
+      node_id: "report",
+    },
+    {
+      seq: 7,
+      timestamp: "2026-05-14T12:03:00Z",
+      type: "run_rewound",
+      run_id: "r1",
+      branch_id: "main",
+      node_id: "verify",
+      data: { dropped_nodes: ["report", "verify"], to_node: "verify" },
+    },
+  ];
+
+  it("erases the dropped nodes' execs, keeps the pre-pivot ones", () => {
+    const out = buildExecutionsAt(rewindEvents(), 999);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.ir_node_id).toBe("analyze");
+    expect(out[0]?.status).toBe("finished");
+  });
+
+  it("scrubbing before the rewind still shows the pre-rewind state", () => {
+    const out = buildExecutionsAt(rewindEvents(), 6);
+    expect(out).toHaveLength(3);
+    const byNode = Object.fromEntries(out.map((e) => [e.ir_node_id, e]));
+    expect(byNode.verify?.status).toBe("finished");
+    expect(byNode.report?.status).toBe("finished");
+  });
+
+  it("a post-rewind node_started recreates a clean exec, renumbered from 0", () => {
+    const events = rewindEvents().concat([
+      nodeStarted(8, "verify", "2026-05-14T12:04:00Z"),
+    ]);
+    const out = buildExecutionsAt(events, 999);
+    expect(out).toHaveLength(2);
+    const verify = out.find((e) => e.ir_node_id === "verify");
+    expect(verify?.status).toBe("running");
+    expect(verify?.finished_at).toBeUndefined();
+    expect(verify?.loop_iteration).toBe(0);
+  });
+
+  it("drops every loop iteration of a rewound node", () => {
+    const events: RunEvent[] = [];
+    for (let i = 0; i < 3; i++) {
+      events.push(nodeStarted(i * 2 + 1, "fix"));
+      events.push({
+        seq: i * 2 + 2,
+        timestamp: "2026-05-14T12:00:30Z",
+        type: "node_finished",
+        run_id: "r1",
+        branch_id: "main",
+        node_id: "fix",
+      });
+    }
+    expect(buildExecutionsAt(events, 999)).toHaveLength(3);
+    events.push({
+      seq: 7,
+      timestamp: "2026-05-14T12:03:00Z",
+      type: "run_rewound",
+      run_id: "r1",
+      branch_id: "main",
+      node_id: "fix",
+      data: { dropped_nodes: ["fix"] },
+    });
+    expect(buildExecutionsAt(events, 999)).toHaveLength(0);
+  });
+
+  it("ignores a run_rewound without dropped_nodes", () => {
+    const events: RunEvent[] = [
+      nodeStarted(1, "a"),
+      {
+        seq: 2,
+        timestamp: "2026-05-14T12:01:00Z",
+        type: "run_rewound",
+        run_id: "r1",
+        branch_id: "main",
+      },
+    ];
+    expect(buildExecutionsAt(events, 999)).toHaveLength(1);
+  });
+});

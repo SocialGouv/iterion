@@ -1299,3 +1299,117 @@ func TestSnapshotReducer_FallbacksUsedDedupesByNode(t *testing.T) {
 		t.Errorf("second = %+v, want implement/run-fallback", got[1])
 	}
 }
+
+func TestSnapshotReducer_RunRewoundResetsDroppedNodes(t *testing.T) {
+	// The run_rewound event must erase the execution state of the nodes
+	// the rewind invalidated: the event log is append-only, so without a
+	// dedicated fold the canvas keeps rendering the dropped nodes with
+	// their pre-rewind status / duration / error (pkg/runview/rewind.go
+	// only touches the checkpoint).
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeStarted, "", "analyze", map[string]any{"kind": "agent"}),
+		evt(2, store.EventNodeFinished, "", "analyze", nil),
+		evt(3, store.EventNodeStarted, "", "verify", map[string]any{"kind": "judge"}),
+		evt(4, store.EventNodeFinished, "", "verify", nil),
+		evt(5, store.EventNodeStarted, "", "report", map[string]any{"kind": "agent"}),
+		evt(6, store.EventNodeFinished, "", "report", nil),
+		// Rewind to "verify": verify (pivot) and everything downstream
+		// of it is invalidated; analyze survives.
+		evt(7, store.EventRunRewound, "", "verify", map[string]any{
+			"from_node":     "report",
+			"to_node":       "verify",
+			"dropped_nodes": []string{"report", "verify"},
+		}),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	if got := len(snap.Executions); got != 1 {
+		t.Fatalf("Executions = %d, want 1 (only the pre-pivot node survives): %+v", got, snap.Executions)
+	}
+	if snap.Executions[0].IRNodeID != "analyze" || snap.Executions[0].Status != ExecStatusFinished {
+		t.Errorf("surviving exec = %+v, want analyze/finished", snap.Executions[0])
+	}
+
+	// The post-rewind resume re-executes the pivot: its node_started
+	// must recreate a clean running exec — and exactly once in the
+	// order slice (no duplicate emission from Snapshot()).
+	b.Apply(evt(8, store.EventRunResumed, "", "", nil))
+	b.Apply(evt(9, store.EventNodeStarted, "", "verify", map[string]any{"kind": "judge"}))
+	snap = b.Snapshot()
+	if got := len(snap.Executions); got != 2 {
+		t.Fatalf("Executions after resume = %d, want 2: %+v", got, snap.Executions)
+	}
+	replayed := snap.Executions[1]
+	if replayed.IRNodeID != "verify" || replayed.Status != ExecStatusRunning {
+		t.Errorf("replayed exec = %+v, want verify/running", replayed)
+	}
+	if replayed.FinishedAt != nil {
+		t.Errorf("replayed exec FinishedAt = %v, want nil (fresh attempt)", replayed.FinishedAt)
+	}
+	// And the replayed node finishes normally — the rewound exec must
+	// not linger anywhere to swallow the node_finished.
+	b.Apply(evt(10, store.EventNodeFinished, "", "verify", nil))
+	snap = b.Snapshot()
+	if snap.Executions[1].Status != ExecStatusFinished {
+		t.Errorf("replayed exec Status = %q, want finished", snap.Executions[1].Status)
+	}
+}
+
+func TestSnapshotReducer_RunRewoundLoopNodeDropsEveryIteration(t *testing.T) {
+	// A dropped node that ran N loop iterations produced N execs; the
+	// rewind invalidates the NODE, so every one of them goes.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	for i := int64(0); i < 3; i++ {
+		b.Apply(evt(i*2, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent"}))
+		b.Apply(evt(i*2+1, store.EventNodeFinished, "", "fix", nil))
+	}
+	if got := len(b.Snapshot().Executions); got != 3 {
+		t.Fatalf("pre-rewind Executions = %d, want 3", got)
+	}
+	b.Apply(evt(6, store.EventRunRewound, "", "fix", map[string]any{
+		"dropped_nodes": []string{"fix"},
+	}))
+	if got := len(b.Snapshot().Executions); got != 0 {
+		t.Fatalf("post-rewind Executions = %d, want 0: %+v", got, b.Snapshot().Executions)
+	}
+	// Re-execution numbers iterations from a clean slate (legacy
+	// no-`iteration`-field path): nodeCount was reset too.
+	b.Apply(evt(7, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent"}))
+	snap := b.Snapshot()
+	if got := len(snap.Executions); got != 1 {
+		t.Fatalf("post-resume Executions = %d, want 1", got)
+	}
+	if snap.Executions[0].LoopIteration != 0 {
+		t.Errorf("replayed LoopIteration = %d, want 0 (nodeCount reset)", snap.Executions[0].LoopIteration)
+	}
+}
+
+func TestSnapshotReducer_RunRewoundJSONDecodedPayload(t *testing.T) {
+	// After a round-trip through events.jsonl / Mongo, dropped_nodes
+	// decodes as []any, not []string — the fold must handle both.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	b.Apply(evt(0, store.EventNodeStarted, "", "verify", map[string]any{"kind": "judge"}))
+	b.Apply(evt(1, store.EventNodeFinished, "", "verify", nil))
+	b.Apply(evt(2, store.EventRunRewound, "", "verify", map[string]any{
+		"dropped_nodes": []any{"verify"},
+	}))
+	if got := len(b.Snapshot().Executions); got != 0 {
+		t.Fatalf("Executions = %d, want 0 (dropped_nodes decoded as []any)", got)
+	}
+}
+
+func TestSnapshotReducer_RunRewoundWithoutDroppedNodesIsANoOp(t *testing.T) {
+	// Defensive: a malformed or legacy run_rewound payload must not
+	// wipe unrelated executions.
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	b.Apply(evt(0, store.EventNodeStarted, "", "analyze", map[string]any{"kind": "agent"}))
+	b.Apply(evt(1, store.EventNodeFinished, "", "analyze", nil))
+	b.Apply(evt(2, store.EventRunRewound, "", "analyze", nil))
+	if got := len(b.Snapshot().Executions); got != 1 {
+		t.Fatalf("Executions = %d, want 1 (no dropped_nodes → no-op)", got)
+	}
+}
