@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Get GitHub App Token
         id: token
-        uses: SocialGouv/token-bureau@33e29a1f370f19f6c3d1680d6e7f0aa7c36a3847 # main
+        uses: SocialGouv/token-bureau@453f0eeb5add59489df124a0aedcb20a9b7fb027 # main
         with:
           token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
           audience: socialgouv
