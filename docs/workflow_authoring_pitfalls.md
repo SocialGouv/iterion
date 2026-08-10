@@ -284,6 +284,93 @@ been seen red is a test whose sensitivity is unmeasured.
 
 ---
 
+## Cross-checked rules from convergent methodologies (IACDM / AI-DLC 2026)
+
+Two independent 2026 methodology papers arrive at this doc's failure model
+from the outside — IACDM's "verification gap" and AI-DLC's "backpressure
+over prescription" are Goodhart/façade said differently. The full mapping
+(what they validate, the vocabulary, what iterion rejected) is
+[references/external-methodologies.md](references/external-methodologies.md);
+the rules below are the delta worth importing.
+
+### Teach-back, not confirmation
+
+An RLHF'd model agrees: "did you understand?" and "is this design good?"
+are always-affirm questions. Invert the direction of the agreement bias:
+the AGENT restates the mission in its own words — the goal, the
+load-bearing assumptions, what it would build differently under the other
+reading — and the human judges the restatement. A restatement can be
+corrected; a yes/no invites a rubber stamp. Bot form (ADR-081): on an
+ambiguous mission, an expensive campaign posts its teach-back via
+`ask_user_async` and KEEPS WORKING under its stated assumptions —
+corrections arrive in its message queue whenever the operator replies; the
+blocking `ask_user` stays reserved for destructive/irreversible hard
+stops. feature-dev's and whole-improve-loop's campaign item 5 is this
+rule.
+
+### Verify divergence, not correctness
+
+The same bias, self-check form: "is this correct?" invites
+self-confirmation. Frame every post-unit self-check as refutation with a
+concrete target — "where does this implementation DIVERGE from the
+spec/axis?" (whole-improve-loop's "Fit" question is this rule). A
+divergence question has a findable answer; a correctness question has a
+comfortable one.
+
+### Scope inventory — absence doesn't fail tests
+
+"Modules that pass all tests but were never implemented do not fail tests;
+they simply do not exist" (IACDM). A test gate judges only what exists.
+When the deliverables are enumerable upfront (a migration's file list, a
+checklist mission, declared endpoints), pair the test gate with a
+deterministic PRESENCE check over that list — the positive-space
+complement of the negative-space checks above. Agent-side honesty clauses
+(`feature_complete` = "a fresh re-read finds EVERY requirement
+implemented") approximate it; a tool-node inventory is stronger wherever
+the list is concrete.
+
+### The cost-tier switch point
+
+Once the expensive phases have externalized the context — plan approved,
+work-list enumerated, verify.sh written — the remaining units are bounded
+and well-specified, and a cheaper model performs equivalently on them.
+Spend the strong model on discovery / design / judgment nodes and pin
+`model:` per node accordingly; downgrade the mechanical tail. The shipped
+precedent: review topology `auto` resolves to mono — the second family is
+a deliberate spend, not a default.
+
+### A lens must own a failure class
+
+For reviewer fan-outs and scanner focus areas: a lens is legitimate only
+if removing it exposes a failure class no other lens detects. Overlapping
+lenses pay twice for the same findings and drown the synthesis. At
+synthesis time, run the two concentration diagnostics: findings clustered
+on ONE module → that module needs redesign, not N patches; ONE lens firing
+across ALL modules → the cause is systemic (an architectural decision) —
+fix the root, not the sites.
+
+### Cap unbounded inputs before the LLM (the ~40–60% rule)
+
+Model quality degrades well before the context window is full — reported
+degradation starts around 40–60% utilization ("lost in the middle"). When
+a node's input can grow without bound (scanner output, board dumps,
+enumerations), cap it DETERMINISTICALLY before the LLM sees it
+(sec-audit's `cap_findings` is the reference), keep per-pass context
+fresh, and offload broad exploration to sub-agents. "It fits in the
+window" is not the bar; "it leaves headroom" is.
+
+### A defect that passed the gates is a gate bug
+
+When a later reviewer — Revi, a human, production — finds a defect in work
+a bot's gates had passed, that is TWO bugs: the code defect and the gate
+that let it through (AI-DLC's "criteria escape rate"). Route the second
+into the bot: sharpen the scanner / verdict / postcondition so the class
+cannot pass again, and record the escape in the bot's bilan ("Findings /
+misses" line). This is rule 5 above ("the metrics are wrong") applied at
+run time instead of authoring time.
+
+---
+
 ## Improvement loops must converge to an asymptote
 
 An improvement/review loop must **converge to an asymptote** — settle

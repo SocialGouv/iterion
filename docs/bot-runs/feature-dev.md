@@ -1,5 +1,35 @@
 # Featurly — `feature-dev` run bilans
 
+## 2026-08-10 — v2.1.0 teach-back contract: ZERO questions on a clear mission, feature shipped to spec (run 019fec4c)
+
+- Status: **validated** — the non-regression half of the teach-back
+  dogfood (its ambiguous-mission twin is whole-improve-loop run
+  019fec3e, same day): a clear mission must produce ZERO
+  `ask_user_async` posts, and did.
+- Versions: bot 2.1.0 (first run with `interaction: async` + teach-back
+  item 5) · iterion 641839340
+- Method: claude_code/claude-opus-5, effort high, sandbox auto,
+  `--max-cost-usd 5 --max-duration 30m`, a deliberately unambiguous
+  `feature_prompt` (argparse CLI, named files, named exit code) against
+  the `parcel-tools` Python fixture.
+- Result: `finished` in one pass, 5m25 wall, campaign $0.88 + review
+  $0.77; `feature_complete=true`, 2 commits, squash-merged (`5741468`);
+  `human_input_requested` count: **0**.
+- Value: the feature landed exactly to spec — `cli.py` with both
+  subcommands, `tests/test_cli.py` in the repo's style, README section;
+  smoke-verified live (`total 1.10 2.20` → 3.30, `freight 2 3.5` →
+  7.00, `total abc` → stderr message + exit 2).
+- Findings / misses: none for the contract under test. Still
+  unexercised across both runs: mid-run answer folding (both runs
+  finished before any answer; ADR-081 engine machinery has its own
+  coverage — prove it live on the next organically-ambiguous run) and
+  the "first pass only" re-post guard (both converged in ONE pass, so
+  no pass 2 existed to tempt a re-post).
+- Lessons for next run: pair every prompt-contract change with this
+  twin-run shape — one run that must trigger the new behavior, one that
+  must NOT; the second is the regression detector and it is the cheaper
+  of the two.
+
 ## 2026-07-12 — #125 "board as pipeline projection" delivered by Featurly dogfood (3 cloud waves + 2 manual)
 
 - Status: **validated — full #125 vision shipped & deployed.** The board-as-pipeline

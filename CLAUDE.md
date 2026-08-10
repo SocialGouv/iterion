@@ -107,7 +107,7 @@ default for durable state or a control-plane surface.
 forge/factory, and its git-shaped features are not legacy to be hidden under a
 product layer. First class, by name: the `.bot` as readable / diffable /
 PR-reviewable text; `worktree: auto` and its finalization (persistent branch +
-best-effort fast-forward, `--merge-into`); the review scope anchored at
+best-effort squash/FF merge, `--merge-into`/`--merge-strategy`); the review scope anchored at
 `refs/iterion/runs/<run>/gate/<seq>`; the forge integrations, PR review, merge
 gate and webhooks; the right-artifact discipline (`git diff HEAD`); the
 commit-in-stride campaign contracts.
@@ -609,19 +609,29 @@ worktree at `<store-dir>/worktrees/<run-id>` and runs all nodes inside it
    `iterion/run/<friendly-name>`, overridable via `--branch-name`). This
    is the GC guard — without it the commits would only be reachable via
    reflog and eligible for `git gc` after ~30 days.
-3. **Best-effort** fast-forwards the user's currently-checked-out branch
-   to that HEAD (default behaviour, overridable via `--merge-into`).
-   Skipped — with a warning logged — if any guard fails: dirty working
-   tree, branch switched mid-run, non-FF, or detached HEAD at start.
+3. **Best-effort** merges the run's commits into the user's
+   currently-checked-out branch — by default as ONE **squash** commit
+   (title = the first commit's subject, body = the per-commit
+   `- <sha> <subject>` list); `--merge-strategy merge` fast-forwards
+   instead (preserves history). Skipped — with a warning logged — if any
+   guard fails (dirty working tree, branch switched mid-run, non-FF,
+   detached HEAD at start), and never attempted for a wip-banked HEAD
+   (unreviewed output stays on the storage branch only).
 4. Removes the worktree directory.
 
 The result is persisted on `run.json` as `final_commit`, `final_branch`,
-`merged_into` and surfaced in the studio RunHeader so the user always
-knows where the run's commits landed.
+`merged_into`, `merged_commit` (differs from `final_commit` under
+squash), `merge_status` (`pending|merged|skipped|failed`) and surfaced
+in the studio RunHeader so the user always knows where the run's
+commits landed.
 
 Override flags (CLI + studio Launch modal + HTTP API):
-- `--merge-into <target>` — `current` (default), `none` (skip FF, branch
-  only), or a branch name (must match currently-checked-out)
+- `--merge-into <target>` — `current` (default), `none` (skip merge,
+  branch only), or a branch name (must match currently-checked-out)
+- `--merge-strategy squash|merge` — squash (default) vs fast-forward
+- `--auto-merge` — merge synchronously at run end (CLI default true;
+  the studio defaults to false and defers the merge to a UI action,
+  leaving `merge_status: pending`)
 - `--branch-name <name>` — override the storage branch (default
   `iterion/run/<friendly-name>`); on collision a numeric suffix is added
 
@@ -954,7 +964,12 @@ Its "what works" companion is
 [docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md) —
 the measured shape of productive operator sessions (commit cadence,
 work-list discipline, termination contracts) distilled into authoring
-rules; ADR-055/ADR-057 encode its core finding.
+rules; ADR-055/ADR-057 encode its core finding. External cross-check:
+[docs/references/external-methodologies.md](docs/references/external-methodologies.md)
+maps two independent 2026 methodology papers (IACDM, AI-DLC) onto
+iterion — what they validate, the imported rules (teach-back, cost-tier
+switch, scope inventory, …, folded into the pitfalls doc), and what was
+deliberately rejected.
 
 ### Improvement loops must converge to an asymptote
 
