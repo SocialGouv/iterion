@@ -91,10 +91,13 @@ tasks:
     desc: Run end-to-end tests
     deps: [templates:dispatch-bots]
     cmds:
-      ## 240s: the ADR-058 v2 rollout added stub suites (docs-refresh's
-      ## six scenarios, feature-dev's five) that legitimately grew the
-      ## package past the old 120s budget.
-      - go test -v -timeout 240s ./e2e/...
+      ## The budget bounds a HANG, not a slow machine. The ADR-058 v2 rollout
+      ## added stub suites (docs-refresh's six scenarios, feature-dev's five)
+      ## that grew the package to ~170s on a dev box; at the old 240s a loaded
+      ## CI runner crossed it and produced a 4m panic dump naming whichever
+      ## test was in flight — a flake that reads as a broken test. A hung test
+      ## still trips 600s.
+      - go test -v -timeout 600s ./e2e/...
 
   test:e2e:ui:
     desc: Run the studio UI end-to-end tests (Playwright against the real server; skips when chromium isn't installed)
