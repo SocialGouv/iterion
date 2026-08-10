@@ -261,7 +261,24 @@ tool plan_read:
     out["base_sha"] = rev.stdout.strip()
 
     lots = plan.get("lots") or []
-    done_ids = set(l.get("id") for l in lots if l.get("status") == "done")
+    # UN LOT BLOQUE NE SE RE-TENTE PAS A CHAQUE RUN.
+    #
+    # `blocked` ne veut pas dire « ce lot n'a rien fait » : il veut dire « il n'a
+    # pas atteint SA porte, et voici pourquoi, ecrit et committe ». Son travail a
+    # atterri ; c'est son verdict qui est rouge.
+    #
+    # Mesure qui a impose ce correctif : sur une campagne de rejeu, un lot s'est
+    # declare bloque apres quarante-deux minutes, et le run SUIVANT a re-choisi
+    # le meme lot pour refaire le meme travail et heurter le meme mur. Un lot
+    # bloque n'est donc plus selectionnable — le re-tenter ne peut rien apprendre
+    # que son rapport ne dise deja.
+    #
+    # Et il SATISFAIT ses dependants, parce que la dette qu'il porte appartient
+    # aux lots suivants : c'est meme, souvent, leur intention litterale. Le
+    # statut reste `blocked` dans le contrat — il ne ment pas, il cesse seulement
+    # de figer la suite.
+    landed = set(l.get("id") for l in lots if l.get("status") in ("done", "blocked"))
+    done_ids = landed
 
     # A lot is eligible when every lot it depends on is done. The dependency
     # order is a DECISION recorded in the contract, not something re-derivable
@@ -270,7 +287,7 @@ tool plan_read:
     chosen = None
     waiting = []
     for lot in lots:
-        if lot.get("status") == "done":
+        if lot.get("status") in ("done", "blocked"):
             continue
         if only and lot.get("id") != only:
             continue
@@ -284,7 +301,13 @@ tool plan_read:
     if chosen is None:
         if waiting:
             emit("no lot is ready: %s. Finish an upstream lot first." % "; ".join(waiting))
-        emit("every lot in the contract is done.")
+        blocked = [l.get("id") for l in lots if l.get("status") == "blocked"]
+        if blocked:
+            emit("every lot has landed, but %d is/are BLOCKED and stayed so: %s. Their "
+                 "committed reports say why; a blocked lot is a finding about the "
+                 "programme, not a lot to re-attempt." % (len(blocked), ", ".join(blocked)))
+        else:
+            emit("every lot in the contract is done.")
 
     gate = chosen.get("exit_gate") or []
     if not gate:
