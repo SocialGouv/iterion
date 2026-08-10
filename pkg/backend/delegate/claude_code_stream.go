@@ -831,20 +831,49 @@ var usageWindowSignals = []string{
 // keeps Kind = transient and a zero ResetAt — never a hard failure.
 func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
 	lower := strings.ToLower(text)
-	kind = RateLimitKindTransient
+	if !isUsageWindowText(lower) {
+		return RateLimitKindTransient, time.Time{}
+	}
+	return RateLimitKindUsageWindow, parseResetHint(lower, now)
+}
+
+// isUsageWindowText reports whether already-lowercased text carries one of the
+// window-exhaustion shapes. Extracted so the classifier and the flattened-error
+// fallback below share ONE definition of "the window is shut": two copies of
+// this drift, and the copy nobody exercises is the one that goes stale.
+func isUsageWindowText(lower string) bool {
 	if hitYourLimitRe.MatchString(lower) {
-		kind = RateLimitKindUsageWindow
+		return true
 	}
 	for _, sig := range usageWindowSignals {
 		if strings.Contains(lower, sig) {
-			kind = RateLimitKindUsageWindow
-			break
+			return true
 		}
 	}
-	if kind != RateLimitKindUsageWindow {
-		return kind, time.Time{}
+	return false
+}
+
+// UsageWindowInFlattenedError recovers the window signal from an error whose
+// TYPE did not survive — a layer that formatted with %v instead of wrapping
+// with %w, a store round-trip, an out-of-process hop.
+//
+// It is the last-resort evidence source: waiting is the only cure for a shut
+// window, so a run whose type was lost otherwise parks with nothing coming
+// back for it. Measured 2026-08-10: four reviews died on one Anthropic weekly
+// cap and not one armed a retry, leaving four pull requests on a required
+// check nobody would answer.
+//
+// Anchored on the marker ErrRateLimited itself prints, NOT on the window
+// wording alone. That anchor is what keeps the fallback from firing on an
+// agent that merely quotes "you've hit your weekly limit" in prose that ends
+// up inside some other error: in a path that PARKS a run for hours, a false
+// positive costs as much as the gap it closes.
+func UsageWindowInFlattenedError(text string) bool {
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, rateLimitedErrorMarker) {
+		return false
 	}
-	return kind, parseResetHint(lower, now)
+	return isUsageWindowText(lower)
 }
 
 // resetAbsRe matches an explicit absolute instant: "reset at

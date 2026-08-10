@@ -117,6 +117,15 @@ func usageWindowEvidence(execErr error) (resetAt time.Time, source string, ok bo
 		return rl.ResetAt, "typed_error", true
 	case runtimeCodeOf(execErr) == runtime.ErrCodeUsageLimitBlocked:
 		return time.Time{}, "runtime_code", true
+	// The flattened message, last. This source was DOCUMENTED above from the
+	// start and never implemented, so a host that had neither of the two
+	// above got no retry at all — the case the doc calls "not hypothetical".
+	// Measured 2026-08-10: four reviews died on one Anthropic weekly cap,
+	// every one of them carrying the provider's own words in run.Error, and
+	// not one armed a retry; four pull requests waited on a required check
+	// nobody would ever answer.
+	case delegate.UsageWindowInFlattenedError(execErr.Error()):
+		return time.Time{}, "flattened_text", true
 	}
 	return time.Time{}, "", false
 }

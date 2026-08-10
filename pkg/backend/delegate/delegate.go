@@ -1294,11 +1294,17 @@ const (
 	RateLimitKindTransient   = "transient"
 )
 
+// rateLimitedErrorMarker opens every ErrRateLimited rendering. Shared with
+// UsageWindowInFlattenedError, which reads it back out of a message some layer
+// formatted instead of wrapping: the two must not drift, or the last-resort
+// evidence silently stops matching the text it exists to recognise.
+const rateLimitedErrorMarker = "rate_limited"
+
 func (e *ErrRateLimited) Error() string {
 	if e.Provider != "" {
-		return "rate_limited (" + e.Provider + "): " + e.Detail
+		return rateLimitedErrorMarker + " (" + e.Provider + "): " + e.Detail
 	}
-	return "rate_limited: " + e.Detail
+	return rateLimitedErrorMarker + ": " + e.Detail
 }
 
 // ErrAuthFailed marks a credential the provider rejected — a dead or

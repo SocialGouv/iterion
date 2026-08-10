@@ -120,9 +120,13 @@ jobs:
         run: go test -mod=vendor ./...
 
       - name: E2E tests
-        # Same budget as the Taskfile's test:e2e (240s) — a shared CI runner
-        # is slower than a dev machine, so a tighter CI timeout only buys flakes.
-        run: go test -mod=vendor -v -timeout 240s ./e2e/...
+        # Same budget as the Taskfile's test:e2e. The number bounds a HANG, not
+        # a slow machine: the suite legitimately runs ~170s on a dev box, so the
+        # old 240s left barely 1.4x headroom and a loaded shared runner crossed
+        # it — a 4m panic dump naming whichever test happened to be in flight,
+        # which reads as "that test is broken" and is not. A true hang still
+        # trips this; only the coin flip is gone.
+        run: go test -mod=vendor -v -timeout 600s ./e2e/...
 
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no
