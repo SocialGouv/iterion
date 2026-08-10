@@ -207,6 +207,44 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 
+	// "Duplicate" is not "the replacement died". The idempotency claim is a
+	// read-then-insert and the gate sweep runs UNELECTED on every replica, so
+	// two passes landing on one dead run give one launch and one duplicate —
+	// for the same, live, replacement. Escalating on that files a card telling
+	// a human the automation is out of moves while the replacement is alive and
+	// reviewing.
+	t.Run("a relaunch still in flight does not escalate", func(t *testing.T) {
+		w := build(t, nil)
+		alive, err := w.s.cfg.Store.CreateRun(context.Background(), "run-prior-relaunch", "dep_update_guard", map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alive.Status = store.RunStatusRunning
+		if err := w.s.cfg.Store.SaveRun(context.Background(), alive); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "d-inflight", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+			Status: webhooks.StatusLaunched, RunID: alive.ID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStateFailure,
+			Description: gateInterruptedDescription,
+		}}
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+
+		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cards) != 0 {
+			t.Fatalf("board cards = %d, want 0 — a human was told automation is out of moves while run %s is still reviewing", len(cards), alive.ID)
+		}
+	})
+
 	t.Run("a real red verdict is left alone entirely", func(t *testing.T) {
 		w := build(t, nil)
 		// Vetty's own red verdict — the review HAPPENED. Nothing to reconcile,

@@ -68,6 +68,21 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 	if sha == "" {
 		return
 	}
+	// An UNATTRIBUTABLE claim must never exist. Ownership of a status is read
+	// off its target URL (gateStatusSpeaksFor), so a claim posted without one
+	// cannot be told from another run's — and the reconciler would have to
+	// choose between painting "review died" over a live review and leaving a
+	// PR stuck on a pending nothing resolves. Neither is acceptable, so with
+	// no PublicURL configured the launch simply does not claim: the check
+	// behaves exactly as it did before this feature existed.
+	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID)
+	if runURL == "" {
+		if s.logger != nil {
+			s.logger.Warn("forge gate: not claiming %s for run %s — PublicURL is unset, so the claim could not name the run and nothing could later tell it from another run's",
+				gateCtx, runID)
+		}
+		return
+	}
 	host, repo, _, err := forge.ParsePullURL(prURL)
 	if err != nil {
 		return
@@ -98,7 +113,7 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 		State:       forge.CommitStatePending,
 		Context:     gateCtx,
 		Description: gateInFlightDescription,
-		TargetURL:   gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID),
+		TargetURL:   runURL,
 	}
 	if err := gc.SetCommitStatus(ctx, repo, sha, st); err != nil {
 		if s.logger != nil {

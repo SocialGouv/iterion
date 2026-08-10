@@ -132,29 +132,98 @@ func TestMarkGateInFlight_NoOpsWithoutAGateOrARevision(t *testing.T) {
 	}
 }
 
-// The regression the marker creates if it is not accounted for: the reconciler
-// stands down on any status it did not recognise as its own, so a run that
-// died still holding its claim would look "already answered" and the PR would
-// wait on a pending that nothing will ever resolve. Strictly worse than the
+// A claim is not an answer, but WHOSE claim it is decides everything.
+//
+// Own claim: the regression the marker creates if it is not accounted for. The
+// reconciler stands down on any status it did not recognise as unanswered, so
+// a run that died still holding its claim would look "already answered" and
+// the PR would wait on a pending nothing resolves — strictly worse than the
 // absent check the marker was introduced to fix.
-func TestGateReconcile_TreatsItsOwnInFlightClaimAsUnanswered(t *testing.T) {
-	gc := &listingGateClient{
-		fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
-		statuses: []forge.CommitStatus{
-			{Context: "iterion/review", State: forge.CommitStatePending, Description: gateInFlightDescription},
-		},
+//
+// Another run's claim: the mirror hazard, and the one that actually shipped
+// broken. The repair's own recovery relaunches a bot, whose launch claims the
+// head; the sweep then re-offers the DEAD run minutes later and would paint
+// "review died" over a review that is running right now — and re-enter a
+// relaunch whose idempotency key is spent, filing a board card telling a human
+// the automation is out of moves while the replacement is alive and working.
+// The same clobber happens whenever two bots share the repo's one gate
+// context, which is the documented reason a repo pins one.
+func TestGateReconcile_ActsOnItsOwnClaimAndLeavesAnotherRunsAlone(t *testing.T) {
+	claim := func(targetURL string) forge.CommitStatus {
+		return forge.CommitStatus{
+			Context:     "iterion/review",
+			State:       forge.CommitStatePending,
+			Description: gateInFlightDescription,
+			TargetURL:   targetURL,
+		}
 	}
-	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+	t.Run("its own claim — nobody else will answer it", func(t *testing.T) {
+		gc := &listingGateClient{
+			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
+			statuses:       []forge.CommitStatus{claim("https://iterion.test/runs/run-gating")},
+		}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
 
-	if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if gc.setCalls != 1 {
-		t.Fatalf("posted %d statuses, want 1 — the PR is left waiting on a pending nothing will resolve", gc.setCalls)
-	}
-	if gc.last.State != forge.CommitStateFailure {
-		t.Errorf("state = %q, want failure — the run died without answering its own claim", gc.last.State)
-	}
+		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 1 {
+			t.Fatalf("posted %d statuses, want 1 — the PR is left waiting on a pending nothing will resolve", gc.setCalls)
+		}
+		if gc.last.State != forge.CommitStateFailure {
+			t.Errorf("state = %q, want failure — the run died without answering its own claim", gc.last.State)
+		}
+	})
+	t.Run("another run's claim — a live review must not be blamed", func(t *testing.T) {
+		gc := &listingGateClient{
+			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
+			statuses:       []forge.CommitStatus{claim("https://iterion.test/runs/run-the-replacement")},
+		}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+
+		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — \"review died\" was painted over a review that is running, and the recovery re-entered", gc.setCalls)
+		}
+	})
+}
+
+// With no PublicURL configured a status cannot name the run it speaks for, so
+// "mine" and "another run's" become the same observation. The launch therefore
+// does not claim at all (the check behaves as it did before the feature), and
+// the repair stands down on an existing synthetic failure rather than re-post
+// and re-enter the recovery on every one of the sweep's ~57 passes per hour.
+func TestGateWithoutPublicURL_ClaimsNothingAndDoesNotLoop(t *testing.T) {
+	t.Run("the launch posts no unattributable claim", func(t *testing.T) {
+		gc := &listingGateClient{}
+		s := inFlightFixture(t, gc)
+		s.cfg.PublicURL = ""
+
+		s.markGateInFlight(context.Background(), "team1", "review-pr", inFlightVars(), "run-42")
+
+		if gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — an unattributable claim can never be told from another run's", gc.setCalls)
+		}
+	})
+	t.Run("the repair does not re-post over an existing synthetic failure", func(t *testing.T) {
+		gc := &listingGateClient{
+			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
+			statuses: []forge.CommitStatus{
+				{Context: "iterion/review", State: forge.CommitStateFailure, Description: gateInterruptedDescription},
+			},
+		}
+		s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+		s.cfg.PublicURL = ""
+
+		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — every sweep pass would re-post and re-enter the recovery", gc.setCalls)
+		}
+	})
 }
 
 // A run parked on a provider usage window is resumed by the retry sweeper up

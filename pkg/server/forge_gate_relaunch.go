@@ -164,6 +164,22 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		// board card is how they find out a gate is dying REPEATEDLY, which
 		// is a deeper problem (a structurally short budget, a recurring
 		// provider quota, a bot defect) than any single death.
+		//
+		// But "duplicate" alone does not mean the replacement died: the
+		// idempotency claim is a read-then-insert, and the gate sweep runs
+		// unelected on every replica, so two passes landing on one dead run
+		// give one StatusLaunched and one StatusDuplicate — for a relaunch
+		// that just SUCCEEDED. Escalating on that files a card telling a human
+		// the automation is out of moves while the replacement is alive and
+		// reviewing. The card is worth filing only once the named run has
+		// itself stopped without answering.
+		if alive, why := s.relaunchStillRunning(launchCtx, res.RunID); alive {
+			if s.logger != nil {
+				s.logger.Debug("gate relaunch: %s on %s#%d@%s already has a relaunch in flight (run %s, %s) — not escalating",
+					d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), res.RunID, why)
+			}
+			return
+		}
 		s.logWarn("gate relaunch: %s on %s#%d@%s already got its one relaunch (run %s) and died again — escalating to the board",
 			d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), res.RunID)
 		s.escalateDeadGateToBoard(d, res.RunID, "the automatic relaunch died too")
@@ -234,4 +250,31 @@ func (s *Server) escalateDeadGateToBoard(d deadGateRun, priorRelaunchRunID, why 
 	if s.logger != nil {
 		s.logger.Info("gate relaunch: board card filed for %s on %s#%d@%s", d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA))
 	}
+}
+
+// relaunchStillRunning reports whether the run an idempotency claim named is
+// still working, and a short phrase saying how it was decided.
+//
+// The claim is a read-then-insert, and the gate sweep runs unelected on every
+// replica, so a StatusDuplicate does NOT by itself mean the replacement died:
+// two passes on one dead run give one launch and one duplicate for the SAME,
+// live, replacement. Escalation is a message to a human ("automation is out of
+// moves"), so it must be false only in the direction that stays quiet: an
+// unknown run — never launched, already pruned, unreadable store — is reported
+// as NOT running, which preserves the escalation this branch exists for.
+func (s *Server) relaunchStillRunning(ctx context.Context, runID string) (bool, string) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" || s.cfg.Store == nil {
+		return false, "no run named"
+	}
+	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
+	if err != nil || run == nil {
+		return false, "run unreadable"
+	}
+	switch run.Status {
+	case store.RunStatusQueued, store.RunStatusRunning,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return true, string(run.Status)
+	}
+	return false, string(run.Status)
 }

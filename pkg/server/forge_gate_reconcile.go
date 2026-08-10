@@ -31,6 +31,14 @@ import (
 // operator can act on.
 const gateReconcilerName = "forge-gate-reconcile"
 
+// The two triggers of the same repair. Which one fired decides how loudly a
+// declined repair speaks: the event fires once per run, the sweep re-offers
+// the same run every minute for its whole lookback.
+const (
+	gateTriggerEvent = "event"
+	gateTriggerSweep = "sweep"
+)
+
 // gateInterruptedDescription is what the operator reads on the check. It has
 // to carry the remedy: whoever finds it has no other clue about what happened.
 const gateInterruptedDescription = "review ended without a verdict — push again or comment the bot's command to re-run"
@@ -123,7 +131,7 @@ func (s *Server) attachGateReconciler(bus eventbus.Bus) (func(), error) {
 // reconcileGateForRun is the eventbus handler. It is deliberately quiet about
 // runs that owed nothing: most runs hold no publish grant at all.
 func (s *Server) reconcileGateForRun(ctx context.Context, ev trigger.Event) error {
-	return s.reconcileGateForRunID(ctx, strings.TrimSpace(ev.Subject.ID), "event")
+	return s.reconcileGateForRunID(ctx, strings.TrimSpace(ev.Subject.ID), gateTriggerEvent)
 }
 
 // reconcileGateForRunID is the repair itself, reachable from either of its two
@@ -175,10 +183,22 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// silence, and four blocked PRs could not be told apart from four runs
 	// that never gated anything. Naming the reason is what makes the next
 	// occurrence a grep instead of an investigation.
+	//
+	// Warn on the EVENT path only. The sweep re-offers the same run every
+	// minute for the whole lookback, so a run sitting in a permanent abstain
+	// branch — a lost grant, an unreachable forge — would log the identical
+	// line ~60 times an hour per replica and bury the branches that carry new
+	// information, defeating the point of naming the reason at all. The event
+	// fires once per run, which is exactly one line per occurrence.
 	abstain := func(format string, args ...any) error {
 		if s.logger != nil {
-			s.logger.Warn("forge gate: run %s (via %s) held a grant on %s but posts nothing: "+format,
-				append([]any{runID, via, prURL}, args...)...)
+			msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
+			args = append([]any{runID, via, prURL}, args...)
+			if via == gateTriggerSweep {
+				s.logger.Debug(msg, args...)
+			} else {
+				s.logger.Warn(msg, args...)
+			}
 		}
 		return nil
 	}
@@ -287,27 +307,55 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// synthetic failure is a worse outcome than leaving a stuck PR stuck.
 		return abstain("provider %s cannot list commit statuses, so a verdict cannot be told from an absence", conn.Provider)
 	}
-	// The in-flight marker is a CLAIM, not an answer: the launch posts it so
-	// the window between push and verdict stops reading as "nothing happened".
-	// A run that died still holding its own claim is exactly the run this
-	// repair exists for, so it must not count as "already posted".
+	// Whether this run still owes an answer is decided by WHO the status on the
+	// head belongs to, not merely by its state. Every status iterion writes
+	// carries the run it speaks for in its target URL, which is what makes the
+	// question answerable across replicas with no shared bookkeeping.
 	runURL := gateRunURL(strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/"), runID)
-	if gate.State != "" && !isGateInFlight(gate) {
-		if !isSyntheticGateInterruption(gate.Description) {
-			return nil // a real verdict
-		}
-		// A synthetic failure deliberately does NOT stand this repair down in
-		// general: when a relaunched run dies too, the second death must still
-		// be answered and escalated rather than mistake the first death's
-		// marker for an answer. But that argument is about a DIFFERENT run on
-		// the same head. The same run offered twice — the event and the sweep
-		// racing, or the sweep re-reading its own window every minute for an
-		// hour — is already answered, and re-posting would spam the forge and
-		// re-enter the recovery on every pass. The target URL names the run
-		// the failure speaks for, so it tells the two apart without any
-		// bookkeeping a second replica would not share.
-		if runURL != "" && strings.EqualFold(strings.TrimSpace(gate.TargetURL), runURL) {
+	switch {
+	case gate.State == "":
+		// Nothing on the head: this run owes the answer.
+
+	case !isGateInFlight(gate) && !isSyntheticGateInterruption(gate.Description):
+		return nil // a real verdict — never overwrite one
+
+	case isGateInFlight(gate):
+		// A CLAIM is not an answer, so a run that died still holding its OWN
+		// claim is exactly what this repair exists for. But a claim belonging
+		// to a DIFFERENT run means someone else is actively reviewing this
+		// head right now — the recovery run this repair just launched, or a
+		// second bot sharing the repo's one gate context. Painting "review
+		// died" over it reports a death that did not happen, and re-enters a
+		// relaunch whose idempotency key is already spent, which files a board
+		// card telling a human the automation is out of moves while the other
+		// run is alive and working.
+		if !gateStatusSpeaksFor(gate, runURL) {
+			if s.logger != nil {
+				s.logger.Debug("forge gate: run %s died on %s@%s but another run holds the in-flight claim — leaving the live review alone",
+					runID, repo, shortSHA(pr.HeadSHA))
+			}
 			return nil
+		}
+
+	default: // a synthetic interruption
+		// It deliberately does NOT stand this repair down in general: when a
+		// relaunched run dies too, the second death must still be answered and
+		// escalated rather than mistake the first death's marker for an
+		// answer. That argument is about a DIFFERENT run on the same head. The
+		// same run offered twice — the event and the sweep racing, or the sweep
+		// re-reading its window every minute for an hour — is already answered.
+		if gateStatusSpeaksFor(gate, runURL) {
+			return nil
+		}
+		// Unattributable: with no PublicURL configured every status is written
+		// with an empty target URL, so "mine" and "another run's" are the same
+		// observation. Repairing then re-posts and re-enters the recovery on
+		// every sweep pass — dozens of forge writes and false escalations per
+		// stuck run. Standing down costs the second-death escalation only, and
+		// only on a deployment that has not set PublicURL.
+		if runURL == "" {
+			return abstain("a synthetic failure is already on %s@%s and PublicURL is unset, so it cannot be told from this run's own — set PublicURL to enable second-death escalation",
+				repo, shortSHA(pr.HeadSHA))
 		}
 	}
 
@@ -336,6 +384,24 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
 	})
 	return nil
+}
+
+// gateStatusSpeaksFor reports whether a status iterion wrote belongs to the
+// run at runURL. Every status this package posts — the in-flight claim and the
+// synthetic failure alike — points at the run it speaks for, so ownership is
+// readable straight off the forge, with no bookkeeping a second replica would
+// not share and a restart would lose.
+//
+// False when runURL is empty (no PublicURL configured) or the status carries
+// no target URL: ownership is then unknowable, and each caller decides which
+// way that ambiguity is safe to resolve rather than having a bare string
+// compare silently pick one.
+func gateStatusSpeaksFor(st forge.CommitStatus, runURL string) bool {
+	target := strings.TrimSpace(st.TargetURL)
+	if runURL == "" || target == "" {
+		return false
+	}
+	return strings.EqualFold(target, runURL)
 }
 
 // gateRunURL points the check at the run that owed it, so the operator lands

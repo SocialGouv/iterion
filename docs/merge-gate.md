@@ -335,10 +335,20 @@ Two rules keep the claim from doing harm:
   back to "running". It writes only over nothing, over a previous claim, or
   over a synthetic interruption (a fresh review on that head IS the recovery).
   A provider iterion cannot read statuses back from is left alone.
-- **Every consumer knows the marker.** A guard written as "this head already
-  has a status, so someone answered" would read the claim as a verdict —
-  which would make posting it *worse* than the absence, by silencing the very
-  repair below. The reconciler therefore treats its own claim as unanswered.
+- **Every consumer knows the marker, and whose it is.** A guard written as
+  "this head already has a status, so someone answered" would read the claim as
+  a verdict — which would make posting it *worse* than the absence, by
+  silencing the repair below. But the mirror error is just as bad: treating
+  *any* claim as unanswered lets a dead run paint "review died" over a review
+  that is running right now (the recovery run this repair itself launched, or a
+  second bot sharing the repo's one context). So every status iterion writes
+  names the run it speaks for, in its target URL, and ownership decides:
+  **its own claim** is unanswered and gets repaired; **another run's** means
+  somebody is working — stand down.
+
+  A corollary: with no `PublicURL` configured a status cannot name its run, so
+  the launch does not claim at all. The check then behaves exactly as it did
+  before this feature — an ambiguous claim would be worse than none.
 
 The claim is not a substitute for the repair: a run that dies still holding it
 leaves a `pending` nothing will resolve, which blocks a required check exactly
@@ -430,6 +440,14 @@ instead of mistaking the first death's marker for an answer. But the same run
 re-offered every minute is already answered. The status's target URL names the
 run it speaks for, which separates the two with no bookkeeping a second replica
 would not share.
+
+The sweep is **not elected** — the repair is idempotent by re-reading the live
+status, so a leader would buy nothing. One consequence needs care: the
+relaunch's once-per-head bound is a read-then-insert claim, so two replicas
+offering one dead run give a launch and a *duplicate*. A duplicate alone is
+therefore not evidence the replacement died; the board card that tells a human
+"automation is out of moves" is filed only once the named run has itself
+stopped.
 
 Finally, when a repair genuinely declines to act, **it says so**. Every branch
 past "this run held a publish grant and died" now logs the reason it is posting

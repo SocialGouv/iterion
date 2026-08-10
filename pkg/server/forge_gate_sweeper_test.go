@@ -147,6 +147,77 @@ func TestGateReconcile_SyntheticFailureStandsDownOnlyForItsOwnRun(t *testing.T) 
 	})
 }
 
+// pagingLister serves a backlog one page at a time, honouring the `before`
+// cursor exactly as the Mongo query does (newest-first, strictly older than
+// the cursor).
+type pagingLister struct {
+	all      []mongostore.NotifiableRunRef // newest first
+	requests []time.Time                   // the `before` of each call
+}
+
+func (p *pagingLister) ListNotifiableRuns(_ context.Context, _, before time.Time, limit int) ([]mongostore.NotifiableRunRef, error) {
+	p.requests = append(p.requests, before)
+	out := []mongostore.NotifiableRunRef{}
+	for _, r := range p.all {
+		if r.UpdatedAt.Before(before) && len(out) < limit {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// A single page is not a bound, it is a silent truncation that REPEATS. Rows
+// come back newest-first, so a dead gating run pushed off the page is pushed
+// off again on every subsequent pass: its check is never repaired and the
+// batch-full warning fires forever with no recovery. The window has to be
+// paged with the cursor the query was built for.
+func TestGateSweep_PagesTheWindowInsteadOfStarvingOldCandidates(t *testing.T) {
+	gc := &listingGateClient{fakeGateClient: fakeGateClient{headSHA: "deadbeef"}}
+	s, runID := gateReconcileFixture(t, gatingInputs(), gc)
+
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	// A full first page of runs that gate nothing, then the real candidate
+	// sitting just behind it — exactly the row a single page would drop.
+	lister := &pagingLister{}
+	for i := 0; i < gateSweepBatch; i++ {
+		lister.all = append(lister.all, mongostore.NotifiableRunRef{
+			ID:        "filler",
+			UpdatedAt: now.Add(-gateSweepGrace - time.Duration(i+1)*time.Second),
+		})
+	}
+	lister.all = append(lister.all, mongostore.NotifiableRunRef{
+		ID:        runID,
+		UpdatedAt: now.Add(-gateSweepGrace - time.Duration(gateSweepBatch+1)*time.Second),
+	})
+
+	s.sweepGates(context.Background(), lister, now)
+
+	if len(lister.requests) < 2 {
+		t.Fatalf("scanned %d page(s) — a full page must advance the cursor, or the oldest candidate is never examined", len(lister.requests))
+	}
+	if gc.setCalls != 1 {
+		t.Fatalf("posted %d statuses, want 1 — the candidate behind the first page was starved", gc.setCalls)
+	}
+}
+
+// A page that cannot advance the cursor (every row sharing one timestamp) must
+// stop and say so, not re-scan the same rows up to the page cap.
+func TestGateSweep_StopsWhenTheCursorCannotAdvance(t *testing.T) {
+	s, _ := gateReconcileFixture(t, gatingInputs(), &listingGateClient{})
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	stuck := &fakeGateSweepLister{}
+	for i := 0; i < gateSweepBatch; i++ {
+		// Zero UpdatedAt: nothing to advance the cursor with.
+		stuck.refs = append(stuck.refs, mongostore.NotifiableRunRef{ID: "no-timestamp"})
+	}
+
+	s.sweepGates(context.Background(), stuck, now)
+
+	if stuck.calls != 1 {
+		t.Fatalf("scanned %d times, want 1 — a stalled cursor re-scanned the same rows", stuck.calls)
+	}
+}
+
 // A scan that fails must not take the ticker down with it: the next pass is
 // the recovery, and a sweeper that exits on one Mongo hiccup silently stops
 // being a net at all.
