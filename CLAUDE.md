@@ -949,7 +949,12 @@ Its "what works" companion is
 [docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md) —
 the measured shape of productive operator sessions (commit cadence,
 work-list discipline, termination contracts) distilled into authoring
-rules; ADR-055/ADR-057 encode its core finding.
+rules; ADR-055/ADR-057 encode its core finding. External cross-check:
+[docs/references/external-methodologies.md](docs/references/external-methodologies.md)
+maps two independent 2026 methodology papers (IACDM, AI-DLC) onto
+iterion — what they validate, the imported rules (teach-back, cost-tier
+switch, scope inventory, …, folded into the pitfalls doc), and what was
+deliberately rejected.
 
 ### Improvement loops must converge to an asymptote
 
