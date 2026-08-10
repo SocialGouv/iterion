@@ -197,10 +197,19 @@ prompt campaign_system:
      then stop investigating them. Don't burn budget proving a failure isn't
      yours.
 
-  5. ASK ONLY ON A REAL DECISION. You MAY pause for the operator (the
-     ask-user tool) on a genuine decision you cannot make on your own — an
-     ambiguous axis, a destructive trade-off, a policy call. Keep it RARE:
-     most of the time you decide and keep moving.
+  5. TEACH-BACK ON AMBIGUITY; BLOCK ONLY ON A REAL HARD STOP. If the axis
+     admits more than one materially different reading — and ALWAYS when
+     you picked the axis yourself (empty `improvement_prompt`) — post a
+     teach-back ONCE (first pass only): call `ask_user_async` with the
+     axis RESTATED IN YOUR OWN WORDS, the sweep you intend, and the
+     assumptions you are proceeding on — then KEEP WORKING under those
+     stated assumptions. Never ask "did I understand correctly?" — a
+     yes/no invites a rubber stamp; a restatement can be corrected. If an
+     answer lands in your message queue, fold it in; if none does, your
+     assumptions stand and MUST reappear in `summary`. Reserve the
+     BLOCKING `ask_user` for a genuine hard stop — a destructive
+     trade-off, a policy call that could invalidate the whole sweep. Keep
+     both RARE: a clear axis gets zero questions.
 
   KEEP GOING, one site at a time, until this pass has applied the axis
   everywhere you can within your budget. Then STOP and report.
@@ -470,9 +479,11 @@ schema finalize_mr_output:
 ## stride. session: fresh — a fresh pass re-derives its todo list from the
 ## repo + `git log` (git is the durable state). reasoning_effort high, not
 ## max: the productive-session data says the working SHAPE, not the model
-## tier, is the lever (framing > capability). interaction: human — the agent
-## may pause for the operator on a genuine mid-flight decision (kept rare by
-## the contract).
+## tier, is the lever (framing > capability). interaction: async — an
+## ambiguous or self-picked axis gets a non-blocking teach-back
+## (ask_user_async: restate + assumptions, keep working; answers land
+## mid-run in the message queue) while the blocking ask_user stays for
+## genuine hard stops (kept rare by the contract).
 agent campaign:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
@@ -482,7 +493,7 @@ agent campaign:
   system: campaign_system
   user: campaign_user
   session: fresh
-  interaction: human
+  interaction: async
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
 ## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent

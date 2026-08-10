@@ -76,8 +76,11 @@ the `finalize_mr` agent when a push can actually happen.)
   duplicate helper, one-caller abstraction, or parallel mechanism was left
   behind). The deterministic gate still decides completion. The campaign emits
   a **termination contract** (`axis_complete`, `commits_this_pass`,
-  `sites_remaining`, …) and may pause for the operator on a genuine mid-flight
-  decision (kept rare).
+  `sites_remaining`, …). On an ambiguous or self-picked axis it posts a
+  non-blocking **teach-back** (`ask_user_async`: the axis restated + the
+  assumptions it proceeds on) and keeps working — answers land mid-run in its
+  message queue; the blocking `ask_user` stays for genuine hard stops (kept
+  rare).
 - **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
   build/test gate: an adaptive agent reads the `verify-build` skill and writes
   the repo's real build+test into `<scratch_dir>/verify.sh`; a tool node

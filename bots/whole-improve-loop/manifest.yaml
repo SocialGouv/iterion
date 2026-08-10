@@ -1,7 +1,7 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.0.2
+version: 2.1.0
 ## 2.0.2 — third advisory question before the report: `Ratchet` — the cheap
 ## deterministic check that would have caught the site it just fixed, landed
 ## in the same commit or a follow-up one, NEVER by amending a commit already
