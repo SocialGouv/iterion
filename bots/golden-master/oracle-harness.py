@@ -1219,7 +1219,8 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
         declared_surface and declared_surface in verdict["moved_surfaces"])
     # Collateral is usually not a harness fault but an under-declared blast
     # radius: the mutant really does move that response. Naming the entries is
-    # what makes the finding actionable instead of a bare count.
+    # what makes the finding actionable instead of a bare count. Whether it IS
+    # the mutant is settled after the revert, below — not assumed here.
     verdict["collateral"] = diverged(refs, captured, sample)
     # How many control entries the collateral check actually compared. A mutant
     # that declares the whole corpus as targets leaves nothing to control
@@ -1235,10 +1236,37 @@ def score_mutant(meta, config, corpus, canon, refs, ws, seed):
 
     if meta.get("needs_restart", True):
         app_restart(config, ws)
-    back = capture(config, corpus, canon, ids=set(targets))
+
+    # THE THIRD CAUSE, and it has to be TESTED rather than reasoned about.
+    #
+    # A control entry that differs from its reference was attributed to the
+    # mutant, and the message offered two explanations: an under-declared blast
+    # radius, or a capture that is not isolated. There is a third, and it is
+    # the only one that does not involve the mutant at all — THE CONTROL ENTRY
+    # DOES NOT REPRODUCE ITSELF. Whichever mutant happened to sample it wears
+    # the blame, which sends the reader looking for a causal path that does not
+    # exist. Measured: a mutant that rewrites a department projection was
+    # reported as moving a users list, whose controller only ever builds
+    # regions; no code path connected the two.
+    #
+    # The revert already re-captures. Re-capturing the DRIFTED CONTROLS at the
+    # same time costs nothing and settles it: with the mutant gone, an entry
+    # that still differs was never moved by it.
+    #
+    # `stable` cannot cover this. It compares three captures to EACH OTHER, all
+    # taken within one run, so an entry that drifts occasionally passes it —
+    # and the whole-corpus negative control catches permanent drift, not rare
+    # drift.
+    suspect = list(verdict.get("collateral") or [])
+    back = capture(config, corpus, canon, ids=set(targets) | set(suspect))
     verdict["revert_clean"] = not diverged(refs, back, targets)
     if not verdict["revert_clean"]:
         verdict["reason"] = "the tree did not return to the reference after revert.sh"
+
+    unstable = diverged(refs, back, suspect)
+    if unstable:
+        verdict["unstable_controls"] = unstable
+        verdict["collateral"] = [c for c in suspect if c not in unstable]
     return verdict
 
 
@@ -1310,6 +1338,133 @@ def stability(config, corpus, canon, ws):
     return {"stable": not ab and not bc, "ab_drift": ab, "bc_drift": bc}, c
 
 
+# ─── Self-test ──────────────────────────────────────────────────────────────
+
+def _selftest():
+    """GM_MODE=selftest — teste la moitie qui DECIDE, pas celle qui compare.
+
+    Le canonicaliseur a ses propres tests, ecrits par la campagne : ils portent
+    sur ce qui est EFFACE avant de comparer. Ceux-ci portent sur ce qui en est
+    CONCLU, et cette moitie n'appartient pas a la campagne. Une regle de
+    decision fausse rend vert un filet dont chaque comparaison est juste.
+
+    Ils vivent DANS ce fichier parce que ce fichier se recopie lui-meme dans le
+    depot cible : des tests a cote ne suivraient pas, et le filet materialise
+    embarquerait alors une regle de decision que plus rien ne verifie.
+
+    Les collaborateurs sont doubles ; c'est `score_mutant` et `probe_mutation`
+    qui tournent, jamais une reimplementation — qui finirait par diverger d'eux.
+    """
+    failures, checked = [], [0]
+
+    def check(name, got, want):
+        checked[0] += 1
+        if got != want:
+            failures.append("%s\n    attendu : %r\n    obtenu  : %r" % (name, want, got))
+
+    g = globals()
+    saved = {k: g[k] for k in ("apply_mutant", "revert_mutant", "tree_fingerprint",
+                               "data_fingerprint", "app_restart", "capture", "control_ids")}
+
+    class World:
+        """Une application doublee.
+
+        `unstable` designe les entrees qui different de leur reference MEME
+        quand aucun mutant n'est applique — celles qui ne se reproduisent pas.
+        """
+
+        def __init__(self, refs, moved_when_applied, unstable=()):
+            self.refs, self.applied = dict(refs), False
+            self.moved, self.unstable = set(moved_when_applied), set(unstable)
+
+        def capture(self, config, corpus, canon, ids=None):
+            ids = set(ids or self.refs)
+            return {i: self.refs[i] + ("!" if (
+                (i in self.moved) if self.applied else (i in self.unstable)) else "")
+                for i in ids}
+
+    def score(targets, sample, moved, unstable=(), revert_code=0):
+        ids = ["%03d" % n for n in range(1, 13)]
+        refs = {i: "ref-" + i for i in ids}
+        corpus = {"entries": [{"id": i, "surface": "http"} for i in ids]}
+        meta = {"id": "t", "dir": "/dev/null", "class": "code", "surface": "http",
+                "archetype": "value_change", "targets": list(targets), "needs_restart": False}
+        w = World(refs, moved, unstable)
+        n = [0]
+
+        def tree(_ws):
+            # Deux empreintes distinctes de part et d'autre de l'application :
+            # c'est tout ce que la validite mecanique demande.
+            n[0] += 1
+            return "applied" if w.applied else "clean-%d" % n[0]
+
+        def apply_(_m, _w):
+            w.applied = True
+            return 0, ""
+
+        def revert_(_m, _w):
+            w.applied = False
+            return revert_code, ("" if revert_code == 0 else "boom")
+
+        g.update(apply_mutant=apply_, revert_mutant=revert_, tree_fingerprint=tree,
+                 data_fingerprint=lambda _m, _w: None, app_restart=lambda _c, _w: None,
+                 capture=w.capture, control_ids=lambda _c, _t, _s: list(sample))
+        return score_mutant(meta, {}, corpus, None, refs, "/dev/null", 0)
+
+    try:
+        # 1. Un mutant qui ne bouge QUE ses cibles.
+        v = score(["001"], ["005", "006"], ["001"])
+        check("cible bougee -> detecte", v["detected"], True)
+        check("aucun collateral", v["collateral"], [])
+        check("aucun temoin instable", v.get("unstable_controls"), None)
+        check("revert propre", v["revert_clean"], True)
+
+        # 2. Rayon d'action SOUS-DECLARE : le temoin revient quand le mutant
+        #    part, donc c'est bien le mutant qui l'avait bouge.
+        v = score(["001"], ["005", "006"], ["001", "005"])
+        check("collateral reel nomme", v["collateral"], ["005"])
+        check("collateral reel non dit instable", v.get("unstable_controls"), None)
+        check("revert propre malgre le collateral", v["revert_clean"], True)
+
+        # 3. LA DISCRIMINATION : un temoin qui differe AUSSI sans le mutant.
+        v = score(["001"], ["005", "006"], ["001", "005"], unstable=["005"])
+        check("temoin instable nomme", v.get("unstable_controls"), ["005"])
+        check("et retire du collateral", v["collateral"], [])
+        check("le mutant reste detecte", v["detected"], True)
+        check("revert toujours propre", v["revert_clean"], True)
+
+        # 4. Les deux a la fois, sans se confondre.
+        v = score(["001"], ["005", "006"], ["001", "005", "006"], unstable=["006"])
+        check("collateral reel garde", v["collateral"], ["005"])
+        check("instable separe", v.get("unstable_controls"), ["006"])
+
+        # 5. Un revert casse n'est pas masque par la discrimination.
+        v = score(["001"], ["005"], ["001", "005"], revert_code=3)
+        check("revert casse -> revert_clean faux", v["revert_clean"], False)
+        check("et la cause est dite", "revert.sh exited 3" in (v.get("reason") or ""), True)
+
+        # 6. Validite mecanique : un apply qui ne change rien est INVALIDE,
+        #    jamais « non detecte » — il ne peut ni gonfler ni diluer le score.
+        g.update(apply_mutant=lambda _m, _w: (0, ""), tree_fingerprint=lambda _w: "identique",
+                 data_fingerprint=lambda _m, _w: None, revert_mutant=lambda _m, _w: (0, ""))
+        v, state = probe_mutation({"id": "t", "dir": "/dev/null", "targets": ["001"]}, "/dev/null")
+        check("apply inerte -> etat inerte", state, "inert")
+        check("apply inerte -> invalide", v["valid"], False)
+        v, state = probe_mutation({"id": "t", "dir": "/dev/null", "targets": []}, "/dev/null")
+        check("sans cible -> echec", state, "failed")
+        check("sans cible -> cause dite", "no targets" in v.get("reason", ""), True)
+    finally:
+        g.update(saved)
+
+    if failures:
+        log("harnais : %d test(s) ECHOUENT" % len(failures))
+        for f in failures:
+            log("  " + f)
+        return 1
+    log("harnais : %d verifications passent" % checked[0])
+    return 0
+
+
 # ─── Entry point ────────────────────────────────────────────────────────────
 
 def main():
@@ -1323,10 +1478,16 @@ def main():
     # set somewhere the gate will not look, and two runs cannot share a pile.
     sealed_dir = sealed_dir_for(ws)
     floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
-    mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate
+    mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate | selftest
+
+    # Les tests du harnais d'abord, et hors de tout le reste : ils ne touchent
+    # ni au depot, ni a l'application, ni a la configuration.
+    if mode == "selftest":
+        raise SystemExit(_selftest())
 
     report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
               "noop_silent": False, "revert_clean": True, "collateral": 0,
+              "unstable_controls": [],
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
@@ -1541,8 +1702,28 @@ def main():
         noop = score_noop(config, corpus, canon, refs, ws, 0)
         report["noop_silent"] = noop["silent"]
 
+        # GM_MUTANTS en mode porte — restreindre le PARCOURS, jamais le verdict.
+        #
+        # Rejouer un mutant seul coute une montee d'application au lieu d'un
+        # cycle complet, ce qui rend une hypothese testable en minutes. Deux
+        # precautions, et elles sont ce qui rend la restriction acceptable :
+        # la graine reste l'index d'ORIGINE, sinon l'echantillon de controle
+        # change et le mutant n'est plus juge sur les memes temoins ; et le
+        # rapport sort sous `gate-subset`, que le lanceur refuse de lire comme
+        # un verdict. Une porte verte obtenue en ne jouant qu'un mutant serait
+        # la facon la plus economique de mentir de tout ce dispositif.
+        only = {i.strip() for i in os.environ.get("GM_MUTANTS", "").split(",") if i.strip()}
+        if only:
+            report["mode"] = "gate-subset"
+            note(report, "GM_MUTANTS restricts this run to %s. The archetype and corpus "
+                         "checks still ran on the WHOLE set, but the score, the collateral "
+                         "and the blind lanes below describe a SUBSET and are not a gate."
+                         % ", ".join(sorted(only)))
+
         verdicts, blind = [], []
         for seed, meta in enumerate(visible):
+            if only and meta["id"] not in only:
+                continue
             v = score_mutant(meta, config, corpus, canon, refs, ws, seed)
             verdicts.append(v)
             if not v.get("valid"):
@@ -1583,6 +1764,8 @@ def main():
             score_pct=int(100 * len(detected) / len(valid)) if valid else 0,
             revert_clean=all(v.get("revert_clean", True) for v in verdicts + held),
             collateral=sum(len(v.get("collateral") or []) for v in verdicts),
+        unstable_controls=sorted({c for v in verdicts
+                                  for c in (v.get("unstable_controls") or [])}),
             uncontrolled=[v["id"] for v in valid if not v.get("control_covered")],
             blind_lanes=blind,
             holdout_total=len([v for v in held if v.get("valid")]),
@@ -1643,6 +1826,18 @@ def main():
                             "responses it does not declare as targets. Either its "
                             "`targets` under-state its blast radius, or the capture is "
                             "not isolated: %s" % (report["collateral"], detail))
+
+        if report["unstable_controls"]:
+            problems.append(
+                "%d control entry(ies) DO NOT REPRODUCE THEMSELVES: %s. They differed "
+                "from their reference while a mutant was applied AND still differed once "
+                "it was reverted, so the mutant is not the cause — the entry is. Every "
+                "verdict about such an entry is meaningless, including the greens: it is "
+                "compared against a reference it cannot reproduce. `stable` does not cover "
+                "this (it compares three captures to each other, taken within one run) and "
+                "neither does the negative control (it catches permanent drift, not rare "
+                "drift). Canonicalise what moves, or make the fixture pin it."
+                % (len(report["unstable_controls"]), ", ".join(report["unstable_controls"])))
         if report["uncontrolled"]:
             problems.append("mutants %s declare the whole corpus as targets: nothing was "
                             "left to control against, so their clean collateral is vacuous. "
