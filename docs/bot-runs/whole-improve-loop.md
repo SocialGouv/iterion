@@ -13,6 +13,53 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-08-10 — v2.1.0 teach-back-async on a self-picked axis: posted once, never blocked, assumptions honored (run 019fec3e)
+
+- Status: **validated** (the teach-back mechanics — the mid-run answer-folding
+  link was not exercised: the run finished in ~6m30 before any answer arrived,
+  see Misses)
+- Versions: bot 2.1.0 (first run of the `interaction: async` + teach-back
+  contract) · iterion 641839340
+- Method: claude_code/claude-opus-5, effort high, sandbox auto (slim
+  v3.35.0 + bot devbox), `--max-cost-usd 5 --max-duration 30m`, EMPTY
+  `improvement_prompt` (the case the new contract flags as "ALWAYS
+  teach-back"), target = a purpose-built Python fixture
+  (`parcel-tools`, 3 modules with the same validation copy-pasted 4×, 9
+  unittest tests) — NOT the live iterion tree.
+- Result: converged in ONE pass, 5 commits on the storage branch
+  (`iterion/run/void-flux-neondemon-7f2c`), squash-merged onto the
+  fixture's main (`a4a0912`, body lists all 5), gate green, suite green
+  after.
+- Value: the new contract behaved exactly as designed, first try —
+  `ask_user_async` posted ONCE with the axis restated in its own words
+  (it even counted the 4th INLINE duplicate in `freight_cost`), 4
+  numbered load-bearing assumptions, 3 answer options, and the closing
+  "Proceeding under these now — no need to reply unless you'd steer it
+  differently". Tool calls continued immediately after the post
+  (status stayed `running` — no premature `await_answers`, the #1
+  feared regression). Unanswered question → the assumptions reappeared
+  in `summary` and `human_note` said so explicitly, framing the pass as
+  "5 clean revertible commits" if the operator wanted a different axis.
+  `human_input_requested` count for the whole run: exactly 1.
+- Findings / misses: (1) the **answer-folding link stayed unexercised**
+  — on a small mission the steering window is minutes, the operator
+  didn't answer in time; prove it on the next organically-ambiguous run
+  (answer within ~2 min of the card appearing), the engine half is
+  ADR-081 machinery. (2) `verify_build` first tried
+  `unittest discover -s tests` from the wrong cwd (`Start directory is
+  not importable`) before writing a correct `verify.sh` — friction, not
+  a failure. (3) Doc drift found while auditing the merge: CLAUDE.md
+  still documented finalization as best-effort fast-forward while the
+  engine defaults to `mergeStrategy: squash` (fixed in this change).
+- Engine hardening: none needed — squash finalize, sandbox HTTP
+  ask-user transport, and the async interaction store all behaved.
+- Lessons for next run: an EMPTY axis on a fresh fixture is the perfect
+  teach-back probe — deterministic trigger, cheap, and the restatement
+  quality is directly readable. Answer fast if the goal is to exercise
+  the queue-delivery link; "carry on" answers prove nothing (they are
+  indistinguishable from no answer — steer with a correcting option
+  instead).
+
 ## 2026-07-07 — v2 on a RELIABILITY axis: converges (not capped) on 9 hang/leak fixes at the I/O boundary (run 019f3afc)
 
 - Status: **validated** — v2 proven on a third axis (reliability), and this run
