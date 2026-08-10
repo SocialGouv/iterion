@@ -239,6 +239,19 @@ export interface RunCancelledEvent extends RunEventBase {
   };
 }
 
+export interface RunRewoundEvent extends RunEventBase {
+  type: "run_rewound";
+  data?: {
+    // Node ids whose state the rewind invalidated (checkpoint outputs,
+    // artifacts, child pointers) — the pivot is always included.
+    // Emitted by pkg/runview/rewind.go.
+    dropped_nodes?: string[];
+    from_node?: string;
+    to_node?: string;
+    [key: string]: unknown;
+  };
+}
+
 export interface BrowserSessionStartedEvent extends RunEventBase {
   type: "browser_session_started";
   data?: {
@@ -439,6 +452,7 @@ export type RunEvent =
   | RunFinishedEvent
   | RunFailedEvent
   | RunCancelledEvent
+  | RunRewoundEvent
   | BrowserSessionStartedEvent
   | BrowserSessionEndedEvent
   | BrowserScreenshotEvent

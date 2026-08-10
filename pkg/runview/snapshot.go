@@ -507,6 +507,8 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		b.accumulateActive(evt.Timestamp)
 	case store.EventRunCancelled:
 		b.handleRunCancelled(evt)
+	case store.EventRunRewound:
+		b.handleRunRewound(evt)
 	case store.EventRunInterrupted:
 		// Server drain — freeze the timer like a pause. The matching
 		// resume re-anchors. Without this case the event would fall
@@ -961,6 +963,91 @@ func (b *SnapshotBuilder) handleRunCancelled(evt *store.Event) {
 		reason = "run cancelled"
 	}
 	b.closeInFlightExecs(ExecStatusFailed, evt.Timestamp, evt.Seq, reason)
+}
+
+// handleRunRewound erases the execution state of every node the rewind
+// invalidated. Rewind (pkg/runview/rewind.go) deletes those nodes'
+// outputs from the checkpoint, but the snapshot is folded from the
+// append-only event log — the pre-rewind node_started / node_finished
+// records are still in the stream, and without this the canvas keeps
+// rendering the dropped nodes with their pre-rewind status, duration
+// and error as if the rewind had not happened.
+//
+// Deleting (rather than downgrading to a neutral status) is what
+// resets the node: with no execution left the canvas renders it as
+// never-run, and the node_started the post-rewind resume emits
+// recreates the exec cleanly — no dependence on the lastResumedSeq
+// pre-resume-artefact rule, which exists to triage duplicate
+// emissions, not to undo recorded state.
+func (b *SnapshotBuilder) handleRunRewound(evt *store.Event) {
+	b.accumulateActive(evt.Timestamp)
+	dropped := rewoundNodeIDs(evt.Data["dropped_nodes"])
+	if len(dropped) == 0 {
+		return
+	}
+	removed := map[string]bool{}
+	for id, exec := range b.execs {
+		if exec != nil && dropped[exec.IRNodeID] {
+			removed[id] = true
+			delete(b.execs, id)
+		}
+	}
+	if len(removed) == 0 {
+		return
+	}
+	kept := b.order[:0]
+	for _, id := range b.order {
+		if !removed[id] {
+			kept = append(kept, id)
+		}
+	}
+	b.order = kept
+	// Clear the (branch, node) → exec_id pointers and the legacy
+	// iteration counters of the dropped nodes so the post-rewind
+	// re-execution starts from a clean slate instead of attributing
+	// downstream events to (or numbering iterations after) an
+	// execution that no longer exists.
+	for branch, perNode := range b.lastExecID {
+		for nodeID := range perNode {
+			if dropped[nodeID] {
+				delete(perNode, nodeID)
+			}
+		}
+		if len(perNode) == 0 {
+			delete(b.lastExecID, branch)
+		}
+	}
+	for branch, counts := range b.nodeCount {
+		for nodeID := range counts {
+			if dropped[nodeID] {
+				delete(counts, nodeID)
+			}
+		}
+		if len(counts) == 0 {
+			delete(b.nodeCount, branch)
+		}
+	}
+}
+
+// rewoundNodeIDs normalises the run_rewound payload's dropped_nodes
+// field into a lookup set. As appended by Rewind it is a []string;
+// after a JSON round-trip through events.jsonl or Mongo it decodes
+// as []any.
+func rewoundNodeIDs(raw any) map[string]bool {
+	out := map[string]bool{}
+	switch v := raw.(type) {
+	case []string:
+		for _, id := range v {
+			out[id] = true
+		}
+	case []any:
+		for _, item := range v {
+			if id, ok := item.(string); ok {
+				out[id] = true
+			}
+		}
+	}
+	return out
 }
 
 // closeInFlightExecs terminates every execution still marked running

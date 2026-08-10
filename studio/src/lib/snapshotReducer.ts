@@ -221,6 +221,33 @@ export function buildExecutionsAt(
         closeInFlightExecs(execs, "failed", evt.timestamp, evt.seq, reason);
         break;
       }
+      case "run_rewound": {
+        // Mirror of pkg/runview/snapshot.go::handleRunRewound: erase the
+        // executions of the nodes the rewind invalidated so the canvas
+        // renders them as never-run past this seq. Folding from scratch
+        // keeps the scrubber coherent both ways — a position BEFORE the
+        // rewind still shows the pre-rewind state, a position after it
+        // shows the reset.
+        const dropped = new Set(
+          (evt.data?.["dropped_nodes"] as string[] | undefined) ?? [],
+        );
+        if (dropped.size === 0) break;
+        for (const [id, e] of execs) {
+          if (dropped.has(e.ir_node_id)) execs.delete(id);
+        }
+        for (const [key, id] of lastExecID) {
+          if (!execs.has(id)) lastExecID.delete(key);
+        }
+        // Reset the legacy iteration counters of the dropped nodes
+        // (backend resets nodeCount too) so a post-rewind re-execution
+        // of an event stream without explicit `iteration` fields
+        // numbers from 0 again. Keys are `${branch} ${nodeId}` —
+        // see eventIter.stepIteration.
+        for (const key of counts.keys()) {
+          if (dropped.has(key.slice(key.indexOf(" ") + 1))) counts.delete(key);
+        }
+        break;
+      }
       default:
         break;
     }
