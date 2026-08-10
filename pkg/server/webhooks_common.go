@@ -935,6 +935,12 @@ func (s *Server) launchWebhookTarget(
 	s.updateWebhookDelivery(ctx, delivery)
 	s.markWebhookOutcome(cfg.Provider, webhooks.StatusLaunched)
 
+	// Claim the repo's gate context on the revision this run is about to
+	// review, so the minutes between the push and the verdict read as
+	// "running" instead of as the absence they are indistinguishable from.
+	// After the launch, because the marker carries the run's URL.
+	s.markGateInFlight(ctx, cfg.TenantID, botID, vars, runID)
+
 	// Mirror the launch onto the trigger spine (observational; carries
 	// launched_run_id so the evaluator never re-launches). Unifies forge with
 	// board/run/schedule sources; no-op without the spine wired.

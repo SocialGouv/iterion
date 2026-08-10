@@ -28,13 +28,23 @@ status.
 ## How it works
 
 ```
-PR opened / pushed ──▶ Revi runs (selected reviewer topology → merge → publish)
+PR opened / pushed ──▶ launch claims the head:  revi/review = pending
+                              │                 ("review in progress")
+                              ▼
+                       Revi runs (selected reviewer topology → merge → publish)
                               │
                               ├─ inline comments  (advisory)
                               └─ revi/review status on the head SHA
                                     success  ⟺  0 findings ≥ gate_severity
                                     failure  ⟺  ≥1 finding  ≥ gate_severity
+
+               run dies without publishing ──▶ reconciler posts failure
+                                               (event + 1-min sweep)
 ```
+
+The context is claimed at launch and answered at the end, so the check is never
+silent while a review is running — see [the in-flight
+claim](#inflight) and [the repair](#interrupted).
 
 1. **Trigger.** Revi auto-reviews on PR `opened`/`reopened`. For the gate to
    track fixes, enable **`ReviewOnSync`** on the webhook so a push
@@ -303,12 +313,44 @@ Revi separates two channels:
   residual risk hides) and are surfaced in the report + the PR review summary
   body. They **never** become findings, reach the board, or gate a merge.
 
+## <a name="inflight"></a>The check says "running" while the review runs
+
+A review takes minutes. For all of them the gate context used to carry **no
+status at all**, and a forge renders that as *"Expected — waiting for status to
+be reported"* — the same rendering as a review that was never launched, a bot
+that crashed on boot, and a webhook that never fired. Read next to Revi's
+review comment on the *previous* commit, it looks exactly like "the bot
+commented but the gate never went green".
+
+So the launch **claims** the context: the moment a run is admitted on a
+revision, the server posts `pending` on that head, described as *review in
+progress — the verdict will replace this*, pointed at the live run console. The
+absence of a status once again means what it says.
+
+Two rules keep the claim from doing harm:
+
+- **It never overwrites a verdict.** A repo pins one gate context precisely so
+  a required check can span several bots ([below](#one-gate)), so a second bot
+  launching on a head another bot already judged must not blank that judgment
+  back to "running". It writes only over nothing, over a previous claim, or
+  over a synthetic interruption (a fresh review on that head IS the recovery).
+  A provider iterion cannot read statuses back from is left alone.
+- **Every consumer knows the marker.** A guard written as "this head already
+  has a status, so someone answered" would read the claim as a verdict —
+  which would make posting it *worse* than the absence, by silencing the very
+  repair below. The reconciler therefore treats its own claim as unanswered.
+
+The claim is not a substitute for the repair: a run that dies still holding it
+leaves a `pending` nothing will resolve, which blocks a required check exactly
+like an absent one. It makes the window legible; the next section is what
+closes it.
+
 ## <a name="interrupted"></a>A review that dies still leaves a verdict
 
-A required check that is **absent** is indistinguishable from one still
-running: the pull request waits for a context that will never arrive, and no
-error appears on the run, the PR or the check. That is worse than a red check,
-because nothing points at the cause.
+A required check that is **absent** — or stuck on the in-flight claim above —
+is indistinguishable from one still running: the pull request waits for a
+context that will never arrive, and no error appears on the run, the PR or the
+check. That is worse than a red check, because nothing points at the cause.
 
 It happened twice in one day in production. A rolling deploy drained a review
 mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
@@ -360,6 +402,50 @@ that from doing harm of its own:
 
 A paused run is not reconciled: it is expected to resume and post its own
 verdict.
+
+### Two triggers, because one event is not a guarantee
+
+The repair is driven by a run-outcome event on the internal bus — and that bus
+is **lossy by design**. Every other consumer carries a reconciliation net for
+exactly that reason (usernotify's 2-minute sweep, the dispatcher's 30s poll
+behind its board fast path, the retry sweeper because no in-pod timer survives
+a rollout). The merge gate — the one consumer whose miss *blocks a pull
+request* — had none: a dropped event left the check absent forever, with the
+run reading `failed_resumable` and nothing anywhere saying a PR was waiting.
+
+Observed 2026-08-10: four review runs died on one provider weekly cap inside 90
+seconds, all four gates stayed absent for hours, and the reconciler had left no
+trace of having considered any of them.
+
+So a **sweep** offers the same runs to the same repair a second time: every
+minute, terminal runs in a bounded window (a 3-minute grace so the two paths
+race only on the dropped ones, a 60-minute lookback so it never reaches back
+and paints a failure onto a long-merged PR). The repair re-reads the live
+status before writing, so the redundant offer costs one API read.
+
+Telling "already answered" from "must escalate" is what makes the second offer
+safe. A synthetic failure deliberately does *not* stand the repair down — that
+is how a **second** death on one head (a relaunched run dying too) escalates
+instead of mistaking the first death's marker for an answer. But the same run
+re-offered every minute is already answered. The status's target URL names the
+run it speaks for, which separates the two with no bookkeeping a second replica
+would not share.
+
+Finally, when a repair genuinely declines to act, **it says so**. Every branch
+past "this run held a publish grant and died" now logs the reason it is posting
+nothing (`forge gate: run … held a grant on … but posts nothing: …`). Those
+branches used to return silently, which is why the four blocked PRs above were
+indistinguishable from four runs that gated nothing.
+
+### The verdict survives a long quota wait
+
+A run parked on a provider usage window is resumed by the retry sweeper up to
+`retrypolicy.DefaultMaxWait` later — a **weekly** forfait cap resets as much as
+seven days out. The per-run publish grant has to outlive that: at a flat 24h it
+expired long before the resumed run reached its publish node, so the review
+completed and then had no way to post the verdict it had computed. The grant's
+TTL is therefore derived from the max retry wait, plus a margin for the resumed
+run itself.
 
 ### The dead review is re-run — once per head
 
