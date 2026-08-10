@@ -260,6 +260,27 @@ func (s *Server) ListenAndServe() error {
 		s.warnf("retry sweeper NOT started: the store does not implement ListRunsDueForRetry — " +
 			"runs parked on a provider quota window will never resume on their own")
 	}
+	// Merge-gate sweeper (cloud only): the reconciliation net under the
+	// reconciler's lossy outcome event. Same shape and cadence as the retry
+	// sweeper next door, and needed for the same reason — a required check
+	// nobody answers blocks a pull request indefinitely, and a dropped event
+	// leaves no trace saying so.
+	if lister, ok := s.cfg.Store.(gateSweepLister); ok && s.forgePublishTokens != nil && s.forgeConnections != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runGateSweeper(ctx, lister)
+		}()
+	} else if s.cfg.ScheduledBots != nil && s.forgePublishTokens != nil {
+		// Cloud mode with gating wired but no sweep: the event path is then the
+		// SOLE trigger, and its misses are exactly the invisible ones.
+		s.warnf("merge-gate sweeper NOT started: the store does not implement ListNotifiableRuns — " +
+			"a review whose outcome event is dropped will leave its required check absent forever")
+	}
 	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
 	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
 	if s.cfg.ScheduledBots != nil {

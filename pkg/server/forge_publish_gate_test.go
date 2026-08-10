@@ -29,11 +29,16 @@ var (
 // fakeGateClient records the merge-gate calls (head-SHA lookup + commit-status
 // write) — the seam the gate tests use instead of a live forge.
 type fakeGateClient struct {
-	headSHA  string
-	getErr   error
-	setErr   error
-	last     forge.CommitStatus
-	lastSHA  string
+	headSHA string
+	getErr  error
+	setErr  error
+	last    forge.CommitStatus
+	lastSHA string
+	// posted keeps every status in order: several now land on one head (the
+	// launch's in-flight claim, then the verdict — or a synthetic failure then
+	// the recovery's fresh claim), and only the SEQUENCE distinguishes a
+	// correct hand-off from a status that overwrote something it should not.
+	posted   []forge.CommitStatus
 	setCalls int
 }
 
@@ -44,6 +49,7 @@ func (f *fakeGateClient) GetPullRequest(context.Context, string, int) (forge.Pul
 func (f *fakeGateClient) SetCommitStatus(_ context.Context, _, sha string, st forge.CommitStatus) error {
 	f.setCalls++
 	f.lastSHA, f.last = sha, st
+	f.posted = append(f.posted, st)
 	return f.setErr
 }
 

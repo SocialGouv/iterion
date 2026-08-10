@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -28,13 +29,38 @@ import (
 // MCP HTTP transport's X-Iterion-Run token pattern (mcp_board_handler.go).
 // ---------------------------------------------------------------------------
 
-// forgePublishDefaultTTL caps how long a publish grant stays alive. Same
-// rationale as boardMCPDefaultTTL: long enough for any realistic run, short
-// enough that a leaked token from a crashed run expires on its own.
-const forgePublishDefaultTTL = 24 * time.Hour
+// forgePublishDefaultTTL caps how long a publish grant stays alive: long
+// enough for any realistic run, short enough that a leaked token from a
+// crashed run expires on its own.
+//
+// "Any realistic run" is NOT the run's wall-clock budget. A run blocked on a
+// provider usage window is parked and resumed by the retry sweeper up to
+// retrypolicy.DefaultMaxWait later — a weekly forfait cap resets as much as
+// seven days out. At the previous flat 24h the grant was dead long before the
+// resumed run reached its publish node, so the review completed and then had
+// no way to post its verdict or its gate status: the required check stayed on
+// whatever the interruption left it, and the PR waited on an answer that had
+// actually been computed. The grant therefore has to outlive the longest wait
+// the retry machinery can schedule, plus a margin for the resumed run itself.
+//
+// The cost is a wider window for a leaked token, and it is NOT offset by early
+// revocation: nothing in this tree calls Revoke outside its own test, so the
+// TTL is the only bound there is. What limits the damage is what the grant can
+// do — post a review and a commit status on ONE repo, re-enforced against the
+// grant's (team, connection, repo) at every use.
+const forgePublishDefaultTTL = retrypolicy.DefaultMaxWait + 24*time.Hour
 
-// forgePublishMaxTokens bounds the in-memory registry.
-const forgePublishMaxTokens = 1024
+// forgePublishMaxTokens bounds the in-memory registry (the backend used when
+// no Valkey is configured).
+//
+// It scales with the TTL because Register only evicts EXPIRED entries before
+// checking the cap, so the ceiling is really "gating launches per TTL": at a
+// flat 1024 the 9-day TTL would saturate at ~114 launches/day, and saturation
+// is not graceful — Register errors, injectForgePublishVars hands the run no
+// grant, and the run cannot publish its verdict. Worse now that the launch has
+// already claimed the check: the reconciler needs the grant to speak, so it
+// abstains (no token ⇒ "not a gating run") and the claim is never answered.
+const forgePublishMaxTokens = 1024 * int(forgePublishDefaultTTL/(24*time.Hour))
 
 // ForgePublishGrant scopes one run's publish token: reviews may only be
 // posted through this team's connection, on this repo.

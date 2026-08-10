@@ -131,8 +131,19 @@ func TestGateRelaunch(t *testing.T) {
 		if err := w.s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		if w.gc.setCalls != 1 {
-			t.Fatalf("posted %d statuses, want 1 — the failure lands BEFORE any recovery", w.gc.setCalls)
+		// Two statuses, and their ORDER is the contract: the synthetic failure
+		// lands BEFORE any recovery (so the PR is never blind even when the
+		// relaunch cannot happen), and the recovery run then claims the check
+		// back to "running" — a review really is in flight again, and leaving
+		// a red cross up would misreport a verdict that was never reached.
+		if w.gc.setCalls != 2 {
+			t.Fatalf("posted %d statuses, want 2 (failure, then the recovery's claim)", w.gc.setCalls)
+		}
+		if got := w.gc.posted[0]; got.State != forge.CommitStateFailure || !isSyntheticGateInterruption(got.Description) {
+			t.Fatalf("first status = %s/%q, want the synthetic failure BEFORE any recovery", got.State, got.Description)
+		}
+		if got := w.gc.posted[1]; !isGateInFlight(got) {
+			t.Fatalf("second status = %s/%q, want the relaunched run's in-flight claim", got.State, got.Description)
 		}
 		if *w.launched != 1 {
 			t.Fatalf("launched %d runs, want 1 — the dead review's bot must be re-run", *w.launched)
@@ -193,6 +204,44 @@ func TestGateRelaunch(t *testing.T) {
 		cards, err = w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("board cards after a third death = %d (%v), want still 1", len(cards), err)
+		}
+	})
+
+	// "Duplicate" is not "the replacement died". The idempotency claim is a
+	// read-then-insert and the gate sweep runs UNELECTED on every replica, so
+	// two passes landing on one dead run give one launch and one duplicate —
+	// for the same, live, replacement. Escalating on that files a card telling
+	// a human the automation is out of moves while the replacement is alive and
+	// reviewing.
+	t.Run("a relaunch still in flight does not escalate", func(t *testing.T) {
+		w := build(t, nil)
+		alive, err := w.s.cfg.Store.CreateRun(context.Background(), "run-prior-relaunch", "dep_update_guard", map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alive.Status = store.RunStatusRunning
+		if err := w.s.cfg.Store.SaveRun(context.Background(), alive); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "d-inflight", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+			Status: webhooks.StatusLaunched, RunID: alive.ID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStateFailure,
+			Description: gateInterruptedDescription,
+		}}
+		runID := seedDeadRun(t, w.s)
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
+
+		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cards) != 0 {
+			t.Fatalf("board cards = %d, want 0 — a human was told automation is out of moves while run %s is still reviewing", len(cards), alive.ID)
 		}
 	})
 
