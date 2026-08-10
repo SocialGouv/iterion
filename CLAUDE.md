@@ -172,6 +172,11 @@ the hours this one spent.
   client (Claude Code, desktop, Cursor): `iterion mcp` setup, the
   `local_*`/`remote_*` tool families, detached-launch semantics,
   `--read-only`, and the `remote_api` escape hatch.
+- [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
+  the in-flight claim at launch, the verdict, and the two triggers that
+  guarantee a dead review still answers (outcome event + 1-min sweep).
+  Read it when a gate looks stuck — "absent", "pending forever", a synthetic
+  `review died`, or a repair that posts nothing and says why in the logs.
 
 ## Development setup
 
