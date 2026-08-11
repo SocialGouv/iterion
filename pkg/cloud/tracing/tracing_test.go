@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go.opentelemetry.io/otel"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -104,6 +105,89 @@ func TestInit_withFakeEndpoint_buildsTracerProvider(t *testing.T) {
 	}
 	if err := shutdown(context.Background()); err != nil {
 		t.Errorf("shutdown: %v", err)
+	}
+}
+
+// TestInit_exportPath asserts the path the exporter actually PUTS ON THE WIRE
+// for each endpoint shape the OTLP spec defines. That path is the only
+// observable that moves: every one of these configurations compiles, connects,
+// and looks healthy while silently POSTing spans somewhere no collector serves.
+//
+// The spec gives the two env vars DIFFERENT semantics
+// (https://opentelemetry.io/docs/specs/otel/protocol/exporter/):
+// OTEL_EXPORTER_OTLP_ENDPOINT is a base URL and the signal path is joined onto
+// it; OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is used as-is, with the root path when
+// it carries none. The SDK's env reader implements both. Init must therefore
+// NOT hand the resolved endpoint back through WithEndpointURL — explicit
+// options are applied after the env config and would flatten the two readings
+// into one.
+//
+// That flattening is what the otel 1.44 → 1.45 bump turned into span loss:
+// 1.44 left a path-less URL's URLPath empty for cleanPath to fill with the
+// default, 1.45 pins it to "/". Case 1 below is that regression.
+func TestInit_exportPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		base     string // OTEL_EXPORTER_OTLP_ENDPOINT, "" = unset
+		signal   string // OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, "" = unset
+		suffix   string // appended to the test server URL
+		wantPath string
+	}{
+		// The #400 regression, and the shape most operators write.
+		{name: "base endpoint, no path", base: "{srv}", wantPath: "/v1/traces"},
+		// A collector behind a reverse-proxy prefix. The signal path is
+		// joined onto the operator's prefix — dropping it POSTs to the
+		// prefix itself, which is the same silent loss one level over.
+		{name: "base endpoint with a prefix", base: "{srv}", suffix: "/otlp", wantPath: "/otlp/v1/traces"},
+		// Per-signal: used as-is. No path means the ROOT path, not the
+		// default signal path — "as-is" is the whole point of the variable.
+		{name: "per-signal endpoint, no path", signal: "{srv}", wantPath: "/"},
+		{name: "per-signal endpoint with a path", signal: "{srv}", suffix: "/v1/traces", wantPath: "/v1/traces"},
+		// Precedence: the per-signal variable wins over the base one.
+		{name: "per-signal wins over base", base: "http://127.0.0.1:1/wrong", signal: "{srv}", suffix: "/chosen", wantPath: "/chosen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			paths := make(chan string, 4)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case paths <- r.URL.Path:
+				default:
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			subst := func(v string) string {
+				if v == "{srv}" {
+					return srv.URL + tc.suffix
+				}
+				return v
+			}
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", subst(tc.base))
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", subst(tc.signal))
+
+			ctx := context.Background()
+			shutdown, err := Init(ctx, "iterion-test", nil)
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			_, span := otel.Tracer("tracing-test").Start(ctx, "probe")
+			span.End()
+			// Shutdown flushes the batcher, so the export completes before
+			// we read — no polling, no sleep, no flake.
+			if err := shutdown(ctx); err != nil {
+				t.Fatalf("shutdown: %v", err)
+			}
+
+			select {
+			case got := <-paths:
+				if got != tc.wantPath {
+					t.Errorf("exporter POSTed to %q, want %q — spans go to a path the collector does not serve", got, tc.wantPath)
+				}
+			default:
+				t.Fatal("the collector received no export at all")
+			}
+		})
 	}
 }
 
