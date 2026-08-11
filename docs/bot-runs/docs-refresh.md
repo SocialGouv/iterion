@@ -74,6 +74,25 @@ reference self-host case.
 - Budget raised 120 → 400 (bot 3.5.5) so the asymptote converges on its own
   terms. Safe now only because of the guard above — a higher ceiling used
   to mean a bigger pile of stranded commits.
+- **Proven live on prod, before and after.** A purpose-built probe (a
+  campaign-shaped loop under a token cap it cannot hold) was run on the
+  cloud instance on both sides of the deploy:
+
+  | | Passes | Back-edge at the last crossing | Outcome |
+  |---|---|---|---|
+  | `019feff6` (pre, v3.36.1) | 3 | **taken** with 595 tokens left for a ~2800-token pass | `failed_resumable`, `deliver` never ran |
+  | `019ff041` (post, v3.36.2) | 2 | **declined** — `budget_warning{reason: loop_budget_guard, used: 5779, needed: 2948, remaining: 3221}` | `finished` through `deliver` |
+
+  The loop counter was `passes(6)` in both, so nothing but the budget ended
+  either run. The post-deploy run exits at 64% of its cap — the guard
+  reserves the room the exit path needs, which the pre-deploy run did not
+  have even when it stopped.
+- Revi caught a real defect in the first cut of the guard (1 high, 1
+  medium, 2 low) before it merged: pricing a loop from run start charged a
+  LATE-entered loop for everything before it, which would have turned
+  secured-renovacy's Phase-2 loop into a single-shot body on every run.
+  The fix prices each loop from its own entry. The unit suite could not
+  have seen it — it exercised one loop.
 - **Already fixed, and the runs prove it.** 08-03 shows the resume/refail
   loop: `campaign` restarted **9 times** at pass 4, 8 `budget_exceeded`
   events, each turn re-provisioning a sandbox to instantly re-hit the same
