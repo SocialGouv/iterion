@@ -282,6 +282,50 @@ func (b *SharedBudget) DurationStatus() (used, limit float64, bounded bool) {
 	return float64(time.Since(b.startedAt)), float64(b.maxDuration), true
 }
 
+// budgetAxis is one enforced budget dimension's standing: what the run
+// has consumed on it, and what it has left before the cap.
+type budgetAxis struct {
+	used      float64
+	remaining float64
+}
+
+// budgetDimensions lists the enforceable axes in the order checkLocked
+// evaluates them, so a caller reporting "which axis stopped me" reports
+// the same one every time.
+var budgetDimensions = []string{"iterations", "tokens", "cost_usd", "duration"}
+
+// Axes reports used + remaining for every ENFORCED dimension, keyed by
+// the names in budgetDimensions (duration in nanoseconds, as float64,
+// matching budgetCheckResult). An axis with no limit is absent: a caller
+// pricing future work only compares against caps that can actually stop
+// it. An overrun axis reports remaining 0, never negative. Nil-safe.
+func (b *SharedBudget) Axes() map[string]budgetAxis {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	axes := make(map[string]budgetAxis, len(budgetDimensions))
+	add := func(dimension string, used, limit float64) {
+		if limit <= 0 {
+			return
+		}
+		remaining := limit - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		axes[dimension] = budgetAxis{used: used, remaining: remaining}
+	}
+
+	add("iterations", float64(b.iterationsUsed), float64(b.maxIterations))
+	add("tokens", float64(b.tokensUsed), float64(b.maxTokens))
+	add("cost_usd", b.costUsed, b.maxCostUSD)
+	add("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+
+	return axes
+}
+
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	var results []budgetCheckResult
 

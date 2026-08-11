@@ -129,6 +129,21 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 					}
 					continue
 				}
+				// Affordability: another iteration priced by the last one
+				// against what the budget has left. Skipping the back-edge
+				// hands the run to its exit path with the work it banked,
+				// where dying mid-iteration on the hard cap would strand it.
+				if dim, need, have := e.loopBudgetShortfall(edge.LoopName, rs); dim != "" {
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f left, last one took %.2f), falling through to the exit path",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, dim, have, need)
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
+						"loop": edge.LoopName, "reason": "loop_budget_guard",
+						"dimension": dim, "remaining": have, "needed": need,
+					}); err != nil {
+						e.logger.Warn("failed to emit loop_budget_guard warning: %v", err)
+					}
+					continue
+				}
 			}
 		}
 

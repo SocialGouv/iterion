@@ -51,6 +51,10 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	}
 	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS))
 	rs.costUSDTotal = cp.CostUSDTotal
+	// Rebase the loop-affordability baseline onto what the resume starts
+	// from, so the first back-edge crossing prices its pass by that pass
+	// and not by every pass the run ever made.
+	captureBudgetSessionBase(rs)
 }
 
 // serializeNodeAttempts converts the runState's typed-key bucket into a

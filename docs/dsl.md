@@ -467,6 +467,35 @@ workflow review:
 
 Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
 
+#### Budget and loop back-edges
+
+A loop's back-edge is declined when the budget can no longer fund another
+iteration. The runtime prices one iteration by what the previous one
+consumed — the distance between two consecutive arrivals at the loop's
+decision point, on every axis the workflow actually caps (`max_cost_usd`,
+`max_tokens`, `max_iterations`, `max_duration`) — and skips the back-edge
+when what is left is less than that. The run then leaves through its own
+exit path: for the campaign shape below, the `gate -> publish` fall-through
+that also serves loop exhaustion.
+
+```iter
+  gate -> publish when converged
+  gate -> work as passes(4)
+  gate -> publish            # exhausted, or unaffordable: ship what is banked
+```
+
+This matters for any loop that banks work as it goes (commits in stride, a
+published report, a PR opened by a tail node). Without it a loop starts an
+iteration it cannot pay for, dies mid-iteration on `BUDGET_EXCEEDED`, and
+the tail that would have delivered the work never runs.
+
+The decline is visible, never silent: a `budget_warning` event carrying
+`reason: loop_budget_guard` with the loop, the blocking dimension, the
+remaining allowance and the price of the last iteration. It is on by
+default; `ITERION_LOOP_BUDGET_GUARD=off` restores the run-until-you-hit-the-wall
+behaviour. The 90%-hard-limit and exceeded checks stay as the backstop for a
+single node that overruns on its own.
+
 ### Edge forms
 
 ```iter
