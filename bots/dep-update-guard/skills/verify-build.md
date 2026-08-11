@@ -170,6 +170,11 @@ one, and after two attempts the PR is held on a verdict that says the build was
 never established. §1b applies here too: what the script covers is decided by
 the repo's CI, never by which files the bump happened to touch.
 
+A script that runs **nothing** is rejected the same way. An empty or
+comment-only script exits 0, which the gate reads as a verified build — so
+"write one" is never satisfied by writing a placeholder. Shell no-ops (`set`,
+`cd`, `exit`, `true`) do not count as running anything.
+
 **Every line must be a COMMAND.** Never emit a bare path to a source file: the
 shell tries to execute it, answers `Permission denied`, and the run reports a
 red build that never ran. To exercise a set of files, pass them to the repo's

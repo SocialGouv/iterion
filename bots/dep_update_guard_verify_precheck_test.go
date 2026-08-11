@@ -98,6 +98,68 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		}
 	})
 
+	// Revi's R6d2b2b: POSIX sh executes any WORD containing a slash as a
+	// pathname, prefix or no prefix. A listing produced by `git ls-files` or
+	// `go list` carries no `./`, and produces the identical symptom — so a
+	// guard keyed on the prefix fires or not depending on how the agent
+	// happened to spell it.
+	t.Run("bare relative paths, no ./ prefix, are rejected too", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, "pkg", "x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var lines []string
+		for _, name := range []string{"a_test.go", "b_test.go", "c_test.go", "d_test.go", "e_test.go"} {
+			rel := filepath.Join("pkg", "x", name)
+			if err := os.WriteFile(filepath.Join(ws, rel), []byte("package x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, rel)
+		}
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !res.PrecheckRejected {
+			t.Errorf("whether the guard fires must not depend on how the listing was spelled; got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+		if res.Passed {
+			t.Error("a script of unrunnable paths must not open the commit path")
+		}
+	})
+
+	// Revi's R510ffe: the loop-back added above asks an agent that already
+	// skipped authorship to write SOMETHING. A script that runs nothing exits
+	// 0, which the gate reads as a verified build — so the cheapest way to
+	// satisfy that pressure would be a green commit certifying no verification
+	// at all. This is the floor that makes the loop-back safe to offer.
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"empty", ""},
+		{"shebang and comments only", "#!/bin/sh\n# nothing to verify for this bump\n"},
+		{"no-ops only", "#!/bin/sh\nset -e\ncd /tmp\nexit 0\n"},
+		{"a bare true", "#!/bin/sh\ntrue\n"},
+	} {
+		t.Run("a vacuous script is rejected: "+tc.name, func(t *testing.T) {
+			ws, scratch := t.TempDir(), t.TempDir()
+			if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(tc.body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			res := run(t, ws, scratch)
+			if res.Passed {
+				t.Error("a script that runs nothing must not certify a build — it exits 0 for the same reason a passing one does")
+			}
+			if !res.PrecheckRejected {
+				t.Errorf("it is an authorship defect and must be sent back, got exit %d: %s", res.ExitCode, res.LogTail)
+			}
+			if !strings.Contains(res.PrecheckReason, "EMPTY SCRIPT") {
+				t.Errorf("the reason must name the defect, got %q", res.PrecheckReason)
+			}
+		})
+	}
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.

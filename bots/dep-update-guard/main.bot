@@ -795,18 +795,31 @@ try:
     _lines = open(script, encoding='utf-8', errors='replace').read().splitlines()
 except OSError:
     _lines = []
+# A script that runs NOTHING exits 0, which reads as a verified build. That
+# path is newly reachable: the loop-back above asks an agent that already
+# skipped authorship to write something, and the cheapest way to satisfy that
+# pressure must not be a green commit. Shell no-ops do not count as running.
+_noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'echo', 'shift')
+_runs = 0
 _bare = []
 for _ln in _lines:
     _s = _ln.strip()
-    if not _s or _s.startswith('#') or (' ' in _s) or (chr(9) in _s):
+    if not _s or _s.startswith('#'):
         continue
-    if not (_s.startswith('./') or _s.startswith('/')):
+    if _s.split()[0] not in _noops:
+        _runs = _runs + 1
+    # Any WORD containing a slash is a pathname to the shell, with or without a
+    # leading ./ -- and a listing is as likely to come out of git ls-files or
+    # go list (bare relative paths) as hand-written with the prefix.
+    if (' ' in _s) or (chr(9) in _s) or ('/' not in _s):
         continue
-    _p = os.path.join(ws, _s[2:]) if _s.startswith('./') else _s
+    _p = _s if _s.startswith('/') else os.path.join(ws, _s)
     if os.path.isfile(_p) and not os.access(_p, os.X_OK):
         _bare.append(_s)
-        if len(_bare) > 3:
-            break
+if _runs == 0:
+    _r = 'EMPTY SCRIPT: ' + script + ' runs nothing -- only blank lines, comments, or shell no-ops. It would exit 0 and certify a build that was never attempted. Write the repo own build and test commands (verify-build skill section 1).'
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
+    raise SystemExit(0)
 if len(_bare) > 3:
     _r = 'NOT COMMANDS: ' + str(len(_bare)) + '+ lines of ' + script + ' are bare paths to files the shell cannot execute (e.g. ' + ', '.join(_bare[:3]) + '). That is a file listing pasted in as commands; sh answers each with Permission denied and the run reports a red build that never ran. Invoke the repo own test runner over those paths instead.'
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))

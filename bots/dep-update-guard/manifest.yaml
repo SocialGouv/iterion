@@ -1,7 +1,18 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.2
+version: 2.7.3
+## 2.7.3 — Revi hardening of 2.7.2, both defects inside the new guards.
+## (a) The bare-path test keyed on a ./ or / prefix, but POSIX sh executes any
+## WORD containing a slash as a pathname -- and a listing out of git ls-files
+## or go list carries no prefix, so whether the guard fired depended on how the
+## agent spelled it. Now: any line that is a single word containing a slash and
+## naming a file the shell cannot execute. (b) Nothing rejected a script that
+## runs NOTHING. An empty or comment-only verify.sh exits 0, which the gate
+## reads as a verified build -- and 2.7.2 made that newly reachable by asking
+## an agent that already skipped authorship to write SOMETHING, with no floor
+## on what counts. A vacuous script was the cheapest way to satisfy that
+## pressure, turning a previously fail-closed path into a green commit.
 ## 2.7.2 — the two verify-authorship defects from the 2026-08-10 batch become
 ## precheck REJECTIONS that loop back, instead of red builds that hold. A
 ## missing verify.sh (iterion#390: a base-image digest refresh whose correct
