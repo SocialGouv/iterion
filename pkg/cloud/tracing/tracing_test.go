@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -131,6 +132,7 @@ func TestInit_exportPath(t *testing.T) {
 		base     string // OTEL_EXPORTER_OTLP_ENDPOINT, "" = unset
 		signal   string // OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, "" = unset
 		suffix   string // appended to the test server URL
+		insecure bool   // OTEL_EXPORTER_OTLP_INSECURE, for the scheme-less shapes
 		wantPath string
 	}{
 		// The #400 regression, and the shape most operators write.
@@ -145,6 +147,23 @@ func TestInit_exportPath(t *testing.T) {
 		{name: "per-signal endpoint with a path", signal: "{srv}", suffix: "/v1/traces", wantPath: "/v1/traces"},
 		// Precedence: the per-signal variable wins over the base one.
 		{name: "per-signal wins over base", base: "http://127.0.0.1:1/wrong", signal: "{srv}", suffix: "/chosen", wantPath: "/chosen"},
+		// The scheme-less `host:port` shape. url.Parse gives it no Host, so
+		// the env reader resolves an EMPTY endpoint and WithEndpoint is what
+		// makes the shape work at all — but WithEndpoint sets only the host.
+		// For the per-signal variable the env reader has meanwhile applied its
+		// "no path part means the root path" rule to a value whose path it
+		// could not see, pinning URLPath to "/"; cleanPath will not replace a
+		// non-empty path. Left alone this lands on the collector root — the
+		// same silent loss, one shape over. There is no path to preserve here
+		// (everything after the colon is opaque to url.Parse), so the signal
+		// path is restated explicitly.
+		//
+		// These two run insecure: any scheme-less value parses as a scheme the
+		// SDK does not recognise, which it treats as TLS. That is the SDK's
+		// documented default for WithEndpoint and not what is under test, so
+		// the spec's own INSECURE toggle takes it out of the way.
+		{name: "base endpoint, host:port", base: "{host}", insecure: true, wantPath: "/v1/traces"},
+		{name: "per-signal endpoint, host:port", signal: "{host}", insecure: true, wantPath: "/v1/traces"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paths := make(chan string, 4)
@@ -158,13 +177,29 @@ func TestInit_exportPath(t *testing.T) {
 			defer srv.Close()
 
 			subst := func(v string) string {
-				if v == "{srv}" {
+				switch v {
+				case "{srv}":
 					return srv.URL + tc.suffix
+				case "{host}":
+					// A NAME, not the listener's IP: url.Parse rejects
+					// "127.0.0.1:4318" outright ("first path segment cannot
+					// contain colon"), which makes the env reader skip and
+					// hides the very behaviour under test. "localhost:4318"
+					// parses — as scheme "localhost" — and is the shape an
+					// operator actually writes.
+					u, err := url.Parse(srv.URL)
+					if err != nil {
+						t.Fatalf("parse test server URL: %v", err)
+					}
+					return "localhost:" + u.Port() + tc.suffix
 				}
 				return v
 			}
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", subst(tc.base))
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", subst(tc.signal))
+			if tc.insecure {
+				t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+			}
 
 			ctx := context.Background()
 			shutdown, err := Init(ctx, "iterion-test", nil)
