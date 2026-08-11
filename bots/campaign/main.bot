@@ -481,6 +481,10 @@ tool steward:
     import os
     import subprocess
 
+    # bool and json input fields render as JSON literals (true/false/null),
+    # so the three JSON atoms need their Python names before interpolation.
+    true, false, null = True, False, None
+
     ws = {{vars.workspace_dir}}
     governance = {{vars.governance}}
     escalation = {{vars.escalation}}
