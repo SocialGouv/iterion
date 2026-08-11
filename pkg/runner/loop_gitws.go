@@ -435,7 +435,9 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 	cmd.WaitDelay = 10 * time.Second
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+	// SanitizeEnv drops the variables that would override which repository,
+	// index or object store this runs against — the clone dir is chosen here.
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
 	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

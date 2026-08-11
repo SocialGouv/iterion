@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
@@ -877,6 +878,9 @@ func workspaceIsDirty(path string) (bool, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = path
+	// cmd.Dir names the repository; an inherited GIT_DIR or GIT_INDEX_FILE
+	// would answer about another one, or read an index that is not its own.
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return false, err
@@ -900,6 +904,7 @@ func workspaceGitCommonDir(path string) (string, error) {
 	// supports linked worktrees. Resolve its possibly-relative output below.
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = workspaceDir
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

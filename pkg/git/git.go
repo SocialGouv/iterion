@@ -141,17 +141,25 @@ var gitRedirectionEnv = []string{
 	"GIT_NAMESPACE",
 }
 
-func gitEnv() []string {
-	src := os.Environ()
-	out := make([]string, 0, len(src)+2)
-	for _, kv := range src {
+// SanitizeEnv returns env without the redirection variables (see
+// gitRedirectionEnv). Exported because this package is not the only place that
+// shells out to git: anything running a git command against a directory it
+// names itself wants the same guarantee, and a caller that assembles its own
+// environment cannot get it from run() below.
+func SanitizeEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
 		key, _, _ := strings.Cut(kv, "=")
 		if slices.Contains(gitRedirectionEnv, key) {
 			continue
 		}
 		out = append(out, kv)
 	}
-	return append(out, "LC_ALL=C", "LANG=C")
+	return out
+}
+
+func gitEnv() []string {
+	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 }
 
 // run executes `git args...` with cwd=dir and returns combined stdout.
