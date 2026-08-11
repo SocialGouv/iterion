@@ -42,12 +42,13 @@ func gitRepo(t *testing.T) string {
 // answers for anything the repo leaves unset.
 //
 // Both leak in production. A sandboxed run with `host_state: none` injects the
-// four identity variables into the container (runtime.applyGitIdentityEnv), so
+// four identity variables into the container (runtime.seedGitIdentityEnv), so
 // `TestLogAllowsTabsInUserControlledFields` — which sets a tab-bearing author
 // locally and expects to read it back — instead saw the run's own bot identity
 // and failed. Vetty held four dependency PRs on that failure alone
 // (SocialGouv/iterion #392/#395/#397/#399), reporting a red build for a bump
 // that had broken nothing.
+//
 // Every GIT_* variable is dropped rather than a chosen few. A denylist here is
 // just a list of the leaks already paid for: the identity quartet was the one
 // that held the PRs, but GIT_INDEX_FILE — which git sets in every hook
@@ -57,12 +58,11 @@ func gitRepo(t *testing.T) string {
 // helpers need nothing from the caller's git environment, so they inherit none
 // of it.
 //
-// Scope: this covers what the HELPERS do. The package's own readers (Status,
-// Log, RevParseHead) run git with the caller's environment, so an ambient
-// GIT_INDEX_FILE still reaches them and the suite still fails under one —
-// differently, and for a reason that lives in the production code rather than
-// here. Every function in this package takes an explicit dir, which makes that
-// inheritance look accidental; deciding it is a separate change.
+// The package's own readers close the same door from the other side:
+// gitEnv() drops the redirection family (see gitRedirectionEnv), keeping the
+// identity and transport variables the sandbox path sets deliberately. So the
+// helpers here strip everything — they need none of it — and production strips
+// only what contradicts its own `dir` argument.
 func gitTestEnv() []string {
 	env := os.Environ()
 	out := env[:0:0]
@@ -99,20 +99,21 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_EMAIL", "ambient@example.invalid")
 	t.Setenv("GIT_COMMITTER_NAME", "ambient[bot]")
 	t.Setenv("GIT_COMMITTER_EMAIL", "ambient@example.invalid")
-	// And the index: git sets GIT_INDEX_FILE in every hook environment and
-	// under `git rebase --exec` / `git bisect run`. Inherited, it does not
-	// just skew an assertion — the suite fails outright and leaves a stray
-	// index at the ambient path, staging into whatever invoked it.
-	//
-	// The scrub covers every GIT_* variable, but this test only pins the ones
-	// the HELPERS own. GIT_DIR and the object-store family also redirect the
-	// package's production readers, which inherit the caller's environment by
-	// design; whether they should is a separate question from this suite's
-	// hermeticity.
+	// And the redirection family: git sets these in every hook environment and
+	// under `git rebase --exec` / `git bisect run`. Inherited, GIT_INDEX_FILE
+	// does not just skew an assertion — the helpers stage into whatever
+	// invoked them, and the readers report the tree as deleted-and-untracked.
 	ambientIndex := filepath.Join(t.TempDir(), "ambient-index")
 	t.Setenv("GIT_INDEX_FILE", ambientIndex)
+	t.Setenv("GIT_WORK_TREE", filepath.Join(t.TempDir(), "ambient-worktree"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(t.TempDir(), "ambient-objects"))
 
 	dir := gitRepo(t)
+	// A reader, not just the helpers: Status runs through the production
+	// gitEnv(), so this is what proves both sides strip the redirection.
+	if files, err := Status(dir); err != nil || len(files) != 0 {
+		t.Fatalf("Status on a clean repo: got %+v, err %v — the ambient git environment is reaching the production readers", files, err)
+	}
 	mustRun(t, dir, "config", "user.name", "Local Author")
 	mustRun(t, dir, "config", "user.email", "local@example.com")
 	sha := commit(t, dir, "hermetic.txt", "x\n", "hermetic")
