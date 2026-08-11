@@ -77,26 +77,32 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	}
 }
 
-// isReExecution reports whether this run has already executed nodes, so the
-// clone about to replace the workspace is discarding their uncommitted output.
+// reExecutionReason names why this claim is a re-execution — so the clone
+// about to replace the workspace is discarding an earlier node's uncommitted
+// output — or returns "" for a genuine first attempt, which has nothing to
+// lose.
 //
-// `msg.Resume` catches the ordinary resume publishes but not all re-executions:
-// a JetStream redelivery of a run still marked `running` — a pod that died
-// inside the orphan sweeper's window — re-clones with Resume nil. The
-// checkpoint is the fact that does not depend on how the delivery was shaped:
-// it exists if and only if a node boundary was already crossed.
-func (r *Runner) isReExecution(ctx context.Context, msg *queue.RunMessage) bool {
+// The two reasons are distinct facts and the marker carries whichever applies.
+// `msg.Resume` is the ordinary resume publish; it does not cover every
+// re-execution, since a JetStream redelivery of a run still marked `running` —
+// a pod that died inside the orphan sweeper's window — re-clones with Resume
+// nil. The checkpoint is the fact that does not depend on how the delivery was
+// shaped: it exists if and only if a node boundary was already crossed.
+func (r *Runner) reExecutionReason(ctx context.Context, msg *queue.RunMessage) string {
 	if msg.Resume != nil {
-		return true
+		return "resume"
 	}
 	run, err := r.cfg.Store.LoadRun(ctx, msg.RunID)
 	if err != nil {
 		// Say so rather than let "could not tell" read as "first attempt":
 		// silence here is the exact failure this marker exists to end.
 		r.cfg.Logger.Warn("runner: run %s: could not read the run to tell a first claim from a re-execution (%v) — not recording a workspace reset", msg.RunID, err)
-		return false
+		return ""
 	}
-	return run != nil && run.Checkpoint != nil
+	if run != nil && run.Checkpoint != nil {
+		return "redelivery"
+	}
+	return ""
 }
 
 // recordWorkspaceReset puts the fresh-clone fact on a re-executing run's
@@ -109,13 +115,13 @@ func (r *Runner) isReExecution(ctx context.Context, msg *queue.RunMessage) bool 
 // sides of it unless something says otherwise. The pod log therefore carries
 // it too, and carries it FIRST: the append is precisely what fails when the
 // timeline is going to be missing the fact.
-func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage) {
-	r.cfg.Logger.Warn("runner: run %s re-executing on a FRESH clone of %s — any file an earlier node edited but did not commit is gone (node outputs are restored from the checkpoint, the working tree is not)",
-		msg.RunID, strutil.FirstNonBlank(msg.RepoSHA, msg.RepoURL))
+func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage, reason string) {
+	r.cfg.Logger.Warn("runner: run %s re-executing (%s) on a FRESH clone of %s — any file an earlier node edited but did not commit is gone (node outputs are restored from the checkpoint, the working tree is not)",
+		msg.RunID, reason, strutil.FirstNonBlank(msg.RepoSHA, msg.RepoURL))
 	if _, err := r.cfg.Store.AppendEvent(ctx, msg.RunID, store.Event{
 		Type: store.EventRunWorkspaceReset,
 		Data: map[string]any{
-			"reason":   "resume",
+			"reason":   reason,
 			"repo_url": msg.RepoURL,
 			"repo_sha": msg.RepoSHA,
 		},
@@ -194,8 +200,8 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// downstream node keeps reading "the previous node edited these files"
 	// against a tree where those edits no longer exist. That divergence used
 	// to be entirely silent — record it on the timeline.
-	if r.isReExecution(ctx, msg) {
-		r.recordWorkspaceReset(ctx, msg)
+	if reason := r.reExecutionReason(ctx, msg); reason != "" {
+		r.recordWorkspaceReset(ctx, msg, reason)
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir repo parent: %w", err)

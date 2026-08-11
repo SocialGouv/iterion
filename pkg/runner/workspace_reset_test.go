@@ -36,7 +36,7 @@ func TestRecordWorkspaceReset(t *testing.T) {
 		RepoSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
 	}
 
-	r.recordWorkspaceReset(context.Background(), msg)
+	r.recordWorkspaceReset(context.Background(), msg, "resume")
 
 	events, err := st.LoadEvents(context.Background(), msg.RunID)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestRecordWorkspaceReset_storeFailureStillReportsToTheLog(t *testing.T) {
 	r.recordWorkspaceReset(context.Background(), &queue.RunMessage{
 		RunID:   "run-1",
 		RepoSHA: "ec2ff4b9e54e61f28f2cd43cd8281e18a5e0af0a",
-	})
+	}, "resume")
 
 	out := logged.String()
 	for _, want := range []string{
@@ -107,23 +107,23 @@ func TestRecordWorkspaceReset_storeFailureStillReportsToTheLog(t *testing.T) {
 	}
 }
 
-// TestIsReExecution covers the predicate that decides whether the marker is
-// warranted. A first claim has nothing to lose; every later one does.
+// TestReExecutionReason covers the predicate that decides whether the marker is
+// warranted, and which fact it names. A first claim has nothing to lose; every later one does.
 //
 // The `running` case is the one `msg.Resume != nil` alone gets wrong: a
 // JetStream redelivery of a run whose pod died inside the orphan sweeper's
 // window arrives with Resume nil, re-clones all the same, and would have
 // discarded an earlier node's work with no marker at all.
-func TestIsReExecution(t *testing.T) {
+func TestReExecutionReason(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		resume     *queue.ResumeSpec
 		checkpoint *store.Checkpoint
-		want       bool
+		want       string
 	}{
-		{name: "first claim: nothing has run yet", want: false},
-		{name: "explicit resume publish", resume: &queue.ResumeSpec{}, want: true},
-		{name: "redelivery with a checkpoint, no resume spec", checkpoint: &store.Checkpoint{NodeID: "commit"}, want: true},
+		{name: "first claim: nothing has run yet", want: ""},
+		{name: "explicit resume publish", resume: &queue.ResumeSpec{}, want: "resume"},
+		{name: "redelivery with a checkpoint, no resume spec", checkpoint: &store.Checkpoint{NodeID: "commit"}, want: "redelivery"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := store.New(t.TempDir())
@@ -141,9 +141,9 @@ func TestIsReExecution(t *testing.T) {
 				}
 			}
 			r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}}
-			got := r.isReExecution(ctx, &queue.RunMessage{RunID: run.ID, Resume: tc.resume})
+			got := r.reExecutionReason(ctx, &queue.RunMessage{RunID: run.ID, Resume: tc.resume})
 			if got != tc.want {
-				t.Errorf("isReExecution = %v, want %v", got, tc.want)
+				t.Errorf("reExecutionReason = %q, want %q — a marker that mislabels which fact it saw is worse than none", got, tc.want)
 			}
 		})
 	}

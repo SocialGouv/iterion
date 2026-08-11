@@ -124,7 +124,8 @@ const (
 	// otherwise discard the work unannounced. Emitted once per claim, so N
 	// markers mean N delivery attempts — matching EventRunResumed, which the
 	// engine also emits per attempt. Data:
-	//   - reason: why the workspace is fresh ("resume")
+	//   - reason: which fact made this a re-execution — "resume" (an explicit
+	//     resume publish) or "redelivery" (a checkpoint with no resume spec)
 	//   - repo_url / repo_sha: what the clone was re-anchored on
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
