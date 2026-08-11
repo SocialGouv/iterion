@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,13 +33,79 @@ func gitRepo(t *testing.T) string {
 	return dir
 }
 
+// gitTestEnv is the environment every helper in this suite runs git under.
+//
+// The suite builds throwaway repositories and configures them with
+// `git config`, then asserts on what git reports back. That only holds if the
+// repository's own config is authoritative — and it is not, by default:
+// GIT_AUTHOR_* / GIT_COMMITTER_* OVERRIDE it, and the operator's global config
+// answers for anything the repo leaves unset.
+//
+// Both leak in production. A sandboxed run with `host_state: none` injects the
+// four identity variables into the container (runtime.applyGitIdentityEnv), so
+// `TestLogAllowsTabsInUserControlledFields` — which sets a tab-bearing author
+// locally and expects to read it back — instead saw the run's own bot identity
+// and failed. Vetty held four dependency PRs on that failure alone
+// (SocialGouv/iterion #392/#395/#397/#399), reporting a red build for a bump
+// that had broken nothing.
+func gitTestEnv() []string {
+	env := os.Environ()
+	out := env[:0:0]
+	for _, kv := range env {
+		switch strings.SplitN(kv, "=", 2)[0] {
+		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+			"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_WORK_TREE":
+			continue
+		}
+		out = append(out, kv)
+	}
+	// Neutralise the operator's own ~/.gitconfig too: a global `commit.gpgsign`
+	// or `init.defaultBranch` would otherwise reach these repositories.
+	return append(out, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+}
+
 func mustRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitTestEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+// TestGitTestEnvIsHermetic pins the property the whole suite rests on: inside
+// these tests the repository's own config decides who authored a commit, not
+// whatever the surrounding process was started with.
+//
+// Without it the suite reports on the environment it happens to run in. That is
+// not theoretical — it is how four dependency PRs came to be held on a red
+// build none of them caused.
+func TestGitTestEnvIsHermetic(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_NAME", "ambient[bot]")
+	t.Setenv("GIT_AUTHOR_EMAIL", "ambient@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "ambient[bot]")
+	t.Setenv("GIT_COMMITTER_EMAIL", "ambient@example.invalid")
+
+	dir := gitRepo(t)
+	mustRun(t, dir, "config", "user.name", "Local Author")
+	mustRun(t, dir, "config", "user.email", "local@example.com")
+	sha := commit(t, dir, "hermetic.txt", "x\n", "hermetic")
+
+	entries, err := Log(dir, "", sha)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	for _, e := range entries {
+		if e.SHA != sha {
+			continue
+		}
+		if e.Author != "Local Author" {
+			t.Fatalf("author: got %q, want the repo's own config — the ambient environment is deciding what this suite asserts on", e.Author)
+		}
+		return
+	}
+	t.Fatalf("commit %s not found in %+v", sha, entries)
 }
 
 func TestStatusEmptyClean(t *testing.T) {

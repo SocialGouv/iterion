@@ -1,7 +1,13 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.0
+version: 2.7.1
+## 2.7.1 — the align step regenerates a lockfile the bump left stale. A bot
+## that edits the manifest without the lockfile makes CI's frozen install
+## fail on a specifier mismatch before any code compiles: the bump is
+## incomplete, not breaking, and regenerating is mechanical and in scope
+## (iterion#394 held on exactly that). Explicitly NOT --no-frozen-lockfile,
+## which hides the drift and merges an unbuildable branch.
 ## 2.7.0 — a lost alignment no longer merges as a clean bump. commit_check
 ## reads `align.applied` alongside the shas and routes the contradiction —
 ## align claimed edits, the head did not move — to a fifth verdict,
