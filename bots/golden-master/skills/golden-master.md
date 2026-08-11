@@ -139,6 +139,44 @@ references, and the net becomes a rubber stamp.
 - A re-baseline touching more than a handful of references in one change is not a re-baseline. It
   is a regression wearing its clothes.
 
+### The ledger's machine-readable blocks — this is the canonical format
+
+Prose in `REBASELINE.md` carries the cause; three HTML-comment blocks carry the protocol, so a
+supervising process can execute the separation of powers mechanically. Other skills point HERE
+rather than restating the format — two declarations drift.
+
+The party that may NOT re-record (a modernisation worker) announces a request:
+
+```
+<!-- iterion:rebaseline-request
+{"id": "R-<lot>-<n>", "lot": "<lot-id>",
+ "cause": "one line: the intended behaviour change that moved these references",
+ "expected_paths": ["exact repo-relative reference paths, read from the oracle's own report"]}
+-->
+```
+
+The party that owns the net answers with an act — written ONLY after re-recording, and ONLY when
+the observed diff equalled `expected_paths` exactly, collateral included — then a verdict once the
+full counter-test replayed green on the committed tree:
+
+```
+<!-- iterion:rebaseline-act
+{"id": "R-<lot>-<n>", "lot": "<lot-id>", "recorded_paths": ["…"], "ts": "…"}
+-->
+<!-- iterion:rebaseline-verdict
+{"id": "R-<lot>-<n>", "gate": "green", "sha": "<commit>", "ts": "…"}
+-->
+```
+
+A request whose `id` has no act is PENDING. `expected_paths` is the announcement the act is judged
+against: observed == announced, exactly, or nothing is committed. An unparseable request block is
+an escalation, never a silence — and a refusal, once recorded by the consuming process, is
+committed state that is not retried.
+
+Two cautions. Never paste an example block into the ledger itself: a consumer reads every block as
+real, fences included. And `expected_paths` are measured, not guessed — the oracle's red report
+names the references that diverged; announce exactly those.
+
 ## The `write` surface — the only one a read-only capture cannot reach
 
 Every other surface watches a response **served**. A corruption that happens
