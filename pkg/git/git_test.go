@@ -48,13 +48,26 @@ func gitRepo(t *testing.T) string {
 // and failed. Vetty held four dependency PRs on that failure alone
 // (SocialGouv/iterion #392/#395/#397/#399), reporting a red build for a bump
 // that had broken nothing.
+// Every GIT_* variable is dropped rather than a chosen few. A denylist here is
+// just a list of the leaks already paid for: the identity quartet was the one
+// that held the PRs, but GIT_INDEX_FILE — which git sets in every hook
+// environment and under `git rebase --exec` / `git bisect run` — makes the
+// helpers stage into the ambient index, and GIT_DIR, GIT_WORK_TREE,
+// GIT_OBJECT_DIRECTORY and GIT_NAMESPACE each redirect something else. These
+// helpers need nothing from the caller's git environment, so they inherit none
+// of it.
+//
+// Scope: this covers what the HELPERS do. The package's own readers (Status,
+// Log, RevParseHead) run git with the caller's environment, so an ambient
+// GIT_INDEX_FILE still reaches them and the suite still fails under one —
+// differently, and for a reason that lives in the production code rather than
+// here. Every function in this package takes an explicit dir, which makes that
+// inheritance look accidental; deciding it is a separate change.
 func gitTestEnv() []string {
 	env := os.Environ()
 	out := env[:0:0]
 	for _, kv := range env {
-		switch strings.SplitN(kv, "=", 2)[0] {
-		case "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
-			"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_WORK_TREE":
+		if strings.HasPrefix(kv, "GIT_") {
 			continue
 		}
 		out = append(out, kv)
@@ -86,6 +99,18 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_EMAIL", "ambient@example.invalid")
 	t.Setenv("GIT_COMMITTER_NAME", "ambient[bot]")
 	t.Setenv("GIT_COMMITTER_EMAIL", "ambient@example.invalid")
+	// And the index: git sets GIT_INDEX_FILE in every hook environment and
+	// under `git rebase --exec` / `git bisect run`. Inherited, it does not
+	// just skew an assertion — the suite fails outright and leaves a stray
+	// index at the ambient path, staging into whatever invoked it.
+	//
+	// The scrub covers every GIT_* variable, but this test only pins the ones
+	// the HELPERS own. GIT_DIR and the object-store family also redirect the
+	// package's production readers, which inherit the caller's environment by
+	// design; whether they should is a separate question from this suite's
+	// hermeticity.
+	ambientIndex := filepath.Join(t.TempDir(), "ambient-index")
+	t.Setenv("GIT_INDEX_FILE", ambientIndex)
 
 	dir := gitRepo(t)
 	mustRun(t, dir, "config", "user.name", "Local Author")
@@ -102,6 +127,9 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 		}
 		if e.Author != "Local Author" {
 			t.Fatalf("author: got %q, want the repo's own config — the ambient environment is deciding what this suite asserts on", e.Author)
+		}
+		if _, err := os.Stat(ambientIndex); err == nil {
+			t.Errorf("the suite wrote to the ambient GIT_INDEX_FILE (%s) — it is staging into whatever git invoked it", ambientIndex)
 		}
 		return
 	}
