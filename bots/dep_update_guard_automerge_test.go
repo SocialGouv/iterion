@@ -464,6 +464,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		{"held bump", map[string]string{"{{input.verdict}}": `"hold_security"`}, "not green"},
 		{"unstable build", map[string]string{"{{input.verdict}}": `"hold_unstable"`}, "not green"},
 		{"pending human decision", map[string]string{"{{input.verdict}}": `"needs_decision"`}, "not green"},
+		{"alignment missing from the branch", map[string]string{"{{input.verdict}}": `"hold_lost_alignment"`}, "not green"},
 		{"unknown verdict", map[string]string{"{{input.verdict}}": `"probably_fine"`}, "not green"},
 		// A verdict whose status never reached the PR must not merge it: the
 		// gate is what the repo actually gates on.

@@ -511,6 +511,11 @@ schema commit_input:
 schema commit_check_output:
   ## did_commit: the branch head moved, and this run is what moved it.
   did_commit: bool
+  ## alignment_lost: `align` reported edits, and none of them reached the
+  ## branch. Reading the shas alone cannot tell that apart from "the bump
+  ## needed no alignment" — both land on an unmoved head — so without this
+  ## flag a vanished alignment is reported as a clean bump and merges.
+  alignment_lost: bool
 
 schema commit_output:
   committed: bool
@@ -864,10 +869,22 @@ compute validate_gate:
 ## `committed: true` having pushed nothing would otherwise make every
 ## user-facing string — the comment badge, the "what Vetty did" line, the
 ## required check's description — assert work that never happened.
+##
+## An unmoved head has TWO causes, and they are opposite verdicts: the bump
+## genuinely needed no alignment, or `align` produced one that never reached
+## the branch. The second is not hypothetical — the runner re-clones the repo
+## on every claim, so a run that dies between `align` and `commit` (a provider
+## usage window is the ordinary way) resumes on a tree where the alignment is
+## gone, while the checkpoint still replays `align.applied = true` downstream.
+## The shas cannot separate the two, so the check reads `align`'s own claim
+## alongside them: not to trust the agent — the sha comparison still decides
+## what was COMMITTED — but so that a claim contradicted by the branch blocks
+## instead of passing for a bump that never needed anything.
 compute commit_check:
   output: commit_check_output
   expr:
     did_commit: "outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha"
+    alignment_lost: "outputs.align.applied && !(outputs.commit.sha != '' && outputs.commit.sha != outputs.prepare.head_sha)"
 
 ## Commit the alignment onto the PR branch + push it back (token auth).
 agent commit:
@@ -933,6 +950,7 @@ tool post_feedback:
         "hold_security":  "\U0001F6D1 HOLD — supply-chain risk; not aligned/merged",
         "needs_decision": "\U0001F9ED Needs a human decision (architectural)",
         "hold_unstable":  "⚠️ HOLD — build/tests not green after alignment",
+        "hold_lost_alignment": "\U0001F6D1 HOLD — the alignment for this bump is NOT on the branch",
         "committed":      "✅ Aligned — code updated on this branch; review & merge",
         "clean":          "✅ Safe bump — no code alignment needed",
     }
@@ -954,6 +972,13 @@ tool post_feedback:
            "hold_security": "Held — no alignment, no commit.",
            "hold_unstable": "Held — build/tests not green.",
            "needs_decision": "Escalated for a human decision.",
+           # No cross-reference to a section title: `section()` renders nothing
+           # for an empty body, so citing one would dangle exactly when align
+           # reported no summary — and a reader who cannot find the section
+           # doubts the HOLD instead of acting on it.
+           "hold_lost_alignment": "Held — the code alignment this run produced for the bump is NOT on this branch: "
+                                  "nothing was committed and the head is still the bot's bump commit. Re-run Vetty on "
+                                  "this PR to redo it; merging as-is ships the bump without it.",
            "clean": "Nothing to align."}.get(s(verdict), "")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a check** — whether this lands is the repo's own required checks' decision, " \
@@ -968,7 +993,8 @@ tool post_feedback:
     # state we did not anticipate, so it BLOCKS — a gate that fails open is
     # worse than no gate.
     GATE_BLOCKING = {"clean": 0, "committed": 0,
-                     "hold_security": 1, "hold_unstable": 1, "needs_decision": 1}
+                     "hold_security": 1, "hold_unstable": 1, "needs_decision": 1,
+                     "hold_lost_alignment": 1}
     gate_on = bool(gate_enabled)
     blocking = GATE_BLOCKING.get(s(verdict))
     if blocking is None:
@@ -981,6 +1007,7 @@ tool post_feedback:
         "committed": "supply-chain audit clean; alignment committed, build verified",
         "hold_security": "supply-chain risk: the bump was not applied",
         "hold_unstable": "build/tests not green after alignment",
+        "hold_lost_alignment": "the code alignment for this bump is missing from the branch",
         "needs_decision": "an architectural decision is pending a human",
     }.get(s(verdict), "")
     if s(verdict) not in GATE_BLOCKING:
@@ -1472,6 +1499,22 @@ workflow dep_update_guard:
   ## read, so it must name what happened: `committed` only when the branch
   ## head actually moved, `clean` when the bump needed no alignment. Both are
   ## green; they differ in what they claim was done.
+  ##
+  ## `hold_lost_alignment` is the third case and it is RED: `align` reported
+  ## edits the branch does not carry. It comes first because it is the only
+  ## one of the three that is not a statement about a healthy run — and
+  ## because an alignment that vanished is indistinguishable, from the shas
+  ## alone, from a bump that needed none. Merging it ships the bump WITHOUT
+  ## the code change that made it safe, which is exactly the failure a
+  ## dependency guard exists to prevent.
+  commit_check -> post_feedback when alignment_lost with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "hold_lost_alignment",
+    audit_summary: "{{outputs.security_audit.summary}}",
+    align_summary: "{{outputs.align.breaking_summary}}",
+    validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
+    commit_summary: "{{outputs.commit.summary}}"
+  }
   commit_check -> post_feedback when did_commit with {
     pr_url: "{{vars.pr_url}}",
     verdict: "committed",
@@ -1480,7 +1523,7 @@ workflow dep_update_guard:
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
     commit_summary: "{{outputs.commit.summary}}"
   }
-  commit_check -> post_feedback when not did_commit with {
+  commit_check -> post_feedback else with {
     pr_url: "{{vars.pr_url}}",
     verdict: "clean",
     audit_summary: "{{outputs.security_audit.summary}}",

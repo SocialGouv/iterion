@@ -141,6 +141,41 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		}
 	})
 
+	// iterion#400: `align` fixed an otel break, the run died on a usage window,
+	// the retry re-cloned, and the fix was gone. The verdict must not read like
+	// the bump needed nothing — the operator's next move is to re-run Vetty,
+	// and nothing on the PR would have told them so.
+	t.Run("hold_lost_alignment: names the missing work, and blocks", func(t *testing.T) {
+		got, _ := run(t, "hold_lost_alignment", "iterion/review", true)
+		if got.Gate == nil {
+			t.Fatal("no gate payload")
+		}
+		if got.Gate.BlockingCount == 0 {
+			t.Error("a bump whose alignment is missing must not be mergeable")
+		}
+		if strings.Contains(got.Gate.Note, "no alignment needed") {
+			t.Errorf("the check reports a missing alignment as a bump that needed none: %q", got.Gate.Note)
+		}
+		if !strings.Contains(got.Gate.Note, "missing") {
+			t.Errorf("note must say the alignment is missing, got %q", got.Gate.Note)
+		}
+		if !strings.Contains(got.Summary, "NOT on this branch") {
+			t.Errorf("the comment must state the alignment is absent:\n%s", got.Summary)
+		}
+		if !strings.Contains(got.Summary, "Re-run Vetty") {
+			t.Errorf("the comment must name the recovery, else the PR just sits red:\n%s", got.Summary)
+		}
+		// This case renders with an EMPTY align_summary, and `section()` emits
+		// nothing for an empty body. So the verdict message must not point at a
+		// section title to explain itself: a reader who cannot find what the
+		// comment cites doubts the HOLD rather than acting on it.
+		for _, title := range []string{"Code alignment", "Security & supply-chain", "Reliability"} {
+			if strings.Contains(got.Summary, `"`+title+`"`) && !strings.Contains(got.Summary, "## "+title) {
+				t.Errorf("the comment cites section %q, which it did not render:\n%s", title, got.Summary)
+			}
+		}
+	})
+
 	t.Run("committed: says so, in the badge and the check", func(t *testing.T) {
 		got, _ := run(t, "committed", "iterion/review", true)
 		if got.Gate == nil || !strings.Contains(got.Gate.Note, "alignment committed") {
@@ -160,6 +195,7 @@ func TestDepUpdateGuardGateVerdict(t *testing.T) {
 		{"hold_security", true},
 		{"hold_unstable", true},
 		{"needs_decision", true},
+		{"hold_lost_alignment", true},
 		// Not a verdict the graph can produce today. If one ever appears, the
 		// gate must refuse it rather than wave it through.
 		{"probably_fine", true},
