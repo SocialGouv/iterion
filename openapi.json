@@ -112,6 +112,15 @@
             "additionalProperties": {},
             "type": "object"
           },
+          "loop_budget_marks": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
           "loop_counters": {
             "additionalProperties": {
               "type": "integer"
