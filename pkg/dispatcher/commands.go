@@ -969,6 +969,11 @@ func removeGitWorktreeRegistration(commonDir, workspacePath string) error {
 	removeCtx, cancelRemove := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelRemove()
 	cmd := exec.CommandContext(removeCtx, "git", "--git-dir", commonDir, "worktree", "remove", "--force", workspacePath)
+	// --git-dir overrides GIT_DIR but NOT GIT_COMMON_DIR, and the worktree
+	// registry is exactly one of the non-worktree files git takes from there.
+	// Inherited, this --force removal would deregister a worktree in ANOTHER
+	// repository while ours keeps a stale registration.
+	cmd.Env = gitlib.SanitizeEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree remove: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -982,7 +987,11 @@ func listGitWorktrees(commonDir string, nulDelimited bool) ([]byte, error) {
 	if nulDelimited {
 		args = append(args, "-z")
 	}
-	return exec.CommandContext(listCtx, "git", args...).Output()
+	listCmd := exec.CommandContext(listCtx, "git", args...)
+	// Same reason as the removal above: --git-dir does not neutralise
+	// GIT_COMMON_DIR, so this would list another repository's worktrees.
+	listCmd.Env = gitlib.SanitizeEnv(os.Environ())
+	return listCmd.Output()
 }
 
 // cmdRetryDue fires when a retry timer expires. We simply drop the

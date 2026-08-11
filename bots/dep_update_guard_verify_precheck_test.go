@@ -160,6 +160,63 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		})
 	}
 
+	// Revi's R12dc35. The floor above judged a line by its first word, so the
+	// most ordinary script shape there is — a no-op leading a chain — counted
+	// as running nothing and was sent back twice, then held. That is the exact
+	// failure this PR exists to remove, reintroduced by its own guard.
+	t.Run("a no-op leading a chained command still counts as running", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "run-tests.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The shape Revi named: a no-op leads, the build follows.
+		script := "#!/bin/sh\nset -e\ncd " + ws + " && ./run-tests.sh\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("a chained command is not a vacuous script: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
+	// Revi's Rac0c6b. The listing check required the path to be an existing
+	// FILE, so `go list ./...` output (import paths that resolve to nothing)
+	// and directories out of `find -type d` sailed through — while failing at
+	// sh exactly like the unexecutable file did. POSIX is sharper: a word
+	// containing a slash is never PATH-searched, so anything that is not an
+	// executable regular file cannot run.
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{"go list import paths", []string{
+			"github.com/SocialGouv/iterion/pkg/git",
+			"github.com/SocialGouv/iterion/pkg/store",
+			"github.com/SocialGouv/iterion/pkg/runtime",
+			"github.com/SocialGouv/iterion/pkg/runner",
+			"github.com/SocialGouv/iterion/pkg/server",
+		}},
+		{"directories", []string{"pkg/git/", "pkg/store/", "pkg/runtime/", "pkg/runner/", "pkg/server/"}},
+	} {
+		t.Run("a listing of "+tc.name+" is rejected", func(t *testing.T) {
+			ws, scratch := t.TempDir(), t.TempDir()
+			if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(tc.lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res := run(t, ws, scratch)
+			if !res.PrecheckRejected {
+				t.Errorf("these fail at sh just like an unexecutable file; got exit %d: %s", res.ExitCode, res.LogTail)
+			}
+			if res.Passed {
+				t.Error("a script of unrunnable words must not open the commit path")
+			}
+		})
+	}
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.

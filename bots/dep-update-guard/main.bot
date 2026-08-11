@@ -806,22 +806,39 @@ for _ln in _lines:
     _s = _ln.strip()
     if not _s or _s.startswith('#'):
         continue
-    if _s.split()[0] not in _noops:
-        _runs = _runs + 1
+    # Per SEGMENT, not per line: cd "$WS" && task check leads with a no-op and
+    # runs the whole build. Judging the line by its first word alone would
+    # reject the most ordinary script shape there is.
+    _seg = _s
+    for _sep in (chr(38) + chr(38), chr(124) + chr(124), ';', chr(124)):
+        _seg = _seg.replace(_sep, chr(10))
+    for _c in _seg.split(chr(10)):
+        _c = _c.strip()
+        if _c and _c.split()[0] not in _noops:
+            _runs = _runs + 1
+            break
     # Any WORD containing a slash is a pathname to the shell, with or without a
     # leading ./ -- and a listing is as likely to come out of git ls-files or
     # go list (bare relative paths) as hand-written with the prefix.
     if (' ' in _s) or (chr(9) in _s) or ('/' not in _s):
         continue
+    # Anything the shell cannot resolve statically is left alone: a variable,
+    # a glob or a home-relative path is not a listing.
+    if (chr(36) in _s) or ('*' in _s) or ('?' in _s) or ('~' in _s) or (chr(96) in _s):
+        continue
     _p = _s if _s.startswith('/') else os.path.join(ws, _s)
-    if os.path.isfile(_p) and not os.access(_p, os.X_OK):
+    # POSIX: a word containing a slash is never PATH-searched, so anything that
+    # is not an executable regular file is GUARANTEED to fail as a command --
+    # an import path out of go list and a directory out of find fail exactly
+    # like the unexecutable file, and testing only for files missed both.
+    if not (os.path.isfile(_p) and os.access(_p, os.X_OK)):
         _bare.append(_s)
 if _runs == 0:
     _r = 'EMPTY SCRIPT: ' + script + ' runs nothing -- only blank lines, comments, or shell no-ops. It would exit 0 and certify a build that was never attempted. Write the repo own build and test commands (verify-build skill section 1).'
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
     raise SystemExit(0)
 if len(_bare) > 3:
-    _r = 'NOT COMMANDS: ' + str(len(_bare)) + '+ lines of ' + script + ' are bare paths to files the shell cannot execute (e.g. ' + ', '.join(_bare[:3]) + '). That is a file listing pasted in as commands; sh answers each with Permission denied and the run reports a red build that never ran. Invoke the repo own test runner over those paths instead.'
+    _r = 'NOT COMMANDS: ' + str(len(_bare)) + '+ lines of ' + script + ' are bare paths the shell cannot execute (e.g. ' + ', '.join(_bare[:3]) + '). That is a file listing pasted in as commands; sh answers each with Permission denied and the run reports a red build that never ran. Invoke the repo own test runner over those paths instead.'
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
     raise SystemExit(0)
 def tree_state():
