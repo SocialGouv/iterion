@@ -402,6 +402,7 @@ export type PassthroughEventType =
   | "run_steered"
   | "run_health"
   | "run_auto_resumed"
+  | "run_workspace_reset"
   | "review_turn"
   | "review_verdict"
   | "review_merged"

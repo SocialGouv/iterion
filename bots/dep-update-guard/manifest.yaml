@@ -1,7 +1,17 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.5
+version: 2.7.0
+## 2.7.0 — a lost alignment no longer merges as a clean bump. commit_check
+## reads `align.applied` alongside the shas and routes the contradiction —
+## align claimed edits, the head did not move — to a fifth verdict,
+## `hold_lost_alignment`, blocking in the gate table and refused by
+## arm_automerge. An unmoved head has two opposite causes ("nothing to
+## align" and "the alignment vanished") and the shas alone cannot separate
+## them; the second happens whenever a run dies between align and commit,
+## since the runner re-clones on every claim while the checkpoint still
+## replays applied=true. Cost of learning it: SocialGouv/iterion#400 merged
+## an otel bump without the breaking-change fix this bot had written.
 ## 2.6.5 — Revi hardening of the loop-back: budget 2h → 4h/$25 (a
 ## fix_verify cycle re-runs verify_build+verify_run, 30–50m each on the
 ## measured heavy case — without the raise heavy bumps would trade
