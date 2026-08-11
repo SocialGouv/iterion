@@ -84,6 +84,31 @@ Treat restartable node effects as at-least-once: a node may run again. Tool
 commands should be idempotent or detect already-completed work, and coding
 agents should inspect the durable Git history before repeating an item.
 
+### The checkpoint restores outputs, not files
+
+A cloud run bound to a repository (`RepoURL` on the queue message) gets its
+workspace from a clone the runner makes on **every claim**: it `RemoveAll`s the
+per-run directory before cloning, and deletes it again when the run returns. A
+resume therefore starts from a pristine checkout of the run's ref — **anything
+an earlier node edited but did not commit is gone**, and the resume is normally
+claimed by a different pod anyway.
+
+The checkpoint still replays that node's *outputs*. So a downstream node reads
+"the previous node changed these files" against a tree where they no longer
+exist, and the two disagree with nothing failing. A re-executing run emits
+`run_workspace_reset` so the discarded tree is visible on the timeline —
+keyed on the checkpoint's existence rather than on the delivery being shaped
+as a resume, since a redelivery of a run still marked `running` re-clones the
+same way.
+
+The consequence for authoring: **do not separate a node that mutates the
+workspace from the node that persists the mutation by a resumable boundary
+unless something checks the two still agree.** Either commit inside the
+mutating node, or have the persisting step verify against the tree rather than
+against the upstream node's claim (`dep-update-guard`'s `commit_check` is the
+worked example — it compares `align.applied` with the branch head and blocks on
+a contradiction). Git is the durable state; an uncommitted working tree is not.
+
 ## Source integrity and bundles
 
 The launch stores a SHA-256 workflow hash. Resume recompiles the source and

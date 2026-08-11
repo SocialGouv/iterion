@@ -77,6 +77,53 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	}
 }
 
+// isReExecution reports whether this run has already executed nodes, so the
+// clone about to replace the workspace is discarding their uncommitted output.
+//
+// `msg.Resume` catches the ordinary resume publishes but not all re-executions:
+// a JetStream redelivery of a run still marked `running` — a pod that died
+// inside the orphan sweeper's window — re-clones with Resume nil. The
+// checkpoint is the fact that does not depend on how the delivery was shaped:
+// it exists if and only if a node boundary was already crossed.
+func (r *Runner) isReExecution(ctx context.Context, msg *queue.RunMessage) bool {
+	if msg.Resume != nil {
+		return true
+	}
+	run, err := r.cfg.Store.LoadRun(ctx, msg.RunID)
+	if err != nil {
+		// Say so rather than let "could not tell" read as "first attempt":
+		// silence here is the exact failure this marker exists to end.
+		r.cfg.Logger.Warn("runner: run %s: could not read the run to tell a first claim from a re-execution (%v) — not recording a workspace reset", msg.RunID, err)
+		return false
+	}
+	return run != nil && run.Checkpoint != nil
+}
+
+// recordWorkspaceReset puts the fresh-clone fact on a re-executing run's
+// timeline.
+//
+// It is observational, so a store that refuses the append must not sink the
+// run — but it is NOT decorative: it is the only trace that a node's
+// uncommitted output was discarded between two attempts, and a bot whose
+// contract is "node A edits, node B commits" reads exactly the same on both
+// sides of it unless something says otherwise. The pod log therefore carries
+// it too, and carries it FIRST: the append is precisely what fails when the
+// timeline is going to be missing the fact.
+func (r *Runner) recordWorkspaceReset(ctx context.Context, msg *queue.RunMessage) {
+	r.cfg.Logger.Warn("runner: run %s re-executing on a FRESH clone of %s — any file an earlier node edited but did not commit is gone (node outputs are restored from the checkpoint, the working tree is not)",
+		msg.RunID, strutil.FirstNonBlank(msg.RepoSHA, msg.RepoURL))
+	if _, err := r.cfg.Store.AppendEvent(ctx, msg.RunID, store.Event{
+		Type: store.EventRunWorkspaceReset,
+		Data: map[string]any{
+			"reason":   "resume",
+			"repo_url": msg.RepoURL,
+			"repo_sha": msg.RepoSHA,
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_workspace_reset: %v", msg.RunID, err)
+	}
+}
+
 // prepareRepoWorkspace clones the run's RepoURL@RepoSHA into a fresh per-run
 // directory and returns its path. For a private repo it authenticates the
 // HTTPS clone with the bound forge token (forge_token / gitlab_token /
@@ -140,6 +187,15 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
 	if err := os.RemoveAll(dir); err != nil {
 		return "", fmt.Errorf("clean repo dir: %w", err)
+	}
+	// A re-execution never inherits the previous attempt's tree: executeRun
+	// deletes this directory when the run returns, and the next claim is
+	// normally another pod anyway. The checkpoint restores node OUTPUTS, so a
+	// downstream node keeps reading "the previous node edited these files"
+	// against a tree where those edits no longer exist. That divergence used
+	// to be entirely silent — record it on the timeline.
+	if r.isReExecution(ctx, msg) {
+		r.recordWorkspaceReset(ctx, msg)
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir repo parent: %w", err)
