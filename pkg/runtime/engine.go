@@ -285,15 +285,11 @@ type runState struct {
 	// a resumed run simply starts its stall window fresh.
 	loopProgressSig map[string]string
 	loopStaleness   map[string]int
-	// loopBudgetMarks prices one iteration of each loop: the budget
-	// consumption snapshot taken at that loop's previous back-edge
-	// decision, per enforced dimension. budgetSessionBase is what this
-	// execution session started from (nil — reading as 0 — for a fresh
-	// run, the restored consumption for a resumed one), and stands in
-	// as the previous mark on a loop's first crossing. Not persisted:
-	// a resumed run re-prices from its own first pass.
+	// loopBudgetMarks prices one iteration of each loop: what the run had
+	// consumed, per enforced budget dimension, when that loop was entered
+	// or last crossed its back-edge. Persisted on the checkpoint, so a
+	// resumed run keeps measuring across the pause.
 	loopBudgetMarks    map[string]loopBudgetMark
-	budgetSessionBase  loopBudgetMark
 	roundRobinCounters map[string]int
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit

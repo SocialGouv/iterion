@@ -474,9 +474,12 @@ iteration. The runtime prices one iteration by what the previous one
 consumed — the distance between two consecutive arrivals at the loop's
 decision point, on every axis the workflow actually caps (`max_cost_usd`,
 `max_tokens`, `max_iterations`, `max_duration`) — and skips the back-edge
-when what is left is less than that. The run then leaves through its own
-exit path: for the campaign shape below, the `gate -> publish` fall-through
-that also serves loop exhaustion.
+once another iteration would reach the threshold where the engine stops
+starting nodes at all (90% of the cap). Stopping merely before the cap
+would not be enough: the run would fall through into an exit path that
+same threshold then refuses. The run instead leaves through its own exit
+path with room to walk it — for the campaign shape below, the
+`gate -> publish` fall-through that also serves loop exhaustion.
 
 ```iter
   gate -> publish when converged
@@ -489,12 +492,22 @@ published report, a PR opened by a tail node). Without it a loop starts an
 iteration it cannot pay for, dies mid-iteration on `BUDGET_EXCEEDED`, and
 the tail that would have delivered the work never runs.
 
+A loop is priced from the moment it is **entered**, and re-priced on each
+re-entry — so a loop reached late in a run (a second phase) is charged for
+its own iterations, never for the work that preceded it, and a nested loop
+re-entered per outer iteration starts fresh. A loop that has not been
+measured yet reports nothing rather than guessing. The prices ride the
+checkpoint, so a resumed run keeps measuring across the pause.
+
 The decline is visible, never silent: a `budget_warning` event carrying
 `reason: loop_budget_guard` with the loop, the blocking dimension, the
-remaining allowance and the price of the last iteration. It is on by
-default; `ITERION_LOOP_BUDGET_GUARD=off` restores the run-until-you-hit-the-wall
-behaviour. The 90%-hard-limit and exceeded checks stay as the backstop for a
-single node that overruns on its own.
+remaining allowance, the price of the last iteration, and the axis's
+`used`/`limit` (durations in seconds, with an explicit `unit`). A
+conditional back-edge is only priced on a crossing where its `when`
+actually holds. It is on by default; `ITERION_LOOP_BUDGET_GUARD=off`
+restores the run-until-you-hit-the-wall behaviour. The 90%-hard-limit and
+exceeded checks stay as the backstop for a single node that overruns on
+its own.
 
 ### Edge forms
 
