@@ -778,8 +778,38 @@ try:
 except OSError:
     pass
 script = os.path.join(scratch, 'verify.sh')
+# No script is an AUTHORSHIP defect, not a red build: the agent skipped a step
+# rather than proved a failure. It loops back with that said, because otherwise
+# a bump whose alignment is legitimately empty -- a base-image digest refresh,
+# say -- can never clear the gate no matter how correct it is (iterion#390).
+# The commit path stays closed either way; on loop exhaustion this holds as before.
 if not os.path.exists(script):
-    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 1, 'precheck_rejected': False, 'precheck_reason': '', 'log_tail': 'verify_build produced no verify.sh -- refusing to commit an unverified alignment (fail-closed: this gate is the only path to commit).'}))
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': 'NO SCRIPT: verify_build wrote no ' + script + '. Write one -- a bump that needed no code alignment still has to prove the repo builds, and mirroring the CI is not conditional on what the bump touched (verify-build skill section 1b).', 'log_tail': 'verify_build produced no verify.sh.'}))
+    raise SystemExit(0)
+# A script whose lines are bare paths to non-executable files is a file listing
+# pasted in as commands: sh answers every one with Permission denied and the
+# verify reports a red build that never ran (iterion#398, ~2300 such lines). No
+# extension list -- the test is that the path names a file the shell cannot
+# execute, which holds for any language.
+try:
+    _lines = open(script, encoding='utf-8', errors='replace').read().splitlines()
+except OSError:
+    _lines = []
+_bare = []
+for _ln in _lines:
+    _s = _ln.strip()
+    if not _s or _s.startswith('#') or (' ' in _s) or (chr(9) in _s):
+        continue
+    if not (_s.startswith('./') or _s.startswith('/')):
+        continue
+    _p = os.path.join(ws, _s[2:]) if _s.startswith('./') else _s
+    if os.path.isfile(_p) and not os.access(_p, os.X_OK):
+        _bare.append(_s)
+        if len(_bare) > 3:
+            break
+if len(_bare) > 3:
+    _r = 'NOT COMMANDS: ' + str(len(_bare)) + '+ lines of ' + script + ' are bare paths to files the shell cannot execute (e.g. ' + ', '.join(_bare[:3]) + '). That is a file listing pasted in as commands; sh answers each with Permission denied and the run reports a red build that never ran. Invoke the repo own test runner over those paths instead.'
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
     raise SystemExit(0)
 def tree_state():
     try:

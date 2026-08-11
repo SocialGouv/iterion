@@ -161,6 +161,23 @@ exit code — so it must genuinely pass, not merely look plausible. A `verify.sh
 that omits the §1b regen step when the repo has generated artifacts is the
 canonical way a change lands green-locally / red-in-CI.
 
+**Write the script even when the bump needed no alignment.** "Nothing changed
+in the code, so there is nothing to verify" is the reasoning to refuse: the
+gate proves the repo still builds with the new dependency, which is exactly the
+question a base-image digest refresh or a lockfile-only bump raises. A run that
+produces no script proves nothing and cannot commit — it is sent back to write
+one, and after two attempts the PR is held on a verdict that says the build was
+never established. §1b applies here too: what the script covers is decided by
+the repo's CI, never by which files the bump happened to touch.
+
+**Every line must be a COMMAND.** Never emit a bare path to a source file: the
+shell tries to execute it, answers `Permission denied`, and the run reports a
+red build that never ran. To exercise a set of files, pass them to the repo's
+own runner (`go test ./...`, `pytest tests/`, `npm test`) — the runner takes
+paths, the shell does not. A script whose lines are mostly bare paths to files
+the shell cannot execute is rejected before it runs, and you are asked to
+rewrite it.
+
 ## 3. Run it, and fix what the just-applied changes broke
 
 Run your script. If it fails, the failure is almost always introduced by the
