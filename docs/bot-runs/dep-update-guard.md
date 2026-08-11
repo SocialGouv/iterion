@@ -7,6 +7,84 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-10/11 — the first Dependabot batch merged unattended, and the one that merged was the one to catch (run 019fecf3)
+
+- Status: **partial — the audit is production-grade, the verdict was not.**
+  Dependabot opened 11 PRs (#390–#400) at 18:26–18:33 UTC; one run each.
+  **#400 merged unattended at 21:04** (gate 20:50:18 → armed 20:50:23 → merge
+  queue 21:04:43). The other ten held RED and none merged: 8 `hold_unstable`,
+  2 `hold_security` (#393 TypeScript 7.0.2, #396 mongodb chart 16→19). Fail-
+  closed works. Same night, buildkit-operator **#18 (Renovate, undici
+  [security]) merged at 19:10** — 9s after the gate, no queue on that repo.
+  Renovate and Dependabot are now both proven, on both merge topologies.
+- Versions: Vetty 2.6.5 · iterion 3.36.1. Cost of run 019fecf3: **~$10.8**
+  (audit $2.24 + align $4.58 + verify_build $3.27 + commit $0.70).
+- **Value — the audit is the best this bot has produced.** On #400 (30 Go
+  modules) it found the decisive property nobody asked for: *this repo
+  vendors, so `go build -mod=vendor` never hash-checks `vendor/` and a clean
+  `go.sum` proves nothing*. It regenerated the vendor tree from checksum-
+  verified modules into a temp dir and diffed byte-for-byte. It caught a CVE
+  resolution absent from Dependabot's own table (grpc 1.81.1→1.83.0 clearing
+  GHSA-hrxh-6v49-42gf HIGH, transitive). It re-ran govulncheck under
+  `CGO_ENABLED=0` after a gcc failure "rather than report a hollow pass", and
+  refused to count 68 trivy hits confined to `e2e/fixtures/` — one of which is
+  the deliberate protestware detection fixture. On bko#18: npm trusted-
+  publisher OIDC with the *same* `oidcConfigId` across both versions (no
+  maintainer change — the classic compromise shape absent), SLSA provenance,
+  tarball sha512 vs lockfile integrity, byte-identical wasm blobs, and an
+  honest coverage-gap statement (trivy parsed 0 npm packages from
+  pnpm-lock.yaml, proven by a control run against the base — so trivy was NOT
+  counted as evidence).
+- **The defect: a lost alignment merged as a clean bump.** `align` (24 min,
+  $4.58) detected a real BREAKING change — otel 1.45's `WithEndpointURL` no
+  longer appends `/v1/traces` to a path-less endpoint — and wrote a
+  `withTracesPath` helper plus a regression test it verified red without the
+  fix. Then `commit` died on the forfait's session limit
+  (`USAGE_LIMIT_BLOCKED`), the retry resumed 24 min later, and **the runner
+  re-cloned**: `prepareRepoWorkspace` does `os.RemoveAll` + `git clone` on
+  every claim, and `executeRun` deletes the dir again on return. The
+  checkpoint restores node OUTPUTS, not files. The commit agent reported the
+  gap precisely in prose ("ACTION NEEDED: re-run alignment … spans silently
+  POST to /"), but `commit_check` read only the shas: unmoved head →
+  `did_commit=false` → verdict `clean` = "the bump needed no alignment" →
+  gate `success` → armed → merged. **The regression went to main.** Latent
+  only because no chart configures `OTEL_EXPORTER_OTLP_*`.
+- The irony worth keeping: the anti-façade rule that made `did_commit` read
+  shas instead of the agent's self-report is exactly what hid this. The truth
+  lived only in the agent's prose, and the graph does not read prose.
+- Engine + bot hardening (this change): `commit_check` now computes
+  `alignment_lost` = align claimed edits ∧ the head did not move, routed to a
+  fifth, BLOCKING verdict `hold_lost_alignment` (Vetty 2.7.0); the runner
+  emits `run_workspace_reset` when a repo-backed run re-executes (keyed on the
+  checkpoint, so a `running`-status redelivery counts too) so the discarded
+  tree stops being invisible.
+- **And the alignment itself was wrong** — found by the adversarial review of
+  this very fix, not by the run. Vetty's `withTracesPath` helper (which I
+  re-applied verbatim, so I repeated its mistake) re-implemented what the SDK
+  already does correctly: `otlpconfig.NewHTTPConfig` applies the env config
+  BEFORE explicit options, and it honours the OTLP spec's two DIFFERENT
+  endpoint semantics — `OTEL_EXPORTER_OTLP_ENDPOINT` is a base URL that gets
+  the signal path joined onto it, `…_TRACES_ENDPOINT` is used as-is. Passing
+  the resolved endpoint back through `WithEndpointURL` flattens both into one
+  reading; **that override was the bug's enabler, not its victim** (it is why
+  1.45's behaviour change reached us at all), and it left
+  `ENDPOINT=https://collector/otlp` POSTing to `/otlp` — the same silent loss
+  one level over. The real fix is to stop overriding. The premise Vetty
+  reasoned from was a false comment already in the file, claiming the SDK
+  honours only one of the two variables.
+- Lessons for next run: (1) a node that MUTATES the workspace and a node that
+  PERSISTS the mutation must not be separated by a resumable boundary without
+  a check that they agree — the gap between them is a pod restart wide;
+  (2) an agent's honest prose report is not a signal the graph can act on —
+  if it matters, it must reach a schema field a gate reads; (3) 8/10 PRs
+  landing on `hold_unstable` deserves its own look — fail-closed is correct
+  but a loop that holds everything delivers nothing; (4) **an aligner inherits
+  the consuming code's wrong assumptions** — Vetty read a comment asserting the
+  SDK ignored one of the two env vars, believed it, and wrote a fix around it.
+  It reproduced the file's existing false premise faithfully. Worth adding to
+  the align prompt: when a bump breaks a call site, check whether the call site
+  was right to exist.
+
 ## 2026-08-04/05 — the backlog majors + the Vite 8 alignment: capability proven, and the verify seam found its shape
 
 - Status: **capability validated; landing required four bot/engine fixes found
