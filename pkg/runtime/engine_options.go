@@ -67,6 +67,13 @@ func WithSandboxDefault(mode string) EngineOption {
 	return func(e *Engine) { e.sandboxDefault = mode }
 }
 
+// WithLoopBudgetGuard sets the run-level loop_budget_guard override
+// ("on"|"off"). Highest precedence in the chain — above the workflow
+// block, the env default and the built-in on. Empty means "no override".
+func WithLoopBudgetGuard(mode string) EngineOption {
+	return func(e *Engine) { e.loopBudgetGuardOverride = mode }
+}
+
 // WithSandboxDefaultImage sets the image ref used as fallback when
 // `sandbox: auto` is active but no .devcontainer/devcontainer.json is
 // found. Empty string lets the runtime pick the built-in default

@@ -89,6 +89,9 @@ const (
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
 	DiagAutoMemoryNotSupported DiagCode = "C132" // auto_memory: on for a backend that does not consume it (warning)
 
+	// Loop back-edge affordability guard diagnostics.
+	DiagInvalidLoopBudgetGuard DiagCode = "C133" // loop_budget_guard: value not one of on|off (error)
+
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
 	// fire ONLY on genuinely-typed slots (enum literals compared against an

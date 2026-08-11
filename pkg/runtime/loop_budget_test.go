@@ -373,6 +373,75 @@ func TestLoopBudgetGuard_IgnoresUnenforcedAxes(t *testing.T) {
 	}
 }
 
+// TestLoopBudgetGuard_PrecedenceChain walks the resolution order the rest
+// of the engine uses — run override → workflow block → env → built-in on.
+// Each layer must be able to overrule every layer below it, and an unset
+// layer must defer rather than decide.
+func TestLoopBudgetGuard_PrecedenceChain(t *testing.T) {
+	cases := []struct {
+		name     string
+		override string // CLI / launch
+		workflow string // `loop_budget_guard:` in the workflow block
+		env      string // ITERION_LOOP_BUDGET_GUARD
+		want     bool
+	}{
+		{"nothing set: on by default", "", "", "", true},
+		{"env alone turns it off", "", "", "off", false},
+		{"env alone, 0 spelling", "", "", "0", false},
+		{"workflow off beats an unset env", "", "off", "", false},
+		{"workflow off beats env on", "", "off", "on", false},
+		{"workflow on beats env off", "", "on", "off", true},
+		{"override off beats workflow on", "off", "on", "on", false},
+		{"override on beats workflow off", "on", "off", "off", true},
+		{"unset override defers to the workflow", "", "off", "on", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ITERION_LOOP_BUDGET_GUARD", tc.env)
+			wf := campaignShapedWorkflow(10_000)
+			wf.LoopBudgetGuard = tc.workflow
+			eng := New(wf, tmpStore(t), newStubExecutor(), WithLoopBudgetGuard(tc.override))
+			if got := eng.loopBudgetGuardEnabled(); got != tc.want {
+				t.Errorf("guard enabled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoopBudgetGuard_WorkflowOffIsHonouredEndToEnd checks the DSL switch
+// reaches the decision and not just the resolver: a workflow that opts out
+// runs at its cap head-on and strands its delivery tail, exactly as the
+// env escape hatch does.
+func TestLoopBudgetGuard_WorkflowOffIsHonouredEndToEnd(t *testing.T) {
+	wf := campaignShapedWorkflow(10_000)
+	wf.LoopBudgetGuard = "off"
+	exec, _, delivered := costingExecutor(3_000)
+
+	eng := New(wf, tmpStore(t), exec)
+	if err := eng.Run(context.Background(), "run-wf-guard-off", nil); err == nil {
+		t.Fatal("expected the opted-out run to die on the token budget")
+	}
+	if *delivered != 0 {
+		t.Errorf("delivery tail ran %d times with the guard off, want 0", *delivered)
+	}
+}
+
+// TestValidateLoopBudgetGuardMode covers the CLI boundary: empty inherits,
+// on|off are accepted, and anything else is refused rather than silently
+// read as "inherit" — which would keep a guard the operator asked to lift.
+func TestValidateLoopBudgetGuardMode(t *testing.T) {
+	for _, ok := range []string{"", "on", "off", " ON ", "Off"} {
+		if err := ValidateLoopBudgetGuardMode(ok); err != nil {
+			t.Errorf("ValidateLoopBudgetGuardMode(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"0", "true", "no", "disabled", "onn"} {
+		if err := ValidateLoopBudgetGuardMode(bad); err == nil {
+			t.Errorf("ValidateLoopBudgetGuardMode(%q) accepted an unspellable mode", bad)
+		}
+	}
+}
+
 // TestLoopBudgetVerdict_DurationDisplayIsInSeconds guards the operator
 // signal: durations are tracked in nanoseconds, and the event is the
 // only thing telling someone why their run stopped iterating.

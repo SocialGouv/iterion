@@ -31,6 +31,7 @@ var runOpts struct {
 	sandboxHostState    string
 	compress            string
 	autoMemory          string
+	loopBudgetGuard     string
 	permission          string
 	permissionAllow     []string
 	permissionAsk       []string
@@ -69,6 +70,7 @@ var runCmd = &cobra.Command{
 			SandboxHostState:    runOpts.sandboxHostState,
 			Compress:            runOpts.compress,
 			AutoMemory:          runOpts.autoMemory,
+			LoopBudgetGuard:     runOpts.loopBudgetGuard,
 			Permission:          runOpts.permission,
 			PermissionAllow:     runOpts.permissionAllow,
 			PermissionAsk:       runOpts.permissionAsk,
@@ -119,6 +121,7 @@ func init() {
 	f.StringVar(&runOpts.sandboxHostState, "sandbox-host-state", "", "Bind host ~/.iterion and ~/.claude into the sandbox so persistent memory survives across runs: \"auto\" (default) | \"none\". Empty inherits ITERION_SANDBOX_HOST_STATE then the built-in default \"auto\". Use \"none\" on multi-tenant/cloud runners to avoid leaking host OAuth credentials. See docs/sandbox.md.")
 	f.StringVar(&runOpts.compress, "compress", "", "command-output compression via the active rewriter plugin chain (rtk by default): \"on\" rewrites agent shell commands to their compact form (e.g. \"rtk <cmd>\"), \"ultra\" requests the densest output, \"off\" disables. Empty inherits the workflow/node compress: DSL then ITERION_COMPRESS. Needs an enabled rewriter plugin whose binary is on PATH. See docs/plugins.md.")
 	f.StringVar(&runOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md): \"on\" lets agent/judge nodes read and maintain a persistent MEMORY.md across runs of this bot on this project, \"off\" disables. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY; the default is off, so a run is hermetic unless it opts in. Honoured by claude_code, claw and pi. See docs/memory-and-knowledge.md.")
+	f.StringVar(&runOpts.loopBudgetGuard, "loop-budget-guard", "", "refuse a loop iteration the budget cannot fund, so the run leaves through its own exit path (a PR tail, a report) with the work it banked instead of dying mid-iteration: \"on\" (default) | \"off\" to run at the cap head-on. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.")
 	f.StringVar(&runOpts.permission, "permission", "", "tool-permission gate (anti-prompt-injection): \"ask\" pauses for human approval on any tool not allow-listed, \"deny\" hard-blocks it (headless), \"off\" disables. Empty inherits the workflow/node permission: DSL then ITERION_PERMISSION. See docs/permissions.md.")
 	f.StringArrayVar(&runOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), Claude-Code syntax e.g. 'Bash(go test:*)', 'Read(**)', 'Edit(pkg/**)'. Auto-approved without prompting. Additive to the workflow allow: list.")
 	f.StringArrayVar(&runOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls always pause for approval. Additive to the workflow ask: list.")

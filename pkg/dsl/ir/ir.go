@@ -44,11 +44,15 @@ type Workflow struct {
 	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
 	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory      string                 // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
-	Permission      string                 // permission gate mode: off|ask|deny ("" = unset → off)
-	PermissionAllow []string               // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
-	PermissionAsk   []string               // ask rules
-	PermissionDeny  []string               // deny rules
-	Sandbox         *SandboxSpec           // workflow-level sandbox spec (nil = inherit global / no sandbox)
+	// LoopBudgetGuard switches the back-edge affordability guard — the
+	// refusal to start a loop iteration the budget cannot fund: on|off
+	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
+	LoopBudgetGuard string
+	Permission      string       // permission gate mode: off|ask|deny ("" = unset → off)
+	PermissionAllow []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
+	PermissionAsk   []string     // ask rules
+	PermissionDeny  []string     // deny rules
+	Sandbox         *SandboxSpec // workflow-level sandbox spec (nil = inherit global / no sandbox)
 	// Cursors map of cursor name → resolved definition. Populated from
 	// top-level `cursor NAME:` declarations. Agent/judge `cursors:`
 	// invocations are resolved against this map at runtime.

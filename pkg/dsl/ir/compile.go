@@ -521,6 +521,7 @@ func (c *compiler) compile() *Workflow {
 		Worktree:        defaultWorktreeMode(wf.Worktree),
 		Compress:        wf.Compress,
 		AutoMemory:      wf.AutoMemory,
+		LoopBudgetGuard: wf.LoopBudgetGuard,
 		Permission:      wf.Permission,
 		PermissionAllow: wf.Allow,
 		PermissionAsk:   wf.Ask,

@@ -504,10 +504,22 @@ The decline is visible, never silent: a `budget_warning` event carrying
 remaining allowance, the price of the last iteration, and the axis's
 `used`/`limit` (durations in seconds, with an explicit `unit`). A
 conditional back-edge is only priced on a crossing where its `when`
-actually holds. It is on by default; `ITERION_LOOP_BUDGET_GUARD=off`
-restores the run-until-you-hit-the-wall behaviour. The 90%-hard-limit and
-exceeded checks stay as the backstop for a single node that overruns on
-its own.
+actually holds.
+
+The guard is **on by default** and switched off through the usual
+precedence chain — `--loop-budget-guard off` (on `run` and `resume`) →
+the workflow's `loop_budget_guard: off` → `ITERION_LOOP_BUDGET_GUARD=off`
+→ the default `on`. Turning it off restores the
+run-until-you-hit-the-wall behaviour, hard failure included. An invalid
+value is diagnostic **C133**, not a silent fall back to the default. The
+90%-hard-limit and exceeded checks stay as the backstop for a single node
+that overruns on its own.
+
+```iter
+workflow campaign:
+  entry: work
+  loop_budget_guard: off    # this loop must burn its cap, not stop short
+```
 
 ### Edge forms
 
