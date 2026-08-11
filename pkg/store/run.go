@@ -702,8 +702,16 @@ type Checkpoint struct {
 	// snapshot and the very next iteration would see nil.
 	LoopPreviousOutput map[string]map[string]any `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
 	LoopCurrentOutput  map[string]map[string]any `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
-	ArtifactVersions   map[string]int            `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
-	Vars               map[string]any            `json:"vars" bson:"vars"`                           // resolved workflow variables
+	// LoopBudgetMarks preserves what each loop had consumed, per budget
+	// dimension, at its last back-edge crossing (or at loop entry) — the
+	// basis on which the runtime prices one more iteration against the
+	// budget's remaining allowance. Without it a resume landing on a
+	// loop's decision node would cross with no measurement and launch a
+	// pass the budget cannot fund, which is exactly the stranding the
+	// affordability guard exists to prevent.
+	LoopBudgetMarks  map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
+	ArtifactVersions map[string]int                `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	Vars             map[string]any                `json:"vars" bson:"vars"`                           // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`

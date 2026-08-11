@@ -1,7 +1,16 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 3.5.4
+version: 3.5.5
+## 3.5.5 — max_cost_usd 120 → 400, sized to hold max_passes comprehensive
+## passes. The two scheduled weeklies (2026-08-03, -08-10) both died on the
+## $120 cap mid-pass — 31 and 29 alignment commits stranded on a clone that
+## died with the pod, no PR either time — while spending nothing real: prod
+## runs the OAuth forfait, so the figure prices tokens against a plan
+## already paid for and the provider's usage window is the true bound. The
+## engine's back-edge affordability guard (same change) makes the higher
+## ceiling safe: exhausting it now routes through mr_gate → the PR tail
+## instead of stranding the work.
 ## 3.5.4 — the `/doki` comment command is now a DIRECT, PR-scoped action
 ## (was board/any), mirroring `/revi`: a developer comments `/doki` on a PR
 ## and docs-refresh launches immediately on the PR head (no tracking card),

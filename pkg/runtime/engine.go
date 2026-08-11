@@ -283,8 +283,13 @@ type runState struct {
 	// and how many consecutive crossings it has been unchanged. Reset when the
 	// signal changes or the loop is re-entered. Not persisted across resume —
 	// a resumed run simply starts its stall window fresh.
-	loopProgressSig    map[string]string
-	loopStaleness      map[string]int
+	loopProgressSig map[string]string
+	loopStaleness   map[string]int
+	// loopBudgetMarks prices one iteration of each loop: what the run had
+	// consumed, per enforced budget dimension, when that loop was entered
+	// or last crossed its back-edge. Persisted on the checkpoint, so a
+	// resumed run keeps measuring across the pause.
+	loopBudgetMarks    map[string]loopBudgetMark
 	roundRobinCounters map[string]int
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
@@ -444,6 +449,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		loopCurrentOutput:  make(map[string]map[string]any),
 		loopProgressSig:    make(map[string]string),
 		loopStaleness:      make(map[string]int),
+		loopBudgetMarks:    make(map[string]loopBudgetMark),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
 		preMarked:          make(map[string]bool),

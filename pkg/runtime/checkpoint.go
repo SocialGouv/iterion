@@ -16,6 +16,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		RoundRobinCounters: rs.roundRobinCounters,
 		LoopPreviousOutput: rs.loopPreviousOutput,
 		LoopCurrentOutput:  rs.loopCurrentOutput,
+		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
 		ArtifactVersions:   rs.artifactVersions,
 		Vars:               rs.vars,
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
@@ -51,6 +52,10 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	}
 	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS))
 	rs.costUSDTotal = cp.CostUSDTotal
+	// Consumption is continuous across the pause, so the persisted loop
+	// prices stay comparable to it and the first crossing after a resume
+	// is measured like any other.
+	restoreLoopBudgetMarks(rs, cp.LoopBudgetMarks)
 }
 
 // serializeNodeAttempts converts the runState's typed-key bucket into a

@@ -419,6 +419,17 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 
 **Budget block:** `max_parallel_branches`, `max_duration`, `max_cost_usd`, `max_tokens`, `max_iterations`. Each is overridable at run time without editing the `.bot` via the matching `iterion run`/`resume` flag (`--max-cost-usd`, `--max-tokens`, `--max-duration`, `--max-iterations`, `--max-parallel-branches`) — non-zero flag wins, zero inherits; precedence is DSL → recipe/preset → CLI flag. Lets you re-budget any bot per run (e.g. `--max-cost-usd 120 --max-duration 4h`) and is the mechanism behind the "budget exceeded → raise the cap + resume" recovery.
 
+A loop's **back-edge is declined when the budget cannot fund another
+iteration** — priced by what the previous one consumed, on every capped
+axis. The run then leaves through its own exit path (the fall-through
+that also serves loop exhaustion), so a campaign bot's delivery tail
+still opens its PR with the work committed in stride, instead of the run
+dying mid-pass on `BUDGET_EXCEEDED` and stranding it on a clone that
+dies with the pod. Visible as a `budget_warning` carrying `reason:
+loop_budget_guard`; `ITERION_LOOP_BUDGET_GUARD=off` is the escape hatch;
+the 90%-hard-limit and exceeded checks remain the backstop for a single
+node that overruns. See [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
+
 ### Backend selection
 
 Six backends are wired:
