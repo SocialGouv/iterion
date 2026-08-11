@@ -103,9 +103,13 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 	// under `git rebase --exec` / `git bisect run`. Inherited, GIT_INDEX_FILE
 	// does not just skew an assertion — the helpers stage into whatever
 	// invoked them, and the readers report the tree as deleted-and-untracked.
+	//
+	// GIT_WORK_TREE is deliberately NOT set here even though the scrub covers
+	// it: git refuses it outright without GIT_DIR, so the suite would die at
+	// `git init` and every assertion below would become unreachable — the
+	// leaks worth pinning are the ones that corrupt results QUIETLY.
 	ambientIndex := filepath.Join(t.TempDir(), "ambient-index")
 	t.Setenv("GIT_INDEX_FILE", ambientIndex)
-	t.Setenv("GIT_WORK_TREE", filepath.Join(t.TempDir(), "ambient-worktree"))
 	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(t.TempDir(), "ambient-objects"))
 
 	dir := gitRepo(t)
@@ -117,6 +121,12 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 	mustRun(t, dir, "config", "user.name", "Local Author")
 	mustRun(t, dir, "config", "user.email", "local@example.com")
 	sha := commit(t, dir, "hermetic.txt", "x\n", "hermetic")
+	// Checked here, not after the author assertion below: that one is a
+	// Fatalf, and every mutation that would strand an ambient index also
+	// changes the author — so behind it this could never run.
+	if _, err := os.Stat(ambientIndex); err == nil {
+		t.Errorf("the suite staged into the ambient GIT_INDEX_FILE (%s) — it is writing into whatever git invoked it", ambientIndex)
+	}
 
 	entries, err := Log(dir, "", sha)
 	if err != nil {
@@ -127,10 +137,7 @@ func TestGitTestEnvIsHermetic(t *testing.T) {
 			continue
 		}
 		if e.Author != "Local Author" {
-			t.Fatalf("author: got %q, want the repo's own config — the ambient environment is deciding what this suite asserts on", e.Author)
-		}
-		if _, err := os.Stat(ambientIndex); err == nil {
-			t.Errorf("the suite wrote to the ambient GIT_INDEX_FILE (%s) — it is staging into whatever git invoked it", ambientIndex)
+			t.Errorf("author: got %q, want the repo's own config — the ambient environment is deciding what this suite asserts on", e.Author)
 		}
 		return
 	}
