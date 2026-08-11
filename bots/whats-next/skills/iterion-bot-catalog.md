@@ -260,6 +260,7 @@ dispatcher routes on it), never the persona.
 | Appy | `app-dev` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
+| Campy | `campaign` |
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
@@ -421,6 +422,42 @@ docs/references/productive-session-patterns.md.
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
 - **Vars**: `base_ref` (string), `baseline` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
+
+### `campaign` — Campy
+
+Supervises a WHOLE modernisation programme, lot after lot, by running the
+modernize bot as a subbot in a bounded loop — and holding the separation
+of powers a human supervisor held before it existed. Progress is judged by
+git, never by what a run says of itself: a child run that did not move
+HEAD landed nothing, and two still runs in a row end the campaign.
+
+The supervisor is DETERMINISTIC: not one LLM node of its own.
+Intelligence lives in the child bots, judgement lives in gates. Its
+steward half executes ledger re-baseline requests if and only if the
+observed reference diff equals the announced set exactly, with the full
+mutation counter-test replayed on the committed tree behind every act —
+a red counter-test unwinds the act. Contract extensions (a lot the worker
+added or reshaped in the plan) fall under a configured governance:
+accepted in flight and listed at the head of the final handoff (default),
+or paused for human approval every time. Other escalations either pause
+the run (interactive) or accumulate into the handoff (default) — and the
+campaign always ends on a committed handoff plus a human review node,
+with blocked lots requalified against the final tree.
+
+- **Use when**:
+  Use to carry a WHOLE programme unattended once its two prerequisites
+  exist: a `.modernize/plan.yaml` contract and a behavioural net under
+  `.golden-master/` (verify-oracle.sh). One `iterion run` then plays lot
+  after lot where a human would have relaunched modernize by hand, judged
+  progress in git, executed announced re-records between runs, and kept the
+  journal.
+  
+  Do NOT use it to run a single lot (run modernize directly), to build the
+  net (golden-master's job), or to decide WHAT to modernise — the programme
+  is a human decision recorded in the contract, and this bot's whole
+  authority over it is measuring whether it advances.
+- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+- **Path**: `bots/campaign/main.bot`
 
 ### `dep-update-guard` — Vetty
 
