@@ -237,7 +237,12 @@ tool preflight:
                         capture_output=True, text=True, timeout=60)
     if st.returncode != 0:
         refuse("cannot read git status in %s: %s" % (ws, st.stderr[-400:]))
-    dirty = [l for l in st.stdout.splitlines() if l.strip()]
+    # The engine materialises the executing node's own script into the
+    # workspace (.iterion-script-*.py) for the lifetime of the node, so a
+    # script tool ALWAYS sees that one untracked path. Execution machinery,
+    # not work in flight — the one exclusion every status read here carries.
+    dirty = [l for l in st.stdout.splitlines() if l.strip()
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
     if dirty:
         refuse("the workspace has %d uncommitted change(s) at campaign start "
                "(e.g. %s). A supervisor only ever acts between runs on "
@@ -515,7 +520,12 @@ tool steward:
             p = line[3:].strip()
             if " -> " in p:
                 p = p.split(" -> ")[-1]
-            paths.append(p.strip('"'))
+            p = p.strip('"')
+            # The engine's own materialised node script (.iterion-script-*):
+            # execution machinery, never part of an observed diff.
+            if os.path.basename(p).startswith(".iterion-script-"):
+                continue
+            paths.append(p)
         return sorted(set(paths))
 
     def restore_clean(observed):
@@ -772,7 +782,10 @@ tool finalize:
         return ""
 
     head = git("rev-parse", "HEAD").stdout.strip()
-    dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()]
+    # Same exclusion as preflight: the engine's own materialised node script
+    # is execution machinery, not an uncommitted change.
+    dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
 
     plan = {}
     yq = find_yq()
