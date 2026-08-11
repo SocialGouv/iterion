@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -168,7 +169,48 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// decision reaches the runner instead of being replaced by the workflow's
 	// own value — a drop there turns a hermetic `off` into a run that reads
 	// and writes shared memory.
-	if SchemaVersion != 6 {
-		t.Errorf("SchemaVersion = %d, want 6 (bump intentionally)", SchemaVersion)
+	// v=7 (2026-08-11) added LoopBudgetGuard for the same reason one layer
+	// down: dropped, the pod re-decides whether a loop stops early or dies at
+	// its ceiling, overruling the operator who said otherwise.
+	if SchemaVersion != 7 {
+		t.Errorf("SchemaVersion = %d, want 7 (bump intentionally)", SchemaVersion)
+	}
+}
+
+// TestRunMessage_LoopBudgetGuardSurvivesTheWire is the composition that
+// matters for a knob whose whole point is to not be re-decided elsewhere:
+// an operator's explicit value must come out of the envelope exactly as it
+// went in, and an unset one must stay unset (so the workflow/env still
+// decide) rather than materialising as a value nobody chose.
+func TestRunMessage_LoopBudgetGuardSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "on", ""} {
+		in := RunMessage{
+			V:              SchemaVersion,
+			RunID:          "r1",
+			WorkflowName:   "w",
+			WorkflowHash:   "h",
+			IRCompiled:     json.RawMessage(`{}`),
+			TenantID:       "t1",
+			PublishedAtRFC: "2026-08-11T00:00:00Z",
+
+			LoopBudgetGuard: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if want == "" && bytes.Contains(blob, []byte("loop_budget_guard")) {
+			t.Error("an unset guard was serialised — the receiver would read a choice nobody made")
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.LoopBudgetGuard != want {
+			t.Errorf("LoopBudgetGuard = %q after the round trip, want %q", out.LoopBudgetGuard, want)
+		}
+		if err := out.Validate(); err != nil {
+			t.Errorf("validate: %v", err)
+		}
 	}
 }

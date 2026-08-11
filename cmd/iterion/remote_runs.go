@@ -44,25 +44,26 @@ var remoteRunsListCmd = &cobra.Command{
 }
 
 var (
-	remoteLaunchBot            string
-	remoteLaunchVars           []string
-	remoteLaunchPreset         string
-	remoteLaunchTimeout        string
-	remoteLaunchBackend        string
-	remoteLaunchCompress       string
-	remoteLaunchAutoMemory     string
-	remoteLaunchPermission     string
-	remoteLaunchReviewMode     string
-	remoteLaunchMergeInto      string
-	remoteLaunchBranch         string
-	remoteLaunchMergeStrategy  string
-	remoteLaunchAutoMerge      bool
-	remoteLaunchAttach         []string
-	remoteLaunchModelOverrides string
-	remoteLaunchCallbackURL    string
-	remoteLaunchCallbackToken  string
-	remoteLaunchFollow         bool
-	remoteLaunchInterval       time.Duration
+	remoteLaunchBot             string
+	remoteLaunchVars            []string
+	remoteLaunchPreset          string
+	remoteLaunchTimeout         string
+	remoteLaunchBackend         string
+	remoteLaunchCompress        string
+	remoteLaunchAutoMemory      string
+	remoteLaunchLoopBudgetGuard string
+	remoteLaunchPermission      string
+	remoteLaunchReviewMode      string
+	remoteLaunchMergeInto       string
+	remoteLaunchBranch          string
+	remoteLaunchMergeStrategy   string
+	remoteLaunchAutoMerge       bool
+	remoteLaunchAttach          []string
+	remoteLaunchModelOverrides  string
+	remoteLaunchCallbackURL     string
+	remoteLaunchCallbackToken   string
+	remoteLaunchFollow          bool
+	remoteLaunchInterval        time.Duration
 )
 
 var remoteRunsLaunchCmd = &cobra.Command{
@@ -93,6 +94,7 @@ var remoteRunsLaunchCmd = &cobra.Command{
 			Backend:            remoteLaunchBackend,
 			Compress:           remoteLaunchCompress,
 			AutoMemory:         remoteLaunchAutoMemory,
+			LoopBudgetGuard:    remoteLaunchLoopBudgetGuard,
 			Permission:         remoteLaunchPermission,
 			ReviewMode:         remoteLaunchReviewMode,
 			MergeInto:          remoteLaunchMergeInto,
@@ -440,6 +442,7 @@ func init() {
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchBackend, "backend", "", "Backend override (claude_code|claw)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchCompress, "compress", "", "Compression override (on|ultra|off)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchAutoMemory, "auto-memory", "", "Auto-memory (MEMORY.md) override (on|off)")
+	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchLoopBudgetGuard, "loop-budget-guard", "", "Loop back-edge affordability guard override (on|off): refuse a loop iteration the budget cannot fund so the run exits through its own tail")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchPermission, "permission", "", "Permission gate override (off|ask|deny)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchReviewMode, "review-mode", "", "Review topology (auto|mono|dual)")
 	remoteRunsLaunchCmd.Flags().StringVar(&remoteLaunchMergeInto, "merge-into", "", "Worktree finalization target (current|none|<branch>)")
