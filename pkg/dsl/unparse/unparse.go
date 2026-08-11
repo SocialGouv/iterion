@@ -606,6 +606,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "auto_memory", wf.AutoMemory)
 		}
 
+		if wf.LoopBudgetGuard != "" {
+			writeProp(&w.b, "loop_budget_guard", wf.LoopBudgetGuard)
+		}
+
 		if wf.Permission != "" {
 			writeProp(&w.b, "permission", wf.Permission)
 		}

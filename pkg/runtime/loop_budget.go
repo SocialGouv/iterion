@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -36,15 +37,52 @@ func (v loopBudgetVerdict) display() (spent, remaining, used, limit float64, uni
 }
 
 // loopBudgetGuardEnabled reports whether the back-edge affordability
-// guard is active. It is on by default and turned off with
-// ITERION_LOOP_BUDGET_GUARD=off|0|false — the escape hatch for an
-// operator who would rather a loop run until it hits the cap head-on.
-func loopBudgetGuardEnabled() bool {
-	switch strings.TrimSpace(strings.ToLower(os.Getenv("ITERION_LOOP_BUDGET_GUARD"))) {
-	case "off", "0", "false", "no":
-		return false
+// guard is active, resolving the precedence chain the rest of the engine
+// uses: CLI/launch override → workflow block → ITERION_LOOP_BUDGET_GUARD
+// → on.
+//
+// It defaults ON because the behaviour it replaces loses work. Turning it
+// off is the escape hatch for an operator who would rather a loop run at
+// its cap head-on and take the hard failure.
+func (e *Engine) loopBudgetGuardEnabled() bool {
+	if v, ok := parseLoopBudgetGuard(e.loopBudgetGuardOverride); ok {
+		return v
+	}
+	if e.workflow != nil {
+		if v, ok := parseLoopBudgetGuard(e.workflow.LoopBudgetGuard); ok {
+			return v
+		}
+	}
+	if v, ok := parseLoopBudgetGuard(os.Getenv("ITERION_LOOP_BUDGET_GUARD")); ok {
+		return v
 	}
 	return true
+}
+
+// parseLoopBudgetGuard reads one layer of the chain. ok=false means the
+// layer is unset (or unreadable) and the next one decides. The DSL
+// validator (C133) and ValidateLoopBudgetGuardMode reject anything but
+// on|off at their own boundaries; the extra spellings are accepted from
+// the env, where operators reach for 0/1.
+func parseLoopBudgetGuard(v string) (enabled, ok bool) {
+	switch strings.TrimSpace(strings.ToLower(v)) {
+	case "off", "0", "false", "no":
+		return false, true
+	case "on", "1", "true", "yes":
+		return true, true
+	}
+	return false, false
+}
+
+// ValidateLoopBudgetGuardMode rejects a --loop-budget-guard value that is
+// neither empty (inherit) nor on|off. A typo would otherwise read as
+// "inherit" and silently keep the guard an operator asked to lift.
+func ValidateLoopBudgetGuardMode(v string) error {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "on", "off":
+		return nil
+	}
+	return fmt.Errorf("invalid loop-budget-guard mode %q: expected on or off", v)
 }
 
 // loopBudgetShortfall reports the budget dimension that can no longer
@@ -69,7 +107,7 @@ func loopBudgetGuardEnabled() bool {
 // exit path with what it has banked. The exceeded and hard-limit checks
 // stay as the backstop for a single node that overruns on its own.
 func (e *Engine) loopBudgetShortfall(loopName string, rs *runState) *loopBudgetVerdict {
-	if !loopBudgetGuardEnabled() {
+	if !e.loopBudgetGuardEnabled() {
 		return nil
 	}
 	axes := rs.budget.Axes()

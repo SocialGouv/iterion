@@ -425,10 +425,15 @@ axis. The run then leaves through its own exit path (the fall-through
 that also serves loop exhaustion), so a campaign bot's delivery tail
 still opens its PR with the work committed in stride, instead of the run
 dying mid-pass on `BUDGET_EXCEEDED` and stranding it on a clone that
-dies with the pod. Visible as a `budget_warning` carrying `reason:
-loop_budget_guard`; `ITERION_LOOP_BUDGET_GUARD=off` is the escape hatch;
-the 90%-hard-limit and exceeded checks remain the backstop for a single
-node that overruns. See [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
+dies with the pod. A loop is priced from its own **entry** (and re-priced
+on re-entry), so a second-phase or nested loop is never charged for the
+work that preceded it; the prices ride the checkpoint. Visible as a
+`budget_warning` carrying `reason: loop_budget_guard`. Precedence mirrors
+`compress:` minus the node level (a loop is not a node): CLI
+`--loop-budget-guard` → workflow `loop_budget_guard:` →
+`ITERION_LOOP_BUDGET_GUARD` → on. Diagnostic C133. The 90%-hard-limit and
+exceeded checks remain the backstop for a single node that overruns. See
+[docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
 
 ### Backend selection
 
