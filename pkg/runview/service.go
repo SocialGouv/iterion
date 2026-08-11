@@ -87,6 +87,10 @@ type LaunchSpec struct {
 	// "off") from the studio Launch toggle. "" inherits the workflow/node
 	// `auto_memory:` DSL then ITERION_AUTO_MEMORY.
 	AutoMemory string
+	// LoopBudgetGuard is the run-level back-edge affordability override
+	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
+	// ITERION_LOOP_BUDGET_GUARD.
+	LoopBudgetGuard string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny") from the studio Launch toggle. ""
 	// inherits the workflow/node `permission:` DSL then
@@ -318,6 +322,9 @@ type ResumeSpec struct {
 	// back to the workflow's own value — turning memory on for a run the
 	// operator had launched hermetically.
 	AutoMemory string
+	// LoopBudgetGuard re-states the run-level back-edge affordability
+	// override ("", "on", "off"), for the same reason AutoMemory does.
+	LoopBudgetGuard string
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

@@ -431,8 +431,11 @@ work that preceded it; the prices ride the checkpoint. Visible as a
 `budget_warning` carrying `reason: loop_budget_guard`. Precedence mirrors
 `compress:` minus the node level (a loop is not a node): CLI
 `--loop-budget-guard` → workflow `loop_budget_guard:` →
-`ITERION_LOOP_BUDGET_GUARD` → on. Diagnostic C133. The 90%-hard-limit and
-exceeded checks remain the backstop for a single node that overruns. See
+`ITERION_LOOP_BUDGET_GUARD` → on. Diagnostic C133. Like `auto_memory:` and
+unlike `compress:`, the run-level override **travels onto the cloud queue**
+(`RunMessage.loop_budget_guard`, schema v7) and into a detached subprocess,
+so a pod never re-decides it. The 90%-hard-limit and exceeded checks remain
+the backstop for a single node that overruns. See
 [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
 
 ### Backend selection

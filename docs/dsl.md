@@ -515,6 +515,13 @@ value is diagnostic **C133**, not a silent fall back to the default. The
 90%-hard-limit and exceeded checks stay as the backstop for a single node
 that overruns on its own.
 
+The run-level override **travels** — onto the cloud queue
+(`RunMessage.loop_budget_guard`, schema v7) and into a detached
+subprocess — so a runner pod re-resolving the chain from its own empty
+environment cannot quietly replace what the operator asked for. It is not
+persisted on the run, so `iterion resume --loop-budget-guard` must
+re-state it.
+
 ```iter
 workflow campaign:
   entry: work
