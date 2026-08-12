@@ -125,7 +125,7 @@ head branch lives in the repo). When the board card doesn't carry that
 signal, say so and ask the operator — never auto-dispatch a PR whose
 origin you cannot confirm.
 
-## Distinguishers — the three pairs that ALWAYS need a tie-break
+## Distinguishers — the pairs that ALWAYS need a tie-break
 
 These overlaps come up often; commit each distinguisher to memory
 before you walk the table on a new roadmap item.
@@ -195,6 +195,35 @@ before you walk the table on a new roadmap item.
   whole-improve-loop / etc. When an operator asks you for a long-horizon
   vision on a mature repo, the right move is often to route to `evolve`
   rather than answer at your own altitude.
+
+### `ultra11y` (Ally) vs `rgaa-audit` (Acci) — who FINDS the non-conformity
+
+Both are READ-ONLY accessibility auditors. Neither fixes anything (that
+is Willy, `whole-improve-loop`, with the `rgaa` preset). They differ in
+where the findings come from, which is what decides between them.
+
+- `ultra11y` / Ally: a static ENGINE finds the non-conformities — 78
+  machine-detectable checks tied to the WCAG 2.2 success criteria,
+  measured against the W3C ACT corpus. Each finding carries a stable id,
+  a criterion, a severity and a `file:line`. The one agent step rules
+  only on the criteria a static pass cannot decide, and the engine's own
+  fail-closed gate refuses an unjustified verdict or an ungroundable
+  non-conformity. It also has a PR mode: `pr_url` + `base_ref` audit
+  exactly what the branch introduced.
+- `rgaa-audit` / Acci: the AGENT finds the non-conformities, reading the
+  UI source theme by theme against the 106 RGAA criteria, with the DSFR
+  MCP tools as the reference markup when the target uses the Système de
+  Design de l'État. Deterministic gates check the audit happened; they
+  do not produce the findings.
+- Tie-break — **reproducibility**: "must a finding survive without a
+  model in the loop (a conformance deliverable, a per-PR gate, an
+  auditor who will re-run it)?" → Ally. "is the value in RGAA
+  theme-by-theme reasoning over a DSFR UI?" → Acci.
+- Tie-break — **scope shape**: a pull request or a branch → Ally (Acci
+  has no diff mode). A whole-repo RGAA campaign on a French public
+  service UI → Acci.
+- Neither supersedes the other, and running both on the same repo is
+  legitimate: they disagree usefully.
 
 ## When no row matches confidently — three escape hatches
 

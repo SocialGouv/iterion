@@ -110,6 +110,7 @@ declare `min_replier_role: maintainer`.
 | adr-rechallenge (ReArchi) | `/rearchi` | PR/issue | board |
 | sec-audit-source (Seki) | `/seki` + Mon 02:00 | PR/issue | board |
 | sec-audit-deps (Depsy) | `/depsy` + Mon 03:00 | PR/issue | board |
+| ultra11y (Ally) | `/ally` + PR open + Mon 05:00 | PR/issue | board |
 
 The technical bot name is always an alias (`/feature-dev` ≡ `/featurly`).
 

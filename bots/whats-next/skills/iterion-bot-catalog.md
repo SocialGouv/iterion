@@ -125,7 +125,7 @@ head branch lives in the repo). When the board card doesn't carry that
 signal, say so and ask the operator — never auto-dispatch a PR whose
 origin you cannot confirm.
 
-## Distinguishers — the three pairs that ALWAYS need a tie-break
+## Distinguishers — the pairs that ALWAYS need a tie-break
 
 These overlaps come up often; commit each distinguisher to memory
 before you walk the table on a new roadmap item.
@@ -195,6 +195,35 @@ before you walk the table on a new roadmap item.
   whole-improve-loop / etc. When an operator asks you for a long-horizon
   vision on a mature repo, the right move is often to route to `evolve`
   rather than answer at your own altitude.
+
+### `ultra11y` (Ally) vs `rgaa-audit` (Acci) — who FINDS the non-conformity
+
+Both are READ-ONLY accessibility auditors. Neither fixes anything (that
+is Willy, `whole-improve-loop`, with the `rgaa` preset). They differ in
+where the findings come from, which is what decides between them.
+
+- `ultra11y` / Ally: a static ENGINE finds the non-conformities — 78
+  machine-detectable checks tied to the WCAG 2.2 success criteria,
+  measured against the W3C ACT corpus. Each finding carries a stable id,
+  a criterion, a severity and a `file:line`. The one agent step rules
+  only on the criteria a static pass cannot decide, and the engine's own
+  fail-closed gate refuses an unjustified verdict or an ungroundable
+  non-conformity. It also has a PR mode: `pr_url` + `base_ref` audit
+  exactly what the branch introduced.
+- `rgaa-audit` / Acci: the AGENT finds the non-conformities, reading the
+  UI source theme by theme against the 106 RGAA criteria, with the DSFR
+  MCP tools as the reference markup when the target uses the Système de
+  Design de l'État. Deterministic gates check the audit happened; they
+  do not produce the findings.
+- Tie-break — **reproducibility**: "must a finding survive without a
+  model in the loop (a conformance deliverable, a per-PR gate, an
+  auditor who will re-run it)?" → Ally. "is the value in RGAA
+  theme-by-theme reasoning over a DSFR UI?" → Acci.
+- Tie-break — **scope shape**: a pull request or a branch → Ally (Acci
+  has no diff mode). A whole-repo RGAA campaign on a French public
+  service UI → Acci.
+- Neither supersedes the other, and running both on the same repo is
+  legitimate: they disagree usefully.
 
 ## When no row matches confidently — three escape hatches
 
@@ -285,6 +314,7 @@ dispatcher routes on it), never the persona.
 | Shieldy | `supply-shield` |
 | Vulny | `supply-shield-cve` |
 | Testy | `test-coverage` |
+| Ally | `ultra11y` |
 | Nexie | `whats-next` (this bot) |
 | Willy | `whole-improve-loop` |
 | Wikky | `wiki-gen` |
@@ -1182,6 +1212,41 @@ not in the workflow — so adding a language needs no DSL edit.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
 - **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
+
+### `ultra11y` — Ally
+
+Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a
+pull-request mode. The ultra11y static engine produces the findings — one
+per criterion, anchored file:line, with a stable id — and ONE adjudication
+agent rules on the criteria a static pass cannot decide (alt relevance,
+link purpose, reading order), each verdict justified or grounded. The
+engine's own gates then refuse the run: `verify --apply` fail-closes on an
+unjustified verdict or an ungroundable non-conformity, and `check` rejects
+a report citing a criterion that does not exist.
+
+Given a pull request (`pr_url` / `base_ref`, set by iterion for any bot
+launched on a PR) it audits exactly what the branch introduced; otherwise
+it audits the whole UI surface and writes a dated conformance report under
+`audits/`, optionally filing one board issue per criterion.
+
+Criteria that need a rendered page (contrast, visible focus, zoom, reflow)
+are reported as RESIDUAL RISKS, never as conforming. No browser is
+launched; nothing is fixed or committed.
+
+- **Use when**:
+  Use when accessibility findings must be DEFENSIBLE — a dated WCAG 2.2 AA or
+  RGAA conformance deliverable, or a per-PR accessibility check whose findings
+  carry file:line anchors and a criterion each. The detection is deterministic,
+  so a finding is reproducible without a model in the loop.
+  
+  Read-only: Ally reports. For FIXING accessibility issues, use Willy
+  (whole-improve-loop) with the rgaa preset. Acci (rgaa-audit) is the sibling
+  to prefer for RGAA theme-by-theme reasoning over a Système de Design de
+  l'État UI, where the DSFR MCP tools carry the reference markup.
+- **Triggers**: ultra11y, a11y, accessibility, wcag
+- **Vars**: `base_ref` (string), `engine_version` (string), `findings_cap` (int), `force_jsx` (bool), `post_to_board` (bool), `pr_url` (string), `prior_pushback` (string), `report_dir` (string), `report_lang` (string), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `standard` (string), `workspace_dir` (string)
+- **Capabilities**: board.create, board.label, board.read
+- **Path**: `bots/ultra11y/main.bot`
 
 ### `whats-next` — Nexie
 

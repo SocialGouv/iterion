@@ -1,0 +1,97 @@
+name: ultra11y
+display_name: Ally
+icon: 🦮
+version: 0.1.0
+## 0.1.0 — first cut. Engine-backed accessibility auditor: the finding set
+## comes from ultra11y's static engine (78 machine-detectable checks tied to
+## the WCAG 2.2 success criteria, measured against the W3C ACT corpus), not
+## from a model. The one agent step adjudicates the criteria a static pass
+## genuinely cannot decide, and its output is folded back through the
+## engine's own fail-closed gate.
+description: |
+  Engine-backed WCAG 2.2 AA / RGAA accessibility auditor (read-only), with a
+  pull-request mode. The ultra11y static engine produces the findings — one
+  per criterion, anchored file:line, with a stable id — and ONE adjudication
+  agent rules on the criteria a static pass cannot decide (alt relevance,
+  link purpose, reading order), each verdict justified or grounded. The
+  engine's own gates then refuse the run: `verify --apply` fail-closes on an
+  unjustified verdict or an ungroundable non-conformity, and `check` rejects
+  a report citing a criterion that does not exist.
+
+  Given a pull request (`pr_url` / `base_ref`, set by iterion for any bot
+  launched on a PR) it audits exactly what the branch introduced; otherwise
+  it audits the whole UI surface and writes a dated conformance report under
+  `audits/`, optionally filing one board issue per criterion.
+
+  Criteria that need a rendered page (contrast, visible focus, zoom, reflow)
+  are reported as RESIDUAL RISKS, never as conforming. No browser is
+  launched; nothing is fixed or committed.
+when_to_use: |
+  Use when accessibility findings must be DEFENSIBLE — a dated WCAG 2.2 AA or
+  RGAA conformance deliverable, or a per-PR accessibility check whose findings
+  carry file:line anchors and a criterion each. The detection is deterministic,
+  so a finding is reproducible without a model in the loop.
+
+  Read-only: Ally reports. For FIXING accessibility issues, use Willy
+  (whole-improve-loop) with the rgaa preset. Acci (rgaa-audit) is the sibling
+  to prefer for RGAA theme-by-theme reasoning over a Système de Design de
+  l'État UI, where the DSFR MCP tools carry the reference markup.
+author: SocialGouv (devthejo) — bots/ultra11y/main.bot
+schema_version: 1
+triggers: [ultra11y, a11y, accessibility, wcag]
+
+capabilities: [board.create, board.label, board.read]
+
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+# Forge-access requirements for the studio Integrations auto-provisioner
+# (advisory + discovery-time — the runtime does not read this).
+forge:
+  events: [pull_request, pull_request_comment]
+  token_scopes:
+    repository: read # clone + read the diff being audited
+    pull_requests: write # publish the findings onto the PR
+  rationale: |
+    In PR mode Ally audits the diff against the base ref and leaves its
+    findings as a `review` artifact; the iterion server publishes them onto
+    the pull request through the team connection's client, so the run itself
+    holds no posting credential.
+
+# What this bot leaves behind for a later run. Matched to a consumer BY KIND,
+# so a fixer picks up an accessibility review without either manifest naming
+# the other bot — and the findings it hands over are the ENGINE's, which is
+# what makes them safe to act on unread.
+produces:
+  - kind: review
+    node: deliver
+
+# A fixer's reply to an earlier review of the same PR: what it fixed, what it
+# contested. Keeps a re-audit from re-filing what was already answered.
+consumes:
+  - kind: review_ledger
+    var: prior_pushback
+    scope: pr
+
+# Invocations: how Ally can be triggered (typed routing contract).
+invocations:
+  - kind: command
+    mode: board
+    args_var: scope_notes
+    command: { name: ally, aliases: [ultra11y, a11y], scope: any, min_replier_role: developer }
+  - kind: forge
+    mode: direct
+    forge: { event: pull_request, actions: [opened, reopened] }
+  - kind: schedule
+    mode: board
+    schedule: { suggested_cron: "0 5 * * 1" }
+  - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in the
+## declared order; everything else stays out of the form (still settable via
+## --var / bot_args).
+launch:
+  primary: [scope_notes, standard, pr_url, base_ref]

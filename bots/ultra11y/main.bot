@@ -1,0 +1,640 @@
+## ─────────────────────────────────────────────────────────────────────
+## ultra11y (persona: Ally) — engine-backed WCAG 2.2 AA / RGAA auditor
+##
+## READ-ONLY. Nothing here edits, fixes or commits code.
+##
+## WHY THIS SHAPE. The sibling accessibility bot (Acci, bots/rgaa-audit)
+## asks a model to find the non-conformities and wraps it in deterministic
+## gates. Its own bilan records what that costs: on run 019f3d3b-7aea the
+## review found four real defects, emitted them without the `status` field
+## the gates count by, and the report published "0 non conformes" — four
+## true findings erased between the agent and the deliverable
+## (docs/bot-runs/rgaa-audit.md). The gates were right; the DETECTOR was a
+## language model, so a dropped field was indistinguishable from a clean
+## repo.
+##
+## Ally moves the detection out of the model's hands. The ultra11y engine
+## (one self-contained .mjs, no keys, Node >= 22.18 — already in the
+## sandbox base image) runs 78 machine-detectable checks tied to the WCAG
+## 2.2 success criteria, measured against the W3C ACT corpus. Its findings
+## carry a stable id, a criterion, a severity and a file:line. There is no
+## model between "a defect exists in the code" and "a defect is counted".
+##
+## The model is still here, doing the part only judgment can do: the ~38
+## criteria a static pass cannot decide (is this alt text relevant, is this
+## link's purpose clear in context). And its output is gated by the engine
+## itself — `verify --apply` fail-closes on an unjustified C/NA, an
+## ungroundable NC, or a criterion missing from the adjudication, and
+## `check` refuses a report citing a criterion that does not exist.
+##
+## Pipeline (single pass — a read-only audit has nothing to converge on):
+##   prepare       — DETERMINISTIC: resolve the pinned engine (hard-fail if
+##                   absent or mismatched), pick full/PR mode, inventory
+##   static_audit  — DETERMINISTIC: the engine. THE finding set.
+##   worklist      — DETERMINISTIC: draft report + the adjudication worklist
+##   adjudicate    — the ONE agent: rules on what the engine could not
+##   fold          — DETERMINISTIC gate ON THE AGENT: verify --apply
+##   deliver       — DETERMINISTIC: dated report + `check` integrity gate +
+##                   the tracker-agnostic issue set
+##   publish       — board issues (full mode); PR mode publishes via the
+##                   `produces: review` hand-off, so this step no-ops there
+##
+## ANTI-FAÇADE. Every gate below is a `tool` node, never an LLM judgment.
+## The one that matters most is `prepare`: an unresolvable engine FAILS the
+## run. A step that let a missing engine fall through would report zero
+## findings, which reads exactly like a clean audit — the single failure
+## mode this design exists to prevent.
+##
+## UNIVERSAL. No language, ecosystem or layout is named anywhere in this
+## file. The engine decides which files it can parse; `scope_globs`
+## defaults to the whole workspace; the stack knowledge lives in the
+## bundled skills. Adding a framework costs zero DSL edits.
+## ─────────────────────────────────────────────────────────────────────
+
+secrets:
+  ## Forge API token for forge-side needs OTHER than posting — cloning a
+  ## private repo on a cloud runner, chiefly. This bot never posts to a
+  ## forge itself: in PR mode it leaves its findings as the `review`
+  ## artifact (`publish:` on `deliver`) and the iterion server publishes
+  ## them through the team connection's live client. A workspace-mounted
+  ## token freezes at launch and must never be the posting credential.
+  ## Mounted read-only as a FILE (path/env only, never read into a
+  ## prompt); `optional: true` so runs without a binding are unaffected.
+  forge_token:
+    as: file
+    optional: true
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## The engine, PINNED. `npx` would otherwise resolve `latest` and what
+  ## runs could change with no commit anywhere. Bump deliberately.
+  ##
+  ## >= 2.32.0 is REQUIRED: `deliver` consumes `prd --issues-json`, the
+  ## tracker-agnostic issue export (maxgfr/ultra11y#15) — without it the
+  ## board issues would have to be re-derived here from raw findings,
+  ## duplicating grouping and de-duplication the engine already owns.
+  ## An older engine fails loudly in `prepare` rather than degrading.
+  engine_version: string = "2.32.0"
+  ## Country standard to report against — "" is the WCAG 2.2 AA core.
+  ## "rgaa" renders the French référentiel. Packs are the engine's, not
+  ## this bot's: a new country is a pack, not a DSL edit.
+  standard:      string = ""
+  ## Free-text scope hint from the operator / dispatched issue.
+  scope_notes:   string = ""
+  ## Optional focusing globs (space-separated, relative). Empty = the whole
+  ## workspace. A per-run override, never a hardcoded layout.
+  scope_globs:   string = ""
+  ## Set by iterion for ANY bot launched on a pull request. Non-empty
+  ## pr_url switches this bot into diff mode — the engine then audits what
+  ## the branch introduced instead of the whole surface. No engine code
+  ## knows this bot exists; the bot reads generic launch context.
+  pr_url:        string = ""
+  base_ref:      string = ""
+  ## An earlier fixer's reply to a previous review of the same PR
+  ## (manifest `consumes: review_ledger`). Read by the adjudicator so a
+  ## contested finding is not re-litigated blind.
+  prior_pushback: string = ""
+  ## Force JSX/TSX parsing for inputs of any extension. Off by default —
+  ## the engine already parses by extension; this is for the repos that
+  ## put component source behind an unusual suffix.
+  force_jsx:     bool   = false
+  ## Where the dated conformance report lands. Neutral repo-root dir the
+  ## operator can gitignore; never iterion's store dir.
+  report_dir:    string = "${PROJECT_DIR}/audits"
+  ## Everything intermediate stays OUT of the target tree. The engine
+  ## contains its writes to --out, so a run leaves the checkout untouched.
+  run_dir:       string = "${PROJECT_SCRATCH_DIR}/ultra11y"
+  ## When false, write the report only — do NOT create board issues.
+  post_to_board: bool   = true
+  ## Overflow guard: keep at most this many criteria as board issues
+  ## (severity-sorted); the rest stay in the report.
+  findings_cap:  int    = 80
+  ## Report language: auto | en | fr. auto follows the audited repo.
+  report_lang:   string = "auto"
+
+## ─── Schemas ──────────────────────────────────────────────────────────
+
+schema prepare_output:
+  engine_version: string
+  mode:           string
+  audit_args:     string
+  listing:        string
+
+schema audit_input:
+  workspace_dir: string
+  engine_version: string
+  audit_args:    string
+  run_dir:       string
+  report_lang:   string
+
+schema audit_output:
+  files:           int
+  findings:        int
+  conformance_pct: int
+  residual:        int
+  audit_path:      string
+  banner:          string
+
+schema worklist_input:
+  workspace_dir: string
+  engine_version: string
+  run_dir:       string
+  standard:      string
+  report_lang:   string
+
+schema worklist_output:
+  todo_path: string
+  count:     int
+
+schema adjudicate_input:
+  workspace_dir:  string
+  run_dir:        string
+  todo_path:      string
+  count:          int
+  mode:           string
+  scope_notes:    string
+  listing:        string
+  prior_pushback: string
+
+schema adjudicate_output:
+  verdicts_path: string
+  decided:       int
+  left_manual:   int
+  summary:       string
+
+schema fold_input:
+  workspace_dir: string
+  engine_version: string
+  run_dir:       string
+  verdicts_path: string
+
+schema fold_output:
+  applied:         int
+  still_manual:    int
+  conformance_pct: int
+  findings:        int
+
+schema deliver_input:
+  workspace_dir: string
+  engine_version: string
+  run_dir:       string
+  report_dir:    string
+  standard:      string
+  report_lang:   string
+  cap:           int
+
+schema deliver_output:
+  report_path: string
+  issues:      json
+  total:       int
+  capped:      int
+  blocking:    int
+
+schema publish_input:
+  workspace_dir: string
+  report_path:   string
+  issues:        json
+  total:         int
+  capped:        int
+  post_to_board: bool
+  mode:          string
+  scope_notes:   string
+
+schema publish_output:
+  created_issues: json
+  summary:        string
+
+## ─── Prompts ──────────────────────────────────────────────────────────
+
+prompt adjudicate_system:
+  You are Ally, an accessibility auditor. A deterministic engine has already
+  audited this codebase and decided every criterion it can decide
+  statically. You are NOT here to re-find those defects — they are found,
+  counted and anchored. You are here for the criteria the engine cannot
+  decide: the judgment calls.
+
+  FIRST read your bundled skills (mirrored under `.claude/skills/`):
+  `ultra11y-engine` (how to drive the engine, its exit codes, where its
+  files are) and `ultra11y-adjudication` (the decision protocol per
+  criterion, and what each verdict must carry).
+
+  YOUR TASK. Open the worklist at the given todo_path. It is JSON. If it
+  carries a `contract` key, read that first — it states the verdict
+  vocabulary and what each verdict additionally requires, and it wins over
+  anything else. Fill in the `verdict` of EVERY item, then write the whole
+  file back to `<run_dir>/adjudication.json`.
+
+  The evidence is already harvested into each item (every image's alt text,
+  every link's text and surrounding context, control labels, colour pairs).
+  Read it. Open the cited files when the evidence is not enough — you have
+  read_file, glob and grep, and the `mcp__ultra11y__*` tools when they are
+  available.
+
+  THE FOUR VERDICTS, and the honest use of each:
+    - "C"  — you verified it holds. Requires a justification, and (where
+             the item offers `citations`) an anchor you were actually shown.
+    - "NC" — it is violated. Requires at least one finding with file, line,
+             message AND a `normativeRef` naming the failed test of the
+             active standard. A finding you cannot ground is not a finding.
+    - "NA" — no such content exists in the audited scope. Requires a
+             one-line reason.
+    - "manual" — you genuinely cannot decide statically. Requires a reason:
+             "needs-rendered-dom" (it needs a real browser — computed
+             contrast, visible focus, zoom, reflow, content on hover) or
+             "undecidable".
+
+  THE ONE RULE THAT MATTERS. `manual` is a RESPECTABLE ANSWER and "C" is
+  not its polite synonym. A criterion you did not verify is not conforming;
+  it is undecided, and the report says so as a residual risk. Marking an
+  unverified criterion "C" is the single way to turn this audit back into
+  the thing it replaces — a clean bill of health nobody earned. A gate
+  re-reads you and fail-closes, but the gate cannot tell an honest C from a
+  lazy one. You can.
+
+  Never invent a file, a line or a criterion. Never widen the contract.
+  When a prior fixer's pushback is provided, read it before ruling on the
+  findings it contests — but their disagreement does not decide the
+  criterion, the evidence does.
+
+prompt adjudicate_user:
+  Audit target: {{input.workspace_dir}}
+  Mode: {{input.mode}} (pr = only what the branch introduced; full = the whole surface)
+  Worklist: {{input.todo_path}} ({{input.count}} criteria to rule on)
+  Write your completed file to: {{input.run_dir}}/adjudication.json
+
+  Scope hint (may be empty): {{input.scope_notes}}
+
+  Repository inventory (deterministic, bounded):
+
+  {{input.listing}}
+
+  Prior fixer pushback on this PR (may be empty): {{input.prior_pushback}}
+
+  Rule on every criterion. Return verdicts_path, how many you decided
+  (C/NC/NA), how many you honestly left manual, and a short summary.
+
+prompt publish_system:
+  You turn a finished accessibility audit into board issues. You make NO
+  code changes and you decide NOTHING about accessibility — the findings,
+  their criteria, their severities and their wording are already fixed by
+  the engine and the adjudication. Your job is faithful transcription.
+
+  Read the `iterion-board` skill for the board tools.
+
+  You are given an ISSUE SET: one item per criterion, already
+  de-duplicated, severity-sorted and capped. For EACH item call
+  mcp__iterion_board__create_issue once with:
+    - title: the item's `title` verbatim — it is the de-dupe grain, so
+      re-running this bot must not create a second copy of the same issue.
+    - body: the item's `body`, plus its occurrences as a `file:line` list.
+    - state: "ready"
+    - labels: the item's own `labels`, plus "source:ultra11y".
+
+  An item with `advisory: true` is a non-normative RECOMMENDATION, not a
+  non-conformity. Keep its label and never re-word it into a defect.
+
+  Do not add findings. Do not re-severity anything. Do not summarise a
+  criterion away because it looks similar to another — the engine already
+  grouped every occurrence under its criterion.
+
+  Report exactly the issues you created in created_issues. If the board
+  tools are unavailable, say so in the summary rather than pretending.
+
+prompt publish_user:
+  Audited scope: {{input.workspace_dir}} (hint: {{input.scope_notes}})
+  Mode: {{input.mode}}
+  Report: {{input.report_path}}
+  Criteria to file: {{input.total}} total, {{input.capped}} held back by the cap.
+  Post to board: {{input.post_to_board}}
+
+  Issue set:
+
+  {{input.issues}}
+
+  File them and return created_issues plus a short summary.
+
+## ─── MCP ──────────────────────────────────────────────────────────────
+
+## The engine's own read-only MCP server: criterion lookup, evidence
+## reading, the adjudication helpers. The adjudicator uses it when it
+## resolves; when it does not, the same engine is one `bash` call away and
+## the deterministic gates are unaffected either way — an MCP outage can
+## slow the agent down, it can never turn a failed audit green.
+mcp_server ultra11y:
+  transport: stdio
+  command: "npx"
+  args: ["-y", "ultra11y@2.31.2", "mcp"]
+
+## ─── Nodes ────────────────────────────────────────────────────────────
+
+## DETERMINISTIC setup, and the run's first hard gate.
+##
+## Resolves the PINNED engine and refuses to continue if what answered is
+## not the version asked for. This is deliberately the loudest failure in
+## the bot: a silently missing scanner reports zero findings, and zero
+## findings is exactly what a clean repo looks like.
+##
+## Also picks the mode (a non-empty pr_url means audit the diff) and takes
+## a bounded, language-agnostic inventory for the agent's context.
+tool prepare:
+  command: `export npm_config_update_notifier=false
+GOT=$(npx -y ultra11y@{{vars.engine_version}} --version 2>/dev/null | tail -1)
+WS='{{vars.workspace_dir}}' WANT='{{vars.engine_version}}' GOT=$GOT PR='{{vars.pr_url}}' BASE='{{vars.base_ref}}' GLOBS='{{vars.scope_globs}}' JSX='{{vars.force_jsx}}' python3 -c "
+import os, json, sys
+want = os.environ.get('WANT','').strip()
+got  = os.environ.get('GOT','').strip()
+if got != want:
+    sys.stderr.write('ultra11y engine unresolved: asked for ' + want + ', got ' + (got or '(nothing)') + '. Refusing to report an audit no engine produced.\n')
+    sys.exit(1)
+ws = os.environ.get('WS','.')
+pr = os.environ.get('PR','').strip()
+base = os.environ.get('BASE','').strip()
+globs = os.environ.get('GLOBS','').strip()
+jsx = os.environ.get('JSX','false').strip().lower() == 'true'
+# Diff mode needs a base to diff against; a pr_url with no base_ref would
+# silently audit everything and call it a PR review, so fall back to the
+# full audit and let the report say what it covered.
+mode = 'pr' if (pr and base) else 'full'
+args = ['--since', base] if mode == 'pr' else ([g for g in globs.split() if g] or ['.'])
+args.append('--graph')
+if jsx:
+    args.append('--jsx')
+EXCLUDED = {'.git','node_modules','vendor','.iterion','.works','.claude','.venv','venv','env','dist','build','.next','out','target','__pycache__','.cache','.terraform','coverage'}
+MANIFESTS = {'package.json','composer.json','Gemfile','requirements.txt','pyproject.toml','go.mod','pom.xml','build.gradle','Cargo.toml','angular.json','vite.config.ts','vite.config.js','next.config.js','nuxt.config.ts','tailwind.config.js','Dockerfile','devbox.json','Taskfile.yml','Makefile','.ultra11yrc.json'}
+try:
+    top = sorted(p + ('/' if os.path.isdir(os.path.join(ws, p)) else '') for p in os.listdir(ws))
+except OSError:
+    top = []
+found = []
+for dp, dns, fns in os.walk(ws):
+    dns[:] = [d for d in dns if d not in EXCLUDED]
+    if os.path.relpath(dp, ws).count(os.sep) >= 4:
+        dns[:] = []
+    for f in fns:
+        if f in MANIFESTS:
+            found.append(os.path.relpath(os.path.join(dp, f), ws))
+    if len(found) >= 400:
+        break
+found = sorted(set(found))[:400]
+listing = 'TOP-LEVEL ENTRIES:\n' + '\n'.join(top) + '\n\nMANIFEST / CONFIG FILES (vendor, build and cache dirs pruned; depth<=4; capped 400):\n' + '\n'.join(found)
+print(json.dumps({'engine_version': got, 'mode': mode, 'audit_args': ' '.join(args), 'listing': listing}))
+"`
+  output: prepare_output
+
+## DETERMINISTIC. The engine runs; its output IS the finding set.
+##
+## No model reads the code here, so a finding cannot be dropped by a
+## schema slip and cannot be invented by a hallucination. A scope that
+## matches no auditable file is reported honestly as an empty scope — the
+## engine having found nothing to parse is a different fact from the code
+## being clean, and the banner says which one happened.
+##
+## The command disables SHELL globbing (set -f) around the engine call.
+## Without it the shell expands a scope glob before the engine ever sees
+## it, and POSIX sh expands a recursive pattern one level deep only — so
+## a scope meant to cover a whole subtree would silently audit its top
+## directory and report that as the full audit. The engine has its own
+## globber that understands the recursive form; set -f is what lets the
+## pattern reach it intact. Word splitting still applies, which is what
+## separates the arguments.
+tool static_audit:
+  command: `export npm_config_update_notifier=false
+mkdir -p '{{input.run_dir}}'
+set -f
+npx -y ultra11y@{{input.engine_version}} audit {{input.audit_args}} --out '{{input.run_dir}}' --json --lang '{{input.report_lang}}' > /dev/null 2>'{{input.run_dir}}/audit.err' || { cat '{{input.run_dir}}/audit.err' >&2; exit 1; }
+set +f
+RUN='{{input.run_dir}}' python3 -c "
+import os, json, sys
+run = os.environ['RUN']
+p = os.path.join(run, 'audit-latest.json')
+try:
+    with open(p) as fh:
+        a = json.load(fh)
+except Exception as e:
+    sys.stderr.write('the engine exited 0 but wrote no readable audit at ' + p + ': ' + str(e) + '\n')
+    sys.exit(1)
+files = int((a.get('scope') or {}).get('files') or 0)
+findings = len(a.get('findings') or [])
+residual = len(a.get('residualRisks') or [])
+banner = ''
+if files == 0:
+    banner = 'The engine found no auditable file in scope. That is an empty scope, NOT a clean audit — widen scope_globs, or check that this project has a user interface at all.'
+print(json.dumps({'files': files, 'findings': findings, 'conformance_pct': int(a.get('conformancePct') or 0), 'residual': residual, 'audit_path': p, 'banner': banner}))
+"`
+  input: audit_input
+  output: audit_output
+
+## DETERMINISTIC. A draft report, then the adjudication worklist the agent
+## fills. The worklist carries its own contract (verdict vocabulary + what
+## each verdict requires), so the agent needs nothing from this file.
+tool worklist:
+  command: `export npm_config_update_notifier=false
+RUN='{{input.run_dir}}'
+STD=''
+if [ -n '{{input.standard}}' ]; then STD='--standard {{input.standard}}'; fi
+npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$RUN" $STD --lang '{{input.report_lang}}' > /dev/null 2>&1
+REPORT=$(ls -1 "$RUN"/*.md 2>/dev/null | head -1)
+if [ -z "$REPORT" ]; then echo 'the engine wrote no draft report to render a worklist from' >&2; exit 1; fi
+npx -y ultra11y@{{input.engine_version}} verify --report "$REPORT" --in "$RUN/audit-latest.json" --manual $STD --out "$RUN" --json > "$RUN/worklist.json" 2>"$RUN/worklist.err" || { cat "$RUN/worklist.err" >&2; exit 1; }
+RUN=$RUN python3 -c "
+import os, json, sys
+run = os.environ['RUN']
+try:
+    with open(os.path.join(run, 'worklist.json')) as fh:
+        w = json.load(fh)
+except Exception as e:
+    sys.stderr.write('unreadable worklist: ' + str(e) + '\n')
+    sys.exit(1)
+todo = w.get('todoPath') or os.path.join(run, 'ADJUDICATE.todo.json')
+print(json.dumps({'todo_path': todo, 'count': int(w.get('count') or 0)}))
+"`
+  input: worklist_input
+  output: worklist_output
+
+## The ONE model step in the bot, and the only one that decides anything.
+## claude_code so the bundled skills are mirrored into .claude/skills/ and
+## the ultra11y MCP server is reachable from turn one. readonly: it rules,
+## it never edits the audited code.
+agent adjudicate:
+  backend: "claude_code"
+  model: "${ITERION_ULTRA11Y_MODEL_ADJUDICATE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_ULTRA11Y_EFFORT_ADJUDICATE:-high}"
+  input: adjudicate_input
+  output: adjudicate_output
+  system: adjudicate_system
+  user: adjudicate_user
+  tools: [bash, read_file, write_file, glob, grep]
+  tool_max_steps: 120
+  readonly: true
+
+## DETERMINISTIC GATE ON THE AGENT'S OUTPUT — the counterpart of `prepare`.
+##
+## `verify --apply` is fail-closed and it is the engine's own gate, not a
+## re-implementation: a null verdict, a C or NA with no justification, an
+## NC whose finding does not ground or cites no normative test, a criterion
+## missing from the adjudication — each is refused BY NAME and this node
+## exits non-zero carrying the reasons. An adjudication that cannot survive
+## this never reaches a report.
+tool fold:
+  command: `export npm_config_update_notifier=false
+RUN='{{input.run_dir}}'
+npx -y ultra11y@{{input.engine_version}} verify --apply '{{input.verdicts_path}}' --in "$RUN/audit-latest.json" --out "$RUN" --json > "$RUN/folded.json" 2>"$RUN/folded.err"
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
+  echo 'the adjudication was REFUSED by the engine gate — no report will be produced from it:' >&2
+  cat "$RUN/folded.json" "$RUN/folded.err" 2>/dev/null >&2
+  exit 1
+fi
+RUN=$RUN python3 -c "
+import os, json, sys
+run = os.environ['RUN']
+with open(os.path.join(run, 'folded.json')) as fh:
+    f = json.load(fh)
+if not f.get('ok'):
+    sys.stderr.write('adjudication refused: ' + json.dumps(f.get('issues') or []) + '\n')
+    sys.exit(1)
+# Conformance and the finding count come from the FOLDED AUDIT ON DISK, not
+# from the fold's own summary: the file is the artifact every later node
+# renders from, so reading it here means these numbers cannot disagree with
+# the report — on any engine version.
+with open(os.path.join(run, 'audit-latest.json')) as fh:
+    a = json.load(fh)
+print(json.dumps({'applied': int(f.get('applied') or 0), 'still_manual': int(f.get('stillManual') or 0), 'conformance_pct': int(a.get('conformancePct') or 0), 'findings': len(a.get('findings') or [])}))
+"`
+  input: fold_input
+  output: fold_output
+
+## DETERMINISTIC delivery, and the run's last gate.
+##
+## Renders the dated report from the adjudicated audit, runs the engine's
+## `check` integrity gate over it (every cited criterion resolves, every NA
+## is justified, the pass-rate maths is sound — a report citing an invented
+## criterion cannot ship), then exports the tracker-agnostic issue set:
+## one item per criterion, severity-sorted and capped.
+##
+## Carries `publish:` — this is the node the manifest's `produces: review`
+## names, so a fixer (or the forge publisher) can pick the findings up.
+tool deliver:
+  publish: a11y_findings
+  command: `export npm_config_update_notifier=false
+RUN='{{input.run_dir}}'
+OUT='{{input.report_dir}}'
+STD=''
+if [ -n '{{input.standard}}' ]; then STD='--standard {{input.standard}}'; fi
+mkdir -p "$OUT"
+npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$OUT" $STD --lang '{{input.report_lang}}' > "$RUN/report.path" 2>"$RUN/report.err" || { cat "$RUN/report.err" >&2; exit 1; }
+REPORT=$(tail -1 "$RUN/report.path")
+if [ ! -f "$REPORT" ]; then echo "the report path the engine printed does not exist: $REPORT" >&2; exit 1; fi
+npx -y ultra11y@{{input.engine_version}} check --report "$REPORT" --in "$RUN/audit-latest.json" $STD --json > "$RUN/check.json" 2>"$RUN/check.err" || { echo 'REPORT INTEGRITY GATE FAILED — the report cites something that does not resolve:' >&2; cat "$RUN/check.json" "$RUN/check.err" 2>/dev/null >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} prd --in "$RUN/audit-latest.json" --out "$RUN" $STD --issues-json --lang '{{input.report_lang}}' > /dev/null 2>"$RUN/prd.err" || { cat "$RUN/prd.err" >&2; exit 1; }
+RUN=$RUN REPORT=$REPORT CAP='{{input.cap}}' python3 -c "
+import os, json, glob, sys
+run = os.environ['RUN']
+try:
+    cap = int(os.environ.get('CAP') or '80')
+except ValueError:
+    cap = 80
+if cap < 1:
+    cap = 80
+matches = sorted(glob.glob(os.path.join(run, 'issues-*.json')))
+if not matches:
+    sys.stderr.write('the engine wrote no issue set to publish from\n')
+    sys.exit(1)
+with open(matches[-1]) as fh:
+    doc = json.load(fh)
+issues = doc.get('issues') or []
+RANK = {'bloquant': 3, 'blocking': 3, 'majeur': 2, 'major': 2, 'mineur': 1, 'minor': 1}
+def rank(i):
+    return RANK.get(str(i.get('severity') or '').strip().lower(), 0)
+issues.sort(key=rank, reverse=True)
+kept = issues[:cap]
+blocking = len([i for i in issues if rank(i) == 3 and not i.get('advisory')])
+print(json.dumps({'report_path': os.environ['REPORT'], 'issues': kept, 'total': len(issues), 'capped': max(0, len(issues) - cap), 'blocking': blocking}))
+"`
+  input: deliver_input
+  output: deliver_output
+
+## Board transcription. claude_code for the capability-gated board MCP
+## tools + the bundled iterion-board skill. It decides nothing: the issue
+## set it receives is already the engine's, de-duplicated and capped.
+agent publish:
+  backend: "claude_code"
+  model: "${ITERION_ULTRA11Y_MODEL_PUBLISH:-claude-opus-5}"
+  reasoning_effort: "${ITERION_ULTRA11Y_EFFORT_PUBLISH:-medium}"
+  input: publish_input
+  output: publish_output
+  system: publish_system
+  user: publish_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.create, board.label]
+  tool_max_steps: 90
+
+## ─── Workflow ─────────────────────────────────────────────────────────
+
+workflow ultra11y:
+  entry: prepare
+  default_backend: "claude_code"
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "${ITERION_ULTRA11Y_MAX_DURATION:-2h}"
+    max_cost_usd: 20
+    max_tokens: 2000000
+    max_iterations: 200
+
+  prepare -> static_audit with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    engine_version: "{{outputs.prepare.engine_version}}",
+    audit_args:    "{{outputs.prepare.audit_args}}",
+    run_dir:       "{{vars.run_dir}}",
+    report_lang:   "{{vars.report_lang}}"
+  }
+
+  static_audit -> worklist with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    engine_version: "{{outputs.prepare.engine_version}}",
+    run_dir:       "{{vars.run_dir}}",
+    standard:      "{{vars.standard}}",
+    report_lang:   "{{vars.report_lang}}"
+  }
+
+  worklist -> adjudicate with {
+    workspace_dir:  "{{vars.workspace_dir}}",
+    run_dir:        "{{vars.run_dir}}",
+    todo_path:      "{{outputs.worklist.todo_path}}",
+    count:          "{{outputs.worklist.count}}",
+    mode:           "{{outputs.prepare.mode}}",
+    scope_notes:    "{{vars.scope_notes}}",
+    listing:        "{{outputs.prepare.listing}}",
+    prior_pushback: "{{vars.prior_pushback}}"
+  }
+
+  adjudicate -> fold with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    engine_version: "{{outputs.prepare.engine_version}}",
+    run_dir:       "{{vars.run_dir}}",
+    verdicts_path: "{{outputs.adjudicate.verdicts_path}}"
+  }
+
+  fold -> deliver with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    engine_version: "{{outputs.prepare.engine_version}}",
+    run_dir:       "{{vars.run_dir}}",
+    report_dir:    "{{vars.report_dir}}",
+    standard:      "{{vars.standard}}",
+    report_lang:   "{{vars.report_lang}}",
+    cap:           "{{vars.findings_cap}}"
+  }
+
+  deliver -> publish with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    report_path:   "{{outputs.deliver.report_path}}",
+    issues:        "{{outputs.deliver.issues}}",
+    total:         "{{outputs.deliver.total}}",
+    capped:        "{{outputs.deliver.capped}}",
+    post_to_board: "{{vars.post_to_board}}",
+    mode:          "{{outputs.prepare.mode}}",
+    scope_notes:   "{{vars.scope_notes}}"
+  }
+
+  publish -> done

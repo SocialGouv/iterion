@@ -46,6 +46,7 @@ These bots are shipped in the repository and are discoverable by the CLI and stu
 | 🏷️ Triagy | [`issue-triage`](../bots/issue-triage/) | Single-shot card triage: read a fresh board card, classify it, stamp the handler bot + labels, and leave a routing comment. Routes work to other bots; never dispatched to. |
 | 💬 Revi (converse) | [`revi-converse`](../bots/revi-converse/) | Answer a focused `/revi` follow-up in the same forge discussion; never edits code. |
 | ♿ Acci | [`rgaa-audit`](../bots/rgaa-audit/) | Read-only RGAA 4.1.2 source audit with a deterministic coverage gate. |
+| 🦮 Ally | [`ultra11y`](../bots/ultra11y/) | Read-only WCAG 2.2 AA / RGAA audit where a static ENGINE finds the non-conformities and the agent only rules on what it cannot decide; PR diff mode. |
 | ⛓️ Shieldy | [`supply-shield`](../bots/supply-shield/) | Diff-scoped dependency-malware gate for forge events. |
 | 🚨 Vulny | [`supply-shield-cve`](../bots/supply-shield-cve/) | Diff-scoped known-CVE gate for changed dependency versions. |
 | 🧪 Testy | [`test-coverage`](../bots/test-coverage/) | Add meaningful regression-catching tests and verify both the suite and the new test diff. |
