@@ -8,8 +8,11 @@ import (
 	"testing"
 )
 
-// gitExec matches a git subprocess being built anywhere in the tree.
-var gitExec = regexp.MustCompile(`exec\.Command(?:Context)?\([^)]*?"git"`)
+// gitExec matches a git subprocess being built anywhere in the tree. It spans
+// newlines: gofmt wraps a long call, and a line-oriented pattern would miss
+// `exec.CommandContext(ctx,\n\t"git", …)` — precisely the shape a new call site
+// is likely to take.
+var gitExec = regexp.MustCompile(`(?s)exec\.Command(?:Context)?\(\s*(?:[\w.]+\s*,\s*)?"git"`)
 
 // TestEveryGitCallerSanitizesEnv sweeps the tree for git subprocesses whose
 // environment is left inherited.
@@ -26,9 +29,11 @@ var gitExec = regexp.MustCompile(`exec\.Command(?:Context)?\([^)]*?"git"`)
 // `.Env` is assigned within a few lines of the command being built; the point
 // is to force the decision, not to prove the value is right.
 func TestEveryGitCallerSanitizesEnv(t *testing.T) {
-	root := filepath.Join("..", "..", "pkg")
-	// pkg/git assigns through gitEnv(), which is SanitizeEnv's own caller.
-	skipDirs := map[string]bool{filepath.Join("..", "..", "pkg", "git"): true}
+	// The whole repository, not just pkg/: a git subprocess is as likely to be
+	// added under cmd/ or e2e/, and a sweep that silently never looks there
+	// reads as coverage it does not have.
+	root := filepath.Join("..", "..")
+	skipNames := map[string]bool{"vendor": true, "studio": true, "node_modules": true, "testdata": true}
 
 	var offenders []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -36,7 +41,13 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 			return err
 		}
 		if info.IsDir() {
-			if skipDirs[path] || info.Name() == "testdata" {
+			// Hidden directories hold scratch clones of other people's code
+			// (.local, .works, .repos) — sweeping them reports on third-party
+			// source and costs half a minute. pkg/git assigns through
+			// gitEnv(), SanitizeEnv's own caller.
+			name := info.Name()
+			if skipNames[name] || (strings.HasPrefix(name, ".") && path != root) ||
+				path == filepath.Join("..", "..", "pkg", "git") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -48,18 +59,21 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 		if rerr != nil {
 			return rerr
 		}
-		lines := strings.Split(string(src), "\n")
-		for i, line := range lines {
-			if !gitExec.MatchString(line) || strings.HasPrefix(strings.TrimSpace(line), "//") {
+		body := string(src)
+		for _, loc := range gitExec.FindAllStringIndex(body, -1) {
+			// A call quoted inside a doc comment is prose, not a call site.
+			lineStart := strings.LastIndex(body[:loc[0]], "\n") + 1
+			if strings.Contains(body[lineStart:loc[0]], "//") {
 				continue
 			}
-			// The assignment may land well below the command: Dir, cancellation
+			// The assignment may land well below the call: Dir, cancellation
 			// hardening and timeouts are commonly wired in between.
-			window := lines[i:min(i+16, len(lines))]
-			if strings.Contains(strings.Join(window, "\n"), ".Env = ") {
+			tail := body[loc[0]:min(loc[0]+700, len(body))]
+			if strings.Contains(tail, ".Env = ") {
 				continue
 			}
-			offenders = append(offenders, filepath.ToSlash(path)+":"+itoa(i+1)+"  "+strings.TrimSpace(line))
+			line := 1 + strings.Count(body[:loc[0]], "\n")
+			offenders = append(offenders, filepath.ToSlash(path)+":"+itoa(line)+"  "+strings.TrimSpace(body[loc[0]:min(loc[1]+40, len(body))]))
 		}
 		return nil
 	})

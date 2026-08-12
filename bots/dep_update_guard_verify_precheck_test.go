@@ -217,6 +217,41 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		})
 	}
 
+	// Revi's R691cf0. A here-doc body is data. Writing a path list into one is
+	// the natural way to feed a runner a set of paths — which is precisely what
+	// the NOT COMMANDS rejection tells the agent to do, so scanning the body
+	// would reject the remediation the message recommends.
+	t.Run("a here-doc body is data, not commands", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, "pkg", "a"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var body []string
+		for _, name := range []string{"w.go", "x.go", "y.go", "z.go", "q.go"} {
+			rel := filepath.Join("pkg", "a", name)
+			if err := os.WriteFile(filepath.Join(ws, rel), []byte("package a\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			body = append(body, rel)
+		}
+		if err := os.WriteFile(filepath.Join(ws, "runner.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "#!/bin/sh\nset -e\ncd " + ws + "\ncat > list.txt <<'EOF'\n" +
+			strings.Join(body, "\n") + "\nEOF\n./runner.sh\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("the paths inside the here-doc are never executed: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.

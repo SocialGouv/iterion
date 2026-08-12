@@ -802,8 +802,17 @@ except OSError:
 _noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'echo', 'shift')
 _runs = 0
 _bare = []
+_hd = ''
 for _ln in _lines:
     _s = _ln.strip()
+    # A here-doc body is DATA, not commands. Writing a path list into one is
+    # the natural shape for feeding a runner a set of paths -- which is exactly
+    # what the rejection below tells the agent to do, so scanning it would
+    # reject the remediation it recommends.
+    if _hd:
+        if _s == _hd:
+            _hd = ''
+        continue
     if not _s or _s.startswith('#'):
         continue
     # Per SEGMENT, not per line: cd "$WS" && task check leads with a no-op and
@@ -817,6 +826,17 @@ for _ln in _lines:
         if _c and _c.split()[0] not in _noops:
             _runs = _runs + 1
             break
+    # The opener itself is a command and was counted above; from the NEXT line
+    # the body is data. A herestring (<<<) has no body, so it is left alone.
+    _lt = chr(60) + chr(60)
+    if _lt in _s:
+        _t = _s.split(_lt, 1)[1]
+        if not _t.startswith(chr(60)):
+            if _t.startswith('-'):
+                _t = _t[1:]
+            _t = _t.strip()
+            if _t:
+                _hd = _t.split()[0].strip(chr(39) + chr(34))
     # Any WORD containing a slash is a pathname to the shell, with or without a
     # leading ./ -- and a listing is as likely to come out of git ls-files or
     # go list (bare relative paths) as hand-written with the prefix.
