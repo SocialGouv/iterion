@@ -9,16 +9,25 @@ import (
 	"testing"
 )
 
-// TestDepUpdateGuardVerifyPrechecks covers the two ways Vetty's verify script
-// came back red without ever having verified anything, both observed on the
-// 2026-08-10 Dependabot batch.
+// TestDepUpdateGuardVerifyPrechecks covers the two verify-script states that
+// are AUTHORSHIP defects rather than red builds: no script at all, and a script
+// that runs nothing.
 //
-// Both are AUTHORSHIP defects, not red builds, and the difference matters:
-// a red build is a fact about the bump, an unwritten or unrunnable script is a
-// step the agent skipped. Reported as a red build they are indistinguishable,
-// and the operator reads "this bump breaks the repo" about a bump that breaks
-// nothing. Reported as a precheck rejection they loop back into verify_build
-// with the reason and self-heal, while the commit path stays just as closed.
+// The difference matters. A red build is a fact about the bump; a step the
+// agent skipped is not, and reported as a red build the two are
+// indistinguishable — the operator reads "this bump breaks the repo" about a
+// bump that breaks nothing. Reported as a precheck rejection they loop back
+// into verify_build with the reason and self-heal, while the commit path stays
+// just as closed.
+//
+// Both conditions are decidable from the file alone, which is why they are the
+// only two here. A third check, rejecting a script whose lines are paths rather
+// than commands (iterion#398), was written and removed: judging shell text
+// statically produced a false positive on every review round — a leading `cd`,
+// a here-doc body, a subdirectory helper, a backslash continuation, an artifact
+// the script builds first — and a guard that holds a bump which builds inflicts
+// exactly the failure it was added to prevent. What remains of it lives in the
+// verify-build skill, as the rule that every line must be a command.
 func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not on PATH")
@@ -64,68 +73,6 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		}
 		if !strings.Contains(res.PrecheckReason, "NO SCRIPT") {
 			t.Errorf("the reason must name the defect so the rewrite is targeted, got %q", res.PrecheckReason)
-		}
-	})
-
-	// iterion#398: verify.sh held ~2300 lines, each a path to a Go test file.
-	// sh answered every one with "Permission denied" and the run reported a
-	// red build for a bump whose whole test surface was in fact green.
-	t.Run("a file listing pasted in as commands is rejected", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		var lines []string
-		for _, name := range []string{"a_test.go", "b_test.go", "c_test.go", "d_test.go", "e_test.go"} {
-			if err := os.WriteFile(filepath.Join(ws, name), []byte("package x\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			lines = append(lines, "./"+name)
-		}
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		res := run(t, ws, scratch)
-		if res.Passed {
-			t.Error("a script of unrunnable paths must not open the commit path")
-		}
-		if !res.PrecheckRejected {
-			t.Error("this is an authorship defect, not a red build — it must loop back with the reason")
-		}
-		if !strings.Contains(res.PrecheckReason, "NOT COMMANDS") {
-			t.Errorf("the reason must name the defect, got %q", res.PrecheckReason)
-		}
-		if !strings.Contains(res.PrecheckReason, "a_test.go") {
-			t.Errorf("the reason must cite the offending lines so the rewrite is targeted, got %q", res.PrecheckReason)
-		}
-	})
-
-	// Revi's R6d2b2b: POSIX sh executes any WORD containing a slash as a
-	// pathname, prefix or no prefix. A listing produced by `git ls-files` or
-	// `go list` carries no `./`, and produces the identical symptom — so a
-	// guard keyed on the prefix fires or not depending on how the agent
-	// happened to spell it.
-	t.Run("bare relative paths, no ./ prefix, are rejected too", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		if err := os.MkdirAll(filepath.Join(ws, "pkg", "x"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		var lines []string
-		for _, name := range []string{"a_test.go", "b_test.go", "c_test.go", "d_test.go", "e_test.go"} {
-			rel := filepath.Join("pkg", "x", name)
-			if err := os.WriteFile(filepath.Join(ws, rel), []byte("package x\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			lines = append(lines, rel)
-		}
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-
-		res := run(t, ws, scratch)
-		if !res.PrecheckRejected {
-			t.Errorf("whether the guard fires must not depend on how the listing was spelled; got exit %d: %s", res.ExitCode, res.LogTail)
-		}
-		if res.Passed {
-			t.Error("a script of unrunnable paths must not open the commit path")
 		}
 	})
 
@@ -198,175 +145,6 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		res := run(t, ws, scratch)
 		if res.PrecheckRejected {
 			t.Errorf("a chained command is not a vacuous script: %q", res.PrecheckReason)
-		}
-		if !res.Passed {
-			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
-		}
-	})
-
-	// Revi's Rac0c6b. The listing check required the path to be an existing
-	// FILE, so `go list ./...` output (import paths that resolve to nothing)
-	// and directories out of `find -type d` sailed through — while failing at
-	// sh exactly like the unexecutable file did. POSIX is sharper: a word
-	// containing a slash is never PATH-searched, so anything that is not an
-	// executable regular file cannot run.
-	for _, tc := range []struct {
-		name  string
-		lines []string
-	}{
-		{"go list import paths", []string{
-			"github.com/SocialGouv/iterion/pkg/git",
-			"github.com/SocialGouv/iterion/pkg/store",
-			"github.com/SocialGouv/iterion/pkg/runtime",
-			"github.com/SocialGouv/iterion/pkg/runner",
-			"github.com/SocialGouv/iterion/pkg/server",
-		}},
-		{"directories", []string{"pkg/git/", "pkg/store/", "pkg/runtime/", "pkg/runner/", "pkg/server/"}},
-	} {
-		t.Run("a listing of "+tc.name+" is rejected", func(t *testing.T) {
-			ws, scratch := t.TempDir(), t.TempDir()
-			if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(tc.lines, "\n")+"\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			res := run(t, ws, scratch)
-			if !res.PrecheckRejected {
-				t.Errorf("these fail at sh just like an unexecutable file; got exit %d: %s", res.ExitCode, res.LogTail)
-			}
-			if res.Passed {
-				t.Error("a script of unrunnable words must not open the commit path")
-			}
-		})
-	}
-
-	// Revi's R691cf0. A here-doc body is data. Writing a path list into one is
-	// the natural way to feed a runner a set of paths — which is precisely what
-	// the NOT COMMANDS rejection tells the agent to do, so scanning the body
-	// would reject the remediation the message recommends.
-	t.Run("a here-doc body is data, not commands", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		if err := os.MkdirAll(filepath.Join(ws, "pkg", "a"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		var body []string
-		for _, name := range []string{"w.go", "x.go", "y.go", "z.go", "q.go"} {
-			rel := filepath.Join("pkg", "a", name)
-			if err := os.WriteFile(filepath.Join(ws, rel), []byte("package a\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			body = append(body, rel)
-		}
-		if err := os.WriteFile(filepath.Join(ws, "runner.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		script := "#!/bin/sh\nset -e\ncd " + ws + "\ncat > list.txt <<'EOF'\n" +
-			strings.Join(body, "\n") + "\nEOF\n./runner.sh\n"
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-
-		res := run(t, ws, scratch)
-		if res.PrecheckRejected {
-			t.Errorf("the paths inside the here-doc are never executed: %q", res.PrecheckReason)
-		}
-		if !res.Passed {
-			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
-		}
-	})
-
-	// Revi's Ree852e. A script's cwd moves as it runs, so resolving relative
-	// words against the workspace root alone reads a subdirectory's helpers as
-	// an unrunnable listing — a hold on a bump that builds, which is the very
-	// failure mode being removed.
-	t.Run("helpers invoked after a cd into a subdirectory are not a listing", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		sub := filepath.Join(ws, "tools")
-		if err := os.MkdirAll(sub, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		var calls []string
-		for _, name := range []string{"build.sh", "test.sh", "lint.sh", "vet.sh", "tidy.sh"} {
-			if err := os.WriteFile(filepath.Join(sub, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			calls = append(calls, "./"+name)
-		}
-		script := "#!/bin/sh\nset -e\ncd " + sub + "\n" + strings.Join(calls, "\n") + "\n"
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-
-		res := run(t, ws, scratch)
-		if res.PrecheckRejected {
-			t.Errorf("these resolve and execute from the directory the script entered: %q", res.PrecheckReason)
-		}
-		if !res.Passed {
-			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
-		}
-	})
-
-	// Revi's Rdbf846, and the shape of the four false positives before it: the
-	// scanner judged each line alone, against a language full of multi-line
-	// constructs, and every patch met the next spelling. What actually
-	// separates iterion#398 from an ordinary script is not any one line but the
-	// PROPORTION — it was a listing and almost nothing else.
-	// One command split over many lines. Every non-final continuation carries a
-	// trailing backslash, hence a space, and only the last one reads as a bare
-	// word — so the proportion never approaches a listing.
-	t.Run("one command split over many continuation lines", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		script := "#!/bin/sh\ncd " + ws + "\n./run.sh \\\n  ./pkg/a \\\n  ./pkg/b \\\n  ./pkg/c \\\n  ./pkg/d \\\n  ./pkg/e\n"
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		res := run(t, ws, scratch)
-		if res.PrecheckRejected {
-			t.Errorf("these are arguments of the invocation above them: %q", res.PrecheckReason)
-		}
-	})
-
-	// Isolates the proportion: four unresolvable words, none of them
-	// continuations, among a dozen real commands. sh fails on them, so the run
-	// goes red — but it went red having RUN, which is a fact about the script,
-	// not the phantom of one that never executed.
-	t.Run("a few bad lines among real commands is not a listing", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		lines := []string{"#!/bin/sh", "cd " + ws}
-		for i := 0; i < 12; i++ {
-			lines = append(lines, "./run.sh")
-		}
-		lines = append(lines, "pkg/a/x.go", "pkg/a/y.go", "pkg/a/z.go", "pkg/a/w.go")
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		res := run(t, ws, scratch)
-		if res.PrecheckRejected {
-			t.Errorf("a script that ran its commands is not a file listing: %q", res.PrecheckReason)
-		}
-	})
-
-	t.Run("continuations and a few path arguments are an ordinary script", func(t *testing.T) {
-		ws, scratch := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		script := "#!/bin/sh\nset -e\ncd " + ws + "\n" +
-			"./run.sh\n" +
-			"./run.sh \\\n  ./pkg/...\n" +
-			"./run.sh \\\n  ./cmd/...\n" +
-			"./run.sh \\\n  pkg/git\n" +
-			"./run.sh \\\n  internal/x\n"
-		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		res := run(t, ws, scratch)
-		if res.PrecheckRejected {
-			t.Errorf("sh runs this perfectly; the guard must not hold a bump for it: %q", res.PrecheckReason)
 		}
 		if !res.Passed {
 			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)

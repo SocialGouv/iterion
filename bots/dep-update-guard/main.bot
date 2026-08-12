@@ -808,23 +808,18 @@ except OSError:
 # wrote nothing, not for the one that wrote a reported answer.
 _noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'shift')
 _runs = 0
-_bare = []
-_eff = 0
 _hd = ''
-_roots = [ws]
 for _ln in _lines:
     _s = _ln.strip()
-    # A here-doc body is DATA, not commands. Writing a path list into one is
-    # the natural shape for feeding a runner a set of paths -- which is exactly
-    # what the rejection below tells the agent to do, so scanning it would
-    # reject the remediation it recommends.
+    # A here-doc body is DATA, not commands: a script writing a path list into
+    # one has not run those paths, and counting them would call an empty script
+    # busy.
     if _hd:
         if _s == _hd:
             _hd = ''
         continue
     if not _s or _s.startswith('#'):
         continue
-    _eff = _eff + 1
     # Per SEGMENT, not per line: a directory change chained to the build leads
     # with a no-op and runs everything. Judging a line by its first word alone
     # would reject the most ordinary script shape there is. (No quote or dollar
@@ -840,10 +835,6 @@ for _ln in _lines:
             break
     # The opener itself is a command and was counted above; from the NEXT line
     # the body is data. A herestring (<<<) has no body, so it is left alone.
-    if _s.split()[0] == 'cd' and len(_s.split()) > 1:
-        _cd = _s.split()[1].strip(chr(39) + chr(34))
-        if (chr(36) not in _cd) and ('*' not in _cd) and ('~' not in _cd):
-            _roots.append(_cd if _cd.startswith('/') else os.path.join(ws, _cd))
     _lt = chr(60) + chr(60)
     if _lt in _s:
         _t = _s.split(_lt, 1)[1]
@@ -853,41 +844,8 @@ for _ln in _lines:
             _t = _t.strip()
             if _t:
                 _hd = _t.split()[0].strip(chr(39) + chr(34))
-    # Any WORD containing a slash is a pathname to the shell, with or without a
-    # leading ./ -- and a listing is as likely to come out of git ls-files or
-    # go list (bare relative paths) as hand-written with the prefix.
-    if (' ' in _s) or (chr(9) in _s) or ('/' not in _s):
-        continue
-    # Anything the shell cannot resolve statically is left alone: a variable,
-    # a glob or a home-relative path is not a listing.
-    if (chr(36) in _s) or ('*' in _s) or ('?' in _s) or ('~' in _s) or (chr(96) in _s):
-        continue
-    # Resolved against every directory the script cds into, not just the
-    # workspace root: a verify.sh that enters a subdirectory and then calls its
-    # helpers by relative name is ordinary, and anchoring at the root alone
-    # would read those calls as an unrunnable listing.
-    _hit = False
-    for _root in _roots:
-        _pp = _s if _s.startswith('/') else os.path.join(_root, _s)
-        if os.path.isfile(_pp) and os.access(_pp, os.X_OK):
-            _hit = True
-            break
-    # POSIX: a word containing a slash is never PATH-searched, so anything that
-    # is not an executable regular file is GUARANTEED to fail as a command --
-    # an import path out of go list and a directory out of find fail exactly
-    # like the unexecutable file, and testing only for files missed both.
-    if not _hit:
-        _bare.append(_s)
 if _runs == 0:
     _r = 'EMPTY SCRIPT: ' + script + ' runs nothing -- only blank lines, comments, or shell no-ops. It would exit 0 and certify a build that was never attempted. Write the repo own build and test commands (verify-build skill section 1).'
-    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
-    raise SystemExit(0)
-# A PROPORTION, not a count: what made iterion#398 a listing is that nearly
-# every line was one. A handful of unresolvable words among real commands is
-# an ordinary script -- four of this guard's own false positives were exactly
-# that shape -- so the rejection needs the script to be MOSTLY listing.
-if len(_bare) > 3 and (len(_bare) * 2) > _eff:
-    _r = 'NOT COMMANDS: ' + str(len(_bare)) + '+ lines of ' + script + ' are bare paths the shell cannot execute (e.g. ' + ', '.join(_bare[:3]) + '). That is a file listing pasted in as commands; sh answers each with Permission denied and the run reports a red build that never ran. Invoke the repo own test runner over those paths instead.'
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))
     raise SystemExit(0)
 def tree_state():

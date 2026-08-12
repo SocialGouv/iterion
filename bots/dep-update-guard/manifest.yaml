@@ -1,7 +1,17 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.3
+version: 2.7.4
+## 2.7.4 — the listing check is removed, not patched again. Rejecting a
+## verify.sh whose lines are paths rather than commands (iterion#398) meant
+## judging shell text statically, and eight review rounds each found the next
+## spelling it read wrong: a leading cd, a here-doc body, a subdirectory
+## helper, a backslash continuation, an artifact the script builds first. Every
+## one of those held a bump that builds -- the exact failure the check was
+## added to prevent, inflicted by the check. The two prechecks that remain are
+## decidable from the file alone (no script; a script that runs nothing), and
+## the rule that every line must be a command stays in the verify-build skill,
+## where it costs nothing when the agent gets it wrong.
 ## 2.7.3 — Revi hardening of 2.7.2, both defects inside the new guards.
 ## (a) The bare-path test keyed on a ./ or / prefix, but POSIX sh executes any
 ## WORD containing a slash as a pathname -- and a listing out of git ls-files
