@@ -98,6 +98,13 @@ vars:
   ## the engine already parses by extension; this is for the repos that
   ## put component source behind an unusual suffix.
   force_jsx:     bool   = false
+  ## NOT here yet, deliberately: `baseline`. The engine's `--baseline` only
+  ## suppresses the `--fail-on` GATE — measured, it changes neither the
+  ## findings nor the conformance rate (74/74 either way on this repo's
+  ## studio SPA). This bot reports, it does not gate, so a `baseline` var
+  ## would be a knob an operator could set and observe nothing from. It
+  ## belongs with the PR-gating work (`fail_on` + a commit status), not
+  ## before it.
   ## Where the dated conformance report lands. Neutral repo-root dir the
   ## operator can gitignore; never iterion's store dir.
   report_dir:    string = "${PROJECT_DIR}/audits"
@@ -231,8 +238,11 @@ prompt adjudicate_system:
   available.
 
   THE FOUR VERDICTS, and the honest use of each:
-    - "C"  — you verified it holds. Requires a justification, and (where
-             the item offers `citations`) an anchor you were actually shown.
+    - "C"  — you verified it holds. Requires a justification AND `citations`
+             naming the harvested evidence you cleared, each anchor drawn
+             from THIS criterion's own evidence. A criterion with no
+             harvested evidence cannot be C at all — there was nothing to
+             clear, so the honest verdict is "manual" or "NA".
     - "NC" — it is violated. Requires at least one finding with file, line,
              message AND a `normativeRef` naming the failed test of the
              active standard. A finding you cannot ground is not a finding.

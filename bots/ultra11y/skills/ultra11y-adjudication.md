@@ -23,10 +23,20 @@ not emit it), the table below is the contract.
 
 | verdict | means | must carry |
 |---|---|---|
-| `C` | you **verified** it holds | a `justification`; and where the item offers `citations`, an anchor from its own evidence |
+| `C` | you **verified** it holds | a `justification` **and** `citations[]` naming the harvested evidence you cleared — each anchor resolvable, and drawn from *this criterion's own* `evidence` (matched by file+line) |
 | `NC` | it is violated | ≥1 finding with `file`, `line`, `message` **and** a `normativeRef` naming the failed test of the active standard |
 | `NA` | no such content exists in scope | a one-line `reason` in the `justification` |
 | `manual` | you genuinely cannot decide statically | `reason`: `needs-rendered-dom` or `undecidable` |
+
+**A clearing verdict is gated exactly like an accusing one.** `citations[]` is not
+optional decoration on a `C`: the fold refuses a `C` that cites nothing, and it
+refuses a citation that does not resolve or that you were never shown. And a
+criterion the harvester found **no evidence for at all cannot be `C`** — there was
+nothing to clear, so the honest verdicts are `manual` (reason `undecidable`) or
+`NA` if nothing in scope is concerned.
+
+This is what stops "C everywhere with a plausible sentence" from passing, which
+is exactly the failure a prose-only justification used to allow.
 
 **Write the verdicts exactly as spelled above** — `C`, `NC`, `NA` upper-case,
 `manual` lower-case. Recent engines accept other casings, older ones refuse the
@@ -137,6 +147,9 @@ re-state the finding with its anchor.
 - Every item has a non-null verdict. A missing one fails the whole fold.
 - Every `C` and `NA` has a justification that says what you checked — not that
   you checked.
+- Every `C` also carries `citations[]`, each anchor drawn from that criterion's
+  own `evidence`. No evidence was harvested ⇒ the verdict is `manual` or `NA`,
+  never `C`.
 - Every `NC` finding has a resolvable `file`, `line` and a `normativeRef` that
   belongs to the criterion being ruled.
 - Every `manual` has one of the two accepted reasons.
