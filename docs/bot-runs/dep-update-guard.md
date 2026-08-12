@@ -7,9 +7,76 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-12 (evening) — both missing proofs land: an alignment merged, and the advisory path fires blind
+
+- Status: **validated.** The two things this bot had never been seen to do, it
+  did — within four hours of each other, on the deployed build.
+- Versions: Vetty **2.7.5** · iterion **v3.40.3** (`82ecebe0`), verified in the
+  pod rather than assumed (`kubectl exec deploy/iterion-runner -- grep -m1
+  '^version:' /opt/iterion/bots/dep-update-guard/manifest.yaml`).
+
+### The alignment landed end to end, in a merged PR
+
+**#394 merged at 18:49 as `88600c5fa`**, and the squash commit carries both
+halves of the work:
+
+```
+ pnpm-lock.yaml      | 210 ++++++++++++++++++-------------
+ studio/package.json |   2 +-
+ Co-authored-by: iterion-forge-61934180[bot]
+ * chore(deps): regenerate the pnpm lockfile for @types/node 26.1.2 → 26.2.0
+```
+
+Dependabot moved two lines of `studio/package.json`; **Vetty wrote the other
+210.** CI installs frozen, so without that regeneration the install fails
+before a line compiles — the bump was un-mergeable as opened, and is merged
+now because the bot fixed it. That is the whole contract of this lane, observed
+for the first time from bump to merge commit.
+
+What made the difference was not the alignment — that had worked for weeks (otel
+1.45 on #400, Vite 6→8 on buildkit-operator #19). It was removing the two
+reasons a correct alignment kept being thrown away: a base tree that could not
+pass its own tests inside the sandbox (#413), and a report that could not say
+why (#412).
+
+### The advisory path fires on a bump nothing in the tree betrays
+
+**#414** bumps `node-ipc` 9.2.1 → 10.1.1 — the `peacenotwar` release
+(GHSA-97m3-w2cp-4xx6 / CVE-2022-23812, CWE-506, 9.8). Verdict **MALICIOUS**,
+`hold_security`, no alignment, no commit. Four auditors agreed independently
+(osv-scanner on the lockfile, the OSV API, `npm audit --package-lock-only`,
+`trivy fs`), and the report states the property that makes this run worth more
+than #410's:
+
+> Nothing in the tree betrays it: index.js is inert, the lockfile integrity hash
+> is valid, and the two newly added transitives are clean per OSV — the signal
+> exists only in the registry advisory.
+
+It also noted, unprompted, that the current pin is clean, so the bump travels
+**safe → malicious** rather than remediating anything; and it disclosed two
+coverage gaps (the fixture lockfile lists transitives without top-level entries,
+so osv-scanner resolved 1 package not 3 — covered by per-package API queries;
+and no `npm install`, so lifecycle scripts were not inspected on disk).
+
+Together with the morning's runs the matrix is complete: **payload analysis →
+MALICIOUS, advisory lookup → MALICIOUS, control → SAFE.**
+
+### The fix, measured on the real batch
+
+`pkg/cli` needed a container runtime it could not have inside the sandbox, so
+iterion's own suite was red there and the fail-closed gate held every bump for a
+reason no bump caused. After #413, on re-review: **#392 green, #399 green, #394
+green and merged.** #396 stays `hold_security` on its own merits (mongodb chart
+16→19). The remaining reds are #390, #395, #397 — #395 now conflicts because its
+stale lockfile commit collides with the one #394 landed, so Dependabot was asked
+to recreate it.
+
+---
+
 ## 2026-08-12 — the anti-malware half fires for the first time, and the verify gate is proven to hold on a red base
 
-- Status: **validated for the security half, blocked for the alignment half.**
+- Status: **validated for the security half, blocked for the alignment half**
+  (both resolved the same evening — see the section above).
   Four runs: #410 (hostile fixture), #411 (its control), #394 and #395 (real
   Dependabot bumps).
 - Versions: Vetty 2.7.4 (runs) → **2.7.5** (fixes below) · iterion v3.40.0.
@@ -56,11 +123,13 @@ What the report got right beyond the verdict:
 Coverage this montage does NOT establish: with a `file:` dependency the hostile
 source sits inside the diff, so this proves the plumbing (audit →
 `hold_security` → red gate → no merge) and the signal reporting, not the
-judgement on an unseen registry package. `test/vetty-malware-bump-registry`
-(node-ipc 9.2.1 → 10.1.1, verdict discoverable only via OSV) is built and
-pushed for that half; not yet run.
+judgement on an unseen registry package. **That half ran the same evening as
+#414 and also held** — see the section above.
 
-### The alignment half is still blocked — but not by the alignment
+### The alignment half is blocked — but not by the alignment
+
+*(Resolved the same evening: #394 merged with its alignment. Kept as written
+because the diagnosis is the useful part.)*
 
 #394 and #395 both held `build/tests not green after alignment`, and neither
 red was caused by its bump:
@@ -130,6 +199,20 @@ and not bot-specific.
   The gate is fail-closed by design and that stays right, but the base tree's
   health is now a precondition of the whole lane — worth establishing before a
   batch, not after three holds.
+- **The target repo must be able to pass its own tests where the bot runs it.**
+  The generalisable form of the above, and the one worth carrying to every other
+  loop bot: a suite that is green on a developer's machine and red in a
+  container is not a suite the bot can use as an oracle. Establish it with one
+  command before blaming the bot —
+  `docker run --rm -v $PWD:/src:ro <the bot's sandbox image> sh -c 'cp -a /src
+  /tmp/w && cd /tmp/w && <the repo's test command>'`. Four holds and most of a
+  day were spent reading bot reports for a defect that was ours, sitting one
+  container run away.
+- **A control run is not ceremony.** #411 changes two JSON files and no code;
+  it is the only reason the morning's holds could be attributed to the tree
+  rather than to the bumps, and the only reason #410's MALICIOUS verdict means
+  detection rather than novelty-aversion. Budget one whenever a run is meant to
+  establish something.
 
 ## 2026-08-11/12 — why the other ten held, and a guard that had to be deleted
 
