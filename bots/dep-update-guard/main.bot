@@ -809,8 +809,8 @@ except OSError:
 _noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'shift')
 _runs = 0
 _hd = ''
-for _ln in _lines:
-    _s = _ln.strip()
+for _i in range(len(_lines)):
+    _s = _lines[_i].strip()
     # A here-doc body is DATA, not commands: a script writing a path list into
     # one has not run those paths, and counting them would call an empty script
     # busy.
@@ -843,7 +843,15 @@ for _ln in _lines:
                 _t = _t[1:]
             _t = _t.strip()
             if _t:
-                _hd = _t.split()[0].strip(chr(39) + chr(34))
+                _t = _t.split()[0].strip(chr(39) + chr(34))
+                # Only if the terminator really appears later. Otherwise a
+                # quoted value or an end-of-line comment containing << opens a
+                # here-doc that never closes and swallows the rest of the
+                # script, which then reads as running nothing.
+                for _rest in _lines[_i + 1:]:
+                    if _rest.strip() == _t:
+                        _hd = _t
+                        break
 if _runs == 0:
     _r = 'EMPTY SCRIPT: ' + script + ' runs nothing -- only blank lines, comments, or shell no-ops. It would exit 0 and certify a build that was never attempted. Write the repo own build and test commands (verify-build skill section 1).'
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 3, 'precheck_rejected': True, 'precheck_reason': _r, 'log_tail': _r}))

@@ -151,6 +151,31 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		}
 	})
 
+	// Revi's Reb56bb. The here-doc scan looks for << anywhere on a line, so a
+	// quoted value or an end-of-line comment containing it would open a body
+	// that never closes — swallowing the rest of the script, which then reads
+	// as running nothing and is held as EMPTY SCRIPT.
+	t.Run("a phantom here-doc must not swallow the script", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The << never has a matching terminator line: it sits in a quoted
+		// value, not a here-doc. It is carried by a no-op so that the only
+		// line which counts as running is the one it would swallow.
+		script := "#!/bin/sh\ncd " + ws + "\nexport MSG='a << b'\n./run.sh\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("the commands after it are still commands: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.

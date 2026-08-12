@@ -179,9 +179,9 @@ comment-only script exits 0, which the gate reads as a verified build — so
 shell tries to execute it, answers `Permission denied`, and the run reports a
 red build that never ran. To exercise a set of files, pass them to the repo's
 own runner (`go test ./...`, `pytest tests/`, `npm test`) — the runner takes
-paths, the shell does not. A script whose lines are mostly bare paths to files
-the shell cannot execute is rejected before it runs, and you are asked to
-rewrite it.
+paths, the shell does not. Nothing catches this for you: a script of paths runs,
+fails on every line, and reports a red build for a bump that broke nothing —
+which an operator then has to read the log to disbelieve.
 
 ## 3. Run it, and fix what the just-applied changes broke
 
