@@ -91,6 +91,13 @@ func waitForActiveChild(t *testing.T, svc *Service, parentID string) string {
 // child pauses. Before the fix the in-process child engine ran unregistered,
 // so manager.Cancel(childID) returned ErrRunNotActive.
 func TestServiceLaunch_SubbotChild_CancelMidFlight(t *testing.T) {
+	// Launch is a product entry point, so a bot with no `sandbox:` block
+	// resolves to `auto` and demands a container runtime. This test is about
+	// cancelling a subbot child, not about isolation — left implicit it passes
+	// on a Docker-equipped host and fails inside a container (observed
+	// 2026-08-12 in `iterion-sandbox-sec`, where it held dependency PRs on a
+	// build failure no bump had caused).
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "control_child.bot"), []byte(subbotControlChild), 0o644); err != nil {
 		t.Fatalf("write child bot: %v", err)

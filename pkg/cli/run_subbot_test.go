@@ -20,6 +20,11 @@ func (*subbotLineageExecutor) Execute(_ context.Context, node ir.Node, _ map[str
 }
 
 func TestRunSubbotsPersistNestedLineage(t *testing.T) {
+	// This file is in package `cli`, so it cannot reach the external
+	// test package's hermeticSandbox helper — same reason, stated here:
+	// RunRun defaults a sandbox-less bot to `auto`, which needs a
+	// container runtime the CI job and the bots' own sandbox lack.
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
 	dir := t.TempDir()
 	rootPath := filepath.Join(dir, "root.bot")
 	writeFile(t, rootPath, `schema lineage_result:

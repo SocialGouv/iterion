@@ -113,6 +113,23 @@ func newTestPrinter(format cli.OutputFormat) (*cli.Printer, *bytes.Buffer) {
 	return &cli.Printer{W: buf, Format: format}, buf
 }
 
+// hermeticSandbox opts a test out of the product default `sandbox: auto`.
+//
+// RunRun and RunResume are product entry points, so a workflow with no
+// `sandbox:` block resolves to auto and demands a container runtime. A test
+// that leaves that implicit passes on a developer's Docker-equipped host and
+// fails wherever there is none — including inside a container, where iterion's
+// own bots run. Observed 2026-08-12: five tests here and one in pkg/runview
+// were red inside `iterion-sandbox-sec`, which is what held four dependency
+// PRs on `build/tests not green` that no bump had caused.
+//
+// Any new test that launches or resumes a run belongs here too: these exercise
+// the run plumbing, not isolation, and should say so rather than inherit it.
+func hermeticSandbox(t *testing.T) {
+	t.Helper()
+	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
+}
+
 // ---------------------------------------------------------------------------
 // Tests — validate
 // ---------------------------------------------------------------------------
@@ -234,6 +251,7 @@ func (e *approveExecutor) Execute(_ context.Context, node ir.Node, input map[str
 }
 
 func TestRun_Success(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "test.bot", minimalWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -267,6 +285,7 @@ func TestRun_Success(t *testing.T) {
 }
 
 func TestRun_SuccessJSON(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "test.bot", minimalWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -293,6 +312,7 @@ func TestRun_SuccessJSON(t *testing.T) {
 }
 
 func TestRun_WithVars(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "test.bot", minimalWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -347,6 +367,7 @@ func (e *rejectExecutor) Execute(_ context.Context, node ir.Node, input map[stri
 }
 
 func TestRun_HumanPause(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "test.bot", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -1331,6 +1352,7 @@ func TestInspect_LegacyPathUnchanged(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResume_Success(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	botPath := writeFixture(t, dir, "test.bot", humanWorkflow)
 	storeDir := filepath.Join(dir, "store")
@@ -1385,6 +1407,7 @@ func TestResume_Success(t *testing.T) {
 }
 
 func TestResume_OperatorPausedWithoutAnswers(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	botPath := writeFixture(t, dir, "operator.bot", `
 workflow operator_resume:
