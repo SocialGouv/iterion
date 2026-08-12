@@ -1,7 +1,65 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.6.5
+version: 2.7.5
+## 2.7.5 — a hold must say what broke. The report carried out[-4000:], a blind
+## tail, and a test runner prints its per-package successes AFTER the package
+## that failed: three holds on 2026-08-12 (iterion#394/#395/#411) reported
+## "build/tests not green" over an excerpt containing a list of `ok` lines and
+## a bare FAIL, with the failing test name scrolled out. The excerpt now
+## carries the matched failing lines as well as the tail. The other half is a
+## skill rule: call the task-runner target, never transcribe its body -- a
+## multi-line Taskfile block passed as one `sh -c` argument arrives with its
+## newlines literal and dies on a syntax error unrelated to the bump, which is
+## what actually held #394 (its alignment was correct).
+## 2.7.4 — the listing check is removed, not patched again. Rejecting a
+## verify.sh whose lines are paths rather than commands (iterion#398) meant
+## judging shell text statically, and eight review rounds each found the next
+## spelling it read wrong: a leading cd, a here-doc body, a subdirectory
+## helper, a backslash continuation, an artifact the script builds first. Every
+## one of those held a bump that builds -- the exact failure the check was
+## added to prevent, inflicted by the check. The two prechecks that remain are
+## decidable from the file alone (no script; a script that runs nothing), and
+## the rule that every line must be a command stays in the verify-build skill,
+## where it costs nothing when the agent gets it wrong.
+## 2.7.3 — Revi hardening of 2.7.2, both defects inside the new guards.
+## (a) The bare-path test keyed on a ./ or / prefix, but POSIX sh executes any
+## WORD containing a slash as a pathname -- and a listing out of git ls-files
+## or go list carries no prefix, so whether the guard fired depended on how the
+## agent spelled it. Now: any line that is a single word containing a slash and
+## naming a file the shell cannot execute. (b) Nothing rejected a script that
+## runs NOTHING. An empty or comment-only verify.sh exits 0, which the gate
+## reads as a verified build -- and 2.7.2 made that newly reachable by asking
+## an agent that already skipped authorship to write SOMETHING, with no floor
+## on what counts. A vacuous script was the cheapest way to satisfy that
+## pressure, turning a previously fail-closed path into a green commit.
+## 2.7.2 — the two verify-authorship defects from the 2026-08-10 batch become
+## precheck REJECTIONS that loop back, instead of red builds that hold. A
+## missing verify.sh (iterion#390: a base-image digest refresh whose correct
+## alignment was empty, and which could therefore never clear the gate) and a
+## script whose lines are bare paths the shell cannot execute (iterion#398:
+## ~2300 of them, every one answered Permission denied while the real test
+## surface was green) are steps the agent skipped, not facts about the bump.
+## Reported as red builds they are indistinguishable from one; reported as
+## rejections they self-heal in-loop and the commit path stays just as closed.
+## The bare-path test names no file extension — it asks whether the path is a
+## file the shell cannot execute, which holds in any language.
+## 2.7.1 — the align step regenerates a lockfile the bump left stale. A bot
+## that edits the manifest without the lockfile makes CI's frozen install
+## fail on a specifier mismatch before any code compiles: the bump is
+## incomplete, not breaking, and regenerating is mechanical and in scope
+## (iterion#394 held on exactly that). Explicitly NOT --no-frozen-lockfile,
+## which hides the drift and merges an unbuildable branch.
+## 2.7.0 — a lost alignment no longer merges as a clean bump. commit_check
+## reads `align.applied` alongside the shas and routes the contradiction —
+## align claimed edits, the head did not move — to a fifth verdict,
+## `hold_lost_alignment`, blocking in the gate table and refused by
+## arm_automerge. An unmoved head has two opposite causes ("nothing to
+## align" and "the alignment vanished") and the shas alone cannot separate
+## them; the second happens whenever a run dies between align and commit,
+## since the runner re-clones on every claim while the checkpoint still
+## replays applied=true. Cost of learning it: SocialGouv/iterion#400 merged
+## an otel bump without the breaking-change fix this bot had written.
 ## 2.6.5 — Revi hardening of the loop-back: budget 2h → 4h/$25 (a
 ## fix_verify cycle re-runs verify_build+verify_run, 30–50m each on the
 ## measured heavy case — without the raise heavy bumps would trade

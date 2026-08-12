@@ -67,20 +67,21 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 
 // RemoteRunsLaunchOptions mirrors the POST /api/runs body the CLI fills.
 type RemoteRunsLaunchOptions struct {
-	FilePath      string // local .bot file; read and sent inline as source
-	BotID         string // catalog bot id (alternative to FilePath)
-	Vars          map[string]string
-	Preset        string
-	Timeout       string
-	Backend       string
-	Compress      string
-	AutoMemory    string
-	Permission    string
-	ReviewMode    string
-	MergeInto     string
-	BranchName    string
-	MergeStrategy string
-	AutoMerge     bool
+	FilePath        string // local .bot file; read and sent inline as source
+	BotID           string // catalog bot id (alternative to FilePath)
+	Vars            map[string]string
+	Preset          string
+	Timeout         string
+	Backend         string
+	Compress        string
+	AutoMemory      string
+	LoopBudgetGuard string
+	Permission      string
+	ReviewMode      string
+	MergeInto       string
+	BranchName      string
+	MergeStrategy   string
+	AutoMerge       bool
 	// Attach maps attachment name -> local file path; each is uploaded
 	// to /api/runs/uploads first and referenced by upload id.
 	Attach             map[string]string
@@ -111,18 +112,19 @@ func RemoteRunsLaunch(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 		req["vars"] = opts.Vars
 	}
 	for k, v := range map[string]string{
-		"preset":         opts.Preset,
-		"timeout":        opts.Timeout,
-		"backend":        opts.Backend,
-		"compress":       opts.Compress,
-		"auto_memory":    opts.AutoMemory,
-		"permission":     opts.Permission,
-		"review_mode":    opts.ReviewMode,
-		"merge_into":     opts.MergeInto,
-		"branch_name":    opts.BranchName,
-		"merge_strategy": opts.MergeStrategy,
-		"callback_url":   opts.CallbackURL,
-		"callback_token": opts.CallbackToken,
+		"preset":            opts.Preset,
+		"timeout":           opts.Timeout,
+		"backend":           opts.Backend,
+		"compress":          opts.Compress,
+		"auto_memory":       opts.AutoMemory,
+		"loop_budget_guard": opts.LoopBudgetGuard,
+		"permission":        opts.Permission,
+		"review_mode":       opts.ReviewMode,
+		"merge_into":        opts.MergeInto,
+		"branch_name":       opts.BranchName,
+		"merge_strategy":    opts.MergeStrategy,
+		"callback_url":      opts.CallbackURL,
+		"callback_token":    opts.CallbackToken,
 	} {
 		if v != "" {
 			req[k] = v

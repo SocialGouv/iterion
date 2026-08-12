@@ -86,6 +86,20 @@ builds and passes tests. Per-stack alignment surfaces:
 - **Other stacks** — follow the same loop: read the changelog, find the
   breaking surface, edit call sites, run the stack's typecheck/build.
 
+**A lockfile the bump left stale IS part of the alignment.** Some bots edit
+the manifest without regenerating the lockfile, and CI installs frozen
+(`pnpm install --frozen-lockfile`, `npm ci`, `yarn --immutable`,
+`go mod tidy` + a vendor-check, `poetry check --lock`, `bundle install
+--frozen`). The install then fails on a mismatch — *"specifiers in the
+lockfile don't match specifiers in package.json"* — before a single line of
+code is compiled. That is not the bump breaking the repo, it is the bump
+being incomplete, and regenerating the lockfile is a mechanical fix squarely
+in scope: run the ecosystem's own resolve step (see `[[package-managers]]`
+for the per-manager command), commit the regenerated lockfile with the rest
+of the alignment, and say so in `breaking_summary`. Do NOT reach for
+`--no-frozen-lockfile` to make the error go away: that hides the drift from
+CI instead of fixing it, and the merged branch stays unbuildable.
+
 Discipline: structured file edits (never `sed`/`cat >` for code); a focused
 syntax check after each file (`tsc --noEmit`, `python -m py_compile`,
 `gofmt -e`, `helm lint`, `php -l`, …); only what the bump broke — no

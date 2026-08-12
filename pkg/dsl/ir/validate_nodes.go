@@ -220,6 +220,22 @@ func (c *compiler) validateCompress(w *Workflow) {
 		})
 }
 
+// validateLoopBudgetGuard enforces that loop_budget_guard is one of the
+// accepted barewords. A typo would silently read as "unset" — i.e. the
+// default, which is ON — so an operator writing `off` and mistyping it
+// would keep a guard they meant to lift, with nothing said. Empty ("")
+// is unset and always valid; the comparison is case-insensitive and
+// whitespace-trimmed.
+func (c *compiler) validateLoopBudgetGuard(w *Workflow) {
+	switch strings.ToLower(strings.TrimSpace(w.LoopBudgetGuard)) {
+	case "", "on", "off":
+		return
+	}
+	c.errorf(DiagInvalidLoopBudgetGuard,
+		"workflow %q has invalid loop_budget_guard %q; valid values are on, off",
+		w.Name, w.LoopBudgetGuard)
+}
+
 // validateAutoMemory enforces that every auto_memory value (workflow-level +
 // every agent/judge node) is one of the accepted barewords, and warns when a
 // node asks for it on a backend that cannot deliver it. A typo would silently

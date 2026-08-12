@@ -1,0 +1,326 @@
+## ═══════════════════════════════════════════════════════════════════
+## review-env (Envy) — deploy the CURRENT workspace's already-published
+## image to the operator-attached platform, and hand back a LIVE https URL.
+##
+## One job, extracted so any flow can lease it: end-to-end tests, screen
+## and accessibility captures, and human review gain realism the moment
+## they run against a real deployed environment — real TLS, real ingress,
+## real DNS — instead of a localhost approximation. A campaign can run
+## this as a subbot; an operator can run it alone; a behavioural net can
+## point its capture base URL at the URL this bot returns.
+##
+## THE PLATFORM LIVES ENTIRELY IN THE ATTACHED SKILL. This DSL names no
+## cluster, no cloud, no CLI: the operator enables ONE `deploy-target`
+## plugin (the platform playbook) and installs ONE `deploy_credential`
+## secret, and swapping infrastructure means swapping that pair — the
+## bot never changes. No skill attached = no deploy, said loudly.
+##
+## THE IMAGE IS THE REPO'S OWN CI'S. This bot never builds or pushes an
+## image: a review environment must serve what the forge built from the
+## pushed commit, or it reviews something nobody can reproduce. If no
+## published image exists, that is a report, not an improvisation.
+##
+## THE URL VERDICT IS MEASURED, NEVER BELIEVED. A deterministic gate
+## probes the reported URL from outside the agent; `healthy` is the
+## agent's claim, `live` is the gate's measurement, and the bot converges
+## only on their conjunction.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## DNS-safe name for the environment; empty = derive from the repo name.
+  ## Reusing a slug makes redeploys land in place (same host).
+  slug: string = ""
+  ## Exact image reference the repo's CI published; empty = the agent reads
+  ## it back from the forge/registry the repo itself declares.
+  image_ref: string = ""
+  ## What the live URL must answer to count as up.
+  expected_status: int = 200
+  ## Redeploy attempts when the environment does not come up live.
+  max_deploy_retries: int = 2
+
+## Browser at the agent's fingertips — attached, never imposed. A deploy
+## that "answers 200" and a deploy that RENDERS are different claims; the
+## agent may open the returned URL in a real headless browser to look
+## before reporting healthy, and to iterate fast when something is wrong.
+## The durable end-to-end coverage belongs to the target repo's own test
+## suite — this server is for the agent's eyes, not for the record.
+mcp_server playwright:
+  transport: stdio
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest", "--headless"]
+
+secrets:
+  ## Deployment credential — a single READ-ONLY file used BY REFERENCE
+  ## (env $DEPLOY_CREDENTIAL = its PATH), never opened or printed; its
+  ## bytes are redacted from every log. Platform-GENERIC: what the file
+  ## contains and how it is consumed are decided entirely by the attached
+  ## deploy-target skill — this bot never knows. Same store name as the
+  ## app-dev bot's, so one installed credential serves both. optional:true
+  ## so validation and dry runs work without one; the deploy then reports
+  ## the missing credential instead of failing the graph.
+  deploy_credential:
+    as: file
+    env: DEPLOY_CREDENTIAL
+    optional: true
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt deploy_system:
+  You deploy the application in the current workspace to the operator's
+  platform and hand back a LIVE https URL. You do one thing; do it
+  honestly.
+
+  YOU DO NOT KNOW THE TARGET PLATFORM a priori — and you must not guess
+  it. Load the `deploy-target` skill FIRST — READ THE FILE
+  `.claude/skills/deploy-target.md` in the workspace, which is where an
+  operator-attached platform plugin mirrors it. The Skill tool's registry
+  carries the bundle's own skills, so an attached skill is often absent
+  from it: a name that does not resolve there is NOT evidence the skill
+  is missing, and the file is the authority. It is the platform playbook
+  — how to authenticate, provision whatever scope the platform uses,
+  reference the image, apply its deploy artifacts, wait for readiness,
+  and DERIVE THE PUBLIC URL. Only if that FILE does not exist can you not
+  deploy: return deployed=false with a clear note and STOP — never
+  improvise a platform.
+
+  THE IMAGE IS ALREADY PUBLISHED — by the repo's own CI, from a pushed
+  commit. Your job starts at the deploy. If `image_ref` was provided, use
+  exactly that. Otherwise read back the reference the repo's CI publishes
+  (its CI config, its committed deploy manifests, and forge registry
+  conventions say where); prefer the image built from the workspace's
+  current HEAD.
+
+  THE CLUSTER IS THE AUTHORITY ON PULLABILITY, NOT YOU. A private
+  registry that answers 401 to your anonymous probe says nothing about
+  what the cluster can pull: the pull credential lives in the namespace
+  as an imagePullSecret an operator provisioned, and you cannot read it —
+  by design. So once you can NAME the image, APPLY and let the rollout
+  answer. `kubectl -n <ns> get secret` tells you which pull secrets
+  exist; `rollout status` plus `describe pod` tell you whether the pull
+  worked, and ImagePullBackOff is a MEASUREMENT you report, not a
+  prediction you make in advance. Refusing to try because a probe you
+  were never meant to run came back unauthorised leaves the one question
+  that matters unmeasured.
+
+  Report deployed=false only when you cannot NAME an image at all —
+  naming exactly what is missing and which CI run would publish it. Do
+  not build one here, and never invent a reference.
+
+  CREDENTIALS BY REFERENCE — never read them. The attached credential is
+  mounted read-only at `{{secrets.deploy_credential}}` — that rendered
+  path is the reliable one. A secret's `env:` declaration is injected
+  into TOOL nodes, not into a delegated agent's shell, so
+  $DEPLOY_CREDENTIAL may well be unset here: export it yourself from the
+  path above rather than concluding the credential is missing. Pass it to
+  your tools by path/env exactly as the skill directs; do NOT open, cat,
+  echo, print, encode or summarise the file. If the skill needs a
+  credential and none is mounted, report deployed=false saying so.
+
+  Report deployed / healthy / deployed_url / image_ref / notes. `healthy`
+  means YOU watched the URL answer; a deterministic gate will re-measure
+  it from outside regardless, so a hopeful claim buys nothing. On
+  failure, notes carries the concrete blocking error and its remedy —
+  never a guessed URL.
+
+prompt deploy_user:
+  Workspace (the app to deploy): {{vars.workspace_dir}}
+  Requested slug (empty = derive from the repo name): {{vars.slug}}
+  Image reference (empty = read back what the repo's CI published): {{vars.image_ref}}
+  Workspace HEAD: {{input.head}} — uncommitted changes: {{input.dirty}}
+
+  A review environment reviews a COMMIT. If the workspace is dirty, say
+  so in notes: the URL will serve the pushed tree, not the local edits.
+
+  Feedback from the previous attempt (empty on the first — when present,
+  fix exactly this then redeploy):
+  {{input.fail_log}}
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema preflight_state:
+  head: string
+  dirty: int
+  notice: string
+
+schema deploy_input:
+  head: string
+  dirty: int
+  fail_log: string
+
+schema deploy_report:
+  deployed: bool
+  healthy: bool
+  deployed_url: string
+  image_ref: string
+  notes: string
+
+schema gate_input:
+  deployed: bool
+  url: string
+  expected: int
+
+schema gate_state:
+  live: bool
+  status: int
+  log_tail: string
+
+schema verdict_state:
+  ok: bool
+  fail_log: string
+  notice: string
+
+schema surface_input:
+  url: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+## preflight — the commit identity the environment will be reviewed as.
+tool preflight:
+  output: preflight_state
+  language: py
+  script: |
+    import json
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    out = {"head": "", "dirty": 0, "notice": ""}
+
+    rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                         capture_output=True, text=True, timeout=30)
+    if rev.returncode != 0:
+        out["notice"] = "not a git workspace: %s" % rev.stderr[-300:]
+        print(json.dumps(out))
+        sys.stderr.write("review-env: %s\n" % out["notice"])
+        raise SystemExit(1)
+    out["head"] = rev.stdout.strip()
+
+    st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=60)
+    out["dirty"] = len([l for l in st.stdout.splitlines() if l.strip()])
+    print(json.dumps(out))
+
+agent deploy:
+  backend: "claude_code"
+  model: "${ITERION_REVIEW_ENV_MODEL:-claude-sonnet-5}"
+  input: deploy_input
+  output: deploy_report
+  system: deploy_system
+  user: deploy_user
+  session: fresh
+  skills: ["deploy-target"]
+  mcp:
+    servers: [playwright]
+  timeout: "25m"
+
+## url_gate — the independent measurement. Standard-library probe, real
+## certificate verification (a review URL that only answers with TLS
+## checks disabled is not live, it is almost live — which is not a state).
+tool url_gate:
+  input: gate_input
+  output: gate_state
+  language: py
+  script: |
+    import json
+    import time
+    import urllib.request
+    import urllib.error
+
+    true, false, null = True, False, None
+
+    deployed = {{input.deployed}}
+    url = {{input.url}}
+    expected = {{input.expected}}
+
+    out = {"live": False, "status": 0, "log_tail": ""}
+    if not deployed or not url.strip():
+        out["log_tail"] = "nothing to probe: the deploy reported deployed=%s url=%r" % (deployed, url)
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    last = ""
+    for attempt in range(6):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "iterion-review-env-gate"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read(2048)
+                out["status"] = resp.status
+                if resp.status == expected and body.strip():
+                    out["live"] = True
+                    out["log_tail"] = "%s -> %d (%d bytes read)" % (url, resp.status, len(body))
+                    break
+                last = "%s -> %d, body %d bytes (expected %d)" % (url, resp.status, len(body), expected)
+        except urllib.error.HTTPError as e:
+            out["status"] = e.code
+            last = "%s -> HTTP %d" % (url, e.code)
+        except Exception as e:
+            last = "%s -> %s: %s" % (url, type(e).__name__, e)
+        time.sleep(10)
+    if not out["live"]:
+        out["log_tail"] = last
+    print(json.dumps(out))
+
+## The conjunction: the agent deployed it, the agent saw it healthy, and
+## the gate measured it live. Two of three is a report, not a URL.
+compute verdict:
+  output: verdict_state
+  expr:
+    ok: "outputs.deploy.deployed && outputs.deploy.healthy && outputs.url_gate.live"
+    fail_log: "if(outputs.url_gate.live, '', outputs.deploy.notes + ' | gate: ' + outputs.url_gate.log_tail)"
+    notice: "if(outputs.url_gate.live, 'live at ' + outputs.deploy.deployed_url, 'not live — see fail_log')"
+
+## surface_url — deterministic result-link emitter: the studio surfaces a
+## run's headline URL from this directive on stdout, never from agent
+## prose. The python guard drops an empty url so the scanner never sees a
+## malformed directive.
+tool surface_url:
+  input: surface_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=deploy scope=external')
+"`
+
+## ─── Workflow ──────────────────────────────────────────────────────
+
+workflow review_env:
+  entry: preflight
+
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default.
+  ## This bundle declares only python3 — platform tooling is the attached
+  ## skill's business, installed by its own steps.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "45m"
+    max_cost_usd: 15
+
+  preflight -> deploy with {
+    head:     "{{outputs.preflight.head}}",
+    dirty:    "{{outputs.preflight.dirty}}",
+    fail_log: ""
+  }
+
+  deploy -> url_gate with {
+    deployed: "{{outputs.deploy.deployed}}",
+    url:      "{{outputs.deploy.deployed_url}}",
+    expected: "{{vars.expected_status}}"
+  }
+
+  url_gate -> verdict
+
+  verdict -> surface_url when ok with {
+    url: "{{outputs.deploy.deployed_url}}"
+  }
+  surface_url -> done
+
+  ## Not live → another attempt carrying the measured failure; exhausted →
+  ## end on the committed report rather than a guess.
+  verdict -> deploy as deploy_loop("{{vars.max_deploy_retries}}") with {
+    head:     "{{outputs.preflight.head}}",
+    dirty:    "{{outputs.preflight.dirty}}",
+    fail_log: "{{outputs.verdict.fail_log}}"
+  }
+  verdict -> done

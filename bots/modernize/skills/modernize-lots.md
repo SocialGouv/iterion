@@ -122,6 +122,42 @@ information. When a reference moves, exactly one of two things is true:
 
 Both are stop conditions for this bot. Neither is yours to resolve.
 
+The second case has a written next step, and it IS yours to write even though
+it is not yours to resolve. When the move is the behaviour change the lot
+intends — and the lot's contract says `rebaseline_allowed: true` — announce it
+in the net's ledger (`REBASELINE.md`, beside the references), in prose for the
+cause **plus** a machine-readable request block. The canonical format lives in
+the golden-master bot's doctrine skill; the shape is:
+
+    <!-- iterion:rebaseline-request
+    {"id": "R-<lot>-<n>", "lot": "<lot-id>",
+     "cause": "one line: the intended change that moved these references",
+     "expected_paths": ["exact repo-relative reference paths"]}
+    -->
+
+**The BLOCK is the request.** The prose around it is for humans; the
+consuming process parses only `iterion:rebaseline-request` blocks, so however
+complete and well-measured the prose, a request without the block does not
+exist and nothing will ever act on it. This is measured, not hypothetical: a
+lot once wrote a model announcement — perimeter measured to the file, the
+future act proven in advance on a re-recorded copy — entirely in prose,
+because the ledger's existing entries taught it their shape. The net stayed
+red until an operator transcribed the block by hand. Match the ledger's prose
+style if you like; write the block regardless, marker line copied exactly.
+
+Commit the request with the lot's landed work, and let the lot block on its
+red gate if it must: a blocked lot carrying a written request is the system
+working, not failing. The party that owns the net consumes the request,
+re-records, and accepts **iff** the observed diff equals your announced
+`expected_paths` exactly — so measure them from the oracle's own red report,
+never guess. A request from a lot whose contract says `rebaseline_allowed:
+false` is refused by construction: that flag is the assertion your lot was
+testing, and asking past it means the lot overflowed.
+
+A red the ledger never heard about is a dead end: the supervising process can
+only execute what was announced. Every re-baseline need, however obvious it
+feels in the moment, goes to the ledger.
+
 ## The third place a fix can cheat: the environment the judge looks through
 
 Two forms of cheating are obvious enough that any net guards against them:
@@ -185,3 +221,9 @@ full of uncommitted changes that the next pass cannot tell apart from its own.
 Write the reasoning where a human will find it — in the commit message and, for
 anything longer, in a file you commit. A status field in a control-plane
 message is read by a machine that does not care, and by no one else.
+
+And a claim is not a commit. Measured: a worker announced a written
+re-baseline request in its exit message while committing nothing — the claim
+evaporated with its workspace, and the supervising process, which believes
+only git, correctly recorded that nothing had landed. Whatever your exit
+message says exists, must exist in a commit first.

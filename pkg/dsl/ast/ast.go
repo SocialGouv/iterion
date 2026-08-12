@@ -760,13 +760,16 @@ type WorkflowDecl struct {
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
 	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
 	AutoMemory     string            // backend auto-memory (MEMORY.md) switch: on|off ("" = unset → off)
-	Permission     string            // permission gate mode: off|ask|deny ("" = unset → off)
-	Allow          []string          // permission allow rules (Claude-Code `Tool(pattern)` syntax)
-	Ask            []string          // permission ask rules
-	Deny           []string          // permission deny rules
-	Sandbox        *SandboxBlock     // sandbox: short or block form (nil = inherit global default)
-	Edges          []*Edge           // directed edges between nodes
-	Span           Span
+	// LoopBudgetGuard switches the back-edge affordability guard: on|off
+	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
+	LoopBudgetGuard string
+	Permission      string        // permission gate mode: off|ask|deny ("" = unset → off)
+	Allow           []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
+	Ask             []string      // permission ask rules
+	Deny            []string      // permission deny rules
+	Sandbox         *SandboxBlock // sandbox: short or block form (nil = inherit global default)
+	Edges           []*Edge       // directed edges between nodes
+	Span            Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

@@ -400,7 +400,7 @@ compute reanchor_result:
   expr:
     converged: "outputs.reanchor_gate.converged"
     repaired: "outputs.reanchor_verify.repaired"
-    notice: "if(outputs.reanchor_gate.converged, 'mutants re-anchored and mechanically valid again; whether the net SEES them is the gate to say', concat('the repair was REFUSED: ', outputs.reanchor_verify.log_tail))"
+    notice: "if(outputs.reanchor_gate.converged, 'mutants re-anchored and mechanically valid again; whether the net SEES them is the gate to say', 'the repair was REFUSED: ' + outputs.reanchor_verify.log_tail)"
 
 workflow reanchor:
   entry: reanchor_base

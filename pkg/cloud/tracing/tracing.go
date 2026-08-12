@@ -58,16 +58,36 @@ func Init(ctx context.Context, serviceName string, logger *iterlog.Logger) (func
 		return func(context.Context) error { return nil }, nil
 	}
 
-	// Pass the resolved endpoint explicitly. Without this, the OTLP
-	// client only honours OTEL_EXPORTER_OTLP_ENDPOINT — so an
-	// operator who set the spec-canonical
-	// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (which we *do* check above
-	// for the guard) would silently send spans nowhere.
+	// Leave a URL-shaped endpoint to the SDK. Its own env parsing already
+	// implements the OTLP spec's TWO distinct endpoint semantics, and
+	// otlpconfig.NewHTTPConfig applies it BEFORE any explicit option:
+	//
+	//   - OTEL_EXPORTER_OTLP_ENDPOINT is a BASE url, so the signal path is
+	//     joined onto whatever path it carries (…/otlp → /otlp/v1/traces);
+	//   - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is used as-is (root path when
+	//     it carries none).
+	//
+	// Handing the resolved endpoint back through WithEndpointURL replaces
+	// both with one flattened reading, and that is what made the otel 1.45
+	// bump lose every span: 1.44 left a path-less URL's URLPath empty for
+	// cleanPath to fill, 1.45 pins it to "/". The env path was correct on
+	// both versions — the override was the bug's enabler, not its victim.
+	//
+	// The scheme-less `host:port` form is the exception: url.Parse yields no
+	// Host for it, so the env reader resolves an empty endpoint. WithEndpoint
+	// is what makes that shape work at all — but it sets ONLY the host, and
+	// the env reader has meanwhile applied the per-signal variable's "no path
+	// part means the root path" rule to a value whose path it could not see,
+	// pinning URLPath to "/". cleanPath does not replace a non-empty path, so
+	// the signal path has to be restated. Nothing is lost by doing so: for
+	// this shape everything after the colon is opaque to url.Parse, so there
+	// is no operator-supplied path to preserve.
 	clientOpts := []otlptracehttp.Option{}
-	if strings.Contains(endpoint, "://") {
-		clientOpts = append(clientOpts, otlptracehttp.WithEndpointURL(endpoint))
-	} else {
-		clientOpts = append(clientOpts, otlptracehttp.WithEndpoint(endpoint))
+	if !strings.Contains(endpoint, "://") {
+		clientOpts = append(clientOpts,
+			otlptracehttp.WithEndpoint(endpoint),
+			otlptracehttp.WithURLPath(defaultTracesPath),
+		)
 	}
 	exp, err := otlptrace.New(ctx, otlptracehttp.NewClient(clientOpts...))
 	if err != nil {
@@ -102,6 +122,10 @@ func Init(ctx context.Context, serviceName string, logger *iterlog.Logger) (func
 	}
 	return tp.Shutdown, nil
 }
+
+// defaultTracesPath mirrors the OTLP/HTTP spec's traces signal path, which the
+// exporter also uses as its own default.
+const defaultTracesPath = "/v1/traces"
 
 // envSampler reads OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG and
 // returns the matching tracesdk.Sampler. Falls back to parent-based

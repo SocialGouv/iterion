@@ -1319,6 +1319,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// runner that is itself the isolation boundary beats a bot's inline
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
+		// The launch-time decision, carried on the wire (schema v7). Without
+		// it the pod resolves the guard from the workflow and its own (empty)
+		// environment, so an operator's `--loop-budget-guard off` on a bot
+		// that declares nothing would run guarded anyway.
+		runtime.WithLoopBudgetGuard(msg.LoopBudgetGuard),
 		// Recovery recipes. Every other host wires these (pkg/cli/run.go,
 		// pkg/runview, pkg/dispatcher); the cloud runner did not, so
 		// recovery.Classify was never called on the one surface that runs

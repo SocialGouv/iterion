@@ -79,6 +79,12 @@ type detachedSpec struct {
 	// so anything not passed here is silently replaced by the workflow's own
 	// value — which for `off` means running with memory ON.
 	AutoMemory string
+	// LoopBudgetGuard forwards the run-level back-edge affordability
+	// override as the CLI's --loop-budget-guard flag, for the same reason
+	// AutoMemory is forwarded: the subprocess re-resolves the knob from
+	// scratch, so anything not passed here is replaced by the workflow's
+	// own value.
+	LoopBudgetGuard string
 	// Budget forwards launch-time budget overrides as the CLI's
 	// --max-* flags, so the detached runner applies the same caps the
 	// in-process path would. Launch only; nil = no override.
@@ -105,6 +111,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
 		}
+		if spec.LoopBudgetGuard != "" {
+			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
+		}
 		if b := spec.Budget; b != nil {
 			if b.MaxCostUSD > 0 {
 				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
@@ -126,6 +135,9 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
 		if spec.AutoMemory != "" {
 			args = append(args, "--auto-memory", spec.AutoMemory)
+		}
+		if spec.LoopBudgetGuard != "" {
+			args = append(args, "--loop-budget-guard", spec.LoopBudgetGuard)
 		}
 		if spec.Force {
 			args = append(args, "--force")
@@ -315,16 +327,17 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	s.prepareRunLogNoFile(runID)
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:    runnerCommandRun,
-		RunID:      runID,
-		FilePath:   spec.FilePath,
-		Vars:       spec.Vars,
-		StoreDir:   s.storeDir,
-		Timeout:    spec.Timeout,
-		MergeInto:  spec.MergeInto,
-		BranchName: spec.BranchName,
-		AutoMemory: spec.AutoMemory,
-		Budget:     spec.Budget,
+		Command:         runnerCommandRun,
+		RunID:           runID,
+		FilePath:        spec.FilePath,
+		Vars:            spec.Vars,
+		StoreDir:        s.storeDir,
+		Timeout:         spec.Timeout,
+		MergeInto:       spec.MergeInto,
+		BranchName:      spec.BranchName,
+		AutoMemory:      spec.AutoMemory,
+		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Budget:          spec.Budget,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
@@ -360,14 +373,15 @@ func (s *Service) resumeDetached(parent context.Context, spec ResumeSpec) (*Laun
 	}
 
 	res, err := s.spawnDetached(parent, detachedSpec{
-		Command:    runnerCommandResume,
-		RunID:      spec.RunID,
-		FilePath:   spec.FilePath,
-		Answers:    answers,
-		StoreDir:   s.storeDir,
-		AutoMemory: spec.AutoMemory,
-		Force:      spec.Force,
-		Timeout:    spec.Timeout,
+		Command:         runnerCommandResume,
+		RunID:           spec.RunID,
+		FilePath:        spec.FilePath,
+		Answers:         answers,
+		StoreDir:        s.storeDir,
+		AutoMemory:      spec.AutoMemory,
+		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Force:           spec.Force,
+		Timeout:         spec.Timeout,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

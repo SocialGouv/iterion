@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,7 +170,9 @@ func (f *Fetcher) git(ctx context.Context, dir, cred string, args ...string) err
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	// SanitizeEnv first: cmd.Dir names the checkout, and an inherited GIT_DIR
+	// or GIT_INDEX_FILE would silently redirect the fetch away from it.
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()),
 		"GIT_TERMINAL_PROMPT=0", // never block a launch on an interactive auth prompt
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_SYSTEM=/dev/null",

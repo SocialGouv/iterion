@@ -39,7 +39,15 @@ import (
 // value, so an operator who asked for `off` on a bot whose DSL says `on` gets a
 // run that reads and writes shared memory anyway — the one thing the knob
 // exists to prevent, failing OPEN and in silence.
-const SchemaVersion = 6
+// v=7 (2026-08-11): added LoopBudgetGuard so a launch-time
+// `--loop-budget-guard` decision reaches the runner. Same direction of
+// failure as v=6, one layer down: dropping the field makes the run fall back
+// to the workflow's own value, so an operator who asked for `off` on a bot
+// that says nothing gets the guard anyway — and one who asked for `on` on a
+// bot declaring `off` gets a run that can still strand its work at the cap.
+// The knob decides whether a loop stops early or dies at its ceiling, which
+// is exactly the kind of choice that must not be quietly re-made on the pod.
+const SchemaVersion = 7
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -79,11 +87,15 @@ type RunMessage struct {
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
-	AutoMemory     string        `json:"auto_memory,omitempty"`
-	BackendConfig  BackendConfig `json:"backend"`
-	Resume         *ResumeSpec   `json:"resume,omitempty"`
-	Trace          TraceContext  `json:"trace"`
-	PublishedAtRFC string        `json:"published_at"`
+	AutoMemory string `json:"auto_memory,omitempty"`
+	// LoopBudgetGuard is the launch-time back-edge affordability override —
+	// the wire half of that knob's strongest precedence level. Empty means
+	// the caller expressed nothing and the workflow/env decide.
+	LoopBudgetGuard string        `json:"loop_budget_guard,omitempty"`
+	BackendConfig   BackendConfig `json:"backend"`
+	Resume          *ResumeSpec   `json:"resume,omitempty"`
+	Trace           TraceContext  `json:"trace"`
+	PublishedAtRFC  string        `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted

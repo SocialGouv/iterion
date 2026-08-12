@@ -109,6 +109,25 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventRunWorkspaceReset marks a repo-backed run RE-EXECUTING from a
+	// FRESH clone. The runner deletes the per-run repo dir when a run
+	// returns and re-clones on every claim, so a second attempt never
+	// inherits the first one's working tree: whatever an earlier node edited
+	// but did not commit is gone. The checkpoint restores node OUTPUTS, so a
+	// downstream node still reads "the alignment was applied" while the
+	// files that carried it no longer exist — a divergence that is otherwise
+	// completely silent.
+	//
+	// Keyed on the checkpoint existing, not on the delivery carrying a resume
+	// spec: a redelivery of a run still marked `running` (a pod that died
+	// inside the orphan sweeper's window) re-clones the same way and would
+	// otherwise discard the work unannounced. Emitted once per claim, so N
+	// markers mean N delivery attempts — matching EventRunResumed, which the
+	// engine also emits per attempt. Data:
+	//   - reason: which fact made this a re-execution — "resume" (an explicit
+	//     resume publish) or "redelivery" (a checkpoint with no resume spec)
+	//   - repo_url / repo_sha: what the clone was re-anchored on
+	EventRunWorkspaceReset EventType = "run_workspace_reset"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from

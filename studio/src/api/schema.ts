@@ -4638,6 +4638,11 @@ export interface components {
             interaction_questions?: {
                 [key: string]: unknown;
             };
+            loop_budget_marks?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
             loop_counters: {
                 [key: string]: number;
             };

@@ -87,6 +87,57 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]a
 	return unconditional
 }
 
+// unitSuffix renders a display unit for log interpolation (" seconds"),
+// or nothing for the axes that carry their own.
+func unitSuffix(unit string) string {
+	if unit == "" {
+		return ""
+	}
+	return " " + unit
+}
+
+// edgeConditionHolds reports whether a `when` clause admits this edge as
+// a candidate. Unconditional and `else` edges always qualify — their
+// fallback role is settled later, by the selection order.
+//
+// Loop and foreach back-edges consult this BEFORE their own bookkeeping:
+// a conditional back-edge whose condition is false was never a candidate,
+// and must not be priced against the budget or reported as a loop that
+// could not be funded. The verdict matches what the selection code below
+// would conclude for the same edge, so an early skip here is the same
+// decision taken sooner.
+func (e *Engine) edgeConditionHolds(edge *ir.Edge, fromNodeID, logPrefix string, output map[string]any, rs *runState, exprCtx **expr.Context) bool {
+	if edge.Expression != nil {
+		if *exprCtx == nil {
+			*exprCtx = e.exprContext(rs, output)
+		}
+		ok, err := edge.Expression.EvalBool(*exprCtx)
+		if err != nil {
+			// Selection reports the failure; staying quiet here avoids
+			// logging the same broken expression twice per crossing.
+			return false
+		}
+		return ok
+	}
+	if edge.Condition == "" {
+		return true
+	}
+	val, ok := output[edge.Condition]
+	if !ok {
+		return false
+	}
+	boolVal, isBool := val.(bool)
+	if !isBool {
+		e.logger.Warn("%s: node %q: condition field %q is %T, expected bool — edge to %q skipped",
+			logPrefix, fromNodeID, edge.Condition, val, edge.To)
+		return false
+	}
+	if edge.Negated {
+		boolVal = !boolVal
+	}
+	return boolVal
+}
+
 // evaluateEdgesWithLoopsRS is the rs-aware variant: it evaluates edge `when`
 // expressions against the full runState (vars, outputs, artifacts, loop, run)
 // while still falling back to the simple boolean-field check when the edge
@@ -104,7 +155,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 
 		if edge.LoopName != "" {
 			loop, ok := e.workflow.Loops[edge.LoopName]
-			if ok {
+			if ok && e.edgeConditionHolds(edge, fromNodeID, logPrefix, output, rs, &exprCtx) {
 				maxIter := e.resolveLoopMax(loop, rs)
 				if rs.loopCounters[edge.LoopName] >= maxIter {
 					kind := "exhausted"
@@ -126,6 +177,30 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 						"loop": edge.LoopName, "reason": "liveness_stall", "crossings": maxLoopStall,
 					}); err != nil {
 						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
+					}
+					continue
+				}
+				// Affordability: another iteration priced by the last one
+				// against what the budget has left. Skipping the back-edge
+				// hands the run to its exit path with the work it banked,
+				// where dying mid-iteration on the hard cap would strand it.
+				if v := e.loopBudgetShortfall(edge.LoopName, rs); v != nil {
+					spent, remaining, used, limit, unit := v.display()
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q cannot fund another iteration (%s: %.2f%s left, last one took %.2f%s), falling through to the exit path",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, v.dimension, remaining, unitSuffix(unit), spent, unitSuffix(unit))
+					data := map[string]any{
+						"loop": edge.LoopName, "reason": "loop_budget_guard",
+						"dimension": v.dimension, "remaining": remaining, "needed": spent,
+						// used/limit are what every other budget_warning
+						// carries — the run report and the alert manager
+						// render the axis from them.
+						"used": used, "limit": limit,
+					}
+					if unit != "" {
+						data["unit"] = unit
+					}
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, data); err != nil {
+						e.logger.Warn("failed to emit loop_budget_guard warning: %v", err)
 					}
 					continue
 				}

@@ -96,6 +96,11 @@ type RunOptions struct {
 	// ("", "on", "off"). "" inherits the workflow/node `auto_memory:` DSL
 	// then ITERION_AUTO_MEMORY; the default is off.
 	AutoMemory string
+	// LoopBudgetGuard is the run-level override for the back-edge
+	// affordability guard ("", "on", "off"). "" inherits the workflow's
+	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
+	// is on.
+	LoopBudgetGuard string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"). "" inherits the workflow/node
 	// `permission:` DSL then the ITERION_PERMISSION env default.
@@ -172,6 +177,10 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	if err := automemory.ValidateMode(opts.AutoMemory); err != nil {
 		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
+	}
+
+	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
+		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
 
 	if opts.BranchName != "" {
@@ -668,6 +677,7 @@ func buildEngine(
 			runtime.WithSandboxDefaultImage(opts.SandboxDefaultImage),
 			runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
 			runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
+			runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
 			runtime.WithSource(opts.Source),

@@ -23,6 +23,7 @@ import (
 // failed_resumable), then the marker is removed and resume must re-run the
 // subbot to completion.
 func TestResume_RunWithSubbot(t *testing.T) {
+	hermeticSandbox(t)
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "BOOM")
 	outFile := filepath.Join(dir, "child-out.txt")

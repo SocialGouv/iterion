@@ -467,6 +467,67 @@ workflow review:
 
 Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
 
+#### Budget and loop back-edges
+
+A loop's back-edge is declined when the budget can no longer fund another
+iteration. The runtime prices one iteration by what the previous one
+consumed — the distance between two consecutive arrivals at the loop's
+decision point, on every axis the workflow actually caps (`max_cost_usd`,
+`max_tokens`, `max_iterations`, `max_duration`) — and skips the back-edge
+once another iteration would reach the threshold where the engine stops
+starting nodes at all (90% of the cap). Stopping merely before the cap
+would not be enough: the run would fall through into an exit path that
+same threshold then refuses. The run instead leaves through its own exit
+path with room to walk it — for the campaign shape below, the
+`gate -> publish` fall-through that also serves loop exhaustion.
+
+```iter
+  gate -> publish when converged
+  gate -> work as passes(4)
+  gate -> publish            # exhausted, or unaffordable: ship what is banked
+```
+
+This matters for any loop that banks work as it goes (commits in stride, a
+published report, a PR opened by a tail node). Without it a loop starts an
+iteration it cannot pay for, dies mid-iteration on `BUDGET_EXCEEDED`, and
+the tail that would have delivered the work never runs.
+
+A loop is priced from the moment it is **entered**, and re-priced on each
+re-entry — so a loop reached late in a run (a second phase) is charged for
+its own iterations, never for the work that preceded it, and a nested loop
+re-entered per outer iteration starts fresh. A loop that has not been
+measured yet reports nothing rather than guessing. The prices ride the
+checkpoint, so a resumed run keeps measuring across the pause.
+
+The decline is visible, never silent: a `budget_warning` event carrying
+`reason: loop_budget_guard` with the loop, the blocking dimension, the
+remaining allowance, the price of the last iteration, and the axis's
+`used`/`limit` (durations in seconds, with an explicit `unit`). A
+conditional back-edge is only priced on a crossing where its `when`
+actually holds.
+
+The guard is **on by default** and switched off through the usual
+precedence chain — `--loop-budget-guard off` (on `run` and `resume`) →
+the workflow's `loop_budget_guard: off` → `ITERION_LOOP_BUDGET_GUARD=off`
+→ the default `on`. Turning it off restores the
+run-until-you-hit-the-wall behaviour, hard failure included. An invalid
+value is diagnostic **C133**, not a silent fall back to the default. The
+90%-hard-limit and exceeded checks stay as the backstop for a single node
+that overruns on its own.
+
+The run-level override **travels** — onto the cloud queue
+(`RunMessage.loop_budget_guard`, schema v7) and into a detached
+subprocess — so a runner pod re-resolving the chain from its own empty
+environment cannot quietly replace what the operator asked for. It is not
+persisted on the run, so `iterion resume --loop-budget-guard` must
+re-state it.
+
+```iter
+workflow campaign:
+  entry: work
+  loop_budget_guard: off    # this loop must burn its cap, not stop short
+```
+
 ### Edge forms
 
 ```iter

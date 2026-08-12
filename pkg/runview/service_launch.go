@@ -267,7 +267,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -441,7 +441,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{},
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -752,6 +752,10 @@ type launchExtras struct {
 	// dispatcher's stall heartbeat the full store-level event stream
 	// without wrapping the store.
 	observers []func(store.Event)
+	// loopBudgetGuard mirrors LaunchSpec/ResumeSpec.LoopBudgetGuard: the
+	// run-level override for the back-edge affordability guard, the level
+	// above the workflow's own `loop_budget_guard:`.
+	loopBudgetGuard string
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -776,6 +780,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	// stays neutral, mirroring the engine's own contract.
 	if s.sandboxDefault != "" {
 		opts = append(opts, runtime.WithSandboxDefault(s.sandboxDefault))
+	}
+	if ex.loopBudgetGuard != "" {
+		opts = append(opts, runtime.WithLoopBudgetGuard(ex.loopBudgetGuard))
 	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}
