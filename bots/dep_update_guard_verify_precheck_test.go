@@ -304,6 +304,75 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		}
 	})
 
+	// Revi's Rdbf846, and the shape of the four false positives before it: the
+	// scanner judged each line alone, against a language full of multi-line
+	// constructs, and every patch met the next spelling. What actually
+	// separates iterion#398 from an ordinary script is not any one line but the
+	// PROPORTION — it was a listing and almost nothing else.
+	// One command split over many lines. Every non-final continuation carries a
+	// trailing backslash, hence a space, and only the last one reads as a bare
+	// word — so the proportion never approaches a listing.
+	t.Run("one command split over many continuation lines", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "#!/bin/sh\ncd " + ws + "\n./run.sh \\\n  ./pkg/a \\\n  ./pkg/b \\\n  ./pkg/c \\\n  ./pkg/d \\\n  ./pkg/e\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("these are arguments of the invocation above them: %q", res.PrecheckReason)
+		}
+	})
+
+	// Isolates the proportion: four unresolvable words, none of them
+	// continuations, among a dozen real commands. sh fails on them, so the run
+	// goes red — but it went red having RUN, which is a fact about the script,
+	// not the phantom of one that never executed.
+	t.Run("a few bad lines among real commands is not a listing", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lines := []string{"#!/bin/sh", "cd " + ws}
+		for i := 0; i < 12; i++ {
+			lines = append(lines, "./run.sh")
+		}
+		lines = append(lines, "pkg/a/x.go", "pkg/a/y.go", "pkg/a/z.go", "pkg/a/w.go")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("a script that ran its commands is not a file listing: %q", res.PrecheckReason)
+		}
+	})
+
+	t.Run("continuations and a few path arguments are an ordinary script", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(ws, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "#!/bin/sh\nset -e\ncd " + ws + "\n" +
+			"./run.sh\n" +
+			"./run.sh \\\n  ./pkg/...\n" +
+			"./run.sh \\\n  ./cmd/...\n" +
+			"./run.sh \\\n  pkg/git\n" +
+			"./run.sh \\\n  internal/x\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("sh runs this perfectly; the guard must not hold a bump for it: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.
