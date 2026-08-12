@@ -5,6 +5,62 @@ in a bounded loop, judging progress in git, and executing the golden-master
 ledger's announced re-records between runs. Not one LLM node of its own.
 See [bots/campaign/](../../bots/campaign/).
 
+## 2026-08-12 — second dogfood: an UNFINISHED programme, four runs, every core path proven (runs 019ff4af → 019ff4f2)
+
+- Status: **VALIDATED on the paths that matter** — steward act ×2 under the
+  observed==announced criterion, contract-extension governance ×2, the first
+  lots landed THROUGH the loop, and at the last iteration the full machine
+  cycle with no operator gesture: the worker measured red, wrote and
+  committed the request block, declared blocked; the steward consumed it in
+  the same iteration, recorded, matched the announcement exactly, committed
+  act and verdict, replayed the full counter-test green; the lot requalified
+  on the final tree.
+- Target: the same finished programme, EXTENDED live with three deliberate
+  one-key wording lots (`rebaseline_allowed: true`, measured single- and
+  double-reference perimeters). ~$8.50 LLM across three child runs.
+
+### What each run taught
+
+**Run A — the producer gap.** The child did the lot impeccably right up to
+the protocol: perimeter measured to the file, the future act PROVEN in
+advance by replaying the full counter-test on a re-recorded copy (emergent —
+nobody asked for that), blocked declared correctly… and the announcement
+entirely in prose, because the ledger's existing entries taught it their
+shape louder than the skill's template. `pending=[]`; nothing could act. The
+skill now says THE BLOCK IS THE REQUEST in so many words, and emitted
+ledgers should open with a header naming the blocks.
+
+**Run B — the steward's act, mechanically.** An operator transcription of
+the worker's own announcement, then: record, observed diff == announced set
+exactly, act + verdict blocks committed, full counter-test green behind,
+the lot requalified. Zero LLM.
+
+**Run C — the honest no-move.** The operator's target key turned out to be
+rendered nowhere; the child measured that, landed the change, let the net
+stay green RIGHTLY, converged done with a committed explanation — and
+invented no request. Meanwhile the supervisor flagged the operator's own
+plan edit as a contract extension and listed it for the handoff: governance
+observed working on the party that configured it.
+
+**Run D — the gate that lied, and the loop that caught it.** Two iterations
+returned `oracle green` on a tree whose serve HAD to diverge: the capture
+reused an application another era had booted — a live pid dates nothing.
+The child, facing a gate that contradicted its own measurement, claimed a
+request in its output without committing it; the supervisor believed only
+git (`moved=false`), stagnation armed, and the THIRD iteration — fresh
+app, honest red — closed the full cycle machine-only. Root cause fixed in
+the target's environment scripts (reuse iff build-inputs content
+fingerprint matches; content over clock, since git-restored timestamps make
+a fresh producer look older than its artifact) and written into the net's
+doctrine skill.
+
+### Still unexercised, named
+
+The diff-mismatch refusal (every observed set matched every announcement so
+far), `governance: human` and `escalation: interactive` (both dogfoods ran
+the defaults), and a campaign long enough to hit `max_lots` or the budget
+guard's declined back-edge.
+
 ## 2026-08-12 — first real run: a finished programme, walked end to end (run 019ff2f6)
 
 - Status: **VALIDATED on the exhausted-programme path.** preflight →

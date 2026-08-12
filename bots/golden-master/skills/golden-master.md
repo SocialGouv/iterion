@@ -127,6 +127,21 @@ an intact tree, RED on an injected behavioural change, from a checkout of commit
 A pipeline nobody has ever seen go red is a pipeline that has never been tested — the same claim
 the net refuses to accept about a comparator.
 
+## The app the gate observes is the app THE GATE booted from the judged tree
+
+A live pid dates nothing. An application booted by another era answers every probe, and every
+capture taken from it describes a tree that is not the one being judged — in either direction.
+Measured twice: a re-record once captured the previous version's output as the new reference, and
+a supervisor's gate twice replayed GREEN on a tree whose serve had to diverge, because the capture
+reused an app a previous run had left up.
+
+The rule the environment scripts must carry: **reuse a running app iff the content fingerprint of
+everything that PRODUCES the artifact matches the fingerprint recorded at its boot** — sources,
+build files, the declared toolchain lock, the wrapper. Content, never clocks: rebuild decisions by
+mtime lie as soon as files arrive through git, which restores COMMIT timestamps, so a freshly
+imported producer can look older than the artifact it must rebuild. Anything else is app-down and
+a fresh boot from the tree. A residual state is recovered from; it is never reported as a success.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the
