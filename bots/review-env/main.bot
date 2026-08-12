@@ -39,6 +39,17 @@ vars:
   ## Redeploy attempts when the environment does not come up live.
   max_deploy_retries: int = 2
 
+## Browser at the agent's fingertips — attached, never imposed. A deploy
+## that "answers 200" and a deploy that RENDERS are different claims; the
+## agent may open the returned URL in a real headless browser to look
+## before reporting healthy, and to iterate fast when something is wrong.
+## The durable end-to-end coverage belongs to the target repo's own test
+## suite — this server is for the agent's eyes, not for the record.
+mcp_server playwright:
+  transport: stdio
+  command: "npx"
+  args: ["-y", "@playwright/mcp@latest", "--headless"]
+
 secrets:
   ## Deployment credential — a single READ-ONLY file used BY REFERENCE
   ## (env $DEPLOY_CREDENTIAL = its PATH), never opened or printed; its
@@ -176,6 +187,8 @@ agent deploy:
   user: deploy_user
   session: fresh
   skills: ["deploy-target"]
+  mcp:
+    servers: [playwright]
   timeout: "25m"
 
 ## url_gate — the independent measurement. Standard-library probe, real
@@ -231,8 +244,8 @@ compute verdict:
   output: verdict_state
   expr:
     ok: "outputs.deploy.deployed && outputs.deploy.healthy && outputs.url_gate.live"
-    fail_log: "if(outputs.url_gate.live, '', concat(outputs.deploy.notes, ' | gate: ', outputs.url_gate.log_tail))"
-    notice: "if(outputs.url_gate.live, concat('live at ', outputs.deploy.deployed_url), 'not live — see fail_log')"
+    fail_log: "if(outputs.url_gate.live, '', outputs.deploy.notes + ' | gate: ' + outputs.url_gate.log_tail)"
+    notice: "if(outputs.url_gate.live, 'live at ' + outputs.deploy.deployed_url, 'not live — see fail_log')"
 
 ## surface_url — deterministic result-link emitter: the studio surfaces a
 ## run's headline URL from this directive on stdout, never from agent
