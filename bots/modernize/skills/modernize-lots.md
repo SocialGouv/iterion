@@ -135,6 +135,16 @@ the golden-master bot's doctrine skill; the shape is:
      "expected_paths": ["exact repo-relative reference paths"]}
     -->
 
+**The BLOCK is the request.** The prose around it is for humans; the
+consuming process parses only `iterion:rebaseline-request` blocks, so however
+complete and well-measured the prose, a request without the block does not
+exist and nothing will ever act on it. This is measured, not hypothetical: a
+lot once wrote a model announcement — perimeter measured to the file, the
+future act proven in advance on a re-recorded copy — entirely in prose,
+because the ledger's existing entries taught it their shape. The net stayed
+red until an operator transcribed the block by hand. Match the ledger's prose
+style if you like; write the block regardless, marker line copied exactly.
+
 Commit the request with the lot's landed work, and let the lot block on its
 red gate if it must: a blocked lot carrying a written request is the system
 working, not failing. The party that owns the net consumes the request,

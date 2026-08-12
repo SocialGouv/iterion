@@ -177,6 +177,11 @@ Two cautions. Never paste an example block into the ledger itself: a consumer re
 real, fences included. And `expected_paths` are measured, not guessed — the oracle's red report
 names the references that diverged; announce exactly those.
 
+A ledger this campaign emits should OPEN with a short header naming these three blocks. A worker
+under pressure learns a file's convention from the file, and a ledger whose visible entries are
+all prose teaches prose — measured: a model announcement, complete in every way except the block,
+that nothing could act on until an operator transcribed it by hand.
+
 ## The `write` surface — the only one a read-only capture cannot reach
 
 Every other surface watches a response **served**. A corruption that happens
