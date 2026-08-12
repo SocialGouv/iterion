@@ -928,7 +928,27 @@ try:
         lf.write(out)
 except OSError:
     pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': out[-4000:]}))
+# A blind tail is the wrong excerpt of a failing run. A test runner prints
+# its per-package successes AFTER the failure, so the last N chars are a
+# list of 'ok' lines and a bare 'FAIL' -- the one line naming what broke
+# scrolls out. Carry the matching lines too, so a hold can be diagnosed
+# from the report instead of from a run log nobody kept.
+def failure_lines(text):
+    marks = ('--- FAIL', 'FAIL', 'panic:', 'Traceback', 'error:', 'Error:', 'ERROR',
+             'not ok', 'syntax error', 'npm ERR', 'ERR_', 'AssertionError', 'FAILED')
+    hits = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s or s.startswith('ok ') or s.startswith('?   '):
+            continue
+        if any(m in ln for m in marks):
+            hits.append(ln[:400])
+    return chr(10).join(hits[-40:])[-2000:]
+tail = out[-3000:]
+dig = failure_lines(out) if rc != 0 else ''
+excerpt = (('FAILING LINES (matched, not the tail):' + chr(10) + dig + chr(10) + chr(10) +
+            'TAIL:' + chr(10)) if dig else '') + tail
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': excerpt}))
 "`
   output: verify_result
 

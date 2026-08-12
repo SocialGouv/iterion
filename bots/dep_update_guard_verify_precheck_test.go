@@ -203,4 +203,41 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
 		}
 	})
+
+	// Observed live on iterion#394/#395/#411 (2026-08-12): three holds reported
+	// "build/tests not green" over an excerpt containing nothing but a list of
+	// `ok` lines and a bare `FAIL`. A test runner prints its per-package
+	// successes AFTER the package that failed, so a blind tail of the output is
+	// systematically the wrong excerpt — it keeps the successes and drops the
+	// one line naming what broke. The operator then cannot tell a real
+	// regression from an environment failure without a run log nobody kept.
+	t.Run("the excerpt keeps the failing line, not just the trailing successes", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		// The shape `go test ./...` produces: the failure first, then far more
+		// than the excerpt budget of passing packages after it.
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		b.WriteString("echo '--- FAIL: TestAwaitTerminal_LoadRunMissTransient (0.42s)'\n")
+		b.WriteString("echo 'FAIL\tgithub.com/SocialGouv/iterion/cmd/iterion\t0.51s'\n")
+		for i := 0; i < 400; i++ {
+			b.WriteString("echo 'ok  \tgithub.com/SocialGouv/iterion/pkg/filler" +
+				strings.Repeat("x", 20) + "\t(cached)'\n")
+		}
+		b.WriteString("echo FAIL\n")
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatal("a script exiting 1 must not pass")
+		}
+		if !strings.Contains(res.LogTail, "TestAwaitTerminal_LoadRunMissTransient") {
+			t.Errorf("the excerpt drops the name of what failed, so the hold cannot be diagnosed from the report; got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "cmd/iterion") {
+			t.Errorf("the excerpt drops the failing package; got:\n%s", res.LogTail)
+		}
+	})
 }
