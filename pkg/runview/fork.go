@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"os"
 )
 
 // ForkSpec describes a fork request — a "create-an-alternative-future"
@@ -244,7 +246,10 @@ func forkWorktree(parent *store.Run, spec ForkSpec, turn *store.TurnCheckpoint, 
 	// otherwise pin the request goroutine forever.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", parent.RepoRoot, "worktree", "add", newWtPath, target).CombinedOutput()
+	wtCmd := exec.CommandContext(ctx, "git", "-C", parent.RepoRoot, "worktree", "add", newWtPath, target)
+	// -C names the repository; an inherited GIT_DIR would override it.
+	wtCmd.Env = gitlib.SanitizeEnv(os.Environ())
+	out, err := wtCmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("git worktree add %s %s: timed out", newWtPath, target)

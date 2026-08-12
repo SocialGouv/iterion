@@ -1,7 +1,39 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.1
+version: 2.7.4
+## 2.7.4 — the listing check is removed, not patched again. Rejecting a
+## verify.sh whose lines are paths rather than commands (iterion#398) meant
+## judging shell text statically, and eight review rounds each found the next
+## spelling it read wrong: a leading cd, a here-doc body, a subdirectory
+## helper, a backslash continuation, an artifact the script builds first. Every
+## one of those held a bump that builds -- the exact failure the check was
+## added to prevent, inflicted by the check. The two prechecks that remain are
+## decidable from the file alone (no script; a script that runs nothing), and
+## the rule that every line must be a command stays in the verify-build skill,
+## where it costs nothing when the agent gets it wrong.
+## 2.7.3 — Revi hardening of 2.7.2, both defects inside the new guards.
+## (a) The bare-path test keyed on a ./ or / prefix, but POSIX sh executes any
+## WORD containing a slash as a pathname -- and a listing out of git ls-files
+## or go list carries no prefix, so whether the guard fired depended on how the
+## agent spelled it. Now: any line that is a single word containing a slash and
+## naming a file the shell cannot execute. (b) Nothing rejected a script that
+## runs NOTHING. An empty or comment-only verify.sh exits 0, which the gate
+## reads as a verified build -- and 2.7.2 made that newly reachable by asking
+## an agent that already skipped authorship to write SOMETHING, with no floor
+## on what counts. A vacuous script was the cheapest way to satisfy that
+## pressure, turning a previously fail-closed path into a green commit.
+## 2.7.2 — the two verify-authorship defects from the 2026-08-10 batch become
+## precheck REJECTIONS that loop back, instead of red builds that hold. A
+## missing verify.sh (iterion#390: a base-image digest refresh whose correct
+## alignment was empty, and which could therefore never clear the gate) and a
+## script whose lines are bare paths the shell cannot execute (iterion#398:
+## ~2300 of them, every one answered Permission denied while the real test
+## surface was green) are steps the agent skipped, not facts about the bump.
+## Reported as red builds they are indistinguishable from one; reported as
+## rejections they self-heal in-loop and the commit path stays just as closed.
+## The bare-path test names no file extension — it asks whether the path is a
+## file the shell cannot execute, which holds in any language.
 ## 2.7.1 — the align step regenerates a lockfile the bump left stale. A bot
 ## that edits the manifest without the lockfile makes CI's frozen install
 ## fail on a specifier mismatch before any code compiles: the bump is
