@@ -252,6 +252,37 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		}
 	})
 
+	// Revi's Ree852e. A script's cwd moves as it runs, so resolving relative
+	// words against the workspace root alone reads a subdirectory's helpers as
+	// an unrunnable listing — a hold on a bump that builds, which is the very
+	// failure mode being removed.
+	t.Run("helpers invoked after a cd into a subdirectory are not a listing", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		sub := filepath.Join(ws, "tools")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var calls []string
+		for _, name := range []string{"build.sh", "test.sh", "lint.sh", "vet.sh", "tidy.sh"} {
+			if err := os.WriteFile(filepath.Join(sub, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			calls = append(calls, "./"+name)
+		}
+		script := "#!/bin/sh\nset -e\ncd " + sub + "\n" + strings.Join(calls, "\n") + "\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("these resolve and execute from the directory the script entered: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
 	// The false positive that would matter: a script legitimately delegating to
 	// the repo's own executable helpers. Rejecting those would break every repo
 	// that wraps its build in a script.

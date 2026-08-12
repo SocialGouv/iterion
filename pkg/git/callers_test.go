@@ -26,8 +26,9 @@ var gitExec = regexp.MustCompile(`(?s)exec\.Command(?:Context)?\(\s*(?:[\w.]+\s*
 // GIT_COMMON_DIR.
 //
 // So the property is checked mechanically. A call site is satisfied when
-// `.Env` is assigned within a few lines of the command being built; the point
-// is to force the decision, not to prove the value is right.
+// git.SanitizeEnv appears within a few lines of the command being built.
+// Accepting any `.Env` assignment would accept `cmd.Env = os.Environ()`, which
+// is the very thing being kept out.
 func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 	// The whole repository, not just pkg/: a git subprocess is as likely to be
 	// added under cmd/ or e2e/, and a sweep that silently never looks there
@@ -68,8 +69,15 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 			}
 			// The assignment may land well below the call: Dir, cancellation
 			// hardening and timeouts are commonly wired in between.
-			tail := body[loc[0]:min(loc[0]+700, len(body))]
-			if strings.Contains(tail, ".Env = ") {
+			// SanitizeEnv specifically, not any .Env assignment: writing
+			// `cmd.Env = os.Environ()` (or appending to it) is the most likely
+			// way a new call site gets written, and it is exactly the
+			// unscrubbed environment this guard exists to keep out.
+			// Generous: cancellation hardening, timeouts and their comments
+			// routinely sit between the call and its environment (the runner's
+			// clone puts 700 characters of them there).
+			tail := body[loc[0]:min(loc[0]+1600, len(body))]
+			if strings.Contains(tail, "SanitizeEnv(") {
 				continue
 			}
 			line := 1 + strings.Count(body[:loc[0]], "\n")
