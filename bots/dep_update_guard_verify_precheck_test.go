@@ -160,6 +160,27 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		})
 	}
 
+	// Revi's R78f11d. verify_system step 5 tells the agent, verbatim, that a
+	// repo with genuinely no build or test system gets a script echoing that
+	// and exiting 0. Counting echo as a no-op rejected the one shape the prompt
+	// prescribes — and the rejection then asked for "the repo own build and
+	// test commands", advice unfollowable for a repo that has none, so the loop
+	// exhausted and held a bump that broke nothing.
+	t.Run("the shape verify_system prescribes for a repo with no build system", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		body := "#!/bin/sh\necho 'this repo has no build or test system'\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		res := run(t, ws, scratch)
+		if res.PrecheckRejected {
+			t.Errorf("the guard rejects the script its own prompt asks for: %q", res.PrecheckReason)
+		}
+		if !res.Passed {
+			t.Errorf("it exits 0 and must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
 	// Revi's R12dc35. The floor above judged a line by its first word, so the
 	// most ordinary script shape there is — a no-op leading a chain — counted
 	// as running nothing and was sent back twice, then held. That is the exact

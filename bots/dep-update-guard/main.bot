@@ -799,7 +799,14 @@ except OSError:
 # path is newly reachable: the loop-back above asks an agent that already
 # skipped authorship to write something, and the cheapest way to satisfy that
 # pressure must not be a green commit. Shell no-ops do not count as running.
-_noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'echo', 'shift')
+#
+# echo is NOT among them, deliberately: verify_system step 5 tells the agent
+# that a repo with genuinely no build or test system gets a script echoing
+# that and exiting 0. Counting echo as a no-op rejected the one shape the
+# prompt prescribes, looped twice, and held a bump that broke nothing -- the
+# false red this whole change exists to remove. A floor is for the run that
+# wrote nothing, not for the one that wrote a reported answer.
+_noops = ('set', 'cd', 'exit', 'true', ':', 'export', 'unset', 'shift')
 _runs = 0
 _bare = []
 _hd = ''
