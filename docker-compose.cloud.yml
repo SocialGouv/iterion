@@ -13,7 +13,7 @@ name: iterion-cloud
 
 services:
   mongo:
-    image: mongo:8.0
+    image: mongo:8.3@sha256:44dce4b1688969ff3fdbfc438fd6113f734140ad96e3639ef17ee26a162dfb58
     command:
       - --replSet
       - rs0
@@ -36,7 +36,7 @@ services:
       retries: 20
 
   nats:
-    image: nats:2.10-alpine
+    image: nats:2.14-alpine@sha256:d4ac35882ac65aff236cd65b9d3fa4d24332c681e1a85f94eedccd3cdd65b1da
     command:
       - -js                # JetStream on (run queue + KV store live here)
       - -m
@@ -53,7 +53,7 @@ services:
       retries: 20
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3
     command:
       - server
       - /data
@@ -73,7 +73,7 @@ services:
       retries: 20
 
   minio-init:
-    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z@sha256:993e8c454a7ec632923f7e3e61adf1d473261da6354cefd641aedd33a2cfe112
     depends_on:
       minio:
         condition: service_healthy
