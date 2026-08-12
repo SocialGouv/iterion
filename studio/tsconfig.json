@@ -16,6 +16,13 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
+    // TypeScript 6.0+ (reached here via the 7.x native compiler) no longer
+    // auto-includes every package under node_modules/@types — `types` now
+    // defaults to `[]`. The e2e specs and playwright.config.ts use `process`
+    // and `node:*` builtins, so @types/node must be requested explicitly.
+    // (`"types": ["*"]` would restore the old blanket behaviour; listing what
+    // is actually needed is the recommended migration.)
+    "types": ["node"],
     "paths": {
       "@/*": ["./src/*"]
     }
