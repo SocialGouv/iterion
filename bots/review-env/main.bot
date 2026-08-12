@@ -72,12 +72,17 @@ prompt deploy_system:
   honestly.
 
   YOU DO NOT KNOW THE TARGET PLATFORM a priori — and you must not guess
-  it. Load the `deploy-target` skill FIRST: it is the platform playbook
-  the operator attached — how to authenticate, provision whatever scope
-  the platform uses, reference the image, apply its deploy artifacts,
-  wait for readiness, and DERIVE THE PUBLIC URL. If no `deploy-target`
-  skill is present you cannot deploy: return deployed=false with a clear
-  note and STOP — never improvise a platform.
+  it. Load the `deploy-target` skill FIRST — READ THE FILE
+  `.claude/skills/deploy-target.md` in the workspace, which is where an
+  operator-attached platform plugin mirrors it. The Skill tool's registry
+  carries the bundle's own skills, so an attached skill is often absent
+  from it: a name that does not resolve there is NOT evidence the skill
+  is missing, and the file is the authority. It is the platform playbook
+  — how to authenticate, provision whatever scope the platform uses,
+  reference the image, apply its deploy artifacts, wait for readiness,
+  and DERIVE THE PUBLIC URL. Only if that FILE does not exist can you not
+  deploy: return deployed=false with a clear note and STOP — never
+  improvise a platform.
 
   THE IMAGE IS ALREADY PUBLISHED — by the repo's own CI, from a pushed
   commit. Your job starts at the deploy. If `image_ref` was provided, use
