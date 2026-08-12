@@ -7,6 +7,70 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-11/12 — why the other ten held, and a guard that had to be deleted
+
+- Status: **the batch is fully diagnosed and every cause is fixed.** No new
+  dogfood run: this is the post-mortem of the eight `hold_unstable` verdicts
+  from the batch below, read out of the Vetty reports themselves.
+- Versions: Vetty 2.6.5 → **2.7.4** · iterion v3.36.1 → **v3.40.0** (deployed).
+  PRs #401, #405, #407.
+- **Four of the eight held on one test of OURS.** #392/#395/#397/#399 all failed
+  `TestLogAllowsTabsInUserControlledFields` with `author: got
+  "iterion-forge-61934180[bot]"`. The test sets a tab-bearing `user.name` on a
+  throwaway repo and expects to read it back — but `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*` OVERRIDE repo config, and a sandboxed run with
+  `host_state: none` injects exactly those four so an in-container `git commit`
+  has an identity at all (`runtime.seedGitIdentityEnv`). Every commit the suite
+  made was authored by the run's own bot identity. Vetty was right that the
+  build was red; it was red for a reason no bump caused.
+- Chasing that found the same hole in production: every function in `pkg/git`
+  names its repository through an explicit `dir`, then ran git with the caller's
+  environment whole. `Status(dir)` under an inherited `GIT_INDEX_FILE` reports
+  the tree as deleted-and-untracked; under `GIT_DIR` it answers about another
+  repository. Now `git.SanitizeEnv` drops the redirection family (identity and
+  transport preserved) and is applied at every call site in the tree —
+  `pkg/runtime/worktree.go`, `pkg/runner/loop_gitws.go`, `pkg/runview/fork.go`,
+  `pkg/dispatcher/commands.go`, `pkg/pluginsource/fetch.go`,
+  `pkg/sandbox/kubernetes/driver.go`. Reviewing that by hand did not work (two
+  of four sites in one file missed, one of them a `worktree remove --force`
+  where `--git-dir` does NOT neutralise `GIT_COMMON_DIR`), so
+  `TestEveryGitCallerSanitizesEnv` now sweeps it mechanically — and found a site
+  I had declared absent.
+- The other four: #394 was a stale lockfile Dependabot never regenerated (CI
+  installs frozen, so the install fails before a line compiles — the skill now
+  says regenerating is part of the alignment, and explicitly not
+  `--no-frozen-lockfile`); #390 produced no `verify.sh` at all for a digest
+  refresh whose correct alignment was empty; #398's `verify.sh` was ~2300 lines
+  of bare paths that `sh` answered with `Permission denied`; #393 was a genuine
+  `hold_security`.
+- **The lesson worth keeping — a guard that was written, patched five times, and
+  then deleted.** #390 and #398 became precheck rejections that loop back
+  instead of terminal reds. The first (no script) is decidable from the file.
+  The second was not: rejecting a script whose lines are paths rather than
+  commands means judging shell text statically, and every review round found the
+  next spelling it read wrong — a leading `cd`, a here-doc body, a subdirectory
+  helper, a backslash continuation, an unresolvable `cd` target, an artifact the
+  script builds before invoking. Each false positive held a bump that builds:
+  the exact failure the guard was added to prevent, inflicted by the guard.
+  Changing the axis (proportion of path-lines, not the line) bought one round.
+  At the eighth it was removed. What survives are the two conditions decidable
+  from the file alone — no script, and a script that runs nothing — plus the
+  rule in the skill, where getting it wrong costs a rewrite instead of a hold.
+- Revi ran **ten rounds** on #407 and found a real defect in every one, four of
+  them inside guards added earlier in the same PR (`R12dc35`, `R78f11d`,
+  `Rdbf846` high). Three findings were about the guard's own tests being
+  vacuous — a fixed window letting a scrubbed neighbour vouch for an unscrubbed
+  call site, an assertion sitting behind a `t.Fatalf` that could never run, a
+  sweep that walked only `pkg/` and matched only single-line calls.
+- Lessons for next run: (1) **prefer a rule in the skill to a guard in the
+  gate** when the property is not decidable from static text — a wrong skill
+  costs a rewrite, a wrong gate costs a hold; (2) a guard no mutation can red is
+  decoration, and in the `verify_run` body it is a trap for the next edit —
+  two pieces of code were deleted this round for exactly that; (3) the
+  `verify_run` command is a shell double-quoted argument, so a backtick in a
+  *comment* closes the DSL string (`E012 unknown tool property`) — it happened
+  twice.
+
 ## 2026-08-10/11 — the first Dependabot batch merged unattended, and the one that merged was the one to catch (run 019fecf3)
 
 - Status: **partial — the audit is production-grade, the verdict was not.**
