@@ -107,6 +107,7 @@ dispatcher routes on it), never the persona.
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
+| Envy | `review-env` |
 | Revi | `review-pr` |
 | Acci | `rgaa-audit` |
 | Depsy | `sec-audit-deps` |
@@ -731,6 +732,39 @@ instead.
 - **Triggers**: revi-converse, ask, converse
 - **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `pr_url` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
 - **Path**: `bots/revi-converse/main.bot`
+
+### `review-env` — Envy
+
+Deploys the CURRENT workspace's already-CI-published image to the
+operator-attached platform and hands back a LIVE https URL — a real
+review environment (real TLS, real ingress, real DNS) for end-to-end
+tests, screen and accessibility captures, and human review.
+
+The platform lives ENTIRELY in the attached `deploy-target` skill: this
+bot names no cluster, no cloud, no CLI. The operator enables one
+deploy-target plugin (the platform playbook) and installs one
+`deploy_credential` secret — used strictly by reference, never read —
+and swapping infrastructure means swapping that pair, never the bot.
+The image is the repo's own CI's: this bot never builds or pushes one,
+because a review environment must serve what the forge built from the
+pushed commit. The URL verdict is measured, never believed: a
+deterministic gate probes the reported URL from outside the agent, with
+real certificate verification, and the bot converges only on the
+conjunction deployed && healthy && live.
+
+- **Use when**:
+  Use when a flow needs a live deployed environment of the current
+  workspace: realistic end-to-end testing, behavioural-net captures
+  against a real URL (point the net's base URL at the returned
+  deployed_url), or a reviewable environment per branch. Runs standalone
+  or as a subbot of a larger campaign.
+  
+  Do NOT use it to build or publish images (the repo's CI owns that), to
+  develop features (app-dev's job — whose opt-in deploy phase shares this
+  bot's skill and credential), or on a platform with no deploy-target
+  plugin attached: it will refuse loudly rather than improvise one.
+- **Vars**: `expected_status` (int), `image_ref` (string), `max_deploy_retries` (int), `slug` (string), `workspace_dir` (string)
+- **Path**: `bots/review-env/main.bot`
 
 ### `review-pr` — Revi
 
