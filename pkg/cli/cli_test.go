@@ -120,9 +120,9 @@ func newTestPrinter(format cli.OutputFormat) (*cli.Printer, *bytes.Buffer) {
 // block resolves to `auto` and demands a container runtime. A test that leaves
 // that implicit passes on a developer's Docker-equipped host and fails wherever
 // there is none — including inside a container, which is where iterion's own
-// bots run. Observed 2026-08-12 inside `iterion-sandbox-sec`: eight tests red
-// across this package and pkg/runview, which is what held four dependency PRs
-// on `build/tests not green` that no bump had caused.
+// bots run. Observed 2026-08-12 inside `iterion-sandbox-sec`: eight tests in
+// this package red on exactly that error, which is what held four dependency
+// PRs on `build/tests not green` that no bump had caused.
 //
 // Prefer this over the environment default: `RunOptions.Sandbox` sits at the
 // CLI-flag tier, so it still holds if a fixture later grows its own `sandbox:`
@@ -130,11 +130,11 @@ func newTestPrinter(format cli.OutputFormat) (*cli.Printer, *bytes.Buffer) {
 // silently outranked by it.
 const noSandbox = "none"
 
-// hermeticSandbox is the same intent one tier lower, for the paths where no
-// run-level override exists: ResumeOptions has no Sandbox field (a resumed run
-// re-resolves through runtime.ResolveGlobalSandboxDefault), and neither does
-// runview's LaunchSpec. Use noSandbox wherever RunOptions is reachable, and
-// reach for this only where it is not.
+// hermeticSandbox is the same intent one tier lower, for the one path where no
+// run-level override exists: ResumeOptions has no Sandbox field, so a resumed
+// run re-resolves through runtime.ResolveGlobalSandboxDefault and the
+// environment is the only lever. Use noSandbox wherever RunOptions is
+// reachable, and reach for this only where it is not.
 func hermeticSandbox(t *testing.T) {
 	t.Helper()
 	t.Setenv("ITERION_SANDBOX_DEFAULT", "none")
@@ -1374,6 +1374,7 @@ func TestResume_Success(t *testing.T) {
 		StoreDir: storeDir,
 		RunID:    "resume-test",
 		Executor: &rejectExecutor{},
+		Sandbox:  noSandbox,
 	}, p1)
 	if err != nil {
 		t.Fatalf("expected nil error for paused run, got: %v", err)
