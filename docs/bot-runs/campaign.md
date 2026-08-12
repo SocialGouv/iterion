@@ -5,6 +5,28 @@ in a bounded loop, judging progress in git, and executing the golden-master
 ledger's announced re-records between runs. Not one LLM node of its own.
 See [bots/campaign/](../../bots/campaign/).
 
+## 2026-08-12 — third dogfood: the refusal and governance paths, exercised on purpose (runs 019ff5aa, 019ff5b3)
+
+- Status: **the falsification matrix is closed** except the engine-level
+  loop bounds (max_lots exhaustion, the budget guard's declined back-edge).
+  $0 LLM: two short runs on a seeded branch.
+- **Mismatch refusal, in flight.** A request deliberately announcing a diff
+  no record produces: the steward recorded, measured observed==[] against
+  the announcement, committed NOTHING, committed the refusal, and the
+  `escalation: interactive` pause fired carrying the item. The second run
+  proved the other half: a committed refusal is never retried.
+- **`governance: human`, on the operator's own edit.** A plan lot retitled
+  MID-campaign was flagged as a modified-lot contract extension,
+  `pending_approval` paused the campaign regardless of mode, and the
+  approval went to the committed record. A measured design fact came with
+  it: extension detection covers the CAMPAIGN segment — the same edit made
+  before launch is base, not extension. Base is consent.
+- **The target-side config-selector fix, visible in the campaign's own
+  measurement**: engine-qualified gate commands went from vacuously green
+  to honestly red (the absent config named), and the requalification figure
+  moved from 30+ to 22 — the difference IS the vacuity, now counted
+  honestly.
+
 ## 2026-08-12 — second dogfood: an UNFINISHED programme, four runs, every core path proven (runs 019ff4af → 019ff4f2)
 
 - Status: **VALIDATED on the paths that matter** — steward act ×2 under the
