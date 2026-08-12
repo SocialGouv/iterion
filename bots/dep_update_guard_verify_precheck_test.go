@@ -294,6 +294,31 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Errorf("the assertion says WHY the test failed and is never on the --- FAIL line; got:\n%s", res.LogTail)
 		}
 	})
+
+	// Revi's R253811, the counter-case to the head bias: a script chaining
+	// install -> lint -> build -> test can match noisily in an early step that
+	// does not fail the run (a resolver complaint, a deprecation banner), and
+	// spending the whole budget there buries the step that actually failed.
+	// Head-biased must not mean head-only.
+	t.Run("a noisy early step does not bury the failure that ended the run", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 200; i++ {
+			b.WriteString("echo 'ERROR: pip dependency resolver complaint " + itoa(i) + "'\n")
+		}
+		b.WriteString("echo '--- FAIL: TestTheRealOne (0.03s)'\n")
+		b.WriteString("echo '    real_test.go:9: the assertion that matters'\n")
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "TestTheRealOne") {
+			t.Errorf("200 non-fatal early matches crowded out the failing step; got:\n%s", res.LogTail)
+		}
+	})
 }
 
 // itoa avoids pulling strconv in for one call site in a fixture generator.

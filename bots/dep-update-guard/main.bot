@@ -960,10 +960,22 @@ def failure_lines(text):
     picked = []
     for j in sorted(keep):
         picked.append(lines[j][:400])
-        if len(picked) > 59:
-            break
-    return chr(10).join(picked)[:2000]
-tail = out[-3000:]
+    # Head-biased but not head-ONLY: a chained script (install, then lint,
+    # then build, then test) can match noisily early -- a resolver complaint,
+    # a deprecation banner -- and spending the whole budget there would bury
+    # the step that actually failed. Both ends are kept, and the elision is
+    # stated rather than silent.
+    if len(picked) > 60:
+        gap = '... ' + str(len(picked) - 60) + ' matched lines elided ...'
+        picked = picked[:40] + [gap] + picked[-20:]
+    txt = chr(10).join(picked)
+    if len(txt) > 1800:
+        txt = txt[:1200] + chr(10) + '... elided ...' + chr(10) + txt[-560:]
+    return txt
+# The excerpt keeps its historical ~4KB ceiling: what changed is how the
+# budget is spent, not how much of it there is. post_feedback interpolates
+# this into a prompt and a PR comment.
+tail = out[-2000:]
 dig = failure_lines(out) if rc != 0 else ''
 excerpt = (('FAILING LINES (matched, not the tail):' + chr(10) + dig + chr(10) + chr(10) +
             'TAIL:' + chr(10)) if dig else '') + tail
