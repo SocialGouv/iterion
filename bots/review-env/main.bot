@@ -94,7 +94,11 @@ prompt deploy_system:
   invent a reference.
 
   CREDENTIALS BY REFERENCE — never read them. The attached credential is
-  mounted read-only; $DEPLOY_CREDENTIAL holds its FILE PATH. Pass it to
+  mounted read-only at `{{secrets.deploy_credential}}` — that rendered
+  path is the reliable one. A secret's `env:` declaration is injected
+  into TOOL nodes, not into a delegated agent's shell, so
+  $DEPLOY_CREDENTIAL may well be unset here: export it yourself from the
+  path above rather than concluding the credential is missing. Pass it to
   your tools by path/env exactly as the skill directs; do NOT open, cat,
   echo, print, encode or summarise the file. If the skill needs a
   credential and none is mounted, report deployed=false saying so.
