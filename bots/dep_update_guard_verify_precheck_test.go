@@ -319,6 +319,35 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Errorf("200 non-fatal early matches crowded out the failing step; got:\n%s", res.LogTail)
 		}
 	})
+
+	// Revi's R20320f, and the sharpest of the round: splitting the budget
+	// between a digest and the tail makes the excerpt STRICTLY WORSE than the
+	// blind tail it replaced whenever nothing matches — and the keyword list
+	// is not exhaustive and never will be. A make/gradle/cmake failure reads
+	// "Error 2", which matches nothing here, so the whole ceiling has to fall
+	// back to the tail rather than being half-spent on an empty digest.
+	t.Run("a failure matching no keyword is not worse off than before", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 200; i++ {
+			b.WriteString("echo 'make[1]: Leaving directory /src/sub" + itoa(i) + "'\n")
+		}
+		b.WriteString("echo 'the real one: recipe for target build failed at line 5'\n")
+		// ~2900 chars of trailing noise: inside a 4000 budget, outside a 2000 one.
+		for i := 0; i < 60; i++ {
+			b.WriteString("echo 'make[1]: Leaving directory /src/after" + itoa(i) + "'\n")
+		}
+		b.WriteString("exit 2\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "recipe for target build failed") {
+			t.Errorf("splitting the budget for a digest that does not exist lost the failure the old blind tail kept; got %d chars:\n%s", len(res.LogTail), res.LogTail)
+		}
+	})
 }
 
 // itoa avoids pulling strconv in for one call site in a fixture generator.

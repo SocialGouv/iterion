@@ -944,7 +944,8 @@ except OSError:
 # of its own, matching no keyword.
 def failure_lines(text):
     marks = ('--- FAIL', 'FAIL', 'panic:', 'Traceback', 'error:', 'Error:', 'ERROR',
-             'not ok', 'syntax error', 'npm ERR', 'ERR_', 'AssertionError', 'FAILED')
+             'not ok', 'syntax error', 'npm ERR', 'ERR_', 'AssertionError', 'FAILED',
+             'make: ***', 'BUILD FAILED', 'FAILURE:', 'error[')
     lines = text.splitlines()
     keep = set()
     for i, ln in enumerate(lines):
@@ -975,8 +976,14 @@ def failure_lines(text):
 # The excerpt keeps its historical ~4KB ceiling: what changed is how the
 # budget is spent, not how much of it there is. post_feedback interpolates
 # this into a prompt and a PR comment.
-tail = out[-2000:]
+#
+# The tail budget is ADAPTIVE, because the keyword list is not exhaustive and
+# never will be: a make/gradle/cmake failure reads 'Error 2', a shell one may
+# read nothing recognisable at all. When nothing matched, spending half the
+# budget on a digest that does not exist would leave a STRICTLY worse excerpt
+# than before any of this -- so the tail takes the whole ceiling back.
 dig = failure_lines(out) if rc != 0 else ''
+tail = out[-2000:] if dig else out[-4000:]
 excerpt = (('FAILING LINES (matched, not the tail):' + chr(10) + dig + chr(10) + chr(10) +
             'TAIL:' + chr(10)) if dig else '') + tail
 print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': excerpt}))
