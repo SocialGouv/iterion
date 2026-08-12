@@ -12,7 +12,7 @@ import (
 // newlines: gofmt wraps a long call, and a line-oriented pattern would miss
 // `exec.CommandContext(ctx,\n\t"git", …)` — precisely the shape a new call site
 // is likely to take.
-var gitExec = regexp.MustCompile(`(?s)exec\.Command(?:Context)?\(\s*(?:[\w.]+\s*,\s*)?"git"`)
+var gitExec = regexp.MustCompile(`(?s)exec\.Command(?:Context)?\(\s*(?:[\w.]+(?:\([^()]*\))?\s*,\s*)?"git"`)
 
 // TestEveryGitCallerSanitizesEnv sweeps the tree for git subprocesses whose
 // environment is left inherited.
@@ -73,10 +73,18 @@ func TestEveryGitCallerSanitizesEnv(t *testing.T) {
 			// `cmd.Env = os.Environ()` (or appending to it) is the most likely
 			// way a new call site gets written, and it is exactly the
 			// unscrubbed environment this guard exists to keep out.
-			// Generous: cancellation hardening, timeouts and their comments
-			// routinely sit between the call and its environment (the runner's
-			// clone puts 700 characters of them there).
-			tail := body[loc[0]:min(loc[0]+1600, len(body))]
+			// Bounded by the NEXT call site, not by a fixed span: in
+			// pkg/dispatcher the four sites sit 107-406 characters apart, so a
+			// fixed window let each one's assignment vouch for its neighbour —
+			// deleting one and keeping the others still passed. Within that
+			// bound the span is generous, since cancellation hardening,
+			// timeouts and their comments routinely sit in between (the
+			// runner's clone puts 706 characters of them there).
+			end := min(loc[0]+1600, len(body))
+			if next := gitExec.FindStringIndex(body[loc[1]:]); next != nil {
+				end = min(end, loc[1]+next[0])
+			}
+			tail := body[loc[0]:end]
 			if strings.Contains(tail, "SanitizeEnv(") {
 				continue
 			}
