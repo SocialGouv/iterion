@@ -928,7 +928,65 @@ try:
         lf.write(out)
 except OSError:
     pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': out[-4000:]}))
+# A blind tail is the wrong excerpt of a failing run. A test runner prints
+# its per-package successes AFTER the failure, so the last N chars are a
+# list of 'ok' lines and a bare 'FAIL' -- the one line naming what broke
+# scrolls out. Carry the matching lines too, so a hold can be diagnosed
+# from the report instead of from a run log nobody kept.
+#
+# Head-biased on purpose: the same reasoning that rejects the tail rejects
+# keeping the LAST matches. The first failure is the one that usually
+# explains the rest, and a cascade pushes it out of any tail-shaped budget.
+# Each hit carries the lines that follow it, because the line naming a
+# failure and the line saying why are never the same line: a --- FAIL line
+# is followed by the assertion, and a build-failed line is PRECEDED by the
+# compiler diagnostic -- which is why a bare file.go:12:5: counts as a hit
+# of its own, matching no keyword.
+def failure_lines(text):
+    marks = ('--- FAIL', 'FAIL', 'panic:', 'Traceback', 'error:', 'Error:', 'ERROR',
+             'not ok', 'syntax error', 'npm ERR', 'ERR_', 'AssertionError', 'FAILED',
+             'make: ***', 'BUILD FAILED', 'FAILURE:', 'error[')
+    lines = text.splitlines()
+    keep = set()
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or s.startswith('ok ') or s.startswith('?   '):
+            continue
+        hit = any(m in ln for m in marks)
+        if not hit and '.go:' in ln and ln.count(':') > 2:
+            hit = True
+        if hit:
+            for j in range(i, min(len(lines), i + 4)):
+                keep.add(j)
+    picked = []
+    for j in sorted(keep):
+        picked.append(lines[j][:400])
+    # Head-biased but not head-ONLY: a chained script (install, then lint,
+    # then build, then test) can match noisily early -- a resolver complaint,
+    # a deprecation banner -- and spending the whole budget there would bury
+    # the step that actually failed. Both ends are kept, and the elision is
+    # stated rather than silent.
+    if len(picked) > 60:
+        gap = '... ' + str(len(picked) - 60) + ' matched lines elided ...'
+        picked = picked[:40] + [gap] + picked[-20:]
+    txt = chr(10).join(picked)
+    if len(txt) > 1800:
+        txt = txt[:1200] + chr(10) + '... elided ...' + chr(10) + txt[-560:]
+    return txt
+# The excerpt keeps its historical ~4KB ceiling: what changed is how the
+# budget is spent, not how much of it there is. post_feedback interpolates
+# this into a prompt and a PR comment.
+#
+# The tail budget is ADAPTIVE, because the keyword list is not exhaustive and
+# never will be: a make/gradle/cmake failure reads 'Error 2', a shell one may
+# read nothing recognisable at all. When nothing matched, spending half the
+# budget on a digest that does not exist would leave a STRICTLY worse excerpt
+# than before any of this -- so the tail takes the whole ceiling back.
+dig = failure_lines(out) if rc != 0 else ''
+tail = out[-2000:] if dig else out[-4000:]
+excerpt = (('FAILING LINES (matched, not the tail):' + chr(10) + dig + chr(10) + chr(10) +
+            'TAIL:' + chr(10)) if dig else '') + tail
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'precheck_rejected': rc == 3, 'precheck_reason': (reason if rc == 3 else ''), 'log_tail': excerpt}))
 "`
   output: verify_result
 
