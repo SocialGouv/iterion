@@ -240,4 +240,71 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Errorf("the excerpt drops the failing package; got:\n%s", res.LogTail)
 		}
 	})
+
+	// Revi's R009763 on the fix above: keeping the LAST matches is the same
+	// mistake as keeping the last lines. A cascade — a suite where one broken
+	// package fails many subtests — pushes the first failure, the one that
+	// usually explains the rest, out of any tail-shaped budget.
+	t.Run("under a cascade the excerpt keeps the FIRST failures", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 120; i++ {
+			b.WriteString("echo '--- FAIL: TestCascade" + strings.Repeat("0", 3-len(itoa(i))) + itoa(i) + " (0.01s)'\n")
+			b.WriteString("echo '    x_test.go:1: boom'\n")
+		}
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "TestCascade000") {
+			t.Errorf("the first failure is the one that explains the cascade, and it was dropped; got:\n%s", res.LogTail)
+		}
+	})
+
+	// Revi's second question on the same fix. A Go compile failure prints
+	// `file.go:12:5: undefined: Baz` — matching no failure keyword — and only
+	// then `FAIL pkg [build failed]`. Naming the package without the
+	// diagnostic does not tell an operator what broke, which is the whole
+	// point of the excerpt. Likewise `--- FAIL: TestX` without the assertion
+	// that follows it.
+	t.Run("the excerpt carries the diagnostic, not only the verdict line", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		b.WriteString("echo 'pkg/foo/bar.go:12:5: undefined: Baz'\n")
+		b.WriteString("echo 'FAIL\tgithub.com/SocialGouv/iterion/pkg/foo [build failed]'\n")
+		b.WriteString("echo '--- FAIL: TestThing (0.02s)'\n")
+		b.WriteString("echo '    thing_test.go:41: got 3, want 4'\n")
+		for i := 0; i < 300; i++ {
+			b.WriteString("echo 'ok  \tgithub.com/SocialGouv/iterion/pkg/other\t(cached)'\n")
+		}
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "undefined: Baz") {
+			t.Errorf("a compile diagnostic matches no failure keyword and must still survive; got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "got 3, want 4") {
+			t.Errorf("the assertion says WHY the test failed and is never on the --- FAIL line; got:\n%s", res.LogTail)
+		}
+	})
+}
+
+// itoa avoids pulling strconv in for one call site in a fixture generator.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var d []byte
+	for i > 0 {
+		d = append([]byte{byte('0' + i%10)}, d...)
+		i /= 10
+	}
+	return string(d)
 }

@@ -933,17 +933,36 @@ except OSError:
 # list of 'ok' lines and a bare 'FAIL' -- the one line naming what broke
 # scrolls out. Carry the matching lines too, so a hold can be diagnosed
 # from the report instead of from a run log nobody kept.
+#
+# Head-biased on purpose: the same reasoning that rejects the tail rejects
+# keeping the LAST matches. The first failure is the one that usually
+# explains the rest, and a cascade pushes it out of any tail-shaped budget.
+# Each hit carries the lines that follow it, because the line naming a
+# failure and the line saying why are never the same line: a --- FAIL line
+# is followed by the assertion, and a build-failed line is PRECEDED by the
+# compiler diagnostic -- which is why a bare file.go:12:5: counts as a hit
+# of its own, matching no keyword.
 def failure_lines(text):
     marks = ('--- FAIL', 'FAIL', 'panic:', 'Traceback', 'error:', 'Error:', 'ERROR',
              'not ok', 'syntax error', 'npm ERR', 'ERR_', 'AssertionError', 'FAILED')
-    hits = []
-    for ln in text.splitlines():
+    lines = text.splitlines()
+    keep = set()
+    for i, ln in enumerate(lines):
         s = ln.strip()
         if not s or s.startswith('ok ') or s.startswith('?   '):
             continue
-        if any(m in ln for m in marks):
-            hits.append(ln[:400])
-    return chr(10).join(hits[-40:])[-2000:]
+        hit = any(m in ln for m in marks)
+        if not hit and '.go:' in ln and ln.count(':') > 2:
+            hit = True
+        if hit:
+            for j in range(i, min(len(lines), i + 4)):
+                keep.add(j)
+    picked = []
+    for j in sorted(keep):
+        picked.append(lines[j][:400])
+        if len(picked) > 59:
+            break
+    return chr(10).join(picked)[:2000]
 tail = out[-3000:]
 dig = failure_lines(out) if rc != 0 else ''
 excerpt = (('FAILING LINES (matched, not the tail):' + chr(10) + dig + chr(10) + chr(10) +
