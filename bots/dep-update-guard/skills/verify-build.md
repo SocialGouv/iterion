@@ -112,6 +112,17 @@ verdict in production:
   exact invocation — flags included — from the CI step or the task-runner
   target CI calls; when in doubt, run the repo's own umbrella target
   (`task check`, `make ci`) INSTEAD of hand-assembling steps.
+- **Call the target; never transcribe its body.** When a task runner defines
+  the step, `verify.sh` invokes `task <target>` — it does not copy what that
+  target runs. A Taskfile/Makefile command is frequently a multi-line shell
+  block, and a block does not survive being passed as one `sh -c` argument:
+  its newlines and tabs arrive literal, the shell parses a single mangled
+  line, and the script dies on a syntax error that has nothing to do with the
+  dependency under test (observed live: a `gofmt` guard transcribed into
+  `devbox run -- sh -c files=$(find …)` produced ``syntax error near
+  unexpected token `then` `` and held a clean `@types/node` bump whose
+  alignment was already correct). Transcription also silently drops the
+  target's `dir:`, `env:` and prerequisites.
 - **Never looser** is §1b: every gate CI enforces (drift, fmt, lint-as-error
   where CI makes it one) must be present — the precheck rejects a gateless
   script.

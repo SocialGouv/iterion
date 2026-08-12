@@ -7,6 +7,130 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-12 — the anti-malware half fires for the first time, and the verify gate is proven to hold on a red base
+
+- Status: **validated for the security half, blocked for the alignment half.**
+  Four runs: #410 (hostile fixture), #411 (its control), #394 and #395 (real
+  Dependabot bumps).
+- Versions: Vetty 2.7.4 (runs) → **2.7.5** (fixes below) · iterion v3.40.0.
+- Method: `/vetty` on two purpose-built fixture PRs plus a re-review of two
+  refreshed Dependabot PRs. Fixtures in `e2e/fixtures/malware-detection/`;
+  branches `test/vetty-malware-*`, based on a scratch branch so nothing could
+  reach `main`.
+
+### The detection worked, and the control is what proves it
+
+Three candidate 0.0.2 releases share one package **name and version** and
+differ only in contents, so the bump is identical in shape across PRs and the
+payload is the only variable. Candidate directories are named opaquely
+(`release-0.0.2-a|b|c`) because Vetty explores the tree it audits — a
+directory called `hostile` would hand it the verdict.
+
+| PR | candidate | verdict | gate |
+|---|---|---|---|
+| #410 | `b` — adds a `postinstall` hook | **MALICIOUS** | `supply-chain risk: the bump was not applied` |
+| #411 | `a` — adds one function | **SAFE** | `build/tests not green after alignment` |
+
+The two gate descriptions differ: the hostile bump was stopped at the security
+gate before any alignment, the control cleared it and went on. A hold that
+reproduced on both would have measured novelty-aversion, not detection.
+
+What the report got right beyond the verdict:
+
+- **It refused the façade.** Every deterministic scanner — osv-scanner, npm
+  audit, the OSV API, semgrep `p/default`, trivy, gitleaks — returned clean,
+  and it said so: *"that cleanliness is meaningless: the package is unpublished
+  (npm view → E404) and linked by file: path… Emitting 'safe' on that basis
+  would have been a pure facade."*
+- **It gave zero weight to the in-band disclaimer.** The payload carries a
+  header saying it is inert by construction; the audit discounted it —
+  *"an in-band claim of innocence is exactly what a hostile package ships."*
+- **It falsified its own detectors.** The control run discounted semgrep as
+  evidence *because* it ran the hostile sibling through it and also got 0:
+  "non-discriminating for this malware shape". It named the exhaustive source
+  review and the lifecycle-hook scan as the detectors that actually discriminate.
+- **Signals are anchored** to `file:line` (`vendor/release-0.0.2-b/postinstall.js:11-15`
+  for the `process.env` serialisation, `:31-37` for the `spawn`), which is the
+  property the `no-package-malware` prior art was going to be mined for.
+
+Coverage this montage does NOT establish: with a `file:` dependency the hostile
+source sits inside the diff, so this proves the plumbing (audit →
+`hold_security` → red gate → no merge) and the signal reporting, not the
+judgement on an unseen registry package. `test/vetty-malware-bump-registry`
+(node-ipc 9.2.1 → 10.1.1, verdict discoverable only via OSV) is built and
+pushed for that half; not yet run.
+
+### The alignment half is still blocked — but not by the alignment
+
+#394 and #395 both held `build/tests not green after alignment`, and neither
+red was caused by its bump:
+
+- **#394 (@types/node 26.1.2 → 26.2.0)** — the audit was exemplary (registry
+  ECDSA signature verified against the live key, tarball sha512 matched, 88
+  `.d.ts` files and zero executables, no hook added, publisher unchanged). The
+  alignment was **correct and complete**: it caught the stale root
+  `pnpm-lock.yaml` and regenerated it — the rule added to the skill after the
+  last batch did its job. Then the verify script died on its own construction:
+
+  ```
+  devbox run -- sh -c files=$(find . -name "*.go" ...)
+  sh: -c: line 1: syntax error near unexpected token `then'
+  ```
+
+  The agent had transcribed a multi-line Taskfile command body into a single
+  `sh -c` argument; the YAML block's newlines and tabs arrived literal.
+- **#395 (@vitejs/plugin-react 5 → 6)** — audit SAFE with SLSA provenance
+  traced to `vitejs/vite-plugin-react`'s publish workflow; no alignment needed
+  on the refreshed head. Held on a Go test-suite `FAIL`.
+- **#411, the control**, changes two JSON fixture files and **no Go code at
+  all** — and also ended in `FAIL` on the same suite. That is the proof the red
+  belongs to the tree, not the change. `go test ./...` on `origin/main` passes
+  locally (including `bots`, `cmd`, `e2e`, and under the runner's injected
+  `GIT_AUTHOR_*`), so the failure is specific to the sandboxed run.
+
+Which test fails is **not knowable from the reports**, and that is the second
+defect: the excerpt was `out[-4000:]`, a blind tail. A test runner prints its
+per-package successes after the package that failed, so all three reports
+carried a wall of `ok` lines and a bare `FAIL`, with the failing name scrolled
+out.
+
+### Fixes (Vetty 2.7.5)
+
+- **The excerpt keeps the failing lines**, matched, in addition to the tail
+  (`verify_run`). Falsifiable: reverting it reddens
+  `TestDepUpdateGuardVerifyPrechecks/the_excerpt_keeps_the_failing_line` with
+  exactly the observed symptom.
+- **Skill rule — call the target, never transcribe its body** (`verify-build`
+  §1c), with the reason: a task-runner block does not survive being passed as
+  one `sh -c` argument, and transcription also drops the target's `dir:`,
+  `env:` and prerequisites.
+
+### Engine finding (not fixed here)
+
+`prepareRepoWorkspace` clones the **default** branch plus the run's ref
+([pkg/runner/loop_gitws.go](../../pkg/runner/loop_gitws.go)), so a PR whose base
+is neither leaves `merge-base(base, HEAD)` unresolvable. #410 hit it and
+degraded loudly (`degraded_reason`, scope narrowed to `HEAD~1..HEAD`) exactly as
+designed — #411 even re-resolved the base itself and said the approximation did
+not change its verdict. It bites stacked PRs and PRs targeting a release branch;
+the fix is for the runner to fetch the run's `base_ref` too, which is generic
+and not bot-specific.
+
+### Lessons for next run
+
+- **Refresh a stale PR branch before re-reviewing it.** Vetty verifies
+  `merge-base(base, HEAD)..HEAD` and does not merge the base, so a PR cut before
+  a fix landed still carries the old red and a re-review only reproduces it at
+  ~$10 a run. `@dependabot rebase`, or `gh pr update-branch` when Vetty has
+  already committed to the branch (Dependabot then refuses: *"edited by someone
+  other than Dependabot"*).
+- **`review_on_sync` is on for this repo**: pushing to the branch relaunches
+  Vetty by itself. Commenting `/vetty` is only needed on a hand-opened PR.
+- **A flaky or environment-sensitive test in the target repo holds every bump.**
+  The gate is fail-closed by design and that stays right, but the base tree's
+  health is now a precondition of the whole lane — worth establishing before a
+  batch, not after three holds.
+
 ## 2026-08-11/12 — why the other ten held, and a guard that had to be deleted
 
 - Status: **the batch is fully diagnosed and every cause is fixed.** No new

@@ -1,7 +1,17 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.4
+version: 2.7.5
+## 2.7.5 — a hold must say what broke. The report carried out[-4000:], a blind
+## tail, and a test runner prints its per-package successes AFTER the package
+## that failed: three holds on 2026-08-12 (iterion#394/#395/#411) reported
+## "build/tests not green" over an excerpt containing a list of `ok` lines and
+## a bare FAIL, with the failing test name scrolled out. The excerpt now
+## carries the matched failing lines as well as the tail. The other half is a
+## skill rule: call the task-runner target, never transcribe its body -- a
+## multi-line Taskfile block passed as one `sh -c` argument arrives with its
+## newlines literal and dies on a syntax error unrelated to the bump, which is
+## what actually held #394 (its alignment was correct).
 ## 2.7.4 — the listing check is removed, not patched again. Rejecting a
 ## verify.sh whose lines are paths rather than commands (iterion#398) meant
 ## judging shell text statically, and eight review rounds each found the next

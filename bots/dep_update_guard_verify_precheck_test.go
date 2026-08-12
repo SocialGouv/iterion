@@ -203,4 +203,162 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Errorf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
 		}
 	})
+
+	// Observed live on iterion#394/#395/#411 (2026-08-12): three holds reported
+	// "build/tests not green" over an excerpt containing nothing but a list of
+	// `ok` lines and a bare `FAIL`. A test runner prints its per-package
+	// successes AFTER the package that failed, so a blind tail of the output is
+	// systematically the wrong excerpt — it keeps the successes and drops the
+	// one line naming what broke. The operator then cannot tell a real
+	// regression from an environment failure without a run log nobody kept.
+	t.Run("the excerpt keeps the failing line, not just the trailing successes", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		// The shape `go test ./...` produces: the failure first, then far more
+		// than the excerpt budget of passing packages after it.
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		b.WriteString("echo '--- FAIL: TestAwaitTerminal_LoadRunMissTransient (0.42s)'\n")
+		b.WriteString("echo 'FAIL\tgithub.com/SocialGouv/iterion/cmd/iterion\t0.51s'\n")
+		for i := 0; i < 400; i++ {
+			b.WriteString("echo 'ok  \tgithub.com/SocialGouv/iterion/pkg/filler" +
+				strings.Repeat("x", 20) + "\t(cached)'\n")
+		}
+		b.WriteString("echo FAIL\n")
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if res.Passed {
+			t.Fatal("a script exiting 1 must not pass")
+		}
+		if !strings.Contains(res.LogTail, "TestAwaitTerminal_LoadRunMissTransient") {
+			t.Errorf("the excerpt drops the name of what failed, so the hold cannot be diagnosed from the report; got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "cmd/iterion") {
+			t.Errorf("the excerpt drops the failing package; got:\n%s", res.LogTail)
+		}
+	})
+
+	// Revi's R009763 on the fix above: keeping the LAST matches is the same
+	// mistake as keeping the last lines. A cascade — a suite where one broken
+	// package fails many subtests — pushes the first failure, the one that
+	// usually explains the rest, out of any tail-shaped budget.
+	t.Run("under a cascade the excerpt keeps the FIRST failures", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 120; i++ {
+			b.WriteString("echo '--- FAIL: TestCascade" + strings.Repeat("0", 3-len(itoa(i))) + itoa(i) + " (0.01s)'\n")
+			b.WriteString("echo '    x_test.go:1: boom'\n")
+		}
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "TestCascade000") {
+			t.Errorf("the first failure is the one that explains the cascade, and it was dropped; got:\n%s", res.LogTail)
+		}
+	})
+
+	// Revi's second question on the same fix. A Go compile failure prints
+	// `file.go:12:5: undefined: Baz` — matching no failure keyword — and only
+	// then `FAIL pkg [build failed]`. Naming the package without the
+	// diagnostic does not tell an operator what broke, which is the whole
+	// point of the excerpt. Likewise `--- FAIL: TestX` without the assertion
+	// that follows it.
+	t.Run("the excerpt carries the diagnostic, not only the verdict line", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		b.WriteString("echo 'pkg/foo/bar.go:12:5: undefined: Baz'\n")
+		b.WriteString("echo 'FAIL\tgithub.com/SocialGouv/iterion/pkg/foo [build failed]'\n")
+		b.WriteString("echo '--- FAIL: TestThing (0.02s)'\n")
+		b.WriteString("echo '    thing_test.go:41: got 3, want 4'\n")
+		for i := 0; i < 300; i++ {
+			b.WriteString("echo 'ok  \tgithub.com/SocialGouv/iterion/pkg/other\t(cached)'\n")
+		}
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "undefined: Baz") {
+			t.Errorf("a compile diagnostic matches no failure keyword and must still survive; got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "got 3, want 4") {
+			t.Errorf("the assertion says WHY the test failed and is never on the --- FAIL line; got:\n%s", res.LogTail)
+		}
+	})
+
+	// Revi's R253811, the counter-case to the head bias: a script chaining
+	// install -> lint -> build -> test can match noisily in an early step that
+	// does not fail the run (a resolver complaint, a deprecation banner), and
+	// spending the whole budget there buries the step that actually failed.
+	// Head-biased must not mean head-only.
+	t.Run("a noisy early step does not bury the failure that ended the run", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 200; i++ {
+			b.WriteString("echo 'ERROR: pip dependency resolver complaint " + itoa(i) + "'\n")
+		}
+		b.WriteString("echo '--- FAIL: TestTheRealOne (0.03s)'\n")
+		b.WriteString("echo '    real_test.go:9: the assertion that matters'\n")
+		b.WriteString("exit 1\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "TestTheRealOne") {
+			t.Errorf("200 non-fatal early matches crowded out the failing step; got:\n%s", res.LogTail)
+		}
+	})
+
+	// Revi's R20320f, and the sharpest of the round: splitting the budget
+	// between a digest and the tail makes the excerpt STRICTLY WORSE than the
+	// blind tail it replaced whenever nothing matches — and the keyword list
+	// is not exhaustive and never will be. A make/gradle/cmake failure reads
+	// "Error 2", which matches nothing here, so the whole ceiling has to fall
+	// back to the tail rather than being half-spent on an empty digest.
+	t.Run("a failure matching no keyword is not worse off than before", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		var b strings.Builder
+		b.WriteString("#!/bin/sh\n")
+		for i := 0; i < 200; i++ {
+			b.WriteString("echo 'make[1]: Leaving directory /src/sub" + itoa(i) + "'\n")
+		}
+		b.WriteString("echo 'the real one: recipe for target build failed at line 5'\n")
+		// ~2900 chars of trailing noise: inside a 4000 budget, outside a 2000 one.
+		for i := 0; i < 60; i++ {
+			b.WriteString("echo 'make[1]: Leaving directory /src/after" + itoa(i) + "'\n")
+		}
+		b.WriteString("exit 2\n")
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(b.String()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := run(t, ws, scratch)
+		if !strings.Contains(res.LogTail, "recipe for target build failed") {
+			t.Errorf("splitting the budget for a digest that does not exist lost the failure the old blind tail kept; got %d chars:\n%s", len(res.LogTail), res.LogTail)
+		}
+	})
+}
+
+// itoa avoids pulling strconv in for one call site in a fixture generator.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var d []byte
+	for i > 0 {
+		d = append([]byte{byte('0' + i%10)}, d...)
+		i /= 10
+	}
+	return string(d)
 }
