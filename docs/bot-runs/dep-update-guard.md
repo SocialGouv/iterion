@@ -95,7 +95,8 @@ fixtures — and excluded rather than counted against it.
   dependency".
 - **#14** closed as obsolete: it targeted `@types/node` 25.9.0 while `main`
   carries `^26.2.0` since #394, and its branch predates the current tree
-  (`.archive/examples/*.iter`, `ast/` at the repo root).
+  (archived examples still carrying the workflow extension iterion used
+  before `.bot`, and `ast/` sitting at the repo root).
 - **#6** (azure/setup-helm 4 → 5): green.
 
 ### Lesson
