@@ -173,6 +173,88 @@ describe("GateInboundPayload", () => {
     vi.unstubAllGlobals();
   });
 
+  it("previews a JSON attachment instead of offering only a download", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(['{"subject":"Ulysse","chapters":[1,2]}'], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline_file-609b6784",
+            filename: "outline.json",
+            path: "/host/state/films/x/outline.json",
+            mime: "application/json",
+            size: 48,
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByText(/"subject": "Ulysse"/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(fetchAttachment).toHaveBeenCalledWith("run-1", "outline_file-609b6784");
+  });
+
+  it("previews a markdown brief as prose, not as a download-only row", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["# Découpage à valider\n\nCe que tu juges"], { type: "text/plain" }),
+      contentType: "text/plain",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          brief_file: {
+            attachment: "brief_file-da9c85f7",
+            filename: "outline_review.md",
+            mime: "text/plain",
+            size: 40,
+          },
+        }}
+        inputFields={[{ name: "brief_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: /découpage à valider/i })).toBeTruthy();
+    expect(screen.getByText("Ce que tu juges")).toBeTruthy();
+  });
+
+  it("folds a long JSON attachment behind a toggle", async () => {
+    const chapters = Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => [`ch_${i}`, { events: ["a", "b"] }]),
+    );
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([JSON.stringify({ chapters })], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline_file-long",
+            filename: "outline.json",
+            mime: "application/json",
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /show all \d+ lines/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+  });
+
   it("degrades to the filename when a file value has no fetchable attachment", async () => {
     render(
       <GateInboundPayload
