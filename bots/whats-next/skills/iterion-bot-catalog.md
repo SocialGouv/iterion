@@ -490,7 +490,7 @@ audit ran and the build is green before anything is committed.
   alignment onto the PR branch. Not for human PRs (use Revi /
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
-- **Vars**: `arm_automerge` (bool), `automerge_method` (string), `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `arm_automerge` (bool), `automerge_method` (string), `base_ref` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `verify_timeout_s` (int), `workspace_dir` (string)
 - **Path**: `bots/dep-update-guard/main.bot`
 
 ### `devbox-setup` — Devy
