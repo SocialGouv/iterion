@@ -74,6 +74,9 @@ vars:
   ## board issues would have to be re-derived here from raw findings,
   ## duplicating grouping and de-duplication the engine already owns.
   ## An older engine fails loudly in `prepare` rather than degrading.
+  ## `--var engine_version` retargets the tool nodes only; the
+  ## `mcp_server` args pin is a literal and must be bumped in the same
+  ## change (see the comment on that block).
   engine_version: string = "2.32.0"
   ## Country standard to report against — "" is the WCAG 2.2 AA core.
   ## "rgaa" renders the French référentiel. Packs are the engine's, not
@@ -110,6 +113,8 @@ vars:
   report_dir:    string = "${PROJECT_DIR}/audits"
   ## Everything intermediate stays OUT of the target tree. The engine
   ## contains its writes to --out, so a run leaves the checkout untouched.
+  ## Edges append /{{run.id}} so two overlapping runs (schedule + PR)
+  ## do not share audit-latest.json / ADJUDICATE.md.
   run_dir:       string = "${PROJECT_SCRATCH_DIR}/ultra11y"
   ## When false, write the report only — do NOT create board issues.
   post_to_board: bool   = true
@@ -161,6 +166,7 @@ schema worklist_output:
 schema adjudicate_input:
   workspace_dir:  string
   run_dir:        string
+  engine_version: string
   todo_path:      string
   count:          int
   mode:           string
@@ -245,9 +251,11 @@ prompt adjudicate_system:
   THE FOUR VERDICTS, and the honest use of each:
     - "C"  — you verified it holds. Requires a justification AND `citations`
              naming the harvested evidence you cleared, each anchor drawn
-             from THIS criterion's own evidence. A criterion with no
-             harvested evidence cannot be C at all — there was nothing to
-             clear, so the honest verdict is "manual" or "NA".
+             from THIS criterion's own evidence. Hold yourself to that —
+             on the pinned engine the fold does not yet refuse a C that
+             only has a plausible sentence. A criterion with no harvested
+             evidence cannot be C at all — there was nothing to clear, so
+             the honest verdict is "manual" or "NA".
     - "NC" — it is violated. Requires at least one finding with file, line,
              message AND a `normativeRef` that is the criterion id itself
              (`"1.3.5"`, or `"11.2"` under a country pack). W3C technique
@@ -255,7 +263,10 @@ prompt adjudicate_system:
              them as fabricated even when ADJUDICATE.md lists them as
              "you may cite". A finding you cannot ground is not a finding.
     - "NA" — no such content exists in the audited scope. Requires a
-             one-line reason.
+             one-line reason. If the item came with harvested evidence,
+             cite those anchors in `citations[]` (out of scope, not
+             cleared) — the fold refuses a bare NA that was shown
+             evidence.
     - "manual" — you genuinely cannot decide statically. Requires a reason:
              "needs-rendered-dom" (it needs a real browser — computed
              contrast, visible focus, zoom, reflow, content on hover) or
@@ -277,6 +288,7 @@ prompt adjudicate_system:
 prompt adjudicate_user:
   Audit target: {{input.workspace_dir}}
   Mode: {{input.mode}} (pr = only what the branch introduced; full = the whole surface)
+  Engine (pinned — compose every CLI call as `npx -y ultra11y@{{input.engine_version}}`, never a bare ultra11y or unpinned npx): {{input.engine_version}}
   Worklist: {{input.todo_path}} ({{input.count}} criteria to rule on)
   Write your completed file to: {{input.run_dir}}/adjudication.json
 
@@ -298,6 +310,12 @@ prompt publish_system:
   the engine and the adjudication. Your job is faithful transcription.
 
   Read the `iterion-board` skill for the board tools.
+
+  FIRST, two conditions under which you create NOTHING: `Post to board` is
+  false, or `Mode` is `pr` (a pull-request run hands its findings over
+  through the review artifact, not the board). In either case call no board
+  tool at all, return an empty created_issues, and say which condition
+  applied in the summary.
 
   You are given an ISSUE SET: one item per criterion, already
   de-duplicated, severity-sorted and capped. For EACH item call
@@ -329,7 +347,8 @@ prompt publish_user:
 
   {{input.issues}}
 
-  File them and return created_issues plus a short summary.
+  If neither no-op condition applies, file them. Return created_issues
+  plus a short summary.
 
 ## ─── MCP ──────────────────────────────────────────────────────────────
 
@@ -338,6 +357,10 @@ prompt publish_user:
 ## resolves; when it does not, the same engine is one `bash` call away and
 ## the deterministic gates are unaffected either way — an MCP outage can
 ## slow the agent down, it can never turn a failed audit green.
+##
+## args: are literals (no {{vars.engine_version}} expansion). The pin
+## here MUST match the `engine_version` default. `--var engine_version=…`
+## does not retarget this server — bump this list in the same change.
 mcp_server ultra11y:
   transport: stdio
   command: "npx"
@@ -453,8 +476,11 @@ tool worklist:
 RUN='{{input.run_dir}}'
 STD=''
 if [ -n '{{input.standard}}' ]; then STD='--standard {{input.standard}}'; fi
-npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$RUN" $STD --lang '{{input.report_lang}}' > /dev/null 2>&1
-REPORT=$(ls -1 "$RUN"/*.md 2>/dev/null | head -1)
+## report must not be silent: a failed write plus ls of a leftover
+## ADJUDICATE.md (C locale sorts it before any dated report) is the
+## empty-scope façade on the second run of the same project.
+npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$RUN" $STD --lang '{{input.report_lang}}' > "$RUN/draft.log" 2>&1 || { cat "$RUN/draft.log" >&2; exit 1; }
+REPORT=$(ls -1t "$RUN"/*.md 2>/dev/null | grep -v '/ADJUDICATE.md$' | head -1)
 if [ -z "$REPORT" ]; then echo 'the engine wrote no draft report to render a worklist from' >&2; exit 1; fi
 npx -y ultra11y@{{input.engine_version}} verify --report "$REPORT" --in "$RUN/audit-latest.json" --manual $STD --out "$RUN" --json > "$RUN/worklist.json" 2>"$RUN/worklist.err" || { cat "$RUN/worklist.err" >&2; exit 1; }
 RUN=$RUN python3 -c "
@@ -557,7 +583,7 @@ except ValueError:
     cap = 80
 if cap < 1:
     cap = 80
-matches = sorted(glob.glob(os.path.join(run, 'issues-*.json')))
+matches = sorted(glob.glob(os.path.join(run, 'issues-*.json')), key=os.path.getmtime)
 if not matches:
     sys.stderr.write('the engine wrote no issue set to publish from\n')
     sys.exit(1)
@@ -607,21 +633,22 @@ workflow ultra11y:
     workspace_dir: "{{vars.workspace_dir}}",
     engine_version: "{{outputs.prepare.engine_version}}",
     audit_args:    "{{outputs.prepare.audit_args}}",
-    run_dir:       "{{vars.run_dir}}",
+    run_dir:       "{{vars.run_dir}}/{{run.id}}",
     report_lang:   "{{vars.report_lang}}"
   }
 
   static_audit -> worklist with {
     workspace_dir: "{{vars.workspace_dir}}",
     engine_version: "{{outputs.prepare.engine_version}}",
-    run_dir:       "{{vars.run_dir}}",
+    run_dir:       "{{vars.run_dir}}/{{run.id}}",
     standard:      "{{vars.standard}}",
     report_lang:   "{{vars.report_lang}}"
   }
 
   worklist -> adjudicate with {
     workspace_dir:  "{{vars.workspace_dir}}",
-    run_dir:        "{{vars.run_dir}}",
+    run_dir:        "{{vars.run_dir}}/{{run.id}}",
+    engine_version: "{{outputs.prepare.engine_version}}",
     todo_path:      "{{outputs.worklist.todo_path}}",
     count:          "{{outputs.worklist.count}}",
     mode:           "{{outputs.prepare.mode}}",
@@ -633,14 +660,14 @@ workflow ultra11y:
   adjudicate -> fold with {
     workspace_dir: "{{vars.workspace_dir}}",
     engine_version: "{{outputs.prepare.engine_version}}",
-    run_dir:       "{{vars.run_dir}}",
+    run_dir:       "{{vars.run_dir}}/{{run.id}}",
     verdicts_path: "{{outputs.adjudicate.verdicts_path}}"
   }
 
   fold -> deliver with {
     workspace_dir: "{{vars.workspace_dir}}",
     engine_version: "{{outputs.prepare.engine_version}}",
-    run_dir:       "{{vars.run_dir}}",
+    run_dir:       "{{vars.run_dir}}/{{run.id}}",
     report_dir:    "{{vars.report_dir}}",
     standard:      "{{vars.standard}}",
     report_lang:   "{{vars.report_lang}}",

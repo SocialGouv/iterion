@@ -28,15 +28,15 @@ not emit it), the table below is the contract.
 | `NA` | no such content exists in scope | a one-line `reason` in the `justification` |
 | `manual` | you genuinely cannot decide statically | `reason`: `needs-rendered-dom` or `undecidable` |
 
-**A clearing verdict is gated exactly like an accusing one.** `citations[]` is not
-optional decoration on a `C`: the fold refuses a `C` that cites nothing, and it
-refuses a citation that does not resolve or that you were never shown. And a
-criterion the harvester found **no evidence for at all cannot be `C`** — there was
-nothing to clear, so the honest verdicts are `manual` (reason `undecidable`) or
-`NA` if nothing in scope is concerned.
-
-This is what stops "C everywhere with a plausible sentence" from passing, which
-is exactly the failure a prose-only justification used to allow.
+**A clearing verdict is held to the same standard as an accusing one.**
+`citations[]` is not optional decoration on a `C`: name the harvested anchors
+you cleared, each drawn from *this criterion's own* `evidence`. Be warned that
+on the pinned engine the fold does **not** yet enforce this — the upstream
+`citations` check is still in flight — so it is a standard you hold yourself
+to, not one that will catch you. And a criterion the harvester found **no
+evidence for at all cannot be `C`** — there was nothing to clear, so the honest
+verdicts are `manual` (reason `undecidable`) or `NA` if nothing in scope is
+concerned.
 
 **Write the verdicts exactly as spelled above** — `C`, `NC`, `NA` upper-case,
 `manual` lower-case. Recent engines accept other casings, older ones refuse the
@@ -144,7 +144,7 @@ The pack also **defines** the words its tests turn on; look them up
 rather than reasoning from the everyday sense:
 
 ```sh
-<engine_cmd> criteria --standard rgaa --glossary "pertinent"
+npx -y ultra11y@<engine_version> criteria --standard rgaa --glossary "pertinent"
 ```
 
 ## Prior pushback

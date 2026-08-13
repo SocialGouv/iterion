@@ -11,13 +11,15 @@ description: |
 # The ultra11y engine, from inside Ally
 
 The engine is one self-contained `.mjs` — no install, no API key, Node ≥ 22.18.
-The bot resolved a **pinned** version before you were started; the exact
-invocation was handed to you as `engine_cmd`. Use that string, never a bare
-`ultra11y` or an unpinned `npx`.
+The bot resolved a **pinned** version before you were started; it is
+passed to you as `engine_version`. Compose every CLI call as
+`npx -y ultra11y@<engine_version>`. Never a bare `ultra11y`, never an
+unpinned `npx` — that would resolve `latest` and could disagree with
+the pack the deterministic nodes already audited.
 
 ```sh
 npm_config_update_notifier=false        # npm's update notice otherwise lands in parsed stdout
-<engine_cmd> --help                     # the full surface
+npx -y ultra11y@<engine_version> --help
 ```
 
 ## The division of labour — and why you exist
@@ -72,14 +74,15 @@ When the `mcp__ultra11y__*` tools resolve, they are the same engine without the
 shell round-trip: `ultra11y_criteria` looks a criterion up offline (its official
 wording, its tests, its automatability class), `ultra11y_read` reads source, and
 `ultra11y_adjudicate` re-renders the worklist. If they are absent, `bash` with
-`engine_cmd` does all of it — nothing about the run depends on MCP.
+`npx -y ultra11y@<engine_version>` does all of it — nothing about the
+run depends on MCP.
 
 ## Useful subcommands
 
 ```sh
-<engine_cmd> criteria 1.4.3                  # one success criterion, offline
-<engine_cmd> criteria --standard rgaa --theme 8   # a country pack's theme
-<engine_cmd> criteria --standard rgaa --glossary "pertinent"   # what the standard DEFINES
+npx -y ultra11y@<engine_version> criteria 1.4.3
+npx -y ultra11y@<engine_version> criteria --standard rgaa --theme 8
+npx -y ultra11y@<engine_version> criteria --standard rgaa --glossary "pertinent"
 ```
 
 The glossary matters more than it looks: under a country standard, words like
