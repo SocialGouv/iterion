@@ -251,8 +251,74 @@ describe("GateInboundPayload", () => {
 
     const toggle = await screen.findByRole("button", { name: /show all \d+ lines/i });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Folded <pre> is a slice, not a CSS clamp over the whole body.
+    expect(screen.queryByText(/ch_19/)).toBeNull();
     fireEvent.click(toggle);
     expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+    expect(screen.getByText(/ch_19/)).toBeTruthy();
+  });
+
+  it("folds a single-line attachment larger than the parse budget", async () => {
+    const body = "x".repeat(25_000);
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([body], { type: "text/plain" }),
+      contentType: "text/plain",
+    });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          log_file: {
+            attachment: "log-huge",
+            filename: "trace.log",
+            mime: "text/plain",
+          },
+        }}
+        inputFields={[{ name: "log_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /^show all$/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const pre = container.querySelector("pre");
+    expect(pre).toBeTruthy();
+    expect(pre?.textContent?.length ?? 0).toBeLessThanOrEqual(20_000);
+    expect(pre?.textContent?.length ?? 0).toBeLessThan(body.length);
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+    expect(container.querySelector("pre")?.textContent).toBe(body);
+  });
+
+  it("does not inline-preview a neutralized XML attachment", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["<root/>"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+    const createObjectURL = vi.fn(() => "blob:xml");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          spec: {
+            attachment: "spec-xml",
+            filename: "data.xml",
+            mime: "application/octet-stream",
+          },
+        }}
+        inputFields={[{ name: "spec", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("<root/>")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+
+    vi.unstubAllGlobals();
   });
 
   it("degrades to the filename when a file value has no fetchable attachment", async () => {
