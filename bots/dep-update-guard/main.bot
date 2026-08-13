@@ -144,6 +144,14 @@ vars:
   ## pollute the PR branch).
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/dep-update-guard"
 
+  ## Seconds the deterministic verify may run before it is called red.
+  ## Overridable because 20 minutes is a guess, not a property of the world:
+  ## a monorepo whose own CI takes longer would be held on a timeout that
+  ## says nothing about the bump. A timeout is reported as a red build
+  ## (exit 124) with whatever output the script produced first -- never as a
+  ## crashed node.
+  verify_timeout_s: int = 1200
+
 ## ─── Prompts ────────────────────────────────────────────────────
 
 prompt security_audit_system:
@@ -868,12 +876,22 @@ pre = tree_state()
 rc = 0
 out = ''
 reason = ''
+limit = int({{vars.verify_timeout_s}})
 try:
-    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1200)
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=limit)
     out = p.stdout or ''
     rc = p.returncode
 except subprocess.TimeoutExpired as e:
-    out = (e.output or '') + chr(10) + '[verify timed out after 1200s]'
+    # e.output is BYTES on this path even though text=True was passed: the
+    # decode happens after communicate() returns normally, and a timeout
+    # attaches the raw buffer instead. Concatenating it to a str raises
+    # TypeError INSIDE this handler, which turns a red build into a crashed
+    # node -- observed 2026-08-13 on iterion#386, where a 20-minute verify
+    # ended the run failed_resumable with a traceback instead of a verdict.
+    partial = e.output or ''
+    if isinstance(partial, bytes):
+        partial = partial.decode('utf-8', 'replace')
+    out = partial + chr(10) + '[verify timed out after ' + str(limit) + 's]'
     rc = 124
 except Exception as e:
     out = 'verify_run could not execute the script: ' + str(e)

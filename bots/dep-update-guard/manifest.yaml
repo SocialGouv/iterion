@@ -1,7 +1,15 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.5
+version: 2.7.6
+## 2.7.6 -- a verify that overruns is a red build, not a crashed run. The
+## TimeoutExpired handler concatenated e.output to a str, and on the timeout
+## path that attribute is BYTES even though text=True was passed (the decode
+## happens after communicate() returns normally). The TypeError fired inside
+## the handler, so iterion#386 ended failed_resumable with a traceback where
+## the verdict belonged. The partial output is decoded defensively now, and
+## the 20-minute limit became `verify_timeout_s` -- a repo whose own CI runs
+## longer was being held on a number that says nothing about its bump.
 ## 2.7.5 — a hold must say what broke. The report carried out[-4000:], a blind
 ## tail, and a test runner prints its per-package successes AFTER the package
 ## that failed: three holds on 2026-08-12 (iterion#394/#395/#411) reported

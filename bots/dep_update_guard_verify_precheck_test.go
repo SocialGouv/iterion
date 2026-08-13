@@ -43,10 +43,11 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		LogTail          string `json:"log_tail"`
 	}
 
-	run := func(t *testing.T, ws, scratch string) verifyResult {
+	runWithTimeout := func(t *testing.T, ws, scratch, timeoutS string) verifyResult {
 		t.Helper()
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
+		cmd = strings.ReplaceAll(cmd, "{{vars.verify_timeout_s}}", timeoutS)
 		out, err := exec.Command("sh", "-c", cmd).Output()
 		if err != nil {
 			t.Fatalf("verify_run failed to execute: %v (out %q)", err, out)
@@ -56,6 +57,10 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 			t.Fatalf("verify_run output is not verify_result JSON: %v (out %q)", uerr, out)
 		}
 		return res
+	}
+	run := func(t *testing.T, ws, scratch string) verifyResult {
+		t.Helper()
+		return runWithTimeout(t, ws, scratch, "1200")
 	}
 
 	// iterion#390: a base-image digest refresh on an unchanged tag. The
@@ -346,6 +351,37 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 		res := run(t, ws, scratch)
 		if !strings.Contains(res.LogTail, "recipe for target build failed") {
 			t.Errorf("splitting the budget for a digest that does not exist lost the failure the old blind tail kept; got %d chars:\n%s", len(res.LogTail), res.LogTail)
+		}
+	})
+
+	// Observed live on iterion#386 (2026-08-13): a verify that ran past the
+	// limit ended the RUN, not the build. TimeoutExpired was caught, and then
+	// the handler itself raised — e.output is bytes on the timeout path even
+	// though text=True was passed, because the decode happens after
+	// communicate() returns normally and a timeout attaches the raw buffer.
+	// bytes + str is a TypeError, so a red build became a crashed node and a
+	// failed_resumable run with a traceback where the verdict should be.
+	t.Run("a verify that overruns is a red build, not a crashed node", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		// Emits output BEFORE hanging, so the partial-output path — the one
+		// that raised — is the path under test.
+		body := "#!/bin/sh\necho 'building the thing'\nsleep 30\n"
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		res := runWithTimeout(t, ws, scratch, "1")
+		if res.Passed {
+			t.Error("a verify that never finished must not certify a build")
+		}
+		if res.ExitCode != 124 {
+			t.Errorf("a timeout is a red build with exit 124, got %d: %s", res.ExitCode, res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "timed out") {
+			t.Errorf("the excerpt must say the verify timed out, else the hold is unexplainable; got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "building the thing") {
+			t.Errorf("the output produced before the timeout is the only clue to where it hung, and it was dropped; got:\n%s", res.LogTail)
 		}
 	})
 }
