@@ -40,8 +40,8 @@ const (
 // studio/src/api/backends.ts.
 type Report struct {
 	// PreferenceOrder is the effective order used when resolving "auto".
-	// Default ["claude_code", "claw"]; codex is intentionally absent so it
-	// is never auto-selected (matches the C030 discouraged stance).
+	// Default ["claude_code", "claw"]; explicit-only CLI backends such as
+	// codex are intentionally absent unless the operator adds them.
 	PreferenceOrder []string `json:"preference_order"`
 	// ResolvedDefault is the first available backend in PreferenceOrder,
 	// or "" when none are available.

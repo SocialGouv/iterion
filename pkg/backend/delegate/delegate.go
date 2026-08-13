@@ -195,7 +195,7 @@ type SystemPromptMode int
 const (
 	// SystemPromptStandalone treats the recipe author's SystemPrompt as the
 	// entire prompt (plus the interaction/ultracode/calibration suffixes).
-	// This is the zero value and the legacy behaviour — used by codex and any
+	// This is the zero value and standalone behaviour — used by codex and any
 	// caller that does not set the mode.
 	SystemPromptStandalone SystemPromptMode = iota
 
@@ -234,7 +234,7 @@ func SystemPromptModeForBackend(backend string) SystemPromptMode {
 	case BackendClaw:
 		return SystemPromptAuthoredBase
 	default:
-		// codex, kimi, and any future/legacy backend: author text is the
+		// codex, kimi, and any future standalone backend: author text is the
 		// whole prompt (kimi folds it into -p; codex replaces).
 		return SystemPromptStandalone
 	}
@@ -1080,7 +1080,7 @@ func (t Task) BuildSystemPrompt() string {
 	var b strings.Builder
 	// The base is the recipe author's prompt, optionally fronted by the
 	// iterion-authored agentic posture when the backend has no native one
-	// (claw). claude_code (SystemPromptAppendToNative) and codex/legacy
+	// (claw). claude_code (SystemPromptAppendToNative) and codex/standalone
 	// (SystemPromptStandalone) both emit author-only here; claude_code then
 	// routes this to --append-system-prompt so the native prompt stays the base.
 	base := t.SystemPrompt

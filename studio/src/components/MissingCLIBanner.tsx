@@ -27,10 +27,10 @@ export default function MissingCLIBanner() {
     desktop
       .detectExternalCLIs(false)
       .then((all) => {
-        // codex is "supported but discouraged" (CLAUDE.md, IR diag C030,
-        // detect.go auto-detect prefs exclude it). A missing codex binary
-        // shouldn't nag the user — Welcome > CliCheck still surfaces it
-        // for those who explicitly opt in.
+        // Codex is an explicit-only backend and is absent from the default
+        // auto-detection order. A missing codex binary therefore should not
+        // nag users who did not select it; Welcome > CliCheck still surfaces
+        // it for operators who opt in.
         if (!cancelled) {
           setState({
             kind: "ok",

@@ -17,7 +17,7 @@ Where those instincts come from differs sharply by backend:
 - **claw** is `claw-code-go`, a bare API client with **no** native
   system prompt of its own — whatever iterion supplies is the entire
   prompt the model sees.
-- **codex** (deprecated) takes the author text as the whole prompt.
+- **codex** takes the author text as the whole prompt.
 
 A single uniform policy breaks one backend or the other. Replacing the
 system prompt on all backends via `--system-prompt` strips Claude
@@ -42,7 +42,7 @@ by [`SystemPromptModeForBackend`](../../pkg/backend/delegate/delegate.go):
   provider-neutral parity substrate (tool-use discipline, plan-then-act,
   evidence-over-guessing, converge-and-stop) — before the author text,
   because claw has no native prompt to append to.
-- **codex / legacy / unset → `SystemPromptStandalone`** (the zero
+- **codex / fallback / unset → `SystemPromptStandalone`** (the zero
   value): the author text is the whole prompt, preserving pre-existing
   behaviour for any Task that never sets the mode.
 

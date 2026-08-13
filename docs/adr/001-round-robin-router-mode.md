@@ -311,23 +311,13 @@ remain valid — cross-pair is a usage pattern, not a DSL constraint.
 
 ---
 
-## Addendum (2026-04-28) — Backend recommendations
+## Addendum (2026-08-13) — Codex backend status
 
-The `round_robin` pattern described above remains fully valid. However,
-the original choice of illustrating alternation with **Claude Code +
-Codex** is no longer recommended: since this ADR was written, accumulated
-experience has shown that the `codex` backend has significant limitations
-(its tool set cannot be configured, it tends to fill its own context
-window, and its integration is less polished). The compiler now emits a
-`C030` warning when a node uses `backend: "codex"`.
-
-For new workflows using `round_robin`, prefer alternating between:
-- `claude_code` (delegate) + the in-process `claw` API with an OpenAI
-  model (`model: "openai/gpt-5.4-mini"`), or
-- two `claude_code` instances configured with different Claude models
-  (e.g. Sonnet vs. Opus), or
-- two direct `claw` models (e.g. `anthropic/claude-...` vs.
-  `openai/gpt-...`).
+The `round_robin` pattern and its **Claude Code + Codex** example remain
+valid. Codex is a supported explicit CLI backend. Its native tool set cannot
+currently be narrowed through Iterion's `tools:` list and it cannot run inside
+Iterion's outer Docker/Kubernetes sandbox; those are documented capability
+boundaries, not a deprecation signal.
 
 Historical examples that used `codex` in this role have been migrated in
 the same commit; see [`e2e/testdata/dual_model_plan_implement_review.bot`](../../e2e/testdata/dual_model_plan_implement_review.bot)

@@ -104,7 +104,7 @@ for prov, r := range resolved { bundle.APIKeys[prov] = string(r.Plaintext) }
 
 The bundle is sealed under a fresh `secrets_ref`; the runner unseals it
 and stamps `bundle.APIKeys` into ctx ([pkg/secrets/credentials.go](../pkg/secrets/credentials.go)).
-The in-process `claw` backend and the `claude_code`, `pi`, and legacy Codex
+The in-process `claw` backend and the `claude_code`, `pi`, and Codex
 delegates read their applicable keys from that credential context. Kimi and
 Grok instead rely on their CLI's own environment/config and do not consume the
 sealed BYOK map.

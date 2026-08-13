@@ -138,11 +138,6 @@ const HINTS: Record<string, DiagnosticHint> = {
     hint: "Multiple edges to the same target define the same `with` key. Resolve the conflict.",
     docsAnchor: "c028",
   },
-  C030: {
-    title: "Codex backend discouraged",
-    hint: "Prefer `claude_code` for tool-using agents or `claw` with an OpenAI model for judges. (C030 is also emitted when `outputs.<node>` points at an unknown node — fix the reference if that's what you're seeing.)",
-    docsAnchor: "c030",
-  },
   C031: {
     title: "outputs ref field not in output schema",
     hint: "Reference a field that exists on the source node's `output` schema.",

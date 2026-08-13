@@ -24,7 +24,7 @@ backend-dependent.
   `TodoWrite` (Claude Code) and `todo_write` (claw). For claw, iterion
   auto-includes `todo_write` for tool-restricted agent nodes and the
   `agenticOperatingPosture` nudges the agent to maintain a list. Pi deliberately
-  has no todo tool, and Kimi, Grok, and legacy Codex do not emit either
+  has no todo tool, and Kimi, Grok, and Codex do not emit either
   recognised tool name; those runs keep the Tasks tab but may have no task-list
   snapshots.
 - **History.** The studio run store keeps an ordered, de-duplicated

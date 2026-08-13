@@ -90,7 +90,7 @@ A prompt orchestrator running on your laptop has the full filesystem and the ful
 The same `.bot` can run on the in-process `claw` backend, Claude Code, or the
 explicit Kimi Code and Grok Build CLI-agent backends. `claw` routes among
 provider models; launch-time selectors can retarget node groups without editing
-the source. The Codex delegate remains only as a deprecated compatibility path.
+the source. Codex remains available as a supported explicit CLI backend.
 See [backends.md](backends.md) and [delegation.md](delegation.md).
 
 A prompt-orchestrator is shaped to one host agent's idioms. Porting it to another is a rewrite.

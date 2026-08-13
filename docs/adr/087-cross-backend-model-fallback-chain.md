@@ -479,7 +479,7 @@ the repo's own stated criterion.
   are excluded — they sit on the legacy `ParseOutput` contract which
   structurally cannot return an error, so no typed trigger can ever fire;
   migrating them to `ParseOutputRich` is a prerequisite for their inclusion,
-  not a follow-on. `codex` is frozen. A **sandboxed `claw` element stays
+  not a follow-on. Codex is not included in this v1 lane. A **sandboxed `claw` element stays
   usable** — the trigger comes from the failing element, and `claude_code`
   types it correctly — but with two bounded limits: it is refused outright
   on a node declaring `permission: ask|deny` (the IPC envelope carries no

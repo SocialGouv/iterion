@@ -324,7 +324,7 @@ CLI, and marketplace. Skills and MCP servers reach both `claude_code` and
 `claw`. Pi also consumes the resolved plugin skills through an explicit
 `--skill` directory in both transports, and the MCP catalog through its embedded
 RPC extension. The remaining work is claw-side discovery/execution for commands,
-named agents, and hooks. Kimi, Grok, and legacy Codex do not consume these
+named agents, and hooks. Kimi, Grok, and Codex do not consume these
 plugin contribution surfaces:
 
 | Claude plugin type | iterion kind | parity note |

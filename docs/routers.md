@@ -43,8 +43,8 @@ router fix_router:
 `model` pins the wire model; it does not itself pin the executor. With no
 `backend`, normal backend credential detection applies (falling back to the
 in-process `claw` backend); set `backend: "claw"` when a direct provider API call
-is required. `claude_code` is the recommended delegated CLI, while `pi`, Kimi,
-and Grok are explicit opt-ins and `codex` is legacy. See
+is required. `claude_code`, Codex, `pi`, Kimi, and Grok are available as
+delegated CLIs; all but `claude_code` are explicit opt-ins. See
 [Delegation](delegation.md) for their trade-offs. If `model` is also absent, the
 router uses its built-in fallback model.
 
@@ -238,7 +238,7 @@ When using `model`, the engine resolves the model identifier through this chain:
 When using `backend`, the named backend (for example `claude_code`, `pi`,
 `kimi`, `grok`, or `claw`) handles the call. Delegated CLIs normally use their
 own login; the in-process `claw` backend uses Iterion's configured provider
-credentials. `codex` remains accepted for compatibility but is discouraged.
+credentials. `codex` is also available as an explicit CLI backend.
 
 ---
 

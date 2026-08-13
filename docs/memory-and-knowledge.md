@@ -183,7 +183,7 @@ re-state it.
 
 Diagnostics: **C131** (invalid value) and **C132** (`on` on a backend that
 ignores it — `claude_code`, `claw` and `pi` consume it; kimi, grok and the
-legacy codex do not). C132 fires per node on an explicit node-level `on`, and
+Codex do not). C132 fires per node on an explicit node-level `on`, and
 once for the workflow when a workflow-level `on` is inert because *nothing* in
 the graph can honour it.
 

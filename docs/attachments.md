@@ -228,7 +228,7 @@ For agent nodes whose backend is `claw`, the executor:
 The blocks land on the Anthropic Messages API as native vision input —
 no tool call needed.
 
-### CLI fallback (`claude_code`, `pi`, Kimi, Grok, legacy Codex)
+### CLI fallback (`claude_code`, Codex, `pi`, Kimi, Grok)
 
 Every CLI-based backend follows the path fallback rather than receiving claw's
 inline multimodal blocks. The

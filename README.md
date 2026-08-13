@@ -87,7 +87,7 @@ More than a DAG runner: Iterion is built for long, autonomous, multi-agent work 
 
 ### Execution & runtime
 
-- 🔌 **Multiple execution backends** — In-process `claw`, the recommended Claude Code delegate, the `pi` coding-agent backend, plus explicit Kimi Code and Grok Build CLI-agent backends; the Codex delegate is deprecated and frozen
+- 🔌 **Multiple execution backends** — In-process `claw`, Claude Code, Codex CLI, `pi`, Kimi Code and Grok Build, selectable per node or workflow
 - 🌐 **Provider routing** — `claw` validates Anthropic and OpenAI as first-class lanes and also wires xAI, Bedrock, Vertex, Foundry, and compatible endpoints with varying test coverage; OpenAI can use an API key or a ChatGPT/Codex OAuth forfait
 - 💰 **Budget enforcement** — Shared, mutex-protected caps on tokens, cost (USD), duration, parallel branches, and loop iterations
 - 🎛️ **Live control and recovery** — Queue operator/supervisor messages, raise budgets, grant loop iterations, retry eligible failures, and resume from persisted checkpoints
@@ -334,7 +334,7 @@ The full documentation lives under [`docs/`](docs/) — start with the [document
 - [docs/routers.md](docs/routers.md) — routing modes deep dive
 - [docs/human-in-the-loop.md](docs/human-in-the-loop.md) — pause for human input; all six interaction values and their node-specific behavior
 - [docs/recipes.md](docs/recipes.md) — preset-driven runs (benchmarking, prompt comparison)
-- [docs/backends.md](docs/backends.md) + [docs/delegation.md](docs/delegation.md) — model/provider routing and the `claw`, Claude Code, `pi`, Kimi, Grok, and legacy Codex execution paths
+- [docs/backends.md](docs/backends.md) + [docs/delegation.md](docs/delegation.md) — model/provider routing and the `claw`, Claude Code, Codex, `pi`, Kimi and Grok execution paths
 - [docs/cursors.md](docs/cursors.md) — prompt-engineering cursors (ambition / depth / rigor / autonomy dials)
 - [docs/attachments.md](docs/attachments.md) — file/image attachments in prompts
 - [docs/privacy_filter.md](docs/privacy_filter.md) — built-in PII redaction tools

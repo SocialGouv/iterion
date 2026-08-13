@@ -36,7 +36,6 @@ const (
 	DiagMissingModelOrBackend DiagCode = "C018" // agent/judge has neither model nor backend
 	DiagDuplicateMCPServer    DiagCode = "C024" // duplicate top-level mcp_server name
 	DiagInvalidMCPServer      DiagCode = "C025" // invalid MCP server config
-	DiagCodexDiscouraged      DiagCode = "C030" // codex backend is supported but discouraged
 	DiagComputeNoExpr         DiagCode = "C039" // compute node has no expressions
 	DiagBadExpr               DiagCode = "C040" // expression failed to parse
 	DiagDuplicateNodeID       DiagCode = "C041" // two declarations share a node ID
@@ -46,11 +45,6 @@ const (
 	DiagBudgetCostInvalid     DiagCode = "C046" // budget.max_cost_usd negative, NaN or Inf
 	DiagResourceCapInvalid    DiagCode = "C194" // resources.<name> capacity ≤ 0
 )
-
-// codexBackendName is the literal value of the discouraged backend.
-// Hardcoded here (rather than imported from delegate/) to avoid an ir → delegate
-// dependency, which the package layout intentionally forbids.
-const codexBackendName = "codex"
 
 // Severity indicates the severity of a diagnostic.
 type Severity int
@@ -184,20 +178,6 @@ func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, 
 // inline diagnostic badges can match attributed diagnostics to the right edge.
 func edgeID(from, to string) string {
 	return from + "->" + to
-}
-
-// warnCodexDiscouraged emits a C030 warning when a node uses the codex backend.
-// Codex is still supported but has known limitations (cannot configure tool set,
-// tends to fill its own context window, weaker iterion integration). New
-// workflows should prefer 'claude_code' for tool-using agents or 'claw' with an
-// OpenAI model (e.g. model: "openai/gpt-5.4-mini") for judges/reviewers.
-func (c *compiler) warnCodexDiscouraged(kind, name, backend string) {
-	if backend != codexBackendName {
-		return
-	}
-	c.warnfAt(DiagCodexDiscouraged, name, "",
-		"%s %q uses 'codex' backend which is supported but discouraged: codex cannot configure its tool set, tends to fill its context window, and has weaker integration; prefer 'claude_code' for tool-using agents or 'claw' with an OpenAI model (e.g. model: \"openai/gpt-5.4-mini\") for judges/reviewers",
-		kind, name)
 }
 
 // compileSandboxBlock translates an AST SandboxBlock (which represents
@@ -780,8 +760,6 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 	if model == "" && d.Backend == "" && !c.canAutoResolveBackend() {
 		c.errorfAt(DiagMissingModelOrBackend, name, "", "%s %q must set 'model' or 'backend' (or configure a credential the runtime can detect — see docs/backends.md)", kind, name)
 	}
-	c.warnCodexDiscouraged(kind, name, d.Backend)
-
 	// Apply workflow-level interaction default when node doesn't set one.
 	interaction := d.Interaction
 	if interaction == InteractionNone {
@@ -928,7 +906,6 @@ func (c *compiler) compileRouters() {
 			node.Model = model
 			node.Backend = r.Backend
 			node.Provider = r.Provider
-			c.warnCodexDiscouraged("router", r.Name, r.Backend)
 			if r.System != "" {
 				c.validatePromptRef(r.Name, "system", r.System)
 				node.SystemPrompt = r.System

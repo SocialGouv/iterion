@@ -70,7 +70,7 @@ one. The shipped hatches are the pattern to imitate:
   defect.** Not a style preference — a defect, reportable as one.
 - **Prefer to warn over to reject.** When an operator could legitimately want
   the thing, emit a `C1xx` diagnostic and let them proceed. `C128`
-  (`sandbox: none`) and `C030` (deprecated codex backend) are the model;
+  (`sandbox: none`) and `C111` (permission rules without a gate) are the model;
   a hard compile error is for what is genuinely incoherent.
 - **Never silently replace an operator's explicit choice.** The `auto_memory`
   precedent: the run-level override travels all the way onto the cloud queue
@@ -97,7 +97,7 @@ and a migration next quarter.
 | Seam | Interface | Shipped implementations |
 |---|---|---|
 | Node execution | `NodeExecutor` ([engine.go](../pkg/runtime/engine.go)) | `ClawExecutor`, test stubs |
-| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, pi, kimi, grok, legacy codex — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
+| LLM/agent backend | `delegate.Backend` + `SystemPromptModeForBackend` ([delegate.go](../pkg/backend/delegate/delegate.go)) | claw, claude_code, codex, pi, kimi, grok — [ADR-065](adr/065-dedicated-cli-agent-backend.md), [backends](backends.md) |
 | Issue tracker | `tracker.Tracker` ([tracker.go](../pkg/dispatcher/tracker/tracker.go)) | native kanban, GitHub, Forgejo |
 | Git forge | [`pkg/forge`](../pkg/forge/) provider adapters | GitHub, GitLab, Forgejo — [ADR-049](adr/049-forge-as-interchangeable-substrate.md) |
 | Shared memory | `knowledge.MemoryStore` ([pkg/knowledge](../pkg/knowledge/)) | filesystem, Mongo — [memory](memory-and-knowledge.md) |

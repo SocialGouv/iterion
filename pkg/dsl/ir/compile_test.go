@@ -110,6 +110,34 @@ func TestCompileMinimalWorkflow(t *testing.T) {
 	}
 }
 
+func TestCompileCodexBackendWithoutDiscouragementWarning(t *testing.T) {
+	src := `
+schema empty:
+  ok: bool
+
+prompt sys:
+  You are a minimal agent.
+
+prompt usr:
+  Do something.
+
+agent start:
+  backend: "codex"
+  input: empty
+  output: empty
+  system: sys
+  user: usr
+
+workflow codex_supported:
+  entry: start
+  start -> done
+`
+	r := compileFile(t, src)
+	if len(r.Diagnostics) != 0 {
+		t.Fatalf("codex backend should compile without diagnostics, got: %v", r.Diagnostics)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Nodes: all kinds
 // ---------------------------------------------------------------------------

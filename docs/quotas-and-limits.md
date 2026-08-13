@@ -111,7 +111,7 @@ Cost metering is "floor, not invoice":
 
 - **`claw`** (in-process LLM) is priced through `pkg/backend/cost` and
   reports `cost_usd` per call.
-- **Every CLI delegate** (`claude_code`, `pi`, Kimi, Grok, and legacy Codex)
+- **Every CLI delegate** (`claude_code`, Codex, `pi`, Kimi, and Grok)
   contributes its aggregate token total when the CLI reports usage. The cloud
   runner's delegate event has no input/output split, so that total is currently
   booked to `input_tokens`.
