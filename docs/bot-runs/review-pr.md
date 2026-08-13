@@ -8,6 +8,68 @@ pr_url` it also posts an inline forge review and an optional deterministic
 commit-status gate. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-08-13 — first review on a self-hosted GitLab, and the two engine gaps it surfaced (runs 019ffad9 / 019ffadb / 019ffb04)
+
+- Status: **validated on the direct-launch path** (webhook lanes still blocked
+  by the target instance's outbound allowlist — see below).
+- Versions: iterion cloud prod v3.40.3 → v3.40.6 · bot `review-pr` 0.5.7
+- Method: `POST /api/runs` with `repo_url` + `connection_id` (repo-targeted
+  launch, no webhook), mono topology, `gate_context: iterion/review`,
+  `post_to_board=false`. Target: a seeded merge request on a private GitLab
+  19.2.1-ee instance (subgroup path five levels deep), forge credential a
+  **group access token** so the bot posts under its own identity.
+- Result: converged in ~8 min. 7 findings on a 14-line handler (1 critical
+  SSRF-with-echo, 3 high, 1 medium, 2 low), 3 carrying one-click suggestions,
+  posted as inline discussions + one summary note. The merge gate landed as
+  `iterion/review=failure` on the MR head and renders as an external pipeline —
+  advisory, since a GitLab commit status blocks nothing unless the project
+  requires pipelines to succeed.
+- Value: the reviewer **executed** the code it was judging. It copied the
+  handler into a throwaway module outside the repo, reproduced the nil-deref
+  panic and the content-sniffing XSS against a local server, then deleted the
+  copy and showed `git status` clean. It also reported that `go vet` already
+  fails on the branch — a claim about the build gate, not a taste judgement.
+
+### Engine gaps (both fixed in #421, deployed as v3.40.6)
+
+- **A repo-targeted launch could not clone from GitLab.** The runner clones
+  with `http.followRedirects=false` (SSRF hardening) and GitLab 301s a bare
+  repo path to its `.git` twin, so the clone died — through all 8 NATS
+  deliveries, into the DLQ, with the redirect never named as the cause. GitHub
+  serves both spellings, so nothing had ever exercised it. The launch handler
+  now canonicalizes `repo_url` through `forge.CloneURLFor`.
+- **GitLab could not READ commit statuses.** `CommitStatusLister` was
+  GitHub-only, and both consumers fail closed without it: the gate reconciler
+  abstains (a review that dies leaves the required context absent forever) and
+  the zero-touch auto-fix lane refuses to act on a gate it cannot see. So the
+  gate could be *posted* on GitLab but never *repaired* — the exact hole that
+  had already been closed for GitHub. Implemented as the read-side mirror,
+  keeping the newest row per name.
+
+### Lessons for the next run
+
+- **A BYOK key is a team-wide default, so billing isolation is a team
+  boundary.** `secrets.Resolve` returns the first key of a provider visible to
+  the run's team — `is_default` only orders candidates, it does not gate them.
+  Putting a second sponsor's key on a team that already runs other repos
+  silently moves those repos onto that sponsor's credit. A dedicated team per
+  billing owner is the only clean separation. Once a key resolves, the CLI
+  receives exactly `{ANTHROPIC_API_KEY}` and the pod's ambient forfait token is
+  not forwarded, so the fallback cannot quietly take over.
+- **Neither cost nor token counts prove which credential paid.** Both are
+  estimated from token counts whatever the path (cost-signal work, native
+  ticket), `env_keys=` in the spawn log counts the whole SDK env, and
+  `last_used_at` is not serialised by the api-keys endpoint. The provider
+  console is the only local proof.
+- **A self-hosted forge may refuse outbound webhooks by policy.** GitLab's
+  Admin → Network → Outbound allowlist rejects hook creation with a flat
+  `Invalid url given` (HTTP 422) that names neither the setting nor the host —
+  it looks like a malformed URL. Probe it early with a throwaway hook: the
+  whole webhook half of an integration depends on it, while direct launches
+  work regardless.
+- Verifying a status on GitLab needs the **full** SHA: `GET
+  /repository/commits/<short-sha>/statuses` returns `[]` rather than an error.
+
 ## 2026-08-04 — five review passes over the credential pool: what Revi caught that adversarial subagents did not (runs 019fc939 / 019fc94a / 019fc95c / 019fc972 / 019fcb7b)
 
 - Status: **validated, and the highest-value reviewer signal measured so far.**
