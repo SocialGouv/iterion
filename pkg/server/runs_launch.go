@@ -15,6 +15,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -342,6 +343,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 		repoSecretOverrides = map[string]string{"forge_token": secID}
 		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+		// Canonicalize to the .git clone URL: the runner clones with
+		// http.followRedirects=false (SSRF hardening), and GitLab 301s a
+		// bare repo path to its .git twin — which that git config turns
+		// into a hard clone failure. GitHub serves both, so the trap only
+		// springs on GitLab; canonicalizing here keeps the launch request
+		// tolerant of either spelling.
+		req.RepoURL = forge.CloneURLFor(base, repoProjectPath)
 	}
 
 	// A launch that targets a pull request gets the repo's launch policy (its
