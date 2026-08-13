@@ -28,7 +28,13 @@ COPY studio/package.json studio/.npmrc* ./studio/
 # warm daemon it persists across builds, so a source-only change (which
 # invalidates this layer) still resolves every dep from the warm store instead
 # of re-fetching from the registry. --store-dir pins it onto the mount.
+# Node 25+ no longer distributes Corepack (nodejs/TSC#1697), so the official
+# node:2x images ship none — install it from npm before enabling it. The pnpm
+# version itself still comes from the root package.json `packageManager` pin,
+# which corepack resolves; only corepack itself is pinned here.
 RUN --mount=type=cache,target=/pnpm-store \
+    --mount=type=cache,target=/root/.npm \
+    npm install -g corepack@0.35.0 && \
     corepack enable && \
     corepack pnpm install --frozen-lockfile --prefer-offline \
         --store-dir=/pnpm-store \
@@ -184,7 +190,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
  && chmod +x /usr/local/bin/kubectl \
  && /usr/local/bin/kubectl version --client --output=yaml > /dev/null
 
-# Copy the Node 22 runtime + the pinned LLM CLIs from stage 3.
+# Copy the Node 26 runtime + the pinned LLM CLIs from stage 3.
 #
 # We deliberately do NOT carry over `npm` / `npx` nor the system
 # /usr/local/lib/node_modules from the build image:
