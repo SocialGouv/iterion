@@ -246,7 +246,9 @@ attachment store: a tool node prints
 `[iterion] attachment=<path> name=<n>` on stdout, the runtime persists
 the file, and the gate's inbound payload previews it: images, audio and
 video as media; JSON, markdown and other text inline (folded when long).
-Anything else stays a download. See
+`.xml` / `.html` / `.svg` / `.js` stay a download (`neutralizeActiveMIME`
+downgrades them; the studio keeps the same carve-out). Anything else
+stays a download. See
 [attachments.md](attachments.md#a-tool-node-hands-over-a-file-it-produced).
 
 A path alone is never enough: it points at the host or the sandbox
