@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
 import { ImagePreviewDialog } from "@/views/PipelineBoard/ImagePreview";
-import { Spinner } from "@/components/ui";
+import { CopyButton, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatBytes } from "@/lib/format";
 import type { GateInboundFileRef } from "@/lib/gateInbound";
@@ -179,31 +179,47 @@ const COLLAPSED_MAX_HEIGHT = "16rem";
 const MARKDOWN_PARSE_BUDGET = 20_000;
 
 function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPreviewKind>>; text: string }) {
-  const shown = useMemo(() => (kind === "json" ? prettyJSON(text) : text), [kind, text]);
+  // Skip pretty-print past the parse budget: a 50 MiB JSON.parse during
+  // render would freeze the gate before the fold can help.
+  const shown = useMemo(() => {
+    if (kind !== "json" || text.length > MARKDOWN_PARSE_BUDGET) return text;
+    return prettyJSON(text);
+  }, [kind, text]);
   const lines = shown.split("\n");
-  const long = lines.length > COLLAPSE_AFTER_LINES;
+  const long = lines.length > COLLAPSE_AFTER_LINES || shown.length > MARKDOWN_PARSE_BUDGET;
   const [open, setOpen] = useState(!long);
   const folded = long && !open;
-  const heavy = kind === "markdown" && shown.length > MARKDOWN_PARSE_BUDGET;
+  const heavyMd = kind === "markdown" && shown.length > MARKDOWN_PARSE_BUDGET;
+  // Markdown keeps the CSS clamp (slicing mid-fence swallows the rest
+  // of the payload). json/text slice so a multi-MB log never enters the
+  // DOM while folded — matching GateInboundPayload.JSONBlock.
+  const preview = folded
+    ? lines.slice(0, COLLAPSE_AFTER_LINES).join("\n").slice(0, MARKDOWN_PARSE_BUDGET)
+    : shown;
 
   return (
     <div className="min-w-0">
-      <div
-        className={folded ? "relative overflow-hidden" : undefined}
-        style={folded ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
-      >
-        {kind === "markdown" && !(folded && heavy) ? (
-          <MarkdownText value={shown} size="sm" />
-        ) : (
-          <pre className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded bg-surface-0 p-1.5 font-mono text-micro leading-relaxed">
-            {folded && heavy ? shown.slice(0, MARKDOWN_PARSE_BUDGET) : shown}
-          </pre>
-        )}
-        {folded && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-b from-transparent to-surface-1"
-          />
+      <div className={kind === "json" ? "flex items-start gap-1" : undefined}>
+        <div
+          className={folded ? "relative min-w-0 flex-1 overflow-hidden" : "min-w-0 flex-1"}
+          style={folded ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
+        >
+          {kind === "markdown" && !(folded && heavyMd) ? (
+            <MarkdownText value={shown} size="sm" />
+          ) : (
+            <pre className="min-w-0 overflow-x-auto whitespace-pre-wrap break-words rounded bg-surface-0 p-1.5 font-mono text-micro leading-relaxed">
+              {folded ? preview : shown}
+            </pre>
+          )}
+          {folded && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-b from-transparent to-surface-1"
+            />
+          )}
+        </div>
+        {kind === "json" && (
+          <CopyButton value={shown} variant="icon" label="Copy JSON" copiedLabel="Copied" />
         )}
       </div>
       {long && (
@@ -214,7 +230,11 @@ function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPrev
           className="inline-flex items-center gap-0.5 text-micro text-accent-text hover:underline"
         >
           {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-          {open ? "Show less" : `Show all ${lines.length} lines`}
+          {open
+            ? "Show less"
+            : lines.length > COLLAPSE_AFTER_LINES
+              ? `Show all ${lines.length} lines`
+              : "Show all"}
         </button>
       )}
     </div>
