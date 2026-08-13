@@ -1,5 +1,37 @@
 # Billy — branch-improvement validation
 
+## 2026-08-13 — the write path on a self-hosted GitLab, end to end (run 019ffb9e)
+
+- Status: **validated.** Every link a fixer needs on a forge that had never
+  hosted one: clone, commit in stride, push onto the MR branch, post the
+  verdict, and gate the head it just produced.
+- Versions: iterion cloud prod v3.40.6 · bot `branch-improve-loop` 1.1.1
+- Method: `POST /api/runs` with `repo_url` + `repo_ref` + `connection_id`
+  (no webhook — the target instance blocks outbound hooks), `push_branch` =
+  the MR source branch, `pr_url` set, `gate_context: iterion/review`,
+  `post_to_board=false`. Scope notes named the defects Revi had reported on
+  the same MR (run `019ffadb`); the credential is a **group access token**, so
+  the push authenticates as the bot rather than as a human.
+- Result: converged in ~46 min. **18 commits pushed** onto the MR branch, one
+  concern each (`fix(fetch): handle http.Get error instead of dereferencing a
+  nil response`, `fix(fetch): refuse destinations outside the public
+  internet`, `fix(fetch): ignore HTTP_PROXY so the destination guard cannot be
+  bypassed`, …), interleaved with the tests that pin them. Verdict comment
+  posted on the MR, and `iterion/review=failure — 1 finding(s) unresolved`
+  landed on the new head under the bot identity.
+- Value: it did not stop at the reported list. Revi flagged the missing
+  destination validation; Billy shipped the guard, then found the ways around
+  its own guard — an IPv6 literal embedding a private IPv4 address, a redirect
+  hop landing inside the perimeter, `HTTP_PROXY` steering the dialer past it —
+  and pinned each with a test. It also noticed the handler was never routed
+  and wired it, which is what made the rest reachable.
+- Notes for the next run: the sandbox image carries no `go` on `PATH`; the
+  agent recovered on its own (`export PATH=$PATH:/usr/local/go/bin`) but paid
+  a couple of turns for it — worth a `devbox.json` if this becomes routine.
+  Commits are authored as `iterion-runner[bot]`, distinct from the group-token
+  identity that performs the push; the loop guard keys on the pusher, so the
+  two must not be conflated when reading a branch's history.
+
 ## 2026-08-01 (fin de journée) — the zero-touch lane, and the crash it took to prove it (run 019fbd98)
 
 - Status: **validated after a crash-level fix.** The opt-in lane had never fired once since it was written; its first real firing panicked a server pod.
