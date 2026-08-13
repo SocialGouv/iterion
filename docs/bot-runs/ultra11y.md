@@ -6,6 +6,97 @@ step rules on the criteria a static pass cannot decide; the engine's own
 fail-closed gates refuse the result if that ruling does not hold up. See
 [bots/ultra11y/](../../bots/ultra11y/).
 
+## 2026-08-13 — CI flake, empty-scope façade, then a full walk to fold (run 019ffa09)
+
+- Status: **partial** — deterministic half validated on a live run; `adjudicate`
+  finished (48/48); `fold` fail-closed on the agent's `normativeRef`s. The
+  graph has not walked `deliver` / `publish`. Resumable.
+- Versions: bot v0.1.1 · iterion `b5cfc171` · engine `ultra11y@2.32.0`
+- Method: `iterion run bots/ultra11y/ --var scope_globs='studio/src/**'
+  --var post_to_board=false --var report_dir=/tmp/iterion-ally-audit
+  --sandbox none --max-cost-usd 15`, store in the operator's `.iterion`.
+  Inherited the bot's 2h duration (the 2026-08-12 run had overridden it to 20m).
+- Result: `prepare` → `static_audit` → `worklist` → `adjudicate` in **~18 min**,
+  $8.42, 74 905 tokens. `fold` refused. `failed_resumable`.
+- Value: two load-bearing bugs, one of them the exact empty-scope façade this
+  bot exists to refuse.
+
+### The CI "failure" was not the bot
+
+`helm-lint` on the previous head died downloading `nats-2.14.4.tgz` with a
+GitHub 503. Unrelated to Ally. Rerun went green; the follow-up push's
+`helm-lint` passed in 11s.
+
+### Finding 1 — `audit_args` as a joined string reports 0 files
+
+A first launch (killed after ~90s) produced:
+
+```
+audit_args: studio/src/** --graph
+scope: {inputs: ["studio/src/** --graph"], files: 0}
+findings: 0   conformance: 100%   residual: 52
+banner: The engine found no auditable file in scope.
+```
+
+`studio/src` held 959 files. `prepare` had `' '.join(args)`'d the engine argv
+into a `string`; the tool-node interpolator single-quotes a string as **one**
+argv; ultra11y treated `--graph` as part of the glob. Zero files is exactly
+what a clean repo looks like.
+
+Fix: `audit_args: string[]`, emit the list, not the join. Replay:
+
+| | before | after (this run) |
+|---|---|---|
+| `audit_args` | `"studio/src/** --graph"` | `[studio/src/**, --graph]` |
+| files | 0 | **494** |
+| findings | 0 | **74** |
+| residual | 52 | **48** |
+| static pass rate | 100% | **20%** |
+
+Same shape as the 2026-08-12 dogfood (496 / 74 / 48 / 20%). Guarded by
+`bots/ultra11y_audit_args_test.go`.
+
+### Finding 2 — the fold refuses the technique ids ADJUDICATE.md tells the agent to cite
+
+`adjudicate` (claude_code / opus-5 / high) ruled all 48:
+
+| verdict | n | notes |
+|---|---|---|
+| NC | 4 | 1.3.5 autocomplete, 2.1.4 character shortcuts, 3.1.2 lang of parts, 4.1.3 status messages |
+| NA | 2 | 1.2.4 live captions, 2.5.4 motion actuation |
+| C | 4 | 2.4.3, 2.4.4, 2.4.6, 3.3.2 — each with citations from its own evidence |
+| manual | 38 | 15 `needs-rendered-dom`, 23 `undecidable` |
+
+`fold` / `verify --apply` refused all four NCs:
+
+```
+normativeRef "H98" does not resolve to a test of wcag (fabricated?)
+normativeRef "F99" does not resolve to a test of wcag (fabricated?)
+normativeRef "H58" does not resolve to a test of wcag (fabricated?)
+normativeRef "ARIA19" does not resolve to a test of wcag (fabricated?)
+cited snippet not found in CloudReloginModal.tsx:89  (and 3 siblings)
+```
+
+The engine's own `ADJUDICATE.md` lists those W3C technique codes under
+"you may cite". The gate does not resolve them. Probed: the same
+adjudication, with each `normativeRef` rewritten to the criterion id
+(`"1.3.5"` …) and `snippet` dropped, folds cleanly — `ok: true`,
+`applied: 10`, `stillManual: 38`, zero issues.
+
+The skill + the adjudicator's system prompt now say: cite the criterion
+id, never a technique code; omit `snippet` unless it is an exact
+substring of that `file:line`. Next run should walk `deliver`.
+
+### Lessons for next run
+
+- Do not override `max_duration` down to 20m — 18 min was enough for
+  this 48-criterion SPA once the empty-scope bug was gone.
+- Re-run with the `normativeRef` guidance and confirm `fold` → `deliver`
+  → `publish` (still `post_to_board=false` unless exercising the board).
+- The technique-vs-criterion-id mismatch is also an ultra11y engine
+  contract bug (ADJUDICATE.md vs `verify --apply`); worth a report
+  upstream so the worklist stops pointing at ids the gate rejects.
+
 ## 2026-08-12 — first cut, dogfooded on iterion's own studio SPA (run 019ff5ef)
 
 - Status: **partial** — the deterministic nodes are proven on real code. The one

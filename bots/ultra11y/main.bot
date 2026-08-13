@@ -249,8 +249,11 @@ prompt adjudicate_system:
              harvested evidence cannot be C at all — there was nothing to
              clear, so the honest verdict is "manual" or "NA".
     - "NC" — it is violated. Requires at least one finding with file, line,
-             message AND a `normativeRef` naming the failed test of the
-             active standard. A finding you cannot ground is not a finding.
+             message AND a `normativeRef` that is the criterion id itself
+             (`"1.3.5"`, or `"11.2"` under a country pack). W3C technique
+             codes (H98, F99, ARIA19) do NOT resolve — the fold refuses
+             them as fabricated even when ADJUDICATE.md lists them as
+             "you may cite". A finding you cannot ground is not a finding.
     - "NA" — no such content exists in the audited scope. Requires a
              one-line reason.
     - "manual" — you genuinely cannot decide statically. Requires a reason:

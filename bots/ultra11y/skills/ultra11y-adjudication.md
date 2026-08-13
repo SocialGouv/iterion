@@ -24,7 +24,7 @@ not emit it), the table below is the contract.
 | verdict | means | must carry |
 |---|---|---|
 | `C` | you **verified** it holds | a `justification` **and** `citations[]` naming the harvested evidence you cleared — each anchor resolvable, and drawn from *this criterion's own* `evidence` (matched by file+line) |
-| `NC` | it is violated | ≥1 finding with `file`, `line`, `message` **and** a `normativeRef` naming the failed test of the active standard |
+| `NC` | it is violated | ≥1 finding with `file`, `line`, `message` **and** a `normativeRef` that is the **criterion id itself** (`"1.3.5"` on WCAG, `"11.2"` / `"11.2.1"` on a country pack) |
 | `NA` | no such content exists in scope | a one-line `reason` in the `justification` |
 | `manual` | you genuinely cannot decide statically | `reason`: `needs-rendered-dom` or `undecidable` |
 
@@ -119,13 +119,29 @@ launches no browser.** These are `manual` / `needs-rendered-dom` — always.
 Literal colour pairs in the evidence are a hint, never a verdict: the computed
 value depends on the cascade you cannot evaluate.
 
-## Under a country standard
+## What `normativeRef` actually resolves to
 
-When a pack is active (`--standard rgaa`), you rule on the *pack's* criteria and
-cite the pack's own tests in `normativeRef` — `"11.2"` or `"11.2.1"`, not the
-WCAG id, which looks alike and denotes something unrelated. The pack also
-**defines** the words its tests turn on; look them up rather than reasoning from
-the everyday sense:
+`verify --apply` resolves a `normativeRef` against the **active standard's
+criterion / test ids**, not against the W3C technique catalogue.
+
+- On WCAG: cite the success-criterion id — `"1.3.5"`, `"2.1.4"`, `"4.1.3"`.
+- On a country pack (`--standard rgaa`): cite the pack's own test —
+  `"11.2"` or `"11.2.1"`, never the WCAG id, which looks alike and
+  denotes something unrelated.
+
+`ADJUDICATE.md` lists W3C techniques (`H98`, `F99`, `ARIA19`, `G217`)
+under "you may cite". **The fold gate does not resolve those.** A live
+run that followed that list (H98 / F99 / H58 / ARIA19) was refused in
+full: `normativeRef "H98" does not resolve to a test of wcag
+(fabricated?)`. The same adjudication, with each ref rewritten to the
+criterion id and no `snippet`, folded cleanly (`ok: true`, 10 applied).
+
+If you attach a `snippet`, it must be an exact substring of the cited
+`file:line`. When unsure, omit it — a missing snippet is fine; a
+mismatched one fails the whole fold.
+
+The pack also **defines** the words its tests turn on; look them up
+rather than reasoning from the everyday sense:
 
 ```sh
 <engine_cmd> criteria --standard rgaa --glossary "pertinent"
@@ -150,7 +166,7 @@ re-state the finding with its anchor.
 - Every `C` also carries `citations[]`, each anchor drawn from that criterion's
   own `evidence`. No evidence was harvested ⇒ the verdict is `manual` or `NA`,
   never `C`.
-- Every `NC` finding has a resolvable `file`, `line` and a `normativeRef` that
-  belongs to the criterion being ruled.
+- Every `NC` finding has a resolvable `file`, `line` and a `normativeRef`
+  that is the criterion id (`"1.3.5"`), never a W3C technique code.
 - Every `manual` has one of the two accepted reasons.
 - You did not mark anything `C` that you did not actually verify.
