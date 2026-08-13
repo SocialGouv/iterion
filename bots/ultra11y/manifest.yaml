@@ -58,12 +58,13 @@ forge:
   events: [pull_request, pull_request_comment]
   token_scopes:
     repository: read # clone + read the diff being audited
-    pull_requests: write # publish the findings onto the PR
+    pull_requests: write # reserved — no forge-review POST on this bot yet
   rationale: |
-    In PR mode Ally audits the diff against the base ref and leaves its
-    findings as a `review` artifact; the iterion server publishes them onto
-    the pull request through the team connection's client, so the run itself
-    holds no posting credential.
+    In PR mode Ally audits the diff against the base ref (`pr_url` +
+    `base_ref`). Findings land as the `review` artifact (fixer hand-off
+    by KIND: findings[] + total_findings) and as board issues when
+    `post_to_board` is true. There is no forge-review POST yet — enabling
+    Ally on a PR will not post inline review comments.
 
 # What this bot leaves behind for a later run. Matched to a consumer BY KIND,
 # so a fixer picks up an accessibility review without either manifest naming

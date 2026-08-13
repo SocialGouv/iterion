@@ -35,9 +35,11 @@
 ##   adjudicate    — the ONE agent: rules on what the engine could not
 ##   fold          — DETERMINISTIC gate ON THE AGENT: verify --apply
 ##   deliver       — DETERMINISTIC: dated report + `check` integrity gate +
-##                   the tracker-agnostic issue set
-##   publish       — board issues (full mode); PR mode publishes via the
-##                   `produces: review` hand-off, so this step no-ops there
+##                   the tracker-agnostic issue set + the review-handoff
+##                   shape (findings[] / total_findings)
+##   publish       — board transcription. No-ops ONLY when post_to_board
+##                   is false. PR mode still files the board (the forge
+##                   review POST is not wired yet — do not claim it is).
 ##
 ## ANTI-FAÇADE. Every gate below is a `tool` node, never an LLM judgment.
 ## The one that matters most is `prepare`: an unresolvable engine FAILS the
@@ -53,11 +55,11 @@
 
 secrets:
   ## Forge API token for forge-side needs OTHER than posting — cloning a
-  ## private repo on a cloud runner, chiefly. This bot never posts to a
-  ## forge itself: in PR mode it leaves its findings as the `review`
-  ## artifact (`publish:` on `deliver`) and the iterion server publishes
-  ## them through the team connection's live client. A workspace-mounted
-  ## token freezes at launch and must never be the posting credential.
+  ## private repo on a cloud runner, chiefly. This bot does not POST a
+  ## forge review: findings go to the `review` artifact (`publish:` on
+  ## `deliver`) for a fixer, and to the board when post_to_board is true.
+  ## A workspace-mounted token freezes at launch and must never be the
+  ## posting credential.
   ## Mounted read-only as a FILE (path/env only, never read into a
   ## prompt); `optional: true` so runs without a binding are unaffected.
   forge_token:
@@ -202,11 +204,17 @@ schema deliver_input:
   cap:           int
 
 schema deliver_output:
-  report_path: string
-  issues:      json
-  total:       int
-  capped:      int
-  blocking:    int
+  report_path:    string
+  issues:         json
+  total:          int
+  capped:         int
+  blocking:       int
+  ## Review hand-off shape (pkg/server/webhooks_handoff.go): a fixer
+  ## reads findings[] / total_findings, never issues[]. questions is a
+  ## scalar string so a later tool node cannot space-join it.
+  findings:       json
+  total_findings: int
+  questions:      string
 
 schema publish_input:
   workspace_dir: string
@@ -311,11 +319,10 @@ prompt publish_system:
 
   Read the `iterion-board` skill for the board tools.
 
-  FIRST, two conditions under which you create NOTHING: `Post to board` is
-  false, or `Mode` is `pr` (a pull-request run hands its findings over
-  through the review artifact, not the board). In either case call no board
-  tool at all, return an empty created_issues, and say which condition
-  applied in the summary.
+  FIRST: if `Post to board` is false, create NOTHING. Call no board tool,
+  return an empty created_issues, and say so in the summary. PR mode is
+  NOT a no-op — there is no forge-review POST on this bot yet, so the
+  board is the durable surface on a pull request as well.
 
   You are given an ISSUE SET: one item per criterion, already
   de-duplicated, severity-sorted and capped. For EACH item call
@@ -460,10 +467,10 @@ except Exception as e:
 files = int((a.get('scope') or {}).get('files') or 0)
 findings = len(a.get('findings') or [])
 residual = len(a.get('residualRisks') or [])
-banner = ''
 if files == 0:
-    banner = 'The engine found no auditable file in scope. That is an empty scope, NOT a clean audit — widen scope_globs, or check that this project has a user interface at all.'
-print(json.dumps({'files': files, 'findings': findings, 'conformance_pct': int(a.get('conformancePct') or 0), 'residual': residual, 'audit_path': p, 'banner': banner}))
+    sys.stderr.write('the engine found no auditable file in scope: an empty scope is NOT a clean audit — widen scope_globs, or check that this project has a user interface at all\n')
+    sys.exit(1)
+print(json.dumps({'files': files, 'findings': findings, 'conformance_pct': int(a.get('conformancePct') or 0), 'residual': residual, 'audit_path': p, 'banner': ''}))
 "`
   input: audit_input
   output: audit_output
@@ -596,7 +603,24 @@ def rank(i):
 issues.sort(key=rank, reverse=True)
 kept = issues[:cap]
 blocking = len([i for i in issues if rank(i) == 3 and not i.get('advisory')])
-print(json.dumps({'report_path': os.environ['REPORT'], 'issues': kept, 'total': len(issues), 'capped': max(0, len(issues) - cap), 'blocking': blocking}))
+# One hand-off finding per occurrence so a fixer gets file:line, not a
+# criterion bucket. Shape matches review-pr emit_output.
+handoff = []
+for i in kept:
+    if i.get('advisory'):
+        continue
+    title = str(i.get('title') or ('RGAA ' + str(i.get('criteriaId') or '')))
+    sev = str(i.get('severity') or 'majeur')
+    cat = 'a11y/' + str(i.get('criteriaId') or '')
+    occs = i.get('occurrences') or []
+    if not occs:
+        handoff.append({'file': '', 'line': 0, 'severity': sev, 'category': cat, 'title': title, 'detail': str(i.get('body') or '')[:400], 'suggestion': '', 'confidence': 'high'})
+        continue
+    for o in occs:
+        if not isinstance(o, dict):
+            continue
+        handoff.append({'file': str(o.get('file') or ''), 'line': int(o.get('line') or 0), 'severity': sev, 'category': cat, 'title': title, 'detail': str(o.get('message') or ''), 'suggestion': '', 'confidence': 'high'})
+print(json.dumps({'report_path': os.environ['REPORT'], 'issues': kept, 'total': len(issues), 'capped': max(0, len(issues) - cap), 'blocking': blocking, 'findings': handoff, 'total_findings': len(handoff), 'questions': ''}))
 "`
   input: deliver_input
   output: deliver_output
