@@ -29,6 +29,7 @@ when_to_use: |
   pair it with the bot that does the work.
 author: SocialGouv — copilot/main.bot
 schema_version: 1
+triggers: [copi, copilot]
 
 dispatch_vars:
   initial_message: |-
