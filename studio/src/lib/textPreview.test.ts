@@ -31,12 +31,18 @@ describe("textPreviewKind", () => {
 
   it("does not re-preview types neutralizeActiveMIME downgrades", () => {
     expect(textPreviewKind("application/octet-stream", "data.xml")).toBeNull();
+    expect(textPreviewKind("application/octet-stream", "page.html")).toBeNull();
+    expect(textPreviewKind("application/octet-stream", "icon.svg")).toBeNull();
+    expect(textPreviewKind("", "x.xml")).toBeNull();
+    expect(textPreviewKind("", "page.html")).toBeNull();
+    expect(textPreviewKind("", "icon.svg")).toBeNull();
     expect(textPreviewKind("application/xml", "cfg.xml")).toBeNull();
     expect(textPreviewKind("text/xml", "x")).toBeNull();
     expect(textPreviewKind("text/html", "page.html")).toBeNull();
     expect(textPreviewKind("image/svg+xml", "icon.svg")).toBeNull();
     expect(textPreviewKind("text/javascript", "app.js")).toBeNull();
     expect(textPreviewKind("application/octet-stream", "notes.txt")).toBe("text");
+    expect(textPreviewKind("text/plain", "notes.txt")).toBe("text");
   });
 });
 
