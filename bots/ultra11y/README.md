@@ -77,7 +77,7 @@ like.
 
 | var | default | |
 |---|---|---|
-| `engine_version` | `2.31.2` | the engine, **pinned**. `npx` would otherwise resolve `latest` and what runs could change with no commit anywhere |
+| `engine_version` | `2.32.0` | the engine, **pinned**. `npx` would otherwise resolve `latest` and what runs could change with no commit anywhere |
 | `standard` | `""` | `""` = WCAG 2.2 AA core; `rgaa` = the French référentiel. A new country is an engine pack, not a DSL edit |
 | `scope_globs` | `""` | empty = the whole workspace |
 | `pr_url` / `base_ref` | `""` | set by iterion for any bot launched on a PR; both non-empty ⇒ diff mode |

@@ -1,7 +1,9 @@
 name: ultra11y
 display_name: Ally
 icon: 🦮
-version: 0.1.0
+version: 0.1.1
+## 0.1.1 — audit_args is string[] so `--graph` is its own argv. A joined
+## string was interpolated as one token and the engine reported 0 files.
 ## 0.1.0 — first cut. Engine-backed accessibility auditor: the finding set
 ## comes from ultra11y's static engine (78 machine-detectable checks tied to
 ## the WCAG 2.2 success criteria, measured against the W3C ACT corpus), not

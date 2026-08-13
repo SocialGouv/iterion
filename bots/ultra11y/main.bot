@@ -124,13 +124,18 @@ vars:
 schema prepare_output:
   engine_version: string
   mode:           string
-  audit_args:     string
+  ## string[], not a joined string. A space-joined `audit_args` is
+  ## interpolated as ONE shell token (`'studio/src/** --graph'`), so the
+  ## engine treats `--graph` as part of the glob and reports 0 files —
+  ## the empty-scope façade this bot exists to refuse. string[] expands
+  ## to one quoted argv per element.
+  audit_args:     string[]
   listing:        string
 
 schema audit_input:
   workspace_dir: string
   engine_version: string
-  audit_args:    string
+  audit_args:    string[]
   run_dir:       string
   report_lang:   string
 
@@ -333,7 +338,7 @@ prompt publish_user:
 mcp_server ultra11y:
   transport: stdio
   command: "npx"
-  args: ["-y", "ultra11y@2.31.2", "mcp"]
+  args: ["-y", "ultra11y@2.32.0", "mcp"]
 
 ## ─── Nodes ────────────────────────────────────────────────────────────
 
@@ -387,7 +392,7 @@ for dp, dns, fns in os.walk(ws):
         break
 found = sorted(set(found))[:400]
 listing = 'TOP-LEVEL ENTRIES:\n' + '\n'.join(top) + '\n\nMANIFEST / CONFIG FILES (vendor, build and cache dirs pruned; depth<=4; capped 400):\n' + '\n'.join(found)
-print(json.dumps({'engine_version': got, 'mode': mode, 'audit_args': ' '.join(args), 'listing': listing}))
+print(json.dumps({'engine_version': got, 'mode': mode, 'audit_args': args, 'listing': listing}))
 "`
   output: prepare_output
 
@@ -405,8 +410,11 @@ print(json.dumps({'engine_version': got, 'mode': mode, 'audit_args': ' '.join(ar
 ## a scope meant to cover a whole subtree would silently audit its top
 ## directory and report that as the full audit. The engine has its own
 ## globber that understands the recursive form; set -f is what lets the
-## pattern reach it intact. Word splitting still applies, which is what
-## separates the arguments.
+## pattern reach it intact.
+##
+## `audit_args` is string[] so each flag/glob is its own quoted argv.
+## A joined string would arrive as one token (`studio/src/** --graph`)
+## and the engine would report 0 files — see prepare_output.
 tool static_audit:
   command: `export npm_config_update_notifier=false
 mkdir -p '{{input.run_dir}}'
