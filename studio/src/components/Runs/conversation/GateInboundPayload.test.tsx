@@ -258,6 +258,50 @@ describe("GateInboundPayload", () => {
     expect(screen.getByText(/ch_19/)).toBeTruthy();
   });
 
+  it("pretty-prints a mid-size JSON outline and still slices the fold", async () => {
+    const outline = {
+      subject: "Ulysse",
+      chapters: Array.from({ length: 400 }, (_, i) => ({
+        id: `ch_${i}`,
+        title: `Chapter ${i}`,
+        events: ["land", "sea", "return"],
+      })),
+    };
+    const raw = JSON.stringify(outline);
+    expect(raw.length).toBeGreaterThan(20_000);
+    expect(raw.length).toBeLessThan(2_000_000);
+
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([raw], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline-mid",
+            filename: "outline.json",
+            mime: "application/json",
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /show all \d+ lines/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const pre = container.querySelector("pre");
+    expect(pre?.textContent).toMatch(/\n\s+"subject": "Ulysse"/);
+    expect(pre?.textContent).not.toBe(raw);
+    expect(pre?.textContent?.length ?? 0).toBeLessThanOrEqual(20_000);
+    expect(screen.queryByText(/"id": "ch_399"/)).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText(/"id": "ch_399"/)).toBeTruthy();
+  });
+
   it("folds a single-line attachment larger than the parse budget", async () => {
     const body = "x".repeat(25_000);
     fetchAttachment.mockResolvedValue({
@@ -317,6 +361,37 @@ describe("GateInboundPayload", () => {
     expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
     expect(screen.queryByText("<root/>")).toBeNull();
     expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves a zip as a download-only row", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["PK"], { type: "application/zip" }),
+      contentType: "application/zip",
+    });
+    const createObjectURL = vi.fn(() => "blob:zip");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          bundle: {
+            attachment: "bundle-zip",
+            filename: "bundle.zip",
+            mime: "application/zip",
+          },
+        }}
+        inputFields={[{ name: "bundle", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+    expect(screen.queryByText("PK")).toBeNull();
 
     vi.unstubAllGlobals();
   });

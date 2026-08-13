@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronRightIcon, DownloadIcon, FileIcon } from "@radix-ui/react-icons";
+import { DownloadIcon, FileIcon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
@@ -9,6 +9,13 @@ import { formatBytes } from "@/lib/format";
 import type { GateInboundFileRef } from "@/lib/gateInbound";
 import { prettyJSON, textPreviewKind } from "@/lib/textPreview";
 
+import {
+  COLLAPSE_AFTER_LINES,
+  COLLAPSED_MAX_HEIGHT,
+  JSON_PRETTY_BUDGET,
+  MARKDOWN_PARSE_BUDGET,
+  Toggle,
+} from "./gateInboundFold";
 import MarkdownText from "./MarkdownText";
 
 interface Props {
@@ -172,27 +179,20 @@ export default function GateInboundFile({ runId, file }: Props) {
   );
 }
 
-// Matches GateInboundPayload: enough to read a short plan, short enough
-// that two files plus the answer form still fit on screen.
-const COLLAPSE_AFTER_LINES = 12;
-const COLLAPSED_MAX_HEIGHT = "16rem";
-const MARKDOWN_PARSE_BUDGET = 20_000;
-
 function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPreviewKind>>; text: string }) {
-  // Skip pretty-print past the parse budget: a 50 MiB JSON.parse during
-  // render would freeze the gate before the fold can help.
+  // Skip pretty-print only past JSON_PRETTY_BUDGET. Sharing the 20 KB
+  // markdown budget left a typical outline.json minified.
   const shown = useMemo(() => {
-    if (kind !== "json" || text.length > MARKDOWN_PARSE_BUDGET) return text;
+    if (kind !== "json" || text.length > JSON_PRETTY_BUDGET) return text;
     return prettyJSON(text);
   }, [kind, text]);
-  const lines = shown.split("\n");
+  const lines = useMemo(() => shown.split("\n"), [shown]);
   const long = lines.length > COLLAPSE_AFTER_LINES || shown.length > MARKDOWN_PARSE_BUDGET;
   const [open, setOpen] = useState(!long);
   const folded = long && !open;
   const heavyMd = kind === "markdown" && shown.length > MARKDOWN_PARSE_BUDGET;
-  // Markdown keeps the CSS clamp (slicing mid-fence swallows the rest
-  // of the payload). json/text slice so a multi-MB log never enters the
-  // DOM while folded — matching GateInboundPayload.JSONBlock.
+  // Markdown keeps the CSS clamp (slicing mid-fence swallows the rest).
+  // json/text slice so a multi-MB log never enters the folded <pre>.
   const preview = folded
     ? lines.slice(0, COLLAPSE_AFTER_LINES).join("\n").slice(0, MARKDOWN_PARSE_BUDGET)
     : shown;
@@ -223,19 +223,13 @@ function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPrev
         )}
       </div>
       {long && (
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          className="inline-flex items-center gap-0.5 text-micro text-accent-text hover:underline"
-        >
-          {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-          {open
-            ? "Show less"
-            : lines.length > COLLAPSE_AFTER_LINES
-              ? `Show all ${lines.length} lines`
-              : "Show all"}
-        </button>
+        <Toggle
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          closedLabel={
+            lines.length > COLLAPSE_AFTER_LINES ? `Show all ${lines.length} lines` : "Show all"
+          }
+        />
       )}
     </div>
   );

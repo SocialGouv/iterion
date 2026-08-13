@@ -1,4 +1,3 @@
-import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { useMemo, useState } from "react";
 
 import type { WireSchemaField } from "@/api/runs";
@@ -10,6 +9,12 @@ import {
 } from "@/lib/gateInbound";
 
 import GateInboundFile from "./GateInboundFile";
+import {
+  COLLAPSE_AFTER_LINES,
+  COLLAPSED_MAX_HEIGHT,
+  MARKDOWN_PARSE_BUDGET,
+  Toggle,
+} from "./gateInboundFold";
 import MarkdownText from "./MarkdownText";
 
 interface Props {
@@ -103,22 +108,6 @@ function GateInboundValue({ runId, item }: { runId: string; item: GateInboundIte
   }
 }
 
-// Above this many lines a value is folded by default — enough to read a
-// short plan in place, short enough that three of them still leave the
-// answer form on screen.
-const COLLAPSE_AFTER_LINES = 12;
-
-// Roughly COLLAPSE_AFTER_LINES of prose at the `sm` line-height. The
-// fold is a CSS clamp, so it is deliberately approximate.
-const COLLAPSED_MAX_HEIGHT = "16rem";
-
-// Past this many characters the folded preview skips markdown entirely.
-// A gate can be mapped a whole `git diff` — one of this feature's own
-// motivating cases — and parsing hundreds of KB through react-markdown +
-// rehype-highlight to then clamp it to ~16rem is work thrown away. The
-// operator opts into that cost by expanding.
-const MARKDOWN_PARSE_BUDGET = 20_000;
-
 function CollapsibleText({ text }: { text: string }) {
   const lines = text.split("\n");
   const long = lines.length > COLLAPSE_AFTER_LINES;
@@ -184,28 +173,6 @@ function JSONBlock({ value }: { value: unknown }) {
         />
       )}
     </div>
-  );
-}
-
-function Toggle({
-  open,
-  onToggle,
-  closedLabel,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  closedLabel: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className="inline-flex items-center gap-0.5 text-micro text-accent-text hover:underline"
-    >
-      {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
-      {open ? "Show less" : closedLabel}
-    </button>
   );
 }
 
