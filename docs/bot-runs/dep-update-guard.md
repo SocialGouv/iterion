@@ -7,6 +7,62 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-13 — the batch closes: 11 PRs resolved, and three operational lessons
+
+- Status: **the 10/08 Dependabot batch is fully resolved**, mostly overnight and
+  unattended. Vetty **2.7.5** · iterion **v3.40.3**.
+
+| outcome | PRs |
+|---|---|
+| merged through the lane | #394 (with Vetty's alignment), #393, #397, #399, #416 |
+| green, in the merge queue | #390 |
+| green after a recreate | #395 |
+| held on its own merits | #396 (`hold_security`, mongodb chart 16→19) |
+| closed as obsolete | #391, #398, #415 |
+
+The morning's whole red class — `build/tests not green after alignment` — is
+gone once the base tree could pass its own tests in the sandbox. Nothing was
+tuned in Vetty to achieve it.
+
+**#390 is the case worth reading**, because it is the shape a digest bump takes
+when the audit is doing real work: SLSA v0.2 attestations on both digests naming
+the same upstream source commit, build history identical but for the Debian
+snapshot timestamp, the **Go compiler layer bit-identical** (`diff_id
+033cd45a…`), 257 advisories resolved and 0 introduced. It then disclosed three
+coverage gaps (no daemon for osv-scanner's image mode, no cosign so signatures
+were not cryptographically verified, no crane/skopeo so it used the raw registry
+API) and two things the operator would want but did not ask for: the pin already
+trails upstream by two rebuilds, and upstream dropped mips64le/s390x from the
+manifest list — neither of which this repo's arches care about.
+
+### Three lessons, all operational
+
+- **A batch sharing one lockfile can only merge serially.** Each merge rewrites
+  `pnpm-lock.yaml`, which invalidates every other PR's lockfile alignment: #395
+  and #415 went `DIRTY` *because the lane was working*. Dependabot then refuses
+  to rebase them — "edited by someone other than Dependabot", since Vetty
+  committed there — and `gh pr update-branch` cannot resolve the conflict
+  either. **`@dependabot recreate` is the way out**: it regenerates the branch
+  from current `main` and discards the stale alignment, which Vetty redoes on
+  the fresh head. Expect this on every batch touching a shared lockfile; it is
+  not a failure.
+- **On a merge-queue repo, `autoMergeRequest` is always null**, even when
+  `arm_automerge` reports `armed: true` — arming performs an *enqueue*, not an
+  auto-merge. Reading the wrong field cost two investigations here. The question
+  is answered by:
+
+  ```sh
+  gh api graphql -f query='query { repository(owner:"…", name:"…") {
+    pullRequest(number:390) { isInMergeQueue
+    mergeQueueEntry { state position estimatedTimeToMerge } } } }'
+  ```
+
+- **A flaky non-required check is worse than a failing one.** `cloud-e2e` is
+  green on `main` and failed on #399, #412 and #417 — the last being a
+  documentation-only PR that cannot break it. The queue merges past it, so it
+  blocks nothing; but it makes every PR read `UNSTABLE` and costs a diagnosis
+  each time. Filed as `native:8f1821b3`.
+
 ## 2026-08-12 (evening) — both missing proofs land: an alignment merged, and the advisory path fires blind
 
 - Status: **validated.** The two things this bot had never been seen to do, it
