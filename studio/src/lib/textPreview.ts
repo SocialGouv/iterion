@@ -16,7 +16,8 @@ function extension(filename: string): string {
 }
 
 function mimeType(mime: string): string {
-  return mime.toLowerCase().split(";")[0].trim();
+  const [type] = mime.toLowerCase().split(";");
+  return (type ?? "").trim();
 }
 
 /** How to render an attachment, or null when it is not inline-text. */
