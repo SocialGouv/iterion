@@ -7,10 +7,8 @@ export const COLLAPSED_MAX_HEIGHT = "16rem";
 /** Folded markdown skips react-markdown past this; also the json/text DOM slice. */
 export const MARKDOWN_PARSE_BUDGET = 20_000;
 
-/** Skip prettyJSON only above this. A few MB of parse+stringify is cheap; 20 KB is not. */
-export const JSON_PRETTY_BUDGET = 2_000_000;
-
-/** Do not blob.text() / line-split an attachment larger than this. */
+/** Do not blob.text() / line-split an attachment larger than this.
+ *  Inlined JSON is always pretty-printed; UTF-8 length cannot exceed this. */
 export const TEXT_PREVIEW_BYTE_BUDGET = 2_000_000;
 
 export function Toggle({

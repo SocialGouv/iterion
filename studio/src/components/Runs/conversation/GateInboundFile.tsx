@@ -1,5 +1,5 @@
 import { DownloadIcon, FileIcon } from "@radix-ui/react-icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
 import { ImagePreviewDialog } from "@/views/PipelineBoard/ImagePreview";
@@ -12,7 +12,6 @@ import { prettyJSON, textPreviewKind } from "@/lib/textPreview";
 import {
   COLLAPSE_AFTER_LINES,
   COLLAPSED_MAX_HEIGHT,
-  JSON_PRETTY_BUDGET,
   MARKDOWN_PARSE_BUDGET,
   TEXT_PREVIEW_BYTE_BUDGET,
   Toggle,
@@ -181,12 +180,9 @@ export default function GateInboundFile({ runId, file }: Props) {
 }
 
 function TextBody({ kind, text }: { kind: NonNullable<ReturnType<typeof textPreviewKind>>; text: string }) {
-  // Skip pretty-print only past JSON_PRETTY_BUDGET. Sharing the 20 KB
-  // markdown budget left a typical outline.json minified.
-  const shown = useMemo(() => {
-    if (kind !== "json" || text.length > JSON_PRETTY_BUDGET) return text;
-    return prettyJSON(text);
-  }, [kind, text]);
+  // Inlined bodies are already ≤ TEXT_PREVIEW_BYTE_BUDGET, so pretty-print
+  // every JSON attachment — text.length cannot exceed the byte cap.
+  const shown = useMemo(() => (kind === "json" ? prettyJSON(text) : text), [kind, text]);
   const lines = useMemo(() => shown.split("\n"), [shown]);
   const long = lines.length > COLLAPSE_AFTER_LINES || shown.length > MARKDOWN_PARSE_BUDGET;
   const [open, setOpen] = useState(!long);
@@ -265,9 +261,10 @@ function classifyAttachmentPreview(
  * (media). Same generation discipline as usePreview: a gate can
  * disappear mid-fetch.
  *
- * Callers must give the component a `key` derived from the attachment so
- * a different file remounts it: the hook does not re-enter its loading
- * state when `name` changes under a live instance.
+ * Effect deps are runId+name only. Filename and declaredMime feed
+ * classification through refs. The parent keys this component on the
+ * attachment name, so a different file remounts; changing mime under a
+ * live instance must not revoke a still-rendered ObjectURL.
  */
 function useAttachmentBlob(
   runId: string,
@@ -275,6 +272,11 @@ function useAttachmentBlob(
   filename: string,
   declaredMime: string | undefined,
 ): BlobState {
+  const filenameRef = useRef(filename);
+  const declaredMimeRef = useRef(declaredMime);
+  filenameRef.current = filename;
+  declaredMimeRef.current = declaredMime;
+
   const [state, setState] = useState<BlobState>(() => ({
     blobURL: null,
     textBody: null,
@@ -287,10 +289,21 @@ function useAttachmentBlob(
     if (!name) return;
     let cancelled = false;
     let created: string | null = null;
+    setState({
+      blobURL: null,
+      textBody: null,
+      contentType: "",
+      loading: true,
+      error: null,
+    });
     fetchAttachment(runId, name)
       .then(async ({ blob, contentType }) => {
         if (cancelled) return;
-        const kind = classifyAttachmentPreview(contentType, declaredMime, filename);
+        const kind = classifyAttachmentPreview(
+          contentType,
+          declaredMimeRef.current,
+          filenameRef.current,
+        );
         if (kind) {
           if (blob.size > TEXT_PREVIEW_BYTE_BUDGET) {
             // Too large to decode into a JS string. Fall through to
@@ -338,7 +351,7 @@ function useAttachmentBlob(
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [runId, name, filename, declaredMime]);
+  }, [runId, name]);
 
   return state;
 }

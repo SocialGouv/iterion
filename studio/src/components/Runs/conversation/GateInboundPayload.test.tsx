@@ -350,7 +350,7 @@ describe("GateInboundPayload", () => {
     };
     const raw = JSON.stringify(outline);
     expect(raw.length).toBeGreaterThan(20_000);
-    expect(raw.length).toBeLessThan(2_000_000);
+    expect(raw.length).toBeLessThan(TEXT_PREVIEW_BYTE_BUDGET);
 
     fetchAttachment.mockResolvedValue({
       blob: new Blob([raw], { type: "application/json" }),
