@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -117,8 +118,48 @@ type DiffPayload struct {
 // stderr substrings like "not a git repository" or "exists on disk,
 // but not in" — those strings are localized when the user's locale is
 // non-English (e.g. fr_FR), and the substring match silently fails.
+// gitRedirectionEnv lists the variables that override WHICH repository, index
+// or object store a git command acts on. Every exported function in this
+// package names its repository through an explicit `dir` argument, so honouring
+// these would silently contradict the caller: a `Status(dir)` running under an
+// inherited GIT_INDEX_FILE reports dir's whole tree as deleted-and-untracked,
+// and under GIT_DIR it answers about another repository entirely.
+//
+// Git sets them in every hook environment and under `git rebase --exec` /
+// `git bisect run`, so any process iterion spawns from one inherits them.
+// Identity (GIT_AUTHOR_* / GIT_COMMITTER_*), transport (GIT_SSH_COMMAND,
+// GIT_TERMINAL_PROMPT) and GIT_CONFIG_* are deliberately NOT here: the sandbox
+// path sets those on purpose so an in-container commit has an identity and
+// skips signing.
+var gitRedirectionEnv = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+}
+
+// SanitizeEnv returns env without the redirection variables (see
+// gitRedirectionEnv). Exported because this package is not the only place that
+// shells out to git: anything running a git command against a directory it
+// names itself wants the same guarantee, and a caller that assembles its own
+// environment cannot get it from run() below.
+func SanitizeEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(gitRedirectionEnv, key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 func gitEnv() []string {
-	return append(os.Environ(), "LC_ALL=C", "LANG=C")
+	return append(SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 }
 
 // run executes `git args...` with cwd=dir and returns combined stdout.

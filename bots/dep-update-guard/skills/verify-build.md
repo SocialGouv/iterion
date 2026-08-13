@@ -112,6 +112,17 @@ verdict in production:
   exact invocation — flags included — from the CI step or the task-runner
   target CI calls; when in doubt, run the repo's own umbrella target
   (`task check`, `make ci`) INSTEAD of hand-assembling steps.
+- **Call the target; never transcribe its body.** When a task runner defines
+  the step, `verify.sh` invokes `task <target>` — it does not copy what that
+  target runs. A Taskfile/Makefile command is frequently a multi-line shell
+  block, and a block does not survive being passed as one `sh -c` argument:
+  its newlines and tabs arrive literal, the shell parses a single mangled
+  line, and the script dies on a syntax error that has nothing to do with the
+  dependency under test (observed live: a `gofmt` guard transcribed into
+  `devbox run -- sh -c files=$(find …)` produced ``syntax error near
+  unexpected token `then` `` and held a clean `@types/node` bump whose
+  alignment was already correct). Transcription also silently drops the
+  target's `dir:`, `env:` and prerequisites.
 - **Never looser** is §1b: every gate CI enforces (drift, fmt, lint-as-error
   where CI makes it one) must be present — the precheck rejects a gateless
   script.
@@ -160,6 +171,28 @@ The deterministic gate re-runs **this** script and gates the commit on its real
 exit code — so it must genuinely pass, not merely look plausible. A `verify.sh`
 that omits the §1b regen step when the repo has generated artifacts is the
 canonical way a change lands green-locally / red-in-CI.
+
+**Write the script even when the bump needed no alignment.** "Nothing changed
+in the code, so there is nothing to verify" is the reasoning to refuse: the
+gate proves the repo still builds with the new dependency, which is exactly the
+question a base-image digest refresh or a lockfile-only bump raises. A run that
+produces no script proves nothing and cannot commit — it is sent back to write
+one, and after two attempts the PR is held on a verdict that says the build was
+never established. §1b applies here too: what the script covers is decided by
+the repo's CI, never by which files the bump happened to touch.
+
+A script that runs **nothing** is rejected the same way. An empty or
+comment-only script exits 0, which the gate reads as a verified build — so
+"write one" is never satisfied by writing a placeholder. Shell no-ops (`set`,
+`cd`, `exit`, `true`) do not count as running anything.
+
+**Every line must be a COMMAND.** Never emit a bare path to a source file: the
+shell tries to execute it, answers `Permission denied`, and the run reports a
+red build that never ran. To exercise a set of files, pass them to the repo's
+own runner (`go test ./...`, `pytest tests/`, `npm test`) — the runner takes
+paths, the shell does not. Nothing catches this for you: a script of paths runs,
+fails on every line, and reports a red build for a bump that broke nothing —
+which an operator then has to read the log to disbelieve.
 
 ## 3. Run it, and fix what the just-applied changes broke
 

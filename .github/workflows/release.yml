@@ -140,7 +140,7 @@ jobs:
     steps:
       - name: Get GitHub App Token
         id: token
-        uses: SocialGouv/token-bureau@33e29a1f370f19f6c3d1680d6e7f0aa7c36a3847 # main
+        uses: SocialGouv/token-bureau@453f0eeb5add59489df124a0aedcb20a9b7fb027 # main
         with:
           token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
           audience: socialgouv
@@ -153,7 +153,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
           files: artifacts/*
@@ -186,7 +186,7 @@ jobs:
         # which cosign does not read. cosign sign uploads the signature
         # via the OCI distribution spec and looks up creds in
         # ~/.docker/config.json — without this step it 401s on push.
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

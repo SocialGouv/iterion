@@ -1,0 +1,1022 @@
+## ═══════════════════════════════════════════════════════════════════
+## campaign (Campy) — supervise a WHOLE modernisation programme,
+## lot after lot, holding the separation of powers a human held before.
+##
+## `modernize` carries ONE lot per run, by design: the programme is a suite
+## of runs, not one long run. Someone has to relaunch it, judge whether a run
+## landed anything, execute the ledger requests the worker is forbidden to
+## execute, and decide when the programme is over. This bot is that someone.
+##
+## It was measured before it was written. A full modernisation programme was
+## replayed end to end under a human supervisor, and the interventions were
+## counted: almost all of them were MECHANICAL — a written procedure with a
+## verifiable criterion — and the criterion held on every single act: the
+## observed reference diff equalled the announced one, every time. What was
+## mechanical is what this bot mechanises. What was not stays with a human,
+## through two escalation modes.
+##
+## THE SUPERVISOR IS DETERMINISTIC. There is not one LLM node in this graph:
+## intelligence lives in the child bots, judgement lives in gates, and the
+## supervisor only measures, acts on written announcements, and keeps a
+## journal. A supervisor with opinions would be a third author in a system
+## whose whole safety comes from having exactly two, separated.
+##
+## THE TWO AUTHORITIES, unchanged:
+##   - the worker (`modernize`, run as a subbot) changes the code and NEVER
+##     writes the oracle's references — its own gate enforces that in git;
+##   - the steward (a tool node HERE) re-records references, and ONLY on a
+##     request written to the ledger, ONLY when the observed diff equals the
+##     announced set exactly, with the full counter-test replayed behind.
+##   The window discipline that separation demands — never act while a
+##   worker is writing — is structural here: a subbot node returns only when
+##   the child run is over. What cost a human a suspend/wait/verify ritual
+##   costs this graph nothing.
+##
+## PROGRESS IS JUDGED BY GIT, NEVER BY THE RUN'S OWN JOURNAL. A run that did
+## not move HEAD landed nothing — whatever it says of itself. Two child runs
+## in a row without movement end the campaign: the point where a programme
+## stops moving IS the measurement.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## The programme contract, versioned in the TARGET repo.
+  plan_path: string = ".modernize/plan.yaml"
+  ## Who approves a CONTRACT EXTENSION — a lot the worker added or reshaped
+  ## in the plan, beyond flipping its own status. "bot": accepted in flight,
+  ## listed at the HEAD of the end-of-campaign handoff for review. "human":
+  ## every extension pauses the campaign for an operator, whatever the
+  ## escalation mode — an unapproved extension shapes every lot after it,
+  ## so its approval cannot wait for the end.
+  governance: string [enum: "bot", "human"] = "bot"
+  ## When escalation items other than extensions arise (a rebaseline request
+  ## the steward refused, a mismatched diff, a red counter-test, a dirty
+  ## tree): "interactive" pauses the run there and then; "handoff"
+  ## accumulates them — a blocked lot no longer blocks its dependants, so
+  ## the campaign keeps landing what it still can — and presents everything
+  ## once, at the end.
+  escalation: string [enum: "handoff", "interactive"] = "handoff"
+  ## Upper bound on child runs. The natural stops are the programme being
+  ## exhausted or the stagnation rule; this is the belt over those braces.
+  max_lots: int = 40
+  ## Consecutive child runs without a single new commit that end the
+  ## campaign. Two is the measured value: one still run can be a lot that
+  ## legitimately blocked; two in a row means nothing eligible is landing.
+  stagnation_stop: int = 2
+  ## Forwarded to the child: bounded repair loop per lot.
+  lot_max_passes: int = 4
+
+## ─── Prompts (for the two HUMAN nodes — no LLM reads these) ─────────
+
+prompt escalate_instructions:
+  The campaign supervisor paused because the items under review need an
+  operator. They are listed with their type and evidence.
+
+  Anything that must change, change IN THE REPOSITORY — edit the plan,
+  answer a ledger request by hand, clean the tree — and commit it. The
+  supervisor re-reads reality from git on the next run; nothing you type
+  here edits anything.
+
+  Then answer: `continue` to resume the campaign, or `stop` to end it now
+  and go straight to the final handoff.
+
+prompt review_instructions:
+  The campaign is over and its handoff is committed in the repository. It
+  leads with every contract extension that was accepted in flight under the
+  configured governance — review those first: they are decisions a bot took
+  and the handoff exists so a human re-takes them. Below them: escalations
+  and their answers, the steward's acts, the run journal, the final oracle
+  verdict, and the requalification of blocked lots.
+
+  Acknowledge to close the run.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema preflight_state:
+  campaign_base: string
+  refs_dir: string
+  verify_path: string
+  ledger_path: string
+  notice: string
+
+schema observe_input:
+  base: string
+  ledger_path: string
+
+schema observe_state:
+  before: string
+  moved: bool
+  stagnant: int
+  exhausted: bool
+  extensions: json
+  pending: json
+  notice: string
+
+schema steward_input:
+  before: string
+  moved: bool
+  extensions: json
+  pending: json
+  ledger_path: string
+  verify_path: string
+
+## `pause_required` is computed from configuration and facts, in code the
+## operator can read — not by a model, and not by the child being judged.
+schema steward_state:
+  acts: int
+  escalations: json
+  pause_required: bool
+  notice: string
+
+schema escalate_input:
+  items: string
+  context: string
+
+schema escalate_answer:
+  action: string [enum: "continue", "stop"]
+  note: string
+
+schema answer_state:
+  stop: bool
+
+schema loop_state:
+  proceed: bool
+  reason: string
+
+schema finalize_input:
+  verify_path: string
+
+schema finalize_state:
+  handoff_path: string
+  oracle_green: bool
+  lots_done: int
+  lots_blocked: int
+  requalified: int
+  notice: string
+
+schema review_input:
+  handoff_path: string
+  summary: string
+
+schema review_ack:
+  ack: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+## preflight — refuse early what would make every later verdict a lie.
+##
+## A campaign over no contract is nothing to supervise; a campaign with no
+## behavioural net would report lots "done" against nothing; a dirty tree at
+## start means somebody's work in flight, which a supervisor must never
+## sweep into its own commits or judge as the child's progress. All three
+## REFUSE rather than emit a clean no-op: a supervisor that finishes green
+## having supervised nothing is the blind judge this whole family of bots
+## exists to refuse.
+tool preflight:
+  output: preflight_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_path = os.path.join(ws, {{vars.plan_path}})
+
+    out = {"campaign_base": "", "refs_dir": "", "verify_path": "",
+           "ledger_path": "", "notice": ""}
+
+    def refuse(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    # Same lookup as the worker: yq is declared in this bundle's devbox.json,
+    # which says which version should serve, not that the environment was
+    # realised for this node. The target repo's own profile is consulted
+    # second, before refusing.
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    if not os.path.isfile(plan_path):
+        refuse("no programme contract at %s. A campaign supervises a written "
+               "programme; write the plan first (see the modernize bot's "
+               "plan-contract skill)." % plan_path)
+
+    yq = find_yq()
+    if not yq:
+        refuse("yq is not on PATH and not in the workspace devbox profile, so "
+               "the contract at %s cannot be read." % plan_path)
+    raw = subprocess.run([yq, "-o=json", plan_path], capture_output=True,
+                         text=True, timeout=60)
+    if raw.returncode != 0:
+        refuse("the contract at %s is not parseable: %s" % (plan_path, raw.stderr[-800:]))
+    plan = json.loads(raw.stdout)
+
+    oracle = plan.get("oracle") or {}
+    out["refs_dir"] = oracle.get("refs_dir") or ""
+    oracle_dir = oracle.get("dir") or ".golden-master"
+    out["verify_path"] = oracle.get("verify") or os.path.join(oracle_dir, "verify-oracle.sh")
+    out["ledger_path"] = os.path.join(oracle_dir, "REBASELINE.md")
+
+    if not os.path.isfile(os.path.join(ws, out["verify_path"])):
+        refuse("no behavioural oracle at %s. Supervising a programme without "
+               "a net would report lots done against nothing; build the net "
+               "first (golden-master bot)." % out["verify_path"])
+
+    st = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=60)
+    if st.returncode != 0:
+        refuse("cannot read git status in %s: %s" % (ws, st.stderr[-400:]))
+    # The engine materialises the executing node's own script into the
+    # workspace (.iterion-script-*.py) for the lifetime of the node, so a
+    # script tool ALWAYS sees that one untracked path. Execution machinery,
+    # not work in flight — the one exclusion every status read here carries.
+    dirty = [l for l in st.stdout.splitlines() if l.strip()
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
+    if dirty:
+        refuse("the workspace has %d uncommitted change(s) at campaign start "
+               "(e.g. %s). A supervisor only ever acts between runs on "
+               "committed trees, and it must not adopt work in flight. Commit "
+               "or clean first." % (len(dirty), "; ".join(dirty[:5])))
+
+    rev = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                         capture_output=True, text=True, timeout=30)
+    if rev.returncode != 0:
+        refuse("cannot read HEAD in %s: %s" % (ws, rev.stderr[-400:]))
+    out["campaign_base"] = rev.stdout.strip()
+
+    print(json.dumps(out))
+
+## run_lot — the worker, one lot per child run.
+##
+## No `output:` is read from the child ON PURPOSE: the supervisor believes
+## nothing a run says about itself. Progress is measured in git by the next
+## node, exactly as it would be measured by a third party. No `isolated:`
+## either — the child works on THIS checkout; that is what it is for, and
+## the workspace-safety guard is right to serialise it.
+subbot run_lot:
+  source: "../modernize/main.bot"
+  with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    plan_path:     "{{vars.plan_path}}",
+    max_passes:    "{{vars.lot_max_passes}}"
+  }
+
+## observe — everything the supervisor knows, re-read from git and files.
+##
+## Cross-iteration state lives in the repository (journal, ledger, plan),
+## never in loop-carried messages: a campaign interrupted anywhere can be
+## resumed, or re-run, and re-derive exactly where it stood.
+tool observe:
+  input: observe_input
+  output: observe_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+    import tempfile
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{vars.plan_path}}
+    campaign_dir = os.path.join(ws, ".modernize", "campaign")
+    journal = os.path.join(campaign_dir, "journal.tsv")
+
+    out = {"before": "", "moved": False, "stagnant": 0, "exhausted": False,
+           "extensions": [], "pending": [], "notice": ""}
+
+    def refuse(notice):
+        import sys
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("campaign: %s\n" % notice)
+        raise SystemExit(1)
+
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    def git(*args, timeout=60):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    yq = find_yq()
+    if not yq:
+        refuse("yq disappeared between preflight and observe")
+
+    def read_plan(text):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(text)
+            tmp = f.name
+        try:
+            raw = subprocess.run([yq, "-o=json", tmp], capture_output=True,
+                                 text=True, timeout=60)
+            if raw.returncode != 0:
+                return None
+            return json.loads(raw.stdout)
+        finally:
+            os.unlink(tmp)
+
+    # The segment to judge: from the last supervised state to HEAD now.
+    rows = []
+    if os.path.isfile(journal):
+        with open(journal, encoding="utf-8") as f:
+            lines = [l.rstrip("\n") for l in f if l.strip()]
+        rows = [l.split("\t") for l in lines[1:]]
+    before = rows[-1][5] if rows else {{input.base}}
+    out["before"] = before
+
+    # "Moved" means the CHILD (or an operator intervening in the repo)
+    # landed something — never the supervisor's own bookkeeping. The
+    # journal, escalation-log and rebaseline-act commits carry fixed
+    # prefixes precisely so this measurement can exclude them.
+    seg = git("log", "--format=%s", "%s..HEAD" % before)
+    if seg.returncode != 0:
+        refuse("cannot read the commit segment %s..HEAD: %s"
+               % (before[:12], seg.stderr[-400:]))
+    child_commits = [s for s in seg.stdout.splitlines()
+                     if s.strip()
+                     and not s.startswith("campaign: ")
+                     and not s.startswith("gm(rebaseline): ")]
+    out["moved"] = bool(child_commits)
+
+    # Stagnation counts CHILD segments only, read from the journal the
+    # steward keeps — supervisor commits never count as progress.
+    trailing = 0
+    for r in reversed(rows):
+        if len(r) > 3 and r[3] == "no":
+            trailing += 1
+        else:
+            break
+    out["stagnant"] = 0 if out["moved"] else trailing + 1
+
+    # Eligibility mirrors the worker's plan_read: done AND blocked both land
+    # and satisfy dependants — a blocked lot's debt belongs to the lots that
+    # follow it, so it must not freeze the rest of the programme.
+    cur_text = open(os.path.join(ws, plan_rel), encoding="utf-8").read()
+    plan = read_plan(cur_text)
+    if plan is None:
+        refuse("the contract no longer parses at HEAD — a child run left an "
+               "unreadable plan, which is a stop, not something to skip over")
+    lots = plan.get("lots") or []
+    landed = set(l.get("id") for l in lots if l.get("status") in ("done", "blocked"))
+    eligible = False
+    for lot in lots:
+        if lot.get("status") in ("done", "blocked"):
+            continue
+        if all(d in landed for d in (lot.get("depends_on") or [])):
+            eligible = True
+            break
+    out["exhausted"] = not eligible
+
+    # Contract EXTENSIONS: any change to the plan in this child segment
+    # beyond a lot flipping its own status. The worker is entitled to write
+    # `status` and to add committed reports; adding or reshaping lots is an
+    # act of programme AUTHORSHIP, and who approves that is a configured
+    # policy, not a default.
+    def normative(plan_obj):
+        m = {}
+        for l in (plan_obj or {}).get("lots") or []:
+            m[l.get("id")] = {k: l.get(k) for k in
+                              ("title", "intent", "exit_gate", "depends_on",
+                               "rebaseline_allowed")}
+        return m
+    old_show = git("show", "%s:%s" % (before, plan_rel))
+    old_plan = read_plan(old_show.stdout) if old_show.returncode == 0 else None
+    old_lots, new_lots = normative(old_plan), normative(plan)
+    exts = []
+    for lid in new_lots:
+        if lid not in old_lots:
+            exts.append({"kind": "added", "lot": lid,
+                         "title": (new_lots[lid].get("title") or "")})
+        elif new_lots[lid] != old_lots[lid]:
+            changed = [k for k in new_lots[lid] if new_lots[lid][k] != old_lots[lid][k]]
+            exts.append({"kind": "modified", "lot": lid, "fields": changed})
+    for lid in old_lots:
+        if lid not in new_lots:
+            exts.append({"kind": "removed", "lot": lid})
+    out["extensions"] = exts
+
+    # Pending ledger requests: machine-readable request blocks without a
+    # matching act. A block that does not parse is NOT skipped — a request
+    # the steward cannot read is an escalation, not a silence.
+    ledger = os.path.join(ws, {{input.ledger_path}})
+    requests, acts, failed = [], set(), set()
+    if os.path.isfile(ledger):
+        text = open(ledger, encoding="utf-8").read()
+        for kind in ("request", "act"):
+            marker = "<!-- iterion:rebaseline-%s" % kind
+            pos = 0
+            while True:
+                start = text.find(marker, pos)
+                if start < 0:
+                    break
+                end = text.find("-->", start)
+                if end < 0:
+                    break
+                body = text[start + len(marker):end].strip()
+                pos = end + 3
+                try:
+                    obj = json.loads(body)
+                except ValueError as e:
+                    if kind == "request":
+                        requests.append({"id": "", "malformed": True,
+                                         "error": str(e), "raw": body[:400]})
+                    continue
+                if kind == "request":
+                    requests.append(obj)
+                else:
+                    acts.add(obj.get("id"))
+    # Requests the steward already refused or failed on stay refused: acting
+    # again would loop on the same wall. The record of refusal is committed.
+    esc_log = os.path.join(campaign_dir, "escalations.jsonl")
+    if os.path.isfile(esc_log):
+        with open(esc_log, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                rid = item.get("request_id")
+                if rid:
+                    failed.add(rid)
+    out["pending"] = [r for r in requests
+                      if r.get("malformed") or
+                      (r.get("id") and r["id"] not in acts and r["id"] not in failed)]
+
+    print(json.dumps(out))
+
+## steward — the OTHER authority, mechanised but still separate.
+##
+## It executes a re-record if and only if: the request is well-formed, the
+## requesting lot's contract allows a re-baseline, the tree is clean, and —
+## the criterion that carried an entire supervised campaign — the observed
+## diff equals the announced set EXACTLY. Then the full counter-test replays
+## on the committed tree, and a red there reverts the act. Everything else
+## becomes an escalation item, written and committed before anyone is asked
+## anything.
+tool steward:
+  input: steward_input
+  output: steward_state
+  language: py
+  script: |
+    import datetime
+    import json
+    import os
+    import subprocess
+
+    # bool and json input fields render as JSON literals (true/false/null),
+    # so the three JSON atoms need their Python names before interpolation.
+    true, false, null = True, False, None
+
+    ws = {{vars.workspace_dir}}
+    governance = {{vars.governance}}
+    escalation = {{vars.escalation}}
+    plan_rel = {{vars.plan_path}}
+    ledger_rel = {{input.ledger_path}}
+    verify_rel = {{input.verify_path}}
+    before = {{input.before}}
+    moved = {{input.moved}}
+    extensions = list({{input.extensions}} or [])
+    pending = list({{input.pending}} or [])
+
+    campaign_rel = os.path.join(".modernize", "campaign")
+    campaign_dir = os.path.join(ws, campaign_rel)
+    journal_rel = os.path.join(campaign_rel, "journal.tsv")
+    esc_rel = os.path.join(campaign_rel, "escalations.jsonl")
+    os.makedirs(campaign_dir, exist_ok=True)
+
+    out = {"acts": 0, "escalations": [], "pause_required": False, "notice": ""}
+    items = []
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    def git(*args, timeout=120):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    def sh(cmd, timeout=3600):
+        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr)[-4000:]
+
+    def changed_paths():
+        st = git("status", "--porcelain")
+        paths = []
+        for line in st.stdout.splitlines():
+            if not line.strip():
+                continue
+            p = line[3:].strip()
+            if " -> " in p:
+                p = p.split(" -> ")[-1]
+            p = p.strip('"')
+            # The engine's own materialised node script (.iterion-script-*):
+            # execution machinery, never part of an observed diff.
+            if os.path.basename(p).startswith(".iterion-script-"):
+                continue
+            paths.append(p)
+        return sorted(set(paths))
+
+    def restore_clean(observed):
+        # Only the record's own writes exist: the tree was verified clean
+        # before it ran. Tracked files go back to HEAD; files the record
+        # CREATED are removed one by one — never a recursive clean.
+        git("checkout", "--", ".")
+        for p in observed:
+            full = os.path.join(ws, p)
+            ls = git("ls-files", "--error-unmatch", p)
+            if ls.returncode != 0 and os.path.isfile(full):
+                os.remove(full)
+
+    head_after_child = git("rev-parse", "HEAD").stdout.strip()
+
+    # ── Contract extensions, under the configured governance ──
+    for ext in extensions:
+        if governance == "bot":
+            items.append({"ts": now, "type": "contract_extension",
+                          "disposition": "accepted_in_flight",
+                          "detail": ext,
+                          "note": "listed at the head of the handoff for review"})
+        else:
+            items.append({"ts": now, "type": "contract_extension",
+                          "disposition": "pending_approval", "detail": ext})
+
+    # ── Pending ledger requests ──
+    tree_dirty = bool(changed_paths())
+    if pending and tree_dirty:
+        items.append({"ts": now, "type": "dirty_tree",
+                      "detail": changed_paths()[:20],
+                      "note": "a child run left uncommitted changes; the "
+                              "steward acts only on committed trees, so every "
+                              "pending request is deferred"})
+    elif pending:
+        # The plan tells the steward which lots may request a re-baseline.
+        plan_lots = {}
+        try:
+            import shutil
+            yq = shutil.which("yq") or os.path.join(
+                ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+            raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
+                                 capture_output=True, text=True, timeout=60)
+            if raw.returncode == 0:
+                for l in (json.loads(raw.stdout).get("lots") or []):
+                    plan_lots[l.get("id")] = l
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            items.append({"ts": now, "type": "plan_unreadable", "detail": str(e)})
+            plan_lots = None
+
+        for req in pending if plan_lots is not None else []:
+            rid = req.get("id") or "?"
+            if req.get("malformed") or not req.get("id"):
+                items.append({"ts": now, "type": "malformed_request",
+                              "request_id": rid, "detail": req})
+                continue
+            expected = sorted(set(req.get("expected_paths") or []))
+            if not expected:
+                items.append({"ts": now, "type": "malformed_request",
+                              "request_id": rid,
+                              "detail": "a request that announces no expected "
+                                        "paths cannot be verified"})
+                continue
+            lot = plan_lots.get(req.get("lot"))
+            if lot is None:
+                items.append({"ts": now, "type": "refused_unknown_lot",
+                              "request_id": rid, "detail": req.get("lot")})
+                continue
+            if not lot.get("rebaseline_allowed"):
+                items.append({"ts": now, "type": "refused_by_contract",
+                              "request_id": rid, "lot": req.get("lot"),
+                              "note": "the lot declares rebaseline_allowed: "
+                                      "false — that flag is the assertion "
+                                      "being tested, and a request against it "
+                                      "means the lot overflowed"})
+                continue
+
+            code, log = sh("%s --record" % verify_rel)
+            observed = changed_paths()
+            if code != 0:
+                restore_clean(observed)
+                items.append({"ts": now, "type": "record_failed",
+                              "request_id": rid, "detail": log[-1500:]})
+                continue
+            if observed != expected:
+                restore_clean(observed)
+                items.append({"ts": now, "type": "diff_mismatch",
+                              "request_id": rid,
+                              "expected": expected, "observed": observed,
+                              "note": "the observed diff is not the announced "
+                                      "one — nothing was committed"})
+                continue
+
+            # Observed == announced: the act is committed, then judged.
+            sha_before_act = git("rev-parse", "HEAD").stdout.strip()
+            act = {"id": rid, "lot": req.get("lot"),
+                   "recorded_paths": observed, "ts": now}
+            with open(os.path.join(ws, ledger_rel), "a", encoding="utf-8") as f:
+                f.write("\n<!-- iterion:rebaseline-act\n%s\n-->\n"
+                        % json.dumps(act, ensure_ascii=False))
+            git("add", "--", ledger_rel, *observed)
+            git("commit", "-m",
+                "gm(rebaseline): act %s — %d reference(s) re-recorded, "
+                "observed diff matches the announcement" % (rid, len(observed)))
+
+            gate_code, gate_log = sh(verify_rel)
+            if gate_code == 0:
+                verdict = {"id": rid, "gate": "green",
+                           "sha": git("rev-parse", "HEAD").stdout.strip(), "ts": now}
+                with open(os.path.join(ws, ledger_rel), "a", encoding="utf-8") as f:
+                    f.write("\n<!-- iterion:rebaseline-verdict\n%s\n-->\n"
+                            % json.dumps(verdict, ensure_ascii=False))
+                git("add", "--", ledger_rel)
+                git("commit", "-m",
+                    "gm(rebaseline): full counter-test green after act %s" % rid)
+                out["acts"] += 1
+            else:
+                # The act did not hold: the committed tree it produced fails
+                # its own net. The act is unwound entirely — these commits
+                # are the steward's own, on a tree verified clean before it
+                # touched anything — and the failure is escalated.
+                git("reset", "--hard", sha_before_act)
+                items.append({"ts": now, "type": "gate_red_after_record",
+                              "request_id": rid, "detail": gate_log[-1500:]})
+
+    # ── Journal row + escalation log, committed as supervisor bookkeeping ──
+    if items:
+        with open(os.path.join(ws, esc_rel), "a", encoding="utf-8") as f:
+            for item in items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    journal = os.path.join(ws, journal_rel)
+    if not os.path.isfile(journal):
+        with open(journal, "w", encoding="utf-8") as f:
+            f.write("run\tts\tbefore\tmoved\tacts\tafter\n")
+    with open(journal, encoding="utf-8") as f:
+        run_n = sum(1 for l in f if l.strip()) # header counts as row 0's slot
+    head_now = git("rev-parse", "HEAD").stdout.strip()
+    with open(journal, "a", encoding="utf-8") as f:
+        f.write("%d\t%s\t%s\t%s\t%d\t%s\n"
+                % (run_n, now, before[:12], "yes" if moved else "no",
+                   out["acts"], head_now[:12]))
+    add = ["add", "--", journal_rel]
+    if items:
+        add.append(esc_rel)
+    git(*add)
+    git("commit", "-m", "campaign: run %d — child moved=%s, steward acts=%d, "
+        "escalations=%d" % (run_n, "yes" if moved else "no", out["acts"], len(items)))
+
+    # ── Pause policy — configuration applied to facts, in readable code ──
+    needs_approval = any(i.get("disposition") == "pending_approval" for i in items)
+    other_items = [i for i in items if i.get("type") != "contract_extension"]
+    out["pause_required"] = bool(
+        needs_approval or (escalation == "interactive" and other_items))
+    out["escalations"] = items
+    out["notice"] = ("%d act(s), %d escalation item(s)" % (out["acts"], len(items)))
+    print(json.dumps(out))
+
+## escalate — the in-flight window, when configuration asks for one.
+##
+## The answer edits nothing: an operator who wants to change the programme
+## changes the repository and commits, exactly as a human supervisor did.
+## The pause IS the window; git carries the intervention.
+human escalate:
+  description: "Campaign escalation — operator review during the run"
+  input: escalate_input
+  output: escalate_answer
+  instructions: escalate_instructions
+  interaction: human
+
+## record_answer — the operator's answer goes where every other fact went:
+## in the committed record, before the campaign moves again.
+tool record_answer:
+  input: escalate_answer
+  output: answer_state
+  language: py
+  script: |
+    import datetime
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    action = {{input.action}}
+    note = {{input.note}}
+    esc_rel = os.path.join(".modernize", "campaign", "escalations.jsonl")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    with open(os.path.join(ws, esc_rel), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": now, "type": "operator_answer",
+                            "action": action, "note": note},
+                           ensure_ascii=False) + "\n")
+    subprocess.run(["git", "-C", ws, "add", "--", esc_rel],
+                   capture_output=True, text=True, timeout=60)
+    subprocess.run(["git", "-C", ws, "commit", "-m",
+                    "campaign: operator answered escalation — %s" % action],
+                   capture_output=True, text=True, timeout=60)
+    print(json.dumps({"stop": action == "stop"}))
+
+## loop_gate — continue while something can still land. Pure conjunction of
+## measured facts; the fall-through also serves loop and budget exhaustion.
+compute loop_gate:
+  output: loop_state
+  expr:
+    proceed: "!outputs.observe.exhausted && outputs.observe.stagnant < vars.stagnation_stop"
+    reason: "if(outputs.observe.exhausted, 'programme exhausted: no eligible lot remains', if(outputs.observe.stagnant >= vars.stagnation_stop, 'stagnation: consecutive child runs landed nothing', 'continue'))"
+
+## finalize — the campaign's verdict, computed the way a third party would.
+##
+## Final counter-test on the committed tree; requalification of blocked
+## lots (each DISTINCT gate command played once on the final tree, the
+## verdict projected per lot — a lot blocked mid-programme often blocks on
+## a cause the finished tree has closed); handoff written and committed,
+## extensions first.
+tool finalize:
+  input: finalize_input
+  output: finalize_state
+  language: py
+  script: |
+    import datetime
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    plan_rel = {{vars.plan_path}}
+    verify_rel = {{input.verify_path}}
+    campaign_rel = os.path.join(".modernize", "campaign")
+    campaign_dir = os.path.join(ws, campaign_rel)
+    handoff_rel = os.path.join(campaign_rel, "handoff.md")
+    requal_rel = os.path.join(campaign_rel, "requalification.json")
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+    out = {"handoff_path": handoff_rel, "oracle_green": False,
+           "lots_done": 0, "lots_blocked": 0, "requalified": 0, "notice": ""}
+
+    def git(*args, timeout=120):
+        return subprocess.run(["git", "-C", ws] + list(args),
+                              capture_output=True, text=True, timeout=timeout)
+
+    def sh(cmd, timeout=3600):
+        p = subprocess.run(cmd, shell=True, cwd=ws, capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr)[-4000:]
+
+    def find_yq():
+        import shutil
+        found = shutil.which("yq")
+        if found:
+            return found
+        cand = os.path.join(ws, ".devbox", "nix", "profile", "default", "bin", "yq")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+        return ""
+
+    head = git("rev-parse", "HEAD").stdout.strip()
+    # Same exclusion as preflight: the engine's own materialised node script
+    # is execution machinery, not an uncommitted change.
+    dirty = [l for l in git("status", "--porcelain").stdout.splitlines() if l.strip()
+             and not os.path.basename(l[3:].strip().strip('"')).startswith(".iterion-script-")]
+
+    plan = {}
+    yq = find_yq()
+    if yq:
+        raw = subprocess.run([yq, "-o=json", os.path.join(ws, plan_rel)],
+                             capture_output=True, text=True, timeout=60)
+        if raw.returncode == 0:
+            plan = json.loads(raw.stdout)
+    lots = plan.get("lots") or []
+    done = [l for l in lots if l.get("status") == "done"]
+    blocked = [l for l in lots if l.get("status") == "blocked"]
+    todo = [l for l in lots if l.get("status") not in ("done", "blocked")]
+    out["lots_done"], out["lots_blocked"] = len(done), len(blocked)
+
+    # The gate judges COMMITTED trees only. A dirty tree at the end is
+    # reported as exactly that — a verdict over a tree that exists nowhere
+    # would be worth nothing.
+    verdict_line = ""
+    if dirty:
+        oracle_summary = ("NOT JUDGED: %d uncommitted change(s) at campaign "
+                          "end — the counter-test only judges committed "
+                          "trees. Files: %s" % (len(dirty), "; ".join(dirty[:10])))
+    else:
+        code, log = sh(verify_rel)
+        out["oracle_green"] = code == 0
+        for line in reversed((log or "").splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                verdict_line = line
+                break
+        oracle_summary = ("GREEN (exit 0)" if code == 0
+                          else "RED (exit %d) — tail:\n\n```\n%s\n```" % (code, log[-1500:]))
+
+    # Requalification: distinct commands once each, verdicts projected.
+    requal = {"head": head[:12], "commands": {}, "lots": {}}
+    if not dirty and blocked:
+        cmds = []
+        for l in blocked:
+            for g in (l.get("exit_gate") or []):
+                if g not in cmds:
+                    cmds.append(g)
+        for c in cmds:
+            code, log = sh(c)
+            requal["commands"][c] = {"rc": code, "tail": log[-400:]}
+        for l in blocked:
+            gates = l.get("exit_gate") or []
+            reds = [g for g in gates if requal["commands"][g]["rc"] != 0]
+            if reds:
+                requal["lots"][l.get("id")] = {"verdict": "still blocked",
+                                               "red": reds[0]}
+            else:
+                requal["lots"][l.get("id")] = {"verdict": "REQUALIFIED — every "
+                                               "gate command green on the final tree"}
+        out["requalified"] = sum(1 for v in requal["lots"].values()
+                                 if v["verdict"].startswith("REQUALIFIED"))
+        with open(os.path.join(ws, requal_rel), "w", encoding="utf-8") as f:
+            json.dump(requal, f, indent=1, ensure_ascii=False)
+
+    # The handoff. Extensions FIRST: they are decisions a bot took in
+    # flight, and this document exists so a human re-takes them.
+    esc_items = []
+    esc_path = os.path.join(campaign_dir, "escalations.jsonl")
+    if os.path.isfile(esc_path):
+        with open(esc_path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    esc_items.append(json.loads(line))
+                except ValueError:
+                    esc_items.append({"type": "unparseable_log_line",
+                                      "raw": line[:200]})
+    exts = [i for i in esc_items if i.get("type") == "contract_extension"]
+    others = [i for i in esc_items if i.get("type") != "contract_extension"]
+
+    journal_rows = []
+    jpath = os.path.join(campaign_dir, "journal.tsv")
+    if os.path.isfile(jpath):
+        with open(jpath, encoding="utf-8") as f:
+            journal_rows = [l.rstrip("\n") for l in f if l.strip()]
+
+    h = []
+    h.append("# Campaign handoff — %s" % now)
+    h.append("")
+    h.append("Final tree: `%s`. Programme: %d done, %d blocked, %d not "
+             "reached, of %d lots." % (head[:12], len(done), len(blocked),
+                                       len(todo), len(lots)))
+    h.append("")
+    h.append("## 1. Contract extensions (%d) — review these first" % len(exts))
+    h.append("")
+    if exts:
+        h.append("The worker changed the PROGRAMME itself during the "
+                 "campaign. Under `governance: bot` each one was accepted in "
+                 "flight and is listed here for a human to re-take; under "
+                 "`governance: human` each one paused the campaign and its "
+                 "approval is recorded below.")
+        h.append("")
+        for i in exts:
+            h.append("- `%s` — %s (%s)" % (json.dumps(i.get("detail"),
+                     ensure_ascii=False), i.get("disposition"), i.get("ts")))
+    else:
+        h.append("None: not one lot was added, reshaped or removed beyond "
+                 "its own status field.")
+    h.append("")
+    h.append("## 2. Escalations and answers (%d)" % len(others))
+    h.append("")
+    for i in others:
+        h.append("- `%s`" % json.dumps(i, ensure_ascii=False)[:500])
+    if not others:
+        h.append("None.")
+    h.append("")
+    h.append("## 3. Run journal")
+    h.append("")
+    h.append("```tsv")
+    h.extend(journal_rows)
+    h.append("```")
+    h.append("")
+    h.append("## 4. Final behavioural verdict")
+    h.append("")
+    h.append(oracle_summary)
+    if verdict_line:
+        h.append("")
+        h.append("```json")
+        h.append(verdict_line)
+        h.append("```")
+    h.append("")
+    h.append("## 5. Requalification of blocked lots")
+    h.append("")
+    if requal["lots"]:
+        for lid, v in requal["lots"].items():
+            h.append("- **%s** — %s%s" % (lid, v["verdict"],
+                     (" (red: `%s`)" % v.get("red")) if v.get("red") else ""))
+        h.append("")
+        h.append("Detail (every distinct command, rc and tail): `%s`." % requal_rel)
+    elif dirty:
+        h.append("Not run: the tree was not committed.")
+    else:
+        h.append("No blocked lot to requalify.")
+    h.append("")
+
+    os.makedirs(campaign_dir, exist_ok=True)
+    with open(os.path.join(ws, handoff_rel), "w", encoding="utf-8") as f:
+        f.write("\n".join(h))
+    add = ["add", "--", handoff_rel]
+    if requal["lots"]:
+        add.append(requal_rel)
+    git(*add)
+    git("commit", "-m", "campaign: handoff — %d done, %d blocked, oracle %s"
+        % (len(done), len(blocked),
+           "green" if out["oracle_green"] else ("unjudged" if dirty else "red")))
+
+    out["notice"] = ("%d done, %d blocked (%d requalify on the final tree), "
+                     "oracle %s" % (len(done), len(blocked), out["requalified"],
+                                    "green" if out["oracle_green"] else "not green"))
+    print(json.dumps(out))
+
+## handoff_review — both escalation modes end here: the campaign never
+## closes without offering a human the decisions it took.
+human handoff_review:
+  description: "End-of-campaign handoff review"
+  input: review_input
+  output: review_ack
+  instructions: review_instructions
+  interaction: human
+
+## ─── Workflow ──────────────────────────────────────────────────────
+
+workflow campaign:
+  entry: preflight
+
+  ## No `sandbox:` block (ADR-082): the platform sandboxes by default, and
+  ## the target's toolchain comes from ITS OWN devbox/devcontainer. This
+  ## bundle declares only yq and python3 — the supervisor stays repo- and
+  ## stack-agnostic; every judged command is declared by the target repo.
+
+  ## The child budgets itself (a subbot's budget does not compose with the
+  ## parent's): this budget bounds the SUPERVISOR — its records, gates and
+  ## bookkeeping — plus the campaign's wall clock, which is the one axis
+  ## that does contain the children.
+  budget:
+    max_parallel_branches: 1
+    max_duration: "48h"
+    max_cost_usd: 25
+
+  preflight -> run_lot
+
+  run_lot -> observe with {
+    base:        "{{outputs.preflight.campaign_base}}",
+    ledger_path: "{{outputs.preflight.ledger_path}}"
+  }
+
+  observe -> steward with {
+    before:      "{{outputs.observe.before}}",
+    moved:       "{{outputs.observe.moved}}",
+    extensions:  "{{outputs.observe.extensions}}",
+    pending:     "{{outputs.observe.pending}}",
+    ledger_path: "{{outputs.preflight.ledger_path}}",
+    verify_path: "{{outputs.preflight.verify_path}}"
+  }
+
+  ## Exhaustive pair on one bool: pause, or straight to the loop decision.
+  steward -> escalate when pause_required with {
+    items:   "{{outputs.steward.escalations}}",
+    context: "{{outputs.steward.notice}}"
+  }
+  steward -> loop_gate when not pause_required
+
+  escalate -> record_answer with {
+    action: "{{outputs.escalate.action}}",
+    note:   "{{outputs.escalate.note}}"
+  }
+  record_answer -> finalize when stop with {
+    verify_path: "{{outputs.preflight.verify_path}}"
+  }
+  record_answer -> loop_gate when not stop
+
+  ## Continue while something can still land; the unguarded fall-through
+  ## also serves loop exhaustion and the budget guard's declined back-edge —
+  ## the campaign always leaves through its own handoff.
+  loop_gate -> finalize when not proceed with {
+    verify_path: "{{outputs.preflight.verify_path}}"
+  }
+  loop_gate -> run_lot as campaign_loop("{{vars.max_lots}}")
+  loop_gate -> finalize with {
+    verify_path: "{{outputs.preflight.verify_path}}"
+  }
+
+  finalize -> handoff_review with {
+    handoff_path: "{{outputs.finalize.handoff_path}}",
+    summary:      "{{outputs.finalize.notice}}"
+  }
+  handoff_review -> done

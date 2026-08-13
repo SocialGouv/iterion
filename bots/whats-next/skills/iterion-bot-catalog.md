@@ -260,6 +260,7 @@ dispatcher routes on it), never the persona.
 | Appy | `app-dev` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
+| Campy | `campaign` |
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
@@ -275,6 +276,7 @@ dispatcher routes on it), never the persona.
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
+| Envy | `review-env` |
 | Revi | `review-pr` |
 | Acci | `rgaa-audit` |
 | Depsy | `sec-audit-deps` |
@@ -421,6 +423,42 @@ docs/references/productive-session-patterns.md.
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
 - **Vars**: `base_ref` (string), `baseline` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
+
+### `campaign` — Campy
+
+Supervises a WHOLE modernisation programme, lot after lot, by running the
+modernize bot as a subbot in a bounded loop — and holding the separation
+of powers a human supervisor held before it existed. Progress is judged by
+git, never by what a run says of itself: a child run that did not move
+HEAD landed nothing, and two still runs in a row end the campaign.
+
+The supervisor is DETERMINISTIC: not one LLM node of its own.
+Intelligence lives in the child bots, judgement lives in gates. Its
+steward half executes ledger re-baseline requests if and only if the
+observed reference diff equals the announced set exactly, with the full
+mutation counter-test replayed on the committed tree behind every act —
+a red counter-test unwinds the act. Contract extensions (a lot the worker
+added or reshaped in the plan) fall under a configured governance:
+accepted in flight and listed at the head of the final handoff (default),
+or paused for human approval every time. Other escalations either pause
+the run (interactive) or accumulate into the handoff (default) — and the
+campaign always ends on a committed handoff plus a human review node,
+with blocked lots requalified against the final tree.
+
+- **Use when**:
+  Use to carry a WHOLE programme unattended once its two prerequisites
+  exist: a `.modernize/plan.yaml` contract and a behavioural net under
+  `.golden-master/` (verify-oracle.sh). One `iterion run` then plays lot
+  after lot where a human would have relaunched modernize by hand, judged
+  progress in git, executed announced re-records between runs, and kept the
+  journal.
+  
+  Do NOT use it to run a single lot (run modernize directly), to build the
+  net (golden-master's job), or to decide WHAT to modernise — the programme
+  is a human decision recorded in the contract, and this bot's whole
+  authority over it is measuring whether it advances.
+- **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
+- **Path**: `bots/campaign/main.bot`
 
 ### `dep-update-guard` — Vetty
 
@@ -863,6 +901,39 @@ instead.
 - **Triggers**: revi-converse, ask, converse
 - **Vars**: `base_ref` (string), `converse_question` (string), `discussion_id` (string), `pr_url` (string), `replier` (string), `thread_context` (string), `trigger_note` (string), `workspace_dir` (string)
 - **Path**: `bots/revi-converse/main.bot`
+
+### `review-env` — Envy
+
+Deploys the CURRENT workspace's already-CI-published image to the
+operator-attached platform and hands back a LIVE https URL — a real
+review environment (real TLS, real ingress, real DNS) for end-to-end
+tests, screen and accessibility captures, and human review.
+
+The platform lives ENTIRELY in the attached `deploy-target` skill: this
+bot names no cluster, no cloud, no CLI. The operator enables one
+deploy-target plugin (the platform playbook) and installs one
+`deploy_credential` secret — used strictly by reference, never read —
+and swapping infrastructure means swapping that pair, never the bot.
+The image is the repo's own CI's: this bot never builds or pushes one,
+because a review environment must serve what the forge built from the
+pushed commit. The URL verdict is measured, never believed: a
+deterministic gate probes the reported URL from outside the agent, with
+real certificate verification, and the bot converges only on the
+conjunction deployed && healthy && live.
+
+- **Use when**:
+  Use when a flow needs a live deployed environment of the current
+  workspace: realistic end-to-end testing, behavioural-net captures
+  against a real URL (point the net's base URL at the returned
+  deployed_url), or a reviewable environment per branch. Runs standalone
+  or as a subbot of a larger campaign.
+  
+  Do NOT use it to build or publish images (the repo's CI owns that), to
+  develop features (app-dev's job — whose opt-in deploy phase shares this
+  bot's skill and credential), or on a platform with no deploy-target
+  plugin attached: it will refuse loudly rather than improvise one.
+- **Vars**: `expected_status` (int), `image_ref` (string), `max_deploy_retries` (int), `slug` (string), `workspace_dir` (string)
+- **Path**: `bots/review-env/main.bot`
 
 ### `review-pr` — Revi
 

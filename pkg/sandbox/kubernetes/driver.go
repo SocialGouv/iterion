@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -851,8 +852,12 @@ func workspaceFileTarget(workspace, relPath string) (string, error) {
 // runner made. For a plain clone or a non-git dir it returns hostSrc
 // unchanged. Best-effort: any git failure falls back to hostSrc.
 func resolveCloneRoot(ctx context.Context, hostSrc string) string {
-	out, err := exec.CommandContext(ctx, "git", "-C", hostSrc,
-		"rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	cloneCmd := exec.CommandContext(ctx, "git", "-C", hostSrc,
+		"rev-parse", "--path-format=absolute", "--git-common-dir")
+	// -C names the workspace; an inherited GIT_DIR or GIT_COMMON_DIR would
+	// answer about another repository and resolve the clone root to it.
+	cloneCmd.Env = gitlib.SanitizeEnv(os.Environ())
+	out, err := cloneCmd.Output()
 	if err != nil {
 		return hostSrc
 	}

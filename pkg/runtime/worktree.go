@@ -52,7 +52,8 @@ const gitCmdTimeout = 60 * time.Second
 func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	// Strip what would override the repository this command names for itself.
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "LC_ALL=C", "LANG=C")
 	detachGitProcessGroup(cmd)
 	return cmd, cancel
 }

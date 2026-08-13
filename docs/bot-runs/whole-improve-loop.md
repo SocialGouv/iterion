@@ -13,6 +13,37 @@ continuation loop. See [bots/whole-improve-loop/](../../bots/whole-improve-loop/
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-08-10 — answer-folding proven live: a mid-pass steer pivots the axis (run 019fed38)
+
+- Status: **validated** — closes the one link the morning's twin runs
+  (019fec3e / feature-dev 019fec4c) left unexercised: an operator answer
+  arriving MID-RUN reaches the campaign's message queue and changes its
+  behavior.
+- Versions: bot 2.1.0 · iterion 641839340 (same binary as 019fec3e).
+- Method: same fixture, empty axis again; this time the teach-back was
+  answered ~75s after posting, via the cross-process CLI path
+  (`iterion runs answer … --store-dir …` against a live `iterion run`),
+  with the CORRECTING option ("Wrong axis — I'll tell you what to
+  sweep": docstrings everywhere, no rounding changes) — a steer chosen
+  to be undeniable in the diff, because a "carry on" answer proves
+  nothing.
+- Result: `finished`, 8 commits, gate green, squash-merged (`307ea7d4`).
+  Commit history IS the proof: `01ccd77 refactor(billing): converge
+  amount rounding…` (its self-picked axis, in flight pre-answer), then
+  five `docs(…)` commits (the steered axis) and nothing touching
+  rounding after. `interaction_answered` at 19:50:22; the summary
+  self-attributes the pivot: "AXIS (operator-assigned mid-pass)… the
+  operator's answer arrived after commit 01ccd77; per their instruction
+  I kept that commit and switched sweeps immediately."
+- Value: the full teach-back loop is now live-proven end to end — post
+  without blocking (019fec3e), zero posts on a clear mission (019fec4c),
+  and mid-run folding with an honest keep-what-landed pivot (this run).
+- Lessons for next run: ~75s response latency was comfortably early
+  (only one pre-pivot commit landed); the steering window on a small
+  mission is the first few minutes. The `runs answer` CLI against a
+  live run is the reliable fast path when the studio card isn't at
+  hand.
+
 ## 2026-08-10 — v2.1.0 teach-back-async on a self-picked axis: posted once, never blocked, assumptions honored (run 019fec3e)
 
 - Status: **validated** (the teach-back mechanics — the mid-run answer-folding

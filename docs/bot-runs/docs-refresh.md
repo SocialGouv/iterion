@@ -13,6 +13,104 @@ promises ledgers persist the agent's adjudications; the opt-in
 `open_mr` tail publishes ONE PR. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-08-11 — the two prod weeklies both died on the cost cap, 60 commits stranded (runs 019fc5c7, 019fe9d3)
+
+- Status: **failed to deliver, twice**. Read after the fact, from the runs
+  alone — nobody was watching either Monday. The 2026-07-27 configuration
+  fix landed and worked; the schedule then failed one layer down.
+- Versions: bot 3.5.4 (baked catalog, `/opt/iterion/bots/docs-refresh/main.bot`)
+  · iterion prod `:edge` · backend `claude_code` on the OAuth forfait.
+- Method: prod cloud schedule `306ecbc6`, `0 4 * * 1`, repo
+  `SocialGouv/iterion.git`, vars `{mode: incremental, open_mr: "true"}`.
+
+| Run | Window (UTC) | Passes | Commits | Died at |
+|---|---|---|---|---|
+| `019fc5c7` (08-03) | 04:00 → 20:20 | 4 | 31 | cost_usd 128/120 |
+| `019fe9d3` (08-10) | 04:00 → 21:36 | 3 | 29 | cost_usd **231**/120 |
+
+- Result: `failed_resumable` both times, `final_branch` and `final_commit`
+  empty, no PR either week. The PR tail is the only push path
+  (`mr_gate → forge_auth_probe → finalize_mr`), and a hard budget death at
+  `campaign` never reaches it — so ~60 real alignment commits died with
+  their pods. Neither run was resumed.
+- **The schedule config is NOT the problem this time.** The `vars: null`
+  defect of 2026-07-27 is fixed: both runs carry `mode: incremental` and
+  `open_mr: true`, and the cron fired to the second (04:00:02, 04:00:03).
+  Everything up to the cap worked. What is left is the cap itself.
+
+### Three things the events say
+
+- **The ceiling prices an estimate, not money.** Both runs are forfait:
+  `rate_limited (claude_code): You've hit your weekly limit · resets 7pm
+  (UTC)`, then `session limit · resets 8:40pm`. A subscription bills
+  nothing per call, so `$231` values tokens against a plan already paid
+  for. The gate killed a run that cost zero, and the provider's usage
+  window was already bounding it.
+- **The overshoot is structural, not marginal: +92%.** The budget is
+  checked BETWEEN nodes. Pass 3 started with `budget_warning … used:
+  96.96` — $23 of headroom — for a `campaign` node that is a whole
+  claude_code session and had just cost $63. The engine let a pass start
+  that it could not fund, then discovered the fact $111 later. The 90%
+  hard limit does not catch this: 80.8% is under it.
+- **The usage-window retry works, and is why a 6h budget spans 17h.**
+  Each `USAGE_LIMIT_BLOCKED` parks the run and re-launches the node after
+  the reset (visible as iterations 1 and 2 each starting twice), and
+  parked time does not count against `max_duration`. The retry is not the
+  problem — it is what carried the run far enough to reach the cap.
+
+### Engine hardening
+
+- **Back-edge affordability guard** (this change,
+  [pkg/runtime/loop_budget.go](../../pkg/runtime/loop_budget.go)): a loop's
+  back-edge is declined when the budget cannot fund another iteration,
+  priced by what the previous one consumed, on every capped axis. The run
+  leaves through its own exit path — for Doki `gate → mr_gate`, the same
+  fall-through that already served loop exhaustion — so the PR tail ships
+  what was banked. Applied to 08-10's numbers it declines the third pass
+  at $97/$120 and opens a PR with the 29 commits. Generic: every v2
+  campaign bot banks work in stride and has this exposure. Visible as
+  `budget_warning{reason: loop_budget_guard}`; `ITERION_LOOP_BUDGET_GUARD=off`
+  is the escape hatch.
+- Budget raised 120 → 400 (bot 3.5.5) so the asymptote converges on its own
+  terms. Safe now only because of the guard above — a higher ceiling used
+  to mean a bigger pile of stranded commits.
+- **Proven live on prod, before and after.** A purpose-built probe (a
+  campaign-shaped loop under a token cap it cannot hold) was run on the
+  cloud instance on both sides of the deploy:
+
+  | | Passes | Back-edge at the last crossing | Outcome |
+  |---|---|---|---|
+  | `019feff6` (pre, v3.36.1) | 3 | **taken** with 595 tokens left for a ~2800-token pass | `failed_resumable`, `deliver` never ran |
+  | `019ff041` (post, v3.36.2) | 2 | **declined** — `budget_warning{reason: loop_budget_guard, used: 5779, needed: 2948, remaining: 3221}` | `finished` through `deliver` |
+
+  The loop counter was `passes(6)` in both, so nothing but the budget ended
+  either run. The post-deploy run exits at 64% of its cap — the guard
+  reserves the room the exit path needs, which the pre-deploy run did not
+  have even when it stopped.
+- Revi caught a real defect in the first cut of the guard (1 high, 1
+  medium, 2 low) before it merged: pricing a loop from run start charged a
+  LATE-entered loop for everything before it, which would have turned
+  secured-renovacy's Phase-2 loop into a single-shot body on every run.
+  The fix prices each loop from its own entry. The unit suite could not
+  have seen it — it exercised one loop.
+- **Already fixed, and the runs prove it.** 08-03 shows the resume/refail
+  loop: `campaign` restarted **9 times** at pass 4, 8 `budget_exceeded`
+  events, each turn re-provisioning a sandbox to instantly re-hit the same
+  spent budget. 08-10 has exactly one. `fix/budget-terminal-ack` (#361,
+  merged 08-04) landed between the two — this is its live confirmation.
+
+### Lessons for next run
+
+- **A budget cap is a delivery decision, not just a spend decision.** On a
+  bot that banks work in stride, where the cap falls decides whether the
+  run ships or throws everything away. That is the engine's job to get
+  right, not the operator's to size around — hence the guard.
+- **An unattended schedule needs an alert, not a reader.** Three weeks of
+  Monday runs produced nothing and nobody knew until someone asked. The
+  07-27 lesson was "a green run is not a delivered run"; the sharper
+  version is that `final_commit` empty on a bot with `open_mr: true` is a
+  detectable condition, and nothing is watching for it.
+
 ## 2026-07-31 — closing run 019fae96: where the yield curve turns (run 019fae96, cont.)
 
 - Status: **partial, deliberately stopped**. Never reached `converged`. The run

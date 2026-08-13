@@ -30,6 +30,11 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 	// nil ctx.Done()). Setting it here covers every caller.
 	rs.ctx = ctx
 
+	// Baseline the loop prices before anything runs, so a loop containing
+	// the workflow entry — entered by no edge — is measured from zero.
+	// Covers every caller for the same reason rs.ctx is pinned here.
+	e.baselineUnpricedLoops(rs)
+
 	currentNodeID := startNodeID
 
 	for {
@@ -788,6 +793,12 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 			if !loop.Entries[selected.To] || loop.Body[selected.From] {
 				continue
 			}
+			// Entering the body from outside re-bases the loop's price:
+			// its first back-edge crossing must cost one iteration, not
+			// everything the run spent before this loop existed. Outside
+			// the re-entry branch below — a FIRST entry needs the
+			// baseline just as much, and leaves the counter at 0.
+			markLoopBudget(rs, loopName)
 			if prior, ok := rs.loopCounters[loopName]; ok && prior > 0 {
 				e.logger.Debug("loop %q: re-entered via edge %s→%s — counter reset from %d", loopName, selected.From, selected.To, prior)
 				rs.loopCounters[loopName] = 0
@@ -810,6 +821,10 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 
 	if selected.LoopName != "" {
 		rs.loopCounters[selected.LoopName] = rs.loopCounters[selected.LoopName] + 1
+		// The crossing is committed: price the iteration that starts here
+		// from this point. Done on the SELECTED edge only, so evaluating a
+		// sibling back-edge cannot move the mark or leave it a zero price.
+		markLoopBudget(rs, selected.LoopName)
 		// Rotate snapshots so {{loop.<name>.previous_output}} reads the
 		// snapshot from the PRIOR traversal (one iteration behind), not the
 		// current one. The current iteration's source output is staged in

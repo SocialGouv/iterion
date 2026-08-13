@@ -765,20 +765,21 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 	contributions = p.appendTenantBotSkills(ctx, contributions, tenantID, spec.BotID)
 	msg := &queue.RunMessage{
-		V:              queue.SchemaVersion,
-		Contributions:  contributions,
-		RunID:          runID,
-		WorkflowName:   wf.Name,
-		WorkflowHash:   hash,
-		IRCompiled:     body,
-		Vars:           varsAsAny(spec.Vars),
-		SecretsRef:     creds.secretsRef,
-		AutoMemory:     spec.AutoMemory,
-		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
-		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
-		TenantID:       tenantID,
-		OrgID:          orgID,
-		OwnerID:        ownerID,
+		V:               queue.SchemaVersion,
+		Contributions:   contributions,
+		RunID:           runID,
+		WorkflowName:    wf.Name,
+		WorkflowHash:    hash,
+		IRCompiled:      body,
+		Vars:            varsAsAny(spec.Vars),
+		SecretsRef:      creds.secretsRef,
+		AutoMemory:      spec.AutoMemory,
+		LoopBudgetGuard: spec.LoopBudgetGuard,
+		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
+		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
+		TenantID:        tenantID,
+		OrgID:           orgID,
+		OwnerID:         ownerID,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -958,8 +959,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Answers: spec.Answers,
 			Force:   spec.Force,
 		},
-		SecretsRef: creds.secretsRef,
-		AutoMemory: spec.AutoMemory,
+		SecretsRef:      creds.secretsRef,
+		AutoMemory:      spec.AutoMemory,
+		LoopBudgetGuard: spec.LoopBudgetGuard,
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.

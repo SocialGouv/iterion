@@ -282,6 +282,27 @@ been seen red is a test whose sensitivity is unmeasured.
    metrics, the metrics are wrong.** Don't relax the goal to fit the
    output; sharpen the metrics and re-run.
 
+6. **Never separate the node that MUTATES the workspace from the node
+   that PERSISTS the mutation by a resumable boundary.** A cloud run
+   re-clones its repo on every claim, so a failure between the two —
+   a provider usage window is the ordinary way — resumes on a pristine
+   tree while the checkpoint faithfully replays the mutating node's
+   outputs. The persisting node then reports "nothing to commit", which
+   is indistinguishable from "there was nothing to do", and every
+   downstream verdict states the benign meaning. Either commit inside
+   the mutating node, or make the persisting step reconcile the upstream
+   CLAIM against the tree and treat a contradiction as blocking. Cost of
+   learning this: iterion#400 merged a dependency bump without the
+   breaking-change fix its own aligner had written
+   ([dep-update-guard bilan](bot-runs/dep-update-guard.md), 2026-08-10).
+
+7. **An agent's honest prose is not a signal the graph can act on.** In
+   that same run the commit agent described the missing alignment
+   exactly, and named the recovery — in the comment body. The gate reads
+   a schema field, so the PR merged green anyway. If a discovery has to
+   change an outcome, it must land in a typed output a deterministic
+   node reads; prose is for the human who arrives afterwards.
+
 ---
 
 ## Cross-checked rules from convergent methodologies (IACDM / AI-DLC 2026)

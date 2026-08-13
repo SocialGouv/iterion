@@ -127,6 +127,21 @@ an intact tree, RED on an injected behavioural change, from a checkout of commit
 A pipeline nobody has ever seen go red is a pipeline that has never been tested — the same claim
 the net refuses to accept about a comparator.
 
+## The app the gate observes is the app THE GATE booted from the judged tree
+
+A live pid dates nothing. An application booted by another era answers every probe, and every
+capture taken from it describes a tree that is not the one being judged — in either direction.
+Measured twice: a re-record once captured the previous version's output as the new reference, and
+a supervisor's gate twice replayed GREEN on a tree whose serve had to diverge, because the capture
+reused an app a previous run had left up.
+
+The rule the environment scripts must carry: **reuse a running app iff the content fingerprint of
+everything that PRODUCES the artifact matches the fingerprint recorded at its boot** — sources,
+build files, the declared toolchain lock, the wrapper. Content, never clocks: rebuild decisions by
+mtime lie as soon as files arrive through git, which restores COMMIT timestamps, so a freshly
+imported producer can look older than the artifact it must rebuild. Anything else is app-down and
+a fresh boot from the tree. A residual state is recovered from; it is never reported as a success.
+
 ## Re-baselining, and why it kills nets
 
 A golden master dies by re-baselining. Something breaks three screens, someone regenerates the
@@ -138,6 +153,49 @@ references, and the net becomes a rubber stamp.
 - After any re-baseline, the **entire** mutation counter-test is re-run, held-out set included.
 - A re-baseline touching more than a handful of references in one change is not a re-baseline. It
   is a regression wearing its clothes.
+
+### The ledger's machine-readable blocks — this is the canonical format
+
+Prose in `REBASELINE.md` carries the cause; three HTML-comment blocks carry the protocol, so a
+supervising process can execute the separation of powers mechanically. Other skills point HERE
+rather than restating the format — two declarations drift.
+
+The party that may NOT re-record (a modernisation worker) announces a request:
+
+```
+<!-- iterion:rebaseline-request
+{"id": "R-<lot>-<n>", "lot": "<lot-id>",
+ "cause": "one line: the intended behaviour change that moved these references",
+ "expected_paths": ["exact repo-relative reference paths, read from the oracle's own report"]}
+-->
+```
+
+The party that owns the net answers with an act — written ONLY after re-recording, and ONLY when
+the observed diff equalled `expected_paths` exactly, collateral included — then a verdict once the
+full counter-test replayed green on the committed tree:
+
+```
+<!-- iterion:rebaseline-act
+{"id": "R-<lot>-<n>", "lot": "<lot-id>", "recorded_paths": ["…"], "ts": "…"}
+-->
+<!-- iterion:rebaseline-verdict
+{"id": "R-<lot>-<n>", "gate": "green", "sha": "<commit>", "ts": "…"}
+-->
+```
+
+A request whose `id` has no act is PENDING. `expected_paths` is the announcement the act is judged
+against: observed == announced, exactly, or nothing is committed. An unparseable request block is
+an escalation, never a silence — and a refusal, once recorded by the consuming process, is
+committed state that is not retried.
+
+Two cautions. Never paste an example block into the ledger itself: a consumer reads every block as
+real, fences included. And `expected_paths` are measured, not guessed — the oracle's red report
+names the references that diverged; announce exactly those.
+
+A ledger this campaign emits should OPEN with a short header naming these three blocks. A worker
+under pressure learns a file's convention from the file, and a ledger whose visible entries are
+all prose teaches prose — measured: a model announcement, complete in every way except the block,
+that nothing could act on until an operator transcribed it by hand.
 
 ## The `write` surface — the only one a read-only capture cannot reach
 

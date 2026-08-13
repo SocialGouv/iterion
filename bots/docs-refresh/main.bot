@@ -1146,17 +1146,23 @@ workflow docs_refresh:
   budget:
     max_parallel_branches: 1
     ## Self-orchestrated passes (the campaign fans out sub-auditors on
-    ## ultracode) are COMPREHENSIVE and long — ~70 min / ~$16 per pass
-    ## on a large corpus (live: run 019f8e08 aligned 40 docs in pass 1).
-    ## The old 2h/$60 caps guillotined it mid-pass-2 as a hard
-    ## failed_resumable BEFORE finalize — losing all 40 in-pod commits
-    ## (the exporter only runs on a clean finalize; see the export-on-
-    ## failure engine gap). Give the asymptote room to reach GRACEFUL
-    ## exhaustion (which finalizes + exports) within budget: a few big
-    ## passes fit here, and max_passes below is lowered to match so the
-    ## run exhausts and ships rather than getting axed by the cap.
+    ## ultracode) are COMPREHENSIVE and long — one pass aligns a large
+    ## corpus (live: 40 docs) and costs $16 to $60+ depending on how
+    ## much drift it finds. The ceiling holds max_passes of those, so
+    ## the asymptote converges on its own terms rather than stopping
+    ## wherever the cap happens to fall. A run on an OAuth forfait
+    ## spends no money at all here — the figure prices tokens against a
+    ## subscription already paid for, and the provider's own usage
+    ## window is what actually bounds it.
+    ##
+    ## The engine declines a back-edge it cannot fund (priced by the
+    ## previous pass), so exhausting this ceiling routes the run through
+    ## mr_gate → the PR tail with the alignments it committed in stride.
+    ## Before that guard existed, a cap reached mid-pass was a hard
+    ## failed_resumable BEFORE finalize and every in-pod commit died
+    ## with the clone — the shape of the 2026-08-03 and -08-10 weeklies.
     max_duration: "6h"
-    max_cost_usd: 120
+    max_cost_usd: 400
 
   compaction:
     threshold: 0.9

@@ -165,6 +165,8 @@ const (
 	TokenCompress
 	// AutoMemory backend auto-memory (MEMORY.md) switch: on|off
 	TokenAutoMemory
+	// LoopBudgetGuard back-edge affordability guard switch: on|off
+	TokenLoopBudgetGuard
 	// Permission gate: scalar mode + allow/ask/deny rule lists
 	TokenPermission
 	TokenAllow
@@ -331,6 +333,7 @@ var tokenNames = map[TokenType]string{
 	TokenWorktree:         "worktree",
 	TokenCompress:         "compress",
 	TokenAutoMemory:       "auto_memory",
+	TokenLoopBudgetGuard:  "loop_budget_guard",
 	TokenPermission:       "permission",
 	TokenAllow:            "allow",
 	TokenAsk:              "ask",
@@ -472,6 +475,7 @@ var keywords = map[string]TokenType{
 	"worktree":              TokenWorktree,
 	"compress":              TokenCompress,
 	"auto_memory":           TokenAutoMemory,
+	"loop_budget_guard":     TokenLoopBudgetGuard,
 	"permission":            TokenPermission,
 	"allow":                 TokenAllow,
 	"ask":                   TokenAsk,

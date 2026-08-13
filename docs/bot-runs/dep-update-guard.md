@@ -7,6 +7,355 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-12 (evening) — both missing proofs land: an alignment merged, and the advisory path fires blind
+
+- Status: **validated.** The two things this bot had never been seen to do, it
+  did — within four hours of each other, on the deployed build.
+- Versions: Vetty **2.7.5** · iterion **v3.40.3** (`82ecebe0`), verified in the
+  pod rather than assumed (`kubectl exec deploy/iterion-runner -- grep -m1
+  '^version:' /opt/iterion/bots/dep-update-guard/manifest.yaml`).
+
+### The alignment landed end to end, in a merged PR
+
+**#394 merged at 18:49 as `88600c5fa`**, and the squash commit carries both
+halves of the work:
+
+```
+ pnpm-lock.yaml      | 210 ++++++++++++++++++-------------
+ studio/package.json |   2 +-
+ Co-authored-by: iterion-forge-61934180[bot]
+ * chore(deps): regenerate the pnpm lockfile for @types/node 26.1.2 → 26.2.0
+```
+
+Dependabot moved two lines of `studio/package.json`; **Vetty wrote the other
+210.** CI installs frozen, so without that regeneration the install fails
+before a line compiles — the bump was un-mergeable as opened, and is merged
+now because the bot fixed it. That is the whole contract of this lane, observed
+for the first time from bump to merge commit.
+
+What made the difference was not the alignment — that had worked for weeks (otel
+1.45 on #400, Vite 6→8 on buildkit-operator #19). It was removing the two
+reasons a correct alignment kept being thrown away: a base tree that could not
+pass its own tests inside the sandbox (#413), and a report that could not say
+why (#412).
+
+### The advisory path fires on a bump nothing in the tree betrays
+
+**#414** bumps `node-ipc` 9.2.1 → 10.1.1 — the `peacenotwar` release
+(GHSA-97m3-w2cp-4xx6 / CVE-2022-23812, CWE-506, 9.8). Verdict **MALICIOUS**,
+`hold_security`, no alignment, no commit. Four auditors agreed independently
+(osv-scanner on the lockfile, the OSV API, `npm audit --package-lock-only`,
+`trivy fs`), and the report states the property that makes this run worth more
+than #410's:
+
+> Nothing in the tree betrays it: index.js is inert, the lockfile integrity hash
+> is valid, and the two newly added transitives are clean per OSV — the signal
+> exists only in the registry advisory.
+
+It also noted, unprompted, that the current pin is clean, so the bump travels
+**safe → malicious** rather than remediating anything; and it disclosed two
+coverage gaps (the fixture lockfile lists transitives without top-level entries,
+so osv-scanner resolved 1 package not 3 — covered by per-package API queries;
+and no `npm install`, so lifecycle scripts were not inspected on disk).
+
+Together with the morning's runs the matrix is complete: **payload analysis →
+MALICIOUS, advisory lookup → MALICIOUS, control → SAFE.**
+
+### The fix, measured on the real batch
+
+`pkg/cli` needed a container runtime it could not have inside the sandbox, so
+iterion's own suite was red there and the fail-closed gate held every bump for a
+reason no bump caused. After #413, on re-review: **#392 green, #399 green, #394
+green and merged.** #396 stays `hold_security` on its own merits (mongodb chart
+16→19). The remaining reds are #390, #395, #397 — #395 now conflicts because its
+stale lockfile commit collides with the one #394 landed, so Dependabot was asked
+to recreate it.
+
+---
+
+## 2026-08-12 — the anti-malware half fires for the first time, and the verify gate is proven to hold on a red base
+
+- Status: **validated for the security half, blocked for the alignment half**
+  (both resolved the same evening — see the section above).
+  Four runs: #410 (hostile fixture), #411 (its control), #394 and #395 (real
+  Dependabot bumps).
+- Versions: Vetty 2.7.4 (runs) → **2.7.5** (fixes below) · iterion v3.40.0.
+- Method: `/vetty` on two purpose-built fixture PRs plus a re-review of two
+  refreshed Dependabot PRs. Fixtures in `e2e/fixtures/malware-detection/`;
+  branches `test/vetty-malware-*`, based on a scratch branch so nothing could
+  reach `main`.
+
+### The detection worked, and the control is what proves it
+
+Three candidate 0.0.2 releases share one package **name and version** and
+differ only in contents, so the bump is identical in shape across PRs and the
+payload is the only variable. Candidate directories are named opaquely
+(`release-0.0.2-a|b|c`) because Vetty explores the tree it audits — a
+directory called `hostile` would hand it the verdict.
+
+| PR | candidate | verdict | gate |
+|---|---|---|---|
+| #410 | `b` — adds a `postinstall` hook | **MALICIOUS** | `supply-chain risk: the bump was not applied` |
+| #411 | `a` — adds one function | **SAFE** | `build/tests not green after alignment` |
+
+The two gate descriptions differ: the hostile bump was stopped at the security
+gate before any alignment, the control cleared it and went on. A hold that
+reproduced on both would have measured novelty-aversion, not detection.
+
+What the report got right beyond the verdict:
+
+- **It refused the façade.** Every deterministic scanner — osv-scanner, npm
+  audit, the OSV API, semgrep `p/default`, trivy, gitleaks — returned clean,
+  and it said so: *"that cleanliness is meaningless: the package is unpublished
+  (npm view → E404) and linked by file: path… Emitting 'safe' on that basis
+  would have been a pure facade."*
+- **It gave zero weight to the in-band disclaimer.** The payload carries a
+  header saying it is inert by construction; the audit discounted it —
+  *"an in-band claim of innocence is exactly what a hostile package ships."*
+- **It falsified its own detectors.** The control run discounted semgrep as
+  evidence *because* it ran the hostile sibling through it and also got 0:
+  "non-discriminating for this malware shape". It named the exhaustive source
+  review and the lifecycle-hook scan as the detectors that actually discriminate.
+- **Signals are anchored** to `file:line` (`vendor/release-0.0.2-b/postinstall.js:11-15`
+  for the `process.env` serialisation, `:31-37` for the `spawn`), which is the
+  property the `no-package-malware` prior art was going to be mined for.
+
+Coverage this montage does NOT establish: with a `file:` dependency the hostile
+source sits inside the diff, so this proves the plumbing (audit →
+`hold_security` → red gate → no merge) and the signal reporting, not the
+judgement on an unseen registry package. **That half ran the same evening as
+#414 and also held** — see the section above.
+
+### The alignment half is blocked — but not by the alignment
+
+*(Resolved the same evening: #394 merged with its alignment. Kept as written
+because the diagnosis is the useful part.)*
+
+#394 and #395 both held `build/tests not green after alignment`, and neither
+red was caused by its bump:
+
+- **#394 (@types/node 26.1.2 → 26.2.0)** — the audit was exemplary (registry
+  ECDSA signature verified against the live key, tarball sha512 matched, 88
+  `.d.ts` files and zero executables, no hook added, publisher unchanged). The
+  alignment was **correct and complete**: it caught the stale root
+  `pnpm-lock.yaml` and regenerated it — the rule added to the skill after the
+  last batch did its job. Then the verify script died on its own construction:
+
+  ```
+  devbox run -- sh -c files=$(find . -name "*.go" ...)
+  sh: -c: line 1: syntax error near unexpected token `then'
+  ```
+
+  The agent had transcribed a multi-line Taskfile command body into a single
+  `sh -c` argument; the YAML block's newlines and tabs arrived literal.
+- **#395 (@vitejs/plugin-react 5 → 6)** — audit SAFE with SLSA provenance
+  traced to `vitejs/vite-plugin-react`'s publish workflow; no alignment needed
+  on the refreshed head. Held on a Go test-suite `FAIL`.
+- **#411, the control**, changes two JSON fixture files and **no Go code at
+  all** — and also ended in `FAIL` on the same suite. That is the proof the red
+  belongs to the tree, not the change. `go test ./...` on `origin/main` passes
+  locally (including `bots`, `cmd`, `e2e`, and under the runner's injected
+  `GIT_AUTHOR_*`), so the failure is specific to the sandboxed run.
+
+Which test fails is **not knowable from the reports**, and that is the second
+defect: the excerpt was `out[-4000:]`, a blind tail. A test runner prints its
+per-package successes after the package that failed, so all three reports
+carried a wall of `ok` lines and a bare `FAIL`, with the failing name scrolled
+out.
+
+### Fixes (Vetty 2.7.5)
+
+- **The excerpt keeps the failing lines**, matched, in addition to the tail
+  (`verify_run`). Falsifiable: reverting it reddens
+  `TestDepUpdateGuardVerifyPrechecks/the_excerpt_keeps_the_failing_line` with
+  exactly the observed symptom.
+- **Skill rule — call the target, never transcribe its body** (`verify-build`
+  §1c), with the reason: a task-runner block does not survive being passed as
+  one `sh -c` argument, and transcription also drops the target's `dir:`,
+  `env:` and prerequisites.
+
+### Engine finding (not fixed here)
+
+`prepareRepoWorkspace` clones the **default** branch plus the run's ref
+([pkg/runner/loop_gitws.go](../../pkg/runner/loop_gitws.go)), so a PR whose base
+is neither leaves `merge-base(base, HEAD)` unresolvable. #410 hit it and
+degraded loudly (`degraded_reason`, scope narrowed to `HEAD~1..HEAD`) exactly as
+designed — #411 even re-resolved the base itself and said the approximation did
+not change its verdict. It bites stacked PRs and PRs targeting a release branch;
+the fix is for the runner to fetch the run's `base_ref` too, which is generic
+and not bot-specific.
+
+### Lessons for next run
+
+- **Refresh a stale PR branch before re-reviewing it.** Vetty verifies
+  `merge-base(base, HEAD)..HEAD` and does not merge the base, so a PR cut before
+  a fix landed still carries the old red and a re-review only reproduces it at
+  ~$10 a run. `@dependabot rebase`, or `gh pr update-branch` when Vetty has
+  already committed to the branch (Dependabot then refuses: *"edited by someone
+  other than Dependabot"*).
+- **`review_on_sync` is on for this repo**: pushing to the branch relaunches
+  Vetty by itself. Commenting `/vetty` is only needed on a hand-opened PR.
+- **A flaky or environment-sensitive test in the target repo holds every bump.**
+  The gate is fail-closed by design and that stays right, but the base tree's
+  health is now a precondition of the whole lane — worth establishing before a
+  batch, not after three holds.
+- **The target repo must be able to pass its own tests where the bot runs it.**
+  The generalisable form of the above, and the one worth carrying to every other
+  loop bot: a suite that is green on a developer's machine and red in a
+  container is not a suite the bot can use as an oracle. Establish it with one
+  command before blaming the bot —
+  `docker run --rm -v $PWD:/src:ro <the bot's sandbox image> sh -c 'cp -a /src
+  /tmp/w && cd /tmp/w && <the repo's test command>'`. Four holds and most of a
+  day were spent reading bot reports for a defect that was ours, sitting one
+  container run away.
+- **A control run is not ceremony.** #411 changes two JSON files and no code;
+  it is the only reason the morning's holds could be attributed to the tree
+  rather than to the bumps, and the only reason #410's MALICIOUS verdict means
+  detection rather than novelty-aversion. Budget one whenever a run is meant to
+  establish something.
+
+## 2026-08-11/12 — why the other ten held, and a guard that had to be deleted
+
+- Status: **the batch is fully diagnosed and every cause is fixed.** No new
+  dogfood run: this is the post-mortem of the eight `hold_unstable` verdicts
+  from the batch below, read out of the Vetty reports themselves.
+- Versions: Vetty 2.6.5 → **2.7.4** · iterion v3.36.1 → **v3.40.0** (deployed).
+  PRs #401, #405, #407.
+- **Four of the eight held on one test of OURS.** #392/#395/#397/#399 all failed
+  `TestLogAllowsTabsInUserControlledFields` with `author: got
+  "iterion-forge-61934180[bot]"`. The test sets a tab-bearing `user.name` on a
+  throwaway repo and expects to read it back — but `GIT_AUTHOR_*` /
+  `GIT_COMMITTER_*` OVERRIDE repo config, and a sandboxed run with
+  `host_state: none` injects exactly those four so an in-container `git commit`
+  has an identity at all (`runtime.seedGitIdentityEnv`). Every commit the suite
+  made was authored by the run's own bot identity. Vetty was right that the
+  build was red; it was red for a reason no bump caused.
+- Chasing that found the same hole in production: every function in `pkg/git`
+  names its repository through an explicit `dir`, then ran git with the caller's
+  environment whole. `Status(dir)` under an inherited `GIT_INDEX_FILE` reports
+  the tree as deleted-and-untracked; under `GIT_DIR` it answers about another
+  repository. Now `git.SanitizeEnv` drops the redirection family (identity and
+  transport preserved) and is applied at every call site in the tree —
+  `pkg/runtime/worktree.go`, `pkg/runner/loop_gitws.go`, `pkg/runview/fork.go`,
+  `pkg/dispatcher/commands.go`, `pkg/pluginsource/fetch.go`,
+  `pkg/sandbox/kubernetes/driver.go`. Reviewing that by hand did not work (two
+  of four sites in one file missed, one of them a `worktree remove --force`
+  where `--git-dir` does NOT neutralise `GIT_COMMON_DIR`), so
+  `TestEveryGitCallerSanitizesEnv` now sweeps it mechanically — and found a site
+  I had declared absent.
+- The other four: #394 was a stale lockfile Dependabot never regenerated (CI
+  installs frozen, so the install fails before a line compiles — the skill now
+  says regenerating is part of the alignment, and explicitly not
+  `--no-frozen-lockfile`); #390 produced no `verify.sh` at all for a digest
+  refresh whose correct alignment was empty; #398's `verify.sh` was ~2300 lines
+  of bare paths that `sh` answered with `Permission denied`; #393 was a genuine
+  `hold_security`.
+- **The lesson worth keeping — a guard that was written, patched five times, and
+  then deleted.** #390 and #398 became precheck rejections that loop back
+  instead of terminal reds. The first (no script) is decidable from the file.
+  The second was not: rejecting a script whose lines are paths rather than
+  commands means judging shell text statically, and every review round found the
+  next spelling it read wrong — a leading `cd`, a here-doc body, a subdirectory
+  helper, a backslash continuation, an unresolvable `cd` target, an artifact the
+  script builds before invoking. Each false positive held a bump that builds:
+  the exact failure the guard was added to prevent, inflicted by the guard.
+  Changing the axis (proportion of path-lines, not the line) bought one round.
+  At the eighth it was removed. What survives are the two conditions decidable
+  from the file alone — no script, and a script that runs nothing — plus the
+  rule in the skill, where getting it wrong costs a rewrite instead of a hold.
+- Revi ran **ten rounds** on #407 and found a real defect in every one, four of
+  them inside guards added earlier in the same PR (`R12dc35`, `R78f11d`,
+  `Rdbf846` high). Three findings were about the guard's own tests being
+  vacuous — a fixed window letting a scrubbed neighbour vouch for an unscrubbed
+  call site, an assertion sitting behind a `t.Fatalf` that could never run, a
+  sweep that walked only `pkg/` and matched only single-line calls.
+- Lessons for next run: (1) **prefer a rule in the skill to a guard in the
+  gate** when the property is not decidable from static text — a wrong skill
+  costs a rewrite, a wrong gate costs a hold; (2) a guard no mutation can red is
+  decoration, and in the `verify_run` body it is a trap for the next edit —
+  two pieces of code were deleted this round for exactly that; (3) the
+  `verify_run` command is a shell double-quoted argument, so a backtick in a
+  *comment* closes the DSL string (`E012 unknown tool property`) — it happened
+  twice.
+
+## 2026-08-10/11 — the first Dependabot batch merged unattended, and the one that merged was the one to catch (run 019fecf3)
+
+- Status: **partial — the audit is production-grade, the verdict was not.**
+  Dependabot opened 11 PRs (#390–#400) at 18:26–18:33 UTC; one run each.
+  **#400 merged unattended at 21:04** (gate 20:50:18 → armed 20:50:23 → merge
+  queue 21:04:43). The other ten held RED and none merged: 8 `hold_unstable`,
+  2 `hold_security` (#393 TypeScript 7.0.2, #396 mongodb chart 16→19). Fail-
+  closed works. Same night, buildkit-operator **#18 (Renovate, undici
+  [security]) merged at 19:10** — 9s after the gate, no queue on that repo.
+  Renovate and Dependabot are now both proven, on both merge topologies.
+- Versions: Vetty 2.6.5 · iterion 3.36.1. Cost of run 019fecf3: **~$10.8**
+  (audit $2.24 + align $4.58 + verify_build $3.27 + commit $0.70).
+- **Value — the audit is the best this bot has produced.** On #400 (30 Go
+  modules) it found the decisive property nobody asked for: *this repo
+  vendors, so `go build -mod=vendor` never hash-checks `vendor/` and a clean
+  `go.sum` proves nothing*. It regenerated the vendor tree from checksum-
+  verified modules into a temp dir and diffed byte-for-byte. It caught a CVE
+  resolution absent from Dependabot's own table (grpc 1.81.1→1.83.0 clearing
+  GHSA-hrxh-6v49-42gf HIGH, transitive). It re-ran govulncheck under
+  `CGO_ENABLED=0` after a gcc failure "rather than report a hollow pass", and
+  refused to count 68 trivy hits confined to `e2e/fixtures/` — one of which is
+  the deliberate protestware detection fixture. On bko#18: npm trusted-
+  publisher OIDC with the *same* `oidcConfigId` across both versions (no
+  maintainer change — the classic compromise shape absent), SLSA provenance,
+  tarball sha512 vs lockfile integrity, byte-identical wasm blobs, and an
+  honest coverage-gap statement (trivy parsed 0 npm packages from
+  pnpm-lock.yaml, proven by a control run against the base — so trivy was NOT
+  counted as evidence).
+- **The defect: a lost alignment merged as a clean bump.** `align` (24 min,
+  $4.58) detected a real BREAKING change — otel 1.45's `WithEndpointURL` no
+  longer appends `/v1/traces` to a path-less endpoint — and wrote a
+  `withTracesPath` helper plus a regression test it verified red without the
+  fix. Then `commit` died on the forfait's session limit
+  (`USAGE_LIMIT_BLOCKED`), the retry resumed 24 min later, and **the runner
+  re-cloned**: `prepareRepoWorkspace` does `os.RemoveAll` + `git clone` on
+  every claim, and `executeRun` deletes the dir again on return. The
+  checkpoint restores node OUTPUTS, not files. The commit agent reported the
+  gap precisely in prose ("ACTION NEEDED: re-run alignment … spans silently
+  POST to /"), but `commit_check` read only the shas: unmoved head →
+  `did_commit=false` → verdict `clean` = "the bump needed no alignment" →
+  gate `success` → armed → merged. **The regression went to main.** Latent
+  only because no chart configures `OTEL_EXPORTER_OTLP_*`.
+- The irony worth keeping: the anti-façade rule that made `did_commit` read
+  shas instead of the agent's self-report is exactly what hid this. The truth
+  lived only in the agent's prose, and the graph does not read prose.
+- Engine + bot hardening (this change): `commit_check` now computes
+  `alignment_lost` = align claimed edits ∧ the head did not move, routed to a
+  fifth, BLOCKING verdict `hold_lost_alignment` (Vetty 2.7.0); the runner
+  emits `run_workspace_reset` when a repo-backed run re-executes (keyed on the
+  checkpoint, so a `running`-status redelivery counts too) so the discarded
+  tree stops being invisible.
+- **And the alignment itself was wrong** — found by the adversarial review of
+  this very fix, not by the run. Vetty's `withTracesPath` helper (which I
+  re-applied verbatim, so I repeated its mistake) re-implemented what the SDK
+  already does correctly: `otlpconfig.NewHTTPConfig` applies the env config
+  BEFORE explicit options, and it honours the OTLP spec's two DIFFERENT
+  endpoint semantics — `OTEL_EXPORTER_OTLP_ENDPOINT` is a base URL that gets
+  the signal path joined onto it, `…_TRACES_ENDPOINT` is used as-is. Passing
+  the resolved endpoint back through `WithEndpointURL` flattens both into one
+  reading; **that override was the bug's enabler, not its victim** (it is why
+  1.45's behaviour change reached us at all), and it left
+  `ENDPOINT=https://collector/otlp` POSTing to `/otlp` — the same silent loss
+  one level over. The real fix is to stop overriding. The premise Vetty
+  reasoned from was a false comment already in the file, claiming the SDK
+  honours only one of the two variables.
+- Lessons for next run: (1) a node that MUTATES the workspace and a node that
+  PERSISTS the mutation must not be separated by a resumable boundary without
+  a check that they agree — the gap between them is a pod restart wide;
+  (2) an agent's honest prose report is not a signal the graph can act on —
+  if it matters, it must reach a schema field a gate reads; (3) 8/10 PRs
+  landing on `hold_unstable` deserves its own look — fail-closed is correct
+  but a loop that holds everything delivers nothing; (4) **an aligner inherits
+  the consuming code's wrong assumptions** — Vetty read a comment asserting the
+  SDK ignored one of the two env vars, believed it, and wrote a fix around it.
+  It reproduced the file's existing false premise faithfully. Worth adding to
+  the align prompt: when a bump breaks a call site, check whether the call site
+  was right to exist.
+
 ## 2026-08-04/05 — the backlog majors + the Vite 8 alignment: capability proven, and the verify seam found its shape
 
 - Status: **capability validated; landing required four bot/engine fixes found

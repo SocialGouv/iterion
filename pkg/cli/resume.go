@@ -63,6 +63,10 @@ type ResumeOptions struct {
 	// bot whose DSL says `on` silently un-does a hermetic `--auto-memory off`
 	// launch.
 	AutoMemory string
+	// LoopBudgetGuard re-states the run-level loop_budget_guard override on
+	// resume, for the same reason AutoMemory does: it is not persisted, so a
+	// resume that says nothing falls back to the workflow's value.
+	LoopBudgetGuard string
 	// ModelFor / BackendFor re-apply the launch-time per-node/-group model+
 	// backend overrides on resume (repeatable --model / --backend,
 	// "selector=value" or bare "value"). Resume does NOT persist the original
@@ -248,6 +252,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		// Sandbox-by-default: resumed runs re-resolve their sandbox with
 		// the same global default as `iterion run`.
 		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
+		runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
 		// Wire the subbot runner, mirroring the run path (run.go). Without
