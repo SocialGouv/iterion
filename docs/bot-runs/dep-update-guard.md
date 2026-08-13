@@ -7,6 +7,107 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-13 (backlog) — the lane was auditing half the traffic and looked like it audited all of it
+
+- Status: **validated, and one serious gap found.** Ran the pre-batch backlog —
+  PRs open since 2026-05-17, plus Renovate's own — through the lane. Vetty
+  **2.7.5** · iterion **v3.40.3**.
+
+### The gap: Renovate PRs never reached Vetty
+
+Renovate runs self-hosted here on a **personal token**, so it authors as
+`devthejo` rather than as a bot account. The lane's auto-launch keys on the
+**author**, so those PRs were classified human-authored and routed to Revi — a
+code reviewer that does not check provenance, advisories, install hooks, or
+maintainer changes.
+
+Verified rather than inferred: #383 and #386 carried a `revi/review` status and
+**no `dep_update_guard` run existed for either**, while every Dependabot PR of
+the same batch had one. On `buildkit-operator` the Renovate→Vetty loop works
+because Renovate is a bot account there — which is exactly why this went
+unnoticed.
+
+**Half the dependency traffic was unaudited while the lane appeared to cover
+it**, which is worse than no coverage, because nobody was looking. Filed as
+`native:c19a8c74`. The preferred fix is to route on the **shape of the change**
+— `prepare` already classifies dependency manifests deterministically — rather
+than on who opened the PR.
+
+Manual fallback that works today: comment `/vetty`. And note a Renovate PR is
+NOT re-triggered by `@dependabot rebase`: tick the rebase checkbox in the PR
+body (` - [ ] <!-- rebase-check -->` → `[x]`, via `gh pr edit --body-file`).
+
+### What the first Vetty run on that half found, immediately
+
+**#384** (`chore(deps): pin dependencies`) — **HOLD**, two verified defects, in a
+PR Revi had already reviewed:
+
+1. **It breaks the deployment.** Renovate wrote the digest into
+   `charts/iterion/values.yaml`'s `tag:` field, which `_helpers.tpl`
+   concatenates with `':'`. Vetty *rendered the helper* instead of reasoning
+   about it: base → `ghcr.io/socialgouv/iterion:3.40.6`, head →
+   `ghcr.io/socialgouv/iterion:@sha256:8f28503…` — an invalid OCI reference that
+   kubelet rejects with `InvalidImageName`, so no pod starts. It also silently
+   replaces the chart's `.Chart.AppVersion` tracking with a floating `latest`.
+2. **The pin freezes a vulnerable version.** `mermaid: 11.16.0` evicts the clean
+   11.16.1, and all five of 11.16.0's advisories are fixed in exactly 11.16.1.
+   The `^11.16.0` range would have self-healed; pinning it does not. A
+   "pin dependencies" PR that *degrades* security is not something a version
+   table shows you.
+
+It also caught `lucide-react` drifting 1.28.0 → 1.31.0 in the lockfile **without
+appearing in the PR's package table**, and proved the malware-negative
+structurally rather than by assertion: the lockfile adds **zero** new
+resolutions and removes 19, so it is pure de-duplication and "malicious-code
+injection is structurally impossible for the npm half". The 27 HIGH/CRITICAL
+trivy hits were traced to `e2e/fixtures/*` — our own node-ipc and lodash
+fixtures — and excluded rather than counted against it.
+
+### The old majors
+
+- **#5 (node 22 → 26)**: green and merged, a second end-to-end alignment. The
+  breaking change was invisible from the version string: **Node 25+ no longer
+  ships Corepack**, so the `studio-builder` stage's `corepack enable && corepack
+  pnpm install` would die on `corepack: not found` — and since that stage feeds
+  `studio/dist` into the Go build, the whole image build with it. Vetty wrote
+  the fix (`npm install -g corepack@0.35.0`), then on a later pass
+  **re-verified its own earlier fix independently** (corepack 0.35.0's engines
+  admit Node 26; `corepack enable` is idempotent after a global install; the
+  download prompt cannot hang a non-interactive build) and swept every other
+  surface that could care about the Node major.
+- **#4 (minio chart 14.7 → 17.0.21)**: **HOLD `suspicious`**, and the right
+  call. It rendered the parent chart with the repo's own values and found chart
+  17 splits the MinIO console into a workload **enabled by default**
+  (`disableWebUI` is gone) whose image returns **404** — Bitnami's migration to
+  `bitnamilegacy/*`, which `values-dev.yaml` works around for
+  `image.repository` but not for `console.image.*`. It bounded the blast radius
+  itself (`minio.enabled: false` in prod, so only the dev path breaks), priced
+  the actual benefit (CRITICAL/HIGH 92 → 91, two CRITICALs fixed upstream 13
+  months later not reached), and **declined to over-claim**: trivy indexed no
+  minio component in the old image, so it reported those CVEs as unresolved *on*
+  the new version rather than introduced *by* the bump. No alignment, because
+  the fix is entangled with a posture decision — whether to run a newly-default
+  web console — which belongs to a human.
+
+### Also resolved, for free
+
+- **#7** closed itself on rebase: "github/codeql-action is no longer a
+  dependency".
+- **#14** closed as obsolete: it targeted `@types/node` 25.9.0 while `main`
+  carries `^26.2.0` since #394, and its branch predates the current tree
+  (archived examples still carrying the workflow extension iterion used
+  before `.bot`, and `ast/` sitting at the repo root).
+- **#6** (azure/setup-helm 4 → 5): green.
+
+### Lesson
+
+**A lane that covers most of its traffic silently is the failure mode to look
+for.** Nothing was broken, no run errored, no report was wrong — the PRs simply
+never arrived, and every surface still read green. The tell was not in any
+report but in the *absence* of one: a PR carrying a gate status with no
+corresponding run. Worth checking the same way on every repo the lane is wired
+to.
+
 ## 2026-08-13 — the batch closes: 11 PRs resolved, and three operational lessons
 
 - Status: **the 10/08 Dependabot batch is fully resolved**, mostly overnight and
