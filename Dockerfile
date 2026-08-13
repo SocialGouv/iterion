@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------
 # --platform=$BUILDPLATFORM: the studio bundle is JS (arch-independent), so build
 # it once on the builder's native arch — never under emulation for an arm64 target.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS studio-builder
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim@sha256:cd565714d4da3e84bfd341e31448f81d47c6362198f152345297c9c1154e6341 AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -28,7 +28,13 @@ COPY studio/package.json studio/.npmrc* ./studio/
 # warm daemon it persists across builds, so a source-only change (which
 # invalidates this layer) still resolves every dep from the warm store instead
 # of re-fetching from the registry. --store-dir pins it onto the mount.
+# Node 25+ no longer distributes Corepack (nodejs/TSC#1697), so the official
+# node:2x images ship none — install it from npm before enabling it. The pnpm
+# version itself still comes from the root package.json `packageManager` pin,
+# which corepack resolves; only corepack itself is pinned here.
 RUN --mount=type=cache,target=/pnpm-store \
+    --mount=type=cache,target=/root/.npm \
+    npm install -g corepack@0.35.0 && \
     corepack enable && \
     corepack pnpm install --frozen-lockfile --prefer-offline \
         --store-dir=/pnpm-store \
@@ -81,7 +87,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
-FROM node:22-bookworm-slim@sha256:813a7480f28fdadac1f7f5c824bcdad435b5bc1322a5968bbbdef8d058f9dff4 AS llm-clis
+FROM node:26-bookworm-slim@sha256:cd565714d4da3e84bfd341e31448f81d47c6362198f152345297c9c1154e6341 AS llm-clis
 WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
@@ -184,7 +190,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
  && chmod +x /usr/local/bin/kubectl \
  && /usr/local/bin/kubectl version --client --output=yaml > /dev/null
 
-# Copy the Node 22 runtime + the pinned LLM CLIs from stage 3.
+# Copy the Node 26 runtime + the pinned LLM CLIs from stage 3.
 #
 # We deliberately do NOT carry over `npm` / `npx` nor the system
 # /usr/local/lib/node_modules from the build image:
