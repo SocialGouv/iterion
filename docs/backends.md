@@ -6,8 +6,8 @@ own tool loop — and one workflow can mix them per node. `model:` is an
 independent wire-model pin, not a request for a particular backend. Iterion
 ships six: `claw` (in-process LLM SDK),
 `claude_code` (Claude Code CLI), `pi` (pi coding agent), `kimi` (Kimi Code
-CLI), `grok` (Grok Build CLI), and the deprecated `codex` compatibility
-delegate. It auto-detects whatever credentials you already have signed in: the
+CLI), `grok` (Grok Build CLI), and `codex` (Codex CLI). It auto-detects
+whatever credentials you already have signed in: the
 default preference considers `claude_code` and `claw`; the other four require
 an explicit opt-in. This page documents the resolution chain, credentials,
 support boundaries, and overrides.
@@ -17,7 +17,7 @@ flowchart LR
   MODEL["model: (optional wire-model pin)"] -.-> NODE{"🧠 Workflow node"}
   NODE --> RESOLVE{"backend: pin / workflow / env / credential detection"}
   RESOLVE -->|"claw"| DIRECT(["⚡ In-process provider client<br/>+ Iterion-native tools"])
-  RESOLVE -->|"claude_code · pi · kimi · grok"| CLI[["🛠️ Delegated coding-agent CLI<br/>+ its own tool loop"]]
+  RESOLVE -->|"claude_code · codex · pi · kimi · grok"| CLI[["🛠️ Delegated coding-agent CLI<br/>+ its own tool loop"]]
 ```
 
 > **Cloud BYOK.** The auto-detection below is the *host/env* path. In
@@ -34,7 +34,7 @@ flowchart LR
 | `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
 | `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
 | `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
-| `codex` | **Deprecated and frozen.** Compatibility/live-test path only; the compiler emits C030. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
+| `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ## TL;DR
 
@@ -113,12 +113,10 @@ remains launch-only.
 claude_code → claw
 ```
 
-`codex` is intentionally **not** in the default list. The codex SDK
-has known limitations (see [codex C030](../pkg/dsl/ir/compile.go)) and the
-delegate is frozen: new workflows and backend work should use `claude_code`,
-or `claw` with an OpenAI model. It remains available for compatibility and live
-test coverage.
-You can still set `backend: codex` per-node, or include it in
+`codex` is intentionally **not** in the short default list, just like the
+other explicit-only CLI backends. This avoids silently changing a workflow's
+tool surface: Codex uses its native tools and sandbox, whereas `claw` uses
+Iterion-native declared tools. Set `backend: codex` per node/workflow, or include it in
 `ITERION_BACKEND_PREFERENCE` to make it eligible for auto-selection.
 
 `claude_code` is preferred over `claw` when the user has the Claude
@@ -422,7 +420,7 @@ a second full retry budget to fail identically.
 
 `claude_code` → `claw` is the validated lane. `kimi` and `grok` sit on a
 CLI contract that structurally cannot return an error, so no typed
-trigger can fire for them; `codex` is frozen. A sandboxed `claw` route
+trigger can fire for them; Codex is not included in the v1 fallback lane. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
 types correctly — but its own failure is always unclassifiable, and it
 **cannot serve a node with `permission: ask|deny`**.
@@ -491,9 +489,8 @@ no subprocess fork). To use `claude_code` with API-key auth, set
 
 ### `codex`
 
-> **Legacy compatibility only.** This backend is deprecated and frozen. The
-> details below document existing workflows; they are not a recommendation for
-> new authoring.
+The Codex backend delegates to the installed Codex CLI through the pinned Agent
+SDK and uses the CLI's own authentication and native tool loop.
 
 | Credential | Source |
 |---|---|
@@ -1122,5 +1119,5 @@ User-Agent you configure affects how it is billed.
 | Pill is red | No credential detected | Set `ANTHROPIC_API_KEY` or sign in to Claude Code, then click Refresh |
 | Pill is green but Run errors out with "no provider" | Workflow uses `model: openai/...` but only `ANTHROPIC_API_KEY` is set | Switch model to an Anthropic spec, or add `OPENAI_API_KEY` |
 | Pill says "claude_code" but you wanted "claw" | OAuth is found and ranked first | `export ITERION_BACKEND_PREFERENCE='claw,claude_code'` |
-| Pill says "claw" but a legacy workflow needs Codex | Codex is deprecated and absent from the default order | Prefer `claw` + an OpenAI model; for compatibility, select `backend: codex` explicitly and ensure `$CODEX_HOME/auth.json` exists |
+| Pill says "claw" but you wanted Codex | Codex is an explicit-only backend and absent from the default order | Select `backend: codex` explicitly (or add it to `ITERION_BACKEND_PREFERENCE`) and ensure `$CODEX_HOME/auth.json` exists |
 | Editor pill stale after fixing env | Server cache (30s) | Click the pill → **Refresh** |

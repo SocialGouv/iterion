@@ -1302,7 +1302,7 @@ func readFixture(t *testing.T, path string) string {
 }
 
 // ---------------------------------------------------------------------------
-// C030 — outputs ref to non-existent node
+// C029 — outputs ref to non-existent node
 // ---------------------------------------------------------------------------
 
 func TestValidateRefUnknownNode(t *testing.T) {

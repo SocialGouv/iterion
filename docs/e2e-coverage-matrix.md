@@ -251,7 +251,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | backends.pi | pi delegate incl. the RPC session + embedded extension | backends | covered-deterministic | pkg/backend/delegate/pi_rpc_test.go, pkg/backend/delegate/pi_mcp_test.go | |
 | backends.kimi | kimi CLI delegate through the generic CLI-agent seam | backends | covered-deterministic | pkg/backend/delegate/cliagent_test.go | |
 | backends.grok | grok CLI delegate through the generic CLI-agent seam | backends | covered-deterministic | pkg/backend/delegate/grok_test.go | |
-| backends.codex-legacy | legacy codex delegate (frozen, C030 diagnostic) | backends | covered-deterministic | pkg/dsl/ir/compile_test.go | deprecated surface: kept compiling + diagnosed, not extended |
+| backends.codex | Codex CLI delegate and supported DSL selection | backends | covered-deterministic | pkg/dsl/ir/compile_test.go, pkg/backend/delegate/delegate_test.go | capability boundaries are documented in docs/backends.md |
 | backends.system-prompt-composition | per-backend SystemPromptMode (Standalone/Append/AuthoredBase) | backends | covered-deterministic | pkg/backend/delegate/delegate_test.go | |
 | backends.reasoning-effort | `reasoning_effort` propagation and wire remapping | backends | covered-deterministic | pkg/backend/model/effort_test.go | |
 | backends.ultracode | `ultracode` mode: xhigh + orchestration prerogative + C089 | backends | covered-deterministic | pkg/dsl/ir/ultracode_test.go, pkg/backend/model/effort_test.go | live behaviour on 4.8: TestLive_Feat_Ultracode |

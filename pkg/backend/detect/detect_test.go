@@ -39,7 +39,7 @@ func isolateEnv(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
-	// Use a fresh empty HOME so legacy ~/.claude / ~/.codex on the dev
+	// Use a fresh empty HOME so pre-existing ~/.claude / ~/.codex on the dev
 	// machine don't leak into tests.
 	t.Setenv("HOME", t.TempDir())
 	stubBinary(t, &findClaudeBinary, "")

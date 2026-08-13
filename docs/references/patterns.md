@@ -209,9 +209,9 @@ workflow gated:
 ## 7. Delegation (coding-agent CLIs)
 
 Pin `backend` to run the node through an external coding-agent CLI instead of
-leaving executor selection to credential detection. `claude_code` is the
-recommended delegate; `pi`, `kimi`, and `grok` are explicit opt-ins, while
-`codex` is legacy. A separate `model:` pin is optional and does not select the
+leaving executor selection to credential detection. `claude_code`, `codex`,
+`pi`, `kimi`, and `grok` are supported delegates; all but `claude_code` are
+explicit opt-ins. A separate `model:` pin is optional and does not select the
 backend.
 
 ```iter
@@ -227,7 +227,7 @@ agent implementer:
 ```
 
 **Key points:**
-- `backend: "claude_code"` is the recommended coding-agent CLI. `pi`, `kimi`, and `grok` are supported explicit alternatives. `backend: "codex"` is accepted but discouraged (C030). For an in-process review, set both `backend: "claw"` and a model such as `model: "openai/gpt-5.4-mini"`.
+- `backend: "claude_code"`, `codex`, `pi`, `kimi`, and `grok` select supported coding-agent CLIs with different capability boundaries. For an in-process review, set both `backend: "claw"` and a model such as `model: "openai/gpt-5.4-mini"`.
 - Delegation supports `interaction` (forwarding human input to the subprocess)
 - `readonly: true` marks the node as non-mutating for workspace safety
 - Multiple mutating delegates cannot run in parallel (workspace safety constraint)

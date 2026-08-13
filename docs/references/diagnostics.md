@@ -17,7 +17,6 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C018** | error/warning | Missing model/backend or LLM interaction requirements | Agents/judges without `model:` or `backend:` are errors only when no default supervisor model and no auto-detectable runtime credentials are available. `mode: llm` routers without either value produce a warning and use the built-in runtime default. Human nodes using `interaction: llm` or `interaction: llm_or_human` must set `model:` or `interaction_model:` and must declare `output:`. | Add `model: "..."`, `backend: "..."`, or configure detectable credentials/defaults for agents/judges; set explicit model/backend for LLM routers when you do not want runtime defaulting; for LLM-backed human nodes add the interaction model and output schema. |
 | **C024** | error | Duplicate MCP server | A `mcp_server` name is declared more than once | Use unique names for each MCP server |
 | **C025** | error | Invalid MCP server config | MCP server misconfigured (e.g., stdio without command, http/sse without url) | Match properties to transport type: stdio needs `command`; http and sse need `url` and must not set `command` or `args` |
-| **C030** | warning | Codex backend discouraged | A node uses `backend: "codex"` | Codex is still supported but has limitations (cannot configure tool set, fills its own context window, weaker integration). Prefer `backend: "claude_code"` for tool-using agents or `claw` (default) with an OpenAI model (`model: "openai/gpt-5.4-mini"`) for judges/reviewers. |
 | **C039** | error | Compute node has no expressions | A `compute` node was declared without any `expr: key: "<expression>"` entries | Add at least one expression mapping an output schema field to an expression — or remove the node |
 | **C040** | error | Expression failed to parse | An expression in a `compute` node or in a quoted `when "..."` clause isn't valid | Check operators, parentheses, namespace prefixes (`vars / input / outputs / artifacts / loop / run`), and built-in calls (`length`, `concat`, `unique`, `contains`, `join`, `if`) |
 | **C041** | error | Duplicate node id | Two declarations share the same node name across agents/judges/routers/humans/tools/computes | Rename one — node ids are a single global namespace |
@@ -149,13 +148,6 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 > enum-literal type check that earlier releases emitted as `C103` is now
 > `C121` — a `C103` always means *invalid policy*. See
 > [docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md](../adr/044-adaptive-recovery-for-deterministic-action-nodes.md).
-
-> **Historical code-reuse note:** earlier releases reused `C030` for
-> two cases. `C029` was introduced for the validator-side
-> *unknown outputs node reference* error; `C030` now only flags the
-> compile-time *Codex backend discouraged* warning. If an older log
-> shows `C030` on an `outputs.<unknown>` reference, treat it as the
-> modern `C029`.
 
 ## Bundle Consistency Diagnostics (manifest ↔ workflow)
 

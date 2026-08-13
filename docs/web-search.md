@@ -120,7 +120,7 @@ Firecrawl's `search` (tier 3).
   `--mcp-config` ([wireUserMCP](../pkg/backend/delegate/claude_code_hooks.go));
   pi RPC hands the same resolved configs to its embedded extension, whose MCP
   client supports streamable HTTP, legacy SSE, and stdio. Pi print mode, Kimi,
-  Grok, and legacy Codex do not consume this catalog.
+  Grok, and Codex do not consume this catalog.
 - For a sandboxed stdio server, `command:` resolves inside the container for
   Claude Code and pi, so a host-only path fails there. Prefer an `http`/`sse`
   server for sandboxed runs; a self-hosted Firecrawl MCP over HTTP is reachable

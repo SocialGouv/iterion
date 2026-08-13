@@ -37,7 +37,7 @@ flowchart TB
     RUNNER["runner"]
     ENGINE["runtime.Engine"]
     EXEC["NodeExecutor"]
-    BACKENDS["claw / claude_code / pi / kimi / grok\n(codex legacy)"]
+    BACKENDS["claw / claude_code / codex\npi / kimi / grok"]
     TOOLS["tools / MCP / sub-bots"]
     SANDBOX["host or sandbox driver"]
   end
@@ -161,7 +161,7 @@ It resolves launch overrides and node/workflow defaults, then dispatches to:
 - `claw`, the in-process multi-provider client with native Iterion tools;
 - `claude_code`, the recommended external CLI agent for implementation work;
 - the generic CLI-agent seam used by Kimi Code and Grok Build;
-- the frozen Codex compatibility delegate.
+- the Codex CLI delegate through the pinned Agent SDK.
 
 MCP servers, board capabilities, tool policies, permission checks, secret
 resolution, command-output rewriters, and cost hooks are assembled around the

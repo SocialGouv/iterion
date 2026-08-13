@@ -155,7 +155,7 @@ allow/ask/deny decision whichever gated backend executes it.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
 - **Backend scope:** enforcement is implemented for `claw`, `claude_code`, and
-  pi RPC mode. Kimi, Grok, and legacy Codex do not consume the policy; do not
+  pi RPC mode. Kimi, Grok, and Codex do not consume the policy; do not
   use them when `permission:` is the safety boundary.
 - **Node scope:** the gate evaluates the **tool calls an agent/judge LLM
   makes**. A `tool` node (a direct, deterministic shell command, no LLM)

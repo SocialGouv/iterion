@@ -20,7 +20,7 @@ are legal**:
 | **OpenAI ChatGPT-forfait** (Codex `auth.json`, `auth_mode: chatgpt`) | `POST /api/me/oauth/codex/credentials` (paste `auth.json`) | ChatGPT-backend OAuth | ✅ (allowed) | n/a | ✅ bridged — iterion seeds a throwaway pi agent dir from the credential, since pi's `openai-codex` provider is OAuth-only and reads no env var (host `~/.codex` works the same way) |
 
 Kimi and Grok are outside this sealed-credential matrix: their delegates rely
-on the CLI's own inherited environment/config. Legacy Codex consumes its own
+on the CLI's own inherited environment/config. Codex consumes its own
 uploaded Codex credential.
 
 A **fourth** source exists when the deployment runs a credential pool: a run

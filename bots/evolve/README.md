@@ -64,7 +64,7 @@ survey with zero changes on Nexie's side:
 ## Models & credentials
 
 All memory-bearing nodes run on the `claw` backend (every CLI backend —
-`claude_code`, `pi`, Kimi, Grok, and legacy Codex — leaves `memory:` without
+`claude_code`, `pi`, Kimi, Grok, and Codex — leaves `memory:` without
 effect and triggers C047). Defaults are forfait-friendly: claw nodes,
 including the GPT-family review branch, use `openai/gpt-5.5` (ChatGPT
 forfait); the Claude-family review branch uses `claude_code` (Claude Code

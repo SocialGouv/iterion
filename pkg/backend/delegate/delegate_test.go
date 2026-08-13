@@ -472,7 +472,7 @@ func TestSystemPromptModeForBackend(t *testing.T) {
 func TestBuildSystemPrompt_Modes(t *testing.T) {
 	const author = "You are a code reviewer. Emit a JSON verdict."
 
-	// Standalone (codex/legacy) and AppendToNative (claude_code) both emit the
+	// Standalone (codex/fallback) and AppendToNative (claude_code) both emit the
 	// author text verbatim — for claude_code the native prompt is the base and
 	// iterion routes this to --append-system-prompt, so it must NOT carry the
 	// iterion-authored agentic base.

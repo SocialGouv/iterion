@@ -73,7 +73,7 @@ form in every hook/log:
   executor), so `pkg/backend/delegate` stays decoupled from secretguard.
 
 Generic placeholder materialization is currently limited to `claw` and
-`claude_code`. Pi, Kimi, Grok, and legacy Codex leave
+`claude_code`. Pi, Kimi, Grok, and Codex leave
 `__ITERION_SECRET_*__` opaque, so use file secrets for those delegates when the
 agent needs a non-provider credential.
 

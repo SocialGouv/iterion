@@ -30,7 +30,7 @@ const (
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
 	DiagDuplicateWithKey         DiagCode = "C028" // duplicate with-mapping key across edges to same target
-	DiagUnknownRefNode           DiagCode = "C029" // outputs ref to non-existent node (was C030, clashed with DiagCodexDiscouraged)
+	DiagUnknownRefNode           DiagCode = "C029" // outputs ref to non-existent node
 	DiagRefFieldNotInSchema      DiagCode = "C031" // outputs ref field not in output schema
 	DiagRefNodeNoSchema          DiagCode = "C032" // outputs ref field on node without output schema
 	DiagUndeclaredVar            DiagCode = "C033" // vars ref to undeclared variable

@@ -374,7 +374,7 @@ when the ticket is already `in_progress` / `done` / `awaiting_input`.
 
 **Multi-engine access.** Board mutations do not require Claude-specific MCP
 tools. The canonical fallbacks work across Claude Code, claw, pi, Kimi, Grok,
-legacy Codex, and scripts:
+Codex, and scripts:
 
 1. **REST** — `/api/v1/pipeline-board/*` and `/api/v1/native/issues/*` (this page);
 2. **CLI** — `iterion issue create|list|show|update|move … --blocker … --bot … --bot-arg key=value`;

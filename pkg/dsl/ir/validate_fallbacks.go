@@ -16,8 +16,7 @@ const (
 // KnownFallbackTriggers is the soft set of `on:` tokens. It mirrors
 // delegate.FallbackCategory, deliberately duplicated as literals rather
 // than imported: pkg/dsl/ir must not depend on pkg/backend/delegate (the
-// package layout forbids it — see the codexBackendName comment in
-// compile.go). Unknown tokens WARN rather than fail so an out-of-tree
+// package layout forbids it). Unknown tokens WARN rather than fail so an out-of-tree
 // runtime can extend the vocabulary.
 //
 // `unclassified` is absent on purpose: it is not a condition an author
@@ -60,8 +59,7 @@ var reasoningEffortBackends = map[string]bool{
 }
 
 // clawBackendName is the literal value of the in-process backend.
-// Hardcoded for the same reason as codexBackendName: ir must not import
-// pkg/backend/delegate.
+// Hardcoded because ir must not import pkg/backend/delegate.
 const clawBackendName = "claw"
 
 // validateFallbacks checks every LLM node's `fallbacks:` block.

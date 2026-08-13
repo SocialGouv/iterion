@@ -7,7 +7,7 @@ import (
 )
 
 // TestDiagnosticCodes_Unique guards against future regressions of
-// the dup-codes class of bug (C024 / C030 both used to mean two
+// the duplicate-code class of bug (several codes historically described two
 // unrelated things — downstream consumers routing diagnostics by
 // code mixed the categories). Asserted via a manual list because
 // DiagCode is a string type with no registry to iterate.
@@ -24,7 +24,6 @@ func TestDiagnosticCodes_Unique(t *testing.T) {
 		"DiagMissingModelOrBackend":     DiagMissingModelOrBackend,
 		"DiagDuplicateMCPServer":        DiagDuplicateMCPServer,
 		"DiagInvalidMCPServer":          DiagInvalidMCPServer,
-		"DiagCodexDiscouraged":          DiagCodexDiscouraged,
 		"DiagComputeNoExpr":             DiagComputeNoExpr,
 		"DiagBadExpr":                   DiagBadExpr,
 		"DiagDuplicateNodeID":           DiagDuplicateNodeID,

@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// C030–C036 — deep template reference validation
+// C029–C036 — deep template reference validation
 // ---------------------------------------------------------------------------
 
 // refContext associates a Ref with the node that consumes it and a
@@ -69,7 +69,7 @@ func collectAllRefs(w *Workflow) []refContext {
 
 	// Tool node command + script refs. ScriptRefs used to be skipped,
 	// so {{outputs.X.history}} inside a tool's script never went
-	// through C030–C036 validation — typos were caught only at
+	// through C029–C036 validation — typos were caught only at
 	// runtime, after the script had already started executing.
 	for _, n := range w.Nodes {
 		if t, ok := n.(*ToolNode); ok {
@@ -92,7 +92,7 @@ func collectAllRefs(w *Workflow) []refContext {
 
 	// Compute node expressions. Each ComputeExpr.AST exposes its
 	// vars/input/outputs/... references — convert them to ir.Ref
-	// shape and feed them into the same C030–C036 pipeline so a
+	// shape and feed them into the same C029–C036 pipeline so a
 	// typo'd `outputs.unknown.field` in a compute expression is
 	// caught at compile time instead of at first evaluation.
 	for _, n := range w.Nodes {
@@ -393,7 +393,7 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	}
 	targetNodeID := rc.Ref.Path[0]
 
-	// C030: referenced node must exist.
+	// C029: referenced node must exist.
 	targetNode, ok := w.Nodes[targetNodeID]
 	if !ok {
 		c.errorf(DiagUnknownRefNode,
