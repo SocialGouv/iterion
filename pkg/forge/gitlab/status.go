@@ -43,10 +43,12 @@ func (c *AdminClient) SetCommitStatus(ctx context.Context, repo, sha string, st 
 // "a verdict is already there" — without it, repairing a missing check could
 // overwrite a real one.
 //
-// Unlike GitHub's combined-status endpoint, GitLab returns EVERY status row
-// on the commit — one per (name, pipeline) attempt, retries included — so the
-// result is deduplicated per name keeping the newest row (highest id): a gate
-// reader handed the raw history could match a stale verdict first.
+// GitLab's default scope already serves the latest row per name (history
+// needs all=true, which this deliberately does not pass) — verified live on
+// GitLab 19.2. The per-name dedup keeping the newest row (highest id) is
+// defense in depth for the shapes the default scope can still produce (one
+// row per pipeline carrying the same name): a gate reader handed more than
+// one row per name could match a stale verdict first.
 func (c *AdminClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
 	var rows []struct {
 		ID          int64  `json:"id"`
