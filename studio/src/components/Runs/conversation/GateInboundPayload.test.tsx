@@ -12,6 +12,7 @@ vi.mock("@/api/runs", async (importOriginal) => {
   };
 });
 
+import { TEXT_PREVIEW_BYTE_BUDGET } from "./gateInboundFold";
 import GateInboundPayload from "./GateInboundPayload";
 
 afterEach(() => {
@@ -169,6 +170,309 @@ describe("GateInboundPayload", () => {
     expect(img.getAttribute("src")).toBe("blob:mockup");
     expect(fetchAttachment).toHaveBeenCalledWith("run-1", "gate.mockup");
     expect(screen.queryByText(/run\/iterion\/attachments/)).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("previews a JSON attachment instead of offering only a download", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(['{"subject":"Ulysse","chapters":[1,2]}'], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline_file-609b6784",
+            filename: "outline.json",
+            path: "/host/state/films/x/outline.json",
+            mime: "application/json",
+            size: 48,
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByText(/"subject": "Ulysse"/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(fetchAttachment).toHaveBeenCalledWith("run-1", "outline_file-609b6784");
+  });
+
+  it("does not inline a text attachment larger than the byte budget", async () => {
+    const blob = new Blob(["do-not-decode"], { type: "text/plain" });
+    Object.defineProperty(blob, "size", { value: TEXT_PREVIEW_BYTE_BUDGET + 1 });
+    fetchAttachment.mockResolvedValue({ blob, contentType: "text/plain" });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          log_file: {
+            attachment: "log-huge-bytes",
+            filename: "build.log",
+            mime: "text/plain",
+            size: TEXT_PREVIEW_BYTE_BUDGET + 1,
+          },
+        }}
+        inputFields={[{ name: "log_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("do-not-decode")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+    expect(container.querySelector("pre")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("previews an extension-less markdown file from the declared mime", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["# Brief to review"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          brief: {
+            attachment: "brief-noext",
+            filename: "brief",
+            mime: "text/markdown",
+          },
+        }}
+        inputFields={[{ name: "brief", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: /brief to review/i })).toBeTruthy();
+  });
+
+  it("keeps a neutralized XML attachment as download even with a declared text/xml mime", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["<root/>"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+    const createObjectURL = vi.fn(() => "blob:xml");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          spec: {
+            attachment: "spec-xml-declared",
+            filename: "data.xml",
+            mime: "text/xml",
+          },
+        }}
+        inputFields={[{ name: "spec", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("<root/>")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("previews a markdown brief as prose, not as a download-only row", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["# Découpage à valider\n\nCe que tu juges"], { type: "text/plain" }),
+      contentType: "text/plain",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          brief_file: {
+            attachment: "brief_file-da9c85f7",
+            filename: "outline_review.md",
+            mime: "text/plain",
+            size: 40,
+          },
+        }}
+        inputFields={[{ name: "brief_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: /découpage à valider/i })).toBeTruthy();
+    expect(screen.getByText("Ce que tu juges")).toBeTruthy();
+  });
+
+  it("folds a long JSON attachment behind a toggle", async () => {
+    const chapters = Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => [`ch_${i}`, { events: ["a", "b"] }]),
+    );
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([JSON.stringify({ chapters })], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline_file-long",
+            filename: "outline.json",
+            mime: "application/json",
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /show all \d+ lines/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Folded <pre> is a slice, not a CSS clamp over the whole body.
+    expect(screen.queryByText(/ch_19/)).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+    expect(screen.getByText(/ch_19/)).toBeTruthy();
+  });
+
+  it("pretty-prints a mid-size JSON outline and still slices the fold", async () => {
+    const outline = {
+      subject: "Ulysse",
+      chapters: Array.from({ length: 400 }, (_, i) => ({
+        id: `ch_${i}`,
+        title: `Chapter ${i}`,
+        events: ["land", "sea", "return"],
+      })),
+    };
+    const raw = JSON.stringify(outline);
+    expect(raw.length).toBeGreaterThan(20_000);
+    expect(raw.length).toBeLessThan(TEXT_PREVIEW_BYTE_BUDGET);
+
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([raw], { type: "application/json" }),
+      contentType: "application/json",
+    });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          outline_file: {
+            attachment: "outline-mid",
+            filename: "outline.json",
+            mime: "application/json",
+          },
+        }}
+        inputFields={[{ name: "outline_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /show all \d+ lines/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const pre = container.querySelector("pre");
+    expect(pre?.textContent).toMatch(/\n\s+"subject": "Ulysse"/);
+    expect(pre?.textContent).not.toBe(raw);
+    expect(pre?.textContent?.length ?? 0).toBeLessThanOrEqual(20_000);
+    expect(screen.queryByText(/"id": "ch_399"/)).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(screen.getByText(/"id": "ch_399"/)).toBeTruthy();
+  });
+
+  it("folds a single-line attachment larger than the parse budget", async () => {
+    const body = "x".repeat(25_000);
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob([body], { type: "text/plain" }),
+      contentType: "text/plain",
+    });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          log_file: {
+            attachment: "log-huge",
+            filename: "trace.log",
+            mime: "text/plain",
+          },
+        }}
+        inputFields={[{ name: "log_file", type: "file" }]}
+      />,
+    );
+
+    const toggle = await screen.findByRole("button", { name: /^show all$/i });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const pre = container.querySelector("pre");
+    expect(pre).toBeTruthy();
+    expect(pre?.textContent?.length ?? 0).toBeLessThanOrEqual(20_000);
+    expect(pre?.textContent?.length ?? 0).toBeLessThan(body.length);
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /show less/i })).toBeTruthy();
+    expect(container.querySelector("pre")?.textContent).toBe(body);
+  });
+
+  it("does not inline-preview a neutralized XML attachment", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["<root/>"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+    const createObjectURL = vi.fn(() => "blob:xml");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          spec: {
+            attachment: "spec-xml",
+            filename: "data.xml",
+            mime: "application/octet-stream",
+          },
+        }}
+        inputFields={[{ name: "spec", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("<root/>")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves a zip as a download-only row", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["PK"], { type: "application/zip" }),
+      contentType: "application/zip",
+    });
+    const createObjectURL = vi.fn(() => "blob:zip");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          bundle: {
+            attachment: "bundle-zip",
+            filename: "bundle.zip",
+            mime: "application/zip",
+          },
+        }}
+        inputFields={[{ name: "bundle", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+    expect(screen.queryByText("PK")).toBeNull();
 
     vi.unstubAllGlobals();
   });

@@ -107,9 +107,15 @@ in the edge's `with {}`:
 ```
 
 The gate's inbound payload renderer previews any value carrying an
-`attachment` name plus one corroborating field. Declaring the field as
-`file` in the gate's input schema sharpens the reading order; it is not
-required.
+`attachment` name plus one corroborating field. Images, audio and video
+play inline; JSON, markdown and other text (`.txt`, `.csv`, `.yaml`,
+`.log`, …) are shown in the gate (long bodies start folded). `.xml`,
+`.html`, `.svg` and `.js` stay a download: `neutralizeActiveMIME`
+downgrades them so the attachment route cannot serve executable bytes
+inline, and the studio preview classifier matches that set. A zip or
+other binary stays a download. Declaring
+the field as `file` in the gate's input schema sharpens the reading
+order; it is not required.
 
 > This is the writing counterpart of `[iterion] preview_screenshot=`,
 > which promotes a browser capture the same way.
