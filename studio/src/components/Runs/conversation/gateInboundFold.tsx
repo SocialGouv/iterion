@@ -10,6 +10,9 @@ export const MARKDOWN_PARSE_BUDGET = 20_000;
 /** Skip prettyJSON only above this. A few MB of parse+stringify is cheap; 20 KB is not. */
 export const JSON_PRETTY_BUDGET = 2_000_000;
 
+/** Do not blob.text() / line-split an attachment larger than this. */
+export const TEXT_PREVIEW_BYTE_BUDGET = 2_000_000;
+
 export function Toggle({
   open,
   onToggle,

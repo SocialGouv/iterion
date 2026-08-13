@@ -12,6 +12,7 @@ vi.mock("@/api/runs", async (importOriginal) => {
   };
 });
 
+import { TEXT_PREVIEW_BYTE_BUDGET } from "./gateInboundFold";
 import GateInboundPayload from "./GateInboundPayload";
 
 afterEach(() => {
@@ -199,6 +200,86 @@ describe("GateInboundPayload", () => {
     expect(screen.getByRole("link", { name: /download/i })).toBeTruthy();
     expect(screen.queryByRole("img")).toBeNull();
     expect(fetchAttachment).toHaveBeenCalledWith("run-1", "outline_file-609b6784");
+  });
+
+  it("does not inline a text attachment larger than the byte budget", async () => {
+    const blob = new Blob(["do-not-decode"], { type: "text/plain" });
+    Object.defineProperty(blob, "size", { value: TEXT_PREVIEW_BYTE_BUDGET + 1 });
+    fetchAttachment.mockResolvedValue({ blob, contentType: "text/plain" });
+
+    const { container } = render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          log_file: {
+            attachment: "log-huge-bytes",
+            filename: "build.log",
+            mime: "text/plain",
+            size: TEXT_PREVIEW_BYTE_BUDGET + 1,
+          },
+        }}
+        inputFields={[{ name: "log_file", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("do-not-decode")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+    expect(container.querySelector("pre")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("previews an extension-less markdown file from the declared mime", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["# Brief to review"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          brief: {
+            attachment: "brief-noext",
+            filename: "brief",
+            mime: "text/markdown",
+          },
+        }}
+        inputFields={[{ name: "brief", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: /brief to review/i })).toBeTruthy();
+  });
+
+  it("keeps a neutralized XML attachment as download even with a declared text/xml mime", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["<root/>"], { type: "application/octet-stream" }),
+      contentType: "application/octet-stream",
+    });
+    const createObjectURL = vi.fn(() => "blob:xml");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          spec: {
+            attachment: "spec-xml-declared",
+            filename: "data.xml",
+            mime: "text/xml",
+          },
+        }}
+        inputFields={[{ name: "spec", type: "file" }]}
+      />,
+    );
+
+    expect(await screen.findByRole("link", { name: /download/i })).toBeTruthy();
+    expect(screen.queryByText("<root/>")).toBeNull();
+    expect(screen.queryByRole("button", { name: /show all/i })).toBeNull();
+
+    vi.unstubAllGlobals();
   });
 
   it("previews a markdown brief as prose, not as a download-only row", async () => {

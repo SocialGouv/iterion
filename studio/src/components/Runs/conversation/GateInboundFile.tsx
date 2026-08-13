@@ -14,6 +14,7 @@ import {
   COLLAPSED_MAX_HEIGHT,
   JSON_PRETTY_BUDGET,
   MARKDOWN_PARSE_BUDGET,
+  TEXT_PREVIEW_BYTE_BUDGET,
   Toggle,
 } from "./gateInboundFold";
 import MarkdownText from "./MarkdownText";
@@ -50,7 +51,7 @@ export default function GateInboundFile({ runId, file }: Props) {
   );
   const [zoomed, setZoomed] = useState(false);
   const mime = contentType || file.mime || "";
-  const kind = textPreviewKind(mime, label);
+  const kind = classifyAttachmentPreview(contentType, file.mime, label);
 
   const meta = (
     <span className="text-micro text-fg-subtle">
@@ -90,11 +91,11 @@ export default function GateInboundFile({ runId, file }: Props) {
     );
   }
 
-  if (error || (!blobURL && textBody === null)) {
+  if (error) {
     return (
       <div className="space-y-0.5">
         <div className="text-micro text-danger-fg" role="alert">
-          Couldn't load {label}: {error ?? "no content"}
+          Couldn't load {label}: {error}
         </div>
         <a
           href={attachmentURL(runId, file.attachment)}
@@ -243,6 +244,22 @@ interface BlobState {
   error: string | null;
 }
 
+/** fetchAttachment defaults a missing header to octet-stream, so
+ *  `contentType || declaredMime` never sees the descriptor. Fall back
+ *  only when the server type is generic; a real image/zip stays media. */
+function classifyAttachmentPreview(
+  contentType: string,
+  declaredMime: string | undefined,
+  filename: string,
+): ReturnType<typeof textPreviewKind> {
+  const fromServer = textPreviewKind(contentType, filename);
+  if (fromServer) return fromServer;
+  const [rawType] = contentType.toLowerCase().split(";");
+  const ct = (rawType ?? "").trim();
+  if (ct !== "" && ct !== "application/octet-stream") return null;
+  return textPreviewKind(declaredMime ?? "", filename);
+}
+
 /**
  * Fetch an attachment as text (documents / JSON) or as an ObjectURL
  * (media). Same generation discipline as usePreview: a gate can
@@ -273,8 +290,20 @@ function useAttachmentBlob(
     fetchAttachment(runId, name)
       .then(async ({ blob, contentType }) => {
         if (cancelled) return;
-        const kind = textPreviewKind(contentType || declaredMime || "", filename);
+        const kind = classifyAttachmentPreview(contentType, declaredMime, filename);
         if (kind) {
+          if (blob.size > TEXT_PREVIEW_BYTE_BUDGET) {
+            // Too large to decode into a JS string. Fall through to
+            // the download row — do not ObjectURL a text body.
+            setState({
+              blobURL: null,
+              textBody: null,
+              contentType,
+              loading: false,
+              error: null,
+            });
+            return;
+          }
           const textBody = await blob.text();
           if (cancelled) return;
           setState({
