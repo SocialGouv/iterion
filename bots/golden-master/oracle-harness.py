@@ -87,12 +87,33 @@ REQUIRED_ARCHETYPES = {
     # written in one place and checked in none is the defect this harness exists
     # to catch, one level up.
     "canvas": ["content_empty", "render_drift"],
-    # `write` is the surface no read-only capture can reach. Its archetype is
-    # required for the same reason the binary one is: without it the lane can be
-    # present, green, and blind — a round trip that stores something other than
-    # what it was given, with every served byte identical.
-    "write":  ["roundtrip_corruption"],
+    # `write` is the surface no read-only capture can reach. Its archetypes are
+    # required for the same reason the binary one is: without them the lane can
+    # be present, green, and blind — a round trip that stores something other
+    # than what it was given, or a creation that silently stopped persisting,
+    # with every served byte identical.
+    "write":  ["roundtrip_corruption", "create_lost"],
 }
+
+# Required corpus probes. Same enforcement doctrine as REQUIRED_ARCHETYPES: the
+# skill explains each one, this constant binds the campaign. Every probe here
+# exists because a real regression class lived in a corpus hole that no mutant
+# could reach — a mutant tests the COMPARATOR on what the corpus watches; a
+# probe forces the corpus to watch a class of surface teams systematically
+# skip. An entry claims a probe through its `probes` list; where a shape can be
+# checked mechanically, it is, so a tag without substance does not count.
+#
+#   write_create          a write entry that CREATES (INSERT), not only updates
+#   error_then_corrected  a multi-step write: an invalid submission, then the
+#                         corrected one — the round trip users actually make
+#   case_pair             two read entries whose paths differ ONLY by case —
+#                         collation and case-folding drift become visible
+#   text_sort             a listing ordered on a TEXTUAL key — numeric-id sorts
+#                         cannot see collation-order drift
+#   auth_case             a persona whose login differs only by case from
+#                         another persona's — identifier case-sensitivity drift
+REQUIRED_CORPUS_PROBES = ("write_create", "error_then_corrected",
+                          "case_pair", "text_sort", "auth_case")
 
 CONTROL_SAMPLE = 6          # non-target entries replayed per mutant, for collateral
 UP_LOG_LINES = 40           # lignes de `config.up` publiees dans le journal
@@ -281,7 +302,13 @@ def open_sessions(config):
         s = Session(resolve_base_url(config, os.environ.get("GM_WORKSPACE", ".")))
         if p.get("login"):
             code = s.login(p["login"])
-            if code >= 400:
+            # A case-variant persona is ALLOWED to be refused: whether the
+            # application folds identifier case is precisely the behaviour the
+            # `auth_case` probe pins, and the refusal is the reference then.
+            # For every other persona a failed login stays fatal — a capture
+            # taken with a broken session records the login page as every
+            # reference.
+            if code >= 400 and not p.get("case_variant_of"):
                 raise SystemExit(
                     "persona %r could not log in (HTTP %s) — a capture taken with a "
                     "broken session records the login page as every reference"
@@ -761,21 +788,41 @@ def capture(config, corpus, canon, ids=None):
                 # A write entry therefore captures TWO things: what the write
                 # answers, and what the readback renders. The second is the one
                 # that counts — that is where content comes back deformed.
-                fields = dict(e.get("fields") or {})
                 # The token comes off the FORM. A security major can turn CSRF
                 # on for state-changing requests where it was off; without it
                 # the entry captures a refusal and yields a reference that can
                 # never fail again — the very defect family this net hunts.
                 tok_field = e.get("csrf_field")
+                tok = None
                 if tok_field:
                     _, _, form_body = s.fetch("GET", e["path"])
                     tok = extract_input_value(form_body, tok_field)
-                    if tok:
-                        fields[tok_field] = tok
-                w_status, w_headers, _ = s.fetch(
-                    e.get("method", "POST"), e["path"], fields=fields,
-                    follow=not e.get("no_redirect", False),
-                )
+
+                def write_once(method, path, fields):
+                    f = dict(fields or {})
+                    if tok_field and tok:
+                        f[tok_field] = tok
+                    return s.fetch(method, path, fields=f,
+                                   follow=not e.get("no_redirect", False))
+
+                steps = e.get("steps") or []
+                trail = []
+                if steps:
+                    # A SEQUENCE, captured whole, in one session. The probe
+                    # this exists for is `error_then_corrected`: submit an
+                    # invalid form, then submit its correction. What must not
+                    # regress is the JOURNEY — an error state that sticks to
+                    # the re-rendered form turns every later submission into a
+                    # refusal, and a single-shot write can never see it.
+                    for st in steps:
+                        st_status, st_headers, st_body = write_once(
+                            st.get("method", e.get("method", "POST")),
+                            st.get("path", e["path"]), st.get("fields"))
+                        trail.append((st_status, st_body))
+                    w_status, w_headers = st_status, st_headers
+                else:
+                    w_status, w_headers, _ = write_once(
+                        e.get("method", "POST"), e["path"], e.get("fields"))
                 rb = e.get("readback")
                 if not rb:
                     raise SystemExit(
@@ -784,7 +831,8 @@ def capture(config, corpus, canon, ids=None):
                         "which is close to nothing" % e["id"])
                 r_status, r_headers, r_body = s.fetch("GET", rb)
                 status, headers = w_status, w_headers
-                body = (r_status, r_headers, r_body)
+                body = ((trail, (r_status, r_headers, r_body)) if steps
+                        else (r_status, r_headers, r_body))
             else:
                 status, headers, body = s.fetch(
                     e.get("method", "GET"), e["path"], fields=e.get("fields"),
@@ -866,6 +914,158 @@ def missing_archetypes(corpus, mutants):
             if archetype not in have.get(surface, set()):
                 gaps.append({"surface": surface, "archetype": archetype})
     return gaps
+
+
+def missing_corpus_probes(corpus, config):
+    """Required corpus probes absent or claimed without substance.
+
+    A probe is CLAIMED by an entry's `probes` list and COUNTS only when its
+    mechanical shape holds — a tag alone is a declaration, and declarations are
+    exactly what this harness refuses to grade. Checked before the application
+    is booted, like the archetypes: a corpus with a hole in it cannot buy the
+    figure back at capture time.
+    """
+    entries = corpus["entries"]
+    tagged = {}
+    for e in entries:
+        for p in e.get("probes", []):
+            tagged.setdefault(p, []).append(e)
+    gaps = []
+
+    ok_create = any(e.get("surface") == "write" and e.get("method", "POST") != "GET"
+                    for e in tagged.get("write_create", []))
+    if not ok_create:
+        gaps.append({"probe": "write_create",
+                     "why": "no write entry creates anything — the net only ever "
+                            "updates, and a broken creation path moves no reference"})
+
+    ok_seq = any(e.get("surface") == "write" and len(e.get("steps") or []) >= 2
+                 for e in tagged.get("error_then_corrected", []))
+    if not ok_seq:
+        gaps.append({"probe": "error_then_corrected",
+                     "why": "no multi-step write replays an invalid submission "
+                            "followed by its correction (needs `steps`, >= 2)"})
+
+    pair = [e.get("path", "") for e in tagged.get("case_pair", [])]
+    ok_pair = any(a.lower() == b.lower() and a != b
+                  for i, a in enumerate(pair) for b in pair[i + 1:])
+    if not ok_pair:
+        gaps.append({"probe": "case_pair",
+                     "why": "no two entries differ only by case in their path — "
+                            "case-folding and collation drift stay invisible"})
+
+    ok_sort = any("?" in e.get("path", "") for e in tagged.get("text_sort", []))
+    if not ok_sort:
+        gaps.append({"probe": "text_sort",
+                     "why": "no entry orders a listing on a textual key (tag one "
+                            "whose query string carries the sort)"})
+
+    personas = {p.get("name"): p for p in config.get("personas", [])}
+    ok_auth = False
+    for p in personas.values():
+        ref = personas.get(p.get("case_variant_of"))
+        if not ref:
+            continue
+        mine = (p.get("login") or {}).get("fields") or {}
+        theirs = (ref.get("login") or {}).get("fields") or {}
+        low = lambda d: {k: str(v).lower() for k, v in d.items()}
+        observed = any(e.get("persona") == p.get("name") for e in entries)
+        if mine and low(mine) == low(theirs) and mine != theirs and observed:
+            ok_auth = True
+    if not ok_auth:
+        gaps.append({"probe": "auth_case",
+                     "why": "no corpus entry observes a persona whose login is a "
+                            "case variant of another persona's (declare "
+                            "`case_variant_of` and use the persona in an entry)"})
+
+    return gaps
+
+
+# ─── Route coverage — the corpus states its own perimeter ───────────────────
+
+def route_regex(pattern):
+    """One route pattern -> anchored regex over the PATH part of an entry.
+
+    `{x}` and `:x` match one segment, `*` one segment, `**` any tail. Nothing
+    else is interpreted — in particular a trailing slash is NOT folded away:
+    with-slash and without-slash are different routes, and the difference has
+    shipped real 404s.
+    """
+    out = []
+    for seg in pattern.split("/"):
+        if seg == "**":
+            out.append(".*")
+        elif seg == "*" or (seg.startswith("{") and seg.endswith("}")) or seg.startswith(":"):
+            out.append("[^/]+")
+        else:
+            out.append(re.escape(seg))
+    return re.compile("^" + "/".join(out) + "$")
+
+
+def route_gaps(routes, corpus, exclusions):
+    """Routes the corpus does not cover and the exclusions do not justify.
+
+    `routes` : [{"method": "GET"|None, "pattern": "/x/{id}"}]
+    `exclusions` : {pattern: reason} — validated by the caller (reason
+    mandatory there; here they are simply honoured).
+    """
+    paths = [(e.get("method", "GET").upper(), e.get("path", "").split("?")[0])
+             for e in corpus["entries"] if e.get("path")]
+    uncovered = []
+    for r in routes:
+        if r["pattern"] in exclusions:
+            continue
+        rx = route_regex(r["pattern"])
+        hit = any((r["method"] is None or r["method"] == m) and rx.match(p)
+                  for m, p in paths)
+        if not hit:
+            uncovered.append((r["method"] + " " if r["method"] else "") + r["pattern"])
+    return uncovered
+
+
+def route_coverage(gm_dir, config, corpus, ws):
+    """Runs the target's `routes_probe`, honours justified exclusions, returns
+    (uncovered, total, excluded). Raises SystemExit with the cause on refusal.
+
+    The probe is the TARGET's statement of its own surface — one route per
+    line, `METHOD /path/{param}` or bare `/path`, `#` comments allowed. It is
+    written by the campaign next to `state_probe`, because only the target
+    knows its stack; the harness only refuses a net that cannot state the
+    perimeter it claims to defend.
+    """
+    code, out = run(config["routes_probe"], ws, timeout=120)
+    if code != 0:
+        raise SystemExit("routes_probe failed (exit %s):\n%s" % (code, out[-1500:]))
+    routes = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, _, tail = line.partition(" ")
+        if tail and head.isalpha() and head.isupper():
+            routes.append({"method": head, "pattern": tail.strip()})
+        else:
+            routes.append({"method": None, "pattern": line})
+    if not routes:
+        raise SystemExit("routes_probe printed no route — an empty perimeter is a "
+                         "statement the corpus covers everything, and it is false "
+                         "by construction")
+
+    exclusions = {}
+    excl_path = os.path.join(gm_dir, "route-coverage.json")
+    if os.path.isfile(excl_path):
+        with open(excl_path, encoding="utf-8") as f:
+            declared = json.load(f).get("exclusions", [])
+        for x in declared:
+            if not (x.get("route") and (x.get("reason") or "").strip()):
+                raise SystemExit(
+                    "route-coverage.json carries an exclusion without a written "
+                    "reason (%r). An exclusion is a decision; a decision has a "
+                    "cause or it is a hole." % x)
+            exclusions[x["route"]] = x["reason"]
+
+    uncovered = route_gaps(routes, corpus, exclusions)
+    return uncovered, len(routes), len(exclusions)
 
 
 
@@ -1453,6 +1653,67 @@ def _selftest():
         v, state = probe_mutation({"id": "t", "dir": "/dev/null", "targets": []}, "/dev/null")
         check("sans cible -> echec", state, "failed")
         check("sans cible -> cause dite", "no targets" in v.get("reason", ""), True)
+
+        # 7. Sondes de corpus : un tag sans la substance mecanique ne compte pas.
+        probes_cfg = {"personas": [
+            {"name": "admin", "login": {"fields": {"email": "a@x", "password": "p"}}},
+            {"name": "admin-case", "case_variant_of": "admin",
+             "login": {"fields": {"email": "A@X", "password": "p"}}}]}
+        full = {"entries": [
+            {"id": "001", "surface": "write", "method": "POST", "path": "/w",
+             "probes": ["write_create"], "readback": "/r"},
+            {"id": "002", "surface": "write", "method": "POST", "path": "/w2",
+             "probes": ["error_then_corrected"], "readback": "/r",
+             "steps": [{"fields": {"a": ""}}, {"fields": {"a": "b"}}]},
+            {"id": "003", "path": "/list?q=Teacher", "probes": ["case_pair"]},
+            {"id": "004", "path": "/list?q=teacher", "probes": ["case_pair"]},
+            {"id": "005", "path": "/list?sort=name,asc", "probes": ["text_sort"]},
+            {"id": "006", "path": "/board", "persona": "admin-case"},
+        ]}
+        check("toutes sondes presentes -> aucun manque",
+              missing_corpus_probes(full, probes_cfg), [])
+        deg = json.loads(json.dumps(full))
+        deg["entries"].pop()   # la variante existe mais aucune entree ne l'observe
+        check("variante de casse jamais observee -> manque",
+              [x["probe"] for x in missing_corpus_probes(deg, probes_cfg)],
+              ["auth_case"])
+        deg = json.loads(json.dumps(full))
+        deg["entries"][0]["method"] = "GET"
+        check("creation en GET -> ne compte pas",
+              [x["probe"] for x in missing_corpus_probes(deg, probes_cfg)],
+              ["write_create"])
+        deg = json.loads(json.dumps(full))
+        deg["entries"][1].pop("steps")
+        check("sequence sans steps -> manque nomme",
+              [x["probe"] for x in missing_corpus_probes(deg, probes_cfg)],
+              ["error_then_corrected"])
+        deg = json.loads(json.dumps(full))
+        deg["entries"][3]["path"] = "/list?q=Teacher"
+        check("paire de casse sans difference -> manque",
+              [x["probe"] for x in missing_corpus_probes(deg, probes_cfg)],
+              ["case_pair"])
+        deg_cfg = json.loads(json.dumps(probes_cfg))
+        deg_cfg["personas"][1]["login"]["fields"]["email"] = "a@x"
+        check("login variante sans difference de casse -> manque",
+              [x["probe"] for x in missing_corpus_probes(full, deg_cfg)],
+              ["auth_case"])
+
+        # 8. Perimetre : motifs, methode, slash final jamais plie, exclusions.
+        routes = [{"method": "GET", "pattern": "/list"},
+                  {"method": None, "pattern": "/items/{id}"},
+                  {"method": "GET", "pattern": "/admin/"},
+                  {"method": "POST", "pattern": "/w"}]
+        rcorpus = {"entries": [{"id": "1", "path": "/list?page=2"},
+                               {"id": "2", "path": "/items/42"},
+                               {"id": "3", "method": "POST", "path": "/w"},
+                               {"id": "4", "path": "/admin"}]}
+        check("motif {id} et query couverts, slash final NON plie",
+              route_gaps(routes, rcorpus, {}), ["GET /admin/"])
+        check("exclusion justifiee honoree",
+              route_gaps(routes, rcorpus, {"/admin/": "retiree du perimetre"}), [])
+        check("un GET ne couvre pas un POST",
+              route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
+              ["POST /list"])
     finally:
         g.update(saved)
 
@@ -1489,6 +1750,8 @@ def main():
               "noop_silent": False, "revert_clean": True, "collateral": 0,
               "unstable_controls": [],
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
+              "missing_corpus_probes": [], "uncovered_routes": [],
+              "routes_total": 0, "routes_excluded": 0,
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
@@ -1634,6 +1897,36 @@ def main():
                  "leaves that defect undetectable, so the run would report a figure it "
                  "has not earned. See skills/oracle-mutation.md."
                  % json.dumps(gaps, ensure_ascii=False))
+
+        probe_gaps = missing_corpus_probes(corpus, config)
+        if probe_gaps:
+            report["missing_corpus_probes"] = probe_gaps
+            bail("the corpus is missing required probes: %s. A mutant can only test "
+                 "what the corpus watches; every probe here is a regression class "
+                 "that shipped through a corpus hole once. See "
+                 "skills/surface-discovery.md."
+                 % json.dumps(probe_gaps, ensure_ascii=False))
+
+        # The perimeter check runs on the TREE, before the application boots:
+        # an unwatched route is a fact of the corpus, not of the run.
+        if not config.get("routes_probe"):
+            bail("config declares no `routes_probe`: the net cannot state the "
+                 "perimeter it claims to defend. Write one next to `state_probe` — "
+                 "one route per line, printed from the target's own routing "
+                 "declarations — and justify every deliberate hole in "
+                 "route-coverage.json.")
+        try:
+            uncovered, r_total, r_excl = route_coverage(gm_dir, config, corpus, ws)
+        except SystemExit as e:
+            bail(str(e))
+        report["routes_total"], report["routes_excluded"] = r_total, r_excl
+        if uncovered:
+            report["uncovered_routes"] = uncovered
+            bail("%d route(s) the corpus never touches: %s%s. Cover each one, or write "
+                 "its exclusion WITH ITS REASON in route-coverage.json — an unwatched "
+                 "route is exactly where the last regression class shipped."
+                 % (len(uncovered), ", ".join(uncovered[:20]),
+                    ", …" if len(uncovered) > 20 else ""))
 
     try:
         app_up(config, ws)

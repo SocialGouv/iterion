@@ -90,7 +90,10 @@ must exist and be detected.
    "recipe":"change one purely visual option the declaration does not carry — a doughnut's hole, a bar's orientation — so the data are untouched and only the drawing moves"},
   {"surface":"write","archetype":"roundtrip_corruption","required":true,
    "catches":"a net that only ever READS — a corruption applied when content is stored moves no reference at all, so every entry stays green while each save degrades what is kept",
-   "recipe":"deform the content on the way IN, in a way that renders identically on the way out: swap a semantic tag for a presentational one with the same appearance, normalise an attribute, or drop one the renderer does not use"}
+   "recipe":"deform the content on the way IN, in a way that renders identically on the way out: swap a semantic tag for a presentational one with the same appearance, normalise an attribute, or drop one the renderer does not use"},
+  {"surface":"write","archetype":"create_lost","required":true,
+   "catches":"a creation that answers success and persists nothing — a lane that replays the form, reads the answer, and never notices the resource does not exist",
+   "recipe":"make the creation path drop its persistence silently (swallow the save, short-circuit the handler) while keeping the success response identical; only the readback can tell"}
 ]
 -->
 

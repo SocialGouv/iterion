@@ -49,9 +49,24 @@ Collation determines `ORDER BY` for text, which is exactly what shifts when the 
 changes. If the reference was recorded under a different collation from the one the migration
 lands on, the drift is invisible — and that drift is the whole point of capturing it.
 
+**Seeded ids and the allocator.** A fixture that inserts rows at explicit ids leaves the
+engine's id allocator behind the data on engines where the two are separate objects — the seed
+loads, every read is green, and the first INSERT through the application dies on a duplicate
+key. Reposition the allocator after every seeded table, and **prove the world is insertable**:
+one INSERT per seeded table (rolled back or restored) belongs to the fixture's own checks. The
+`write_create` corpus probe then keeps it honest end to end.
+
 **Outbound calls.** Anything reaching a third party must be stubbed or pointed at a local sink,
 otherwise the reference encodes someone else's uptime. A local SMTP sink with a read API is
 enough for mail flows.
+
+A record-and-replay stub only knows the requests something once drove through it — and a stub
+recorded by browsing READ pages does not know the queries that only fire on WRITE paths:
+server-side validators commonly call a referential with a query shape no listing page ever
+produces. Drive the recording through the write and validation flows the corpus replays
+(submit the forms, trip the validators), or the write lane will fail against the stub while
+every read passes. A stub that answers "not recorded" is doing its job: it is naming a flow
+the recording never exercised.
 
 **What NOT to freeze.** Do not neutralise volatile values in the *data* when the canonicaliser
 should be handling them in the *capture*. If logging in updates a last-login timestamp that
