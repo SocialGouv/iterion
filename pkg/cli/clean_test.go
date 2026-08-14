@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -701,6 +702,398 @@ func TestClean_SparedEntriesCarryTheirSize(t *testing.T) {
 	}
 }
 
+// A bare repository has no `.git` at all — it IS the git directory. A
+// `.git`-name search walks straight past a vendored mirror or cache whose
+// objects exist nowhere else.
+func TestClean_RefusesWorktreeHoldingABareRepo(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("bare")
+	f.mergeIntoMain("bare")
+	f.seedRun("bare", store.RunStatusFinished)
+
+	bare := filepath.Join(path, "vendor", "mirror.git")
+	mustMkdir(t, bare)
+	f.git(filepath.Dir(bare), "init", "--bare", "mirror.git")
+	if !looksLikeGitDir(bare) {
+		t.Fatalf("fixture did not produce a bare repo at %s", bare)
+	}
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["bare"] {
+		t.Fatal("deleted a worktree holding a bare repository")
+	}
+	if got := sparedReason(r, "bare"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, bare, "bare repo")
+}
+
+// The classification is a photograph and the sweep runs for tens of
+// seconds. The run lock says nothing about the writer that matters here:
+// an operator, an editor, an agent working outside iterion.
+func TestClean_RechecksTheTreeImmediatelyBeforeDeleting(t *testing.T) {
+	f := newCleanFixture(t)
+	for i, id := range []string{"first", "racy"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour) // first is swept first
+	}
+	racy := filepath.Join(f.store, "worktrees", "racy")
+
+	// The whole scan runs before the first deletion, so writing while
+	// `first` is being removed lands squarely in the window between
+	// `racy`'s classification and its deletion.
+	real := removeTree
+	removeTree = func(p string) error {
+		if filepath.Base(p) == "first" {
+			mustWrite(t, filepath.Join(racy, "URGENT.md"), "written while the sweep was walking\n")
+		}
+		return real(p)
+	}
+	t.Cleanup(func() { removeTree = real })
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["racy"] {
+		t.Fatal("deleted a worktree that became dirty after it was classified")
+	}
+	if got := sparedReason(r, "racy"); got != skipLevel {
+		t.Fatalf("spared for %q, want %q", got, skipLevel)
+	}
+	mustExist(t, filepath.Join(racy, "URGENT.md"), "work written during the sweep")
+}
+
+// Porcelain renders a rename as one line, `XY ORIG -> DEST`. Judging it
+// on ORIG lets a file moved OUT of the scaffold carry the whole entry
+// with it, and the destination — real uncommitted work — is never seen.
+func TestClean_ScaffoldExclusionJudgesARenameOnItsDestination(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("renamed")
+	mustMkdir(t, filepath.Join(path, ".claude", "skills"))
+	mustWrite(t, filepath.Join(path, ".claude", "skills", "s.md"), "mirrored\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "scaffold")
+	f.mergeIntoMain("renamed")
+	f.seedRun("renamed", store.RunStatusFinished)
+
+	f.git(path, "mv", ".claude/skills/s.md", "DESIGN_NOTES.md")
+	mustWrite(t, filepath.Join(path, "DESIGN_NOTES.md"), "mirrored\nand a day of my own notes\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["renamed"] {
+		t.Fatal("the scaffold exclusion swallowed a rename out of .claude/ and deleted the work")
+	}
+	mustExist(t, filepath.Join(path, "DESIGN_NOTES.md"), "renamed-out work")
+}
+
+// The exclusion covers the mirror, not everything a run may write beside
+// it under .claude/.
+func TestClean_OnlyTheSkillsMirrorIsExcludedFromDirty(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("wrote")
+	f.mergeIntoMain("wrote")
+	f.seedRun("wrote", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, ".claude"))
+	// Deliberately not a *.local.json: a developer's global gitignore
+	// commonly covers those, and this test is about the exclusion in the
+	// code, not about the machine it runs on.
+	runWritten := filepath.Join(path, ".claude", "notes-from-the-run.md")
+	mustWrite(t, runWritten, "the run wrote this itself\n")
+	if out := f.git(path, "status", "--porcelain", "--untracked-files=all"); !strings.Contains(out, "notes-from-the-run") {
+		t.Skipf("this machine's git ignores the probe file: %q", out)
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["wrote"] {
+		t.Fatal("conservative deleted a worktree whose run wrote under .claude/ outside the mirror")
+	}
+	mustExist(t, runWritten, "run-written file")
+}
+
+// %(*objectname) dereferences one level, so a tag on a tag peels to
+// another tag object and compares unequal all over again.
+func TestClean_TagOfTagOnHeadIsStillALabel(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("doubletag")
+	f.seedRun("doubletag", store.RunStatusFinished)
+	head := f.git(path, "rev-parse", "HEAD")
+	f.git(f.repo, "tag", "-a", "v1", "-m", "one", head)
+	f.git(f.repo, "tag", "-a", "v1-signed", "-m", "two", "v1")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "doubletag"); got != landingOwnBranch {
+		t.Fatalf("landing %q, want %q — a tag of a tag on HEAD is still a label", got, landingOwnBranch)
+	}
+	mustExist(t, path, "double-tagged worktree")
+}
+
+// os.RemoveAll succeeds on a path that is already gone, so two sweeps
+// would each claim the deletion and its bytes.
+func TestClean_DoesNotClaimAWorktreeAnotherSweepAlreadyTook(t *testing.T) {
+	f := newCleanFixture(t)
+	for i, id := range []string{"first", "contended"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
+	}
+	contended := filepath.Join(f.store, "worktrees", "contended")
+
+	real := removeTree
+	removeTree = func(p string) error {
+		if filepath.Base(p) == "first" {
+			_ = os.RemoveAll(contended) // the other sweep got there first
+		}
+		return real(p)
+	}
+	t.Cleanup(func() { removeTree = real })
+
+	// aggressive, so the pre-delete dirty re-check (which a vanished path
+	// also trips) is not what spares it: this is about the guard on the
+	// path having already gone.
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if r.DeletedCount != 1 {
+		t.Fatalf("claimed %d deletions; only `first` was actually removed by this sweep", r.DeletedCount)
+	}
+	if deletedPaths(r)["contended"] {
+		t.Fatal("claimed a worktree another sweep had already taken")
+	}
+	var want int64
+	for _, wt := range r.Deleted {
+		want += wt.Bytes
+	}
+	if r.BytesReclaimed != want {
+		t.Fatalf("BytesReclaimed = %d, want %d", r.BytesReclaimed, want)
+	}
+}
+
+// A git that answers `version` but fails per directory — dubious
+// ownership, a corrupt object, EACCES on .git — must not read as a
+// directory that is not a repository, which aggressive deletes.
+func TestClean_PerDirectoryGitFailureIsNotAnOrphan(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("unreadable")
+	f.mergeIntoMain("unreadable")
+	f.seedRun("unreadable", store.RunStatusFinished)
+
+	breakGit(t, "rev-parse")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "unreadable"); got == landingOrphan {
+		t.Fatal("a git failure that is not `not a git repository` was read as an orphan")
+	}
+	if deletedPaths(r)["unreadable"] {
+		t.Fatal("deleted a worktree git could not answer for")
+	}
+	mustExist(t, path, "worktree git could not answer for")
+}
+
+func TestClean_SubmoduleStatusFailureIsRefused(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("subfail")
+	f.mergeIntoMain("subfail")
+	f.seedRun("subfail", store.RunStatusFinished)
+
+	breakGit(t, "submodule")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["subfail"] {
+		t.Fatal("deleted although git could not say whether a submodule was present")
+	}
+	if got := sparedReason(r, "subfail"); got != skipUnlanded {
+		t.Fatalf("spared for %q, want %q", got, skipUnlanded)
+	}
+	mustExist(t, path, "worktree with unanswerable submodule status")
+}
+
+// The walk is what proves there is no repository hiding in the tree. A
+// walk that could not finish has not proved it.
+func TestClean_UnreadableSubtreeIsRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f := newCleanFixture(t)
+	path := f.addWorktree("blind")
+	f.mergeIntoMain("blind")
+	f.seedRun("blind", store.RunStatusFinished)
+
+	hidden := filepath.Join(path, "hidden")
+	mustMkdir(t, hidden)
+	mustWrite(t, filepath.Join(hidden, "f"), "x")
+	if err := os.Chmod(hidden, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o700) })
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["blind"] {
+		t.Fatal("deleted a worktree whose tree could not be fully read")
+	}
+	if got := sparedReason(r, "blind"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, path, "worktree with an unreadable subtree")
+}
+
+// git suffixes colliding worktree basenames, so `<id>` and `<id>1` may
+// live in two different stores — and the unsuffixed one may be the
+// operator's. Matching on the recorded gitdir is the only way to know.
+func TestClean_DropsTheRegistrationThatNamesTheDeletedPath(t *testing.T) {
+	f := newCleanFixture(t)
+	// The operator's worktree, registered FIRST so it takes the plain name.
+	operator := filepath.Join(f.root, "operator", "shared")
+	mustMkdir(t, filepath.Dir(operator))
+	f.git(f.repo, "worktree", "add", "-b", "operator-work", operator)
+	mustWrite(t, filepath.Join(operator, "staged.txt"), "staged\n")
+	f.git(operator, "add", "staged.txt")
+
+	// iterion's worktree, same basename: git gives it a suffixed admin dir.
+	f.addWorktree("shared")
+	f.mergeIntoMain("shared")
+	f.seedRun("shared", store.RunStatusFinished)
+
+	adminRoot := filepath.Join(f.repo, ".git", "worktrees")
+	before, err := os.ReadDir(adminRoot)
+	if err != nil || len(before) != 2 {
+		t.Fatalf("fixture did not produce two registrations: %v (%d)", err, len(before))
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if r.RegistrationsPruned != 1 {
+		t.Fatalf("dropped %d registration(s), want exactly 1", r.RegistrationsPruned)
+	}
+	// The operator's worktree must still work, index and all.
+	out, err := f.gitErr(operator, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("the operator's worktree is broken after the sweep: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "staged.txt") {
+		t.Fatalf("the operator's worktree lost its staged work: %q", out)
+	}
+}
+
+// The dry run must not reach the store either.
+func TestClean_DryRunKeepsRunRecordsEvenWithWithRuns(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	r := f.run(CleanOptions{OlderThan: 0, WithRuns: true}) // no Apply
+	if len(r.Deleted) != 1 || r.Deleted[0].RunDeleted {
+		t.Fatalf("dry run reports a deleted run record: %+v", r.Deleted)
+	}
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if _, err := s.LoadRun(context.Background(), "merged"); err != nil {
+		t.Fatalf("dry run deleted the run record: %v", err)
+	}
+}
+
+// The dry run never reaches the lock or the status re-read, so guard 1
+// has to hold on its own in the listing an operator reads before
+// deciding.
+func TestClean_DryRunAlsoSparesNonTerminalRuns(t *testing.T) {
+	for _, status := range []store.RunStatus{
+		store.RunStatusQueued,
+		store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newCleanFixture(t)
+			f.addWorktree("live")
+			f.mergeIntoMain("live")
+			f.seedRun("live", status)
+
+			r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0}) // no Apply
+			if r.DeletedCount != 0 {
+				t.Fatalf("dry run offers to delete the worktree of a %s run", status)
+			}
+			if got := sparedReason(r, "live"); got != skipRunActive {
+				t.Fatalf("spared for %q, want %q", got, skipRunActive)
+			}
+		})
+	}
+}
+
+// A checkpoint ref that CONTAINS the head — a later turn of the same run
+// — still is not another line of work adopting it.
+func TestClean_ALaterIterionCheckpointIsStillNotAMerge(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("turns")
+	f.seedRun("turns", store.RunStatusFinished)
+	head := f.git(path, "rev-parse", "HEAD")
+	// A later commit, recorded as the run's next checkpoint.
+	mustWrite(t, filepath.Join(path, "next.txt"), "turn 2\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "turn 2")
+	later := f.git(path, "rev-parse", "HEAD")
+	f.git(path, "reset", "--hard", head)
+	f.git(f.repo, "update-ref", "refs/iterion/runs/turns/nodes/n/1", later)
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "turns"); got != landingOwnBranch {
+		t.Fatalf("landing %q, want %q — a checkpoint of the same run is not an adoption", got, landingOwnBranch)
+	}
+	if deletedPaths(r)["turns"] {
+		t.Fatal("conservative took a worktree held only by iterion's own later checkpoint")
+	}
+}
+
+// A leaked lock would make every later sweep a no-op.
+func TestClean_ReleasesTheRunLock(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("first")
+	f.mergeIntoMain("first")
+	f.seedRun("first", store.RunStatusFinished)
+	f.addWorktree("second")
+	f.mergeIntoMain("second")
+	f.seedRun("second", store.RunStatusFinished)
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true, WithRuns: false})
+	if r.DeletedCount != 2 {
+		t.Fatalf("deleted %d, want 2 — a leaked lock would have stopped the second", r.DeletedCount)
+	}
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	lock, err := s.LockRun(context.Background(), "first")
+	if err != nil {
+		t.Fatalf("the run lock was not released: %v", err)
+	}
+	_ = lock.Unlock()
+}
+
+// keep-last is a floor on what survives, not a quota on the scan: an
+// entry already spared for another reason must not consume a slot.
+func TestClean_KeepLastDoesNotSpendSlotsOnAlreadySparedEntries(t *testing.T) {
+	f := newCleanFixture(t)
+	for i, id := range []string{"old", "mid"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
+	}
+	// The most recent entry is spared for another reason entirely.
+	f.addWorktree("live")
+	f.mergeIntoMain("live")
+	f.seedRun("live", store.RunStatusRunning)
+
+	r := f.run(CleanOptions{OlderThan: 0, KeepLast: 1, Apply: true})
+	if got := sparedReason(r, "mid"); got != skipKeepLast {
+		t.Fatalf("mid spared for %q, want %q — keep-last must still hold back a real candidate", got, skipKeepLast)
+	}
+	if got := sparedReason(r, "live"); got != skipRunActive {
+		t.Errorf("live spared for %q, want %q — its real reason must not be masked", got, skipRunActive)
+	}
+	if !deletedPaths(r)["old"] {
+		t.Error("the oldest candidate was not taken")
+	}
+}
+
 // --- the levels ------------------------------------------------------------
 
 // Landing is decided by whether a ref was BUILT UPON the commits or
@@ -863,31 +1256,59 @@ func TestClean_DropsOwnRegistrationAndSparesAbsentForeignOnes(t *testing.T) {
 
 // --- failure handling ------------------------------------------------------
 
-// A failed deletion must not abort the sweep: returning early strands the
-// deletions already made with no report at all.
-func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
+// A read-only subtree is not a reason to give up half way. The Go module
+// cache is laid down at 0555 by the go tool, so any worktree that fetched
+// a module holds hundreds of such directories: a plain os.RemoveAll walks
+// in, destroys everything up to the first one, and fails — leaving a
+// mangled multi-gigabyte tree that every later sweep re-mangles.
+func TestClean_RemovesTreesHoldingReadOnlyDirectories(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
+	root := t.TempDir()
+	tree := filepath.Join(root, "worktree")
+	modcache := filepath.Join(tree, "go", "pkg", "mod", "golang.org", "toolchain")
+	mustMkdir(t, modcache)
+	mustWrite(t, filepath.Join(tree, "keep.txt"), "x")
+	mustWrite(t, filepath.Join(modcache, "go"), "binary")
+	if err := os.Chmod(modcache, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(modcache, 0o700) })
+
+	if err := os.RemoveAll(tree); err == nil {
+		t.Skip("this platform lets RemoveAll through a read-only directory")
+	}
+	if err := removeAllForce(tree); err != nil {
+		t.Fatalf("removeAllForce: %v", err)
+	}
+	mustNotExist(t, tree, "tree with a read-only subtree")
+}
+
+// A failed deletion must not abort the sweep: returning early strands the
+// deletions already made with no report at all.
+func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
 	f := newCleanFixture(t)
 	for i, id := range []string{"aaa", "bbb", "ccc"} {
 		f.addWorktree(id)
 		f.mergeIntoMain(id)
 		f.seedRun(id, store.RunStatusFinished)
-		f.backdate(id, time.Duration(90-i)*24*time.Hour) // aaa oldest
+		f.backdate(id, time.Duration(90-i)*24*time.Hour) // aaa oldest, ccc newest
 	}
-	// Make bbb undeletable.
-	locked := filepath.Join(f.store, "worktrees", "bbb", "locked")
-	mustMkdir(t, locked)
-	mustWrite(t, filepath.Join(locked, "file"), "x")
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatalf("chmod: %v", err)
+	// bbb sits in the MIDDLE of the sweep order, so "the sweep carried on"
+	// is what the assertions below actually observe.
+	failing := filepath.Join(f.store, "worktrees", "bbb")
+	real := removeTree
+	removeTree = func(p string) error {
+		if p == failing {
+			return errors.New("simulated: another owner's file")
+		}
+		return real(p)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	t.Cleanup(func() { removeTree = real })
 
-	// moderate: the locked directory is untracked, so bbb reads dirty.
 	r, err := f.runErr(CleanOptions{
-		StoreDir: f.store, Level: CleanModerate, OlderThan: 0, Apply: true,
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
 	})
 	if err == nil {
 		t.Fatal("a failed deletion did not surface an error")

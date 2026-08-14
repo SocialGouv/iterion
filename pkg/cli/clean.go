@@ -275,7 +275,28 @@ func RunClean(opts CleanOptions, p *Printer) error {
 			continue
 		}
 
-		if err := os.RemoveAll(wt.Path); err != nil {
+		// The classification is a photograph, and the sweep can take tens
+		// of seconds to reach this entry. The run lock says nothing about
+		// the writer that matters here — an operator, an editor, an agent
+		// working outside iterion. Re-ask the one question whose answer
+		// decides whether uncommitted work is about to go.
+		if worktreeDirty(wt.Path) && cleanLevelRank[opts.Level] < requiredLevel(wt.Landing, true) {
+			wt.Dirty = true
+			wt.SkipReason = skipLevel
+			result.Spared = append(result.Spared, *wt)
+			releaseLock(lock)
+			continue
+		}
+
+		// A concurrent sweep may already have taken it: os.RemoveAll
+		// succeeds on a path that is gone, and both sweeps would then
+		// claim the deletion and its bytes.
+		if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
+			releaseLock(lock)
+			continue
+		}
+
+		if err := removeTree(wt.Path); err != nil {
 			wt.Error = err.Error()
 			failures = append(failures, fmt.Errorf("delete worktree %s: %w", wt.Path, err))
 			result.Failed = append(result.Failed, *wt)
@@ -457,13 +478,14 @@ func classifyWorktree(
 		wt.SkipReason = skipLevel
 	}
 
-	// The live checkout of a running campaign is the one tree never
-	// walked: it is being written to, so the number would be incoherent,
-	// the I/O competes with the run, and it feeds no decision. Everything
-	// else is measured — including what was spared, because an operator
-	// told only what the current level yields cannot see that the next
-	// one would free ten times as much.
-	if wt.SkipReason == skipRunActive {
+	// Measuring costs a walk of every file, so it is spent only where the
+	// number changes a decision: on candidates, and on what only the
+	// level ladder is holding back — an operator told what this level
+	// yields cannot otherwise see that the next frees ten times more.
+	// Nothing else is walked. In particular never the live checkout of a
+	// running campaign, whose size would be an incoherent snapshot taken
+	// in competition with the run's own I/O.
+	if wt.SkipReason != "" && wt.SkipReason != skipLevel {
 		return wt
 	}
 	bytes, nested, complete := scanTree(path)
@@ -523,16 +545,31 @@ func requiredLevel(landing string, dirty bool) int {
 // must not read as "none found".
 func scanTree(root string) (bytes int64, nested []string, complete bool) {
 	complete = true
+	ownGit := filepath.Join(root, ".git")
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			complete = false
 			return nil //nolint:nilerr // partial walk beats no sweep; `complete` carries the caveat
 		}
-		if d.Name() == ".git" && p != filepath.Join(root, ".git") {
+		if d.Name() == ".git" && p != ownGit {
 			nested = append(nested, filepath.Dir(p))
-			return filepath.SkipDir
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			// SkipDir on a non-directory skips the REST of the parent
+			// directory, which would silently drop its siblings from the
+			// size. The entry itself is a file; there is nothing to skip.
+			return nil
 		}
 		if d.IsDir() {
+			// A bare repository has no `.git` at all — it IS the git
+			// directory. `git clone --bare`, a mirror, a vendored cache:
+			// invisible to a `.git` search, normally gitignored, and its
+			// objects exist nowhere else.
+			if p != root && looksLikeGitDir(p) {
+				nested = append(nested, p)
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		info, err := d.Info()
@@ -544,6 +581,58 @@ func scanTree(root string) (bytes int64, nested []string, complete bool) {
 		return nil
 	})
 	return bytes, nested, complete
+}
+
+// looksLikeGitDir reports the on-disk signature of a git directory:
+// HEAD alongside objects/ and refs/. That is what `git rev-parse
+// --resolve-git-dir` checks, without a process per directory.
+func looksLikeGitDir(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil {
+		return false
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		info, err := os.Stat(filepath.Join(dir, sub))
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// removeAllForce removes a tree, restoring write permission on the
+// directories that refuse it.
+//
+// A plain os.RemoveAll walks into the tree and only fails when it meets
+// the read-only directory — by which point everything before it is
+// already gone. The Go module cache is laid down at 0555 by the go tool
+// itself, so a run worktree that ever fetched a module contains hundreds
+// of them: the sweep would half-destroy a multi-gigabyte tree, report a
+// partial deletion, and retry the same wreck on every subsequent run.
+// removeTree is the seam the sweep deletes through. A removal that fails
+// for a reason a single uid cannot arrange — another owner's files, a
+// busy mount — is exactly the case the continuation contract exists for,
+// so the tests substitute it rather than approximate it.
+var removeTree = removeAllForce
+
+func removeAllForce(root string) error {
+	err := os.RemoveAll(root)
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || !d.IsDir() {
+			return nil //nolint:nilerr // best effort; the retry below reports what remains
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return nil //nolint:nilerr // same
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			_ = os.Chmod(p, info.Mode().Perm()|0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(root)
 }
 
 // worktreeInspection is what git could be made to say about a directory.
@@ -604,7 +693,11 @@ func inspectWorktreeGit(path string) worktreeInspection {
 	if common, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 		insp.commonDir = common
 	}
-	insp.ignoredEntries = countIgnoredEntries(path)
+	if n, err := countIgnoredEntries(path); err != nil {
+		insp.err = err
+	} else {
+		insp.ignoredEntries = n
+	}
 
 	// An INITIALISED submodule's commits live in the worktree's own
 	// administrative directory, which goes when the registration does,
@@ -668,6 +761,13 @@ func inspectWorktreeGit(path string) worktreeInspection {
 		tip, full := fields[0], fields[len(fields)-1]
 		if len(fields) == 3 {
 			tip = fields[1] // annotated tag: compare the commit it peels to
+			// %(*objectname) dereferences ONE level, so a tag pointing at
+			// a tag peels to another tag object and compares unequal
+			// again. Resolve it properly; the case is rare enough to
+			// afford a process.
+			if commit, err := gitOut(path, "rev-parse", full+"^{commit}"); err == nil {
+				tip = commit
+			}
 		}
 		labelled = true
 		// iterion's own per-run checkpoints keep the commits alive, so
@@ -716,10 +816,17 @@ func samePath(a, b string) bool {
 // excludes it for the same reason when deciding whether a run left work
 // behind. Measured here: 10 of 25 otherwise-clean merged worktrees were
 // held back a whole level by nothing but this directory.
-const cleanScaffoldPrefix = ".claude/"
+// The exclusion is deliberately narrow: `.claude/skills/`, where the
+// mirror lands — not `.claude/` wholesale. A run that writes anything
+// else under `.claude/` (a settings file, a hook, a note of its own)
+// wrote it, and it must still read as work.
+const cleanScaffoldPrefix = ".claude/skills/"
 
 func worktreeDirty(path string) bool {
-	out, err := gitOut(path, "status", "--porcelain")
+	// --untracked-files=all, because git otherwise folds an untracked
+	// directory into a single `.claude/` line and the exclusion could not
+	// tell the mirror from anything else the run put beside it.
+	out, err := gitOut(path, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		// Unreadable status is treated as dirty: the conservative reading
 		// of "we could not tell" is "there may be something here".
@@ -729,7 +836,17 @@ func worktreeDirty(path string) bool {
 		if len(line) < 4 {
 			continue
 		}
-		p := strings.TrimSpace(line[2:])
+		status, rest := line[:2], strings.TrimSpace(line[2:])
+		// A rename is one line, `XY ORIG -> DEST`. Judging it on ORIG
+		// means a file moved OUT of the scaffold takes the whole entry
+		// with it, and the destination — real, uncommitted work — is
+		// never seen.
+		if strings.ContainsAny(status, "RC") {
+			if _, dst, ok := strings.Cut(rest, " -> "); ok {
+				rest = dst
+			}
+		}
+		p := strings.TrimSpace(rest)
 		if len(p) >= 2 && strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) {
 			p = p[1 : len(p)-1]
 		}
@@ -745,10 +862,12 @@ func worktreeDirty(path string) bool {
 // are reported, not gated on: in a run worktree they are the build output
 // the command exists to reclaim, and gating on them would spare every
 // worktree that ever compiled anything.
-func countIgnoredEntries(path string) int {
+func countIgnoredEntries(path string) (int, error) {
 	out, err := gitOut(path, "status", "--porcelain", "--ignored=matching")
 	if err != nil {
-		return 0
+		// A count of zero would read as "nothing ignored here", which is a
+		// verdict we did not reach.
+		return 0, err
 	}
 	n := 0
 	for _, line := range strings.Split(out, "\n") {
@@ -756,7 +875,7 @@ func countIgnoredEntries(path string) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // pruneWorktreeRegistration drops the administrative entry of the one
@@ -1065,6 +1184,15 @@ func renderCleanSpared(p *Printer, r CleanResult) {
 		parts = append(parts, part)
 	}
 	p.Line("spared — %s", strings.Join(parts, "; "))
+	// A spared entry that carries a reason of its own — a held run lock,
+	// a tree that could not be read — is not the same as the plain
+	// category it was filed under, and the operator cannot act on a
+	// count alone.
+	for _, wt := range r.Spared {
+		if wt.Error != "" {
+			p.Line("  %s: %s", wt.Path, wt.Error)
+		}
+	}
 }
 
 // shortRunID trims a UUIDv7 run id to its leading segment for the table.

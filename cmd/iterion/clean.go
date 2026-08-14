@@ -36,12 +36,20 @@ WHAT DECIDES SAFETY
 
 Not age, and not run status alone — what git can PROVE about the commits:
 
-  merged      a ref whose tip is NOT this HEAD contains this HEAD, so
-              another line of work was built on top of these commits
-  own-branch  refs contain HEAD but every one points exactly AT it: they
-              are labels keeping the commits alive, not work built upon
-  unlanded    no ref contains HEAD
-  orphan      git cannot account for the directory at all
+  merged       a ref whose tip is NOT this HEAD contains this HEAD, so
+               another line of work was built on top of these commits
+  own-branch   refs contain HEAD but every one points exactly AT it: they
+               are labels keeping the commits alive, not work built upon
+  unlanded     no ref contains HEAD, or git could not answer
+  orphan       git cannot account for the directory at all
+  nested-repo  the tree holds a repository of its own
+
+Refs under refs/iterion/ — the per-run checkpoints iterion writes itself —
+are consulted, because they do hold a run's commits alive; but they are
+that run's own bookkeeping and are reaped with it, so containment by one of
+them never means merged. Annotated tags are compared on the commit they
+peel to: %(objectname) is the tag object's id and never the commit's, so a
+release tag sitting on a HEAD would otherwise read as work built upon it.
 
 Every git answer is refused unless git is talking about THIS directory.
 Asked about a directory merely nested inside some repository — and the
