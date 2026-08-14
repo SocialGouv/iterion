@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 import type { PipelineBoardCard } from "@/api/pipelineBoards";
@@ -118,36 +118,36 @@ export function SequentialReviews({ card, onResolved }: Props) {
         </div>
       )}
 
-      {review.run_id && (
-        // Keyed AND cache-keyed on reviewKey, like the answer form below:
-        // a run that reaches a second gate keeps the same run_id, so
-        // without both the panel is reconciled in place and keeps serving
-        // the previous gate's file list — the operator would approve
-        // gate N while looking at gate N-1.
-        <ReviewScopePanel
-          key={reviewKey}
-          runId={review.run_id}
-          pauseKey={reviewKey}
-          live
-        />
-      )}
+      {/* One key for the pair. Sibling keys must be unique: React's
+          remaining-children map keeps only the last child per key, so a
+          shared reviewKey leaked every previous ReviewScopePanel when
+          stepping turns. pauseKey still cache-keys the scope query — a
+          second gate on the same run_id would otherwise reuse gate N-1. */}
+      <Fragment key={reviewKey}>
+        {review.run_id && (
+          <ReviewScopePanel
+            runId={review.run_id}
+            pauseKey={reviewKey}
+            live
+          />
+        )}
 
-      {review.run_id && review.node_id ? (
-        <HumanPromptForm
-          key={reviewKey}
-          runId={review.run_id}
-          nodeId={review.node_id}
-          questions={review.questions ?? {}}
-          instructions={review.instructions}
-          sourceOverride={null}
-          onResumed={handleResolved}
-        />
-      ) : (
-        <InlineBanner tone="warning" layout="inline">
-          This pause has no node identifier, so it cannot be answered inline. Open the run
-          console to inspect it.
-        </InlineBanner>
-      )}
+        {review.run_id && review.node_id ? (
+          <HumanPromptForm
+            runId={review.run_id}
+            nodeId={review.node_id}
+            questions={review.questions ?? {}}
+            instructions={review.instructions}
+            sourceOverride={null}
+            onResumed={handleResolved}
+          />
+        ) : (
+          <InlineBanner tone="warning" layout="inline">
+            This pause has no node identifier, so it cannot be answered inline. Open the run
+            console to inspect it.
+          </InlineBanner>
+        )}
+      </Fragment>
     </div>
   );
 }

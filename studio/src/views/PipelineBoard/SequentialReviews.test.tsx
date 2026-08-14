@@ -57,6 +57,19 @@ vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
   ),
 }));
 
+// Distinct from the form mock so the stepper test can count leftover
+// panels. data-scope-run-id (not data-run-id) keeps the static-markup
+// assertions on the form from matching this stand-in.
+vi.mock("./ReviewScopePanel", () => ({
+  ReviewScopePanel: (props: { runId: string; pauseKey?: string }) => (
+    <div
+      data-testid="review-scope"
+      data-scope-run-id={props.runId}
+      data-pause-key={props.pauseKey ?? ""}
+    />
+  ),
+}));
+
 import {
   clampReviewIndex,
   pendingReviewVersionKey,
@@ -212,5 +225,34 @@ describe("SequentialReviews", () => {
       ),
     );
     expect(html).toBe("");
+  });
+
+  it("replaces the review-scope panel when stepping to another turn", () => {
+    // Two siblings used to share reviewKey. React's remaining-children
+    // map keeps only the last child per key, so Next unmounted the form
+    // and leaked every previous ReviewScopePanel.
+    render(
+      withClient(
+        <SequentialReviews card={cardWithReviews(3)} onResolved={() => {}} />,
+      ),
+    );
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-0",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next review" }));
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-1",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous review" }));
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-1",
+    );
+    expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe("run-1");
   });
 });
