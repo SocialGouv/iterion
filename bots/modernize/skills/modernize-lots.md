@@ -213,6 +213,13 @@ build stops moving is a legitimate action taken for a *stated* reason, and a
 silent way to hide a real incompatibility taken for none. The difference is
 entirely in whether the reason is written down.
 
+There is a fifth way, and it is the quietest: **crossing a major and changing
+nothing.** Code identical to the baseline is not behaviour identical to the
+baseline — a major redefines semantics underneath unchanged lines, and every
+build stays green because nothing in the tree moved. When the lot's contract
+says `crosses_major: true`, the [[upgrade-archetypes]] sweep is the due
+diligence against exactly this, and its record belongs in the tree.
+
 ## What to commit, and when
 
 Commit as you go. An interrupted run should leave landed work, not a worktree

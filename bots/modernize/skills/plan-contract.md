@@ -26,6 +26,7 @@ lots:
     title: "one line, in the imperative"
     status: todo                 # todo | blocked | done
     rebaseline_allowed: false
+    crosses_major: false         # true -> the upgrade-archetypes sweep is due
     depends_on: []
     intent: |
       What may change, and what may not. Read by the agent working the lot.
@@ -121,6 +122,31 @@ such a lot, the lot overflowed, and finding that out is the point.
 
 This bot never re-baselines regardless. The flag documents intent for the
 humans and for the process that owns re-recording.
+
+## `crosses_major`
+
+Set `true` on any lot that crosses a MAJOR of anything with semantics — web
+framework, ORM, template engine, database engine, language runtime. It puts the
+[[upgrade-archetypes]] sweep in scope: derive the drift probes from that
+major's own migration notes, run them, and leave the record in the tree at
+`.modernize/sweeps/<lot-id>.md`.
+
+The contract makes the record inspectable rather than optional — such a lot's
+`exit_gate` includes:
+
+```yaml
+    exit_gate:
+      - "test -s .modernize/sweeps/L22.md"
+      - "…the commands that decide the lot itself"
+```
+
+The gate checks the record EXISTS; it does not read its content. That is
+deliberate and it is the same division as everywhere else in this file: the
+mechanical layer proves an artefact was produced and committed, the reviewer
+judges what it says, and the behavioural net remains the only party that can
+prove the sweep missed nothing it watches. A sweep record that says "class not
+instantiated in this stack, because X" is a legitimate record; an absent one is
+a lot that skipped a due diligence its own contract named.
 
 ## Re-anchoring a mutant is the NET's act, and this bot delegates it
 
