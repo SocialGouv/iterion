@@ -146,6 +146,7 @@ type CleanedWorktree struct {
 	// symlinks can no longer be resolved. Not serialised.
 	gitCommonDir string
 	resolvedPath string
+	head         string
 }
 
 // CleanResult is the top-level payload for --json.
@@ -278,11 +279,14 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		// The classification is a photograph, and the sweep can take tens
 		// of seconds to reach this entry. The run lock says nothing about
 		// the writer that matters here — an operator, an editor, an agent
-		// working outside iterion. Re-ask the one question whose answer
-		// decides whether uncommitted work is about to go.
-		if worktreeDirty(wt.Path) && cleanLevelRank[opts.Level] < requiredLevel(wt.Landing, true) {
-			wt.Dirty = true
-			wt.SkipReason = skipLevel
+		// working outside iterion. Re-ask the whole question, not just
+		// "is it dirty": a COMMIT leaves a clean tree, so asking only
+		// about the working tree waves through the one change that
+		// creates something to lose. Deleting then takes the worktree's
+		// administrative directory with it, and the new commit — held by
+		// nothing else — is dangling until the next gc.
+		if reason, ok := stillEligible(wt, opts.Level); !ok {
+			wt.SkipReason = reason
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
@@ -457,6 +461,7 @@ func classifyWorktree(
 	insp := inspectWorktreeGit(path)
 	wt.Landing, wt.Dirty, wt.ContainedBy = insp.landing, insp.dirty, insp.containedBy
 	wt.gitCommonDir = insp.commonDir
+	wt.head = insp.head
 	wt.IgnoredEntries = insp.ignoredEntries
 	if insp.err != nil {
 		wt.Error = insp.err.Error()
@@ -566,7 +571,7 @@ func scanTree(root string) (bytes int64, nested []string, complete bool) {
 			// directory. `git clone --bare`, a mirror, a vendored cache:
 			// invisible to a `.git` search, normally gitignored, and its
 			// objects exist nowhere else.
-			if p != root && looksLikeGitDir(p) {
+			if p != root && p != ownGit && looksLikeGitDir(p) {
 				nested = append(nested, p)
 				return filepath.SkipDir
 			}
@@ -635,9 +640,38 @@ func removeAllForce(root string) error {
 	return os.RemoveAll(root)
 }
 
+// stillEligible re-derives the verdict immediately before a deletion and
+// reports whether it still admits one. It is the whole classification
+// again, not a subset: any question left unasked is a change the sweep
+// waves through.
+func stillEligible(wt *CleanedWorktree, level CleanLevel) (string, bool) {
+	insp := inspectWorktreeGit(wt.Path)
+	if insp.head != wt.head {
+		// Something committed, reset, or checked out under us. Whatever
+		// the new HEAD is, it is not what was judged.
+		return skipUnlanded, false
+	}
+	switch insp.landing {
+	case landingNowhere:
+		return skipUnlanded, false
+	case landingNested:
+		return skipNested, false
+	}
+	if cleanLevelRank[level] < requiredLevel(insp.landing, insp.dirty) {
+		wt.Dirty = insp.dirty
+		return skipLevel, false
+	}
+	if _, nested, complete := scanTree(wt.Path); len(nested) > 0 || !complete {
+		wt.NestedRepos = nested
+		return skipNested, false
+	}
+	return "", true
+}
+
 // worktreeInspection is what git could be made to say about a directory.
 type worktreeInspection struct {
 	landing        string
+	head           string
 	dirty          bool
 	containedBy    []string
 	commonDir      string
@@ -689,7 +723,7 @@ func inspectWorktreeGit(path string) worktreeInspection {
 		return notARepo
 	}
 
-	insp := worktreeInspection{dirty: worktreeDirty(path)}
+	insp := worktreeInspection{head: head, dirty: worktreeDirty(path)}
 	if common, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 		insp.commonDir = common
 	}
@@ -816,11 +850,57 @@ func samePath(a, b string) bool {
 // excludes it for the same reason when deciding whether a run left work
 // behind. Measured here: 10 of 25 otherwise-clean merged worktrees were
 // held back a whole level by nothing but this directory.
-// The exclusion is deliberately narrow: `.claude/skills/`, where the
-// mirror lands — not `.claude/` wholesale. A run that writes anything
-// else under `.claude/` (a settings file, a hook, a note of its own)
-// wrote it, and it must still read as work.
-const cleanScaffoldPrefix = ".claude/skills/"
+// cleanScaffoldPaths are the destinations iterion writes into a run
+// worktree at run start, and only those. `.claude/` wholesale would hide
+// anything a run chose to put beside them; a single `.claude/skills/`
+// misses the rest of what the mirror lays down — plugin.MirrorKinds
+// (skills, commands, agents), the hooks settings file and its sidecar.
+//
+// pkg/runtime answers the same question for a different purpose
+// (deciding whether a run left work behind) and is the reason this list
+// has to stay in step with what the mirror actually writes.
+var cleanScaffoldPaths = []string{
+	".claude/skills/",
+	".claude/commands/",
+	".claude/agents/",
+	".claude/.iterion-managed/",
+	".claude/settings.json",
+}
+
+// renameDestination returns the DEST half of a porcelain rename entry,
+// stepping over a quoted source rather than cutting at the first " -> ".
+func renameDestination(rest string) string {
+	if strings.HasPrefix(rest, `"`) {
+		if end := strings.Index(rest[1:], `"`); end >= 0 {
+			after := rest[1+end+1:]
+			if _, dst, ok := strings.Cut(after, " -> "); ok {
+				return dst
+			}
+			return rest
+		}
+	}
+	if _, dst, ok := strings.Cut(rest, " -> "); ok {
+		return dst
+	}
+	return rest
+}
+
+func dequotePath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 2 && strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) {
+		p = p[1 : len(p)-1]
+	}
+	return p
+}
+
+func isScaffold(p string) bool {
+	for _, prefix := range cleanScaffoldPaths {
+		if p == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 func worktreeDirty(path string) bool {
 	// --untracked-files=all, because git otherwise folds an untracked
@@ -840,20 +920,16 @@ func worktreeDirty(path string) bool {
 		// A rename is one line, `XY ORIG -> DEST`. Judging it on ORIG
 		// means a file moved OUT of the scaffold takes the whole entry
 		// with it, and the destination — real, uncommitted work — is
-		// never seen.
+		// never seen. The source is skipped past first: git quotes a path
+		// containing " -> ", and cutting the raw line would land inside
+		// the quotes and hand back a fragment of the source as the
+		// destination.
 		if strings.ContainsAny(status, "RC") {
-			if _, dst, ok := strings.Cut(rest, " -> "); ok {
-				rest = dst
-			}
+			rest = renameDestination(rest)
 		}
-		p := strings.TrimSpace(rest)
-		if len(p) >= 2 && strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) {
-			p = p[1 : len(p)-1]
+		if p := dequotePath(rest); p != "" && !isScaffold(p) {
+			return true
 		}
-		if p == "" || strings.HasPrefix(p, cleanScaffoldPrefix) {
-			continue
-		}
-		return true
 	}
 	return false
 }

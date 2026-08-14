@@ -1094,6 +1094,269 @@ func TestClean_KeepLastDoesNotSpendSlotsOnAlreadySparedEntries(t *testing.T) {
 	}
 }
 
+// A commit leaves a CLEAN tree, so re-asking only "is it dirty" waves
+// through the one change that creates something to lose — and deleting
+// takes the worktree's administrative directory, leaving the new commit
+// held by nothing.
+func TestClean_SparesAWorktreeThatCommittedDuringTheSweep(t *testing.T) {
+	f := newCleanFixture(t)
+	for i, id := range []string{"first", "committer"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
+	}
+	target := filepath.Join(f.store, "worktrees", "committer")
+
+	var newHead string
+	real := removeTree
+	removeTree = func(p string) error {
+		if filepath.Base(p) == "first" {
+			mustWrite(t, filepath.Join(target, "day-of-work.md"), "an operator's commit\n")
+			f.git(target, "add", ".")
+			f.git(target, "commit", "-m", "operator: a day of work")
+			newHead = f.git(target, "rev-parse", "HEAD")
+			// Land it too, so the LANDING is still `merged` and only the
+			// changed HEAD can be what spares the worktree.
+			f.git(f.repo, "branch", "-f", "committed-work", newHead)
+			f.git(f.repo, "merge", "--no-ff", "-m", "merge the operator's work", "committed-work")
+		}
+		return real(p)
+	}
+	t.Cleanup(func() { removeTree = real })
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["committer"] {
+		t.Fatal("deleted a worktree whose HEAD moved after it was classified")
+	}
+	mustExist(t, target, "worktree that committed mid-sweep")
+	if got := f.git(f.repo, "cat-file", "-t", newHead); got != "commit" {
+		t.Fatalf("the commit made during the sweep is not reachable: %q", got)
+	}
+}
+
+// A repository can appear inside the tree between classification and
+// deletion just as easily as a commit can.
+func TestClean_SparesAWorktreeThatGainedANestedRepoDuringTheSweep(t *testing.T) {
+	f := newCleanFixture(t)
+	// Ignored in the base repo, so both worktrees inherit it and the outer
+	// tree stays clean when a repository appears inside.
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), ".repos/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore .repos")
+
+	for i, id := range []string{"first", "gainer"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
+	}
+	target := filepath.Join(f.store, "worktrees", "gainer")
+
+	real := removeTree
+	removeTree = func(p string) error {
+		if filepath.Base(p) == "first" {
+			embedded := filepath.Join(target, ".repos", "tool")
+			mustMkdir(t, embedded)
+			f.initRepo(embedded) // gitignored: the outer tree stays clean
+		}
+		return real(p)
+	}
+	t.Cleanup(func() { removeTree = real })
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["gainer"] {
+		t.Fatal("deleted a worktree that gained a nested repository during the sweep")
+	}
+	if got := sparedReason(r, "gainer"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, filepath.Join(target, ".repos", "tool"), "repo cloned mid-sweep")
+}
+
+// The `.git` of the worktree itself has HEAD, objects/ and refs/ when it
+// is a real directory rather than a pointer file. Reading that as a
+// nested repository refuses the worktree at every level, forever.
+func TestClean_OwnGitDirectoryIsNotANestedRepo(t *testing.T) {
+	f := newCleanFixture(t)
+	// A checkout whose .git is a DIRECTORY: a plain clone, not a
+	// `git worktree add` pointer file.
+	path := filepath.Join(f.store, "worktrees", "cloned")
+	f.git(f.root, "clone", "-q", f.repo, path)
+	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
+		t.Skipf("clone did not produce a .git directory: %v", err)
+	}
+	f.seedRun("cloned", store.RunStatusFinished)
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
+	if got := landingOf(r, "cloned"); got == landingNested {
+		t.Fatal("the worktree's own .git directory was read as a nested repository")
+	}
+}
+
+// iterion's mirror does not land in .claude/skills/ alone: plugin
+// contributions go to commands/ and agents/, and the hooks injector
+// writes settings.json and its sidecar.
+func TestClean_TheWholeMirrorIsExcludedFromDirty(t *testing.T) {
+	for _, rel := range []string{
+		".claude/skills/s.md",
+		".claude/commands/c.md",
+		".claude/agents/a.md",
+		".claude/.iterion-managed/plugin-hooks.json",
+		".claude/settings.json",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			f := newCleanFixture(t)
+			path := f.addWorktree("mirrored")
+			f.mergeIntoMain("mirrored")
+			f.seedRun("mirrored", store.RunStatusFinished)
+			mustMkdir(t, filepath.Dir(filepath.Join(path, rel)))
+			mustWrite(t, filepath.Join(path, rel), "written by iterion\n")
+
+			r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+			if !deletedPaths(r)["mirrored"] {
+				t.Fatalf("iterion's own %s was counted as the run's uncommitted work (spared: %q)",
+					rel, sparedReason(r, "mirrored"))
+			}
+		})
+	}
+}
+
+// git quotes a path containing " -> ", so cutting the raw line lands
+// inside the quoted source and hands back a fragment of it as the
+// destination.
+func TestClean_RenameSplitStepsOverAQuotedSource(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("quoted")
+	// The arrow sits BEFORE something that looks like the scaffold, so a
+	// naive cut at the first " -> " hands back `.claude/skills/…` and the
+	// entry passes for iterion's own litter. git quotes the whole source.
+	weird := "foo -> .claude/skills/bar"
+	mustMkdir(t, filepath.Dir(filepath.Join(path, weird)))
+	if err := os.WriteFile(filepath.Join(path, weird), []byte("tracked\n"), 0o644); err != nil {
+		t.Skipf("this filesystem rejects the probe filename: %v", err)
+	}
+	if _, err := f.gitErr(path, "add", "--", weird); err != nil {
+		t.Skip("git rejects the probe filename")
+	}
+	f.git(path, "commit", "-m", "add a path containing an arrow")
+	f.mergeIntoMain("quoted")
+	f.seedRun("quoted", store.RunStatusFinished)
+
+	f.git(path, "mv", "--", weird, "REAL-WORK.md")
+	mustWrite(t, filepath.Join(path, "REAL-WORK.md"), "tracked\nplus a day of my own\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["quoted"] {
+		t.Fatal("a quoted rename source was mistaken for the destination and real work was deleted")
+	}
+	mustExist(t, filepath.Join(path, "REAL-WORK.md"), "renamed work")
+}
+
+// The sweep must delete THROUGH removeAllForce, not merely have it
+// available: the read-only module cache is the common case, not a corner.
+func TestClean_SweepRemovesThroughTheForcingRemover(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f := newCleanFixture(t)
+	path := f.addWorktree("modcache")
+	mustWrite(t, filepath.Join(path, ".gitignore"), "go/\n")
+	f.git(path, "add", ".gitignore")
+	f.git(path, "commit", "-m", "ignore the module cache")
+	f.mergeIntoMain("modcache")
+	f.seedRun("modcache", store.RunStatusFinished)
+
+	cache := filepath.Join(path, "go", "pkg", "mod", "toolchain")
+	mustMkdir(t, cache)
+	mustWrite(t, filepath.Join(cache, "go"), "binary")
+	if err := os.Chmod(cache, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o700) })
+
+	r, err := f.runErr(CleanOptions{
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
+	})
+	if err != nil {
+		t.Fatalf("the sweep failed on a tree holding a read-only directory: %v", err)
+	}
+	if r.FailedCount != 0 {
+		t.Fatalf("FailedCount = %d, want 0", r.FailedCount)
+	}
+	mustNotExist(t, path, "worktree with a read-only module cache")
+}
+
+// An inherited GIT_DIR makes git answer for a different repository while
+// --show-toplevel still names this directory, so the identity guard
+// passes and a foreign repo's refs decide this worktree's fate.
+func TestClean_IgnoresAnInheritedGitDir(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("unlanded") // detached, never promoted
+	f.seedRun("unlanded", store.RunStatusFinished)
+
+	// A second repository whose main is far ahead of anything here.
+	other := filepath.Join(f.root, "other")
+	mustMkdir(t, other)
+	f.initRepo(other)
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["unlanded"] {
+		t.Fatal("an inherited GIT_DIR let a foreign repository's refs decide this worktree's fate")
+	}
+	mustExist(t, path, "worktree judged under an inherited GIT_DIR")
+}
+
+// A store reached through a symlink must classify identically, or the
+// whole pool reads as `orphan` — spared at conservative, and deleted at
+// aggressive without git ever having been consulted.
+func TestClean_ClassifiesTheSameThroughASymlinkedStore(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	link := filepath.Join(t.TempDir(), "store-link")
+	if err := os.Symlink(f.store, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	r := f.run(CleanOptions{StoreDir: link, Level: CleanConservative, OlderThan: 0})
+	if got := landingOf(r, "merged"); got != landingMerged {
+		t.Fatalf("landing through a symlinked store = %q, want %q", got, landingMerged)
+	}
+}
+
+// The counts and the evidence are what an operator reads before --apply.
+func TestClean_ReportsIgnoredCountAndContainmentEvidence(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("evidence")
+	mustWrite(t, filepath.Join(path, ".gitignore"), "build/\n")
+	f.git(path, "add", ".gitignore")
+	f.git(path, "commit", "-m", "ignore build")
+	f.mergeIntoMain("evidence")
+	f.seedRun("evidence", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, "build"))
+	mustWrite(t, filepath.Join(path, "build", "out.bin"), "artifact")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0})
+	if len(r.Deleted) != 1 {
+		t.Fatalf("expected one candidate, got %d", len(r.Deleted))
+	}
+	if r.Deleted[0].IgnoredEntries == 0 {
+		t.Error("gitignored paths were not counted; the operator cannot see what goes")
+	}
+	if len(r.Deleted[0].ContainedBy) == 0 {
+		t.Error("contained_by is empty; the evidence for `merged` is not reported")
+	}
+	for _, ref := range r.Deleted[0].ContainedBy {
+		if strings.TrimSpace(ref) == "" {
+			t.Error("contained_by holds an empty ref name")
+		}
+	}
+}
+
 // --- the levels ------------------------------------------------------------
 
 // Landing is decided by whether a ref was BUILT UPON the commits or
@@ -1140,18 +1403,25 @@ func TestClean_LevelsFollowWhatGitCanProve(t *testing.T) {
 		}
 	}
 
-	r = f.run(CleanOptions{Level: CleanModerate, OlderThan: 0})
+	// --apply, not dry run: the pre-deletion re-check is only on the
+	// apply path, and a guard that spares everything there would leave
+	// the dry run looking perfectly healthy.
+	r = f.run(CleanOptions{Level: CleanModerate, OlderThan: 0, Apply: true})
 	if !deletedPaths(r)["merged-dirty"] {
-		t.Error("moderate did not take a merged worktree with uncommitted files")
+		t.Errorf("moderate --apply did not take a merged, dirty worktree (spared: %q)",
+			sparedReason(r, "merged-dirty"))
 	}
 	if deletedPaths(r)["promoted"] || deletedPaths(r)["stale"] {
 		t.Error("moderate took own-branch or orphan")
 	}
+	mustNotExist(t, dirty, "dirty merged worktree at moderate")
 
-	r = f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
+	r = f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
 	if !deletedPaths(r)["promoted"] || !deletedPaths(r)["stale"] {
-		t.Error("aggressive did not take own-branch and orphan")
+		t.Errorf("aggressive --apply did not take own-branch and orphan (promoted: %q, stale: %q)",
+			sparedReason(r, "promoted"), sparedReason(r, "stale"))
 	}
+	mustNotExist(t, orphan, "orphan at aggressive")
 }
 
 // Taking an own-branch worktree is only defensible because the commits

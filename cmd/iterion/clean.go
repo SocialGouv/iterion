@@ -79,10 +79,21 @@ THREE GUARDS NO LEVEL LIFTS
      does not trigger this: 'git worktree add' never populates submodules,
      so that is their normal state and there is nothing there to lose.
 
-Git must also be usable before any verdict is formed. Without that check a
-git missing from a cron PATH or an unreadable config would make every
-directory unclassifiable at once — and be reported as a store full of
-disposable leftovers.
+Git must also be usable before any verdict is formed: a git missing from a
+cron PATH, or a malformed config, would otherwise make every directory
+unclassifiable at once. A git that answers but fails on one directory
+yields 'unlanded', never 'orphan'.
+
+What iterion mirrors into the worktree at run start does not count as the
+run's uncommitted work: .claude/skills/, .claude/commands/, .claude/agents/,
+.claude/.iterion-managed/ and .claude/settings.json — and nothing else.
+Anything a run puts elsewhere under .claude/ is the run's, and reads as work.
+
+Immediately before a deletion the whole verdict is derived again, because a
+sweep runs for tens of seconds and the classification is a photograph. A
+worktree whose HEAD moved, whose tree turned dirty, or which gained a
+repository of its own is spared — asking only about the working tree would
+miss a commit, which leaves it clean.
 
 <store-dir>/worktrees/.state and any other dot-prefixed entry is left
 alone: it holds gate state shared across runs, not one run's checkout.
@@ -121,7 +132,7 @@ Examples:
   iterion clean                                  # dry run, conservative, this project
   iterion clean --apply                          # execute it
   iterion clean --all-projects                   # every project store under the iterion home
-  iterion clean --older-than 720h --apply        # only worktrees idle 30 days or more
+  iterion clean --older-than 720h --apply        # root dir untouched for 30 days (default 168h)
   iterion clean --level moderate --apply         # also drop uncommitted files of landed runs
   iterion clean --keep-last 10 --apply           # always leave the 10 most recent
   iterion clean --with-runs --apply              # delete each worktree's run record too
@@ -148,7 +159,7 @@ func init() {
 	f := cleanCmd.Flags()
 	f.StringVar(&cleanOpts.storeDir, "store-dir", "", "Store directory override (default: managed store for the working directory)")
 	f.StringVar(&cleanOpts.level, "level", "conservative", "How much to reclaim: conservative, moderate, aggressive")
-	f.StringVar(&cleanOpts.olderThan, "older-than", "168h", "Only worktrees untouched for at least this Go duration (168h = 7d)")
+	f.StringVar(&cleanOpts.olderThan, "older-than", "168h", "Only worktrees whose root directory has not changed for at least this Go duration (168h = 7d)")
 	f.BoolVar(&cleanOpts.apply, "apply", false, "Actually delete; without it the command is a dry run")
 	f.BoolVar(&cleanOpts.allProjects, "all-projects", false, "Sweep every project store under the iterion data dir, not just this project's")
 	f.IntVar(&cleanOpts.keepLast, "keep-last", 0, "Always keep the N most recent otherwise-eligible worktrees")

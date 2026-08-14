@@ -293,14 +293,24 @@ Three guards no level lifts:
    trigger it: `git worktree add` never populates submodules, so that is
    their normal state and there is nothing there to lose.
 
-Git itself must be usable before any verdict is formed. Without that check
-a git missing from a cron `PATH`, or an unreadable `~/.gitconfig`, would
-make every directory unclassifiable at once — and be reported as a store
-full of disposable leftovers.
+Git itself must be usable before any verdict is formed: a git missing from
+a cron `PATH`, or a malformed config, would otherwise make every directory
+unclassifiable at once. A git that answers but fails on a particular
+directory yields `unlanded`, never `orphan` — only git's own "not a git
+repository" is read as a directory that is not a worktree.
 
-The `.claude/` directory iterion mirrors into a run worktree at run start
-does not count as uncommitted work: it is written by iterion, not produced
-by the run.
+What iterion mirrors into a run worktree at run start does not count as
+uncommitted work — it is written by iterion, not produced by the run.
+That is `.claude/skills/`, `.claude/commands/`, `.claude/agents/`,
+`.claude/.iterion-managed/` and `.claude/settings.json`, and nothing else:
+anything a run puts elsewhere under `.claude/` is the run's, and reads as
+work.
+
+Immediately before a deletion the whole verdict is derived again, because
+the classification is a photograph and a sweep runs for tens of seconds. A
+worktree whose HEAD moved, whose tree turned dirty, or which gained a
+repository of its own in the meantime is spared. Re-asking only about the
+working tree would not do: a commit leaves a clean tree.
 
 Every git answer is refused unless git is talking about **that** directory.
 Asked about a directory merely nested inside a repository — and the
@@ -314,14 +324,27 @@ by contrast, is deleted at every level — in a run worktree it is the build
 output the command exists to reclaim — and the count of gitignored paths is
 reported per worktree so it is visible before `--apply`.
 
-The command is a dry run until `--apply`, and reports what it spared, why,
-and how much it holds — so "nothing was eligible" is never confused with
-"everything was guarded", and the yield of the next level up is visible
-before choosing it. A failed deletion does not abort the sweep: the rest is
-still processed and the report still printed, since an aborted sweep
-strands what it already deleted with no record of it. Failures are listed
-under `failed` in `--json`, apart from `deleted`, so `deleted_count` counts
-deletions rather than attempts.
+The command is a dry run until `--apply`, and reports what it spared and
+why, so "nothing was eligible" is never confused with "everything was
+guarded". Each spared entry carries a `skip_reason`: `run-active`,
+`unlanded`, `nested-repo`, `too-recent`, `keep-last`, or
+`needs-higher-level`. Sizes are measured for the candidates and for what
+only the level ladder holds back — so the yield of the next level up is
+visible before choosing it — and not for the rest, which report `0`:
+measuring costs a walk of every file, and the live checkout of a running
+campaign is never walked at all.
+
+`--older-than` defaults to `168h` (7 days) and is compared against the
+mtime of the worktree's **root directory**, which changes when an entry is
+created, removed or renamed directly in it — not when a file deep inside
+is edited.
+
+A failed deletion does not abort the sweep: the rest is still processed and
+the report still printed, since an aborted sweep strands what it already
+deleted with no record of it. Failures are listed under `failed` in
+`--json`, apart from `deleted`, so `deleted_count` counts deletions rather
+than attempts — in a dry run it counts what *would* be deleted, which
+`dry_run: true` and each entry's `"deleted": false` make explicit.
 
 After each successful deletion the worktree's own registration is dropped
 from the parent repository. `git worktree prune` is deliberately not used —
