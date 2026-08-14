@@ -1298,8 +1298,16 @@ tool oracle_run:
         explicit = os.environ.get("GM_SEALED_DIR")
         if explicit:
             return explicit
-        root = os.environ.get("GM_SCRATCH", os.path.join(ws, ".."))
-        return os.path.join(root, "gm-holdout-" + (os.path.basename(os.path.abspath(ws)) or "default"))
+        # The default root is the system temp dir, NOT the workspace's parent: in a
+        # sandboxed run the worktree is the only writable checkout path and its
+        # parent is read-only — deriving a sibling there dies on the first seal.
+        # The name hashes the ABSOLUTE path because sibling worktrees of one repo
+        # share a basename; under a common root, basename alone would make two
+        # campaigns seal into each other's pile.
+        root = os.environ.get("GM_SCRATCH", tempfile.gettempdir())
+        ap = os.path.abspath(ws)
+        tag = hashlib.sha256(ap.encode("utf-8")).hexdigest()[:10]
+        return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
 
 
     def seal_holdout(gm_dir, sealed_dir):
@@ -1926,6 +1934,25 @@ tool oracle_run:
             check("un GET ne couvre pas un POST",
                   route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
                   ["POST /list"])
+
+            # 9. Scellement : derivable partout, jamais dans le parent du worktree
+            #    (lecture seule en sandbox), et sans collision entre worktrees
+            #    freres qui partagent le meme basename.
+            saved_env = {k: os.environ.get(k) for k in ("GM_SEALED_DIR", "GM_SCRATCH")}
+            os.environ.pop("GM_SEALED_DIR", None)
+            os.environ.pop("GM_SCRATCH", None)
+            a, b = sealed_dir_for("/w/replay/poss"), sealed_dir_for("/w/replay2/poss")
+            check("meme basename, deux worktrees -> deux piles", a != b, True)
+            check("la pile ne vit pas dans le parent du worktree",
+                  a.startswith("/w/"), False)
+            check("deux processus, meme workspace -> meme pile",
+                  sealed_dir_for("/w/replay/poss") == a, True)
+            os.environ["GM_SEALED_DIR"] = "/elsewhere/pile"
+            check("GM_SEALED_DIR impose sa pile", sealed_dir_for("/w/x"), "/elsewhere/pile")
+            for k, v in saved_env.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
         finally:
             g.update(saved)
 
