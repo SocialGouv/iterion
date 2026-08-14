@@ -105,6 +105,20 @@ func (f *cleanFixture) mergeIntoMain(runID string) {
 	f.git(f.repo, "merge", "--no-ff", "-m", "merge "+runID, "iterion/run/"+runID)
 }
 
+// addSubmodule registers a submodule in the repo. A worktree created
+// afterwards declares it but does not populate it, which is the state
+// `git worktree add` always leaves.
+func (f *cleanFixture) addSubmodule(at string) {
+	f.t.Helper()
+	sub := filepath.Join(f.root, "submodule-src")
+	mustMkdir(f.t, sub)
+	f.initRepo(sub)
+	if _, err := f.gitErr(f.repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, at); err != nil {
+		f.t.Skip("submodules unavailable in this git configuration")
+	}
+	f.git(f.repo, "commit", "-m", "add submodule")
+}
+
 func (f *cleanFixture) seedRun(runID string, status store.RunStatus) {
 	f.t.Helper()
 	s, err := store.New(f.store)
@@ -392,31 +406,91 @@ func TestClean_OrphanNeedsAggressiveAndIsNeverReportedClean(t *testing.T) {
 	mustExist(t, filepath.Join(path, "urgent.txt"), "orphaned checkout")
 }
 
-// A submodule's commits live in the worktree's own admin directory, which
-// goes when the registration does. Containment in the superproject proves
-// nothing about them.
-func TestClean_RefusesWorktreeCarryingASubmodule(t *testing.T) {
+// An INITIALISED submodule's commits live in the worktree's own admin
+// directory, which goes when the registration does. Containment in the
+// superproject proves nothing about them.
+func TestClean_RefusesWorktreeCarryingAnInitialisedSubmodule(t *testing.T) {
 	f := newCleanFixture(t)
-	sub := filepath.Join(f.root, "sub")
-	mustMkdir(t, sub)
-	f.initRepo(sub)
-	if _, err := f.gitErr(f.repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendor/lib"); err != nil {
-		t.Skip("submodules unavailable in this git configuration")
-	}
-	f.git(f.repo, "commit", "-m", "add submodule")
+	f.addSubmodule("vendor/lib")
 
 	path := f.addWorktree("withsub")
 	f.mergeIntoMain("withsub")
 	f.seedRun("withsub", store.RunStatusFinished)
+	f.git(path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
 
 	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
 	if deletedPaths(r)["withsub"] {
 		t.Fatal("deleted a worktree carrying a submodule; containment does not cross the gitlink")
 	}
-	if got := sparedReason(r, "withsub"); got != skipUnlanded {
-		t.Fatalf("spared for %q, want %q", got, skipUnlanded)
+	if got := sparedReason(r, "withsub"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
 	}
 	mustExist(t, path, "worktree with submodule")
+}
+
+// `git worktree add` never populates submodules, so "declared but not
+// initialised" is their normal state in a run worktree. There is no
+// working tree and no object of the submodule's own under the directory,
+// so there is nothing to lose — and refusing on it made every worktree of
+// every repository that merely declares a submodule permanently
+// unreclaimable, under the misleading label `unlanded`.
+func TestClean_UninitialisedSubmoduleDoesNotBlockCleaning(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addSubmodule("vendor/lib")
+
+	path := f.addWorktree("declared")
+	f.mergeIntoMain("declared")
+	f.seedRun("declared", store.RunStatusFinished)
+
+	// Precondition: git does report it, with the not-initialised marker.
+	if out := f.git(path, "submodule", "status"); !strings.HasPrefix(strings.TrimSpace(out), "-") {
+		t.Fatalf("fixture is not reproducing an uninitialised submodule: %q", out)
+	}
+	if entries, err := os.ReadDir(filepath.Join(path, "vendor", "lib")); err == nil && len(entries) > 0 {
+		t.Fatalf("submodule is populated after all: %d entries", len(entries))
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if !deletedPaths(r)["declared"] {
+		t.Fatalf("a merged, clean worktree was refused over a submodule that was never initialised (spared: %q)",
+			sparedReason(r, "declared"))
+	}
+	mustNotExist(t, path, "worktree with an uninitialised submodule")
+}
+
+// A plain clone dropped inside a worktree — a vendored checkout, the
+// `.repos/<tool>` habit of keeping a dependency's source beside the code
+// that uses it — is invisible to every question asked of the OUTER
+// repository: `submodule status` says nothing, and it is normally
+// gitignored, so the tree reads clean.
+func TestClean_RefusesWorktreeHoldingAnEmbeddedRepo(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("embeds")
+	f.mergeIntoMain("embeds")
+	f.seedRun("embeds", store.RunStatusFinished)
+
+	// Gitignored, exactly as such a directory normally is, so the outer
+	// tree still reads clean.
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), ".repos/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore .repos")
+
+	embedded := filepath.Join(path, ".repos", "upstream-tool")
+	mustMkdir(t, embedded)
+	f.initRepo(embedded)
+	mustWrite(t, filepath.Join(embedded, "patch.txt"), "unpushed local work\n")
+	f.git(embedded, "add", ".")
+	f.git(embedded, "commit", "-m", "local fix nobody else has")
+	head := f.git(embedded, "rev-parse", "HEAD")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["embeds"] {
+		t.Fatalf("deleted a worktree holding an embedded repository; commit %s would be gone", head)
+	}
+	if got := sparedReason(r, "embeds"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, filepath.Join(embedded, "patch.txt"), "embedded repo")
 }
 
 // The gate state under worktrees/.state is shared across runs and is not
@@ -470,6 +544,161 @@ func TestClean_UnreadableStatusIsTreatedAsDirty(t *testing.T) {
 		t.Fatalf("spared for %q, want %q", got, skipLevel)
 	}
 	mustExist(t, path, "worktree with unreadable status")
+}
+
+// "git could not answer" and "git says this is not a worktree" are
+// different facts. Collapsing them turns a broken environment — git
+// missing from a cron PATH, an unreadable config — into a store full of
+// disposable leftovers, at the level that also deletes them.
+func TestClean_BrokenGitIsAnErrorNotAStoreFullOfOrphans(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	dir := t.TempDir() // a PATH with no git in it at all
+	t.Setenv("PATH", dir)
+
+	_, err := f.runErr(CleanOptions{
+		StoreDir: f.store, Level: CleanAggressive, OlderThan: 0, Apply: true,
+	})
+	if err == nil {
+		t.Fatal("a sweep with no usable git reported success")
+	}
+	if !strings.Contains(err.Error(), "git") {
+		t.Errorf("error does not say git is the problem: %v", err)
+	}
+	mustExist(t, path, "worktree under a broken git")
+}
+
+// The status re-read closes a window whose width is the whole
+// os.RemoveAll. `run` and `resume` hold a per-run lock for the run's
+// lifetime; clean must take the same one, or "a live run keeps its
+// worktree" is merely likely.
+func TestClean_SkipsWorktreeWhoseRunLockIsHeld(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("held")
+	f.mergeIntoMain("held")
+	f.seedRun("held", store.RunStatusFinished) // terminal: eligible on status
+
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	lock, err := s.LockRun(context.Background(), "held")
+	if err != nil {
+		t.Fatalf("LockRun: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["held"] {
+		t.Fatal("deleted a worktree whose run lock another process holds")
+	}
+	if got := sparedReason(r, "held"); got != skipRunActive {
+		t.Fatalf("spared for %q, want %q", got, skipRunActive)
+	}
+	mustExist(t, path, "locked run")
+}
+
+// iterion persists its own per-run checkpoints under refs/iterion/. Not
+// looking there reported worktrees as `unlanded` — unrecoverable — when a
+// ref did hold their commits. They are this run's bookkeeping though, so
+// they lift it to own-branch, never to merged.
+func TestClean_IterionCheckpointRefsAreOwnBranchNotUnlanded(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("checkpointed")
+	f.seedRun("checkpointed", store.RunStatusFinished)
+	head := f.git(path, "rev-parse", "HEAD")
+	f.git(f.repo, "update-ref", "refs/iterion/runs/checkpointed/nodes/n/0", head)
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0})
+	if got := landingOf(r, "checkpointed"); got != landingOwnBranch {
+		t.Fatalf("landing %q, want %q — a checkpoint ref does hold the commits", got, landingOwnBranch)
+	}
+	if deletedPaths(r)["checkpointed"] {
+		t.Error("conservative took a worktree held only by iterion's own checkpoint ref")
+	}
+
+	r = f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
+	if !deletedPaths(r)["checkpointed"] {
+		t.Error("aggressive did not take it either; the refs namespace is still unread")
+	}
+}
+
+// %(objectname) on an annotated tag is the tag OBJECT's id, never the
+// commit's, so a tag sitting exactly on HEAD compared unequal and read as
+// work built on top — silently dropping an aggressive-only worktree to
+// conservative-deletable.
+func TestClean_AnnotatedTagOnHeadIsALabelNotAMerge(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("tagged")
+	f.seedRun("tagged", store.RunStatusFinished)
+	head := f.git(path, "rev-parse", "HEAD")
+	f.git(f.repo, "tag", "-a", "v1.0.0", "-m", "release", head)
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "tagged"); got != landingOwnBranch {
+		t.Fatalf("landing %q, want %q — an annotated tag AT the commit is a label", got, landingOwnBranch)
+	}
+	if deletedPaths(r)["tagged"] {
+		t.Fatal("conservative took a worktree whose only ref is an annotated tag on its own HEAD")
+	}
+	mustExist(t, path, "tagged worktree")
+}
+
+// The .claude/ mirror is written BY iterion at run start, not produced by
+// the run. Counting it as uncommitted work held merged worktrees back a
+// whole level for nothing.
+func TestClean_IterionsOwnScaffoldDoesNotCountAsUncommittedWork(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("scaffolded")
+	f.mergeIntoMain("scaffolded")
+	f.seedRun("scaffolded", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, ".claude", "skills"))
+	mustWrite(t, filepath.Join(path, ".claude", "skills", "x.md"), "mirrored by iterion\n")
+
+	// Precondition: git does see it.
+	if out := f.git(path, "status", "--porcelain"); !strings.Contains(out, ".claude") {
+		t.Fatalf("fixture did not produce the scaffold: %q", out)
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if !deletedPaths(r)["scaffolded"] {
+		t.Fatalf("a merged worktree was held back by iterion's own scaffold (spared: %q)",
+			sparedReason(r, "scaffolded"))
+	}
+
+	// But real uncommitted work still counts.
+	f2 := newCleanFixture(t)
+	p2 := f2.addWorktree("real")
+	f2.mergeIntoMain("real")
+	f2.seedRun("real", store.RunStatusFinished)
+	mustWrite(t, filepath.Join(p2, "notes.md"), "actual work\n")
+	r2 := f2.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r2)["real"] {
+		t.Fatal("the scaffold exclusion swallowed genuine uncommitted work")
+	}
+}
+
+// An operator told only what the current level yields cannot see that the
+// next one would free ten times as much.
+func TestClean_SparedEntriesCarryTheirSize(t *testing.T) {
+	f := newCleanFixture(t)
+	p := f.addWorktree("heavy")
+	f.mergeIntoMain("heavy")
+	f.seedRun("heavy", store.RunStatusFinished)
+	mustWrite(t, filepath.Join(p, "big.bin"), strings.Repeat("x", 4096))
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0})
+	if got := sparedReason(r, "heavy"); got != skipLevel {
+		t.Fatalf("spared for %q, want %q", got, skipLevel)
+	}
+	for _, wt := range r.Spared {
+		if filepath.Base(wt.Path) == "heavy" && wt.Bytes < 4096 {
+			t.Fatalf("spared entry reports %d bytes; a zero there reads as nothing to gain", wt.Bytes)
+		}
+	}
 }
 
 // --- the levels ------------------------------------------------------------
@@ -666,17 +895,20 @@ func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
 	if r.Scanned != 3 {
 		t.Fatalf("scanned %d, want 3 — the report must be emitted despite the failure", r.Scanned)
 	}
-	if r.FailedCount != 1 {
-		t.Errorf("FailedCount = %d, want 1", r.FailedCount)
+	if r.FailedCount != 1 || len(r.Failed) != 1 {
+		t.Fatalf("FailedCount=%d len(Failed)=%d, want 1 and 1", r.FailedCount, len(r.Failed))
+	}
+	// A machine consumer reading deleted_count must see deletions, not
+	// attempts: the failure belongs in its own list.
+	if r.DeletedCount != 2 {
+		t.Errorf("DeletedCount = %d, want 2 — failures must not be counted as deletions", r.DeletedCount)
 	}
 	// ccc comes after bbb in the sweep order and must still have been done.
 	mustNotExist(t, filepath.Join(f.store, "worktrees", "aaa"), "first deletion")
 	mustNotExist(t, filepath.Join(f.store, "worktrees", "ccc"), "deletion after the failure")
-	var failed CleanedWorktree
-	for _, wt := range r.Deleted {
-		if filepath.Base(wt.Path) == "bbb" {
-			failed = wt
-		}
+	failed := r.Failed[0]
+	if filepath.Base(failed.Path) != "bbb" {
+		t.Errorf("the failed entry is %q, want bbb", filepath.Base(failed.Path))
 	}
 	if failed.Error == "" {
 		t.Error("the failing worktree carries no error in the report")
@@ -684,8 +916,14 @@ func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
 	if failed.Deleted {
 		t.Error("a worktree that could not be removed is reported as deleted")
 	}
-	if r.BytesReclaimed != 0 && failed.Bytes > 0 && r.BytesReclaimed >= failed.Bytes*3 {
-		t.Error("bytes of a failed deletion were counted as reclaimed")
+	// Exact, not a threshold: a bound loose enough never to fire is not an
+	// assertion. Only what was actually removed may be counted.
+	var want int64
+	for _, wt := range r.Deleted {
+		want += wt.Bytes
+	}
+	if r.BytesReclaimed != want {
+		t.Errorf("BytesReclaimed = %d, want %d (a failed deletion must not count)", r.BytesReclaimed, want)
 	}
 }
 

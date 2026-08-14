@@ -254,7 +254,8 @@ What decides safety is not age and not run status alone, but what git can
 | `merged` | a ref whose tip is **not** this HEAD contains this HEAD — another line of work was built on top | conservative (clean tree), moderate (dirty) |
 | `own-branch` | refs contain HEAD but every one points exactly **at** it: labels keeping the commits alive, nothing built upon them | aggressive |
 | `orphan` | git cannot account for the directory at all | aggressive |
-| `unlanded` | no ref contains HEAD | never |
+| `unlanded` | no ref contains HEAD, or git could not answer | never |
+| `nested-repo` | the tree holds a repository of its own | never |
 
 Classifying by *what the refs were built upon* rather than by ref name
 matters in practice: iterion creates run worktrees detached
@@ -262,20 +263,44 @@ matters in practice: iterion creates run worktrees detached
 a branch name against, and a run whose commits were merely promoted to
 `iterion/run/<x>` has not been adopted by anything yet.
 
+Refs under `refs/iterion/` — the per-run checkpoints iterion writes itself
+— are consulted, because they do hold a run's commits alive; but they are
+that run's own bookkeeping and are reaped with it, so containment by one
+of them can never mean `merged`. Annotated tags are compared on their
+peeled commit: `%(objectname)` is the tag object's id and never equals the
+commit, so a release tag sitting on a worktree's HEAD would otherwise read
+as work built on top of it.
+
 Three guards no level lifts:
 
 1. **A run that is not terminal keeps its worktree.** Checked against run
    status, never mtime — a run can spend hours inside one agent turn
    without touching its checkout, so age alone would call it abandoned. A
-   run whose `run.json` cannot be read is treated as active, not as absent,
-   and the status is re-read immediately before deleting because
-   `iterion resume` reuses a run's existing worktree.
+   run whose `run.json` cannot be read is treated as active, not as absent.
+   The sweep takes the same per-run lock `iterion run` and `iterion resume`
+   hold for a run's lifetime and keeps it across the deletion: the window a
+   status re-read alone leaves open is not an instant but the whole
+   removal, which on a real worktree runs for seconds.
 2. **An `unlanded` worktree is never deleted.** Its commits would survive
    only in the reflog, which expires; recovering or discarding that work is
    a decision for the operator and for git, not for a sweep.
-3. **A worktree carrying a submodule is never deleted.** The submodule's
-   commits live in the worktree's own administrative directory, and
-   containment in the superproject proves nothing about them.
+3. **A worktree holding a repository of its own is never deleted** — an
+   initialised submodule, or a plain clone dropped inside it (a vendored
+   checkout, a dependency's source kept beside the code that uses it). Its
+   objects live under the directory, so containment in the outer repository
+   proves nothing about them, and being gitignored the tree still reads
+   clean. A submodule merely *declared* and never initialised does not
+   trigger it: `git worktree add` never populates submodules, so that is
+   their normal state and there is nothing there to lose.
+
+Git itself must be usable before any verdict is formed. Without that check
+a git missing from a cron `PATH`, or an unreadable `~/.gitconfig`, would
+make every directory unclassifiable at once — and be reported as a store
+full of disposable leftovers.
+
+The `.claude/` directory iterion mirrors into a run worktree at run start
+does not count as uncommitted work: it is written by iterion, not produced
+by the run.
 
 Every git answer is refused unless git is talking about **that** directory.
 Asked about a directory merely nested inside a repository — and the
@@ -289,11 +314,14 @@ by contrast, is deleted at every level — in a run worktree it is the build
 output the command exists to reclaim — and the count of gitignored paths is
 reported per worktree so it is visible before `--apply`.
 
-The command is a dry run until `--apply`, and reports what it spared and
-why, so "nothing was eligible" is never confused with "everything was
-guarded". A failed deletion does not abort the sweep: the rest is still
-processed and the report still printed, since an aborted sweep strands what
-it already deleted with no record of it.
+The command is a dry run until `--apply`, and reports what it spared, why,
+and how much it holds — so "nothing was eligible" is never confused with
+"everything was guarded", and the yield of the next level up is visible
+before choosing it. A failed deletion does not abort the sweep: the rest is
+still processed and the report still printed, since an aborted sweep
+strands what it already deleted with no record of it. Failures are listed
+under `failed` in `--json`, apart from `deleted`, so `deleted_count` counts
+deletions rather than attempts.
 
 After each successful deletion the worktree's own registration is dropped
 from the parent repository. `git worktree prune` is deliberately not used —

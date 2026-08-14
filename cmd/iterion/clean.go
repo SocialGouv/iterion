@@ -55,14 +55,26 @@ THREE GUARDS NO LEVEL LIFTS
   1. A run that is not terminal keeps its worktree. Checked against run
      status, never mtime: a run can spend hours in one agent turn without
      touching its worktree, and age alone would call it abandoned. The
-     status is re-read immediately before deleting, because 'iterion
-     resume' reuses a run's existing worktree.
+     sweep takes the same per-run lock 'iterion run' and 'iterion resume'
+     hold for a run's lifetime, and holds it across the deletion — the
+     window a status re-read alone would leave open is not an instant but
+     the whole removal, which on a real worktree runs for seconds.
   2. An 'unlanded' worktree is never deleted. Its commits would survive
      only in the reflog, which expires. Recovering or discarding that work
      is a decision for the operator and for git, not for a sweep.
-  3. A worktree carrying a submodule is never deleted. The submodule's
-     commits live in the worktree's own administrative directory, and
-     containment in the superproject proves nothing about them.
+  3. A worktree holding a repository of its own is never deleted — an
+     initialised submodule, or a plain clone dropped inside it (a vendored
+     checkout, a dependency's source kept beside the code that uses it).
+     Its objects live under the directory, so containment in the outer
+     repository proves nothing about them, and being gitignored the tree
+     still reads clean. A submodule merely DECLARED and never initialised
+     does not trigger this: 'git worktree add' never populates submodules,
+     so that is their normal state and there is nothing there to lose.
+
+Git must also be usable before any verdict is formed. Without that check a
+git missing from a cron PATH or an unreadable config would make every
+directory unclassifiable at once — and be reported as a store full of
+disposable leftovers.
 
 <store-dir>/worktrees/.state and any other dot-prefixed entry is left
 alone: it holds gate state shared across runs, not one run's checkout.
