@@ -300,17 +300,25 @@ directory yields `unlanded`, never `orphan` — only git's own "not a git
 repository" is read as a directory that is not a worktree.
 
 What iterion mirrors into a run worktree at run start does not count as
-uncommitted work — it is written by iterion, not produced by the run.
-That is `.claude/skills/`, `.claude/commands/`, `.claude/agents/`,
-`.claude/.iterion-managed/` and `.claude/settings.json`, and nothing else:
-anything a run puts elsewhere under `.claude/` is the run's, and reads as
-work.
+uncommitted work — it is written by iterion, not produced by the run. That
+is **untracked** content under `.claude/skills/`, `.claude/commands/`,
+`.claude/agents/` and `.claude/.iterion-managed/`, plus `.claude/settings.json`
+exactly. A *tracked* file's change under those directories came from the
+repository, so it is the run's work; `.claude/settings.json.orig` is a
+failed merge, not a mirror; and a `.claude/` nested deeper in the tree is
+the run's own scaffolding of a sub-project.
 
 Immediately before a deletion the whole verdict is derived again, because
 the classification is a photograph and a sweep runs for tens of seconds. A
-worktree whose HEAD moved, whose tree turned dirty, or which gained a
-repository of its own in the meantime is spared. Re-asking only about the
-working tree would not do: a commit leaves a clean tree.
+worktree whose HEAD moved, which gained a repository of its own, or whose
+tree turned dirty **in a way the current level no longer admits** is
+spared — at `conservative` a tree that turned dirty is; at `moderate` and
+above a dirty merged tree remains eligible, by that level's own contract.
+Re-asking only about the working tree would not do: a commit leaves a
+clean tree.
+
+A worktree a concurrent sweep already removed is reported `already-gone`,
+neither deleted nor judged.
 
 Every git answer is refused unless git is talking about **that** directory.
 Asked about a directory merely nested inside a repository — and the
@@ -327,10 +335,10 @@ reported per worktree so it is visible before `--apply`.
 The command is a dry run until `--apply`, and reports what it spared and
 why, so "nothing was eligible" is never confused with "everything was
 guarded". Each spared entry carries a `skip_reason`: `run-active`,
-`unlanded`, `nested-repo`, `too-recent`, `keep-last`, or
-`needs-higher-level`. Sizes are measured for the candidates and for what
-only the level ladder holds back — so the yield of the next level up is
-visible before choosing it — and not for the rest, which report `0`:
+`unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`, or
+`needs-higher-level`. Sizes are measured for the candidates, for what only
+the level ladder holds back — so the yield of the next level up is visible
+before choosing it — and for `keep-last`; not for the rest, which report `0`:
 measuring costs a walk of every file, and the live checkout of a running
 campaign is never walked at all.
 

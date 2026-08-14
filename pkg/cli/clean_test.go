@@ -858,6 +858,16 @@ func TestClean_DoesNotClaimAWorktreeAnotherSweepAlreadyTook(t *testing.T) {
 	if deletedPaths(r)["contended"] {
 		t.Fatal("claimed a worktree another sweep had already taken")
 	}
+	// And it must be accounted for: silently dropping it makes the totals
+	// stop adding up, and filing it under `unlanded` would be a verdict
+	// about work rather than a statement that it was already gone.
+	if got := sparedReason(r, "contended"); got != skipVanished {
+		t.Fatalf("reported as %q, want %q", got, skipVanished)
+	}
+	if r.Scanned != len(r.Deleted)+len(r.Spared)+len(r.Failed) {
+		t.Errorf("scanned=%d but deleted+spared+failed=%d — an entry went unaccounted for",
+			r.Scanned, len(r.Deleted)+len(r.Spared)+len(r.Failed))
+	}
 	var want int64
 	for _, wt := range r.Deleted {
 		want += wt.Bytes
@@ -1174,13 +1184,13 @@ func TestClean_SparesAWorktreeThatGainedANestedRepoDuringTheSweep(t *testing.T) 
 	mustExist(t, filepath.Join(target, ".repos", "tool"), "repo cloned mid-sweep")
 }
 
-// The `.git` of the worktree itself has HEAD, objects/ and refs/ when it
-// is a real directory rather than a pointer file. Reading that as a
-// nested repository refuses the worktree at every level, forever.
-func TestClean_OwnGitDirectoryIsNotANestedRepo(t *testing.T) {
+// A self-contained clone dropped into the pool answers every containment
+// question from refs and objects that live inside itself — and they are
+// destroyed along with the directory. `merged` means "reachable
+// independently of what this worktree holds", which such a repository can
+// never satisfy however confidently git answers.
+func TestClean_RefusesASelfContainedRepoInThePool(t *testing.T) {
 	f := newCleanFixture(t)
-	// A checkout whose .git is a DIRECTORY: a plain clone, not a
-	// `git worktree add` pointer file.
 	path := filepath.Join(f.store, "worktrees", "cloned")
 	f.git(f.root, "clone", "-q", f.repo, path)
 	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
@@ -1188,10 +1198,111 @@ func TestClean_OwnGitDirectoryIsNotANestedRepo(t *testing.T) {
 	}
 	f.seedRun("cloned", store.RunStatusFinished)
 
-	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
-	if got := landingOf(r, "cloned"); got == landingNested {
-		t.Fatal("the worktree's own .git directory was read as a nested repository")
+	// Work that exists in this clone and nowhere else, with HEAD left on a
+	// commit another of its own branches contains — the exact shape that
+	// reads as `merged`.
+	f.git(path, "checkout", "-q", "-b", "feature")
+	mustWrite(t, filepath.Join(path, "precious.txt"), "exists in no other object store\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "precious")
+	precious := f.git(path, "rev-parse", "HEAD")
+	f.git(path, "checkout", "-q", "main")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["cloned"] {
+		t.Fatalf("deleted a self-contained repository; commit %s existed nowhere else", precious)
 	}
+	if got := sparedReason(r, "cloned"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, path, "self-contained repo")
+	// The commit lives only in this clone's own object store.
+	if out, err := f.gitErr(f.repo, "cat-file", "-t", precious); err == nil && strings.TrimSpace(out) == "commit" {
+		t.Fatal("fixture is not isolating the commit: the parent repo holds it too")
+	}
+	if out := f.git(path, "cat-file", "-t", precious); strings.TrimSpace(out) != "commit" {
+		t.Fatalf("the clone lost its own commit: %q", out)
+	}
+}
+
+// git answered --show-toplevel for THIS directory, so it does know the
+// worktree: an unresolvable HEAD — an unborn branch, a `checkout --orphan`
+// an agent left behind — is "we could not tell", not "this is not a
+// worktree". The difference decides whether a tree full of uncommitted
+// work is deletable at aggressive.
+func TestClean_UnresolvableHeadIsNotAnOrphan(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("unborn")
+	f.seedRun("unborn", store.RunStatusFinished)
+	f.git(path, "checkout", "-q", "--orphan", "fresh-start")
+	mustWrite(t, filepath.Join(path, "precious.txt"), "a day of uncommitted work\n")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "unborn"); got == landingOrphan {
+		t.Fatalf("landing = %q: only HEAD was unresolvable, and git knows this directory", got)
+	}
+	if deletedPaths(r)["unborn"] {
+		t.Fatal("deleted a worktree whose HEAD git could not resolve")
+	}
+	mustExist(t, filepath.Join(path, "precious.txt"), "work under an unresolvable HEAD")
+}
+
+// The mirror only lays down files it owns and preserves any it finds
+// diverged, so a TRACKED file's diff under one of its directories came
+// from the repository, not from iterion.
+func TestClean_TrackedFilesUnderTheMirrorStillCountAsWork(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("versioned")
+	mustMkdir(t, filepath.Join(path, ".claude", "agents"))
+	mustWrite(t, filepath.Join(path, ".claude", "agents", "reviewer.md"), "committed config\n")
+	mustWrite(t, filepath.Join(path, ".claude", "settings.json"), "{}\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "version the project's claude config")
+	f.mergeIntoMain("versioned")
+	f.seedRun("versioned", store.RunStatusFinished)
+
+	// The run's deliverable: a change to those versioned files.
+	mustWrite(t, filepath.Join(path, ".claude", "agents", "reviewer.md"), "the run rewrote this\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["versioned"] {
+		t.Fatal("a tracked file's uncommitted change under .claude/ was mistaken for iterion's mirror")
+	}
+	mustExist(t, filepath.Join(path, ".claude", "agents", "reviewer.md"), "modified tracked config")
+}
+
+// `.claude/settings.json` is rewritten in place by iterion; `.orig`,
+// `.bak` and `.rej` beside it are a failed merge or an editor's backup.
+func TestClean_ScaffoldFilesAreMatchedExactlyNotByPrefix(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("backup")
+	f.mergeIntoMain("backup")
+	f.seedRun("backup", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, ".claude"))
+	mustWrite(t, filepath.Join(path, ".claude", "settings.json.orig"), "the pre-merge settings someone needs\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["backup"] {
+		t.Fatal("a .orig beside settings.json was swallowed by a prefix match")
+	}
+	mustExist(t, filepath.Join(path, ".claude", "settings.json.orig"), "merge backup")
+}
+
+// The mirror is iterion's, wherever the run's own tree puts a `.claude/`
+// of its own: a scaffold path is anchored at the worktree root.
+func TestClean_ANestedClaudeDirectoryIsNotTheMirror(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("subproject")
+	f.mergeIntoMain("subproject")
+	f.seedRun("subproject", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, "apps", "web", ".claude", "skills"))
+	mustWrite(t, filepath.Join(path, "apps", "web", ".claude", "skills", "s.md"), "the run scaffolded a sub-project\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["subproject"] {
+		t.Fatal("a .claude/ nested inside the tree was counted as iterion's own mirror")
+	}
+	mustExist(t, filepath.Join(path, "apps", "web", ".claude", "skills", "s.md"), "sub-project scaffold")
 }
 
 // iterion's mirror does not land in .claude/skills/ alone: plugin
@@ -1863,6 +1974,73 @@ func TestClean_DryRunDoesNotClaimRunRecordsWereDeleted(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "run records deleted") {
 		t.Errorf("dry run claims run records were deleted:\n%s", buf.String())
+	}
+}
+
+// Both negatives fail open: a negative --older-than makes the age filter
+// a no-op, a negative --keep-last makes the floor a no-op. Refusing them
+// is the only thing between a typo and a wider sweep than intended.
+func TestClean_RejectsNegativeBounds(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	for name, opts := range map[string]CleanOptions{
+		"older-than": {OlderThan: -time.Hour},
+		"keep-last":  {KeepLast: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := opts
+			o.StoreDir, o.Level, o.Apply = f.store, CleanConservative, true
+			if _, err := f.runErr(o); err == nil {
+				t.Fatalf("a negative --%s was accepted", name)
+			}
+			mustExist(t, filepath.Join(f.store, "worktrees", "merged"), "worktree after a rejected flag")
+		})
+	}
+}
+
+// Taking the run lock creates the run directory, so a sweep that locks
+// before checking would resurrect the records `runs prune` removed — and
+// a resurrected, unreadable record reads as `running`, which would spare
+// that worktree for good.
+func TestClean_DoesNotResurrectRunRecords(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("recordless")
+	f.mergeIntoMain("recordless")
+	// deliberately no seedRun: this is a worktree whose run was pruned
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if !deletedPaths(r)["recordless"] {
+		t.Fatalf("a worktree with no run record was not swept (spared: %q)", sparedReason(r, "recordless"))
+	}
+	if _, err := os.Stat(filepath.Join(f.store, "runs", "recordless")); !os.IsNotExist(err) {
+		t.Fatal("the sweep recreated the run directory of a run that no longer exists")
+	}
+}
+
+// The warning that a tree may be half-removed is the one line telling an
+// operator to go and look. Only --json was ever asserted.
+func TestClean_HumanOutputWarnsAboutAPartialDeletion(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("doomed")
+	f.mergeIntoMain("doomed")
+	f.seedRun("doomed", store.RunStatusFinished)
+
+	real := removeTree
+	removeTree = func(p string) error { return errors.New("simulated: another owner's file") }
+	t.Cleanup(func() { removeTree = real })
+
+	var buf bytes.Buffer
+	err := RunClean(CleanOptions{
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
+	}, &Printer{W: &buf, Format: OutputHuman})
+	if err == nil {
+		t.Fatal("a failed deletion did not surface an error")
+	}
+	if !strings.Contains(buf.String(), "may be partially deleted") {
+		t.Fatalf("the human report does not warn about a partial deletion:\n%s", buf.String())
 	}
 }
 

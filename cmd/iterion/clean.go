@@ -85,15 +85,19 @@ unclassifiable at once. A git that answers but fails on one directory
 yields 'unlanded', never 'orphan'.
 
 What iterion mirrors into the worktree at run start does not count as the
-run's uncommitted work: .claude/skills/, .claude/commands/, .claude/agents/,
-.claude/.iterion-managed/ and .claude/settings.json — and nothing else.
-Anything a run puts elsewhere under .claude/ is the run's, and reads as work.
+run's uncommitted work: UNTRACKED content under .claude/skills/,
+.claude/commands/, .claude/agents/, .claude/.iterion-managed/, plus
+.claude/settings.json exactly. A tracked file's change under those
+directories came from the repository and is the run's work; a .orig beside
+settings.json is a failed merge; a .claude/ deeper in the tree is the run's
+own scaffolding of a sub-project.
 
 Immediately before a deletion the whole verdict is derived again, because a
 sweep runs for tens of seconds and the classification is a photograph. A
-worktree whose HEAD moved, whose tree turned dirty, or which gained a
-repository of its own is spared — asking only about the working tree would
-miss a commit, which leaves it clean.
+worktree whose HEAD moved, which gained a repository of its own, or whose
+tree turned dirty in a way the current level no longer admits, is spared —
+asking only about the working tree would miss a commit, which leaves it
+clean.
 
 <store-dir>/worktrees/.state and any other dot-prefixed entry is left
 alone: it holds gate state shared across runs, not one run's checkout.

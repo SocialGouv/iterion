@@ -94,6 +94,9 @@ const (
 	skipTooRecent = "too-recent"
 	skipKeepLast  = "keep-last"
 	skipLevel     = "needs-higher-level"
+	// skipVanished: the directory was gone before we reached it, so this
+	// sweep neither deleted it nor decided anything about it.
+	skipVanished = "already-gone"
 )
 
 // iterionRefPrefix is where iterion persists its own per-run checkpoints
@@ -285,17 +288,20 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		// creates something to lose. Deleting then takes the worktree's
 		// administrative directory with it, and the new commit — held by
 		// nothing else — is dangling until the next gc.
-		if reason, ok := stillEligible(wt, opts.Level); !ok {
-			wt.SkipReason = reason
+		// A concurrent sweep may already have taken it. Asked before the
+		// re-derivation, because inspecting a path that is gone yields
+		// "git could not tell" and would file it under `unlanded` — a
+		// verdict about work that is not what happened.
+		if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
+			wt.SkipReason = skipVanished
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
 		}
 
-		// A concurrent sweep may already have taken it: os.RemoveAll
-		// succeeds on a path that is gone, and both sweeps would then
-		// claim the deletion and its bytes.
-		if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
+		if reason, ok := stillEligible(wt, opts.Level); !ok {
+			wt.SkipReason = reason
+			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
 		}
@@ -717,15 +723,31 @@ func inspectWorktreeGit(path string) worktreeInspection {
 
 	head, err := gitOut(path, "rev-parse", "HEAD")
 	if err != nil {
-		// No commit yet: nothing committed to lose, but the tree may be
-		// full of uncommitted work. `orphan` already requires the highest
-		// level and dirty stays true.
-		return notARepo
+		if errors.Is(err, errNotARepo) {
+			return notARepo
+		}
+		// --show-toplevel already answered for THIS directory, so git does
+		// know the worktree: an unresolvable HEAD — an unborn branch, a
+		// `checkout --orphan` an agent left behind, a dangling symbolic
+		// ref — is "we could not tell", not "this is not a worktree". The
+		// difference decides whether a tree full of uncommitted work is
+		// deletable at aggressive.
+		cannotTell.err = err
+		return cannotTell
 	}
 
 	insp := worktreeInspection{head: head, dirty: worktreeDirty(path)}
 	if common, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 		insp.commonDir = common
+		// A repository that lives INSIDE the directory answers containment
+		// with refs and objects that are destroyed along with it. `merged`
+		// means "reachable independently of what this worktree holds", and
+		// a self-contained clone dropped into the pool can never satisfy
+		// that however confidently git answers.
+		if isInside(resolvePath(path), resolvePath(common)) {
+			insp.landing = landingNested
+			return insp
+		}
 	}
 	if n, err := countIgnoredEntries(path); err != nil {
 		insp.err = err
@@ -859,13 +881,18 @@ func samePath(a, b string) bool {
 // pkg/runtime answers the same question for a different purpose
 // (deciding whether a run left work behind) and is the reason this list
 // has to stay in step with what the mirror actually writes.
-var cleanScaffoldPaths = []string{
+var cleanScaffoldDirs = []string{
 	".claude/skills/",
 	".claude/commands/",
 	".claude/agents/",
 	".claude/.iterion-managed/",
-	".claude/settings.json",
 }
+
+// cleanScaffoldFiles are exact paths, never prefixes: iterion rewrites
+// settings.json in place, but `.claude/settings.json.orig`, `.bak`, `.rej`
+// are a failed merge or an editor's backup — someone's work, and a
+// prefix test would have swallowed them.
+var cleanScaffoldFiles = []string{".claude/settings.json"}
 
 // renameDestination returns the DEST half of a porcelain rename entry,
 // stepping over a quoted source rather than cutting at the first " -> ".
@@ -893,13 +920,36 @@ func dequotePath(p string) string {
 	return p
 }
 
-func isScaffold(p string) bool {
-	for _, prefix := range cleanScaffoldPaths {
-		if p == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(p, prefix) {
+// isScaffold reports whether a porcelain entry is iterion's own mirror
+// rather than the run's work. The status code is part of the question: a
+// TRACKED file under one of these directories came from the repository,
+// and a modification to it is the repository's content changing. The
+// mirror only ever lays down files it owns, and preserves any it finds
+// diverged — so a diff there is never its doing.
+func isScaffold(status, p string) bool {
+	for _, exact := range cleanScaffoldFiles {
+		if p == exact {
+			return true
+		}
+	}
+	if strings.TrimSpace(status) != "??" {
+		return false
+	}
+	for _, dir := range cleanScaffoldDirs {
+		if p == strings.TrimSuffix(dir, "/") || strings.HasPrefix(p, dir) {
 			return true
 		}
 	}
 	return false
+}
+
+// isInside reports whether child sits within parent.
+func isInside(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func worktreeDirty(path string) bool {
@@ -927,7 +977,7 @@ func worktreeDirty(path string) bool {
 		if strings.ContainsAny(status, "RC") {
 			rest = renameDestination(rest)
 		}
-		if p := dequotePath(rest); p != "" && !isScaffold(p) {
+		if p := dequotePath(rest); p != "" && !isScaffold(status, p) {
 			return true
 		}
 	}
@@ -1172,6 +1222,10 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 	if r.DeletedCount == 0 {
 		p.Line("nothing to clean at level %s (scanned %d worktree(s) in %d store(s))",
 			r.Level, r.Scanned, len(r.Stores))
+		// A sweep whose every deletion failed still deleted nothing — but
+		// saying only that would send the operator away reassured while a
+		// tree may be half removed.
+		renderCleanFailures(p, r)
 		renderCleanSpared(p, r)
 		return nil
 	}
@@ -1203,9 +1257,7 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 	p.Table([]string{"RUN", "LANDING", "AGE", "SIZE", "PATH"}, rows)
 	p.Line("%s %d worktree(s), %s reclaimed (scanned %d in %d store(s))",
 		verb, r.DeletedCount, humanBytes(r.BytesReclaimed), r.Scanned, len(r.Stores))
-	for _, wt := range r.Failed {
-		p.Line("FAILED, may be partially deleted: %s (%s)", wt.Path, wt.Error)
-	}
+	renderCleanFailures(p, r)
 	for _, wt := range r.Deleted {
 		if wt.RunError != "" {
 			p.Line("deleted, but its run record could not be removed: %s (%s)", wt.RunID, wt.RunError)
@@ -1229,6 +1281,15 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 		p.Line("dry run — nothing was deleted; re-run with --apply")
 	}
 	return nil
+}
+
+// renderCleanFailures names every deletion that was attempted and did
+// not complete. os.RemoveAll works its way into a tree before it fails,
+// so "failed" and "untouched" are not the same thing.
+func renderCleanFailures(p *Printer, r CleanResult) {
+	for _, wt := range r.Failed {
+		p.Line("FAILED, may be partially deleted: %s (%s)", wt.Path, wt.Error)
+	}
 }
 
 // renderCleanSpared summarises what was protected and why. A sweep that
