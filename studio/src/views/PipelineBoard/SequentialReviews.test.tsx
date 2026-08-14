@@ -57,6 +57,19 @@ vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
   ),
 }));
 
+// Distinct from the form mock so the stepper test can count leftover
+// panels. data-scope-run-id (not data-run-id) keeps the static-markup
+// assertions on the form from matching this stand-in.
+vi.mock("./ReviewScopePanel", () => ({
+  ReviewScopePanel: (props: { runId: string; pauseKey?: string }) => (
+    <div
+      data-testid="review-scope"
+      data-scope-run-id={props.runId}
+      data-pause-key={props.pauseKey ?? ""}
+    />
+  ),
+}));
+
 import {
   clampReviewIndex,
   pendingReviewVersionKey,
@@ -212,5 +225,50 @@ describe("SequentialReviews", () => {
       ),
     );
     expect(html).toBe("");
+  });
+
+  it("replaces the review-scope panel when stepping to another turn", () => {
+    // Two siblings used to share reviewKey. React's remaining-children
+    // map keeps only the last child per key, so Next unmounted the form
+    // and leaked every previous ReviewScopePanel.
+    const card = cardWithReviews(3);
+    const first = card.pending_reviews?.[0];
+    const second = card.pending_reviews?.[1];
+    if (!first || !second) throw new Error("test requires three pending reviews");
+    render(
+      withClient(
+        <SequentialReviews card={card} onResolved={() => {}} />,
+      ),
+    );
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-0",
+    );
+    expect(screen.getByTestId("review-scope").getAttribute("data-pause-key")).toBe(
+      pendingReviewVersionKey(first),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next review" }));
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-1",
+    );
+    // pauseKey cache-keys the scope query. The Fragment remounts the
+    // panel, but a remount does not evict react-query's entry — without
+    // a per-turn pauseKey a second gate on the same run_id reuses N-1.
+    expect(screen.getByTestId("review-scope").getAttribute("data-pause-key")).toBe(
+      pendingReviewVersionKey(second),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous review" }));
+    expect(screen.getAllByTestId("review-scope")).toHaveLength(1);
+    expect(screen.getByTestId("review-scope").getAttribute("data-scope-run-id")).toBe(
+      "run-1",
+    );
+    expect(screen.getByTestId("review-scope").getAttribute("data-pause-key")).toBe(
+      pendingReviewVersionKey(second),
+    );
+    expect(screen.getByTestId("human-prompt").getAttribute("data-run-id")).toBe("run-1");
   });
 });
