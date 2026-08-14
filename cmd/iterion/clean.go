@@ -82,13 +82,16 @@ THREE GUARDS NO LEVEL LIFTS
 Git must also be usable before any verdict is formed: a git missing from a
 cron PATH, or a malformed config, would otherwise make every directory
 unclassifiable at once. A git that answers but fails on one directory
-yields 'unlanded', never 'orphan'.
+yields 'unlanded', never 'orphan': only git saying so itself, or git
+answering for an ENCLOSING repository, makes a directory read as not a
+worktree.
 
 What iterion mirrors into the worktree at run start does not count as the
 run's uncommitted work: UNTRACKED content under .claude/skills/,
-.claude/commands/, .claude/agents/, .claude/.iterion-managed/, plus
-.claude/settings.json exactly. A tracked file's change under those
-directories came from the repository and is the run's work; a .orig beside
+.claude/commands/ and .claude/agents/, plus .claude/settings.json exactly —
+and, at any status, an .iterion-managed/ directory under .claude/, which is
+iterion's own bookkeeping. A tracked file's change under those directories
+came from the repository and is the run's work; a .orig beside
 settings.json is a failed merge; a .claude/ deeper in the tree is the run's
 own scaffolding of a sub-project.
 

@@ -293,7 +293,9 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		// "git could not tell" and would file it under `unlanded` — a
 		// verdict about work that is not what happened.
 		if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
-			wt.SkipReason = skipVanished
+			// Its bytes were reclaimed by whoever removed it, not held
+			// back by us: reporting them would read as "still to gain".
+			wt.SkipReason, wt.Bytes = skipVanished, 0
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
@@ -301,6 +303,16 @@ func RunClean(opts CleanOptions, p *Printer) error {
 
 		if reason, ok := stillEligible(wt, opts.Level); !ok {
 			wt.SkipReason = reason
+			result.Spared = append(result.Spared, *wt)
+			releaseLock(lock)
+			continue
+		}
+
+		// stillEligible spends several git calls and a full walk, so ask
+		// once more: os.RemoveAll succeeds on a path that is already gone
+		// and both sweeps would claim the deletion and its bytes.
+		if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
+			wt.SkipReason, wt.Bytes = skipVanished, 0
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
@@ -737,17 +749,27 @@ func inspectWorktreeGit(path string) worktreeInspection {
 	}
 
 	insp := worktreeInspection{head: head, dirty: worktreeDirty(path)}
-	if common, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
-		insp.commonDir = common
-		// A repository that lives INSIDE the directory answers containment
-		// with refs and objects that are destroyed along with it. `merged`
-		// means "reachable independently of what this worktree holds", and
-		// a self-contained clone dropped into the pool can never satisfy
-		// that however confidently git answers.
-		if isInside(resolvePath(path), resolvePath(common)) {
-			insp.landing = landingNested
-			return insp
-		}
+
+	// A repository that lives INSIDE the directory answers containment with
+	// refs and objects that are destroyed along with it. `merged` means
+	// "reachable independently of what this worktree holds", and a
+	// self-contained clone dropped into the pool can never satisfy that
+	// however confidently git answers.
+	//
+	// Not knowing where the common dir is must therefore refuse, not wave
+	// through: this is the only thing standing between such a clone and
+	// its own destruction, and burying it in an `err == nil` made the
+	// guard vanish silently on any git that could not answer.
+	common, err := gitCommonDir(path)
+	if err != nil {
+		insp.landing = landingNowhere
+		insp.err = err
+		return insp
+	}
+	insp.commonDir = common
+	if isInside(resolvePath(path), resolvePath(common)) {
+		insp.landing = landingNested
+		return insp
 	}
 	if n, err := countIgnoredEntries(path); err != nil {
 		insp.err = err
@@ -921,19 +943,34 @@ func dequotePath(p string) string {
 }
 
 // isScaffold reports whether a porcelain entry is iterion's own mirror
-// rather than the run's work. The status code is part of the question: a
-// TRACKED file under one of these directories came from the repository,
-// and a modification to it is the repository's content changing. The
-// mirror only ever lays down files it owns, and preserves any it finds
-// diverged — so a diff there is never its doing.
+// rather than the run's work.
+//
+// The status code is part of the question. A TRACKED file under one of
+// these directories came from the repository, and a repository that
+// versions its `.claude/` owns what is in it — `.claude/settings.json`
+// and `.claude/agents/` are checked-in project configuration in plenty of
+// them, and an agent editing one is delivering work.
+//
+// The trade is deliberate and it costs yield, not safety: the mirror CAN
+// rewrite a tracked file it previously wrote (reconcileSkillFile refreshes
+// a destination whose marker still matches), so a repository that commits
+// the mirror's own output reads dirty after a bundle changes and needs
+// `--level moderate`. Reading it the other way costs work instead.
 func isScaffold(status, p string) bool {
+	// An `.iterion-managed/` directory under `.claude/` is iterion's own
+	// bookkeeping about what it mirrored — sha256 markers, the hooks
+	// sidecar. It is nobody's work at any status, and the mirror rewrites
+	// it on every run.
+	if strings.HasPrefix(p, ".claude/") && strings.Contains(p, "/.iterion-managed/") {
+		return true
+	}
+	if strings.TrimSpace(status) != "??" {
+		return false
+	}
 	for _, exact := range cleanScaffoldFiles {
 		if p == exact {
 			return true
 		}
-	}
-	if strings.TrimSpace(status) != "??" {
-		return false
 	}
 	for _, dir := range cleanScaffoldDirs {
 		if p == strings.TrimSuffix(dir, "/") || strings.HasPrefix(p, dir) {
@@ -941,6 +978,27 @@ func isScaffold(status, p string) bool {
 		}
 	}
 	return false
+}
+
+// gitCommonDir locates the repository a worktree belongs to, as an
+// absolute path.
+//
+// --path-format=absolute needs git 2.31; on anything older the option is
+// rejected, and the bare form answers RELATIVELY (plain `.git` from a
+// checkout's root). Falling back and absolutising keeps the guard that
+// depends on this answer working there instead of quietly evaporating.
+func gitCommonDir(path string) (string, error) {
+	if out, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
+		return out, nil
+	}
+	out, err := gitOut(path, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(path, out)
+	}
+	return filepath.Clean(out), nil
 }
 
 // isInside reports whether child sits within parent.

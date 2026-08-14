@@ -296,8 +296,9 @@ Three guards no level lifts:
 Git itself must be usable before any verdict is formed: a git missing from
 a cron `PATH`, or a malformed config, would otherwise make every directory
 unclassifiable at once. A git that answers but fails on a particular
-directory yields `unlanded`, never `orphan` — only git's own "not a git
-repository" is read as a directory that is not a worktree.
+directory yields `unlanded`, never `orphan`. Only two things make a
+directory read as "not a worktree": git saying so itself, and git
+answering for some *enclosing* repository instead of that directory.
 
 What iterion mirrors into a run worktree at run start does not count as
 uncommitted work — it is written by iterion, not produced by the run. That
@@ -338,7 +339,8 @@ guarded". Each spared entry carries a `skip_reason`: `run-active`,
 `unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`, or
 `needs-higher-level`. Sizes are measured for the candidates, for what only
 the level ladder holds back — so the yield of the next level up is visible
-before choosing it — and for `keep-last`; not for the rest, which report `0`:
+before choosing it — and for `keep-last`; not for the rest, which report `0` — as does
+`already-gone`, whose bytes another sweep has already reclaimed:
 measuring costs a walk of every file, and the live checkout of a running
 campaign is never walked at all.
 

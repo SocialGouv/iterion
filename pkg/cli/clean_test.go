@@ -258,6 +258,40 @@ func breakGit(t *testing.T, subcommand string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// rejectPathFormat shims a git that predates --path-format (2.31): the
+// option is rejected, and the bare --git-common-dir answers relatively.
+func rejectPathFormat(t *testing.T) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do\n" +
+		"  case \"$a\" in --path-format=*) echo \"error: unknown option \\`$a'\" >&2; exit 129 ;; esac\n" +
+		"done\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil { //nolint:gosec // test shim
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// breakGitArg fails any git invocation carrying a given argument.
+func breakGitArg(t *testing.T, arg string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"" + arg + "\" ]; then\n" +
+		"    echo 'shim: forced failure' >&2\n    exit 128\n  fi\ndone\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil { //nolint:gosec // test shim
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // --- guards that no level lifts -------------------------------------------
 
 // A run that has not reached a terminal status owns its worktree, and no
@@ -864,6 +898,12 @@ func TestClean_DoesNotClaimAWorktreeAnotherSweepAlreadyTook(t *testing.T) {
 	if got := sparedReason(r, "contended"); got != skipVanished {
 		t.Fatalf("reported as %q, want %q", got, skipVanished)
 	}
+	for _, wt := range r.Spared {
+		if filepath.Base(wt.Path) == "contended" && wt.Bytes != 0 {
+			t.Errorf("an already-gone entry reports %d bytes; they were reclaimed by the other sweep, "+
+				"and showing them reads as space still to gain", wt.Bytes)
+		}
+	}
 	if r.Scanned != len(r.Deleted)+len(r.Spared)+len(r.Failed) {
 		t.Errorf("scanned=%d but deleted+spared+failed=%d — an entry went unaccounted for",
 			r.Scanned, len(r.Deleted)+len(r.Spared)+len(r.Failed))
@@ -1225,6 +1265,46 @@ func TestClean_RefusesASelfContainedRepoInThePool(t *testing.T) {
 	}
 }
 
+// --path-format=absolute needs git 2.31. On an older git the option is
+// rejected and the bare form answers relatively, so a guard buried in an
+// `err == nil` would simply vanish — and the self-contained clone it
+// protects would read `merged` again.
+func TestClean_RefusesASelfContainedRepoOnGitWithoutPathFormat(t *testing.T) {
+	f := newCleanFixture(t)
+	path := filepath.Join(f.store, "worktrees", "cloned")
+	f.git(f.root, "clone", "-q", f.repo, path)
+	f.seedRun("cloned", store.RunStatusFinished)
+
+	rejectPathFormat(t)
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["cloned"] {
+		t.Fatal("a git too old for --path-format made the self-contained-repo guard disappear")
+	}
+	if got := sparedReason(r, "cloned"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, path, "self-contained repo under an old git")
+}
+
+// And a git that cannot answer the question at all must refuse, not
+// classify: it is the only thing standing between such a clone and its
+// own destruction.
+func TestClean_UnanswerableCommonDirIsRefused(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	breakGitArg(t, "--git-common-dir")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["merged"] {
+		t.Fatal("deleted although git could not say where the repository lives")
+	}
+	mustExist(t, path, "worktree whose common dir is unknown")
+}
+
 // git answered --show-toplevel for THIS directory, so it does know the
 // worktree: an unresolvable HEAD — an unborn branch, a `checkout --orphan`
 // an agent left behind — is "we could not tell", not "this is not a
@@ -1262,13 +1342,41 @@ func TestClean_TrackedFilesUnderTheMirrorStillCountAsWork(t *testing.T) {
 	f.seedRun("versioned", store.RunStatusFinished)
 
 	// The run's deliverable: a change to those versioned files.
-	mustWrite(t, filepath.Join(path, ".claude", "agents", "reviewer.md"), "the run rewrote this\n")
+	for _, rel := range []string{".claude/agents/reviewer.md", ".claude/settings.json"} {
+		t.Run(rel, func(t *testing.T) {
+			mustWrite(t, filepath.Join(path, filepath.FromSlash(rel)), "the run rewrote this\n")
+			t.Cleanup(func() { f.git(path, "checkout", "--", ".") })
+
+			r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+			if deletedPaths(r)["versioned"] {
+				t.Fatalf("a tracked %s was mistaken for iterion's mirror", rel)
+			}
+			mustExist(t, filepath.Join(path, filepath.FromSlash(rel)), "modified tracked config")
+		})
+	}
+}
+
+// `.iterion-managed/` under `.claude/` is iterion's bookkeeping about what
+// it mirrored. The mirror rewrites it every run, tracked or not, so it is
+// nobody's work at any status.
+func TestClean_IterionManagedBookkeepingIsNeverWork(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("markers")
+	marker := ".claude/skills/.iterion-managed/s.SKILL.md.sha256"
+	mustMkdir(t, filepath.Dir(filepath.Join(path, filepath.FromSlash(marker))))
+	mustWrite(t, filepath.Join(path, filepath.FromSlash(marker)), "deadbeef\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "version the markers")
+	f.mergeIntoMain("markers")
+	f.seedRun("markers", store.RunStatusFinished)
+
+	// A new bundle refreshes the marker in place.
+	mustWrite(t, filepath.Join(path, filepath.FromSlash(marker)), "cafebabe\n")
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
-	if deletedPaths(r)["versioned"] {
-		t.Fatal("a tracked file's uncommitted change under .claude/ was mistaken for iterion's mirror")
+	if !deletedPaths(r)["markers"] {
+		t.Fatalf("iterion's own marker counted as the run's work (spared: %q)", sparedReason(r, "markers"))
 	}
-	mustExist(t, filepath.Join(path, ".claude", "agents", "reviewer.md"), "modified tracked config")
 }
 
 // `.claude/settings.json` is rewritten in place by iterion; `.orig`,
