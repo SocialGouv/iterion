@@ -15,11 +15,13 @@ import (
 )
 
 // cleanFixture builds a real git repository plus an iterion store whose
-// worktrees are genuine linked worktrees of it. The classification this
-// command makes is entirely a set of claims about git state, so the tests
-// exercise git rather than a model of it.
+// worktrees are genuine linked worktrees of it, in the shape production
+// creates them. The classification this command makes is entirely a set
+// of claims about git state, so the tests exercise git rather than a
+// model of it.
 type cleanFixture struct {
 	t     *testing.T
+	root  string
 	repo  string
 	store string
 }
@@ -32,23 +34,34 @@ func newCleanFixture(t *testing.T) *cleanFixture {
 	root := t.TempDir()
 	f := &cleanFixture{
 		t:     t,
+		root:  root,
 		repo:  filepath.Join(root, "repo"),
 		store: filepath.Join(root, "store"),
 	}
 	mustMkdir(t, f.repo)
 	mustMkdir(t, filepath.Join(f.store, "worktrees"))
-
-	f.git(f.repo, "init", "--initial-branch=main")
-	f.git(f.repo, "config", "user.email", "test@example.com")
-	f.git(f.repo, "config", "user.name", "Test")
-	mustWrite(t, filepath.Join(f.repo, "README.md"), "base\n")
-	f.git(f.repo, "add", "README.md")
-	f.git(f.repo, "commit", "-m", "base")
+	f.initRepo(f.repo)
 	return f
+}
+
+func (f *cleanFixture) initRepo(dir string) {
+	f.t.Helper()
+	f.git(dir, "init", "--initial-branch=main")
+	mustWrite(f.t, filepath.Join(dir, "README.md"), "base\n")
+	f.git(dir, "add", "README.md")
+	f.git(dir, "commit", "-m", "base")
 }
 
 func (f *cleanFixture) git(dir string, args ...string) string {
 	f.t.Helper()
+	out, err := f.gitErr(dir, args...)
+	if err != nil {
+		f.t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, out)
+	}
+	return out
+}
+
+func (f *cleanFixture) gitErr(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -57,28 +70,38 @@ func (f *cleanFixture) git(dir string, args ...string) string {
 		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com",
 		"LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		f.t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, out)
-	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), err
 }
 
-// addWorktree creates <store>/worktrees/<runID> as a linked worktree on
-// its own branch, with one commit on top of main.
+// addWorktree creates <store>/worktrees/<runID> the way iterion does:
+// `git worktree add <path> <sha>` with no -b, so HEAD is DETACHED
+// (pkg/runtime/worktree.go). One commit is made on top. With no ref
+// pointing at it, that commit is `unlanded`.
 func (f *cleanFixture) addWorktree(runID string) string {
 	f.t.Helper()
 	path := filepath.Join(f.store, "worktrees", runID)
-	f.git(f.repo, "worktree", "add", "-b", "iterion/run/"+runID, path, "main")
+	base := f.git(f.repo, "rev-parse", "main")
+	f.git(f.repo, "worktree", "add", path, base)
 	mustWrite(f.t, filepath.Join(path, runID+".txt"), "work by "+runID+"\n")
 	f.git(path, "add", ".")
 	f.git(path, "commit", "-m", "work by "+runID)
 	return path
 }
 
-// mergeIntoMain merges a worktree's branch into main, which is what makes
-// its HEAD reachable from a ref other than its own.
+// promote mirrors finalizeWorktree: a branch is created in the REPO at
+// the worktree's HEAD; the worktree itself stays detached. The commits
+// are now held by a ref, but nothing was built on top of them.
+func (f *cleanFixture) promote(runID string) {
+	f.t.Helper()
+	head := f.git(filepath.Join(f.store, "worktrees", runID), "rev-parse", "HEAD")
+	f.git(f.repo, "branch", "--", "iterion/run/"+runID, head)
+}
+
+// mergeIntoMain builds main on top of the run's commits, so a ref whose
+// tip is NOT the worktree's HEAD contains that HEAD.
 func (f *cleanFixture) mergeIntoMain(runID string) {
 	f.t.Helper()
+	f.promote(runID)
 	f.git(f.repo, "merge", "--no-ff", "-m", "merge "+runID, "iterion/run/"+runID)
 }
 
@@ -99,18 +122,39 @@ func (f *cleanFixture) seedRun(runID string, status store.RunStatus) {
 	}
 }
 
+func (f *cleanFixture) backdate(runID string, age time.Duration) {
+	f.t.Helper()
+	ts := time.Now().Add(-age)
+	p := filepath.Join(f.store, "worktrees", runID)
+	if err := os.Chtimes(p, ts, ts); err != nil {
+		f.t.Fatalf("chtimes %s: %v", runID, err)
+	}
+}
+
 func (f *cleanFixture) run(opts CleanOptions) CleanResult {
 	f.t.Helper()
-	opts.StoreDir = f.store
+	if opts.StoreDir == "" && !opts.AllProjects {
+		opts.StoreDir = f.store
+	}
 	if opts.Level == "" {
 		opts.Level = CleanConservative
 	}
-	var buf bytes.Buffer
-	p := &Printer{W: &buf, Format: OutputJSON}
-	if err := RunClean(opts, p); err != nil {
+	r, err := f.runErr(opts)
+	if err != nil {
 		f.t.Fatalf("RunClean: %v", err)
 	}
-	return decodeCleanResult(f.t, buf.Bytes())
+	return r
+}
+
+func (f *cleanFixture) runErr(opts CleanOptions) (CleanResult, error) {
+	f.t.Helper()
+	var buf bytes.Buffer
+	p := &Printer{W: &buf, Format: OutputJSON}
+	err := RunClean(opts, p)
+	if buf.Len() == 0 {
+		return CleanResult{}, err
+	}
+	return decodeCleanResult(f.t, buf.Bytes()), err
 }
 
 func decodeCleanResult(t *testing.T, raw []byte) CleanResult {
@@ -139,6 +183,15 @@ func sparedReason(r CleanResult, runID string) string {
 	return ""
 }
 
+func landingOf(r CleanResult, runID string) string {
+	for _, wt := range append(append([]CleanedWorktree{}, r.Deleted...), r.Spared...) {
+		if filepath.Base(wt.Path) == runID {
+			return wt.Landing
+		}
+	}
+	return ""
+}
+
 func mustMkdir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -153,7 +206,44 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
-// --- the guards -----------------------------------------------------------
+func mustExist(t *testing.T, path, why string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("%s: %s is gone from disk (%v)", why, path, err)
+	}
+}
+
+func mustNotExist(t *testing.T, path, why string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("%s: %s is still on disk", why, path)
+	}
+}
+
+// breakGit puts a `git` shim first on PATH that fails for one
+// subcommand and delegates everything else to the real binary. The
+// "we could not tell, so we must refuse" fallbacks cannot be reached by
+// arranging repository state — only by making git fail.
+func breakGit(t *testing.T, subcommand string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	// Match the SUBCOMMAND — the first argument that is not a global flag
+	// — so breaking `status` does not also break `submodule status`.
+	script := "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in -*) continue ;; esac\n" +
+		"  if [ \"$a\" = \"" + subcommand + "\" ]; then\n    echo 'shim: forced failure' >&2\n    exit 128\n  fi\n" +
+		"  break\ndone\nexec " + real + " \"$@\"\n"
+	shim := filepath.Join(dir, "git")
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil { //nolint:gosec // test shim must be executable
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// --- guards that no level lifts -------------------------------------------
 
 // A run that has not reached a terminal status owns its worktree, and no
 // level may take it. This is the guard that protects a campaign in
@@ -169,14 +259,9 @@ func TestClean_NeverDeletesWorktreeOfNonTerminalRun(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			f := newCleanFixture(t)
 			f.addWorktree("live")
-			f.mergeIntoMain("live") // landed: eligible on every other count
+			f.mergeIntoMain("live") // merged: eligible on every other count
 			f.seedRun("live", status)
-
-			// Back-date the directory so age cannot be what spares it.
-			old := time.Now().Add(-90 * 24 * time.Hour)
-			if err := os.Chtimes(filepath.Join(f.store, "worktrees", "live"), old, old); err != nil {
-				t.Fatalf("chtimes: %v", err)
-			}
+			f.backdate("live", 90*24*time.Hour)
 
 			r := f.run(CleanOptions{Level: CleanAggressive, Apply: true})
 			if deletedPaths(r)["live"] {
@@ -185,40 +270,157 @@ func TestClean_NeverDeletesWorktreeOfNonTerminalRun(t *testing.T) {
 			if got := sparedReason(r, "live"); got != skipRunActive {
 				t.Fatalf("spared for %q, want %q", got, skipRunActive)
 			}
-			if _, err := os.Stat(filepath.Join(f.store, "worktrees", "live")); err != nil {
-				t.Fatalf("worktree of a %s run was removed from disk: %v", status, err)
-			}
+			mustExist(t, filepath.Join(f.store, "worktrees", "live"), "run "+string(status))
 		})
 	}
 }
 
-// Commits no ref can reach would survive only in the reflog. No level
-// deletes them — that is the promise that makes the command usable
-// without reading its source first.
+// The scan is a snapshot. `iterion resume` reuses a run's existing
+// worktree, so a run that was terminal when scanned can be running by
+// the time the sweep reaches it.
+func TestClean_RechecksRunStatusImmediatelyBeforeDeleting(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("resumed")
+	f.mergeIntoMain("resumed")
+	f.seedRun("resumed", store.RunStatusFailedResumable) // terminal at scan time
+	f.backdate("resumed", 90*24*time.Hour)
+
+	// Flip it to running between the scan and the deletion, which is what
+	// a concurrent `iterion resume` does.
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	opts := CleanOptions{StoreDir: f.store, Level: CleanAggressive, Apply: true}
+	opts.Now = func() time.Time {
+		_ = s.UpdateRunStatus(context.Background(), "resumed", store.RunStatusRunning, "")
+		return time.Now()
+	}
+	var buf bytes.Buffer
+	if err := RunClean(opts, &Printer{W: &buf, Format: OutputJSON}); err != nil {
+		t.Fatalf("RunClean: %v", err)
+	}
+	r := decodeCleanResult(t, buf.Bytes())
+	if deletedPaths(r)["resumed"] {
+		t.Fatal("deleted the worktree of a run that resumed during the sweep")
+	}
+	if got := sparedReason(r, "resumed"); got != skipRunActive {
+		t.Fatalf("spared for %q, want %q", got, skipRunActive)
+	}
+	mustExist(t, filepath.Join(f.store, "worktrees", "resumed"), "resumed run")
+}
+
+// Commits nothing was built upon and no ref holds would survive only in
+// the reflog. No level deletes them — that is the promise that makes the
+// command usable without reading its source first.
 func TestClean_NeverDeletesUnlandedWorktree(t *testing.T) {
 	f := newCleanFixture(t)
-	path := f.addWorktree("orphaned")
-	// Detach HEAD and drop the branch: the commit is now reachable from
-	// nothing but this worktree's HEAD.
-	f.git(path, "checkout", "--detach")
-	f.git(f.repo, "branch", "-D", "iterion/run/orphaned")
+	path := f.addWorktree("orphaned") // detached, never promoted: exactly production's failed run
 	f.seedRun("orphaned", store.RunStatusFailed)
 
 	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
-	if deletedPaths(r)["orphaned"] {
-		t.Fatal("deleted a worktree whose commits no ref contains")
+	if got := landingOf(r, "orphaned"); got != landingNowhere {
+		t.Fatalf("landing %q, want %q", got, landingNowhere)
 	}
 	if got := sparedReason(r, "orphaned"); got != skipUnlanded {
 		t.Fatalf("spared for %q, want %q", got, skipUnlanded)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("unlanded worktree was removed from disk: %v", err)
+	mustExist(t, path, "unlanded worktree")
+}
+
+// Git answers for the nearest enclosing repository when the directory it
+// is asked about is not itself a worktree. The project-local
+// `<repo>/.iterion/` store puts the whole pool inside the operator's
+// checkout, and `.iterion/` is conventionally gitignored — so the parent
+// reads back clean and merged, and an arbitrary directory of uncommitted
+// work looks like a landed worktree.
+func TestClean_RefusesGitAnswersThatBelongToAnEnclosingRepo(t *testing.T) {
+	f := newCleanFixture(t)
+	// A project-local store: <repo>/.iterion/worktrees/<id>
+	nestedStore := filepath.Join(f.repo, ".iterion")
+	mustMkdir(t, filepath.Join(nestedStore, "worktrees", "data"))
+	mustWrite(t, filepath.Join(nestedStore, "worktrees", "data", "notes.md"), "never committed anywhere\n")
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), ".iterion/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore the store")
+
+	// Sanity: git really does answer for the parent from in there.
+	if top := f.git(filepath.Join(nestedStore, "worktrees", "data"), "rev-parse", "--show-toplevel"); !samePath(top, f.repo) {
+		t.Fatalf("fixture is not reproducing the nesting: toplevel=%s", top)
 	}
+
+	r := f.run(CleanOptions{StoreDir: nestedStore, Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["data"] {
+		t.Fatal("conservative deleted a directory classified from the enclosing repo's state")
+	}
+	if got := landingOf(r, "data"); got != landingOrphan {
+		t.Errorf("landing %q, want %q — git's answer must be refused", got, landingOrphan)
+	}
+	mustExist(t, filepath.Join(nestedStore, "worktrees", "data", "notes.md"), "nested data dir")
+}
+
+// An orphan is not proof of junk: a checkout whose parent repository
+// moved looks exactly like a stale directory and may hold a day of work.
+func TestClean_OrphanNeedsAggressiveAndIsNeverReportedClean(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("stranded")
+	f.mergeIntoMain("stranded")
+	f.seedRun("stranded", store.RunStatusFinished)
+	mustWrite(t, filepath.Join(path, "urgent.txt"), "uncommitted, and about to be judged junk\n")
+
+	// Break the link the way moving the parent repository does.
+	f.git(f.repo, "worktree", "list") // touch, so the registration exists
+	if err := os.Rename(f.repo, f.repo+"-moved"); err != nil {
+		t.Fatalf("rename repo: %v", err)
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["stranded"] {
+		t.Fatal("conservative deleted an orphan holding uncommitted work")
+	}
+	if got := landingOf(r, "stranded"); got != landingOrphan {
+		t.Fatalf("landing %q, want %q", got, landingOrphan)
+	}
+	if got := sparedReason(r, "stranded"); got != skipLevel {
+		t.Errorf("spared for %q, want %q", got, skipLevel)
+	}
+	for _, wt := range r.Spared {
+		if filepath.Base(wt.Path) == "stranded" && !wt.Dirty {
+			t.Error("an orphan whose tree git cannot read was reported clean")
+		}
+	}
+	mustExist(t, filepath.Join(path, "urgent.txt"), "orphaned checkout")
+}
+
+// A submodule's commits live in the worktree's own admin directory, which
+// goes when the registration does. Containment in the superproject proves
+// nothing about them.
+func TestClean_RefusesWorktreeCarryingASubmodule(t *testing.T) {
+	f := newCleanFixture(t)
+	sub := filepath.Join(f.root, "sub")
+	mustMkdir(t, sub)
+	f.initRepo(sub)
+	if _, err := f.gitErr(f.repo, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendor/lib"); err != nil {
+		t.Skip("submodules unavailable in this git configuration")
+	}
+	f.git(f.repo, "commit", "-m", "add submodule")
+
+	path := f.addWorktree("withsub")
+	f.mergeIntoMain("withsub")
+	f.seedRun("withsub", store.RunStatusFinished)
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["withsub"] {
+		t.Fatal("deleted a worktree carrying a submodule; containment does not cross the gitlink")
+	}
+	if got := sparedReason(r, "withsub"); got != skipUnlanded {
+		t.Fatalf("spared for %q, want %q", got, skipUnlanded)
+	}
+	mustExist(t, path, "worktree with submodule")
 }
 
 // The gate state under worktrees/.state is shared across runs and is not
-// any run's checkout; reclaiming it is a different decision with a
-// different cost.
+// any run's checkout.
 func TestClean_SkipsDotPrefixedEntries(t *testing.T) {
 	f := newCleanFixture(t)
 	stateDir := filepath.Join(f.store, "worktrees", ".state")
@@ -229,82 +431,113 @@ func TestClean_SkipsDotPrefixedEntries(t *testing.T) {
 	if r.Scanned != 0 {
 		t.Fatalf("scanned %d entries, want 0 — .state must not be a candidate", r.Scanned)
 	}
-	if _, err := os.Stat(stateDir); err != nil {
-		t.Fatalf(".state was removed: %v", err)
-	}
+	mustExist(t, stateDir, ".state")
 }
 
-// --- the levels -----------------------------------------------------------
+// --- "we could not tell, so we must refuse" --------------------------------
 
-func TestClean_ConservativeTakesLandedAndOrphanOnly(t *testing.T) {
+func TestClean_ForEachRefFailureIsTreatedAsUnlanded(t *testing.T) {
 	f := newCleanFixture(t)
-
-	// landed-elsewhere, clean tree -> conservative takes it
-	f.addWorktree("merged")
+	path := f.addWorktree("merged")
 	f.mergeIntoMain("merged")
 	f.seedRun("merged", store.RunStatusFinished)
 
-	// landed-elsewhere but dirty -> needs moderate
-	dirty := f.addWorktree("merged-dirty")
+	breakGit(t, "for-each-ref")
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["merged"] {
+		t.Fatal("deleted although git could not answer the containment question")
+	}
+	if got := sparedReason(r, "merged"); got != skipUnlanded {
+		t.Fatalf("spared for %q, want %q", got, skipUnlanded)
+	}
+	mustExist(t, path, "worktree git could not vouch for")
+}
+
+func TestClean_UnreadableStatusIsTreatedAsDirty(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	breakGit(t, "status")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["merged"] {
+		t.Fatal("conservative deleted a worktree whose working tree git refused to report")
+	}
+	if got := sparedReason(r, "merged"); got != skipLevel {
+		t.Fatalf("spared for %q, want %q", got, skipLevel)
+	}
+	mustExist(t, path, "worktree with unreadable status")
+}
+
+// --- the levels ------------------------------------------------------------
+
+// Landing is decided by whether a ref was BUILT UPON the commits or
+// merely points at them — which is what "merged" means, and what a
+// name-based comparison of the worktree's own branch could never express
+// on a detached checkout.
+func TestClean_LevelsFollowWhatGitCanProve(t *testing.T) {
+	f := newCleanFixture(t)
+
+	f.addWorktree("merged") // merged, clean -> conservative
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	dirty := f.addWorktree("merged-dirty") // merged, dirty -> moderate
 	f.mergeIntoMain("merged-dirty")
 	mustWrite(t, filepath.Join(dirty, "scratch.txt"), "uncommitted\n")
 	f.seedRun("merged-dirty", store.RunStatusFinished)
 
-	// own branch only -> needs aggressive
-	f.addWorktree("solo")
-	f.seedRun("solo", store.RunStatusFinished)
+	f.addWorktree("promoted") // promoted only -> own-branch -> aggressive
+	f.promote("promoted")
+	f.seedRun("promoted", store.RunStatusFinished)
 
-	// orphan: a plain directory that is not a worktree at all
-	orphan := filepath.Join(f.store, "worktrees", "stale")
+	orphan := filepath.Join(f.store, "worktrees", "stale") // orphan -> aggressive
 	mustMkdir(t, orphan)
 	mustWrite(t, filepath.Join(orphan, "leftover.txt"), "junk\n")
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "merged"); got != landingMerged {
+		t.Errorf("merged landing = %q, want %q", got, landingMerged)
+	}
+	if got := landingOf(r, "promoted"); got != landingOwnBranch {
+		t.Errorf("promoted-only landing = %q, want %q — a ref AT the commit is not work built upon it", got, landingOwnBranch)
+	}
 	got := deletedPaths(r)
 	if !got["merged"] {
-		t.Error("conservative did not take a landed, clean worktree")
+		t.Error("conservative did not take a merged, clean worktree")
 	}
-	if !got["stale"] {
-		t.Error("conservative did not take an orphan directory")
+	for _, spared := range []string{"merged-dirty", "promoted", "stale"} {
+		if got[spared] {
+			t.Errorf("conservative took %q", spared)
+		}
+		if reason := sparedReason(r, spared); reason != skipLevel {
+			t.Errorf("%s spared for %q, want %q", spared, reason, skipLevel)
+		}
 	}
-	if got["merged-dirty"] {
-		t.Error("conservative took a dirty worktree; that is moderate's job")
-	}
-	if got["solo"] {
-		t.Error("conservative took an own-branch worktree; that is aggressive's job")
-	}
-	if reason := sparedReason(r, "merged-dirty"); reason != skipLevel {
-		t.Errorf("merged-dirty spared for %q, want %q", reason, skipLevel)
-	}
-	if reason := sparedReason(r, "solo"); reason != skipLevel {
-		t.Errorf("solo spared for %q, want %q", reason, skipLevel)
-	}
-}
 
-func TestClean_ModerateAddsDirtyLanded(t *testing.T) {
-	f := newCleanFixture(t)
-	dirty := f.addWorktree("merged-dirty")
-	f.mergeIntoMain("merged-dirty")
-	mustWrite(t, filepath.Join(dirty, "scratch.txt"), "uncommitted\n")
-	f.seedRun("merged-dirty", store.RunStatusFinished)
-
-	f.addWorktree("solo")
-	f.seedRun("solo", store.RunStatusFinished)
-
-	r := f.run(CleanOptions{Level: CleanModerate, OlderThan: 0, Apply: true})
+	r = f.run(CleanOptions{Level: CleanModerate, OlderThan: 0})
 	if !deletedPaths(r)["merged-dirty"] {
-		t.Error("moderate did not take a landed worktree with uncommitted files")
+		t.Error("moderate did not take a merged worktree with uncommitted files")
 	}
-	if deletedPaths(r)["solo"] {
-		t.Error("moderate took an own-branch worktree")
+	if deletedPaths(r)["promoted"] || deletedPaths(r)["stale"] {
+		t.Error("moderate took own-branch or orphan")
+	}
+
+	r = f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
+	if !deletedPaths(r)["promoted"] || !deletedPaths(r)["stale"] {
+		t.Error("aggressive did not take own-branch and orphan")
 	}
 }
 
-// Aggressive takes own-branch worktrees — and the point of allowing it is
-// that the commits survive: the branch is a ref in the parent repo.
+// Taking an own-branch worktree is only defensible because the commits
+// stay reachable from the ref in the parent repository.
 func TestClean_AggressiveTakesOwnBranchAndCommitsSurvive(t *testing.T) {
 	f := newCleanFixture(t)
 	path := f.addWorktree("solo")
+	f.promote("solo")
 	f.seedRun("solo", store.RunStatusFinished)
 	head := f.git(path, "rev-parse", "HEAD")
 
@@ -312,16 +545,151 @@ func TestClean_AggressiveTakesOwnBranchAndCommitsSurvive(t *testing.T) {
 	if !deletedPaths(r)["solo"] {
 		t.Fatal("aggressive did not take an own-branch worktree")
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("worktree still on disk: %v", err)
-	}
-	// The commit must still be reachable from the branch in the repo.
+	mustNotExist(t, path, "deleted worktree")
 	if got := f.git(f.repo, "rev-parse", "iterion/run/solo"); got != head {
 		t.Fatalf("branch tip is %s, want the deleted worktree's HEAD %s", got, head)
 	}
 }
 
-// --- filters and effects --------------------------------------------------
+// --- the report must match the disk ---------------------------------------
+
+// Assertions on the report alone cannot see a deletion that removes the
+// wrong path: a sweep that reports correctly and deletes the parent
+// directory would pass every report-only test.
+func TestClean_SparedSurviveOnDiskWhenSomethingIsDeleted(t *testing.T) {
+	f := newCleanFixture(t)
+
+	f.addWorktree("takeme") // the one that must go
+	f.mergeIntoMain("takeme")
+	f.seedRun("takeme", store.RunStatusFinished)
+
+	f.addWorktree("live") // spared: run-active
+	f.mergeIntoMain("live")
+	f.seedRun("live", store.RunStatusRunning)
+
+	f.addWorktree("solo") // spared: needs-higher-level
+	f.promote("solo")
+	f.seedRun("solo", store.RunStatusFinished)
+
+	f.addWorktree("nowhere") // spared: unlanded
+	f.seedRun("nowhere", store.RunStatusFailed)
+
+	stateDir := filepath.Join(f.store, "worktrees", ".state")
+	mustMkdir(t, stateDir)
+	mustWrite(t, filepath.Join(stateDir, "app.jar"), "binary")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if !deletedPaths(r)["takeme"] || r.DeletedCount != 1 {
+		t.Fatalf("expected exactly takeme deleted, got %v", deletedPaths(r))
+	}
+	mustNotExist(t, filepath.Join(f.store, "worktrees", "takeme"), "deleted worktree")
+	for _, survivor := range []string{"live", "solo", "nowhere", ".state"} {
+		mustExist(t, filepath.Join(f.store, "worktrees", survivor), "spared "+survivor)
+	}
+}
+
+// --- registration hygiene --------------------------------------------------
+
+// Deleting the directory must drop this worktree's registration — and
+// only this one. `git worktree prune` would also drop the registration of
+// any worktree whose path is momentarily absent (an unmounted volume, a
+// stopped container's bind mount), discarding its index and its staged
+// work.
+func TestClean_DropsOwnRegistrationAndSparesAbsentForeignOnes(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("mine")
+	f.mergeIntoMain("mine")
+	f.seedRun("mine", store.RunStatusFinished)
+
+	// A worktree of the same repo that belongs to the operator, currently
+	// not present at its recorded path.
+	foreign := filepath.Join(f.root, "foreign")
+	f.git(f.repo, "worktree", "add", "-b", "operator-work", foreign)
+	mustWrite(t, filepath.Join(foreign, "staged.txt"), "staged work\n")
+	f.git(foreign, "add", "staged.txt")
+	hidden := filepath.Join(f.root, ".foreign-unmounted")
+	if err := os.Rename(foreign, hidden); err != nil {
+		t.Fatalf("hide foreign worktree: %v", err)
+	}
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if r.RegistrationsPruned != 1 {
+		t.Fatalf("dropped %d registration(s), want 1", r.RegistrationsPruned)
+	}
+	mustNotExist(t, filepath.Join(f.repo, ".git", "worktrees", "mine"), "own registration")
+	mustExist(t, filepath.Join(f.repo, ".git", "worktrees", "foreign"), "foreign registration")
+
+	// Bring it back: it must still be a usable worktree with its index.
+	if err := os.Rename(hidden, foreign); err != nil {
+		t.Fatalf("restore foreign worktree: %v", err)
+	}
+	out, err := f.gitErr(foreign, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("foreign worktree is broken after the sweep: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "staged.txt") {
+		t.Fatalf("foreign worktree lost its staged work: %q", out)
+	}
+}
+
+// --- failure handling ------------------------------------------------------
+
+// A failed deletion must not abort the sweep: returning early strands the
+// deletions already made with no report at all.
+func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f := newCleanFixture(t)
+	for i, id := range []string{"aaa", "bbb", "ccc"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.backdate(id, time.Duration(90-i)*24*time.Hour) // aaa oldest
+	}
+	// Make bbb undeletable.
+	locked := filepath.Join(f.store, "worktrees", "bbb", "locked")
+	mustMkdir(t, locked)
+	mustWrite(t, filepath.Join(locked, "file"), "x")
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	// moderate: the locked directory is untracked, so bbb reads dirty.
+	r, err := f.runErr(CleanOptions{
+		StoreDir: f.store, Level: CleanModerate, OlderThan: 0, Apply: true,
+	})
+	if err == nil {
+		t.Fatal("a failed deletion did not surface an error")
+	}
+	if r.Scanned != 3 {
+		t.Fatalf("scanned %d, want 3 — the report must be emitted despite the failure", r.Scanned)
+	}
+	if r.FailedCount != 1 {
+		t.Errorf("FailedCount = %d, want 1", r.FailedCount)
+	}
+	// ccc comes after bbb in the sweep order and must still have been done.
+	mustNotExist(t, filepath.Join(f.store, "worktrees", "aaa"), "first deletion")
+	mustNotExist(t, filepath.Join(f.store, "worktrees", "ccc"), "deletion after the failure")
+	var failed CleanedWorktree
+	for _, wt := range r.Deleted {
+		if filepath.Base(wt.Path) == "bbb" {
+			failed = wt
+		}
+	}
+	if failed.Error == "" {
+		t.Error("the failing worktree carries no error in the report")
+	}
+	if failed.Deleted {
+		t.Error("a worktree that could not be removed is reported as deleted")
+	}
+	if r.BytesReclaimed != 0 && failed.Bytes > 0 && r.BytesReclaimed >= failed.Bytes*3 {
+		t.Error("bytes of a failed deletion were counted as reclaimed")
+	}
+}
+
+// --- filters and effects ---------------------------------------------------
 
 func TestClean_DryRunIsTheDefaultAndDeletesNothing(t *testing.T) {
 	f := newCleanFixture(t)
@@ -342,38 +710,42 @@ func TestClean_DryRunIsTheDefaultAndDeletesNothing(t *testing.T) {
 	if r.BytesReclaimed <= 0 {
 		t.Error("dry run reported no reclaimable bytes; the preview is the whole point")
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("dry run removed the worktree: %v", err)
-	}
+	mustExist(t, path, "dry run")
 }
 
-func TestClean_OlderThanSparesRecentWorktrees(t *testing.T) {
+// Both directions matter: --older-than must spare what is recent AND let
+// through what is old. A filter that spares everything passes a
+// spare-only test.
+func TestClean_OlderThanSparesRecentAndTakesOld(t *testing.T) {
 	f := newCleanFixture(t)
-	f.addWorktree("fresh")
-	f.mergeIntoMain("fresh")
-	f.seedRun("fresh", store.RunStatusFinished)
+	for _, id := range []string{"fresh", "ancient"} {
+		f.addWorktree(id)
+		f.mergeIntoMain(id)
+		f.seedRun(id, store.RunStatusFinished)
+	}
+	f.backdate("ancient", 8*24*time.Hour)
 
 	r := f.run(CleanOptions{OlderThan: 168 * time.Hour, Apply: true})
 	if deletedPaths(r)["fresh"] {
-		t.Fatal("deleted a worktree younger than --older-than")
+		t.Error("deleted a worktree younger than --older-than")
 	}
 	if got := sparedReason(r, "fresh"); got != skipTooRecent {
-		t.Fatalf("spared for %q, want %q", got, skipTooRecent)
+		t.Errorf("fresh spared for %q, want %q", got, skipTooRecent)
 	}
+	if !deletedPaths(r)["ancient"] {
+		t.Fatal("--older-than spared a worktree older than the threshold; the filter lets nothing through")
+	}
+	mustNotExist(t, filepath.Join(f.store, "worktrees", "ancient"), "old worktree")
+	mustExist(t, filepath.Join(f.store, "worktrees", "fresh"), "recent worktree")
 }
 
 func TestClean_KeepLastSparesTheMostRecentEligible(t *testing.T) {
 	f := newCleanFixture(t)
-	base := time.Now().Add(-90 * 24 * time.Hour)
 	for i, id := range []string{"old", "mid", "new"} {
 		f.addWorktree(id)
 		f.mergeIntoMain(id)
 		f.seedRun(id, store.RunStatusFinished)
-		ts := base.Add(time.Duration(i) * 24 * time.Hour)
-		p := filepath.Join(f.store, "worktrees", id)
-		if err := os.Chtimes(p, ts, ts); err != nil {
-			t.Fatalf("chtimes: %v", err)
-		}
+		f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
 	}
 
 	r := f.run(CleanOptions{OlderThan: 0, KeepLast: 1, Apply: true})
@@ -387,29 +759,7 @@ func TestClean_KeepLastSparesTheMostRecentEligible(t *testing.T) {
 	if reason := sparedReason(r, "new"); reason != skipKeepLast {
 		t.Errorf("spared for %q, want %q", reason, skipKeepLast)
 	}
-}
-
-// Deleting the directory without pruning leaves an administrative entry
-// behind; enough of those and `git worktree list` stops being readable.
-func TestClean_PrunesStaleWorktreeRegistrations(t *testing.T) {
-	f := newCleanFixture(t)
-	f.addWorktree("merged")
-	f.mergeIntoMain("merged")
-	f.seedRun("merged", store.RunStatusFinished)
-
-	before := f.git(f.repo, "worktree", "list")
-	if !strings.Contains(before, "merged") {
-		t.Fatalf("fixture did not register the worktree:\n%s", before)
-	}
-
-	r := f.run(CleanOptions{OlderThan: 0, Apply: true})
-	if len(r.ReposPruned) != 1 {
-		t.Fatalf("pruned %d repos, want 1: %v", len(r.ReposPruned), r.ReposPruned)
-	}
-	after := f.git(f.repo, "worktree", "list")
-	if strings.Contains(after, "worktrees/merged") {
-		t.Fatalf("stale registration survived:\n%s", after)
-	}
+	mustExist(t, filepath.Join(f.store, "worktrees", "new"), "kept worktree")
 }
 
 // The run record is evidence — the journal of what the agent did. It is
@@ -460,7 +810,7 @@ func TestClean_SparesWorktreeWhoseRunRecordIsUnreadable(t *testing.T) {
 
 	runJSON := filepath.Join(f.store, "runs", "merged", "run.json")
 	if _, err := os.Stat(runJSON); err != nil {
-		t.Skipf("run.json not at the expected path: %v", err)
+		t.Fatalf("run.json not at the expected path — fixture drift, not a skip: %v", err)
 	}
 	mustWrite(t, runJSON, "{ this is not json")
 
@@ -471,13 +821,127 @@ func TestClean_SparesWorktreeWhoseRunRecordIsUnreadable(t *testing.T) {
 	if got := sparedReason(r, "merged"); got != skipRunActive {
 		t.Fatalf("spared for %q, want %q", got, skipRunActive)
 	}
+	mustExist(t, filepath.Join(f.store, "worktrees", "merged"), "unreadable run record")
+}
+
+// --- store resolution ------------------------------------------------------
+
+// --all-projects is the widest blast radius the command has: every store
+// under the iterion data dir, including projects the operator was not
+// thinking about.
+func TestClean_AllProjectsSweepsEveryStoreAndKeepLastIsPerStore(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+
+	projects := map[string]*cleanFixture{}
+	for _, name := range []string{"alpha", "beta"} {
+		root := filepath.Join(home, "projects", name)
+		mustMkdir(t, filepath.Join(root, "worktrees"))
+		repo := filepath.Join(t.TempDir(), "repo-"+name)
+		mustMkdir(t, repo)
+		f := &cleanFixture{t: t, root: filepath.Dir(repo), repo: repo, store: root}
+		f.initRepo(repo)
+		for i, id := range []string{name + "-old", name + "-new"} {
+			f.addWorktree(id)
+			f.mergeIntoMain(id)
+			f.seedRun(id, store.RunStatusFinished)
+			f.backdate(id, time.Duration(90-i*10)*24*time.Hour)
+		}
+		projects[name] = f
+	}
+	// A project store with no worktrees dir must not be listed.
+	mustMkdir(t, filepath.Join(home, "projects", "gamma"))
+
+	var buf bytes.Buffer
+	err := RunClean(CleanOptions{
+		Level: CleanConservative, OlderThan: 0, AllProjects: true, KeepLast: 1, Apply: true,
+	}, &Printer{W: &buf, Format: OutputJSON})
+	if err != nil {
+		t.Fatalf("RunClean: %v", err)
+	}
+	r := decodeCleanResult(t, buf.Bytes())
+
+	if len(r.Stores) != 2 {
+		t.Fatalf("swept %d stores %v, want the 2 with worktrees/", len(r.Stores), r.Stores)
+	}
+	if r.Scanned != 4 {
+		t.Fatalf("scanned %d, want 4 across both stores", r.Scanned)
+	}
+	// keep-last 1 must spare the newest of EACH store, not one overall.
+	for name, f := range projects {
+		mustNotExist(t, filepath.Join(f.store, "worktrees", name+"-old"), name+" oldest")
+		mustExist(t, filepath.Join(f.store, "worktrees", name+"-new"), name+" kept by keep-last")
+	}
+	if r.DeletedCount != 2 {
+		t.Fatalf("deleted %d, want 1 per store", r.DeletedCount)
+	}
+}
+
+// A store directory the operator named explicitly and that does not
+// exist is a typo, not an empty store. Reporting success would have a
+// cron happily cleaning nothing forever.
+func TestClean_ExplicitStoreDirMustExist(t *testing.T) {
+	var buf bytes.Buffer
+	err := RunClean(CleanOptions{
+		StoreDir: filepath.Join(t.TempDir(), "does-not-exist"),
+		Level:    CleanConservative,
+	}, &Printer{W: &buf, Format: OutputJSON})
+	if err == nil {
+		t.Fatal("a nonexistent --store-dir was reported as nothing to clean")
+	}
+	if !strings.Contains(err.Error(), "store-dir") {
+		t.Errorf("error does not name the flag: %v", err)
+	}
+}
+
+// --- output and validation -------------------------------------------------
+
+// The table is what an operator reads before typing --apply.
+func TestClean_TableOutputNamesWhatItWouldDelete(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	var buf bytes.Buffer
+	if err := RunClean(CleanOptions{
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0,
+	}, &Printer{W: &buf, Format: OutputHuman}); err != nil {
+		t.Fatalf("RunClean: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"merged", "would delete", "dry run", "--apply"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table output does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestClean_DryRunDoesNotClaimRunRecordsWereDeleted(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	var buf bytes.Buffer
+	if err := RunClean(CleanOptions{
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, WithRuns: true,
+	}, &Printer{W: &buf, Format: OutputHuman}); err != nil {
+		t.Fatalf("RunClean: %v", err)
+	}
+	if strings.Contains(buf.String(), "run records deleted") {
+		t.Errorf("dry run claims run records were deleted:\n%s", buf.String())
+	}
 }
 
 func TestClean_RejectsUnknownLevel(t *testing.T) {
 	f := newCleanFixture(t)
 	var buf bytes.Buffer
-	p := &Printer{W: &buf, Format: OutputJSON}
-	err := RunClean(CleanOptions{StoreDir: f.store, Level: CleanLevel("nuke")}, p)
+	err := RunClean(CleanOptions{StoreDir: f.store, Level: CleanLevel("nuke")},
+		&Printer{W: &buf, Format: OutputJSON})
 	if err == nil {
 		t.Fatal("an unknown level was accepted")
 	}
@@ -488,12 +952,11 @@ func TestClean_RejectsUnknownLevel(t *testing.T) {
 
 func TestClean_RejectsAllProjectsWithStoreDir(t *testing.T) {
 	var buf bytes.Buffer
-	p := &Printer{W: &buf, Format: OutputJSON}
 	err := RunClean(CleanOptions{
 		StoreDir:    t.TempDir(),
 		Level:       CleanConservative,
 		AllProjects: true,
-	}, p)
+	}, &Printer{W: &buf, Format: OutputJSON})
 	if err == nil {
 		t.Fatal("--all-projects with --store-dir was accepted")
 	}
@@ -501,12 +964,12 @@ func TestClean_RejectsAllProjectsWithStoreDir(t *testing.T) {
 
 // A store with no worktrees directory is an ordinary state, not a failure.
 func TestClean_EmptyStoreIsNotAnError(t *testing.T) {
+	dir := t.TempDir()
 	var buf bytes.Buffer
-	p := &Printer{W: &buf, Format: OutputJSON}
 	if err := RunClean(CleanOptions{
-		StoreDir: t.TempDir(),
+		StoreDir: dir,
 		Level:    CleanConservative,
-	}, p); err != nil {
+	}, &Printer{W: &buf, Format: OutputJSON}); err != nil {
 		t.Fatalf("RunClean on an empty store: %v", err)
 	}
 	r := decodeCleanResult(t, buf.Bytes())

@@ -22,18 +22,18 @@ import (
 type CleanLevel string
 
 const (
-	// CleanConservative deletes only what cannot represent work: stale
-	// directories that are no longer git worktrees, and worktrees whose
-	// HEAD is already reachable from another ref with nothing uncommitted.
+	// CleanConservative deletes only worktrees whose commits another ref
+	// has already built upon, with nothing uncommitted in the tree. Git
+	// proves the content is recoverable; nothing else qualifies.
 	CleanConservative CleanLevel = "conservative"
-	// CleanModerate additionally deletes landed worktrees carrying
+	// CleanModerate additionally deletes merged worktrees carrying
 	// uncommitted files. The commits survive on the other ref; what goes
-	// is whatever was never committed — typically build output
-	// (node_modules, target/, .devbox), but the operator is asserting it.
+	// is whatever was never committed.
 	CleanModerate CleanLevel = "moderate"
-	// CleanAggressive additionally deletes worktrees whose commits live
-	// only on their own branch. Still no commit is lost: the branch is a
-	// ref in the parent repository and outlives the worktree directory.
+	// CleanAggressive additionally deletes worktrees whose commits are
+	// held only by a ref pointing at them (no commit is lost — the ref is
+	// in the parent repository and outlives the directory) and orphan
+	// directories, whose contents git cannot account for at all.
 	CleanAggressive CleanLevel = "aggressive"
 )
 
@@ -56,24 +56,27 @@ type CleanOptions struct {
 	Now         func() time.Time // test seam; nil = time.Now
 }
 
-// Landing classes. These describe where a worktree's commits live, which
-// is the only question that decides whether deleting the directory can
-// destroy work.
+// Landing classes. These describe what git can prove about a worktree's
+// commits, which is the only question that decides whether deleting the
+// directory can destroy work.
 const (
-	// landingOrphan: the directory is not a git worktree at all — its
-	// registration is gone, or it never had one. Nothing to lose.
+	// landingOrphan: git cannot account for this directory — it is not a
+	// worktree, or the answers git gives belong to some enclosing
+	// repository rather than to it. Its contents are unknowable, so it is
+	// not conservative-deletable even though it is often pure leftover.
 	landingOrphan = "orphan"
-	// landingElsewhere: HEAD is contained by a ref other than the
-	// worktree's own branch. The work merged, or was promoted onto a
-	// persistent branch and then merged.
-	landingElsewhere = "landed-elsewhere"
-	// landingOwnBranch: HEAD is contained only by the branch this
-	// worktree has checked out. Deleting the directory keeps the commits
-	// (the ref stays), but nothing else references them yet.
+	// landingMerged: a ref whose tip is NOT this HEAD contains this HEAD.
+	// Another line of work was built on top of these commits, so they are
+	// reachable independently of anything this worktree holds.
+	landingMerged = "merged"
+	// landingOwnBranch: refs contain HEAD, but every one of them points
+	// exactly AT it — they are labels on this commit, not work built upon
+	// it. Deleting the directory keeps the commits (the ref stays), but
+	// nothing has adopted them yet.
 	landingOwnBranch = "own-branch"
-	// landingNowhere: detached HEAD with no ref containing it. Deleting
-	// the directory makes the commits reachable only via reflog and
-	// eligible for GC. Never deleted, at any level.
+	// landingNowhere: no ref contains HEAD, or git could not be made to
+	// answer. Deleting the directory would leave the commits reachable
+	// only via reflog and eligible for GC. Never deleted, at any level.
 	landingNowhere = "unlanded"
 )
 
@@ -97,32 +100,45 @@ type CleanedWorktree struct {
 	Bytes      int64     `json:"bytes"`
 	AgeSeconds int64     `json:"age_seconds"`
 	ModTime    time.Time `json:"mod_time"`
-	// ContainedBy names up to a few refs that hold this worktree's HEAD —
-	// the evidence for a `landed-elsewhere` verdict, so the operator can
+	// ContainedBy names up to a few refs that were built on top of this
+	// HEAD — the evidence for a `merged` verdict, so the operator can
 	// check the claim rather than trust it.
 	ContainedBy []string `json:"contained_by,omitempty"`
-	Deleted     bool     `json:"deleted"`
+	// IgnoredEntries counts top-level gitignored paths present in the
+	// tree. Ignored content is deleted at every level (in a run worktree
+	// it is the build output the command exists to reclaim), so the count
+	// is surfaced rather than gated on.
+	IgnoredEntries int  `json:"ignored_entries,omitempty"`
+	Deleted        bool `json:"deleted"`
 	// SkipReason is set on spared worktrees and empty on deleted ones.
 	SkipReason string `json:"skip_reason,omitempty"`
 	// RunDeleted reports whether the paired run record went too (--with-runs).
 	RunDeleted bool `json:"run_deleted,omitempty"`
+	// Error records a deletion that was attempted and failed. The sweep
+	// continues past it; the directory may be partially removed.
+	Error string `json:"error,omitempty"`
+	// gitCommonDir is captured before deletion so the registration can be
+	// dropped afterwards. Not serialised.
+	gitCommonDir string
 }
 
 // CleanResult is the top-level payload for --json.
 type CleanResult struct {
-	Stores          []string          `json:"stores"`
-	Level           string            `json:"level"`
-	OlderThan       string            `json:"older_than"`
-	KeepLast        int               `json:"keep_last"`
-	DryRun          bool              `json:"dry_run"`
-	WithRuns        bool              `json:"with_runs"`
-	Scanned         int               `json:"scanned"`
-	Deleted         []CleanedWorktree `json:"deleted"`
-	Spared          []CleanedWorktree `json:"spared"`
-	DeletedCount    int               `json:"deleted_count"`
-	BytesReclaimed  int64             `json:"bytes_reclaimed"`
-	ReposPruned     []string          `json:"repos_pruned,omitempty"`
-	StaleTestStores int               `json:"stale_test_stores,omitempty"`
+	Stores         []string          `json:"stores"`
+	Level          string            `json:"level"`
+	OlderThan      string            `json:"older_than"`
+	KeepLast       int               `json:"keep_last"`
+	DryRun         bool              `json:"dry_run"`
+	WithRuns       bool              `json:"with_runs"`
+	Scanned        int               `json:"scanned"`
+	Deleted        []CleanedWorktree `json:"deleted"`
+	Spared         []CleanedWorktree `json:"spared"`
+	DeletedCount   int               `json:"deleted_count"`
+	FailedCount    int               `json:"failed_count,omitempty"`
+	BytesReclaimed int64             `json:"bytes_reclaimed"`
+	// RegistrationsPruned counts the per-worktree administrative entries
+	// dropped from parent repositories after a successful deletion.
+	RegistrationsPruned int `json:"registrations_pruned,omitempty"`
 }
 
 // cleanGitTimeout bounds every git invocation the sweep makes. A wedged
@@ -153,20 +169,24 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		return err
 	}
 
+	// keep-last is applied per store: an operator who asks to keep the
+	// last 10 means 10 of this project's, not 10 across every project on
+	// the machine — under --all-projects a global floor would empty whole
+	// stores to make room for a busier one's recent runs.
 	var all []CleanedWorktree
 	for _, storeDir := range stores {
 		found, err := scanStoreWorktrees(storeDir, opts, now)
 		if err != nil {
 			return err
 		}
+		sort.Slice(found, func(i, j int) bool { return found[i].ModTime.Before(found[j].ModTime) })
+		applyKeepLast(found, opts.KeepLast)
 		all = append(all, found...)
 	}
 
 	// Oldest first: the operator reads the list top-down and the head of
 	// it is what they are least likely to want back.
-	sort.Slice(all, func(i, j int) bool { return all[i].ModTime.Before(all[j].ModTime) })
-
-	applyKeepLast(all, opts.KeepLast)
+	sort.SliceStable(all, func(i, j int) bool { return all[i].ModTime.Before(all[j].ModTime) })
 
 	result := CleanResult{
 		Stores:    stores,
@@ -180,50 +200,72 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		Spared:    []CleanedWorktree{},
 	}
 
-	repos := map[string]struct{}{}
+	// Failures never abort the sweep. Returning early would strand the
+	// deletions already made with no report at all — the operator would
+	// read an error and have no way to learn what is already gone.
+	var failures []error
+
 	for i := range all {
 		wt := &all[i]
 		if wt.SkipReason != "" {
 			result.Spared = append(result.Spared, *wt)
 			continue
 		}
-		// Resolve the parent repo BEFORE deleting: the pointer that names
-		// it lives inside the directory we are about to remove.
-		if repo := worktreeRepoRoot(wt.Path); repo != "" {
-			repos[repo] = struct{}{}
+		if !opts.Apply {
+			result.BytesReclaimed += wt.Bytes
+			result.Deleted = append(result.Deleted, *wt)
+			continue
 		}
-		if opts.Apply {
-			if err := os.RemoveAll(wt.Path); err != nil {
-				return fmt.Errorf("delete worktree %s: %w", wt.Path, err)
+
+		// Re-read the run's status immediately before deleting. The scan
+		// is a snapshot, and `iterion resume` reuses a run's existing
+		// worktree — a resumed run turns a terminal status back into
+		// `running` while the sweep is still walking other directories.
+		if st, ok := reloadRunStatus(wt.StoreDir, wt.RunID); ok && !st.IsTerminal() {
+			wt.RunStatus = string(st)
+			wt.SkipReason = skipRunActive
+			result.Spared = append(result.Spared, *wt)
+			continue
+		}
+
+		if err := os.RemoveAll(wt.Path); err != nil {
+			wt.Error = err.Error()
+			failures = append(failures, fmt.Errorf("delete worktree %s: %w", wt.Path, err))
+			result.Deleted = append(result.Deleted, *wt)
+			continue
+		}
+		wt.Deleted = true
+		result.BytesReclaimed += wt.Bytes
+
+		if wt.gitCommonDir != "" {
+			if pruned, err := pruneWorktreeRegistration(wt.gitCommonDir, wt.Path); err != nil {
+				failures = append(failures, fmt.Errorf("prune registration for %s: %w", wt.Path, err))
+			} else if pruned {
+				result.RegistrationsPruned++
 			}
-			wt.Deleted = true
-			if opts.WithRuns && wt.RunID != "" {
-				if err := deleteRunRecord(wt.StoreDir, wt.RunID); err != nil {
-					return fmt.Errorf("delete run %s: %w", wt.RunID, err)
-				}
+		}
+
+		if opts.WithRuns && wt.RunID != "" {
+			if err := deleteRunRecord(wt.StoreDir, wt.RunID); err != nil {
+				wt.Error = err.Error()
+				failures = append(failures, fmt.Errorf("delete run %s: %w", wt.RunID, err))
+			} else {
 				wt.RunDeleted = true
 			}
 		}
-		result.BytesReclaimed += wt.Bytes
 		result.Deleted = append(result.Deleted, *wt)
 	}
 	result.DeletedCount = len(result.Deleted)
-
-	// Deleting the directory leaves the registration behind; without this
-	// the parent repo accumulates administrative entries for worktrees
-	// that no longer exist, and `git worktree list` becomes unusable.
-	if opts.Apply && len(repos) > 0 {
-		for repo := range repos {
-			if err := gitWorktreePrune(repo); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: git worktree prune in %s: %v\n", repo, err)
-				continue
-			}
-			result.ReposPruned = append(result.ReposPruned, repo)
+	for _, wt := range result.Deleted {
+		if wt.Error != "" {
+			result.FailedCount++
 		}
-		sort.Strings(result.ReposPruned)
 	}
 
-	return renderCleanResult(p, result)
+	if err := renderCleanResult(p, result); err != nil {
+		return err
+	}
+	return errors.Join(failures...)
 }
 
 // resolveCleanStores lists the store directories to sweep. Without
@@ -234,7 +276,16 @@ func RunClean(opts CleanOptions, p *Printer) error {
 func resolveCleanStores(opts CleanOptions) ([]string, error) {
 	if !opts.AllProjects {
 		cwd, _ := os.Getwd()
-		return []string{store.ResolveStoreDir(cwd, opts.StoreDir)}, nil
+		storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
+		// A --store-dir the operator named explicitly must exist.
+		// Reporting "nothing to clean" for a typo'd path is a silent
+		// success a cron would repeat forever while the real store fills.
+		if opts.StoreDir != "" {
+			if _, err := os.Stat(storeDir); err != nil {
+				return nil, UserInputError(fmt.Errorf("--store-dir %s: %w", storeDir, err))
+			}
+		}
+		return []string{storeDir}, nil
 	}
 	if opts.StoreDir != "" {
 		return nil, UserInputError(errors.New("--all-projects and --store-dir are mutually exclusive"))
@@ -297,16 +348,16 @@ func scanStoreWorktrees(storeDir string, opts CleanOptions, now func() time.Time
 			continue
 		}
 		path := filepath.Join(wtRoot, e.Name())
-		wt := classifyWorktree(path, e.Name(), storeDir, statuses, opts, now)
-		out = append(out, wt)
+		out = append(out, classifyWorktree(path, e.Name(), storeDir, statuses, opts, now))
 	}
 	return out, nil
 }
 
 // classifyWorktree produces the full decision for one worktree
-// directory. The guards are ordered by how expensive they are to check
-// and how absolute they are: an active run is refused before git is ever
-// consulted.
+// directory. The guards are ordered by how absolute they are and how
+// expensive they are to check: an active run is refused before git is
+// ever consulted, and the directory is only measured once it is a real
+// candidate.
 func classifyWorktree(
 	path, runID, storeDir string,
 	statuses map[string]store.RunStatus,
@@ -323,7 +374,6 @@ func classifyWorktree(
 		}
 		wt.AgeSeconds = int64(age.Seconds())
 	}
-	wt.Bytes = dirSize(path)
 
 	// Guard 1 — an unfinished run owns its worktree. This is checked
 	// against run status, not against the directory's mtime: a run that
@@ -337,12 +387,14 @@ func classifyWorktree(
 		}
 	}
 
-	wt.Landing, wt.Dirty, wt.ContainedBy = inspectWorktreeGit(path)
+	insp := inspectWorktreeGit(path)
+	wt.Landing, wt.Dirty, wt.ContainedBy = insp.landing, insp.dirty, insp.containedBy
+	wt.gitCommonDir = insp.commonDir
 
-	// Guard 2 — commits no ref can reach. Deleting the directory would
-	// leave them reachable only through the reflog, which expires. No
-	// level lifts this; recovering the work is the operator's call, made
-	// with git, not a sweep's.
+	// Guard 2 — commits nothing was built upon and no ref even holds.
+	// Deleting the directory would leave them reachable only through the
+	// reflog, which expires. No level lifts this; recovering the work is
+	// the operator's call, made with git, not a sweep's.
 	if wt.Landing == landingNowhere {
 		wt.SkipReason = skipUnlanded
 		return wt
@@ -357,20 +409,30 @@ func classifyWorktree(
 		wt.SkipReason = skipLevel
 		return wt
 	}
+
+	// Only now is the directory a candidate, so only now is it worth
+	// walking. Sizing every worktree up front meant stat-ing millions of
+	// files — including the live checkout of a running campaign — to
+	// produce numbers that fed no decision.
+	wt.Bytes = dirSize(path)
+	wt.IgnoredEntries = insp.ignoredEntries
 	return wt
 }
 
 // requiredLevel is the minimum level that admits a given landing class.
 func requiredLevel(landing string, dirty bool) int {
 	switch landing {
-	case landingOrphan:
-		return cleanLevelRank[CleanConservative]
-	case landingElsewhere:
+	case landingMerged:
 		if dirty {
 			return cleanLevelRank[CleanModerate]
 		}
 		return cleanLevelRank[CleanConservative]
-	case landingOwnBranch:
+	case landingOwnBranch, landingOrphan:
+		// An orphan is usually pure leftover, but git cannot say what is
+		// in it — a checkout whose parent repository moved looks exactly
+		// like a stale directory, and it may hold a day of uncommitted
+		// work. "We could not tell" does not belong in the level whose
+		// contract is that nothing which could be work is touched.
 		return cleanLevelRank[CleanAggressive]
 	}
 	// landingNowhere is refused before this is reached; treat anything
@@ -379,47 +441,116 @@ func requiredLevel(landing string, dirty bool) int {
 	return cleanLevelRank[CleanAggressive] + 1
 }
 
-// inspectWorktreeGit reports where a worktree's commits live and whether
-// its tree is clean. A directory git refuses to answer for is an orphan:
-// its registration is gone, so there is no branch and no index behind it.
-func inspectWorktreeGit(path string) (landing string, dirty bool, containedBy []string) {
-	if _, err := gitOut(path, "rev-parse", "--git-dir"); err != nil {
-		return landingOrphan, false, nil
+// worktreeInspection is what git could be made to say about a directory.
+type worktreeInspection struct {
+	landing        string
+	dirty          bool
+	containedBy    []string
+	commonDir      string
+	ignoredEntries int
+}
+
+// inspectWorktreeGit reports what git can prove about a worktree.
+//
+// Every answer is refused unless git is talking about THIS directory.
+// Run under a directory merely nested inside some repository — and the
+// project-local `<repo>/.iterion/` store layout puts the whole worktree
+// pool inside the operator's checkout — git walks up and answers for the
+// enclosing repository instead. Its HEAD, its clean status and its refs
+// then describe a tree this directory has nothing to do with, which reads
+// as a landed, clean worktree and deletes whatever the directory held.
+func inspectWorktreeGit(path string) worktreeInspection {
+	unknown := worktreeInspection{landing: landingOrphan, dirty: true}
+
+	top, err := gitOut(path, "rev-parse", "--show-toplevel")
+	if err != nil || !samePath(top, path) {
+		return unknown
 	}
 	head, err := gitOut(path, "rev-parse", "HEAD")
 	if err != nil {
-		// A worktree that never got a commit (empty repo) has no HEAD to
-		// lose. Its only content is whatever is uncommitted.
-		return landingOrphan, worktreeDirty(path), nil
+		// A worktree with no commit yet has no HEAD to lose, but it may
+		// hold a tree full of uncommitted work; `orphan` already requires
+		// the highest level, and dirty stays true.
+		return unknown
 	}
-	dirty = worktreeDirty(path)
 
-	own, _ := gitOut(path, "symbolic-ref", "--quiet", "--short", "HEAD")
+	insp := worktreeInspection{dirty: worktreeDirty(path)}
+	if common, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
+		insp.commonDir = common
+	}
+	insp.ignoredEntries = countIgnoredEntries(path)
 
-	refs, err := gitOut(path, "for-each-ref", "--format=%(refname:short)",
+	// A submodule's commits live in the worktree's own administrative
+	// directory, which goes when the registration does. Containment in
+	// the superproject proves nothing about them, and iterion has no
+	// submodule handling to compensate — so the proof simply does not
+	// reach that far, and we must not claim it does.
+	if out, err := gitOut(path, "submodule", "status"); err != nil || out != "" {
+		insp.landing = landingNowhere
+		return insp
+	}
+
+	// Refs are classified by whether they were BUILT UPON this HEAD or
+	// merely point at it. A ref whose tip is some other commit and which
+	// contains HEAD means another line of work adopted these commits. A
+	// ref whose tip IS HEAD is a label — it keeps the commits alive, but
+	// nothing has taken them up.
+	//
+	// Comparing object ids rather than ref names also removes a whole
+	// family of misreadings: `symbolic-ref --short` and `for-each-ref
+	// %(refname:short)` do not shorten identically, so a name-based "is
+	// this my own branch" test misfires on ambiguous names — and in
+	// production it never fired at all, because iterion creates its
+	// worktrees detached (`git worktree add <path> <sha>`), leaving no
+	// symbolic ref to compare against.
+	refs, err := gitOut(path, "for-each-ref", "--format=%(objectname) %(refname:short)",
 		"--contains", head, "refs/heads", "refs/remotes", "refs/tags")
 	if err != nil {
 		// Without the containment answer we cannot prove the commits are
 		// safe, so we must not claim they are.
-		return landingNowhere, dirty, nil
+		insp.landing = landingNowhere
+		return insp
 	}
-	for _, ref := range strings.Split(refs, "\n") {
-		ref = strings.TrimSpace(ref)
-		if ref == "" || ref == own {
+	labelled := false
+	for _, line := range strings.Split(refs, "\n") {
+		tip, name, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || name == "" {
 			continue
 		}
-		containedBy = append(containedBy, ref)
-	}
-	if len(containedBy) > 0 {
-		if len(containedBy) > 3 {
-			containedBy = containedBy[:3]
+		labelled = true
+		if tip != head {
+			insp.containedBy = append(insp.containedBy, name)
 		}
-		return landingElsewhere, dirty, containedBy
 	}
-	if own != "" {
-		return landingOwnBranch, dirty, nil
+	switch {
+	case len(insp.containedBy) > 0:
+		if len(insp.containedBy) > 3 {
+			insp.containedBy = insp.containedBy[:3]
+		}
+		insp.landing = landingMerged
+	case labelled:
+		insp.landing = landingOwnBranch
+	default:
+		insp.landing = landingNowhere
 	}
-	return landingNowhere, dirty, nil
+	return insp
+}
+
+// samePath compares two paths through symlinks, so a store under a
+// symlinked temp dir does not read as a foreign repository.
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		ra = filepath.Clean(a)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		rb = filepath.Clean(b)
+	}
+	return ra == rb
 }
 
 func worktreeDirty(path string) bool {
@@ -432,31 +563,57 @@ func worktreeDirty(path string) bool {
 	return out != ""
 }
 
-// worktreeRepoRoot resolves the repository a linked worktree belongs to,
-// by reading the gitdir pointer its `.git` file carries. Returns "" when
-// the pointer is missing or does not have the expected shape.
-func worktreeRepoRoot(path string) string {
-	out, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil || out == "" {
-		return ""
+// countIgnoredEntries counts gitignored paths present in the tree. They
+// are reported, not gated on: in a run worktree they are the build output
+// the command exists to reclaim, and gating on them would spare every
+// worktree that ever compiled anything.
+func countIgnoredEntries(path string) int {
+	out, err := gitOut(path, "status", "--porcelain", "--ignored=matching")
+	if err != nil {
+		return 0
 	}
-	// <repo>/.git -> <repo>; a bare repo has no worktrees to prune.
-	if filepath.Base(out) != ".git" {
-		return ""
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "!!") {
+			n++
+		}
 	}
-	return filepath.Dir(out)
+	return n
 }
 
-func gitWorktreePrune(repo string) error {
-	_, err := gitOut(repo, "worktree", "prune")
-	return err
+// pruneWorktreeRegistration drops the administrative entry of the one
+// worktree just deleted, and only if that entry still names it.
+//
+// `git worktree prune` would be the obvious call and is the wrong one: it
+// sweeps the whole repository and removes the registration of ANY
+// worktree whose path is missing at that instant — an operator's checkout
+// on an unmounted volume, a stopped container's bind mount. That entry
+// holds the worktree's index, so pruning it discards their staged work
+// and leaves the checkout unusable when the volume comes back.
+func pruneWorktreeRegistration(commonDir, path string) (bool, error) {
+	admin := filepath.Join(commonDir, "worktrees", filepath.Base(path))
+	raw, err := os.ReadFile(filepath.Join(admin, "gitdir")) // #nosec G304 -- derived from git's own answer
+	if err != nil {
+		return false, nil // no registration to drop
+	}
+	if !samePath(filepath.Dir(strings.TrimSpace(string(raw))), path) {
+		return false, nil // registration belongs to a different worktree
+	}
+	if err := os.RemoveAll(admin); err != nil {
+		return false, fmt.Errorf("remove %s: %w", admin, err)
+	}
+	return true, nil
 }
 
 // gitOut runs git in dir and returns trimmed stdout.
 func gitOut(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanGitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// --no-optional-locks keeps read-only inspection read-only: `git
+	// status` otherwise refreshes and rewrites the worktree's index and
+	// takes index.lock, so even a dry run would collide with the git of
+	// an agent working in that same checkout.
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-optional-locks"}, args...)...)
 	cmd.Dir = dir
 	// LC_ALL/LANG pinned so callers may branch on git's own wording, and
 	// the environment sanitised so an inherited GIT_DIR cannot redirect
@@ -477,9 +634,7 @@ func gitOut(dir string, args ...string) (string, error) {
 }
 
 // loadRunStatuses reads the status of every run in the store, keyed by
-// run id. A store whose runs cannot be listed yields an empty map: the
-// git guards still apply, and every worktree with a live run is also a
-// worktree git reports as dirty or unlanded.
+// run id.
 func loadRunStatuses(storeDir string) map[string]store.RunStatus {
 	statuses := map[string]store.RunStatus{}
 	s, err := store.New(storeDir)
@@ -504,6 +659,24 @@ func loadRunStatuses(storeDir string) map[string]store.RunStatus {
 	return statuses
 }
 
+// reloadRunStatus re-reads one run's status at deletion time. Reports
+// ok=false when the store or the run cannot be opened at all — the scan's
+// snapshot then stands, having already refused unreadable records.
+func reloadRunStatus(storeDir, runID string) (store.RunStatus, bool) {
+	if runID == "" {
+		return "", false
+	}
+	s, err := store.New(storeDir)
+	if err != nil {
+		return "", false
+	}
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		return "", false
+	}
+	return r.Status, true
+}
+
 func deleteRunRecord(storeDir, runID string) error {
 	s, err := store.New(storeDir)
 	if err != nil {
@@ -515,6 +688,7 @@ func deleteRunRecord(storeDir, runID string) error {
 // applyKeepLast spares the N most recent worktrees that would otherwise
 // be deleted. Entries already spared for another reason do not consume a
 // slot — the flag is a floor on what survives, not a quota on the scan.
+// Callers pass ONE store's entries, oldest first.
 func applyKeepLast(all []CleanedWorktree, keepLast int) {
 	if keepLast <= 0 {
 		return
@@ -525,14 +699,10 @@ func applyKeepLast(all []CleanedWorktree, keepLast int) {
 			eligible = append(eligible, i)
 		}
 	}
-	// `all` is oldest-first, so the tail holds the most recent.
-	if len(eligible) <= keepLast {
-		for _, i := range eligible {
-			all[i].SkipReason = skipKeepLast
-		}
-		return
+	if len(eligible) > keepLast {
+		eligible = eligible[len(eligible)-keepLast:]
 	}
-	for _, i := range eligible[len(eligible)-keepLast:] {
+	for _, i := range eligible {
 		all[i].SkipReason = skipKeepLast
 	}
 }
@@ -585,22 +755,36 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 		if wt.Dirty {
 			landing += " +dirty"
 		}
+		note := wt.Path
+		switch {
+		case wt.Error != "":
+			note = "FAILED (may be partially deleted): " + wt.Path
+		case wt.IgnoredEntries > 0:
+			note = fmt.Sprintf("%s (%d gitignored path(s))", wt.Path, wt.IgnoredEntries)
+		}
 		rows = append(rows, []string{
 			shortRunID(wt.RunID),
 			landing,
 			formatAge(time.Duration(wt.AgeSeconds) * time.Second),
 			humanBytes(wt.Bytes),
-			wt.Path,
+			note,
 		})
 	}
 	p.Table([]string{"RUN", "LANDING", "AGE", "SIZE", "PATH"}, rows)
 	p.Line("%s %d worktree(s), %s reclaimed (scanned %d in %d store(s))",
-		verb, r.DeletedCount, humanBytes(r.BytesReclaimed), r.Scanned, len(r.Stores))
-	if r.WithRuns {
-		p.Line("run records deleted alongside their worktree (--with-runs)")
+		verb, r.DeletedCount-r.FailedCount, humanBytes(r.BytesReclaimed), r.Scanned, len(r.Stores))
+	if r.FailedCount > 0 {
+		p.Line("WARNING: %d deletion(s) failed and may have left a partially removed directory", r.FailedCount)
 	}
-	if len(r.ReposPruned) > 0 {
-		p.Line("pruned stale worktree registrations in %d repo(s)", len(r.ReposPruned))
+	if r.WithRuns {
+		if r.DryRun {
+			p.Line("run records would be deleted alongside their worktree (--with-runs)")
+		} else {
+			p.Line("run records deleted alongside their worktree (--with-runs)")
+		}
+	}
+	if r.RegistrationsPruned > 0 {
+		p.Line("dropped %d stale worktree registration(s)", r.RegistrationsPruned)
 	}
 	renderCleanSpared(p, r)
 	if r.DryRun {
@@ -617,10 +801,8 @@ func renderCleanSpared(p *Printer, r CleanResult) {
 		return
 	}
 	counts := map[string]int{}
-	bytes := map[string]int64{}
 	for _, wt := range r.Spared {
 		counts[wt.SkipReason]++
-		bytes[wt.SkipReason] += wt.Bytes
 	}
 	reasons := make([]string, 0, len(counts))
 	for reason := range counts {
@@ -629,7 +811,7 @@ func renderCleanSpared(p *Printer, r CleanResult) {
 	sort.Strings(reasons)
 	parts := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
-		parts = append(parts, fmt.Sprintf("%s: %d (%s)", reason, counts[reason], humanBytes(bytes[reason])))
+		parts = append(parts, fmt.Sprintf("%s: %d", reason, counts[reason]))
 	}
 	p.Line("spared — %s", strings.Join(parts, "; "))
 }

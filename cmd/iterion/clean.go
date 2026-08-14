@@ -34,38 +34,68 @@ collect it. Those leftovers are where a long-lived store's disk goes.
 
 WHAT DECIDES SAFETY
 
-Not age, and not run status alone — where the commits live:
+Not age, and not run status alone — what git can PROVE about the commits:
 
-  orphan            the directory is no longer a git worktree
-  landed-elsewhere  HEAD is contained by a ref other than its own branch
-  own-branch        HEAD is contained only by the branch it checked out
-  unlanded          no ref contains HEAD
+  merged      a ref whose tip is NOT this HEAD contains this HEAD, so
+              another line of work was built on top of these commits
+  own-branch  refs contain HEAD but every one points exactly AT it: they
+              are labels keeping the commits alive, not work built upon
+  unlanded    no ref contains HEAD
+  orphan      git cannot account for the directory at all
 
-TWO GUARDS NO LEVEL LIFTS
+Every git answer is refused unless git is talking about THIS directory.
+Asked about a directory merely nested inside some repository — and the
+project-local <repo>/.iterion/ store puts the whole worktree pool inside
+the operator's checkout — git walks up and answers for the enclosing
+repository. Its HEAD, its clean status and its refs would read as a
+landed, clean worktree and delete whatever the directory actually held.
+
+THREE GUARDS NO LEVEL LIFTS
 
   1. A run that is not terminal keeps its worktree. Checked against run
      status, never mtime: a run can spend hours in one agent turn without
-     touching its worktree, and age alone would call it abandoned.
+     touching its worktree, and age alone would call it abandoned. The
+     status is re-read immediately before deleting, because 'iterion
+     resume' reuses a run's existing worktree.
   2. An 'unlanded' worktree is never deleted. Its commits would survive
      only in the reflog, which expires. Recovering or discarding that work
      is a decision for the operator and for git, not for a sweep.
+  3. A worktree carrying a submodule is never deleted. The submodule's
+     commits live in the worktree's own administrative directory, and
+     containment in the superproject proves nothing about them.
 
 <store-dir>/worktrees/.state and any other dot-prefixed entry is left
 alone: it holds gate state shared across runs, not one run's checkout.
 
 LEVELS (cumulative)
 
-  conservative  orphan + landed-elsewhere with a clean tree. Nothing that
-                could be work is touched. This is the default.
-  moderate      + landed-elsewhere carrying uncommitted files. The commits
-                survive on the other ref; uncommitted files do not.
-  aggressive    + own-branch. No commit is lost — the branch is a ref in
-                the parent repository and outlives the directory — but
-                nothing else references that work yet.
+  conservative  merged, with a clean tree. Git proves the commits are
+                recoverable and nothing is uncommitted. This is the default.
+  moderate      + merged carrying uncommitted files. The commits survive
+                on the other ref; uncommitted files do not.
+  aggressive    + own-branch, where no commit is lost (the ref is in the
+                parent repository and outlives the directory) but nothing
+                has adopted the work yet; and + orphan, where git cannot
+                say what the directory holds — a checkout whose parent
+                repository moved looks exactly like a stale leftover.
+
+Gitignored content is deleted at every level: in a run worktree it is the
+build output this command exists to reclaim. The count of gitignored paths
+is reported per worktree, so it is visible before --apply.
 
 Dry run by default: the command prints what it would delete and deletes
-nothing until --apply. After deleting it runs 'git worktree prune' in each
-affected repository, so no stale registration is left behind.
+nothing until --apply. A deletion that fails does not abort the sweep: the
+remaining worktrees are still processed and the report still printed,
+because an aborted sweep strands what it already deleted with no record.
+
+After each successful deletion the worktree's own registration is dropped
+from the parent repository. 'git worktree prune' is deliberately NOT used:
+it sweeps the whole repository and would also drop the registration of any
+worktree merely absent at that instant — an operator's checkout on an
+unmounted volume — discarding its index and its staged work.
+
+--keep-last applies per store, so under --all-projects it keeps N of each
+project's worktrees rather than N across the whole machine.
 
 Examples:
   iterion clean                                  # dry run, conservative, this project

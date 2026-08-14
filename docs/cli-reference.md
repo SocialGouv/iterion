@@ -246,34 +246,65 @@ checkout behind for inspection and never comes back for it. On a
 long-lived store that leftover pool is where the disk goes, and
 `runs prune` cannot reach it.
 
-What decides safety is not age and not run status alone, but where the
-commits live:
+What decides safety is not age and not run status alone, but what git can
+**prove** about the commits:
 
 | landing | meaning | taken at |
 | --- | --- | --- |
-| `orphan` | no longer a git worktree | conservative |
-| `landed-elsewhere` | HEAD contained by a ref other than its own branch | conservative (clean tree), moderate (dirty) |
-| `own-branch` | HEAD contained only by the branch it checked out | aggressive |
+| `merged` | a ref whose tip is **not** this HEAD contains this HEAD — another line of work was built on top | conservative (clean tree), moderate (dirty) |
+| `own-branch` | refs contain HEAD but every one points exactly **at** it: labels keeping the commits alive, nothing built upon them | aggressive |
+| `orphan` | git cannot account for the directory at all | aggressive |
 | `unlanded` | no ref contains HEAD | never |
 
-Two guards no level lifts:
+Classifying by *what the refs were built upon* rather than by ref name
+matters in practice: iterion creates run worktrees detached
+(`git worktree add <path> <sha>`), so there is no symbolic ref to compare
+a branch name against, and a run whose commits were merely promoted to
+`iterion/run/<x>` has not been adopted by anything yet.
+
+Three guards no level lifts:
 
 1. **A run that is not terminal keeps its worktree.** Checked against run
    status, never mtime — a run can spend hours inside one agent turn
    without touching its checkout, so age alone would call it abandoned. A
-   run whose `run.json` cannot be read is treated as active, not as absent.
+   run whose `run.json` cannot be read is treated as active, not as absent,
+   and the status is re-read immediately before deleting because
+   `iterion resume` reuses a run's existing worktree.
 2. **An `unlanded` worktree is never deleted.** Its commits would survive
    only in the reflog, which expires; recovering or discarding that work is
    a decision for the operator and for git, not for a sweep.
+3. **A worktree carrying a submodule is never deleted.** The submodule's
+   commits live in the worktree's own administrative directory, and
+   containment in the superproject proves nothing about them.
+
+Every git answer is refused unless git is talking about **that** directory.
+Asked about a directory merely nested inside a repository — and the
+project-local `<repo>/.iterion/` store puts the whole worktree pool inside
+the operator's checkout — git walks up and answers for the enclosing
+repository, whose clean status and refs would read as a landed worktree.
 
 Dot-prefixed entries such as `worktrees/.state` are left alone: they hold
-gate state shared across runs, not one run's checkout.
+gate state shared across runs, not one run's checkout. Gitignored content,
+by contrast, is deleted at every level — in a run worktree it is the build
+output the command exists to reclaim — and the count of gitignored paths is
+reported per worktree so it is visible before `--apply`.
 
 The command is a dry run until `--apply`, and reports what it spared and
 why, so "nothing was eligible" is never confused with "everything was
-guarded". After deleting it runs `git worktree prune` in each affected
-repository. Run records are kept unless `--with-runs` is passed — they are
-the journal of what the agent did, and they are small.
+guarded". A failed deletion does not abort the sweep: the rest is still
+processed and the report still printed, since an aborted sweep strands what
+it already deleted with no record of it.
+
+After each successful deletion the worktree's own registration is dropped
+from the parent repository. `git worktree prune` is deliberately not used —
+it sweeps the whole repository and would also drop the registration of a
+worktree merely absent at that instant, such as an operator's checkout on
+an unmounted volume, discarding its index and staged work.
+
+`--keep-last` applies per store, so under `--all-projects` it keeps N of
+each project's worktrees rather than N across the whole machine. Run records
+are kept unless `--with-runs` is passed — they are the journal of what the
+agent did, and they are small.
 
 ### `iterion runs questions` / `iterion runs answer`
 
