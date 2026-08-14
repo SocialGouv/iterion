@@ -2026,9 +2026,33 @@ tool oracle_run:
         # (re)record with the code path that will judge it. Copying from __file__
         # keeps one source of truth — the inlined node — rather than a second copy
         # drifting in a sibling node.
+        # IDEMPOTENT: the standalone and the inlined node differ only by their
+        # header, so the copy is normalised to ONE canonical form and written only
+        # when it differs. A gate that dirties the tree with its own header churn
+        # leaves the run un-mergeable and forces a human to land it by hand.
         try:
-            shutil.copyfile(__file__, os.path.join(gm_dir, "harness.py"))
-        except (OSError, NameError):
+            with open(__file__, encoding="utf-8") as f:
+                src = f.read()
+            body = src[src.index("\nimport hashlib"):]
+            canon_copy = (
+                "#!/usr/bin/env python3\n"
+                '"""Materialised oracle harness — the decision procedure, not the '
+                "campaign's to edit.\n"
+                "The reviewable source of truth lives in the golden-master bot "
+                "bundle; this copy\n"
+                "exists so the emitted runner, CI and later passes judge with the "
+                "same code.\n"
+                'Regenerated at every gate; edits made here do not survive."""\n'
+                + body)
+            target = os.path.join(gm_dir, "harness.py")
+            old = ""
+            if os.path.isfile(target):
+                with open(target, encoding="utf-8") as f:
+                    old = f.read()
+            if old != canon_copy:
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(canon_copy)
+        except (OSError, NameError, ValueError):
             pass
 
         # Une porte sur un arbre sale juge un arbre qui n'a jamais existé : les
@@ -2754,6 +2778,26 @@ tool emit_runner:
             f.write("means the comparator was tuned to its training set, not fixed.\n\n")
             f.write("Re-run: `sh " + oracle_dir + "/verify-oracle.sh` -- `--record` re-baselines,\n")
             f.write("which requires a written cause per reference (see the `golden-master` skill).\n")
+
+    # A converged campaign must leave a MERGEABLE tree: emissions sitting
+    # uncommitted make the engine bank the run as wip and skip the merge, and
+    # a human then lands the net by hand — the step where a hardened runner
+    # got clobbered once. Scoped strictly to the oracle dir this node owns.
+    gi = os.path.join(gm, ".gitignore")
+    if not os.path.exists(gi):
+        with open(gi, "w") as f:
+            f.write("__pycache__/\n")
+    import subprocess
+    inside = subprocess.run(["git", "-C", ws, "rev-parse", "--is-inside-work-tree"],
+                            capture_output=True, text=True)
+    if inside.returncode == 0 and inside.stdout.strip() == "true":
+        subprocess.run(["git", "-C", ws, "add", oracle_dir], check=False)
+        staged = subprocess.run(["git", "-C", ws, "diff", "--cached", "--quiet"],
+                                capture_output=True)
+        if staged.returncode != 0:
+            subprocess.run(["git", "-C", ws, "commit", "-m",
+                            "chore(oracle): materialise the runner, the report and the harness"],
+                           check=False, capture_output=True)
 
     print(json.dumps({"runner_path": runner, "report_path": report}))
 

@@ -1814,9 +1814,33 @@ def main():
     # (re)record with the code path that will judge it. Copying from __file__
     # keeps one source of truth — the inlined node — rather than a second copy
     # drifting in a sibling node.
+    # IDEMPOTENT: the standalone and the inlined node differ only by their
+    # header, so the copy is normalised to ONE canonical form and written only
+    # when it differs. A gate that dirties the tree with its own header churn
+    # leaves the run un-mergeable and forces a human to land it by hand.
     try:
-        shutil.copyfile(__file__, os.path.join(gm_dir, "harness.py"))
-    except (OSError, NameError):
+        with open(__file__, encoding="utf-8") as f:
+            src = f.read()
+        body = src[src.index("\nimport hashlib"):]
+        canon_copy = (
+            "#!/usr/bin/env python3\n"
+            '"""Materialised oracle harness — the decision procedure, not the '
+            "campaign's to edit.\n"
+            "The reviewable source of truth lives in the golden-master bot "
+            "bundle; this copy\n"
+            "exists so the emitted runner, CI and later passes judge with the "
+            "same code.\n"
+            'Regenerated at every gate; edits made here do not survive."""\n'
+            + body)
+        target = os.path.join(gm_dir, "harness.py")
+        old = ""
+        if os.path.isfile(target):
+            with open(target, encoding="utf-8") as f:
+                old = f.read()
+        if old != canon_copy:
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(canon_copy)
+    except (OSError, NameError, ValueError):
         pass
 
     # Une porte sur un arbre sale juge un arbre qui n'a jamais existé : les
