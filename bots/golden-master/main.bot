@@ -2724,7 +2724,10 @@ tool emit_runner:
         # exactly the failure mode the whole bot exists to prevent, one level
         # up. So the verdict is translated here, from the same conjunction the
         # graph applies -- never from a score, and never from a subset.
-        'python3 "$GM_WORKSPACE/$GM_DIR/harness.py" > "$GM_REPORT_TMP" 2>&1 || VERDICT_RC=$?',
+        # stdout ONLY into the report: the harness logs to stderr and prints
+        # one JSON verdict. Merging stderr feeds the progress log into the
+        # JSON this runner re-reads, and the gate dies parsing itself.
+        'python3 "$GM_WORKSPACE/$GM_DIR/harness.py" > "$GM_REPORT_TMP" || VERDICT_RC=$?',
         '[ -n "$VERDICT_RC" ] || VERDICT_RC=0',
         'cat "$GM_REPORT_TMP"',
         'if [ "$VERDICT_RC" != "0" ]; then rm -f "$GM_REPORT_TMP"; exit "$VERDICT_RC"; fi',
