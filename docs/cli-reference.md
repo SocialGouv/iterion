@@ -9,6 +9,7 @@ This page maps every public top-level command in the current binary and document
 | `bench asymptote` | Build a workflow-quality stabilisation report from persisted runs. |
 | `bots` | Create bots, install published ones, and emit the catalogue. |
 | `bundle` | Pack a bundle source directory into a deterministic `.botz`. |
+| `clean` | Reclaim disk by deleting run worktrees whose work has landed. |
 | `completion` | Generate Bash, Zsh, Fish, or PowerShell completion. |
 | `diagram` | Render a workflow as Mermaid. |
 | `dispatch` | Poll a tracker and launch an eligible bot per issue. |
@@ -227,7 +228,52 @@ iterion runs prune --dry-run
 iterion runs prune --older-than 168h --keep-last 100
 ```
 
-Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed.
+Default retention deletes `finished`, `failed`, and `cancelled` runs older than 720 hours. `failed_resumable` requires explicit inclusion via `--status`. Only `<store-dir>/runs/` is touched; worktrees are not removed — use [`iterion clean`](#iterion-clean) for those.
+
+### `iterion clean`
+
+```bash
+iterion clean                             # dry run, conservative, this project
+iterion clean --apply
+iterion clean --all-projects --older-than 720h --apply
+iterion clean --level moderate --keep-last 10 --apply
+```
+
+Reclaims the per-run worktrees under `<store-dir>/worktrees/`. A
+`worktree: auto` run that succeeds promotes its commits onto a branch and
+removes its checkout; a failed or interrupted one deliberately leaves the
+checkout behind for inspection and never comes back for it. On a
+long-lived store that leftover pool is where the disk goes, and
+`runs prune` cannot reach it.
+
+What decides safety is not age and not run status alone, but where the
+commits live:
+
+| landing | meaning | taken at |
+| --- | --- | --- |
+| `orphan` | no longer a git worktree | conservative |
+| `landed-elsewhere` | HEAD contained by a ref other than its own branch | conservative (clean tree), moderate (dirty) |
+| `own-branch` | HEAD contained only by the branch it checked out | aggressive |
+| `unlanded` | no ref contains HEAD | never |
+
+Two guards no level lifts:
+
+1. **A run that is not terminal keeps its worktree.** Checked against run
+   status, never mtime — a run can spend hours inside one agent turn
+   without touching its checkout, so age alone would call it abandoned. A
+   run whose `run.json` cannot be read is treated as active, not as absent.
+2. **An `unlanded` worktree is never deleted.** Its commits would survive
+   only in the reflog, which expires; recovering or discarding that work is
+   a decision for the operator and for git, not for a sweep.
+
+Dot-prefixed entries such as `worktrees/.state` are left alone: they hold
+gate state shared across runs, not one run's checkout.
+
+The command is a dry run until `--apply`, and reports what it spared and
+why, so "nothing was eligible" is never confused with "everything was
+guarded". After deleting it runs `git worktree prune` in each affected
+repository. Run records are kept unless `--with-runs` is passed — they are
+the journal of what the agent did, and they are small.
 
 ### `iterion runs questions` / `iterion runs answer`
 
