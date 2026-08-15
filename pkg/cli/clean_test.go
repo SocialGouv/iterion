@@ -1305,6 +1305,117 @@ func TestClean_UnanswerableCommonDirIsRefused(t *testing.T) {
 	mustExist(t, path, "worktree whose common dir is unknown")
 }
 
+// The re-derivation spends several git calls and a full walk. A sweep
+// that took the directory in that gap must not be claimed — nor its
+// bytes, which the other sweep reclaimed.
+func TestClean_DoesNotClaimAWorktreeTakenDuringTheReDerivation(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("racy")
+	f.mergeIntoMain("racy")
+	f.seedRun("racy", store.RunStatusFinished)
+
+	afterEligibility = func(p string) { _ = os.RemoveAll(p) }
+	t.Cleanup(func() { afterEligibility = func(string) {} })
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if r.DeletedCount != 0 || r.BytesReclaimed != 0 {
+		t.Fatalf("claimed %d deletion(s) and %d bytes for a directory another sweep took",
+			r.DeletedCount, r.BytesReclaimed)
+	}
+	if got := sparedReason(r, "racy"); got != skipVanished {
+		t.Fatalf("reported as %q, want %q", got, skipVanished)
+	}
+	for _, wt := range r.Spared {
+		if filepath.Base(wt.Path) == "racy" && wt.Bytes != 0 {
+			t.Errorf("reports %d bytes already reclaimed by the other sweep", wt.Bytes)
+		}
+	}
+}
+
+// Every answer git gives is absolute; a --store-dir does not have to be,
+// and `--store-dir .iterion` is the documented incantation for the
+// project-local layout. Comparing the two then fails for every worktree
+// at once: all of them read `orphan`, which aggressive deletes, and the
+// nested-repo guard cannot even form a relative path.
+func TestClean_RelativeStoreDirClassifiesLikeAnAbsoluteOne(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+	f.addWorktree("nowhere") // detached, never promoted
+	f.seedRun("nowhere", store.RunStatusFinished)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(filepath.Dir(f.store)); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	r := f.run(CleanOptions{StoreDir: filepath.Base(f.store), Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "nowhere"); got != landingNowhere {
+		t.Fatalf("under a relative --store-dir, landing = %q, want %q — guard 2 must still hold", got, landingNowhere)
+	}
+	if deletedPaths(r)["nowhere"] {
+		t.Fatal("a relative --store-dir let an unlanded worktree be deleted")
+	}
+	if got := landingOf(r, "merged"); got != landingMerged {
+		t.Errorf("merged worktree reads %q under a relative --store-dir", got)
+	}
+	mustExist(t, filepath.Join(f.store, "worktrees", "nowhere"), "unlanded under a relative store dir")
+}
+
+// The mirror's markers sit at an exact depth. A run that names a skill
+// `.iterion-managed` must not vanish from the tree's dirtiness.
+func TestClean_ManagedDirIsMatchedAtItsDepthOnly(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("deepname")
+	deep := filepath.Join(path, ".claude", "skills", "mine", ".iterion-managed")
+	mustMkdir(t, deep)
+	mustWrite(t, filepath.Join(deep, "notes.md"), "committed\n")
+	f.git(path, "add", ".")
+	f.git(path, "commit", "-m", "a skill of the run's own")
+	f.mergeIntoMain("deepname")
+	f.seedRun("deepname", store.RunStatusFinished)
+	// Tracked and modified: the untracked-directory rule cannot apply, so
+	// only a segment match at any depth could hide it.
+	mustWrite(t, filepath.Join(deep, "notes.md"), "a day of the run's own notes\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["deepname"] {
+		t.Fatal("a nested .iterion-managed/ was matched as iterion's bookkeeping")
+	}
+	mustExist(t, filepath.Join(deep, "notes.md"), "run-written notes")
+}
+
+// The fallback branch of gitCommonDir must classify an ORDINARY linked
+// worktree correctly too — a test that only ever exercises it on a
+// self-contained clone proves nothing about the common case.
+func TestClean_OrdinaryWorktreeStillClassifiesOnGitWithoutPathFormat(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("merged")
+	f.mergeIntoMain("merged")
+	f.seedRun("merged", store.RunStatusFinished)
+
+	rejectPathFormat(t)
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := landingOf(r, "merged"); got != landingMerged {
+		t.Fatalf("landing = %q on a git without --path-format, want %q", got, landingMerged)
+	}
+	if !deletedPaths(r)["merged"] {
+		t.Fatalf("an ordinary linked worktree was refused on an older git (spared: %q)",
+			sparedReason(r, "merged"))
+	}
+	mustNotExist(t, path, "ordinary worktree on an older git")
+	if r.RegistrationsPruned != 1 {
+		t.Errorf("dropped %d registration(s), want 1 — the fallback path must still locate the repo",
+			r.RegistrationsPruned)
+	}
+}
+
 // git answered --show-toplevel for THIS directory, so it does know the
 // worktree: an unresolvable HEAD — an unborn branch, a `checkout --orphan`
 // an agent left behind — is "we could not tell", not "this is not a

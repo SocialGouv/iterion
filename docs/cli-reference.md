@@ -356,8 +356,9 @@ deleted with no record of it. Failures are listed under `failed` in
 than attempts — in a dry run it counts what *would* be deleted, which
 `dry_run: true` and each entry's `"deleted": false` make explicit.
 
-After each successful deletion the worktree's own registration is dropped
-from the parent repository. `git worktree prune` is deliberately not used —
+After each successful deletion the worktree's registration is dropped from
+the parent repository — where there is one to find: an `orphan` has no
+repository git will name. `git worktree prune` is deliberately not used —
 it sweeps the whole repository and would also drop the registration of a
 worktree merely absent at that instant, such as an operator's checkout on
 an unmounted volume, discarding its index and staged work.

@@ -308,6 +308,8 @@ func RunClean(opts CleanOptions, p *Printer) error {
 			continue
 		}
 
+		afterEligibility(wt.Path)
+
 		// stillEligible spends several git calls and a full walk, so ask
 		// once more: os.RemoveAll succeeds on a path that is already gone
 		// and both sweeps would claim the deletion and its bytes.
@@ -365,7 +367,7 @@ func RunClean(opts CleanOptions, p *Printer) error {
 func resolveCleanStores(opts CleanOptions) ([]string, error) {
 	if !opts.AllProjects {
 		cwd, _ := os.Getwd()
-		storeDir := store.ResolveStoreDir(cwd, opts.StoreDir)
+		storeDir := absStore(store.ResolveStoreDir(cwd, opts.StoreDir))
 		// A --store-dir the operator named explicitly must exist.
 		// Reporting "nothing to clean" for a typo'd path is a silent
 		// success a cron would repeat forever while the real store fills.
@@ -380,7 +382,7 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 		return nil, UserInputError(errors.New("--all-projects and --store-dir are mutually exclusive"))
 	}
 
-	root := store.GlobalIterionDataDir()
+	root := absStore(store.GlobalIterionDataDir())
 	var stores []string
 	if hasWorktreeDir(root) {
 		stores = append(stores, root)
@@ -403,6 +405,24 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 	}
 	sort.Strings(stores)
 	return stores, nil
+}
+
+// absStore makes a store path absolute.
+//
+// Every answer git gives comes back absolute, and a store dir does not
+// have to: `ResolveStoreDir` returns an explicit --store-dir verbatim, and
+// `--store-dir .iterion` is the documented incantation for the
+// project-local layout. Comparing git's absolute answer against a relative
+// path then fails for every worktree at once — `samePath` never matches,
+// so every directory reads `orphan`, which aggressive deletes; `isInside`
+// cannot even form a relative path, so the nested-repo guard never fires;
+// and the registration lookup never matches its recorded gitdir. One
+// normalisation at the boundary is what keeps all three honest.
+func absStore(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 func hasWorktreeDir(storeDir string) bool {
@@ -631,6 +651,13 @@ func looksLikeGitDir(dir string) bool {
 // itself, so a run worktree that ever fetched a module contains hundreds
 // of them: the sweep would half-destroy a multi-gigabyte tree, report a
 // partial deletion, and retry the same wreck on every subsequent run.
+// afterEligibility marks the gap between the re-derivation and the
+// removal — several git calls and a full tree walk wide, which is ample
+// for a concurrent sweep to take the directory. Nothing in production,
+// the only place a test can stand to prove the check that follows it is
+// load-bearing.
+var afterEligibility = func(string) {}
+
 // removeTree is the seam the sweep deletes through. A removal that fails
 // for a reason a single uid cannot arrange — another owner's files, a
 // busy mount — is exactly the case the continuation contract exists for,
@@ -907,7 +934,20 @@ var cleanScaffoldDirs = []string{
 	".claude/skills/",
 	".claude/commands/",
 	".claude/agents/",
+}
+
+// cleanManagedDirs are the mirror's own bookkeeping — sha256 markers
+// beside each mirrored kind, and the hooks sidecar next to
+// settings.json. Nobody's work at any status, and rewritten on every run.
+//
+// They are matched at their exact depth rather than as a segment: a run
+// that names a skill `.iterion-managed` would otherwise disappear from
+// the tree's dirtiness entirely.
+var cleanManagedDirs = []string{
 	".claude/.iterion-managed/",
+	".claude/skills/.iterion-managed/",
+	".claude/commands/.iterion-managed/",
+	".claude/agents/.iterion-managed/",
 }
 
 // cleanScaffoldFiles are exact paths, never prefixes: iterion rewrites
@@ -957,12 +997,10 @@ func dequotePath(p string) string {
 // the mirror's own output reads dirty after a bundle changes and needs
 // `--level moderate`. Reading it the other way costs work instead.
 func isScaffold(status, p string) bool {
-	// An `.iterion-managed/` directory under `.claude/` is iterion's own
-	// bookkeeping about what it mirrored — sha256 markers, the hooks
-	// sidecar. It is nobody's work at any status, and the mirror rewrites
-	// it on every run.
-	if strings.HasPrefix(p, ".claude/") && strings.Contains(p, "/.iterion-managed/") {
-		return true
+	for _, dir := range cleanManagedDirs {
+		if strings.HasPrefix(p, dir) {
+			return true
+		}
 	}
 	if strings.TrimSpace(status) != "??" {
 		return false
