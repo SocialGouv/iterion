@@ -9,13 +9,14 @@ import (
 )
 
 var cleanOpts struct {
-	storeDir    string
-	level       string
-	olderThan   string
-	apply       bool
-	allProjects bool
-	keepLast    int
-	withRuns    bool
+	storeDir         string
+	level            string
+	olderThan        string
+	apply            bool
+	allProjects      bool
+	keepLast         int
+	withRuns         bool
+	includeResumable bool
 }
 
 var cleanCmd = &cobra.Command{
@@ -60,8 +61,8 @@ landed, clean worktree and delete whatever the directory actually held.
 
 THREE GUARDS NO LEVEL LIFTS
 
-  1. A run that is not terminal keeps its worktree. Checked against run
-     status, never mtime: a run can spend hours in one agent turn without
+  1. A run that is not terminal keeps its worktree. The status is checked,
+     never mtime: a run can spend hours in one agent turn without
      touching its worktree, and age alone would call it abandoned. The
      sweep takes the same per-run lock 'iterion run' and 'iterion resume'
      hold for a run's lifetime, and holds it across the deletion — the
@@ -132,6 +133,14 @@ it sweeps the whole repository and would also drop the registration of any
 worktree merely absent at that instant — an operator's checkout on an
 unmounted volume — discarding its index and its staged work.
 
+'iterion resume' restarts a failed_resumable or cancelled run IN ITS
+EXISTING WORKTREE, and both report as terminal to a poller — so guard 1
+lets them through, and sweeping one destroys the resume while every other
+check nods along. They are spared as 'resumable', with their size, and
+--include-resumable says the resume is not wanted. Same opt-in 'runs
+prune' requires for the same statuses; on a long-lived store this is
+usually where the reclaimable space is.
+
 --keep-last applies per store, so under --all-projects it keeps N of each
 project's worktrees rather than N across the whole machine.
 
@@ -151,13 +160,14 @@ Examples:
 			return cli.UserInputError(fmt.Errorf("--older-than: %w", err))
 		}
 		return cli.RunClean(cli.CleanOptions{
-			StoreDir:    cleanOpts.storeDir,
-			Level:       cli.CleanLevel(cleanOpts.level),
-			OlderThan:   olderThan,
-			Apply:       cleanOpts.apply,
-			AllProjects: cleanOpts.allProjects,
-			KeepLast:    cleanOpts.keepLast,
-			WithRuns:    cleanOpts.withRuns,
+			StoreDir:         cleanOpts.storeDir,
+			Level:            cli.CleanLevel(cleanOpts.level),
+			OlderThan:        olderThan,
+			Apply:            cleanOpts.apply,
+			AllProjects:      cleanOpts.allProjects,
+			KeepLast:         cleanOpts.keepLast,
+			WithRuns:         cleanOpts.withRuns,
+			IncludeResumable: cleanOpts.includeResumable,
 		}, newPrinter())
 	},
 }
@@ -170,6 +180,7 @@ func init() {
 	f.BoolVar(&cleanOpts.apply, "apply", false, "Actually delete; without it the command is a dry run")
 	f.BoolVar(&cleanOpts.allProjects, "all-projects", false, "Sweep every project store under the iterion data dir, not just this project's")
 	f.IntVar(&cleanOpts.keepLast, "keep-last", 0, "Always keep the N most recent otherwise-eligible worktrees")
+	f.BoolVar(&cleanOpts.includeResumable, "include-resumable", false, "Also sweep worktrees of runs that could be resumed (failed_resumable, cancelled), giving up the resume")
 	f.BoolVar(&cleanOpts.withRuns, "with-runs", false, "Also delete the run record paired with each deleted worktree")
 
 	rootCmd.AddCommand(cleanCmd)

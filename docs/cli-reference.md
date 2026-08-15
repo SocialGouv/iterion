@@ -337,10 +337,22 @@ The command is a dry run until `--apply`, and reports what it spared and
 why, so "nothing was eligible" is never confused with "everything was
 guarded". Each spared entry carries a `skip_reason`: `run-active`,
 `unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`, or
-`needs-higher-level`. Sizes are measured for the candidates, for what only
+`needs-higher-level`, or `resumable`. `run-active` also covers a run whose
+lock another iterion process holds; the reason is printed beside the entry.
+
+`iterion resume` restarts a `failed_resumable` or `cancelled` run **in its
+existing worktree**, and both report as terminal to a poller — so the
+guard above lets them through, and sweeping one destroys the resume while
+every other check nods along, since the commits are merged and nothing is
+lost but the ability to continue. Those worktrees are spared as
+`resumable`, with their size, and `--include-resumable` is how to say the
+resume is not wanted. It is the same opt-in `runs prune` requires before
+it touches the same statuses. On a long-lived store they are most of what
+accumulates, so that line is usually where the reclaimable space is. Sizes are measured for the candidates, for what only
 the level ladder holds back — so the yield of the next level up is visible
-before choosing it — and for `keep-last`; not for the rest, which report `0` — as does
-`already-gone`, whose bytes another sweep has already reclaimed:
+before choosing it — for `keep-last` and for `resumable`; not for `run-active`, `unlanded`,
+`nested-repo`, `too-recent` or `already-gone`, which report `0` — the last because
+another sweep has already reclaimed them:
 measuring costs a walk of every file, and the live checkout of a running
 campaign is never walked at all.
 

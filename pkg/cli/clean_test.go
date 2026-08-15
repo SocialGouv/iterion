@@ -331,7 +331,7 @@ func TestClean_RechecksRunStatusImmediatelyBeforeDeleting(t *testing.T) {
 	f := newCleanFixture(t)
 	f.addWorktree("resumed")
 	f.mergeIntoMain("resumed")
-	f.seedRun("resumed", store.RunStatusFailedResumable) // terminal at scan time
+	f.seedRun("resumed", store.RunStatusFinished) // terminal and not resumable at scan time
 	f.backdate("resumed", 90*24*time.Hour)
 
 	// Flip it to running between the scan and the deletion, which is what
@@ -758,6 +758,13 @@ func TestClean_RefusesWorktreeHoldingABareRepo(t *testing.T) {
 	}
 	if got := sparedReason(r, "bare"); got != skipNested {
 		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	// Found by the walk, so the walk had already measured it; the contract
+	// says a spared entry of this class reports nothing.
+	for _, wt := range r.Spared {
+		if filepath.Base(wt.Path) == "bare" && wt.Bytes != 0 {
+			t.Errorf("a nested-repo reports %d bytes; the contract says 0", wt.Bytes)
+		}
 	}
 	mustExist(t, bare, "bare repo")
 }
@@ -1305,6 +1312,198 @@ func TestClean_UnanswerableCommonDirIsRefused(t *testing.T) {
 	mustExist(t, path, "worktree whose common dir is unknown")
 }
 
+// `IsTerminal()` answers whether a poller should stop refreshing, not
+// whether anything still owns the checkout. `iterion resume` restarts a
+// failed_resumable or a cancelled run in its existing worktree — sweeping
+// it destroys the resume while every other guard nods along, because the
+// commits are merged and nothing is lost except the ability to continue.
+func TestClean_SparesWorktreesOfResumableRuns(t *testing.T) {
+	// paused_operator is dormant but not terminal, so the ordinary guard
+	// already holds it and --include-resumable must not reach it: only a
+	// run a poller would call finished is released here.
+	for _, status := range []store.RunStatus{
+		store.RunStatusFailedResumable,
+		store.RunStatusCancelled,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newCleanFixture(t)
+			path := f.addWorktree("resumable")
+			f.mergeIntoMain("resumable") // merged and clean: eligible on every other count
+			f.seedRun("resumable", status)
+
+			// Dry run first: it never reaches the deletion-time gate, so
+			// this is the only thing pinning the classification — and it
+			// is the listing an operator reads before typing --apply.
+			dry := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0})
+			if dry.DeletedCount != 0 {
+				t.Fatalf("the dry run offers to delete a %s run's worktree", status)
+			}
+			if got := sparedReason(dry, "resumable"); got != skipResumable {
+				t.Fatalf("dry run spared for %q, want %q", got, skipResumable)
+			}
+
+			r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+			if deletedPaths(r)["resumable"] {
+				t.Fatalf("deleted the worktree of a %s run, which `iterion resume` restarts in place", status)
+			}
+			if got := sparedReason(r, "resumable"); got != skipResumable {
+				t.Fatalf("spared for %q, want %q", got, skipResumable)
+			}
+			// The size is what an operator weighs against giving up the
+			// resume, so it has to be reported.
+			for _, wt := range r.Spared {
+				if wt.SkipReason == skipResumable && wt.Bytes == 0 {
+					t.Error("a resumable worktree reports no size; nothing to weigh the resume against")
+				}
+			}
+			mustExist(t, path, "resumable run's worktree")
+
+			// --include-resumable is how the operator says the resume is
+			// not wanted.
+			r = f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true, IncludeResumable: true})
+			if !deletedPaths(r)["resumable"] {
+				t.Fatalf("--include-resumable did not release a %s run's worktree (spared: %q)",
+					status, sparedReason(r, "resumable"))
+			}
+			mustNotExist(t, path, "resumable worktree under --include-resumable")
+		})
+	}
+}
+
+// A repository whose `.git` is a POINTER FILE — a linked worktree of some
+// other repository, a `clone --separate-git-dir` — is as invisible to the
+// outer repository's questions as one with a `.git` directory.
+func TestClean_RefusesWorktreeHoldingARepoWhoseGitIsAFile(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("holds")
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "vendor/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore vendor")
+	f.mergeIntoMain("holds")
+	f.seedRun("holds", store.RunStatusFinished)
+
+	// Another repository, checked out INSIDE the worktree as a linked
+	// worktree: its `.git` is a file, and its commits live in that other
+	// repository's object store.
+	other := filepath.Join(f.root, "other")
+	mustMkdir(t, other)
+	f.initRepo(other)
+	embedded := filepath.Join(path, "vendor", "lib")
+	mustMkdir(t, filepath.Dir(embedded))
+	f.git(other, "worktree", "add", embedded)
+	if info, err := os.Stat(filepath.Join(embedded, ".git")); err != nil || info.IsDir() {
+		t.Skipf("linked worktree did not produce a .git file: %v", err)
+	}
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
+	if deletedPaths(r)["holds"] {
+		t.Fatal("deleted a worktree holding a repository whose .git is a pointer file")
+	}
+	if got := sparedReason(r, "holds"); got != skipNested {
+		t.Fatalf("spared for %q, want %q", got, skipNested)
+	}
+	mustExist(t, embedded, "embedded linked worktree")
+}
+
+// The lock has to be HELD across the removal, not merely taken: the
+// window it closes is the whole os.RemoveAll.
+func TestClean_HoldsTheRunLockAcrossTheRemoval(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("locked")
+	f.mergeIntoMain("locked")
+	f.seedRun("locked", store.RunStatusFinished)
+
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	heldDuringRemoval := false
+	real := removeTree
+	removeTree = func(p string) error {
+		if lock, err := s.LockRun(context.Background(), "locked"); err != nil {
+			heldDuringRemoval = true
+		} else {
+			_ = lock.Unlock()
+		}
+		return real(p)
+	}
+	t.Cleanup(func() { removeTree = real })
+
+	f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if !heldDuringRemoval {
+		t.Fatal("the run lock was not held while the worktree was being removed")
+	}
+}
+
+// The registration holds the worktree's index. Dropping it after a
+// removal that failed leaves a half-deleted checkout that git can no
+// longer open — the precise damage the targeted prune exists to avoid.
+func TestClean_DoesNotDropTheRegistrationOfAFailedDeletion(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("doomed")
+	f.mergeIntoMain("doomed")
+	f.seedRun("doomed", store.RunStatusFinished)
+
+	real := removeTree
+	removeTree = func(string) error { return errors.New("simulated: another owner's file") }
+	t.Cleanup(func() { removeTree = real })
+
+	r, err := f.runErr(CleanOptions{
+		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
+	})
+	if err == nil {
+		t.Fatal("the failed deletion did not surface an error")
+	}
+	if r.RegistrationsPruned != 0 {
+		t.Fatalf("dropped %d registration(s) for a deletion that failed", r.RegistrationsPruned)
+	}
+	mustExist(t, filepath.Join(f.repo, ".git", "worktrees", "doomed"), "registration of a failed deletion")
+}
+
+// A worktree that never had a run record must not acquire a deletion
+// tombstone: DeleteRun creates the run directory before marking it, and
+// the marker makes every later write to that id fail.
+func TestClean_WithRunsDoesNotInventRecordsForOrphans(t *testing.T) {
+	f := newCleanFixture(t)
+	orphan := filepath.Join(f.store, "worktrees", "stale")
+	mustMkdir(t, orphan)
+	mustWrite(t, filepath.Join(orphan, "leftover.txt"), "junk\n")
+	mustMkdir(t, filepath.Join(f.store, "runs"))
+
+	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true, WithRuns: true})
+	if !deletedPaths(r)["stale"] {
+		t.Fatalf("the orphan was not swept (spared: %q)", sparedReason(r, "stale"))
+	}
+	for _, wt := range r.Deleted {
+		if wt.RunDeleted {
+			t.Error("reported a run record as deleted for a worktree that never had one")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.store, "runs", "stale")); !os.IsNotExist(err) {
+		t.Fatal("--with-runs left a tombstone for a run that never existed")
+	}
+}
+
+// Inspecting a directory must not turn it into a managed store: that is
+// what a later `iterion` invocation reads to decide where its runs live.
+func TestClean_DryRunDoesNotProvisionTheStore(t *testing.T) {
+	dir := t.TempDir()
+	mustMkdir(t, filepath.Join(dir, "worktrees"))
+
+	var buf bytes.Buffer
+	if err := RunClean(CleanOptions{
+		StoreDir: dir, Level: CleanConservative, OlderThan: 0,
+	}, &Printer{W: &buf, Format: OutputJSON}); err != nil {
+		t.Fatalf("RunClean: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runs")); !os.IsNotExist(err) {
+		t.Error("a dry run created runs/ — enough to promote the directory to a managed store")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
+		t.Error("a dry run wrote a .gitignore into its target")
+	}
+}
+
 // The re-derivation spends several git calls and a full walk. A sweep
 // that took the directory in that gap must not be claimed — nor its
 // bytes, which the other sweep reclaimed.
@@ -1316,6 +1515,7 @@ func TestClean_DoesNotClaimAWorktreeTakenDuringTheReDerivation(t *testing.T) {
 
 	afterEligibility = func(p string) { _ = os.RemoveAll(p) }
 	t.Cleanup(func() { afterEligibility = func(string) {} })
+	_ = duringEligibility
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
 	if r.DeletedCount != 0 || r.BytesReclaimed != 0 {
@@ -1329,6 +1529,27 @@ func TestClean_DoesNotClaimAWorktreeTakenDuringTheReDerivation(t *testing.T) {
 		if filepath.Base(wt.Path) == "racy" && wt.Bytes != 0 {
 			t.Errorf("reports %d bytes already reclaimed by the other sweep", wt.Bytes)
 		}
+	}
+}
+
+// A directory that vanishes WHILE the verdict is being re-derived makes
+// git fall silent, and silence reads as `unlanded` — this command's alarm
+// verdict. An operator would go hunting for work that was never lost.
+func TestClean_AVanishedWorktreeIsNotReportedUnlanded(t *testing.T) {
+	f := newCleanFixture(t)
+	f.addWorktree("racy")
+	f.mergeIntoMain("racy")
+	f.seedRun("racy", store.RunStatusFinished)
+
+	duringEligibility = func(p string) { _ = os.RemoveAll(p) }
+	t.Cleanup(func() { duringEligibility = func(string) {} })
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
+	if got := sparedReason(r, "racy"); got != skipVanished {
+		t.Fatalf("reported as %q, want %q — it was taken, not judged", got, skipVanished)
+	}
+	if r.DeletedCount != 0 || r.BytesReclaimed != 0 {
+		t.Errorf("claimed %d deletion(s), %d bytes", r.DeletedCount, r.BytesReclaimed)
 	}
 }
 

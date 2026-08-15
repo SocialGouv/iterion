@@ -53,7 +53,10 @@ type CleanOptions struct {
 	AllProjects bool
 	KeepLast    int
 	WithRuns    bool
-	Now         func() time.Time // test seam; nil = time.Now
+	// IncludeResumable gives up the ability to resume the runs whose
+	// worktrees are swept. Off by default.
+	IncludeResumable bool
+	Now              func() time.Time // test seam; nil = time.Now
 }
 
 // Landing classes. These describe what git can prove about a worktree's
@@ -94,6 +97,11 @@ const (
 	skipTooRecent = "too-recent"
 	skipKeepLast  = "keep-last"
 	skipLevel     = "needs-higher-level"
+	// skipResumable: the run is terminal to a poller but `iterion resume`
+	// restarts it in this very worktree. Sparing it is the default and
+	// --include-resumable is the way to say the resume is not wanted —
+	// the same opt-in `runs prune` requires for the same statuses.
+	skipResumable = "resumable"
 	// skipVanished: the directory was gone before we reached it, so this
 	// sweep neither deleted it nor decided anything about it.
 	skipVanished = "already-gone"
@@ -271,9 +279,13 @@ func RunClean(opts CleanOptions, p *Printer) error {
 			continue
 		}
 
-		if st, ok := reloadRunStatus(wt.StoreDir, wt.RunID); ok && !st.IsTerminal() {
+		if st, ok := reloadRunStatus(wt.StoreDir, wt.RunID); ok &&
+			(ownsWorktree(st) || (isResumable(st) && !opts.IncludeResumable)) {
 			wt.RunStatus = string(st)
 			wt.SkipReason = skipRunActive
+			if !ownsWorktree(st) {
+				wt.SkipReason = skipResumable
+			}
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
 			continue
@@ -302,6 +314,13 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		}
 
 		if reason, ok := stillEligible(wt, opts.Level); !ok {
+			// git cannot answer for a path that is no longer there, and
+			// its silence reads as `unlanded` — this command's alarm
+			// verdict, which would send an operator hunting for work that
+			// was never lost. Say what actually happened instead.
+			if _, err := os.Lstat(wt.Path); os.IsNotExist(err) {
+				reason, wt.Bytes = skipVanished, 0
+			}
 			wt.SkipReason = reason
 			result.Spared = append(result.Spared, *wt)
 			releaseLock(lock)
@@ -341,10 +360,11 @@ func RunClean(opts CleanOptions, p *Printer) error {
 		releaseLock(lock)
 
 		if opts.WithRuns && wt.RunID != "" {
-			if err := deleteRunRecord(wt.StoreDir, wt.RunID); err != nil {
+			switch existed, err := deleteRunRecord(wt.StoreDir, wt.RunID); {
+			case err != nil:
 				wt.RunError = err.Error()
 				failures = append(failures, fmt.Errorf("delete run %s: %w", wt.RunID, err))
-			} else {
+			case existed:
 				wt.RunDeleted = true
 			}
 		}
@@ -474,6 +494,7 @@ func classifyWorktree(
 	now func() time.Time,
 ) CleanedWorktree {
 	wt := CleanedWorktree{RunID: runID, Path: path, StoreDir: storeDir, resolvedPath: resolvePath(path)}
+	resumable := false
 
 	if info, err := os.Stat(path); err == nil {
 		wt.ModTime = info.ModTime()
@@ -490,10 +511,11 @@ func classifyWorktree(
 	// worktree, so age alone would declare a live run abandoned.
 	if st, ok := statuses[runID]; ok {
 		wt.RunStatus = string(st)
-		if !st.IsTerminal() {
+		if ownsWorktree(st) {
 			wt.SkipReason = skipRunActive
 			return wt
 		}
+		resumable = isResumable(st) && !opts.IncludeResumable
 	}
 
 	insp := inspectWorktreeGit(path)
@@ -519,6 +541,12 @@ func classifyWorktree(
 		wt.SkipReason = skipTooRecent
 	} else if cleanLevelRank[opts.Level] < requiredLevel(wt.Landing, wt.Dirty) {
 		wt.SkipReason = skipLevel
+	} else if resumable {
+		// Only where the entry would otherwise be taken at THIS level:
+		// reporting `resumable` for something the level ladder also holds
+		// back would promise a gain --include-resumable cannot deliver
+		// on its own.
+		wt.SkipReason = skipResumable
 	}
 
 	// Measuring costs a walk of every file, so it is spent only where the
@@ -528,13 +556,13 @@ func classifyWorktree(
 	// Nothing else is walked. In particular never the live checkout of a
 	// running campaign, whose size would be an incoherent snapshot taken
 	// in competition with the run's own I/O.
-	if wt.SkipReason != "" && wt.SkipReason != skipLevel {
+	if wt.SkipReason != "" && wt.SkipReason != skipLevel && wt.SkipReason != skipResumable {
 		return wt
 	}
 	bytes, nested, complete := scanTree(path)
 	wt.Bytes = bytes
 	if len(nested) > 0 {
-		wt.Landing, wt.SkipReason = landingNested, skipNested
+		wt.Landing, wt.SkipReason, wt.Bytes = landingNested, skipNested, 0
 		wt.NestedRepos = nested
 		if len(wt.NestedRepos) > 3 {
 			wt.NestedRepos = wt.NestedRepos[:3]
@@ -651,12 +679,15 @@ func looksLikeGitDir(dir string) bool {
 // itself, so a run worktree that ever fetched a module contains hundreds
 // of them: the sweep would half-destroy a multi-gigabyte tree, report a
 // partial deletion, and retry the same wreck on every subsequent run.
-// afterEligibility marks the gap between the re-derivation and the
-// removal — several git calls and a full tree walk wide, which is ample
-// for a concurrent sweep to take the directory. Nothing in production,
-// the only place a test can stand to prove the check that follows it is
-// load-bearing.
-var afterEligibility = func(string) {}
+// The re-derivation and the removal are separated by several git calls
+// and a full tree walk — ample for a concurrent sweep to take the
+// directory. Two different checks cover the two halves of that gap, and
+// each needs a place a test can stand to prove it is load-bearing. Both
+// are nothing in production.
+var (
+	duringEligibility = func(string) {}
+	afterEligibility  = func(string) {}
+)
 
 // removeTree is the seam the sweep deletes through. A removal that fails
 // for a reason a single uid cannot arrange — another owner's files, a
@@ -690,6 +721,7 @@ func removeAllForce(root string) error {
 // again, not a subset: any question left unasked is a change the sweep
 // waves through.
 func stillEligible(wt *CleanedWorktree, level CleanLevel) (string, bool) {
+	duringEligibility(wt.Path)
 	insp := inspectWorktreeGit(wt.Path)
 	if insp.head != wt.head {
 		// Something committed, reset, or checked out under us. Whatever
@@ -1145,6 +1177,35 @@ func pruneWorktreeRegistration(commonDir, resolvedPath string) (bool, error) {
 	return false, nil
 }
 
+// ownsWorktree reports whether anything still lays claim to a run's
+// checkout.
+//
+// This is deliberately NOT `!IsTerminal()`. That predicate answers a
+// different question — whether a poller should stop refreshing — and its
+// own documentation says `failed_resumable` is terminal "even though the
+// run can be resumed". `iterion resume` accepts failed_resumable,
+// cancelled and paused_operator; a run it will restart still owns its
+// worktree, and sweeping it destroys the resume while every other guard
+// nods along, because the commits are merged and nothing is lost except
+// the ability to continue.
+func ownsWorktree(st store.RunStatus) bool {
+	return !st.IsTerminal()
+}
+
+// isResumable reports whether `iterion resume` would restart this run in
+// its existing worktree. These statuses are terminal to a poller, so the
+// ordinary guard lets them through — and on a real store they are the
+// bulk of what accumulates, so refusing them outright leaves nothing to
+// reclaim. Spared by default, released by --include-resumable, which is
+// the same opt-in `runs prune` requires before it touches them.
+func isResumable(st store.RunStatus) bool {
+	switch st {
+	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+		return true
+	}
+	return false
+}
+
 // lockRunForClean takes the same per-run advisory lock `iterion run` and
 // `iterion resume` hold for a run's lifetime. It is non-blocking: a held
 // lock means someone else owns the run right now, which is exactly the
@@ -1239,6 +1300,13 @@ func gitOut(dir string, args ...string) (string, error) {
 // run id.
 func loadRunStatuses(storeDir string) map[string]store.RunStatus {
 	statuses := map[string]store.RunStatus{}
+	// store.New provisions the store — it creates runs/ and drops a
+	// .gitignore. Inspecting must not do that: a dry run would mutate its
+	// target, and runs/ is one of the markers that promote a stray
+	// directory to a managed store for every later command.
+	if _, err := os.Stat(filepath.Join(storeDir, "runs")); err != nil {
+		return statuses
+	}
 	s, err := store.New(storeDir)
 	if err != nil {
 		return statuses
@@ -1279,12 +1347,22 @@ func reloadRunStatus(storeDir, runID string) (store.RunStatus, bool) {
 	return r.Status, true
 }
 
-func deleteRunRecord(storeDir, runID string) error {
+// deleteRunRecord removes a run's record, and reports whether there was
+// one. DeleteRun creates the run directory before writing its deletion
+// marker, so calling it for a worktree that never had a run — an orphan
+// directory, a run already pruned — leaves a durable tombstone behind
+// that makes every later write to that id fail, and reports a record as
+// deleted that never existed.
+func deleteRunRecord(storeDir, runID string) (bool, error) {
 	s, err := store.New(storeDir)
 	if err != nil {
-		return fmt.Errorf("open store %s: %w", storeDir, err)
+		return false, fmt.Errorf("open store %s: %w", storeDir, err)
 	}
-	return s.DeleteRun(context.Background(), runID)
+	ctx := context.Background()
+	if _, err := s.LoadRun(ctx, runID); err != nil {
+		return false, nil
+	}
+	return true, s.DeleteRun(ctx, runID)
 }
 
 // applyKeepLast spares the N most recent worktrees that would otherwise
@@ -1413,6 +1491,9 @@ func renderCleanSpared(p *Printer, r CleanResult) {
 		part := fmt.Sprintf("%s: %d", reason, counts[reason])
 		if bytes[reason] > 0 {
 			part += " (" + humanBytes(bytes[reason]) + ")"
+		}
+		if reason == skipResumable {
+			part += ", released by --include-resumable"
 		}
 		parts = append(parts, part)
 	}
