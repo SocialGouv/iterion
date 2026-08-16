@@ -7,6 +7,135 @@ const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 5;
 const ZOOM_STEP = 0.25;
 
+export type MediaPreviewKind = "image" | "video" | "audio";
+
+// MediaPreviewDialog is the /pipelines popup for every media attachment:
+// image (zoom + pan), video, or audio. ImagePreviewDialog keeps the
+// image-only call sites unchanged.
+export function MediaPreviewDialog({
+  open,
+  onOpenChange,
+  src,
+  alt,
+  title,
+  description,
+  downloadHref,
+  footerExtra,
+  kind = "image",
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  src: string;
+  alt: string;
+  title?: ReactNode;
+  description?: ReactNode;
+  downloadHref?: string;
+  footerExtra?: ReactNode;
+  kind?: MediaPreviewKind;
+}) {
+  if (kind !== "image") {
+    return (
+      <PlaybackPreviewDialog
+        key={src}
+        open={open}
+        onOpenChange={onOpenChange}
+        src={src}
+        title={title}
+        description={description}
+        downloadHref={downloadHref}
+        footerExtra={footerExtra}
+        kind={kind}
+      />
+    );
+  }
+  return (
+    <ImagePreviewDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      src={src}
+      alt={alt}
+      title={title}
+      description={description}
+      downloadHref={downloadHref}
+      footerExtra={footerExtra}
+    />
+  );
+}
+
+function PlaybackPreviewDialog({
+  open,
+  onOpenChange,
+  src,
+  title,
+  description,
+  downloadHref,
+  footerExtra,
+  kind,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  src: string;
+  title?: ReactNode;
+  description?: ReactNode;
+  downloadHref?: string;
+  footerExtra?: ReactNode;
+  kind: Exclude<MediaPreviewKind, "image">;
+}) {
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      widthClass={kind === "video" ? "max-w-5xl" : "max-w-3xl"}
+      title={title}
+      description={description}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-end gap-2">
+          {footerExtra}
+          {downloadHref && (
+            <a
+              href={downloadHref}
+              download
+              className="inline-flex items-center gap-1 rounded-md border border-border-default px-2.5 py-1 text-xs font-medium text-fg-default hover:bg-surface-2"
+            >
+              <DownloadIcon /> Download
+            </a>
+          )}
+        </div>
+      }
+    >
+      {loadError ? (
+        <div className="py-6 text-center text-xs text-danger-fg">{loadError}</div>
+      ) : kind === "video" ? (
+        <div className="flex items-center justify-center rounded-md bg-surface-0 p-3">
+          <video
+            controls
+            autoPlay
+            src={src}
+            className="max-h-[min(70vh,720px)] max-w-full"
+            onError={() => setLoadError("Could not load this video file for playback.")}
+          >
+            Your browser cannot play this video file.
+          </video>
+        </div>
+      ) : (
+        <div className="flex items-center justify-center rounded-md bg-surface-0 p-6">
+          <audio
+            controls
+            autoPlay
+            src={src}
+            className="w-full"
+            onError={() => setLoadError("Could not load this audio file for playback.")}
+          >
+            Your browser cannot play this audio file.
+          </audio>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
 // ImagePreviewDialog shows a full-viewport-safe image viewer with zoom
 // (+/−, wheel, double-click) and pan-by-drag when zoomed. Used by ticket
 // input thumbnails and produced-elements previews on /pipelines only.

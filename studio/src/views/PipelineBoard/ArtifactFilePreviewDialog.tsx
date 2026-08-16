@@ -6,7 +6,7 @@ import { Dialog, Spinner } from "@/components/ui";
 import { formatBytes } from "@/lib/format";
 
 import type { ProducedFileKind } from "./fileKind";
-import { ImagePreviewDialog } from "./ImagePreview";
+import { MediaPreviewDialog, type MediaPreviewKind } from "./ImagePreview";
 
 interface Props {
   preview: PreviewState;
@@ -33,9 +33,11 @@ export function ArtifactFilePreviewDialog({
     </span>
   );
 
-  if (isImagePreview(preview, kind) && preview.blobURL) {
+  const mediaKind = mediaKindOf(preview, kind);
+  if (mediaKind && preview.blobURL) {
     return (
-      <ImagePreviewDialog
+      <MediaPreviewDialog
+        kind={mediaKind}
         open
         onOpenChange={(open) => {
           if (!open) onClose();
@@ -73,10 +75,16 @@ export function ArtifactFilePreviewDialog({
   );
 }
 
-function isImagePreview(preview: PreviewState, kind: ProducedFileKind): boolean {
-  if (preview.loading || preview.error || !preview.blobURL) return false;
-  if (preview.textBody !== null) return false;
-  return preview.contentType.startsWith("image/") || kind === "image";
+function mediaKindOf(
+  preview: PreviewState,
+  kind: ProducedFileKind,
+): MediaPreviewKind | null {
+  if (preview.loading || preview.error || !preview.blobURL) return null;
+  if (preview.textBody !== null) return null;
+  if (preview.contentType.startsWith("image/") || kind === "image") return "image";
+  if (preview.contentType.startsWith("audio/") || kind === "audio") return "audio";
+  if (preview.contentType.startsWith("video/") || kind === "video") return "video";
+  return null;
 }
 
 // Content-Type wins over the declared/extension kind. The kind remains a

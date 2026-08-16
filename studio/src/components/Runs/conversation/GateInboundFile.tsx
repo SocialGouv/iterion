@@ -1,8 +1,11 @@
-import { DownloadIcon, FileIcon } from "@radix-ui/react-icons";
+import { DownloadIcon, FileIcon, SpeakerLoudIcon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { attachmentURL, fetchAttachment } from "@/api/runs";
-import { ImagePreviewDialog } from "@/views/PipelineBoard/ImagePreview";
+import {
+  MediaPreviewDialog,
+  type MediaPreviewKind,
+} from "@/views/PipelineBoard/ImagePreview";
 import { CopyButton, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatBytes } from "@/lib/format";
@@ -37,8 +40,9 @@ interface Props {
  * before — never a broken image.
  *
  * Text, markdown and JSON are shown inline (same fold as the inbound
- * payload renderer). Images, audio and video keep their media players.
- * Anything else stays a download — a zip at a gate is not a preview.
+ * payload renderer). Images, audio and video open a preview dialog —
+ * the same popup as produced-elements media. Anything else stays a
+ * download — a zip at a gate is not a preview.
  */
 export default function GateInboundFile({ runId, file }: Props) {
   const label = file.filename || file.attachment || file.path || "file";
@@ -48,9 +52,10 @@ export default function GateInboundFile({ runId, file }: Props) {
     label,
     file.mime,
   );
-  const [zoomed, setZoomed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const mime = contentType || file.mime || "";
   const kind = classifyAttachmentPreview(contentType, file.mime, label);
+  const mediaKind = mediaPreviewKind(mime);
 
   const meta = (
     <span className="text-micro text-fg-subtle">
@@ -119,23 +124,24 @@ export default function GateInboundFile({ runId, file }: Props) {
     );
   }
 
-  if (blobURL && mime.startsWith("image/")) {
+  if (blobURL && mediaKind) {
     return (
       <div className="space-y-1">
         <button
           type="button"
-          onClick={() => setZoomed(true)}
-          className="block max-w-full rounded border border-border-subtle bg-surface-0 p-1 hover:border-border-strong"
+          onClick={() => setPreviewOpen(true)}
+          className="block max-w-full rounded border border-border-subtle bg-surface-0 p-1 text-left hover:border-border-strong"
           title={`Open ${label}`}
         >
-          <img src={blobURL} alt={label} className="max-h-64 max-w-full object-contain" />
+          <MediaThumb kind={mediaKind} src={blobURL} label={label} />
         </button>
         {meta}
-        {zoomed && (
-          <ImagePreviewDialog
+        {previewOpen && (
+          <MediaPreviewDialog
+            kind={mediaKind}
             open
             onOpenChange={(open) => {
-              if (!open) setZoomed(false);
+              if (!open) setPreviewOpen(false);
             }}
             src={blobURL}
             alt={label}
@@ -148,34 +154,54 @@ export default function GateInboundFile({ runId, file }: Props) {
     );
   }
 
-  if (blobURL && mime.startsWith("audio/")) {
-    return (
-      <div className="space-y-1">
-        <audio controls src={blobURL} className="w-full">
-          Your browser cannot play this audio file.
-        </audio>
-        {meta}
-      </div>
-    );
-  }
-
-  if (blobURL && mime.startsWith("video/")) {
-    return (
-      <div className="space-y-1">
-        <video controls src={blobURL} className="max-h-64 max-w-full rounded">
-          Your browser cannot play this video file.
-        </video>
-        {meta}
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-2">
       <FileIcon className="shrink-0 text-fg-subtle" />
       {meta}
       {download}
     </div>
+  );
+}
+
+function mediaPreviewKind(mime: string): MediaPreviewKind | null {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  return null;
+}
+
+function MediaThumb({
+  kind,
+  src,
+  label,
+}: {
+  kind: MediaPreviewKind;
+  src: string;
+  label: string;
+}) {
+  if (kind === "image") {
+    return <img src={src} alt={label} className="max-h-64 max-w-full object-contain" />;
+  }
+  if (kind === "video") {
+    return (
+      <span className="relative block">
+        <video
+          src={src}
+          muted
+          preload="metadata"
+          className="pointer-events-none max-h-32 max-w-full rounded"
+        />
+        <span className="absolute inset-x-0 bottom-0 bg-surface-0/80 px-1.5 py-0.5 text-micro text-fg-default">
+          Open preview
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-1.5 text-micro text-fg-default">
+      <SpeakerLoudIcon className="shrink-0" />
+      Open preview
+    </span>
   );
 }
 

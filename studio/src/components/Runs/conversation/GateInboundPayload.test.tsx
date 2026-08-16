@@ -174,6 +174,68 @@ describe("GateInboundPayload", () => {
     vi.unstubAllGlobals();
   });
 
+  it("opens a video attachment in the media preview dialog", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["fake-mp4"], { type: "video/mp4" }),
+      contentType: "video/mp4",
+    });
+    const createObjectURL = vi.fn(() => "blob:clip");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          clip_file: {
+            attachment: "clip-file-abcd",
+            filename: "shot.mp4",
+            mime: "video/mp4",
+            size: 4096,
+          },
+        }}
+        inputFields={[{ name: "clip_file", type: "file" }]}
+      />,
+    );
+
+    const open = await screen.findByRole("button", { name: /open preview/i });
+    expect(document.querySelector("video[controls]")).toBeNull();
+    fireEvent.click(open);
+    expect(document.querySelector("dialog video[controls], video[controls]")).toBeTruthy();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("opens an audio attachment in the media preview dialog", async () => {
+    fetchAttachment.mockResolvedValue({
+      blob: new Blob(["fake-wav"], { type: "audio/wav" }),
+      contentType: "audio/wav",
+    });
+    const createObjectURL = vi.fn(() => "blob:track");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+
+    render(
+      <GateInboundPayload
+        runId="run-1"
+        questions={{
+          bed_file: {
+            attachment: "bed-file-abcd",
+            filename: "sea.wav",
+            mime: "audio/wav",
+            size: 2048,
+          },
+        }}
+        inputFields={[{ name: "bed_file", type: "file" }]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /open preview/i }));
+    expect(document.querySelector("audio[controls]")).toBeTruthy();
+
+    vi.unstubAllGlobals();
+  });
+
   it("previews a JSON attachment instead of offering only a download", async () => {
     fetchAttachment.mockResolvedValue({
       blob: new Blob(['{"subject":"Ulysse","chapters":[1,2]}'], { type: "application/json" }),

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRightIcon, DownloadIcon } from "@radix-ui/react-icons";
+import { ChevronRightIcon } from "@radix-ui/react-icons";
 
 import { getReviewScope, workspaceFileURL, type RunFile } from "@/api/runs";
 import FileDiffDialog from "@/components/Runs/FileDiffDialog";
@@ -11,7 +11,7 @@ import {
   producedKindLabel,
   type ProducedFileKind,
 } from "./fileKind";
-import { ImagePreviewDialog } from "./ImagePreview";
+import { MediaPreviewDialog, type MediaPreviewKind } from "./ImagePreview";
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -60,7 +60,8 @@ function isMediaKind(kind: ProducedFileKind): boolean {
  *
  * The list itself sits in a closed-by-default accordion: a media pipeline can
  * produce dozens of files and the form below is the action the operator needs
- * first. Opening a row plays media (audio/video/image) or opens a text diff.
+ * first. Opening a row opens the media preview dialog (audio/video/image)
+ * or a text diff.
  */
 export function ReviewScopePanel({ runId, live, pauseKey }: Props) {
   const [diffFile, setDiffFile] = useState<RunFile | null>(null);
@@ -283,7 +284,6 @@ function WorkspaceMediaDialog({
     () => workspaceFileURL(runId, file.path, { gate, download: true }),
     [runId, file.path, gate],
   );
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   const description = (
     <span>
@@ -292,9 +292,10 @@ function WorkspaceMediaDialog({
     </span>
   );
 
-  if (kind === "image") {
+  if (isMediaKind(kind)) {
     return (
-      <ImagePreviewDialog
+      <MediaPreviewDialog
+        kind={kind as MediaPreviewKind}
         open
         onOpenChange={(open) => {
           if (!open) onClose();
@@ -317,51 +318,10 @@ function WorkspaceMediaDialog({
       widthClass="max-w-3xl"
       title={<span className="font-mono text-xs">{file.path}</span>}
       description={description}
-      footer={
-        <a
-          href={downloadHref}
-          download
-          className="inline-flex items-center gap-1 rounded-md border border-border-default px-2.5 py-1 text-xs font-medium text-fg-default hover:bg-surface-2"
-        >
-          <DownloadIcon /> Download
-        </a>
-      }
     >
-      {loadError ? (
-        <div className="py-6 text-center text-xs text-danger-fg">{loadError}</div>
-      ) : kind === "audio" ? (
-        <div className="flex items-center justify-center rounded bg-surface-0 p-6">
-          <audio
-            controls
-            autoPlay
-            src={src}
-            className="w-full"
-            onError={() =>
-              setLoadError("Could not load this audio file for playback.")
-            }
-          >
-            Your browser cannot play this audio file.
-          </audio>
-        </div>
-      ) : kind === "video" ? (
-        <div className="flex items-center justify-center rounded bg-surface-0 p-3">
-          <video
-            controls
-            autoPlay
-            src={src}
-            className="max-h-[70vh] max-w-full"
-            onError={() =>
-              setLoadError("Could not load this video file for playback.")
-            }
-          >
-            Your browser cannot play this video file.
-          </video>
-        </div>
-      ) : (
-        <div className="flex h-32 items-center justify-center gap-2 text-xs text-fg-subtle">
-          <Spinner /> Loading…
-        </div>
-      )}
+      <div className="flex h-32 items-center justify-center gap-2 text-xs text-fg-subtle">
+        <Spinner /> Loading…
+      </div>
     </Dialog>
   );
 }

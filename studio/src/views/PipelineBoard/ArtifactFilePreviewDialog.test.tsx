@@ -5,6 +5,13 @@ import type { PreviewState } from "@/components/Runs/usePreview";
 
 vi.mock("./ImagePreview", () => ({
   ImagePreviewDialog: ({ alt }: { alt: string }) => <img alt={alt} />,
+  MediaPreviewDialog: ({
+    alt,
+    kind,
+  }: {
+    alt: string;
+    kind?: string;
+  }) => (kind === "image" || !kind ? <img alt={alt} /> : <div data-kind={kind}>{alt}</div>),
 }));
 
 import {

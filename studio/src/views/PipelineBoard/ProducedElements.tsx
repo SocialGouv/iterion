@@ -30,7 +30,7 @@ import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
-import { ImagePreviewDialog } from "./ImagePreview";
+import { MediaPreviewDialog, type MediaPreviewKind } from "./ImagePreview";
 import {
   aggregateProducedItems,
   type ProducedItem,
@@ -241,8 +241,9 @@ export function ProducedElements({ runIds, status }: Props) {
         </Suspense>
       )}
 
-      {preview && isImagePreview(preview, previewKind) && preview.blobURL ? (
-        <ImagePreviewDialog
+      {preview && isPlayableMedia(preview, previewKind) && preview.blobURL ? (
+        <MediaPreviewDialog
+          kind={mediaKindOf(preview, previewKind)}
           open
           onOpenChange={(open) => {
             if (!open) closePreview();
@@ -287,10 +288,20 @@ export function ProducedElements({ runIds, status }: Props) {
   );
 }
 
-function isImagePreview(preview: PreviewState, kind: ProducedFileKind): boolean {
-  if (preview.loading || preview.error || !preview.blobURL) return false;
-  if (preview.textBody !== null) return false;
-  return preview.contentType.startsWith("image/") || kind === "image";
+function isPlayableMedia(preview: PreviewState, kind: ProducedFileKind): boolean {
+  return mediaKindOf(preview, kind) !== null && !!preview.blobURL;
+}
+
+function mediaKindOf(
+  preview: PreviewState,
+  kind: ProducedFileKind,
+): MediaPreviewKind | null {
+  if (preview.loading || preview.error || !preview.blobURL) return null;
+  if (preview.textBody !== null) return null;
+  if (preview.contentType.startsWith("image/") || kind === "image") return "image";
+  if (preview.contentType.startsWith("audio/") || kind === "audio") return "audio";
+  if (preview.contentType.startsWith("video/") || kind === "video") return "video";
+  return null;
 }
 
 // KIND_ICON maps a produced kind to its row glyph. Media kinds (image/audio/
