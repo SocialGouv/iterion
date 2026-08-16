@@ -78,13 +78,13 @@ export function ArtifactFilePreviewDialog({
 function mediaKindOf(
   preview: PreviewState,
   kind: ProducedFileKind,
-): MediaPreviewKind | null {
-  if (preview.loading || preview.error || !preview.blobURL) return null;
-  if (preview.textBody !== null) return null;
+): MediaPreviewKind | undefined {
+  if (preview.loading || preview.error || !preview.blobURL) return undefined;
+  if (preview.textBody !== null) return undefined;
   if (preview.contentType.startsWith("image/") || kind === "image") return "image";
   if (preview.contentType.startsWith("audio/") || kind === "audio") return "audio";
   if (preview.contentType.startsWith("video/") || kind === "video") return "video";
-  return null;
+  return undefined;
 }
 
 // Content-Type wins over the declared/extension kind. The kind remains a
