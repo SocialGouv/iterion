@@ -147,8 +147,19 @@ func TestMongoApiKey_ScopeWithoutMatchingTenantIsUnreachable(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "well-stamped" {
 		t.Fatalf("team-b must see exactly its own key, got %+v", got)
 	}
-	// And it stays invisible to the other tenant.
-	if other, err := s.ListByTeam(store.WithTenant(ctx, "team-a"), "team-b", ""); err != nil || len(other) != 0 {
-		t.Fatalf("team-a must not see team-b's key (err=%v, n=%d)", err, len(other))
+	// From team-a's context the WELL-stamped key is out of reach — while the
+	// mis-stamped one still answers, which is the whole asymmetry: the row is
+	// visible to whoever created it and not to whoever it belongs to.
+	other, err := s.ListByTeam(store.WithTenant(ctx, "team-a"), "team-b", "")
+	if err != nil {
+		t.Fatalf("list from team-a: %v", err)
+	}
+	for _, k := range other {
+		if k.ID == "well-stamped" {
+			t.Fatalf("team-b's key must not be reachable from team-a's context")
+		}
+	}
+	if len(other) != 1 || other[0].ID != "mis-stamped" {
+		t.Fatalf("the mis-stamped row is the one that answers here, got %+v", other)
 	}
 }
