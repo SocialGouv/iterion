@@ -13,7 +13,7 @@
     "xdotool@latest",
     "imagemagick@latest",
     "pkg-config@latest",
-    "gtk3@latest",
+    "gtk3@3.24.52",
     "webkitgtk_4_1@latest",
     "golangci-lint@latest"
   ],
