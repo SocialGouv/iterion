@@ -395,8 +395,23 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	// ErrRunPaused / ErrRunPausedOperator instead of naking for retry
 	// (pkg/runner/loop.go). The retained claim is reclaimed only by the
 	// stale-claim sweep once THIS daemon's pid dies (isStaleLocalMarker), so
-	// a live dispatcher never re-dispatches a parked issue; after a restart
-	// it degrades to a single fresh re-run that re-parks at the same point.
+	// a live dispatcher never re-dispatches a parked issue. After a
+	// restart the stale-claim sweep drops the claim; dispatch then
+	// re-parks (awaiting-input, same last_run) instead of minting a
+	// fresh run from entry — a planner restarted from init_film is
+	// not "the same pause".
+	if isResumeSourceChanged(err) {
+		// The bot source changed since this run started. Minting a
+		// sibling from entry would replay the prefix (agents, tools,
+		// already-paid artefacts). Park: keep the claim, keep last_run,
+		// do not retry. The operator resumes THIS run with --force or
+		// cancels it before asking for a new one.
+		c.stampLastRun(issueID, r)
+		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console, or cancel this run before a new dispatch.", r.Identifier, r.RunID)
+		c.fireSnapshot()
+		return
+	}
+
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
 		c.setAwaitingInput(issueID, true)

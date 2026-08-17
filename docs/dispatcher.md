@@ -162,6 +162,28 @@ lifecycle: run `finished` → `agent.completed_state`, hard `failed` →
 genuinely still awaits the operator. The cloud board coordinator runs
 the same sweep for cloud-launched cards.
 
+A reboot (new PID) drops the park-claim. `in_progress` stays eligible
+for crash-recovery, but a live `last_run` is **never** replaced by a
+sibling planner from the workflow entry:
+
+| `last_run` status | On the next tick / boot |
+|---|---|
+| `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). |
+| `running` / `queued` | Hold. Do not mint. After orphan promotion the run becomes resumable. |
+| `failed_resumable` / `cancelled` | Resume the **same** run id. |
+| `finished` | Do not relaunch. File the ticket (`completed_state`). |
+| none, or hard `failed`, and the ticket is explicitly eligible | The only legitimate fresh run. |
+
+The stranded-pause sweep (`reconcileStrandedPaused`) also runs while
+the dispatcher is **paused**, so a studio restart with `desired: paused`
+re-parks without dispatching. An out-of-band `iterion resume --force`
+that re-pauses on a later human node is picked up by the same sweep —
+the dispatcher worker already returned when the run first parked, so
+`finishRun` is not in the loop.
+
+To really start over: cancel or finish the old run, or drag a
+hard-failed ticket back to `ready`. A reboot is not a from-scratch.
+
 ### In-progress transition (`agent.running_state`)
 
 After `tracker.Claim` succeeds, the dispatcher transitions the issue
@@ -285,12 +307,13 @@ without requiring an observed retirement transition.
 Directories created by older versions directly under
 `<workspace.root>/<sanitized-issue-id>/` are deliberately not adopted or
 deleted: the old sanitizer was many-to-one, so ownership cannot be proven from
-the name. A resumable run with only such a legacy/unowned workspace is restarted
-fresh in v2 while the old directory is left untouched for operator recovery.
-This loss of resume continuity is an accepted one-time migration cost. To
-reclaim legacy directories, first confirm that no active/resumable run still
-references them, then inspect and move or delete them manually; automatic
-cleanup would risk deleting a different issue's colliding legacy workspace.
+the name. A resumable run with only such a legacy/unowned workspace is **not**
+restarted fresh — that would mint a sibling planner and replay the prefix.
+Dispatch is deferred (visible as a skip) and the old directory is left
+untouched for operator recovery. To reclaim legacy directories, first confirm
+that no active/resumable run still references them, then inspect and move or
+delete them manually; automatic cleanup would risk deleting a different
+issue's colliding legacy workspace.
 The resolver also refuses workspaces whose symlink resolution lands outside the
 configured root.
 

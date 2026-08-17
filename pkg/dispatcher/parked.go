@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -78,6 +80,114 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 			c.logger.Warn("dispatcher: parked sweep release %s: %v", iss.Identifier, err)
 		}
 		c.claims.Remove(iss.ID)
+		moved = true
+	}
+	if moved {
+		c.fireSnapshot()
+	}
+}
+
+// lastRunID is the tracker's persisted last_run pointer, or "" when
+// the adapter has no lookup (github/forgejo) or the card has never
+// been dispatched. Native-only today, same seam as stampLastRun.
+func (c *Dispatcher) lastRunID(issueID string) string {
+	look, ok := c.tracker.(interface {
+		LastRunForIssue(id string) (string, error)
+	})
+	if !ok {
+		return ""
+	}
+	runID, err := look.LastRunForIssue(issueID)
+	if err != nil || runID == "" {
+		return ""
+	}
+	return runID
+}
+
+// reparkToAwaitingInput moves a card whose last_run is still paused
+// back to the awaiting-input column, same run id. Caller owns the
+// claim (so ListCandidates stays away even if the column is missing).
+func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) {
+	c.stampLastRun(iss.ID, &runningEntry{
+		IssueID: iss.ID, Identifier: iss.Identifier, RunID: runID,
+	})
+	c.setAwaitingInput(iss.ID, true)
+	c.moveToAwaitingInput(iss.ID, iss.Identifier)
+	c.logger.Info(
+		"dispatcher: %s last run %s is still paused — re-parked in awaiting-input, refusing a fresh run",
+		iss.Identifier, runID,
+	)
+}
+
+// reparkClaimedIfLastRunWaiting stops a fresh dispatch when last_run is
+// already paused for a human or the operator. The ticket must already
+// be claimed by this tick (so ListCandidates stays away). Returns true
+// when the caller must abort — the card is parked again, same run.
+func (c *Dispatcher) reparkClaimedIfLastRunWaiting(iss tracker.Issue) bool {
+	runID := c.lastRunID(iss.ID)
+	if runID == "" {
+		return false
+	}
+	switch c.runStatusOnDisk(runID) {
+	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+	default:
+		return false
+	}
+	c.reparkToAwaitingInput(iss, runID)
+	c.fireSnapshot()
+	return true
+}
+
+// reconcileStrandedPaused re-parks eligible cards whose last_run is
+// still paused for a human or the operator. The usual case is a
+// studio reboot: SweepStaleClaims dropped the park-claim, in_progress
+// is eligible, and without this sweep the next dispatch would mint a
+// sibling from entry. Also catches an out-of-band `iterion resume`
+// that re-paused on a later human node — the dispatcher worker had
+// already returned, so finishRun never moved the card.
+//
+// Runs on every tick, including while paused: reclaim is re-park,
+// never a fresh run.
+func (c *Dispatcher) reconcileStrandedPaused(ctx context.Context) {
+	lister, ok := c.tracker.(interface {
+		ListForRepark(marker string) ([]tracker.Issue, error)
+	})
+	if !ok {
+		return
+	}
+	cards, err := lister.ListForRepark(c.hostMarker)
+	if err != nil {
+		c.logger.Warn("dispatcher: stranded-pause sweep list: %v", err)
+		return
+	}
+	moved := false
+	for _, iss := range cards {
+		if _, running := c.state.running[iss.ID]; running {
+			continue
+		}
+		runID := c.lastRunID(iss.ID)
+		if runID == "" {
+			continue
+		}
+		switch c.runStatusOnDisk(runID) {
+		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		default:
+			continue
+		}
+		// Claim before the column move so a concurrent tick cannot
+		// dispatch if awaiting_input is missing on a custom board.
+		c.claims.Record(claimEntry{
+			IssueID: iss.ID, Identifier: iss.Identifier,
+			Marker: c.hostMarker, ClaimedAt: time.Now().UTC(),
+		})
+		if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+			c.claims.Remove(iss.ID)
+			if !errors.Is(err, tracker.ErrClaimConflict) {
+				c.logger.Warn("dispatcher: stranded-pause claim %s: %v", iss.Identifier, err)
+			}
+			continue
+		}
+		c.reparkToAwaitingInput(iss, runID)
 		moved = true
 	}
 	if moved {

@@ -113,14 +113,15 @@ asymmetry between the two execution paths.
 The non-obvious trade-off: a parked issue **stays claimed**, and the
 dispatcher stops tracking it. Two accepted costs follow. (a) Across a daemon
 restart the claim is swept (`isStaleLocalMarker` fires once the owning pid
-dies), so the issue is re-dispatched **fresh once** and re-parks at the same
-point — benign, and consistent with the existing crash-recovery model. (b)
-If the operator resumes the run to completion out-of-band, the claim lingers
-until the next restart or a manual release (the dispatcher is no longer
-watching that run). We chose **claim-as-parking** over a new state machine
-because it is correct in-process with no schema/UI churn, and degrades
-gracefully; full out-of-band-resume reconciliation and a distinct
-"waiting for input" surface are the deferred follow-up.
+dies). `in_progress` stays eligible (crash-recovery), but the dispatcher
+**re-parks** a paused `last_run` instead of minting a sibling from entry —
+a planner restarted from `init_film` is not "the same pause". (b)
+If the operator resumes the run to completion out-of-band, the parked
+sweep (`reconcileParked`) files the card; a resume that re-pauses is
+re-parked by `reconcileStrandedPaused`. We chose **claim-as-parking**
+over a new state machine because it is correct in-process with no
+schema/UI churn; the awaiting-input column and the stranded-pause
+sweep closed the original follow-ups.
 
 ## Consequences
 

@@ -115,6 +115,46 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 	return a.store.Release(id, marker)
 }
 
+// ListForRepark returns cards this dispatcher may re-park after a
+// reboot or an out-of-band resume: any eligible state (plus
+// in_progress, the crash-recovery lane) that already has a last_run
+// and is unclaimed or claimed by marker. Cards already in
+// awaiting_input stay with ListAwaitingInput / reconcileParked.
+// Consumed by reconcileStrandedPaused via optional-interface assertion.
+func (a *Adapter) ListForRepark(marker string) ([]tracker.Issue, error) {
+	b := a.store.Board()
+	seen := make(map[string]bool, len(b.States))
+	states := make([]string, 0, len(b.States))
+	for _, s := range b.States {
+		if !s.Eligible && s.Name != StateInProgress {
+			continue
+		}
+		if s.Name == StateAwaitingInput || seen[s.Name] {
+			continue
+		}
+		seen[s.Name] = true
+		states = append(states, s.Name)
+	}
+	if len(states) == 0 {
+		return nil, nil
+	}
+	issues, err := a.store.List(ListFilter{States: states})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tracker.Issue, 0, len(issues))
+	for _, iss := range issues {
+		if iss.LastRunID == "" {
+			continue
+		}
+		if iss.Claim != "" && iss.Claim != marker {
+			continue
+		}
+		out = append(out, toTrackerIssue(iss))
+	}
+	return out, nil
+}
+
 // ListAwaitingInput returns the cards parked in the awaiting-input
 // column that this dispatcher may reconcile: unclaimed (post-restart,
 // after the stale-claim sweep) or claimed by the given marker. Cards

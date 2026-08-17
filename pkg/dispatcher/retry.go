@@ -39,12 +39,13 @@ const sandboxParkDelay = 1 * time.Hour
 // When the prior run terminated in a resumable status (failed_resumable,
 // cancelled, paused_operator), prev.RunID is captured on the retry
 // entry so the next dispatch resumes the same run via
-// runtime.Engine.Resume instead of minting a fresh one. The engine's
-// resume machinery picks up at the failing node, reuses the worktree
-// the prior run created, and avoids re-executing upstream nodes
-// (which can be expensive — a feature_dev plan node can spend $5 and
-// 10 minutes on workspace exploration before producing its first
-// artifact).
+// runtime.Engine.Resume instead of minting a fresh one. A live last_run
+// is never discarded to mint a sibling planner from entry — see
+// lastRunForbidsFresh. The engine's resume machinery picks up at the
+// failing node, reuses the worktree the prior run created, and avoids
+// re-executing upstream nodes (which can be expensive — a feature_dev
+// plan node can spend $5 and 10 minutes on workspace exploration
+// before producing its first artifact).
 func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr error) {
 	cfg := c.cfg.Load()
 	// prevAttempt is the attempt index of the run that just failed. It
@@ -86,21 +87,10 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 		errStr = runErr.Error()
 	}
 	prevRunID := c.resumableRunID(prev.RunID)
-	// The prior run may be resumable by status (failed_resumable /
-	// cancelled / paused_operator), but if resume already FAILED because
-	// the bot's workflow source changed since that run started, resuming
-	// again is futile — the runtime rejects it identically every attempt
-	// ("workflow source has changed ... re-run from scratch or use
-	// --force", pkg/runtime/resume.go). Drop the resume pointer so the
-	// next attempt mints a fresh runID instead of looping on the same
-	// doomed resume. Bot edits are routine in a dev/dogfood loop, so this
-	// otherwise strands every issue whose last run is failed_resumable.
-	if isResumeSourceChanged(runErr) {
-		if prevRunID != "" {
-			c.logger.Info("dispatcher: %s prior run %s not resumable (bot source changed) — retrying from scratch", prev.Identifier, prevRunID)
-		}
-		prevRunID = ""
-	}
+	// Source-changed is parked in finishRun (keep last_run, no sibling).
+	// If it still reaches here, keep the resume pointer: minting a
+	// planner from entry is worse than retrying a doomed resume.
+	// lastRunForbidsFresh still refuses GenerateRunID.
 	c.state.retries[issueID] = &retryEntry{
 		IssueID:    issueID,
 		Identifier: prev.Identifier,
@@ -123,20 +113,44 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 // isResumeSourceChanged reports whether runErr is the runtime's refusal
 // to resume because the bot's workflow source changed since the prior
 // run started (pkg/runtime/resume.go: "workflow source has changed ...
-// re-run from scratch or use --force"). Such a run cannot be resumed as-
-// is; the dispatcher must retry FRESH rather than reschedule the same
-// doomed resume. The runtime exposes a typed sentinel in-process and retains a
-// compatibility fallback for detached/mixed-version boundaries that flatten
-// errors to text.
+// re-run from scratch or use --force"). finishRun parks the ticket
+// instead of minting a sibling: the operator resumes THIS run with
+// --force, or cancels it before asking for a new one. The runtime
+// exposes a typed sentinel in-process and retains a compatibility
+// fallback for detached/mixed-version boundaries that flatten errors
+// to text.
 func isResumeSourceChanged(err error) bool {
 	return runtime.IsWorkflowSourceChanged(err)
 }
 
+// lastRunForbidsFresh reports statuses that still own the ticket: the
+// dispatcher must re-park, resume, or hold — never mint a sibling
+// planner from the workflow entry. The only legitimate fresh run is
+// no last_run, or a hard-failed / vanished last_run plus an
+// explicitly eligible ticket.
+func lastRunForbidsFresh(status store.RunStatus) bool {
+	switch status {
+	case store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
+		store.RunStatusRunning,
+		store.RunStatusQueued,
+		store.RunStatusFinished,
+		store.RunStatusFailedResumable,
+		store.RunStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 // resumableRunID returns the runID iff the corresponding run record
-// can be resumed by the runtime — i.e. its on-disk status is
-// failed_resumable, cancelled, or paused_operator. Returns "" if the
-// run is missing, terminal-without-checkpoint (failed), or any error
-// reading the store; the dispatcher then falls back to a fresh run.
+// can be auto-resumed by the dispatcher — i.e. its on-disk status is
+// failed_resumable, cancelled, or paused_operator. paused_waiting_human
+// is deliberately excluded (no answers → immediate re-pause); that
+// status is re-parked, not resumed. Returns "" if the run is missing,
+// hard-failed, or any error reading the store. An empty result is NOT
+// a licence to mint a sibling: resolveRunID still consults
+// lastRunForbidsFresh before GenerateRunID.
 // Best-effort: store IO errors are debug-logged, never fatal.
 func (c *Dispatcher) resumableRunID(runID string) string {
 	if runID == "" || c.storeDir == "" {
