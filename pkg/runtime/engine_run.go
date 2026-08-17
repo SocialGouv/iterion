@@ -88,7 +88,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// spun up for a doomed run.
 	if err := e.validateVarEnums(run.Inputs); err != nil {
 		e.markFailedBestEffort(ctx, runID, "var validation", err)
-		return fmt.Errorf("runtime: var validation: %w", err)
+		return e.setupErr(ctx, fmt.Errorf("runtime: var validation: %w", err))
 	}
 
 	// Worktree setup stays inline: the finalizeOnExit defer must
@@ -138,7 +138,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
-				return fmt.Errorf("runtime: worktree setup: %w", wtErr)
+				return e.setupErr(ctx, fmt.Errorf("runtime: worktree setup: %w", wtErr))
 			}
 			e.workDir = wtc.wtPath
 			worktreeCleanup = cleanup
@@ -174,7 +174,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	sandboxCleanup, sbErr := e.startSandbox(ctx, runID, repoRoot, wtCtx.gitDir, inputs)
 	if sbErr != nil {
 		e.markFailedBestEffort(ctx, runID, "sandbox start", sbErr)
-		return fmt.Errorf("runtime: sandbox: %w", sbErr)
+		return e.setupErr(ctx, fmt.Errorf("runtime: sandbox: %w", sbErr))
 	}
 	defer sandboxCleanup()
 
@@ -185,7 +185,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 	// caps only; expression / unbounded caps emit 0 (max unknown).
 	if err := e.emit(ctx, runID, store.EventRunStarted, "", loopBoundsPayload(e.workflow)); err != nil {
 		e.markFailedBestEffort(ctx, runID, "emit run_started", err)
-		return fmt.Errorf("runtime: emit run_started: %w", err)
+		return e.setupErr(ctx, fmt.Errorf("runtime: emit run_started: %w", err))
 	}
 
 	rs := e.runInitState(ctx, runID, inputs)
@@ -335,12 +335,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *store.Run) (*store.Run, error) {
 	if err := promoteBundleAttachmentDefaults(ctx, e.store, runID, e.workflow, e.bundle, e.logger); err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle attachment defaults", err)
-		return nil, fmt.Errorf("runtime: bundle attachment defaults: %w", err)
+		return nil, e.setupErr(ctx, fmt.Errorf("runtime: bundle attachment defaults: %w", err))
 	}
 	if e.attachmentPromote != nil {
 		if err := e.attachmentPromote(ctx, runID); err != nil {
 			e.markFailedBestEffort(ctx, runID, "attachment promote", err)
-			return nil, fmt.Errorf("runtime: promote attachments: %w", err)
+			return nil, e.setupErr(ctx, fmt.Errorf("runtime: promote attachments: %w", err))
 		}
 	}
 	if reloaded, err := e.store.LoadRun(ctx, runID); err == nil {
@@ -395,7 +395,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {
 			e.markFailedBestEffort(ctx, runID, "save work dir", err)
-			return fmt.Errorf("runtime: save work dir: %w", err)
+			return e.setupErr(ctx, fmt.Errorf("runtime: save work dir: %w", err))
 		}
 	}
 	// Push workDir into the executor so backend subprocesses (claude_code,
