@@ -66,3 +66,60 @@ func TestListRuns_ListsACreatedRunThatHoldsItsLock(t *testing.T) {
 		t.Fatalf("a locked, created run stays listed; got %v", ids)
 	}
 }
+
+// The two listings answer different questions, and the retention sweep needs
+// the second one: a leftover it cannot see is a leftover it can neither report
+// nor let an operator clean up.
+func TestListRunDirs_SeesWhatListRunsFilters(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	lock, err := s.LockRun(ctx, "01-leftover")
+	if err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+	if _, err := s.CreateRun(ctx, "02-real", "wf", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	dirs, err := s.ListRunDirs(ctx)
+	if err != nil {
+		t.Fatalf("list dirs: %v", err)
+	}
+	if len(dirs) != 2 || dirs[0] != "01-leftover" || dirs[1] != "02-real" {
+		t.Fatalf("the janitor sees every directory; got %v", dirs)
+	}
+	runs, err := s.ListRuns(ctx)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0] != "02-real" {
+		t.Fatalf("readers see only runs; got %v", runs)
+	}
+}
+
+// A deliberate deletion is not a leftover: neither listing resurrects it.
+func TestListRunDirs_StillExcludesTombstones(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "01-gone", "wf", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.DeleteRun(ctx, "01-gone"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	dirs, err := s.ListRunDirs(ctx)
+	if err != nil {
+		t.Fatalf("list dirs: %v", err)
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("a tombstoned run stays out of both listings; got %v", dirs)
+	}
+}

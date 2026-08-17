@@ -532,7 +532,34 @@ func (s *FilesystemRunStore) mutateSubbotChildren(runID string, apply func(map[s
 }
 
 // ListRuns returns the IDs of all persisted runs.
-func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
+// ListRuns returns the ids of the runs in the store: directories that
+// carry a run.json, which is the authoritative identity of a run (see
+// CreateRun). Everything listed here loads.
+//
+// That last property is the point. LockRun mkdirs the run directory to
+// place its .lock, so an id that is locked and then never created — an
+// abandoned launch, a crash between the lock and the first write —
+// leaves a directory carrying only that lock. Listed as a run it is a
+// permanent phantom: every LoadRun on it fails, and a consumer that
+// reads the first id it is handed waits on a run that will never load.
+//
+// A caller whose job is precisely to find the leftovers — the retention
+// sweep — wants the opposite and asks ListRunDirs.
+func (s *FilesystemRunStore) ListRuns(ctx context.Context) ([]string, error) {
+	return s.listRunEntries(ctx, true)
+}
+
+// ListRunDirs returns every run directory in the store, including those
+// with no readable run.json. It is the janitor's view: a partial delete,
+// a crash before the first write, or an abandoned lock leaves a
+// directory that a retention sweep must be able to SEE (and report)
+// rather than silently step over. Tombstoned runs stay excluded — those
+// are deliberate deletions, not leftovers.
+func (s *FilesystemRunStore) ListRunDirs(ctx context.Context) ([]string, error) {
+	return s.listRunEntries(ctx, false)
+}
+
+func (s *FilesystemRunStore) listRunEntries(_ context.Context, requireDoc bool) ([]string, error) {
 	runsDir := filepath.Join(s.root, "runs")
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
@@ -548,17 +575,10 @@ func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 		if s.runDeleted(e.Name()) {
 			continue
 		}
-		// Nor is a directory that holds no run.json a run. LockRun
-		// mkdirs the run dir to place its .lock, so an id that is
-		// locked and then never created — an abandoned launch, a crash
-		// between the lock and the first write — leaves a directory
-		// carrying only `.lock`. It is indistinguishable from a real
-		// run here and permanent, so every consumer that reads the
-		// first id it is handed stalls on a run that will never load.
-		// run.json is the authoritative identity of a run (see
-		// CreateRun); absent it, there is nothing to list.
-		if _, err := os.Stat(s.runJSONPath(e.Name())); err != nil {
-			continue
+		if requireDoc {
+			if _, err := os.Stat(s.runJSONPath(e.Name())); err != nil {
+				continue
+			}
 		}
 		ids = append(ids, e.Name())
 	}

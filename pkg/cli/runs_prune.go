@@ -133,7 +133,9 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 	}
 
 	ctx := context.Background()
-	ids, err := s.ListRuns(ctx)
+	// The janitor's listing, not the readers': a directory with no
+	// loadable run.json is exactly what this sweep must surface.
+	ids, err := s.ListRunDirs(ctx)
 	if err != nil {
 		return fmt.Errorf("list runs: %w", err)
 	}
