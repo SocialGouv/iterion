@@ -73,7 +73,13 @@ func isDelegateRetryable(err error) bool {
 	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
-		return true
+		// Except when iterion raised it: re-issuing the call would spend
+		// exactly the quota the operator's cap exists to protect, and the
+		// provider — still under its own wall — would serve it. The run
+		// parks instead and a durable retry brings it back once the window
+		// has really reopened (pkg/runner/usage_retry.go). A refusal that
+		// came FROM the provider keeps its historical in-place budget.
+		return !rateLimited.SelfImposed
 	}
 	// Transient connectivity failure (DNS / TCP / TLS / upstream 5xx) — a
 	// net.Error, a wrapped syscall errno, or a stringified marker bubbled up

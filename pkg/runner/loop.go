@@ -54,6 +54,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 const tracerName = "github.com/SocialGouv/iterion/pkg/runner"
@@ -450,6 +451,17 @@ type Config struct {
 	// keeps the STORE record fresh, and the runner re-reads it via
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
+
+	// UsageCapPolicy is the operator's ceiling on the LLM subscription's
+	// own usage windows (pkg/usagecap), resolved machine-wide at startup.
+	// The zero value caps nothing, which leaves runs bounded only by the
+	// provider's wall — the historical behaviour.
+	UsageCapPolicy usagecap.Policy
+	// UsageCaps is where readings of those windows are shared across
+	// replicas, so a pod can park a run before spending anything on
+	// rediscovering a ceiling another pod already hit. nil disables the
+	// pre-flight; the in-run guard still applies.
+	UsageCaps usagecap.Store
 
 	// OrgUsage, when non-nil, receives each run's accumulated LLM
 	// cost/tokens into the org's monthly bucket at the end of every
@@ -1157,6 +1169,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer cleanup()
 	}
 
+	// Usage cap, pre-flight. Placed after the credentials (which name the
+	// subscription this run would draw on) and before the clone and the
+	// container: at this point the run has cost nothing yet, so a capped
+	// run parks for free instead of paying a workspace and one LLM call to
+	// rediscover a ceiling another pod already measured.
+	if capErr := r.usageCapPreflight(ctx, msg, r.cfg.Logger); capErr != nil {
+		return capErr
+	}
+
 	// Workspace: an inbound webhook/repo-bound run carries RepoURL/RepoSHA —
 	// clone it into a per-run dir (authed with the bound forge token for a
 	// private repo) and point the engine there so ${PROJECT_DIR} is the repo
@@ -1612,6 +1633,10 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// DSL says `on` would run with memory on — the knob failing open.
 		AutoMemory:  msg.AutoMemory,
 		MemoryStore: r.cfg.MemoryStore,
+		// The operator's subscription ceiling, published to the shared
+		// store as this run measures it — the pod is where the provider's
+		// telemetry is observable, and the only place it can be captured.
+		UsageGuard: r.usageGuardFor(ctx, msg, logger),
 	})
 	if err != nil {
 		return nil, nil, err

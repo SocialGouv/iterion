@@ -62,6 +62,14 @@ var ErrRunPausedOperator = errors.New("runtime: run paused by operator")
 // HTTP layer translates this to 503 Service Unavailable.
 var ErrServerDraining = errors.New("runtime: server draining")
 
+// ErrUsageCapped is returned by the runview Service when the operator's
+// subscription usage cap (pkg/usagecap) leaves no headroom to start new
+// work. The HTTP layer translates it to 429 Too Many Requests — the run was
+// refused by a quota, and the caller may retry once the window reopens
+// (the error text says when). A run already claimed by a cloud runner takes
+// the other road instead: it parks with a durable retry.
+var ErrUsageCapped = errors.New("runtime: usage cap reached")
+
 // NodeExecutor is the abstraction called by the engine to actually run a
 // node (LLM call, tool invocation, etc.). The runtime itself is agnostic
 // to the concrete implementation — tests supply stubs, production code

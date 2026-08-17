@@ -172,6 +172,11 @@ the hours this one spent.
   client (Claude Code, desktop, Cursor): `iterion mcp` setup, the
   `local_*`/`remote_*` tool families, detached-launch semantics,
   `--read-only`, and the `remote_api` escape hatch.
+- [docs/usage-caps.md](docs/usage-caps.md) — capping the LLM
+  subscription below the provider's own wall (`ITERION_USAGE_CAP_*`:
+  soft on the 5h window, hard on the weekly one), where the numbers
+  come from, and the KEDA emergency brake. Read it when bots are eating
+  the forfait an operator also works on.
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).

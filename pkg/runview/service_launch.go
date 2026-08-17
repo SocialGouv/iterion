@@ -114,6 +114,16 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		return &LaunchResult{RunID: runID, Done: closed, QueuePosition: pos}, nil
 	}
 
+	// Usage cap, local path: a cap that stops runs mid-flight but lets new
+	// ones start is not a cap. Placed after the cloud hand-off because a
+	// queued run is governed by the RUNNER's pre-flight instead, which
+	// reads the shared ledger and parks the run with a retry rather than
+	// refusing it — here the operator is present, so an immediate refusal
+	// is the honest answer.
+	if blocked, reason := LocalUsagePreflight(); blocked {
+		return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
+	}
+
 	if detachedEnabled() {
 		return s.launchDetached(parent, runID, spec)
 	}

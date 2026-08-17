@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // Backend name constants used for registration and dispatch.
@@ -1038,6 +1039,19 @@ type TaskHooks struct {
 	// while it works. Runs on the stream-handling goroutine: must not
 	// block.
 	OnAssistantText func(text string)
+
+	// OnUsageWindow fires when the backend observes the provider's own
+	// usage-window telemetry — how much of the subscription's five-hour
+	// and weekly windows is spent (claude_code's rate_limit_event; other
+	// backends have no equivalent surface yet).
+	//
+	// Returning a non-nil error ABORTS the session with that error. That
+	// is the enforcement seam for a usage cap: the backend reports and
+	// obeys, the executor decides. Returning nil lets the session run on,
+	// which is what an observer-only caller does.
+	//
+	// Runs on the stream-handling goroutine: must not block.
+	OnUsageWindow func(usagecap.Reading) error
 }
 
 // TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished
@@ -1286,6 +1300,14 @@ type ErrRateLimited struct {
 	// text ("resets 3pm", "reset at 2026-07-17 19:00"). Zero when not
 	// parseable — callers must not depend on it.
 	ResetAt time.Time
+	// SelfImposed marks a refusal iterion RAISED rather than received: the
+	// operator's usage cap firing below the provider's own wall (see
+	// pkg/usagecap). Everything downstream — park, durable retry, resume —
+	// treats it exactly like the provider's refusal, which is the point.
+	// The one behaviour it must change is the in-place retry: re-issuing
+	// the call would spend precisely the quota the cap exists to protect,
+	// and the provider would answer it perfectly happily.
+	SelfImposed bool
 }
 
 // ErrRateLimited.Kind values.

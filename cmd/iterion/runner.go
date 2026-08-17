@@ -22,6 +22,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runner"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/spf13/cobra"
 )
 
@@ -220,6 +221,22 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		Logger:  logger,
 	})
 
+	// Usage cap: the operator's ceiling on the LLM subscription's own
+	// five-hour / weekly windows. A malformed policy stops the runner
+	// here — every wrong answer downstream fails open, and a fleet that
+	// silently stopped honouring its cap is what this guards against.
+	usageCapPolicy, err := usagecap.FromEnv()
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	usageCapStore := usagecap.NewMongoStore(st.DB())
+	if usageCapPolicy.Enabled() {
+		if err := usagecap.EnsureSchema(rootCtx, st.DB()); err != nil {
+			return fmt.Errorf("runner: ensure usage_windows schema: %w", err)
+		}
+		logger.Info("runner: usage cap armed — %s", usageCapPolicy)
+	}
+
 	// Bots: where bot-qualified runs resolve their bundle so skills/
 	// mirror into the workspace — same env contract as the server
 	// (the official image sets ITERION_BOTS_PATH=/opt/iterion/bots).
@@ -255,6 +272,8 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
 		CredPool:          credBroker,
+		UsageCapPolicy:    usageCapPolicy,
+		UsageCaps:         usageCapStore,
 		BotsPaths:         botsPaths,
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
