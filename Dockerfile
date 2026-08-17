@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/app/studio/node_modules/.vite \
 # --platform=$BUILDPLATFORM: run the Go toolchain on the builder's native arch and
 # CROSS-compile to the target (CGO is off, so this is free) — never emulate the Go
 # compile for an arm64 target. TARGETOS/TARGETARCH are injected by buildx.
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
