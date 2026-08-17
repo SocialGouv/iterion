@@ -178,3 +178,80 @@ workflow resume_hash:
 		t.Fatalf("forced status = %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 }
+
+func TestResumeRun_DispatcherChildOutsideWorkDirUsesPersistedSource(t *testing.T) {
+	t.Setenv("ITERION_RUNS_DETACHED", "0")
+	srv, httpServer := newTestServer(t)
+
+	const source = `
+schema gate_out:
+  approved: bool
+
+human gate:
+  output: gate_out
+  interaction: human
+
+workflow dispatcher_child:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+
+	const runID = "run-dispatcher-child-outside-workdir"
+	// Dispatcher child bots execute from issue worktrees under the managed
+	// store, not beneath the Studio's WorkDir. The pipeline board omits source
+	// when it answers their human gates, so resume must use the launch snapshot
+	// already persisted on the child run.
+	outsidePath := filepath.Join(t.TempDir(), "dispatcher", "worktree", "child.bot")
+	if _, err := srv.safePath(outsidePath); err == nil {
+		t.Fatalf("test setup invalid: %q should escape WorkDir", outsidePath)
+	}
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open run store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := st.CreateRun(ctx, runID, "dispatcher_child", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source)
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	run.FilePath = outsidePath
+	run.WorkflowHash = workflowHash
+	run.WorkflowSource = source
+	run.ParentRunID = "parent-run"
+	if err := st.SaveRun(ctx, run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := st.PauseRun(ctx, runID, &store.Checkpoint{
+		NodeID:           "gate",
+		Outputs:          map[string]map[string]any{},
+		LoopCounters:     map[string]int{},
+		ArtifactVersions: map[string]int{},
+		Vars:             map[string]any{},
+	}); err != nil {
+		t.Fatalf("PauseRun: %v", err)
+	}
+
+	resp, err := http.Post(
+		httpServer.URL+"/api/runs/"+runID+"/resume",
+		"application/json",
+		bytes.NewBufferString(`{"answers":{"approved":true}}`),
+	)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		var refusal map[string]any
+		decodeJSONResp(t, resp, &refusal)
+		t.Fatalf("status = %d, want %d; body = %#v", resp.StatusCode, http.StatusAccepted, refusal)
+	}
+}

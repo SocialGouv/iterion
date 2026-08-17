@@ -133,7 +133,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
-	filePath, source, err := s.resolveResumeSource(ref.FilePath, "")
+	filePath, source, err := s.resolveResumeSource(ref.FilePath, "", "")
 	if err != nil {
 		// A bot removed from the catalog will never resolve; re-arming
 		// would just re-fail every 15 minutes forever.
