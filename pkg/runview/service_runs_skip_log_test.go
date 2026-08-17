@@ -15,11 +15,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// A run id whose document is gone is a stale index entry, not a corrupt
-// run: it logs once at Debug — never at Warn — and is not re-logged on
-// every UI poll. A genuinely unreadable document rates a Warn, also
-// once: a corrupt run.json does not heal between two polls, and the
-// repeated lines were drowning the instance log (several per second).
+// A genuinely unreadable document rates a Warn, and only once: a corrupt
+// run.json does not heal between two polls, and the repeated lines were
+// drowning the instance log (several per second).
+//
+// A directory with no run.json is not seeded here any more: the store no
+// longer lists one at all (see TestListRuns_SkipsALockedButNeverCreatedRun),
+// so it never reaches this layer. The Debug-once path it used to exercise
+// remains for the case that is genuinely racy rather than permanent — a run
+// listed and then deleted between the list and the load — which no fixture
+// can stage deterministically.
 func TestListRunRecordsCtxSkipsStaleAndCorruptRunsQuietly(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
@@ -32,10 +37,6 @@ func TestListRunRecordsCtxSkipsStaleAndCorruptRunsQuietly(t *testing.T) {
 	// One healthy run so the listing has something to return.
 	if _, err := st.CreateRun(context.Background(), "run-ok", "wf", nil); err != nil {
 		t.Fatalf("create run: %v", err)
-	}
-	// Stale index entry: the id exists, run.json does not.
-	if err := os.MkdirAll(filepath.Join(storeDir, "runs", "run-gone"), 0o755); err != nil {
-		t.Fatalf("mkdir stale run: %v", err)
 	}
 	// Corrupt document: present but unreadable.
 	corruptDir := filepath.Join(storeDir, "runs", "run-corrupt")
@@ -67,18 +68,12 @@ func TestListRunRecordsCtxSkipsStaleAndCorruptRunsQuietly(t *testing.T) {
 		for _, line := range strings.Split(strings.TrimRight(log, "\n"), "\n") {
 			if strings.Contains(line, id) {
 				n++
-				if id == "run-gone" && !strings.Contains(line, "🔍") {
-					t.Errorf("stale run-gone must log at Debug (🔍), got: %s", line)
-				}
 				if id == "run-corrupt" && !strings.Contains(line, "⚠️") {
 					t.Errorf("corrupt run-corrupt must log at Warn (⚠️), got: %s", line)
 				}
 			}
 		}
 		return n
-	}
-	if got := lineCount("run-gone"); got != 1 {
-		t.Errorf("run-gone logged on %d lines over 3 polls, want 1 (log-once)\nlog:\n%s", got, log)
 	}
 	if got := lineCount("run-corrupt"); got != 1 {
 		t.Errorf("run-corrupt logged on %d lines over 3 polls, want 1 (log-once)\nlog:\n%s", got, log)

@@ -548,6 +548,18 @@ func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 		if s.runDeleted(e.Name()) {
 			continue
 		}
+		// Nor is a directory that holds no run.json a run. LockRun
+		// mkdirs the run dir to place its .lock, so an id that is
+		// locked and then never created — an abandoned launch, a crash
+		// between the lock and the first write — leaves a directory
+		// carrying only `.lock`. It is indistinguishable from a real
+		// run here and permanent, so every consumer that reads the
+		// first id it is handed stalls on a run that will never load.
+		// run.json is the authoritative identity of a run (see
+		// CreateRun); absent it, there is nothing to list.
+		if _, err := os.Stat(s.runJSONPath(e.Name())); err != nil {
+			continue
+		}
 		ids = append(ids, e.Name())
 	}
 	sort.Strings(ids)
