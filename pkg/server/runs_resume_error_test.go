@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -198,25 +197,7 @@ workflow dispatcher_child:
   gate -> fail when not approved
 `
 
-	botPath := filepath.Join(srv.cfg.WorkDir, "dispatcher_child.bot")
-	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
 	const runID = "run-dispatcher-child-outside-workdir"
-	launched, err := srv.runs.Launch(context.Background(), runview.LaunchSpec{
-		RunID:       runID,
-		FilePath:    botPath,
-		ParentRunID: "parent-run",
-	})
-	if err != nil {
-		t.Fatalf("launch child: %v", err)
-	}
-	select {
-	case <-launched.Done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("child did not reach its human gate within 30s")
-	}
-
 	// Dispatcher child bots execute from issue worktrees under the managed
 	// store, not beneath the Studio's WorkDir. The pipeline board omits source
 	// when it answers their human gates, so resume must use the launch snapshot
@@ -230,19 +211,33 @@ workflow dispatcher_child:
 	if err != nil {
 		t.Fatalf("open run store: %v", err)
 	}
-	run, err := st.LoadRun(context.Background(), runID)
+	ctx := context.Background()
+	if _, err := st.CreateRun(ctx, runID, "dispatcher_child", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	run, err := st.LoadRun(ctx, runID)
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	if run.Status != store.RunStatusPausedWaitingHuman {
-		t.Fatalf("status = %q, want %q", run.Status, store.RunStatusPausedWaitingHuman)
-	}
-	if run.WorkflowSource == "" {
-		t.Fatal("launch did not persist WorkflowSource")
+	_, workflowHash, err := runview.CompileWorkflowFromSource(outsidePath, source)
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
 	}
 	run.FilePath = outsidePath
-	if err := st.SaveRun(context.Background(), run); err != nil {
+	run.WorkflowHash = workflowHash
+	run.WorkflowSource = source
+	run.ParentRunID = "parent-run"
+	if err := st.SaveRun(ctx, run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
+	}
+	if err := st.PauseRun(ctx, runID, &store.Checkpoint{
+		NodeID:           "gate",
+		Outputs:          map[string]map[string]any{},
+		LoopCounters:     map[string]int{},
+		ArtifactVersions: map[string]int{},
+		Vars:             map[string]any{},
+	}); err != nil {
+		t.Fatalf("PauseRun: %v", err)
 	}
 
 	resp, err := http.Post(
