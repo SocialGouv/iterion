@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // registerBYOKRoutes wires every /api/teams/:id/api-keys and
@@ -83,6 +84,26 @@ func (s *Server) writeApiKeyList(w http.ResponseWriter, keys []secrets.ApiKey, e
 	return true
 }
 
+// apiKeyTenantCtx scopes the store context to the team a route names in its
+// path, instead of the caller's ACTIVE team that requireAuth stamped.
+//
+// The api-keys store derives tenant_id from the context — on write it stamps
+// the row, on read it filters. So a key created for a team other than the
+// caller's active one used to land as (scope_team = target, tenant_id =
+// caller's active team): listable from the context that created it, and
+// INVISIBLE to the runs of the team it was meant to fund. Nothing failed —
+// the run simply resolved no key and fell back to the platform credential,
+// which is the one shape a credential bug must never take.
+//
+// Routes with no {id} (the /api/me family) keep the active team: there the
+// caller's own tenant IS the scope.
+func apiKeyTenantCtx(r *http.Request) context.Context {
+	if teamID := r.PathValue("id"); teamID != "" {
+		return store.WithTenant(r.Context(), teamID)
+	}
+	return r.Context()
+}
+
 func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
@@ -92,7 +113,7 @@ func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	// Team admins see all team-wide keys + their own user-scoped
 	// keys (matches BYOK plan). Members only see what's visible.
-	keys, err := s.apiKeys.ListByTeam(r.Context(), teamID, id.UserID)
+	keys, err := s.apiKeys.ListByTeam(apiKeyTenantCtx(r), teamID, id.UserID)
 	s.writeApiKeyList(w, keys, err)
 }
 
@@ -163,12 +184,13 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		CreatedAt:    now,
 		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
 	}
-	if err := s.apiKeys.Create(r.Context(), key); err != nil {
+	ctx := apiKeyTenantCtx(r)
+	if err := s.apiKeys.Create(ctx, key); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
 	if req.IsDefault {
-		if err := s.apiKeys.ClearDefault(r.Context(), teamID, userID, provider, keyID); err != nil {
+		if err := s.apiKeys.ClearDefault(ctx, teamID, userID, provider, keyID); err != nil {
 			httpError(w, http.StatusInternalServerError, "key %s created but clearing previous default failed: %v", keyID, err)
 			return
 		}
@@ -180,7 +202,8 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	key, err := s.apiKeys.Get(r.Context(), keyID)
+	ctx := apiKeyTenantCtx(r)
+	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			httpError(w, http.StatusNotFound, "key not found")
@@ -215,12 +238,12 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 	if req.IsDefault != nil {
 		key.IsDefault = *req.IsDefault
 	}
-	if err := s.apiKeys.Update(r.Context(), key); err != nil {
+	if err := s.apiKeys.Update(ctx, key); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
 	if key.IsDefault {
-		if err := s.apiKeys.ClearDefault(r.Context(), key.ScopeTeamID, key.ScopeUserID, key.Provider, key.ID); err != nil {
+		if err := s.apiKeys.ClearDefault(ctx, key.ScopeTeamID, key.ScopeUserID, key.Provider, key.ID); err != nil {
 			httpError(w, http.StatusInternalServerError, "key updated but clearing previous default failed: %v", err)
 			return
 		}
@@ -232,7 +255,8 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	keyID := r.PathValue("key_id")
-	key, err := s.apiKeys.Get(r.Context(), keyID)
+	ctx := apiKeyTenantCtx(r)
+	key, err := s.apiKeys.Get(ctx, keyID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			w.WriteHeader(http.StatusNoContent)
@@ -245,7 +269,7 @@ func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "cannot delete this key")
 		return
 	}
-	if err := s.apiKeys.Delete(r.Context(), key.ID); err != nil {
+	if err := s.apiKeys.Delete(ctx, key.ID); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
