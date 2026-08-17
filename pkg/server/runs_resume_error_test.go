@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -176,5 +177,86 @@ workflow resume_hash:
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("forced status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+}
+
+func TestResumeRun_DispatcherChildOutsideWorkDirUsesPersistedSource(t *testing.T) {
+	t.Setenv("ITERION_RUNS_DETACHED", "0")
+	srv, httpServer := newTestServer(t)
+
+	const source = `
+schema gate_out:
+  approved: bool
+
+human gate:
+  output: gate_out
+  interaction: human
+
+workflow dispatcher_child:
+  entry: gate
+  gate -> done when approved
+  gate -> fail when not approved
+`
+
+	botPath := filepath.Join(srv.cfg.WorkDir, "dispatcher_child.bot")
+	if err := os.WriteFile(botPath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	const runID = "run-dispatcher-child-outside-workdir"
+	launched, err := srv.runs.Launch(context.Background(), runview.LaunchSpec{
+		RunID:       runID,
+		FilePath:    botPath,
+		ParentRunID: "parent-run",
+	})
+	if err != nil {
+		t.Fatalf("launch child: %v", err)
+	}
+	select {
+	case <-launched.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("child did not reach its human gate")
+	}
+
+	// Dispatcher child bots execute from issue worktrees under the managed
+	// store, not beneath the Studio's WorkDir. The pipeline board omits source
+	// when it answers their human gates, so resume must use the launch snapshot
+	// already persisted on the child run.
+	outsidePath := filepath.Join(t.TempDir(), "dispatcher", "worktree", "child.bot")
+	if _, err := srv.safePath(outsidePath); err == nil {
+		t.Fatalf("test setup invalid: %q should escape WorkDir", outsidePath)
+	}
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open run store: %v", err)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("status = %q, want %q", run.Status, store.RunStatusPausedWaitingHuman)
+	}
+	if run.WorkflowSource == "" {
+		t.Fatal("launch did not persist WorkflowSource")
+	}
+	run.FilePath = outsidePath
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	resp, err := http.Post(
+		httpServer.URL+"/api/runs/"+runID+"/resume",
+		"application/json",
+		bytes.NewBufferString(`{"answers":{"approved":true}}`),
+	)
+	if err != nil {
+		t.Fatalf("POST resume: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		var refusal map[string]any
+		decodeJSONResp(t, resp, &refusal)
+		t.Fatalf("status = %d, want %d; body = %#v", resp.StatusCode, http.StatusAccepted, refusal)
 	}
 }
