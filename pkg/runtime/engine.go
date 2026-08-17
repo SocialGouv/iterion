@@ -437,7 +437,6 @@ type resumeBackendState struct {
 // classification, minus the checkpoint, which no node has yet earned —
 // resume then restarts from the entry, which it is built to do.
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
-	msg := fmt.Sprintf("%s: %v", phase, cause)
 	writeCtx := context.WithoutCancel(ctx)
 	status, msg := setupFailureStatus(ctx, phase, cause)
 	var err error
