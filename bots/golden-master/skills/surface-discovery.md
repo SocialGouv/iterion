@@ -121,6 +121,46 @@ written reason:
 An exclusion without a reason is refused. The point is not that every route must be watched; it
 is that every unwatched route is a decision someone wrote down, instead of a hole nobody chose.
 
+## Features are the level above routes — standard 3
+
+A route the corpus touches once is not a feature it exercises. Real gaps that route coverage
+cannot see: a search screen whose every filter shares one route, a multi-screen journey whose
+middle step is never walked, a surface that is not a route at all (a scheduled job, an outgoing
+mail). Measured on a real audit: the corpus was green on routes and an entire behaviour class
+had never been exercised.
+
+A net that declares `"standard": 3` in its config therefore states its features, the same way
+it states its routes:
+
+- **`feature_probe`** — a command printing `<feature-id> <source>` per line, `#` comments
+  allowed. It runs with the application UP and `GM_BASE_URL` exported, so it can walk the
+  **served navigation graph** (menus, links, per persona) AND read the **tree's own
+  catalogues** (message keys, templates, job declarations). At least two independent sources
+  are required — the harness refuses a single-source inventory, because each source only shows
+  what it shows: the crawl cannot see a job, the catalogue cannot see what the server hides.
+- **`feature-coverage.json`** — the committed inventory answering the probe: every feature
+  mapped to the corpus entries that exercise it, or excluded WITH a written reason.
+
+```json
+{"features": [
+   {"feature": "catalog.search.by-period", "entries": ["031", "032"]}
+ ],
+ "exclusions": [
+   {"feature": "notifications.digest-mail",
+    "reason": "fires from a scheduler, not a request; measured by the ops runbook, not this net"}
+ ]}
+```
+
+The harness replays the probe at every gate and refuses three ways, each named: a feature
+neither mapped nor excluded (a hole nobody chose), a mapped or excluded feature the probe no
+longer prints (a map to a surface that is gone reads as coverage), and a mapping citing a
+corpus id that does not exist (evidence that is not there). Record mode is exempt — recording
+is how a net under construction earns its inventory.
+
+A NEW net declares standard 3. An existing net keeps its declared standard until its owner
+raises it — a raise is a net extension, through the ledger like any other, and the verdict
+carries the `standard` figure so a net below the current one is visible, never silent.
+
 ## The corpus file
 
 ```json

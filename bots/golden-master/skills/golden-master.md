@@ -24,6 +24,8 @@ net and a deliverable in its own right — a client can read it, run it, and aud
   corpus.json     the request catalogue
   canon/rules.py  canonicalize(entry, status, headers, body) -> str
   refs/<id>.txt   the recorded references — the contractual baseline
+  route-coverage.json    justified holes in the ROUTE perimeter  (see [[surface-discovery]])
+  feature-coverage.json  the FEATURE inventory, standard >= 3    (see [[surface-discovery]])
   mutants/        proof the references are not blind   (see [[oracle-mutation]])
   mutants/holdout/  the sealed set — write, then stop looking
   REPORT.md       emitted: score per lane, escaped mutants, held-out result

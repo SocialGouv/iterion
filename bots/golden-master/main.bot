@@ -1335,6 +1335,103 @@ tool oracle_run:
         return uncovered, len(routes), len(exclusions)
 
 
+    def parse_feature_probe(out):
+        """The probe's statement -> {feature_id: sorted(sources)}.
+
+        One feature per line, `<feature-id> <source>`, `#` comments allowed. The
+        same feature printed by several sources is the point: a single source only
+        shows what it shows. Refusals carry their cause — a line without a source
+        is a statement without provenance, an empty statement claims the corpus
+        covers every feature, and a single-source inventory has no independent
+        witness.
+        """
+        feats = {}
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) != 2:
+                raise SystemExit("feature_probe printed %r — expected `<feature-id> "
+                                 "<source>`, one per line" % line)
+            fid, src = parts
+            feats.setdefault(fid, set()).add(src)
+        if not feats:
+            raise SystemExit("feature_probe printed no feature — an empty inventory "
+                             "is a statement the corpus covers every feature, and it "
+                             "is false by construction")
+        sources = set().union(*feats.values())
+        if len(sources) < 2:
+            raise SystemExit("feature_probe drew from a single source (%s): an "
+                             "inventory needs at least two independent witnesses — "
+                             "the served navigation graph and the tree's "
+                             "message/template catalogue are the canonical pair — or "
+                             "it only sees what that one source shows"
+                             % ", ".join(sorted(sources)))
+        return {f: sorted(s) for f, s in feats.items()}
+
+
+    def feature_gaps(features, coverage, corpus):
+        """(unmapped, stale, broken) between the probe's live statement and the
+        committed inventory.
+
+        UNMAPPED: printed now, neither mapped to corpus entries nor excluded in
+        writing. STALE: carried by the inventory but no longer printed — a map to
+        a surface that is gone reads as coverage. BROKEN: a mapping citing a
+        corpus id that does not exist — evidence that is not there.
+        """
+        ids = {e["id"] for e in corpus["entries"]}
+        mapped = {m.get("feature"): m for m in coverage.get("features", [])}
+        excluded = {x.get("feature") for x in coverage.get("exclusions", [])}
+        unmapped = sorted(f for f in features if f not in mapped and f not in excluded)
+        stale = sorted(f for f in (set(mapped) | excluded) if f not in features)
+        broken = sorted("%s -> %s" % (f, i) for f, m in mapped.items()
+                        for i in (m.get("entries") or []) if i not in ids)
+        return unmapped, stale, broken
+
+
+    def feature_coverage(gm_dir, config, corpus, ws):
+        """Runs the target's `feature_probe` against the LIVE application, honours
+        the committed inventory, returns (unmapped, stale, total, excluded).
+        Raises SystemExit with the cause on refusal.
+
+        The probe is the target's statement of its own FEATURES — the level above
+        routes: a route the corpus touches once is not a feature it exercises. It
+        runs with the application up and `GM_BASE_URL` exported, so it can walk
+        the served navigation AND read the tree's catalogues; only the campaign
+        knows how. The inventory (`feature-coverage.json`) maps each feature to
+        the corpus entries that exercise it, or excludes it in writing.
+        """
+        os.environ["GM_BASE_URL"] = resolve_base_url(config, ws)
+        code, out = run(config["feature_probe"], ws, timeout=300)
+        if code != 0:
+            raise SystemExit("feature_probe failed (exit %s):\n%s" % (code, out[-1500:]))
+        features = parse_feature_probe(out)
+
+        coverage = {}
+        cov_path = os.path.join(gm_dir, "feature-coverage.json")
+        if os.path.isfile(cov_path):
+            with open(cov_path, encoding="utf-8") as f:
+                coverage = json.load(f)
+        for m in coverage.get("features", []):
+            if not (m.get("feature") and (m.get("entries") or [])):
+                raise SystemExit(
+                    "feature-coverage.json maps %r to no corpus entry. A mapping to "
+                    "nothing is an exclusion wearing a map's clothes — move it to "
+                    "`exclusions` with its reason, or point it at real entries." % (m,))
+        for x in coverage.get("exclusions", []):
+            if not (x.get("feature") and (x.get("reason") or "").strip()):
+                raise SystemExit(
+                    "feature-coverage.json carries an exclusion without a written "
+                    "reason (%r). An exclusion is a decision; a decision has a "
+                    "cause or it is a hole." % (x,))
+
+        unmapped, stale, broken = feature_gaps(features, coverage, corpus)
+        if broken:
+            raise SystemExit(
+                "feature-coverage.json cites corpus entries that do not exist: %s. "
+                "The map points at evidence that is not there." % ", ".join(broken))
+        return unmapped, stale, len(features), len(coverage.get("exclusions", []))
 
 
     def sealed_dir_for(ws):
@@ -1990,6 +2087,38 @@ tool oracle_run:
                   route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
                   ["POST /list"])
 
+            # 8c. Features : l'etage au-dessus des routes — non-mappee, perimee,
+            #     preuve inexistante, exigence de deux sources.
+            fcorpus = {"entries": [{"id": "1"}, {"id": "2"}]}
+            feats = {"catalog.search": ["i18n", "nav"], "catalog.export": ["nav"]}
+            fcov = {"features": [{"feature": "catalog.search", "entries": ["1", "2"]}],
+                    "exclusions": [{"feature": "catalog.export", "reason": "retiree"}]}
+            check("inventaire complet -> aucun trou",
+                  feature_gaps(feats, fcov, fcorpus), ([], [], []))
+            check("feature ni mappee ni exclue -> nommee",
+                  feature_gaps(feats, {"features": fcov["features"]}, fcorpus)[0],
+                  ["catalog.export"])
+            check("inventaire d'une feature disparue -> perime",
+                  feature_gaps({"catalog.search": ["nav", "i18n"]}, fcov, fcorpus)[1],
+                  ["catalog.export"])
+            check("mapping vers une entree inexistante -> preuve absente",
+                  feature_gaps(feats, {"features": [{"feature": "catalog.search",
+                                                     "entries": ["9"]}]}, fcorpus)[2],
+                  ["catalog.search -> 9"])
+            try:
+                parse_feature_probe("a nav\nb nav\n")
+                check("sonde mono-source -> refus", "aucun-refus", "SystemExit")
+            except SystemExit:
+                check("sonde mono-source -> refus", "SystemExit", "SystemExit")
+            try:
+                parse_feature_probe("# rien\n")
+                check("sonde vide -> refus", "aucun-refus", "SystemExit")
+            except SystemExit:
+                check("sonde vide -> refus", "SystemExit", "SystemExit")
+            check("sources fusionnees par feature, commentaires ignores",
+                  parse_feature_probe("a nav\n# c\na i18n\nb i18n\n"),
+                  {"a": ["i18n", "nav"], "b": ["i18n"]})
+
             # 8b. Registre : une demande sans acte bloque ; un `replaces` acte la
             #     chaine ; un bloc illisible escalade, ne se devine pas.
             ldir = tempfile.mkdtemp(prefix="gm-selftest-ledger-")
@@ -2077,6 +2206,8 @@ tool oracle_run:
                   "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
                   "missing_corpus_probes": [], "uncovered_routes": [],
                   "routes_total": 0, "routes_excluded": 0,
+                  "standard": 2, "unmapped_features": [], "stale_features": [],
+                  "features_total": 0, "features_excluded": 0,
                   "pending_rebaselines": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
                   "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
@@ -2098,6 +2229,16 @@ tool oracle_run:
             config = json.load(f)
         with open(os.path.join(gm_dir, "corpus.json"), encoding="utf-8") as f:
             corpus = json.load(f)
+
+        # The net's declared standard. 2 = routes-era nets; 3 adds the feature
+        # inventory. A net keeps its declared standard until its owner raises it
+        # through the ledger — and the verdict CARRIES the figure, so a net below
+        # the current standard is visible, never silent.
+        try:
+            std = int(config.get("standard", 2))
+        except (TypeError, ValueError):
+            bail("config `standard` is not an integer: %r" % (config.get("standard"),))
+        report["standard"] = std
 
         try:
             canon = load_canon(gm_dir)
@@ -2292,6 +2433,40 @@ tool oracle_run:
             app_up(config, ws)
         except SystemExit as e:
             bail(str(e))
+
+        # The feature perimeter is judged against the LIVE application — the probe
+        # may walk the served navigation — so it sits after boot, unlike routes.
+        # It binds from standard 3; record mode is exempt because recording is how
+        # a net under construction earns its inventory.
+        if mode != "record" and std >= 3:
+            if not config.get("feature_probe"):
+                bail("config declares standard %d but no `feature_probe`: the net "
+                     "cannot state the features it claims to cover. Write one next "
+                     "to `routes_probe` — `<feature-id> <source>` per line, from at "
+                     "least two independent sources (the served navigation graph, "
+                     "the tree's message/template catalogue) — and map each feature "
+                     "to corpus entries in feature-coverage.json." % std)
+            try:
+                f_unmapped, f_stale, f_total, f_excl = feature_coverage(
+                    gm_dir, config, corpus, ws)
+            except SystemExit as e:
+                bail(str(e))
+            report["features_total"], report["features_excluded"] = f_total, f_excl
+            if f_stale:
+                report["stale_features"] = f_stale
+                bail("%d feature(s) in feature-coverage.json the probe no longer "
+                     "prints: %s%s. A map to a surface that is gone reads as "
+                     "coverage — prune the inventory or fix the probe."
+                     % (len(f_stale), ", ".join(f_stale[:20]),
+                        ", …" if len(f_stale) > 20 else ""))
+            if f_unmapped:
+                report["unmapped_features"] = f_unmapped
+                bail("%d feature(s) the corpus never exercises: %s%s. Map each one "
+                     "to the entries that exercise it, or write its exclusion WITH "
+                     "ITS REASON in feature-coverage.json — a route touched once is "
+                     "not a feature covered."
+                     % (len(f_unmapped), ", ".join(f_unmapped[:20]),
+                        ", …" if len(f_unmapped) > 20 else ""))
 
         try:
             if mode == "record":
