@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
@@ -32,9 +33,41 @@ func (c *AdminClient) SetCommitStatus(ctx context.Context, repo, sha string, st 
 		return err
 	}
 	if code/100 != 2 {
+		// GitLab's commit-status state machine refuses pending → pending
+		// ("Cannot transition status via :enqueue from :pending", HTTP 400)
+		// where GitHub accepts the same POST as a no-op. The only writer that
+		// posts pending is the merge gate's in-flight CLAIM, and a claim asks
+		// for a state that is ALREADY true here — a second bot on the shared
+		// gate context, or a relaunch onto a head someone already claimed. So
+		// confirm the existing status really is pending and report success:
+		// the gate is claimed either way, and failing left the check reading
+		// "absent" while a review was in fact running.
+		//
+		// Deliberately narrow: only for a pending write, only after READING
+		// the live status back. Any other 4xx, and a pending write over any
+		// other state, still surfaces.
+		if code == http.StatusBadRequest && st.State == forge.CommitStatePending && c.pendingAlreadyOn(ctx, repo, sha, st.Context) {
+			return nil
+		}
 		return statusErr("set commit status", code)
 	}
 	return nil
+}
+
+// pendingAlreadyOn reports whether ctxName already carries a pending status on
+// sha. Read-only, best-effort: an unreadable status list answers false, so a
+// rejected write is reported rather than assumed benign.
+func (c *AdminClient) pendingAlreadyOn(ctx context.Context, repo, sha, ctxName string) bool {
+	sts, err := c.ListCommitStatuses(ctx, repo, sha)
+	if err != nil {
+		return false
+	}
+	for _, s := range sts {
+		if strings.EqualFold(strings.TrimSpace(s.Context), strings.TrimSpace(ctxName)) {
+			return s.State == forge.CommitStatePending
+		}
+	}
+	return false
 }
 
 // ListCommitStatuses returns the statuses already present on sha

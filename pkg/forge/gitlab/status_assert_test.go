@@ -80,3 +80,87 @@ func TestListCommitStatuses_ErrorStatus(t *testing.T) {
 		t.Fatal("want an error on a non-2xx response, got nil")
 	}
 }
+
+// GitLab refuses pending → pending ("Cannot transition status via :enqueue
+// from :pending", HTTP 400) where GitHub takes the same POST as a no-op. The
+// merge gate's in-flight claim is the only writer that posts pending, and it
+// asks for a state that is already true — so the claim must read as claimed,
+// not as a failure that leaves the check reading "absent".
+func TestSetCommitStatus_PendingOverPendingIsClaimed(t *testing.T) {
+	var posts int
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v4/projects/grp%2Fproj/statuses/abc", func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "Cannot transition status via :enqueue from :pending (Reason(s): Status cannot transition via \"enqueue\")",
+		})
+	})
+	mux.HandleFunc("GET /api/v4/projects/grp%2Fproj/repository/commits/abc/statuses", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "status": "pending", "name": "iterion/review"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+	err := c.SetCommitStatus(context.Background(), "grp/proj", "abc", forge.CommitStatus{
+		State: forge.CommitStatePending, Context: "iterion/review",
+	})
+	if err != nil {
+		t.Fatalf("a claim over an existing pending claim must succeed, got %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("want exactly one POST attempt, got %d", posts)
+	}
+}
+
+// The narrowing that keeps the case above from swallowing real failures: the
+// same 400 with the context sitting on any other state still surfaces, since
+// the claim did NOT take and the gate would otherwise read as claimed.
+func TestSetCommitStatus_PendingOverOtherStateStillFails(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v4/projects/grp%2Fproj/statuses/abc", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "Cannot transition status via :enqueue from :running"})
+	})
+	mux.HandleFunc("GET /api/v4/projects/grp%2Fproj/repository/commits/abc/statuses", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "status": "success", "name": "iterion/review"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+	if err := c.SetCommitStatus(context.Background(), "grp/proj", "abc", forge.CommitStatus{
+		State: forge.CommitStatePending, Context: "iterion/review",
+	}); err == nil {
+		t.Fatal("want the rejection to surface when the context is not already pending")
+	}
+}
+
+// A verdict write (the state the gate actually gates on) never takes the
+// already-claimed path: a rejected verdict is a real failure.
+func TestSetCommitStatus_VerdictRejectionSurfaces(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v4/projects/grp%2Fproj/statuses/abc", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "Cannot transition status"})
+	})
+	mux.HandleFunc("GET /api/v4/projects/grp%2Fproj/repository/commits/abc/statuses", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "status": "pending", "name": "iterion/review"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+	if err := c.SetCommitStatus(context.Background(), "grp/proj", "abc", forge.CommitStatus{
+		State: forge.CommitStateFailure, Context: "iterion/review",
+	}); err == nil {
+		t.Fatal("want a rejected verdict to surface")
+	}
+}
