@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,12 @@ type ClawExecutor struct {
 	permAskRules   []string
 	permDenyRules  []string
 	permEnvDefault string
+
+	// usageGuard enforces the operator's subscription usage cap from the
+	// provider's own telemetry (pkg/usagecap). Nil = no cap, so the run is
+	// bounded only by the provider's wall. Shared across the run's nodes:
+	// the windows it watches are the credential's, not a node's.
+	usageGuard *usagecap.Guard
 
 	// sandbox is the live [sandbox.Run] for the current iterion run,
 	// or nil when the workflow doesn't activate a sandbox. The engine
@@ -385,6 +392,13 @@ func WithAutoMemoryOverride(mode string) ClawExecutorOption {
 // pass the Mongo store, which is what makes MEMORY.md survive the pod.
 func WithAutoMemoryStore(ms knowledge.MemoryStore) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.autoMemStore = ms }
+}
+
+// WithUsageGuard arms the operator's subscription usage cap for this run
+// (see pkg/usagecap). Nil — the default — leaves the run governed only by
+// the provider's own wall, which is the historical behaviour.
+func WithUsageGuard(g *usagecap.Guard) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.usageGuard = g }
 }
 
 // WithRewriteChain sets the active rewriter chain (the enabled rewriter
@@ -934,6 +948,52 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 		fn := e.hooks.OnAssistantText
 		h.OnAssistantText = func(text string) {
 			fn(nodeID, AssistantTextInfo{Text: text, Iteration: iteration})
+		}
+	}
+	// Usage cap: the backend reports the provider's own window telemetry,
+	// the guard decides. A hard cap answers with the same usage-window
+	// error a real refusal produces, so the run parks and a durable retry
+	// resumes it once the window reopens — the operator's ceiling reuses
+	// the provider's recovery path rather than inventing one.
+	if e.usageGuard != nil {
+		guard := e.usageGuard
+		capHook := e.hooks.OnUsageCap
+		h.OnUsageWindow = func(r usagecap.Reading) error {
+			d := guard.Observe(r)
+			if !d.Blocked {
+				return nil
+			}
+			if capHook != nil {
+				capHook(nodeID, UsageCapInfo{
+					Window:   string(d.Window),
+					Family:   string(d.Family),
+					Percent:  d.Percent,
+					Cap:      d.Cap,
+					Mode:     string(guard.Policy().For(d.Family).Mode),
+					Stopped:  d.Stop,
+					ResetsAt: d.ResetsAt,
+				})
+			}
+			if !d.Stop {
+				// Soft: this run keeps its half-done work; the pre-flight
+				// gate is what stops the NEXT one from starting.
+				if e.logger != nil {
+					e.logger.Warn("[%s#%d/%s] %s — finishing this run, starting no new work",
+						nodeID, iteration, backendName, d.Reason)
+				}
+				return nil
+			}
+			if e.logger != nil {
+				e.logger.Warn("[%s#%d/%s] %s — stopping the run; it resumes when the window reopens",
+					nodeID, iteration, backendName, d.Reason)
+			}
+			return &delegate.ErrRateLimited{
+				Provider:    backendName,
+				Detail:      d.Reason,
+				Kind:        delegate.RateLimitKindUsageWindow,
+				ResetAt:     d.ResetsAt,
+				SelfImposed: true,
+			}
 		}
 	}
 	if e.hooks.OnLLMTurnCapture != nil {

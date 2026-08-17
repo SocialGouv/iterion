@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -374,6 +375,14 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				result = m
 				progressed = true // a turn completed
 				backfillEmptyResult(result, lastAssistantText)
+			case *claudesdk.RateLimitEvent:
+				// The provider's own account of how much of the
+				// subscription is left. Not progress: it arrives on a
+				// timer of the CLI's own, and letting it reset the
+				// forward-progress watchdog would mask a spinning session.
+				if err := b.handleRateLimitEvent(m, task, cancelStream); err != nil {
+					return result, meta, err
+				}
 			default:
 				if it.msg != nil {
 					b.Logger.Debug("[%s#%d/claude-code] 📨 %T message", task.NodeID, task.Iteration, it.msg)
@@ -511,6 +520,42 @@ func (b *ClaudeCodeBackend) handleSystemMessage(m *claudesdk.SystemMessage, task
 		b.Logger.Debug("[%s#%d/claude-code] ⚙️  system/%s session=%s",
 			task.NodeID, task.Iteration, m.Subtype, m.SessionID)
 	}
+}
+
+// handleRateLimitEvent turns the CLI's rate_limit_event into a
+// usagecap.Reading and hands it to the executor's hook, which owns the
+// policy. A hook that answers with an error is stopping the session on a
+// usage cap: cancel the stream and surface the error so the run parks the
+// way a real provider refusal would — the whole point being that iterion
+// decided it, hours before the provider would have.
+//
+// No hook means nobody is watching, and a session must never fail for lack
+// of an observer.
+func (b *ClaudeCodeBackend) handleRateLimitEvent(m *claudesdk.RateLimitEvent, task Task, cancelStream context.CancelFunc) error {
+	if m == nil || task.Hooks.OnUsageWindow == nil {
+		return nil
+	}
+	r := usagecap.Reading{
+		Window:     usagecap.Window(m.Info.RateLimitType),
+		Status:     m.Info.Status,
+		ObservedAt: time.Now().UTC(),
+	}
+	if m.Info.Utilization != nil {
+		r.Utilization = *m.Info.Utilization
+	}
+	if m.Info.ResetsAt != nil {
+		r.ResetsAt = time.Unix(*m.Info.ResetsAt, 0).UTC()
+	}
+	// Debug, not info: the CLI emits one of these whenever the numbers
+	// move, and the operator-facing line is the executor's — it is the
+	// only layer that knows whether this reading crossed anything.
+	b.Logger.Debug("[%s#%d/claude-code] 📊 usage %s %.0f%% status=%s",
+		task.NodeID, task.Iteration, r.Window, r.Percent(), r.Status)
+	if err := task.Hooks.OnUsageWindow(r); err != nil {
+		cancelStream()
+		return err
+	}
+	return nil
 }
 
 // handleAssistantMessage processes a streamed AssistantMessage: logs its

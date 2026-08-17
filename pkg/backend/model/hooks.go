@@ -476,6 +476,23 @@ func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
 	})
 }
 
+// onUsageCap implements the OnUsageCap hook: it records that the
+// operator's own ceiling — not the provider's — is what governed this run.
+func (h *storeHooks) onUsageCap(nodeID string, info UsageCapInfo) {
+	data := map[string]any{
+		"window":  info.Window,
+		"family":  info.Family,
+		"percent": info.Percent,
+		"cap":     info.Cap,
+		"mode":    info.Mode,
+		"stopped": info.Stopped,
+	}
+	if !info.ResetsAt.IsZero() {
+		data["resets_at"] = info.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	h.emit(nodeID, store.EventUsageCap, data)
+}
+
 // isLikelyStructuredPayload reports whether text is a bare JSON object
 // or array — the shape of a structured-output answer rather than
 // human-facing narration.
@@ -968,6 +985,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnLLMRetry:         h.onLLMRetry,
 		OnLLMStepFinish:    h.onLLMStepFinish,
 		OnAssistantText:    h.onAssistantText,
+		OnUsageCap:         h.onUsageCap,
 		OnLLMTurnCapture:   h.onLLMTurnCapture,
 		OnLLMCompacted:     h.onLLMCompacted,
 		OnToolStarted:      h.onToolStarted,

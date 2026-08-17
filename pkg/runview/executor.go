@@ -27,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // rewriteChainFromPlugins loads the plugin registry and builds the command-
@@ -130,6 +131,14 @@ type ExecutorSpec struct {
 	// "off"), highest-priority input to automemory.Resolve (above node/workflow
 	// DSL and ITERION_AUTO_MEMORY). See docs/memory-and-knowledge.md.
 	AutoMemory string
+
+	// UsageGuard enforces the operator's subscription usage cap
+	// (pkg/usagecap) for this run. The cloud runner injects one backed by
+	// the shared Mongo store, so every pod sees what the others learned;
+	// nil makes BuildExecutor resolve the machine-wide policy from the
+	// environment onto a process-local store, which is exactly right for
+	// a CLI run and inert when no cap is configured.
+	UsageGuard *usagecap.Guard
 
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"), highest-priority input to the gate's
@@ -329,6 +338,13 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithRewriteChain(rewriteChainFromPlugins(spec.Logger)),
 		model.WithPermissionOverride(spec.Permission),
 		model.WithPermissionRules(spec.PermissionAllow, spec.PermissionAsk, spec.PermissionDeny),
+	}
+	usageGuard, err := resolveUsageGuard(spec)
+	if err != nil {
+		return nil, err
+	}
+	if usageGuard != nil {
+		opts = append(opts, model.WithUsageGuard(usageGuard))
 	}
 	if sid := resolveSourceIssueID(spec); sid != "" {
 		opts = append(opts, model.WithSourceIssueID(sid))

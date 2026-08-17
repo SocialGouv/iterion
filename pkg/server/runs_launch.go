@@ -422,6 +422,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "server draining")
 			return
 		}
+		if errors.Is(err, runtime.ErrUsageCapped) {
+			// A quota refusal, not a malformed request: the same launch
+			// succeeds once the window reopens, and the message says when.
+			s.httpErrorFor(w, r, http.StatusTooManyRequests, "%v", err)
+			span.SetStatus(codes.Error, "usage cap reached")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "launch failed")

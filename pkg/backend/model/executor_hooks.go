@@ -111,9 +111,15 @@ type EventHooks struct {
 	// an opaque []byte (JSON-encoded []api.Message) so EventHooks
 	// stays neutral to the wire format.
 	OnLLMTurnCapture func(nodeID string, info LLMTurnCaptureInfo)
-	OnLLMCompacted   func(nodeID string, info LLMCompactInfo)
-	OnToolStarted    func(nodeID string, info LLMToolStartedInfo)
-	OnToolCall       func(nodeID string, info LLMToolCallInfo)
+	// OnUsageCap fires when a reading of the provider's subscription
+	// telemetry crosses an operator-configured cap (pkg/usagecap). Purely
+	// observational — the executor has already decided whether to stop the
+	// run by the time it fires — but it is the only place the timeline
+	// learns that iterion stopped itself rather than being refused.
+	OnUsageCap     func(nodeID string, info UsageCapInfo)
+	OnLLMCompacted func(nodeID string, info LLMCompactInfo)
+	OnToolStarted  func(nodeID string, info LLMToolStartedInfo)
+	OnToolCall     func(nodeID string, info LLMToolCallInfo)
 	// OnToolNodeResult is called for direct tool nodes (not LLM tool loops)
 	// with full input/output content for detailed logging.
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)

@@ -109,6 +109,18 @@ const (
 	//     "runtime_code+parsed_text", "…+blind_wait") — the degraded
 	//     paths must be visible, not silent
 	EventRunRetryScheduled EventType = "run_retry_scheduled"
+	// EventUsageCap marks the provider's subscription telemetry crossing a
+	// cap the OPERATOR set, below the provider's own wall (see
+	// pkg/usagecap). It is the difference between "the provider refused
+	// us" and "we stopped ourselves", which nothing else on the timeline
+	// can tell apart — both end the run the same way. Data:
+	//   - window: the provider's window name (five_hour, seven_day, …)
+	//   - family: the cap that governs it ("5h" | "week")
+	//   - percent / cap: observed utilization vs the configured ceiling
+	//   - mode: "soft" (nothing new starts) or "hard" (this run stops)
+	//   - stopped: whether THIS run was ended by the cap
+	//   - resets_at: RFC3339 instant the window reopens, when known
+	EventUsageCap EventType = "usage_cap"
 	// EventRunWorkspaceReset marks a repo-backed run RE-EXECUTING from a
 	// FRESH clone. The runner deletes the per-run repo dir when a run
 	// returns and re-clones on every claim, so a second attempt never

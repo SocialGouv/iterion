@@ -45,7 +45,7 @@ func isControlResponse(rm *rawMessage) bool {
 // isMessage returns true if the line is a regular message (not control protocol).
 func isMessage(rm *rawMessage) bool {
 	switch rm.Type {
-	case "system", "assistant", "user", "result", "stream_event":
+	case "system", "assistant", "user", "result", "stream_event", "rate_limit_event":
 		return true
 	}
 	return false

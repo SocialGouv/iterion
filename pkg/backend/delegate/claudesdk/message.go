@@ -7,7 +7,7 @@ import (
 
 // Message is a sealed interface for NDJSON messages from the CLI.
 // Concrete types: [SystemMessage], [AssistantMessage], [UserMessage],
-// [ResultMessage], [StreamEvent].
+// [ResultMessage], [StreamEvent], [RateLimitEvent].
 type Message interface {
 	messageType() string
 	sealed()
@@ -224,6 +224,43 @@ type StreamEvent struct {
 func (*StreamEvent) messageType() string { return "stream_event" }
 func (*StreamEvent) sealed()             {}
 
+// RateLimitInfo is the CLI's view of one provider usage window, emitted
+// whenever the numbers change. It is the only place a subscription's
+// remaining headroom is observable from outside the provider: the metered
+// API returns rate-limit headers, but a CLI-driven session hides them.
+//
+// Every field but Status is optional on the wire — a "rejected" can arrive
+// with no utilization and no reset instant — so the pointers are load
+// bearing: 0 and "absent" are different answers here.
+type RateLimitInfo struct {
+	// Status is "allowed", "allowed_warning" or "rejected".
+	Status string `json:"status"`
+	// RateLimitType names the window: five_hour, seven_day,
+	// seven_day_opus, seven_day_sonnet, seven_day_overage_included,
+	// overage.
+	RateLimitType string `json:"rateLimitType,omitempty"`
+	// Utilization is the FRACTION of the window consumed (0..1), not a
+	// percentage.
+	Utilization *float64 `json:"utilization,omitempty"`
+	// ResetsAt is a Unix timestamp in SECONDS.
+	ResetsAt *int64 `json:"resetsAt,omitempty"`
+	// OverageStatus / OverageResetsAt describe the paid spill-over
+	// channel, carried for diagnostics.
+	OverageStatus   string `json:"overageStatus,omitempty"`
+	OverageResetsAt *int64 `json:"overageResetsAt,omitempty"`
+}
+
+// RateLimitEvent reports a change in the provider's usage-window state.
+type RateLimitEvent struct {
+	Type      string        `json:"type"` // "rate_limit_event"
+	UUID      string        `json:"uuid"`
+	SessionID string        `json:"session_id"`
+	Info      RateLimitInfo `json:"rate_limit_info"`
+}
+
+func (*RateLimitEvent) messageType() string { return "rate_limit_event" }
+func (*RateLimitEvent) sealed()             {}
+
 // unmarshalMessage dispatches a raw JSON line to the correct Message type.
 func unmarshalMessage(data []byte) (Message, error) {
 	var probe struct {
@@ -253,6 +290,10 @@ func unmarshalMessage(data []byte) (Message, error) {
 		msg = &m
 	case "stream_event":
 		var m StreamEvent
+		err = json.Unmarshal(data, &m)
+		msg = &m
+	case "rate_limit_event":
+		var m RateLimitEvent
 		err = json.Unmarshal(data, &m)
 		msg = &m
 	default:

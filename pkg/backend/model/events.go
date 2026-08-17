@@ -76,6 +76,19 @@ type AssistantTextInfo struct {
 	Iteration int
 }
 
+// UsageCapInfo describes a usage-cap crossing, passed to the OnUsageCap
+// hook. Stopped distinguishes the two postures: a soft cap fires this event
+// and lets the run finish, a hard cap fires it and ends the run.
+type UsageCapInfo struct {
+	Window   string
+	Family   string
+	Percent  float64
+	Cap      float64
+	Mode     string
+	Stopped  bool
+	ResetsAt time.Time
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string

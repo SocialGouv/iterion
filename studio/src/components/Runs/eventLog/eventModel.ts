@@ -16,6 +16,10 @@ export const EVENT_BADGE: Record<string, string> = {
   artifact_written: "bg-accent-soft text-fg-default",
   human_input_requested: "bg-warning-soft text-warning-fg",
   budget_warning: "bg-warning-soft text-warning-fg",
+  // The operator's own subscription ceiling, hit below the provider's
+  // wall. Warning-coloured: the run either stops or is the last one to
+  // start, and either way it is a decision iterion took.
+  usage_cap: "bg-warning-soft text-warning-fg",
   budget_exceeded: "bg-danger-soft text-danger-fg",
   // A route change, not a failure — the run continues on another
   // model/backend. Warning-coloured because the primary route is gone.
