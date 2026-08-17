@@ -166,9 +166,21 @@ The party that may NOT re-record (a modernisation worker) announces a request:
 <!-- iterion:rebaseline-request
 {"id": "R-<lot>-<n>", "lot": "<lot-id>",
  "cause": "one line: the intended behaviour change that moved these references",
- "expected_paths": ["exact repo-relative reference paths, read from the oracle's own report"]}
+ "expected_paths": ["exact repo-relative reference paths, read from the oracle's own report"],
+ "replaces": "R-<lot>-<n> (OPTIONAL: an earlier pending request this one subsumes)"}
 -->
 ```
+
+`replaces` is how supersedence is DECLARED: acting the newer request closes the
+chain it replaces. Prose saying "this replaces R-X" counts for the reader and
+for nobody else — the harness only follows the field.
+
+**A pending request is a conjunction term.** The gate refuses while any request
+is unanswered (`pending_rebaselines` in the verdict): a pending request means
+known-diverging entries are quarantined out of the verdict, and a green built
+around them narrows the net while reporting progress — the exact failure this
+bot exists to catch, one level up. Clearing the ledger is not housekeeping to
+do after convergence; it is what convergence MEANS.
 
 The party that owns the net answers with an act — written ONLY after re-recording, and ONLY when
 the observed diff equalled `expected_paths` exactly, collateral included — then a verdict once the

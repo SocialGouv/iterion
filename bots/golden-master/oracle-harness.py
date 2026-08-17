@@ -981,6 +981,61 @@ def missing_corpus_probes(corpus, config):
     return gaps
 
 
+def pending_rebaselines(gm_dir):
+    """Ledger requests no act has answered — measured, four of them, resting
+    quietly behind a green gate.
+
+    A pending request means a known divergence is being carried: the entries it
+    names are quarantined out of the verdict, and the gate is green AROUND
+    them. Left unchecked, that state is exactly the failure this whole file
+    exists to catch one level down — the net narrowing while every run reports
+    green. So a pending request is a CONJUNCTION TERM: the gate refuses until
+    the owner acts it (or a later request declares `\"replaces\"` and is acted
+    itself; the supersedence must be the machine-readable field, prose does not
+    count).
+
+    A ledger that cannot be parsed is an escalation, never a silence — but an
+    ABSENT ledger is a net that never re-baselined, and that is a legal state.
+    """
+    path = os.path.join(gm_dir, "REBASELINE.md")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+
+    def blocks(kind):
+        out = []
+        for body in re.findall(r"<!-- iterion:rebaseline-%s\n(.*?)\n-->" % kind,
+                               text, re.S):
+            try:
+                out.append(json.loads(body))
+            except ValueError:
+                out.append({"id": "UNPARSEABLE", "raw": body[:120]})
+        return out
+
+    requests = blocks("request")
+    acted = {b.get("id") for b in blocks("act")}
+    if any(r.get("id") == "UNPARSEABLE" for r in requests) or "UNPARSEABLE" in acted:
+        return [{"id": "UNPARSEABLE",
+                 "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+
+    replaced_by = {}
+    for r in requests:
+        if r.get("replaces"):
+            replaced_by[r["replaces"]] = r["id"]
+
+    def closed(rid, seen=()):
+        if rid in acted:
+            return True
+        nxt = replaced_by.get(rid)
+        if not nxt or nxt in seen:
+            return False
+        return closed(nxt, seen + (rid,))
+
+    return [{"id": r["id"], "lot": r.get("lot", "?")}
+            for r in requests if not closed(r["id"])]
+
+
 # ─── Route coverage — the corpus states its own perimeter ───────────────────
 
 def route_regex(pattern):
@@ -1723,6 +1778,37 @@ def _selftest():
               route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
               ["POST /list"])
 
+        # 8b. Registre : une demande sans acte bloque ; un `replaces` acte la
+        #     chaine ; un bloc illisible escalade, ne se devine pas.
+        ldir = tempfile.mkdtemp(prefix="gm-selftest-ledger-")
+        lp = os.path.join(ldir, "REBASELINE.md")
+
+        def ledger(*blks):
+            with open(lp, "w", encoding="utf-8") as f:
+                f.write("\n".join("<!-- iterion:rebaseline-%s\n%s\n-->" % b for b in blks))
+
+        check("pas de registre -> aucun pending",
+              pending_rebaselines(os.path.join(ldir, "absent")), [])
+        ledger(("request", '{"id": "R-A-1", "lot": "A"}'))
+        check("demande sans acte -> pending",
+              [p["id"] for p in pending_rebaselines(ldir)], ["R-A-1"])
+        ledger(("request", '{"id": "R-A-1", "lot": "A"}'),
+               ("act", '{"id": "R-A-1", "lot": "A", "recorded_paths": []}'))
+        check("demande actee -> rien", pending_rebaselines(ldir), [])
+        ledger(("request", '{"id": "R-A-1", "lot": "A"}'),
+               ("request", '{"id": "R-B-1", "lot": "B", "replaces": "R-A-1"}'),
+               ("act", '{"id": "R-B-1", "lot": "B", "recorded_paths": []}'))
+        check("remplacee par une demande actee -> chaine fermee",
+              pending_rebaselines(ldir), [])
+        ledger(("request", '{"id": "R-A-1", "lot": "A"}'),
+               ("request", '{"id": "R-B-1", "lot": "B", "replaces": "R-A-1"}'))
+        check("remplacee par une demande NON actee -> les deux pendent",
+              sorted(p["id"] for p in pending_rebaselines(ldir)),
+              ["R-A-1", "R-B-1"])
+        ledger(("request", 'pas du json'))
+        check("bloc illisible -> escalade nommee",
+              pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
+
         # 9. Scellement : derivable partout, jamais dans le parent du worktree
         #    (lecture seule en sandbox), et sans collision entre worktrees
         #    freres qui partagent le meme basename.
@@ -1779,6 +1865,7 @@ def main():
               "notice": "", "uncontrolled": [], "blind_lanes": [], "missing_archetypes": [],
               "missing_corpus_probes": [], "uncovered_routes": [],
               "routes_total": 0, "routes_excluded": 0,
+              "pending_rebaselines": [],
               "holdout_detected": 0, "holdout_total": 0, "stable": False,
               "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
               "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
@@ -1978,6 +2065,16 @@ def main():
                  "route is exactly where the last regression class shipped."
                  % (len(uncovered), ", ".join(uncovered[:20]),
                     ", …" if len(uncovered) > 20 else ""))
+
+        pending = pending_rebaselines(gm_dir)
+        if pending:
+            report["pending_rebaselines"] = pending
+            bail("the ledger carries %d pending re-baseline request(s): %s. Each one "
+                 "quarantines known-diverging entries out of this verdict — a green "
+                 "built around them narrows the net while reporting progress. Act "
+                 "them (record, diff == announced, act block, then the verdict after "
+                 "a green counter-test), or refuse them in writing."
+                 % (len(pending), json.dumps(pending, ensure_ascii=False)))
 
     try:
         app_up(config, ws)
