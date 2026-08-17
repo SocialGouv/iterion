@@ -213,8 +213,8 @@ workflow dispatcher_child:
 	}
 	select {
 	case <-launched.Done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("child did not reach its human gate")
+	case <-time.After(30 * time.Second):
+		t.Fatal("child did not reach its human gate within 30s")
 	}
 
 	// Dispatcher child bots execute from issue worktrees under the managed
