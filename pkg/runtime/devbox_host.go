@@ -129,7 +129,27 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 
 	repoCfg := devboxConfigIn(e.workDir, "workspace", e.logger)
 	botCfg := devboxConfigIn(bundleResourceDir(e.bundle, e.filePath), "bundle", e.logger)
+	// A declined repo source is REPORTED, not dropped: silence here is
+	// indistinguishable from a repo that declared nothing, and the
+	// operator staring at a missing binary deserves the reason.
+	skippedRepo := ""
+	if repoCfg != "" && !e.repoDevboxEnabled() {
+		if e.logger != nil {
+			e.logger.Info("runtime: host devbox: repo_devbox is off — %s is NOT installed for this run; the packages the target repo pins are unavailable (the bot's own devbox.json still is)", repoCfg)
+		}
+		skippedRepo, repoCfg = repoCfg, ""
+	}
 	if repoCfg == "" && botCfg == "" {
+		if skippedRepo != "" {
+			if err := e.emit(ctx, runID, store.EventSandboxDevboxProvisioned, "", map[string]any{
+				"target":          "host",
+				"skipped_sources": []string{"repo"},
+				"skipped_configs": []string{skippedRepo},
+				"reason":          "repo_devbox off",
+			}); err != nil && e.logger != nil {
+				e.logger.Warn("runtime: emit %s event for run %s: %v", store.EventSandboxDevboxProvisioned, runID, err)
+			}
+		}
 		return noop
 	}
 
@@ -151,6 +171,11 @@ func (e *Engine) provisionHostDevbox(ctx context.Context, runID string) func() {
 	emitOutcome := func(projects []hostDevboxProject, binDirs []string, path string) {
 		payload := map[string]any{
 			"target": "host",
+		}
+		if skippedRepo != "" {
+			payload["skipped_sources"] = []string{"repo"}
+			payload["skipped_configs"] = []string{skippedRepo}
+			payload["reason"] = "repo_devbox off"
 		}
 		if len(projects) > 0 {
 			labels := make([]string, 0, len(projects))

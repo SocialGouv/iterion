@@ -340,8 +340,14 @@ func TestResolveDevboxProjects_RejectsPathPoisoningDir(t *testing.T) {
 	spec := &sandbox.Spec{WorkspaceFolder: "/work:space"}
 	p := SandboxParams{WorkspacePath: workspace}
 
-	if got := resolveDevboxProjects(spec, p, "", iterlog.Nop()); len(got) != 0 {
+	got, skipped := resolveDevboxProjects(spec, p, "", iterlog.Nop())
+	if len(got) != 0 {
 		t.Errorf("a dir containing ':' must be dropped, got %+v", got)
+	}
+	// Dropped for being unusable, NOT declined by repo_devbox — the two
+	// reasons must not be conflated in what the operator is told.
+	if skipped != "" {
+		t.Errorf("a poisoned dir is not a repo_devbox refusal, got skipped=%q", skipped)
 	}
 }
 

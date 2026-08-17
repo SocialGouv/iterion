@@ -67,6 +67,11 @@ type ResumeOptions struct {
 	// resume, for the same reason AutoMemory does: it is not persisted, so a
 	// resume that says nothing falls back to the workflow's value.
 	LoopBudgetGuard string
+
+	// RepoDevbox re-states the run-level repo_devbox override on resume;
+	// like LoopBudgetGuard it is not persisted on the run, so a launch-time
+	// `off` must be repeated here or the workflow/env layer decides again.
+	RepoDevbox string
 	// ModelFor / BackendFor re-apply the launch-time per-node/-group model+
 	// backend overrides on resume (repeatable --model / --backend,
 	// "selector=value" or bare "value"). Resume does NOT persist the original
@@ -253,6 +258,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		// the same global default as `iterion run`.
 		runtime.WithSandboxDefault(runtime.ResolveGlobalSandboxDefault()),
 		runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
+		runtime.WithRepoDevbox(opts.RepoDevbox),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
 		// Wire the subbot runner, mirroring the run path (run.go). Without

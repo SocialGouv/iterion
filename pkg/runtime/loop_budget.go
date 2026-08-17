@@ -64,15 +64,7 @@ func (e *Engine) loopBudgetGuardEnabled() bool {
 // validator (C133) and ValidateLoopBudgetGuardMode reject anything but
 // on|off at their own boundaries; the extra spellings are accepted from
 // the env, where operators reach for 0/1.
-func parseLoopBudgetGuard(v string) (enabled, ok bool) {
-	switch strings.TrimSpace(strings.ToLower(v)) {
-	case "off", "0", "false", "no":
-		return false, true
-	case "on", "1", "true", "yes":
-		return true, true
-	}
-	return false, false
-}
+func parseLoopBudgetGuard(v string) (enabled, ok bool) { return parseOnOff(v) }
 
 // ValidateLoopBudgetGuardMode rejects a --loop-budget-guard value that is
 // neither empty (inherit) nor on|off. A typo would otherwise read as

@@ -101,6 +101,11 @@ type RunOptions struct {
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
 	// is on.
 	LoopBudgetGuard string
+
+	// RepoDevbox is the run-level override deciding whether the TARGET
+	// REPO's devbox.json is installed for this run ("on"|"off"; empty
+	// inherits the workflow block, then ITERION_REPO_DEVBOX, then on).
+	RepoDevbox string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"). "" inherits the workflow/node
 	// `permission:` DSL then the ITERION_PERMISSION env default.
@@ -179,6 +184,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return UserInputError(fmt.Errorf("--auto-memory: %w", err))
 	}
 
+	if err := runtime.ValidateRepoDevboxMode(opts.RepoDevbox); err != nil {
+		return err
+	}
 	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
 		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
@@ -678,6 +686,7 @@ func buildEngine(
 			runtime.WithSandboxHostStateOverride(opts.SandboxHostState),
 			runtime.WithSandboxHostStateDefault(sandboxHostStateDefault),
 			runtime.WithLoopBudgetGuard(opts.LoopBudgetGuard),
+			runtime.WithRepoDevbox(opts.RepoDevbox),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
 			runtime.WithSource(opts.Source),

@@ -1093,6 +1093,14 @@ print(json.dumps({'degraded': degraded, 'banner': banner}))
 workflow review_pr:
   entry: diff_precheck
 
+  ## A review READS the target repo; it never builds it. Installing the
+  ## toolchain that repo pins to build ITSELF buys this run nothing and
+  ## costs it a cold Nix realise before the first node — minutes on a
+  ## large repo, long enough to outlast the window a sandbox has to come
+  ## up. The bot's own devbox.json, if it ever ships one, still installs.
+  ## Override per run with `--repo-devbox on`.
+  repo_devbox: off
+
   budget:
     ## Two read-only reviewer branches run in parallel; emit runs alone
     ## afterwards.

@@ -1,7 +1,7 @@
 name: revi-converse
 display_name: Revi (converse)
 icon: 💬
-version: 0.1.0
+version: 0.1.1
 description: |
   Conversational sibling of Revi (review-pr). Triggered when an
   authorized forge user asks a focused QUESTION on an open pull

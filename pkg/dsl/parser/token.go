@@ -167,6 +167,8 @@ const (
 	TokenAutoMemory
 	// LoopBudgetGuard back-edge affordability guard switch: on|off
 	TokenLoopBudgetGuard
+	// RepoDevbox target-repo devbox.json provisioning switch: on|off
+	TokenRepoDevbox
 	// Permission gate: scalar mode + allow/ask/deny rule lists
 	TokenPermission
 	TokenAllow
@@ -334,6 +336,7 @@ var tokenNames = map[TokenType]string{
 	TokenCompress:         "compress",
 	TokenAutoMemory:       "auto_memory",
 	TokenLoopBudgetGuard:  "loop_budget_guard",
+	TokenRepoDevbox:       "repo_devbox",
 	TokenPermission:       "permission",
 	TokenAllow:            "allow",
 	TokenAsk:              "ask",
@@ -476,6 +479,7 @@ var keywords = map[string]TokenType{
 	"compress":              TokenCompress,
 	"auto_memory":           TokenAutoMemory,
 	"loop_budget_guard":     TokenLoopBudgetGuard,
+	"repo_devbox":           TokenRepoDevbox,
 	"permission":            TokenPermission,
 	"allow":                 TokenAllow,
 	"ask":                   TokenAsk,

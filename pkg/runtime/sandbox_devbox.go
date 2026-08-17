@@ -137,8 +137,19 @@ func applyDevboxProvisioning(
 	if spec == nil {
 		return
 	}
-	projects := resolveDevboxProjects(spec, p, bundleContainerPath, logger)
+	projects, skippedRepo := resolveDevboxProjects(spec, p, bundleContainerPath, logger)
 	if len(projects) == 0 {
+		if skippedRepo != "" {
+			// Nothing to install, but something WAS declared and
+			// deliberately not installed. Saying so is the difference
+			// between a decision and a missing binary nobody explains.
+			_ = emitEvent(store.EventSandboxDevboxProvisioned, map[string]any{
+				"target":          "sandbox",
+				"skipped_sources": []string{"repo"},
+				"skipped_configs": []string{skippedRepo},
+				"reason":          "repo_devbox off",
+			})
+		}
 		return
 	}
 
@@ -166,28 +177,47 @@ func applyDevboxProvisioning(
 		logger.Info("runtime: sandbox devbox: provisioning %s from %s — `devbox install` at container start, %s prepended to PATH (a cold Nix realise can take minutes)",
 			strings.Join(labels, "+"), strings.Join(configs, ", "), strings.Join(binDirs, ", "))
 	}
-	_ = emitEvent(store.EventSandboxDevboxProvisioned, map[string]any{
+	payload := map[string]any{
 		"target":   "sandbox",
 		"sources":  labels,
 		"configs":  configs,
 		"bin_dirs": binDirs,
 		"path":     spec.Env["PATH"],
-	})
+	}
+	if skippedRepo != "" {
+		payload["skipped_sources"] = []string{"repo"}
+		payload["skipped_configs"] = []string{skippedRepo}
+		payload["reason"] = "repo_devbox off"
+	}
+	_ = emitEvent(store.EventSandboxDevboxProvisioned, payload)
 }
 
 // resolveDevboxProjects lists the devbox sources this run carries, in
 // PATH-precedence order: the target repo first, then the bot. A repo that
 // pins its own toolchain stays authoritative for building itself; the
 // bot's packages fill in what the repo does not provide.
+//
+// The second return is the host path of a repo devbox.json that EXISTS but
+// was declined by `repo_devbox: off` — "" when there was none to decline.
+// The caller reports it: a source dropped in silence is indistinguishable
+// from a source nobody declared.
 func resolveDevboxProjects(
 	spec *sandbox.Spec,
 	p SandboxParams,
 	bundleContainerPath string,
 	logger *iterlog.Logger,
-) []devboxProject {
+) ([]devboxProject, string) {
 	var out []devboxProject
+	skippedRepo := ""
 
-	if cfg := devboxConfigIn(p.WorkspacePath, "workspace", logger); cfg != "" {
+	repoCfg := devboxConfigIn(p.WorkspacePath, "workspace", logger)
+	if repoCfg != "" && !resolveRepoDevbox(p.RepoDevboxOverride, p.Workflow) {
+		if logger != nil {
+			logger.Info("runtime: sandbox devbox: repo_devbox is off — %s is NOT installed for this run; the packages the target repo pins are unavailable (the bot's own devbox.json still is)", repoCfg)
+		}
+		skippedRepo, repoCfg = repoCfg, ""
+	}
+	if cfg := repoCfg; cfg != "" {
 		// Installs in place: the workspace bind is read-write, and a
 		// repo's devbox.json may reference sibling paths (`path:./flake`)
 		// that only resolve next to it. devbox drops a self-ignoring
@@ -223,7 +253,7 @@ func resolveDevboxProjects(
 		}
 		kept = append(kept, pr)
 	}
-	return kept
+	return kept, skippedRepo
 }
 
 // devboxConfigIn returns the host path of dir's devbox.json, or "" when

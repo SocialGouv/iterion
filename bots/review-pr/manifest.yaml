@@ -1,7 +1,7 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.5.7
+version: 0.5.8
 ## 0.5.7 — the review comment stops reporting a comparison that never happened.
 ## Mono is the default topology (one family reviews), yet every comment ended
 ## with "0 finding(s) cross-confirmed by both model families" — which reads as

@@ -181,6 +181,12 @@ type SandboxParams struct {
 	HostStateOverride string
 	HostStateDefault  string
 
+	// RepoDevboxOverride is the CLI/launch-level `repo_devbox` override
+	// ("on"|"off"|""), highest layer of the chain that decides whether the
+	// TARGET REPO's devbox.json is installed. Empty defers to the workflow
+	// block, then ITERION_REPO_DEVBOX, then on. See resolveRepoDevbox.
+	RepoDevboxOverride string
+
 	EmitEvent func(store.EventType, map[string]any) error
 	Logger    *iterlog.Logger
 	// AttachmentsHostDir, when non-empty, is bind-mounted read-only
@@ -1496,6 +1502,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		DefaultImage:             e.sandboxDefaultImage,
 		HostStateOverride:        e.sandboxHostStateOverride,
 		HostStateDefault:         e.sandboxHostStateDefault,
+		RepoDevboxOverride:       e.repoDevboxOverride,
 		EmitEvent:                emitForSandbox,
 		Logger:                   e.logger,
 		AttachmentsHostDir:       attachHost,

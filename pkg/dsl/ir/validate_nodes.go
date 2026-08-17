@@ -236,6 +236,20 @@ func (c *compiler) validateLoopBudgetGuard(w *Workflow) {
 		w.Name, w.LoopBudgetGuard)
 }
 
+// validateRepoDevbox enforces that repo_devbox is one of the accepted
+// barewords. Same reasoning as loop_budget_guard: the default is ON, so a
+// mistyped `off` would silently keep the target repo's whole toolchain
+// installing at every run — minutes of Nix, invisibly.
+func (c *compiler) validateRepoDevbox(w *Workflow) {
+	switch strings.ToLower(strings.TrimSpace(w.RepoDevbox)) {
+	case "", "on", "off":
+		return
+	}
+	c.errorf(DiagInvalidRepoDevbox,
+		"workflow %q has invalid repo_devbox %q; valid values are on, off",
+		w.Name, w.RepoDevbox)
+}
+
 // validateAutoMemory enforces that every auto_memory value (workflow-level +
 // every agent/judge node) is one of the accepted barewords, and warns when a
 // node asks for it on a backend that cannot deliver it. A typo would silently

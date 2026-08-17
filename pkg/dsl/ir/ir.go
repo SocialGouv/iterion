@@ -48,6 +48,10 @@ type Workflow struct {
 	// refusal to start a loop iteration the budget cannot fund: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
+	// RepoDevbox switches provisioning of the TARGET REPO's devbox.json —
+	// the toolchain that repo pins to build ITSELF: on|off ("" = unset →
+	// ITERION_REPO_DEVBOX → on). The BOT's own devbox.json is unaffected.
+	RepoDevbox      string
 	Permission      string       // permission gate mode: off|ask|deny ("" = unset → off)
 	PermissionAllow []string     // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
 	PermissionAsk   []string     // ask rules

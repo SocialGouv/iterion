@@ -266,6 +266,11 @@ print(json.dumps({'degraded': degraded, 'banner': banner}))
 workflow revi_converse:
   entry: converse_agent
 
+  ## Answering a question about a diff reads the repo; it never builds
+  ## it. Same reasoning as review-pr: the target's own toolchain is a
+  ## cold Nix realise this run has no use for.
+  repo_devbox: off
+
   budget:
     ## One short LLM step + a deterministic gate. Conversations
     ## must feel snappy.
