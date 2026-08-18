@@ -99,10 +99,15 @@ Consequences worth knowing:
 
 ## What a cap does NOT stop
 
-**A workflow that cannot call a model is never blocked.** The cap governs a
-model subscription; a run with no agent, judge, `llm` router, model-answered
-human node, agent recovery rung, subbot or supervisor cannot draw on it, so
-refusing that run would protect nothing.
+**A run is only refused in advance when it could not possibly avoid
+spending.** The cap governs a model subscription, and it blocks at launch
+only if EVERY path from the workflow's entry to a terminal passes through
+something that can call a model — an agent, a judge, an `llm` router, a
+model-answered human node, an agent recovery rung, a subbot, a supervisor.
+
+If any model-free path exists, the run starts and the **mid-run** guard stops
+it at the actual call. That costs a pod and a clone in the worst case, and it
+is the price of not refusing work that would never have been billed.
 
 The distinction is not cosmetic. A zero-LLM run is often the half of a bot
 that *gathers* — and gathered material is not recoverable by retrying later.
@@ -112,12 +117,23 @@ material permanently gone, while the `digest` half it feeds waits on a queue
 that stays empty. Between 2026-08-17 and 2026-08-18 that is exactly what
 happened.
 
-The predicate is [`ir.Workflow.UsesLLM`](../pkg/dsl/ir/uses_llm.go) and it is
-deliberately conservative: every uncertainty answers "yes, it spends". A
-subbot counts because its child `.bot` is a separate source the parent does
-not carry; a supervisor counts even when no graph node does, because it
-watches with a model of its own. So the predicate can only ever spare a
-workflow provably free of model calls — it can never hand a spender a pass.
+**Why "every path" and not "contains a model node".** A two-mode bot carries
+both halves in ONE `.bot`: Vigie's `collect` polls feeds with tool nodes,
+`digest` synthesises with an agent, and a router picks between them from a
+field the `plan` node produces at RUNTIME — not from a var, so no launch-time
+analysis can predict it. A predicate asking merely "does this graph contain
+an agent?" answers yes for both halves and refuses the collect half too. That
+is exactly the defect that silenced the production veille, and shipping the
+weaker predicate first did not fix it.
+
+The predicate is [`ir.Workflow.AlwaysReachesLLM`](../pkg/dsl/ir/uses_llm.go),
+walking forward from the entry and treating a model-calling node as a wall:
+reaching a terminal without hitting one proves a model-free path exists. It
+stays conservative in the direction that matters — an unwalkable graph, a
+missing entry, a dangling edge or a supervisor all answer "true", keeping
+today's refusal rather than opening the gate. (`UsesLLM` still exists for the
+plain "does this graph contain one?" question; the two deliberately disagree
+on a two-mode bot, which is the whole point.)
 
 Both pre-flights apply it: the cloud runner's (which has the compiled
 workflow in hand) and the local launch path's (which compiles only when the

@@ -1,27 +1,30 @@
 package ir
 
-// UsesLLM reports whether executing this workflow can result in at least
-// one model call.
+// This file answers two different questions about model spend, and the
+// distinction between them is the whole point.
 //
-// It exists for the guards that protect a *model* budget — the operator's
-// subscription cap first among them. Such a guard refusing to start a
-// workflow that would never call a model protects nothing and costs
-// everything: the zero-LLM half of a two-mode bot (a feed collector that
-// only polls RSS and appends to a queue) stops running while the window is
-// shut, and the material it was supposed to bank is simply lost, because a
-// feed serves a short window and does not remember what nobody fetched.
+//   UsesLLM          — "does this workflow contain a node that can call a
+//                      model?" A property of the graph.
+//   AlwaysReachesLLM — "will EVERY run of this workflow reach one?" A
+//                      property of every path through the graph.
 //
-// The answer is deliberately CONSERVATIVE: every uncertainty returns true,
-// so a guard keeps blocking exactly what it blocks today and this predicate
-// can only ever open the door for a workflow provably free of model calls.
-// A subbot is the clearest case — its child `.bot` is a separate source
-// this workflow does not carry, so it counts as LLM-using on principle.
+// A guard that refuses work BEFORE it starts — the operator's subscription
+// cap — must ask the second. The first is not enough, and the gap between
+// them is not academic: a two-mode bot carries both halves in one `.bot`,
+// and refusing its zero-LLM half because the LLM half exists in the same
+// file is exactly the defect this pair was written to close.
+
+// UsesLLM reports whether the workflow contains at least one node that can
+// call a model, anywhere in the graph, reachable or not.
+//
+// Deliberately CONSERVATIVE: every uncertainty answers true. A subbot
+// counts because its child `.bot` is a separate source this workflow does
+// not carry; a supervisor counts even when no graph node does, because it
+// watches with a model of its own.
 func (w *Workflow) UsesLLM() bool {
 	if w == nil {
 		return false
 	}
-	// A supervisor is an LLM agent watching the run from the side; it can
-	// wake and spend even when no graph node ever would.
 	if len(w.Supervisors) > 0 {
 		return true
 	}
@@ -31,6 +34,83 @@ func (w *Workflow) UsesLLM() bool {
 		}
 	}
 	return false
+}
+
+// AlwaysReachesLLM reports whether EVERY path from the entry node to a
+// terminal passes through a node that can call a model — i.e. whether this
+// workflow is incapable of running without spending.
+//
+// It is the predicate a pre-flight guard needs. Refusing a run in advance
+// is only defensible when the run could not possibly avoid the thing being
+// guarded; when some path avoids it, the honest answer is to let the run
+// start and let the MID-RUN guard stop it at the actual call. That costs a
+// pod and a clone in the worst case, and it is the price of not refusing
+// work that would never have been billed.
+//
+// The routing that decides which path a run takes is usually not knowable
+// here — Vigie's `plan -> fetch_feeds when collect` branches on a field the
+// `plan` node produces at runtime, not on a var — so this deliberately does
+// not try to predict it. It asks the weaker, decidable question: does a
+// model-free path exist at all?
+//
+// Conservative in the direction that matters: an empty or unreachable
+// graph, a workflow whose entry is missing, or any shape this cannot walk
+// answers true, keeping today's behaviour rather than opening the gate.
+func (w *Workflow) AlwaysReachesLLM() bool {
+	if w == nil || len(w.Nodes) == 0 {
+		return true
+	}
+	// A supervisor is armed for the whole run whatever path it takes, so
+	// no path avoids the spend.
+	if len(w.Supervisors) > 0 {
+		return true
+	}
+	entry := w.Entry
+	if entry == "" || w.Nodes[entry] == nil {
+		return true
+	}
+
+	// Walk forward from the entry, treating an LLM node as a WALL: paths
+	// through it spend, so they are not explored. Reaching a terminal
+	// without hitting a wall proves a model-free path exists.
+	out := map[string][]string{}
+	for _, e := range w.Edges {
+		if e != nil {
+			out[e.From] = append(out[e.From], e.To)
+		}
+	}
+	seen := map[string]bool{entry: true}
+	stack := []string{entry}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		node := w.Nodes[id]
+		if node == nil {
+			// An edge into a node the workflow does not define: unwalkable,
+			// so refuse to conclude "a free path exists" from it.
+			return true
+		}
+		if nodeUsesLLM(node) {
+			continue // wall
+		}
+		switch node.(type) {
+		case *DoneNode, *FailNode:
+			return false // a terminal reached without spending
+		}
+		next := out[id]
+		if len(next) == 0 {
+			// A dead end that is not a terminal — the runtime would fail
+			// here rather than finish. Not a proof of a free path.
+			continue
+		}
+		for _, to := range next {
+			if !seen[to] {
+				seen[to] = true
+				stack = append(stack, to)
+			}
+		}
+	}
+	return true
 }
 
 // nodeUsesLLM answers for one node. Kept separate so the reasoning per node

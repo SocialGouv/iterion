@@ -124,7 +124,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// …unless this workflow cannot call a model at all, in which case
 		// the cap guards nothing it could spend. The compile is paid ONLY
 		// on the blocked path, so the common case stays free.
-		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil || wf.UsesLLM() {
+		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
 	}
