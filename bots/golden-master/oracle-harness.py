@@ -1250,6 +1250,19 @@ def sealed_dir_for(ws):
     return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
 
 
+def holdout_committed_in_tree(gm_dir):
+    """True when mutants/holdout/ carries COMMITTED entries.
+
+    A committed held-out set is a cross-run artefact: the authoring run shipped
+    it for a LATER convergence gate, because the ephemeral seal dir dies with
+    the run that made it — the tree is the only durable home the set has. No
+    git, or no repository: not committed — the authoring-run flow, where the
+    set exists only as fresh files.
+    """
+    code, out = run("git ls-files -- mutants/holdout", gm_dir, timeout=60)
+    return code == 0 and bool(out.strip())
+
+
 def seal_holdout(gm_dir, sealed_dir):
     """Move the held-out set OUT of the worktree, once, at the first gate.
 
@@ -1260,9 +1273,19 @@ def seal_holdout(gm_dir, sealed_dir):
     mechanical from the second pass onward, which is where hardening actually
     compounds.
 
+    A COMMITTED set is the exception, and it is left exactly where it is: it
+    awaits its own convergence gate. Sealing it here would strip tracked files
+    out of the tree — uncommitted deletions a finalize refuses to merge — and
+    burn the set's single scoring on a gate that does not own it. The gate
+    that DOES own it opts in explicitly with GM_SEAL_COMMITTED=1; the flag can
+    only widen what the gate consumes, never soften a verdict.
+
     Returns True when the set now lives outside the workspace.
     """
     src = os.path.join(gm_dir, "mutants", "holdout")
+    if os.path.isdir(src) and holdout_committed_in_tree(gm_dir) \
+            and os.environ.get("GM_SEAL_COMMITTED") != "1":
+        return bool(os.path.isdir(sealed_dir) and os.listdir(sealed_dir))
     os.makedirs(sealed_dir, exist_ok=True)
     if os.path.isdir(src):
         for name in sorted(os.listdir(src)):
@@ -1907,6 +1930,46 @@ def _selftest():
               parse_feature_probe("a nav\n# c\na i18n\nb i18n\n"),
               {"a": ["i18n", "nav"], "b": ["i18n"]})
 
+        # 8d. Scellement : un jeu frais se scelle ; un jeu COMMITTE attend sa
+        #     propre porte (le sceller brulerait sa notation et laisserait des
+        #     suppressions non committees) ; l'opt-in est explicite.
+        sroot = tempfile.mkdtemp(prefix="gm-selftest-seal-")
+        def mk_holdout(repo):
+            hd = os.path.join(repo, ".golden-master", "mutants", "holdout", "t01")
+            os.makedirs(hd)
+            with open(os.path.join(hd, "apply.sh"), "w", encoding="utf-8") as f:
+                f.write("true\n")
+            return os.path.join(repo, ".golden-master")
+        gmd = mk_holdout(os.path.join(sroot, "fresh"))
+        sealed1 = os.path.join(sroot, "sealed1")
+        check("jeu non committe -> scelle hors de l'arbre",
+              [seal_holdout(gmd, sealed1),
+               os.path.isdir(os.path.join(gmd, "mutants", "holdout", "t01"))],
+              [True, False])
+        repo2 = os.path.join(sroot, "committed")
+        gmd2 = mk_holdout(repo2)
+        for cmd in ("git init -q", "git add -A",
+                    "git -c user.email=t@t -c user.name=t commit -qm seed"):
+            run(cmd, repo2, timeout=60)
+        sealed2 = os.path.join(sroot, "sealed2")
+        check("jeu committe -> laisse en place, rien de scelle",
+              [seal_holdout(gmd2, sealed2),
+               os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01")),
+               os.path.isdir(sealed2)],
+              [False, True, False])
+        prev_seal = os.environ.get("GM_SEAL_COMMITTED")
+        os.environ["GM_SEAL_COMMITTED"] = "1"
+        try:
+            check("opt-in explicite -> le jeu committe se scelle",
+                  [seal_holdout(gmd2, sealed2),
+                   os.path.isdir(os.path.join(gmd2, "mutants", "holdout", "t01"))],
+                  [True, False])
+        finally:
+            if prev_seal is None:
+                os.environ.pop("GM_SEAL_COMMITTED", None)
+            else:
+                os.environ["GM_SEAL_COMMITTED"] = prev_seal
+
         # 8b. Registre : une demande sans acte bloque ; un `replaces` acte la
         #     chaine ; un bloc illisible escalade, ne se devine pas.
         ldir = tempfile.mkdtemp(prefix="gm-selftest-ledger-")
@@ -2140,6 +2203,12 @@ def main():
 
     if mode != "record":
         seal_holdout(gm_dir, sealed_dir)
+        if holdout_committed_in_tree(gm_dir) and \
+                os.environ.get("GM_SEAL_COMMITTED") != "1":
+            note(report, "a fresh held-out set is COMMITTED under mutants/holdout/ "
+                         "and awaits its own convergence gate: this gate leaves it "
+                         "in place and scores without it. GM_SEAL_COMMITTED=1 is "
+                         "that gate's explicit opt-in.")
         held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
         # The held-out set lives outside the workspace once sealed. If the
         # sealed directory moved or was wiped, it is GONE — and the archetype
