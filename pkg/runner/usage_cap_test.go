@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -55,6 +56,19 @@ func capRunner(pol usagecap.Policy, caps usagecap.Store, rs store.RunStore) *Run
 	}}
 }
 
+// capLLMWorkflow is the shape every pre-flight test assumed before the
+// predicate existed: a workflow with an agent node, i.e. one that can
+// actually draw on the subscription the cap protects.
+func capLLMWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "capped",
+		Entry: "think",
+		Nodes: map[string]ir.Node{
+			"think": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "think"}},
+		},
+	}
+}
+
 func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	ctx := t.Context()
 	resets := time.Now().UTC().Add(30 * time.Hour)
@@ -72,7 +86,7 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	rs := &capStatusStore{}
 	r := capRunner(capTestPolicy(), caps, rs)
 
-	err := r.usageCapPreflight(ctx, &queue.RunMessage{RunID: "run-1"}, iterlog.Nop())
+	err := r.usageCapPreflight(ctx, capLLMWorkflow(), &queue.RunMessage{RunID: "run-1"}, iterlog.Nop())
 	if err == nil {
 		t.Fatal("want the run refused: the weekly window is at 92% against a 75% cap")
 	}
@@ -165,7 +179,7 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rs := &capStatusStore{}
 			r := capRunner(tt.pol, tt.caps(t), rs)
-			if err := r.usageCapPreflight(t.Context(), &queue.RunMessage{RunID: "run-1"}, iterlog.Nop()); err != nil {
+			if err := r.usageCapPreflight(t.Context(), capLLMWorkflow(), &queue.RunMessage{RunID: "run-1"}, iterlog.Nop()); err != nil {
 				t.Fatalf("blocked the run: %v", err)
 			}
 			if rs.calls != 0 {
@@ -230,5 +244,65 @@ func TestUsageGuardFor_PublishesUnderTheRunsCredentialKey(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Utilization != 0.5 {
 		t.Fatalf("ledger = %+v, want the reading under the tenant's key", got)
+	}
+}
+
+// capToolOnlyWorkflow is the Vigie `collect` shape: a graph of tool nodes
+// that never reaches a model. Documented zero-LLM, and refused for five days
+// by a cap on a subscription it could not have spent.
+func capToolOnlyWorkflow() *ir.Workflow {
+	return &ir.Workflow{
+		Name:  "collect",
+		Entry: "fetch",
+		Nodes: map[string]ir.Node{
+			"fetch": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "fetch"}, Command: "true"},
+			"dedup": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "dedup"}, Command: "true"},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+	}
+}
+
+// TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel is the fix's
+// reason for existing, in the shape that produced it.
+//
+// The cap protects an LLM subscription. A workflow with no model call cannot
+// draw on it, so refusing that run protects nothing — and costs whatever the
+// run was there to do. For a feed collector the loss is not recoverable by
+// retrying later: a feed serves a short window and does not remember what
+// nobody fetched, so five days of refusals are five days of material gone.
+//
+// The ledger below is the one that blocked Vigie: the seven-day window at
+// 92% against a 75% cap. The LLM-shaped run must still be refused (asserted
+// in the same test, so a fix that simply disabled the cap fails here).
+func TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel(t *testing.T) {
+	ctx := t.Context()
+	caps := usagecap.NewMemStore()
+	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform),
+		usagecap.Reading{
+			Window:      usagecap.WindowSevenDay,
+			Utilization: 0.92,
+			Status:      usagecap.StatusWarning,
+			ResetsAt:    time.Now().UTC().Add(30 * time.Hour),
+			ObservedAt:  time.Now().UTC(),
+		}); err != nil {
+		t.Fatal(err)
+	}
+	rs := &capStatusStore{}
+	r := capRunner(capTestPolicy(), caps, rs)
+
+	if err := r.usageCapPreflight(ctx, capToolOnlyWorkflow(),
+		&queue.RunMessage{RunID: "collect-1"}, iterlog.Nop()); err != nil {
+		t.Fatalf("a zero-LLM run was refused by an LLM cap: %v", err)
+	}
+	// And it must not be marked failed_resumable either: a run that was
+	// never blocked has no reason to carry the status of a blocked one.
+	if rs.calls != 0 {
+		t.Errorf("flipped the run's status %d times without blocking it", rs.calls)
+	}
+
+	// Same ledger, same runner: a workflow that CAN spend is still refused.
+	if err := r.usageCapPreflight(ctx, capLLMWorkflow(),
+		&queue.RunMessage{RunID: "think-1"}, iterlog.Nop()); err == nil {
+		t.Error("the cap must still refuse a model-calling run")
 	}
 }
