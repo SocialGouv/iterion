@@ -427,21 +427,68 @@ type resumeBackendState struct {
 // and a lost flip costs an operator round trip — or waits for the
 // periodic orphan reconcile. Attempts run on a detached ctx: the run
 // ctx being dead is one of the very triggers that lands here.
+// The status it writes is not always `failed`. Setup runs on the same
+// ctx the node loop does, so the same two interruptions reach it — and
+// they mean the same thing here as there: a runner drained mid-rollout,
+// or an operator cancelling, has not produced a workflow failure. Marked
+// terminal, such a run cannot be resumed, and for a review that means the
+// merge gate it owed stays absent for good. The node loop already
+// classifies both (handleContextDoneWithCheckpoint); this is that
+// classification, minus the checkpoint, which no node has yet earned —
+// resume then restarts from the entry, which it is built to do.
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
-	msg := fmt.Sprintf("%s: %v", phase, cause)
 	writeCtx := context.WithoutCancel(ctx)
+	status, msg := setupFailureStatus(ctx, phase, cause)
 	var err error
 	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-		if err = e.store.UpdateRunStatus(writeCtx, runID, store.RunStatusFailed, msg); err == nil {
+		if err = e.store.UpdateRunStatus(writeCtx, runID, status, msg); err == nil {
 			return
 		}
 	}
 	if e.logger != nil {
-		e.logger.Warn("runtime: failed to record run %s as failed during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, phase, err, cause)
+		e.logger.Warn("runtime: failed to record run %s as %s during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, status, phase, err, cause)
 	}
+}
+
+// setupFailureStatus classifies a pre-execLoop failure, mirroring what
+// handleContextDoneWithCheckpoint decides inside a node.
+//
+//   - the run ctx cancelled with ErrRunInterrupted (runner drain, lost
+//     heartbeat) — infrastructure took the run away: failed_resumable, so
+//     the ordinary retry puts it on a healthy pod;
+//   - the run ctx cancelled by an operator: cancelled, which is resumable
+//     too and says who stopped it;
+//   - anything else — a real setup error: failed, as before.
+//
+// It reads the CTX, not just the error: a drain kills the work by
+// cancelling, so what surfaces is whatever the interrupted step returned
+// (a killed `kubectl exec`, a half-written worktree), never the cause.
+func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string) {
+	if ctx == nil || ctx.Err() == nil {
+		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause)
+	}
+	if errors.Is(context.Cause(ctx), ErrRunInterrupted) {
+		return store.RunStatusFailedResumable, fmt.Sprintf("%s interrupted before the first node (resumable): %v", phase, cause)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause)
+	}
+	return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause)
+}
+
+// setupErr decorates the error a setup phase returns so an interruption
+// stays recognisable to the runner: it NAKs on ErrRunInterrupted (the run
+// is redelivered to a healthy pod) and ACKs on anything else. Without it
+// the status written above would say resumable while the queue had
+// already dropped the run — the two halves have to agree.
+func (e *Engine) setupErr(ctx context.Context, err error) error {
+	if ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), ErrRunInterrupted) {
+		return fmt.Errorf("%w: %v", ErrRunInterrupted, err)
+	}
+	return err
 }
 
 // newRunState builds a runState with all maps allocated. Resume paths
