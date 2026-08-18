@@ -121,7 +121,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// refusing it — here the operator is present, so an immediate refusal
 	// is the honest answer.
 	if blocked, reason := LocalUsagePreflight(); blocked {
-		return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
+		// …unless this workflow cannot call a model at all, in which case
+		// the cap guards nothing it could spend. The compile is paid ONLY
+		// on the blocked path, so the common case stays free.
+		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil || wf.UsesLLM() {
+			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
+		}
 	}
 
 	if detachedEnabled() {

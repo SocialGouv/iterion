@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -85,9 +86,20 @@ const usageCapStoreTimeout = 5 * time.Second
 // A cap exists to protect a subscription from a fleet of bots, not to strand
 // the fleet when its bookkeeping is unavailable: the mid-run guard is still
 // armed behind it, so the worst case of failing open is one wasted call.
-func (r *Runner) usageCapPreflight(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) error {
+func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, logger *iterlog.Logger) error {
 	pol := r.cfg.UsageCapPolicy
 	if !pol.Enabled() || r.cfg.UsageCaps == nil {
+		return nil
+	}
+	// A workflow that cannot call a model has nothing to draw on the
+	// subscription this cap protects. Blocking it would protect nothing and
+	// lose whatever it was supposed to do meanwhile — for a feed collector,
+	// material that no later run can recover, since a feed only serves a
+	// short window. The mid-run guard stays armed either way.
+	if !wf.UsesLLM() {
+		if logger != nil {
+			logger.Debug("runner: run %s makes no model call — usage cap not applied", msg.RunID)
+		}
 		return nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, usageCapStoreTimeout)

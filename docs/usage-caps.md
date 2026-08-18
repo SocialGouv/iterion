@@ -97,6 +97,34 @@ Consequences worth knowing:
 - then the ordinary wait: `run_retry_scheduled` with `retry_after` at the
   window's reopening, and `run_auto_resumed` when it fires.
 
+## What a cap does NOT stop
+
+**A workflow that cannot call a model is never blocked.** The cap governs a
+model subscription; a run with no agent, judge, `llm` router, model-answered
+human node, agent recovery rung, subbot or supervisor cannot draw on it, so
+refusing that run would protect nothing.
+
+The distinction is not cosmetic. A zero-LLM run is often the half of a bot
+that *gathers* — and gathered material is not recoverable by retrying later.
+Vigie's `collect` mode polls feeds into a queue; a feed serves a short window
+and does not remember what nobody fetched, so every refused collect is
+material permanently gone, while the `digest` half it feeds waits on a queue
+that stays empty. Between 2026-08-17 and 2026-08-18 that is exactly what
+happened.
+
+The predicate is [`ir.Workflow.UsesLLM`](../pkg/dsl/ir/uses_llm.go) and it is
+deliberately conservative: every uncertainty answers "yes, it spends". A
+subbot counts because its child `.bot` is a separate source the parent does
+not carry; a supervisor counts even when no graph node does, because it
+watches with a model of its own. So the predicate can only ever spare a
+workflow provably free of model calls — it can never hand a spender a pass.
+
+Both pre-flights apply it: the cloud runner's (which has the compiled
+workflow in hand) and the local launch path's (which compiles only when the
+cap is blocking, so the common case pays nothing). The mid-run guard stays
+armed in both cases, so a workflow that turns out to spend anyway is still
+stopped at the call.
+
 ## Cloud
 
 Every pod sees only its own session, so readings are shared through the
