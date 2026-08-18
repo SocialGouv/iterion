@@ -91,12 +91,14 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 	if !pol.Enabled() || r.cfg.UsageCaps == nil {
 		return nil
 	}
-	// A workflow that cannot call a model has nothing to draw on the
-	// subscription this cap protects. Blocking it would protect nothing and
-	// lose whatever it was supposed to do meanwhile — for a feed collector,
-	// material that no later run can recover, since a feed only serves a
-	// short window. The mid-run guard stays armed either way.
-	if !wf.UsesLLM() {
+	// Refuse in advance only what could not possibly avoid spending. A
+	// workflow with any model-free path — the collect half of a two-mode
+	// feed bot, say — is let through and stopped by the MID-RUN guard if it
+	// actually reaches a model call. Blocking it here protects nothing and
+	// loses what it was there to do: for a collector, material no later run
+	// recovers, since a feed serves a short window and does not remember
+	// what nobody fetched.
+	if !wf.AlwaysReachesLLM() {
 		if logger != nil {
 			logger.Debug("runner: run %s makes no model call — usage cap not applied", msg.RunID)
 		}

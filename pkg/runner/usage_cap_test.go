@@ -65,7 +65,9 @@ func capLLMWorkflow() *ir.Workflow {
 		Entry: "think",
 		Nodes: map[string]ir.Node{
 			"think": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "think"}},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
+		Edges: []*ir.Edge{{From: "think", To: "done"}},
 	}
 }
 
@@ -259,6 +261,7 @@ func capToolOnlyWorkflow() *ir.Workflow {
 			"dedup": &ir.ToolNode{BaseNode: ir.BaseNode{ID: "dedup"}, Command: "true"},
 			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
+		Edges: []*ir.Edge{{From: "fetch", To: "dedup"}, {From: "dedup", To: "done"}},
 	}
 }
 
