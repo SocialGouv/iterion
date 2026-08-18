@@ -20,6 +20,10 @@
     "moduleDetection": "force",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
+    // TypeScript 6+/7 no longer auto-includes every package under
+    // node_modules/@types (`types` now defaults to `[]`), so the Node globals
+    // and `node:*` module declarations have to be requested explicitly.
+    "types": ["node"],
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src"],
