@@ -182,6 +182,12 @@ prompt synthesize_system:
   5. Keep message_markdown under ~10000 characters. If
      input.overflow_count > 0, state that N older queued items were
      dropped unprocessed.
+  6. Date the digest for the window it COVERS, not for today. When
+     input.span_days > 1 the queue drained here accumulated over that
+     many days (a shut usage window, a paused schedule, a feed that came
+     back): title it as covering input.oldest_published → today, and do
+     not present items as breaking. When span_days <= 1 it is an ordinary
+     daily digest — title it with today's date as usual.
 
   RULES:
   - Every entry must correspond to input items. NEVER invent an item,
@@ -208,7 +214,8 @@ prompt synthesize_user:
   Compose the "{{input.digest_title}}" digest — {{input.items_count}}
   queued item(s) for category "{{input.category}}"
   ({{input.overflow_count}} older queued item(s) overflowed and were
-  dropped from this digest). Follow the editorial guidance and the system
+  dropped from this digest). This queue spans {{input.span_days}} day(s);
+  its oldest item is dated {{input.oldest_published}}. Follow the editorial guidance and the system
   procedure. Everything you need is inlined below — do NOT read files or
   run shell commands to find it (the run's permission policy forbids them,
   and it is unnecessary: the queue is here).
@@ -288,6 +295,13 @@ schema pending_output:
   ## Queue items beyond max_items (dropped from this digest AND from
   ## the queue — the digest message states the count).
   overflow_count: int
+  ## The window this queue actually spans: date of its oldest item
+  ## (YYYY-MM-DD, "" when no item carries a parsable date) and its age in
+  ## whole days. A digest drains a QUEUE, not a day — after a gap the
+  ## oldest item can be days old, and presenting it as today's news is
+  ## wrong. Read by the synthesis prompt to date the digest honestly.
+  oldest_published: string
+  span_days: int
   ## Every queued item id at snapshot time — commit_state clears
   ## exactly these, so items collected mid-digest survive.
   snapshot_ids: string[]
@@ -310,6 +324,8 @@ schema synthesize_input:
   items: json
   items_count: int
   overflow_count: int
+  oldest_published: string
+  span_days: int
   recent_topics: string
   editorial: string
   editorial_nonce: string
@@ -749,7 +765,7 @@ tool load_pending:
   output: pending_output
   language: py
   script: |
-    import json, os, fcntl
+    import json, os, fcntl, email.utils, datetime
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     editorial = {{input.editorial}}
@@ -885,12 +901,37 @@ tool load_pending:
     # per-run nonce fence. The LLM learns the nonce only from its trusted
     # system prompt, so editorial text cannot forge the closing marker to
     # break out and be read as instructions.
+    # How wide a window this queue actually spans. A digest drains a
+    # QUEUE, not a day: after any gap — a shut usage window, a paused
+    # schedule, a broken feed — the oldest item can be days old, and
+    # presenting it as today's news is simply wrong. Computed here, from
+    # the items themselves, so the LLM is told the span rather than left
+    # to infer it from datelines it must not trust.
+    def _pub_dt(it):
+        raw = (it.get('published') or '').strip()
+        if not raw:
+            return None
+        try:
+            d = email.utils.parsedate_to_datetime(raw)
+        except Exception:
+            return None
+        if d is None:
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+    _dts = [d for d in (_pub_dt(i) for i in items) if d is not None]
+    oldest_published, span_days = '', 0
+    if _dts:
+        oldest = min(_dts)
+        oldest_published = oldest.date().isoformat()
+        span_days = max(0, (datetime.datetime.now(datetime.timezone.utc) - oldest).days)
+
     nonce = os.urandom(8).hex()
     editorial_fenced = ('<<<UNTRUSTED_EDITORIAL ' + nonce + '>>>' + chr(10) +
                         (editorial or '') + chr(10) +
                         '<<<END_UNTRUSTED_EDITORIAL ' + nonce + '>>>')
     print(json.dumps({'has_items': bool(items), 'category': category, 'items': items,
                       'items_count': len(items), 'overflow_count': overflow,
+                      'oldest_published': oldest_published, 'span_days': span_days,
                       'snapshot_ids': snapshot_ids, 'recent_topics': chr(10).join(recent),
                       'editorial': editorial_fenced, 'editorial_nonce': nonce,
                       'digest_title': digest_title, 'sinks': sinks},
@@ -1215,6 +1256,8 @@ workflow feed_watch:
     items: "{{outputs.load_pending.items}}",
     items_count: "{{outputs.load_pending.items_count}}",
     overflow_count: "{{outputs.load_pending.overflow_count}}",
+    oldest_published: "{{outputs.load_pending.oldest_published}}",
+    span_days: "{{outputs.load_pending.span_days}}",
     recent_topics: "{{outputs.load_pending.recent_topics}}",
     editorial: "{{outputs.load_pending.editorial}}",
     editorial_nonce: "{{outputs.load_pending.editorial_nonce}}"
