@@ -4,6 +4,94 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-08-18 — Vigie silent since 13 Aug: the collect stopped finding anything new (runs 01a00e17, 01a00e4e)
+
+- Status: **partially diagnosed — re-seeded, root cause NOT closed**
+- Versions: bot 1.1.2 → 1.2.0 · iterion v3.46.0 (`ab3c760`)
+- Method: no LLM spent. Production run artifacts read through
+  `iterion remote api`, the state repo cloned and replayed locally, plus a
+  two-clone end-to-end test of the state hand-off against a local bare remote.
+
+### What the operator saw
+
+Nothing posted to Mattermost after 13 Aug. The runs kept firing and kept
+reporting `finished`.
+
+### What was actually happening
+
+`finished` is not `delivered`. A digest whose queue is empty exits at
+`plan → load_pending → done` — zero LLM, zero post, green status. Every
+`cyber` digest from 14 to 17 Aug did exactly that.
+
+The queue was empty because **the collect stopped finding new items on
+13 Aug around midday**, and never resumed:
+
+| | |
+|---|---|
+| Last state push | `d3223c4` collect 13/08 05:02, then `8726232` digest 06:02 — **nothing until 17/08 11:20** |
+| Every collect since | `new_count: 0`, `duplicate_count: ~969`, `committed: false` |
+| Same collect, run locally off the same git HEAD | **+247 new items** |
+
+The forge push history chains cleanly (`before` → `head`, no force-push), so
+nothing was overwritten: those collects genuinely had nothing to commit.
+
+**Not** the usage cap: that only began refusing runs on 17/08 17:00 — four
+days into the silence. It made things worse (it also refuses `collect`, a
+documented zero-LLM mode) but it is not the cause.
+
+### Hypotheses killed along the way
+
+- **User-Agent / anti-bot** — false. The bot's real UA gets 200 from
+  BleepingComputer, DarkReading and Threatpost. An earlier test that sent
+  *no* UA produced the 403 that suggested it.
+- **A persistent runner workspace holding an out-of-band state** — the
+  runner has a single `emptyDir`, nothing survives a pod. And `ia` delivered
+  75 items on 17/08 while `cyber` saw zero the same morning: a storage-wide
+  divergence cannot be that selective.
+- **The bot's own state hand-off** — proven sound. Two clones against a local
+  bare remote: collect finds 247, commits, pushes; a fresh clone reads back
+  `cyber=96, ia=48`. The chain crosses git correctly.
+
+### What remains open
+
+The prod collect fetches ~969 items (61–63 feeds OK) and matches **all** of
+them against a `seen.json` frozen at 13 Aug. From this workstation the same
+feeds yield 247 unseen ones. The remaining explanation compatible with every
+fact is that the HTTP responses received **from inside the cluster** are
+stale. Confirming it needs one outbound fetch from a pod — refused here
+without named authorization, so it is still to do:
+
+```sh
+kubectl --context ovh-prod -n iterion exec <a runner or server pod> -- \
+  sh -c 'wget -qO- https://krebsonsecurity.com/feed/ | grep -c "<item>"'
+# then compare the newest <pubDate> with what the same feed serves outside
+```
+
+### Actions taken
+
+- **State re-seeded** (`ffb5077..3780fa5`): 222 items back in the queues
+  (cyber 87, design-systems 49, ia 26), recomputed by a local zero-LLM
+  collect. Unblocks the next digest; does not fix the cause.
+- **Engine** — the usage cap no longer refuses a run that cannot call a model
+  (`ir.Workflow.UsesLLM`, PR #451). A refused `collect` is material lost for
+  good: a feed serves a short window and does not remember what nobody
+  fetched.
+- **Bot 1.2.0** — a digest now dates the window it covers (`span_days`,
+  `oldest_published`, PR #452). Measured on the real queue: oldest item
+  13/08, span 5 days.
+
+### Lessons
+
+- **`finished` is not `delivered`.** The empty-queue early exit is correct
+  behaviour and completely silent; nothing alerts when a daily digest posts
+  nothing several days running. That gap is what let this last five days.
+- **Read the schedule before calling a gap a failure.** `cyber` is daily;
+  `ia`/`tsjs`/`gopyrust`/`java` run Mondays, `design-*`/`ux-metier`/`a11y`
+  Wednesdays. Four categories being quiet from 13 to 16 Aug was the plan,
+  not a symptom — an early misreading here cost a full pass.
+- `hnrss.org` has been 502 since at least 17/08 (6–8 feeds). Third-party
+  outage, no effect on the silence.
+
 ## 2026-08-03 — Java digest rejected by its own link firewall: redirect-serving feeds (run 019fc65e)
 
 - Status: **failed (diagnosed + fixed)** — the Monday java digest died on
