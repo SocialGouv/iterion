@@ -358,6 +358,7 @@ tool lot_verify:
   script: |
     import json
     import os
+    import shlex
     import subprocess
 
     ws = {{vars.workspace_dir}}
@@ -446,12 +447,24 @@ tool lot_verify:
         # without measuring anything, and no reference would have moved.
         # Measured as a real gap: refs_dir alone left both scripts open.
         gm_dir = os.path.dirname(refs_dir.rstrip("/")) or ".golden-master"
+        # Trois familles, une seule raison : ce qui DECIDE du verdict ne se
+        # touche pas depuis un lot. Les references (ce qui est compare), la
+        # machinerie (ce qui compare : runner, harnais, canonicaliseur) — et
+        # les ENTREES qui disent QUOI mesurer. Amputer le corpus ou elargir
+        # les exclusions retrecit le filet sans deplacer une seule reference,
+        # et un vert ne peut pas rapporter ce retrecissement (mesure au tour
+        # 6). Un changement legitime de ces fichiers est une EXTENSION du
+        # filet : elle appartient a son proprietaire, par le registre.
         judged = [refs_dir,
                   os.path.join(gm_dir, "verify-oracle.sh"),
                   os.path.join(gm_dir, "harness.py"),
-                  os.path.join(gm_dir, "canon")]
+                  os.path.join(gm_dir, "canon"),
+                  os.path.join(gm_dir, "config.json"),
+                  os.path.join(gm_dir, "corpus.json"),
+                  os.path.join(gm_dir, "route-coverage.json"),
+                  os.path.join(gm_dir, "feature-coverage.json")]
         code, log = run("git diff --name-only %s -- %s"
-                        % (base, " ".join(judged)))
+                        % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
