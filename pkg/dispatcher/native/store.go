@@ -111,7 +111,7 @@ func NewStore(root string) (*Store, error) {
 	s := &Store{
 		root:   root,
 		index:  map[string]*Issue{},
-		logger: iterlog.New(iterlog.LevelWarn, os.Stderr),
+		logger: iterlog.NewFallback(iterlog.LevelWarn, os.Stderr),
 	}
 	if err := s.loadOrInitBoard(); err != nil {
 		return nil, err

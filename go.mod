@@ -131,6 +131,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/creativeprojects/go-selfupdate v1.6.0
 	github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9
+	github.com/getsentry/sentry-go v0.48.0
 	github.com/gofrs/flock v0.13.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0

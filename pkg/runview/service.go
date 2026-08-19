@@ -793,7 +793,7 @@ func WithoutWorkspaceTracking() ServiceOption {
 // caller wires WithStore, storeDir may be "" — the service uses the
 // injected store directly without resolving a filesystem path.
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
-	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
+	logger := iterlog.NewFromEnv(os.Stderr)
 
 	s := &Service{
 		storeDir:         storeDir,
@@ -937,6 +937,12 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	}
 	if set.DesktopSink != nil {
 		sinks = append(sinks, set.DesktopSink)
+	}
+	// Error tracking, when an operator configured a DSN: a failed or
+	// stalled run reaches the same incident stream as a panic. nil (and
+	// therefore absent) whenever tracking is off.
+	if tk := alert.NewTrackerSink(); tk != nil {
+		sinks = append(sinks, tk)
 	}
 	// Browser delivery: publish an in-process `alert` event to the
 	// broker. It is NOT persisted to events.jsonl, so the file tail

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -376,7 +377,7 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		oldWatcher.Stop()
 	}
 	if newWatcher != nil {
-		go newWatcher.Start()
+		errtrack.Go("server.fileWatcher", newWatcher.Start)
 	}
 	s.logger.Info("projects: swapped workdir to %s", abs)
 	return nil

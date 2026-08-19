@@ -612,3 +612,47 @@ func TestWriteJSON_MarshalFailureDropsLine(t *testing.T) {
 		t.Errorf("expected no output on marshal failure, got %q", buf.String())
 	}
 }
+
+func TestLog_WithWriterKeepsFormatFieldsAndHook(t *testing.T) {
+	var parent, tee bytes.Buffer
+	root := NewWithFormat(LevelInfo, &parent, FormatJSON).WithField("run_id", "run_42")
+
+	var hooked []Level
+	root.SetHook(func(level Level, _ string, fields map[string]any) {
+		if fields["run_id"] != "run_42" {
+			t.Errorf("hook lost the inherited fields: %v", fields)
+		}
+		hooked = append(hooked, level)
+	})
+
+	// A per-run logger tees into its own buffer AND the parent's writer,
+	// exactly as the runner and the run console build theirs.
+	run := root.WithWriter(io.MultiWriter(root.Writer(), &tee))
+	run.Error("boom")
+
+	var rec jsonRecord
+	if err := json.Unmarshal(tee.Bytes(), &rec); err != nil {
+		t.Fatalf("the fork did not keep the JSON format: %v: %q", err, tee.String())
+	}
+	if rec.Msg != "boom" || rec.Level != "error" {
+		t.Errorf("record: got level=%q msg=%q", rec.Level, rec.Msg)
+	}
+	if rec.Fields["run_id"] != "run_42" {
+		t.Errorf("the fork lost the inherited fields: %v", rec.Fields)
+	}
+	if parent.String() != tee.String() {
+		t.Errorf("the parent's writer did not see the line: parent=%q tee=%q", parent.String(), tee.String())
+	}
+	if len(hooked) != 1 || hooked[0] != LevelError {
+		t.Errorf("the fork did not reach the root's hook: %v", hooked)
+	}
+}
+
+func TestLog_WithWriterNilSafe(t *testing.T) {
+	var nilLogger *Logger
+	if got := nilLogger.WithWriter(io.Discard); got != nil {
+		t.Errorf("WithWriter on a nil logger: got %v want nil", got)
+	}
+	// A nil writer degrades to Discard rather than panicking on write.
+	NewWithFormat(LevelInfo, nil, FormatHuman).WithWriter(nil).Info("no panic")
+}

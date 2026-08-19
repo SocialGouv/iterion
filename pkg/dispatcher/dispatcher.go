@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -190,7 +191,7 @@ func New(opts Options) (*Dispatcher, error) {
 func (c *Dispatcher) Start(ctx context.Context) {
 	c.startOnce.Do(func() {
 		c.sweepStaleLocalClaims()
-		go c.actorLoop(ctx)
+		errtrack.Go("dispatcher.actorLoop", func() { c.actorLoop(ctx) })
 	})
 }
 

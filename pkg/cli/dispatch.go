@@ -12,9 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -27,6 +28,21 @@ type DispatchOptions struct {
 	NoServer   bool // overrides cfg.Server.Port to disable HTTP
 }
 
+// dispatchLogConfig resolves the log configuration of the dispatcher
+// daemon. It is a production surface like `iterion server` and
+// `iterion runner`, so it takes the same default — structured JSON on
+// stderr, ready to ship — while the interactive CLI commands keep the
+// human format. ITERION_LOG_FORMAT / ITERION_LOG_LEVEL still win.
+func dispatchLogConfig() (iterconfig.LogConfig, error) {
+	cfg, err := iterconfig.Load(iterconfig.LoadOptions{
+		DefaultLogFormat: iterconfig.LogFormatJSON,
+	})
+	if err != nil {
+		return iterconfig.LogConfig{}, err
+	}
+	return cfg.Log, nil
+}
+
 // RunDispatch loads the config, opens the necessary stores, builds a
 // Manager + starts a dispatcher, then serves the REST/WS surface until
 // SIGINT/SIGTERM.
@@ -35,7 +51,17 @@ type DispatchOptions struct {
 // studio server uses, just driven by a YAML on disk instead of the
 // SPA's PUT /api/v1/dispatcher/config endpoint.
 func RunDispatch(p *Printer, opts DispatchOptions) error {
-	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
+	logCfg, err := dispatchLogConfig()
+	if err != nil {
+		return err
+	}
+	logger := logCfg.NewLogger(os.Stderr)
+	// Couple the daemon's logger to the error tracker (no-op unless
+	// SENTRY_DSN is set): error lines become events, warn lines
+	// breadcrumbs. Init already ran at the CLI root.
+	errtrack.Init(errtrack.Config{Logger: logger, ServerName: "iterion-dispatch"})
+	errtrack.AttachLogHook(logger)
+	defer errtrack.Flush()
 
 	cwd, err := os.Getwd()
 	if err != nil {

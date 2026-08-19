@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -85,16 +86,43 @@ const (
 	FormatJSON
 )
 
+// Hook receives every record a Logger emits at or above warn level,
+// with the record's inherited fields as a private copy. It is the seam
+// error trackers ride: pkg/errtrack registers one so an error line
+// becomes a tracker event and a warn line a breadcrumb.
+//
+// Contract for implementations:
+//   - MUST NOT block — the hook runs synchronously on the logging
+//     goroutine (ordering matters: a breadcrumb has to reach the
+//     tracker before the event it explains).
+//   - MAY panic; the dispatch recovers, so a broken hook degrades to a
+//     single "hook panicked" line instead of taking the process down.
+//   - MUST NOT log through the same Logger — the recovery path writes
+//     directly to the underlying writer, but a non-panicking hook that
+//     logs at warn+ would recurse without bound.
+type Hook func(level Level, msg string, fields map[string]any)
+
+// hookThreshold is the least severe level a Hook is invoked for.
+// Levels are ordered most-severe-first (LevelError == 0), so "at or
+// above warn" reads as `level <= hookThreshold`.
+const hookThreshold = LevelWarn
+
 // Logger is a leveled logger that writes either emoji-rich human
 // output (default) or structured JSON. Loggers may carry a fixed set
-// of fields via WithField/WithFields/WithError; the underlying writer
-// and mutex are shared between forks so concurrent log lines never
-// interleave.
+// of fields via WithField/WithFields/WithError; the underlying writer,
+// mutex and hook are shared between forks so concurrent log lines
+// never interleave and a hook installed on the root logger is seen by
+// every fork made from it, before or after SetHook.
 type Logger struct {
 	level  Level
 	w      io.Writer
 	format Format
 	mu     *sync.Mutex
+	// hook is the shared, atomically-swappable warn+ callback slot.
+	// Shared (not copied) across forks so SetHook on any handle to the
+	// tree reaches all of them. Never nil for a Logger built through a
+	// constructor; the dispatch stays nil-safe regardless.
+	hook *atomic.Pointer[Hook]
 	// fields is the inherited context. nil for the root logger; copied
 	// (not aliased) on each WithField call so a fork's mutations don't
 	// leak back to the parent.
@@ -114,12 +142,61 @@ func NewWithFormat(level Level, w io.Writer, format Format) *Logger {
 	if w == nil {
 		w = io.Discard
 	}
-	return &Logger{level: level, w: w, format: format, mu: &sync.Mutex{}}
+	return &Logger{level: level, w: w, format: format, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}}
 }
 
 // Nop returns a logger that discards all output (level below error).
 func Nop() *Logger {
-	return &Logger{level: LevelError - 1, w: io.Discard, mu: &sync.Mutex{}}
+	return &Logger{level: LevelError - 1, w: io.Discard, mu: &sync.Mutex{}, hook: &atomic.Pointer[Hook]{}}
+}
+
+// SetHook installs h as the warn+ callback for l and every fork made
+// from it (forks share the slot). A nil h clears the hook. Safe on a
+// nil Logger.
+func (l *Logger) SetHook(h Hook) {
+	if l == nil || l.hook == nil {
+		return
+	}
+	if h == nil {
+		l.hook.Store(nil)
+		return
+	}
+	l.hook.Store(&h)
+}
+
+// dispatchHook invokes the installed hook for a record the logger has
+// already emitted. Called outside the writer mutex so a slow hook
+// never stalls another goroutine's log line.
+func (l *Logger) dispatchHook(level Level, msg string) {
+	if l.hook == nil || level > hookThreshold {
+		return
+	}
+	p := l.hook.Load()
+	if p == nil || *p == nil {
+		return
+	}
+	h := *p
+	// A panicking hook degrades to one line on the underlying writer.
+	// emit (not log) so the report can't re-enter the dispatch.
+	defer func() {
+		if r := recover(); r != nil {
+			l.emit(LevelError, "❌", fmt.Sprintf("log: hook panicked: %v", r))
+		}
+	}()
+	h(level, msg, l.snapshotFields())
+}
+
+// snapshotFields returns a private copy of the inherited context so a
+// hook can retain or mutate it without racing the logger tree.
+func (l *Logger) snapshotFields() map[string]any {
+	if len(l.fields) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(l.fields))
+	for k, v := range l.fields {
+		out[k] = v
+	}
+	return out
 }
 
 // Level returns the configured log level.
@@ -184,7 +261,13 @@ func (l *Logger) log(level Level, emoji string, format string, args ...any) {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
+	l.emit(level, emoji, msg)
+	l.dispatchHook(level, msg)
+}
 
+// emit writes one already-formatted record in the logger's format. It
+// performs no level check and no hook dispatch — callers own both.
+func (l *Logger) emit(level Level, emoji string, msg string) {
 	if l.format == FormatJSON {
 		l.writeJSON(level, msg)
 		return
@@ -196,6 +279,28 @@ func (l *Logger) log(level Level, emoji string, format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_, _ = io.WriteString(l.w, line)
+}
+
+// WithWriter returns a fork of l writing to w instead of l's own
+// writer, keeping the level, the FORMAT, the inherited fields and the
+// hook slot. It is how a per-run logger tees into a buffer without
+// leaving the seam: building a fresh Logger there would silently reset
+// the format to human (breaking the JSON stream of a runner pod that
+// tees into its own stdout) and drop the tracker hook, so a run's
+// error lines would never reach error tracking.
+//
+// The mutex is shared with l, so a fork whose w also writes to l's
+// writer still interleaves atomically with the parent's own lines.
+func (l *Logger) WithWriter(w io.Writer) *Logger {
+	if l == nil {
+		return nil
+	}
+	if w == nil {
+		w = io.Discard
+	}
+	out := l.withFields(nil)
+	out.w = w
+	return out
 }
 
 // WithField returns a fork of l carrying the given (key, value) pair
@@ -233,6 +338,7 @@ func (l *Logger) withFields(extra map[string]any) *Logger {
 		w:      l.w,
 		format: l.format,
 		mu:     l.mu,
+		hook:   l.hook,
 	}
 	if len(l.fields) == 0 && len(extra) == 0 {
 		return out
@@ -265,12 +371,16 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 		return
 	}
 
+	// The body travels as a field, so the hook sees the same structured
+	// record a JSON shipper would.
+	fl := l
+	if body != "" {
+		fl = l.withFields(map[string]any{"body": body})
+	}
+
 	if l.format == FormatJSON {
-		fl := l
-		if body != "" {
-			fl = l.withFields(map[string]any{"body": body})
-		}
 		fl.writeJSON(level, header)
+		fl.dispatchHook(level, header)
 		return
 	}
 
@@ -293,8 +403,10 @@ func (l *Logger) LogBlock(level Level, emoji string, header string, body string)
 	}
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	_, _ = io.WriteString(l.w, buf.String())
+	l.mu.Unlock()
+
+	fl.dispatchHook(level, header)
 }
 
 // Truncate returns s truncated to at most max bytes with a suffix if

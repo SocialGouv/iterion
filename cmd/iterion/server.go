@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
@@ -215,7 +216,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// directly. We bypass cli.RunStudio because it auto-discovers a
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
-	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	// Couple the process logger to the error tracker (no-op unless
+	// SENTRY_DSN is set): every error line becomes an event, every warn
+	// line a breadcrumb on the next one. Init already ran at the root.
+	errtrack.Init(errtrack.Config{Logger: logger, ServerName: "iterion-server"})
+	errtrack.AttachLogHook(logger)
+	defer errtrack.Flush()
 	logger.Info("server: starting (mode=cloud)")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

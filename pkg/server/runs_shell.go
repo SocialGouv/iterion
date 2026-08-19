@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runshell"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -178,8 +179,8 @@ func (c *shellConn) touch() { c.lastActivity.Store(time.Now().UnixNano()) }
 
 func (c *shellConn) run() {
 	done := make(chan struct{})
-	go c.pumpPTYToWS(done)
-	go c.watchIdle(done)
+	errtrack.Go("server.shell.pumpPTYToWS", func() { c.pumpPTYToWS(done) })
+	errtrack.Go("server.shell.watchIdle", func() { c.watchIdle(done) })
 	c.pumpWSToPTY() // blocks until the socket dies
 	close(done)
 	c.close("")

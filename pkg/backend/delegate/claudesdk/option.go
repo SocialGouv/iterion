@@ -3,8 +3,10 @@ package claudesdk
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"os"
 	"os/exec"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // CommandBuilder, when set via [WithCommandBuilder], replaces the
@@ -127,14 +129,17 @@ type config struct {
 }
 
 // errorf reports an internal SDK error through the configured log hook,
-// falling back to the standard library logger when none is set — never a
-// silent no-op.
+// falling back to iterion's central logger when none is set — never a
+// silent no-op. iterion always wires WithLogf (see
+// ClaudeCodeBackend.buildTransportOptions), so the fallback only serves
+// a caller that constructed the transport directly; it still honours
+// ITERION_LOG_FORMAT so the line cannot break a JSON log stream.
 func (c *config) errorf(format string, args ...any) {
 	if c.logf != nil {
 		c.logf(format, args...)
 		return
 	}
-	log.Printf(format, args...)
+	iterlog.NewFromEnv(os.Stderr).Error(format, args...)
 }
 
 // WithModel sets the Claude model (e.g. "claude-sonnet-4-6", "claude-opus-4-6").

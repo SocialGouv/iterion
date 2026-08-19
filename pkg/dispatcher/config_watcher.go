@@ -7,6 +7,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -60,7 +61,7 @@ func (w *ConfigWatcher) Start(onReload func(*Config)) error {
 	if err := w.fsWatcher.Add(dir); err != nil {
 		return err
 	}
-	go w.loop(onReload)
+	errtrack.Go("dispatcher.configWatcher", func() { w.loop(onReload) })
 	return nil
 }
 

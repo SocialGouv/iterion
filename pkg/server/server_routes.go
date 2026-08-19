@@ -2,7 +2,6 @@ package server
 
 import (
 	"io/fs"
-	"log"
 	"net/http"
 )
 
@@ -331,7 +330,13 @@ func (s *Server) routes() {
 	// (e.g. /runs/abc) render index.html instead of 404.
 	staticSub, err := fs.Sub(StaticFS, "static")
 	if err != nil {
-		log.Fatalf("failed to create sub filesystem: %v", err)
+		// A library must not kill the process: the API surface
+		// registered above stays serving, and the failure is reported
+		// through the central logger (and, with a DSN configured, the
+		// error tracker) instead of a bare stdlib log.Fatalf that skips
+		// every defer. Same degradation as `iterion dispatch`.
+		s.logger.Error("server: SPA assets unavailable, studio UI not served: %v", err)
+		return
 	}
 	s.mux.Handle("GET /", SPAHandler(staticSub))
 }

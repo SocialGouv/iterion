@@ -39,6 +39,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -640,7 +641,7 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = iterlog.New(iterlog.LevelInfo, os.Stderr)
+		cfg.Logger = iterlog.NewFromEnv(os.Stderr)
 	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = os.TempDir()
@@ -687,7 +688,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// nats-jetstream scaler — this gauge gives operators a parallel
 	// signal in their own dashboards without competing with the scaler.
 	if r.cfg.Metrics != nil {
-		go r.pollPending(loopCtx)
+		errtrack.Go("runner.pollPending", func() { r.pollPending(loopCtx) })
 	}
 	// K8s sandbox reaper (ADR-070): at boot + on a ticker, a healthy
 	// runner force-deletes the orphaned sandbox pod + both Secrets +
@@ -697,7 +698,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// closing the OOM-with-surviving-pod plaintext-credential leak that
 	// the ownerReference cascade misses (the pod UID survives a container
 	// restart). No-op when not in-cluster / no NATS. See reaper.go.
-	go r.runSandboxReaper(loopCtx)
+	errtrack.Go("runner.sandboxReaper", func() { r.runSandboxReaper(loopCtx) })
 	// Stamp Event.LogOffset from the per-run log writer on stores that
 	// support the hook (mongo + filesystem both do) — the cloud twin of
 	// the runview Service wiring, powering per-node log slicing.
@@ -946,7 +947,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// would invite split-brain when JetStream redelivers to a sibling pod).
 	// The cause makes the redelivery auto-resume without manual intervention.
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone)
+	errtrack.Go("runner.heartbeat", func() { r.heartbeat(runCtx, runCancel, lock, delivery, hbDone) })
 	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
 	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
 	// at function entry is LIFO-last so it would run after this defer.
@@ -1240,7 +1241,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
 			refreshCtx, stopRefresh := context.WithCancel(ctx)
 			defer stopRefresh()
-			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+			errtrack.Go("runner.refreshFileSecrets", func() {
+				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+			})
 		}
 	}
 	// Same rotation problem for the token GIT uses. Independent of the file
@@ -1251,7 +1254,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if ref := r.gitCredentialSecretRef(ctx); ref != "" {
 			gitCredCtx, stopGitCred := context.WithCancel(ctx)
 			defer stopGitCred()
-			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+			errtrack.Go("runner.refreshGitCredentials", func() {
+				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+			})
 		}
 	}
 
@@ -1309,7 +1314,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer func() { _ = w.Close() }()
 		r.registerLogWriter(msg.RunID, w)
 		defer r.unregisterLogWriter(msg.RunID)
-		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
+		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
 	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
