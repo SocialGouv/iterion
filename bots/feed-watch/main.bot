@@ -99,6 +99,13 @@ vars:
   ## deliver nothing. The message stays in the run artifacts.
   dry_run: bool = false
 
+  ## A digest that finds an empty queue exits without posting — correct,
+  ## and completely silent. Run after run that reads exactly like a healthy
+  ## quiet week, so a broken collector goes unnoticed for days (it did:
+  ## 2026-08-13 → 18). After this many days without a DELIVERED digest, the
+  ## bot says so on the same sinks, at most once per window. 0 disables.
+  silence_alert_days: int = 3
+
   ## Commit (and push) the state dir after each mutation. Needs the
   ## state_dir NOT gitignored and push credentials on the workspace.
   state_commit: bool = false
@@ -286,6 +293,7 @@ schema pending_input:
   workspace: string
   state_dir: string
   max_items: int
+  silence_alert_days: int
 
 schema pending_output:
   has_items: bool
@@ -304,6 +312,12 @@ schema pending_output:
   span_days: int
   ## Every queued item id at snapshot time — commit_state clears
   ## exactly these, so items collected mid-digest survive.
+  ## Days since this category last DELIVERED a digest (read from
+  ## digests.jsonl), and whether that silence is now worth announcing.
+  ## Only meaningful on the empty-queue path — a digest that posts is
+  ## not silent, and a category that has never posted is not either.
+  silence_days: int
+  silence_alert: bool
   snapshot_ids: string[]
   ## Previous digests (headline + excerpt) — the semantic-dedup context.
   recent_topics: string
@@ -356,6 +370,16 @@ schema notify_input:
   dry_run: bool
   category: string
   digest_title: string
+
+schema silence_input:
+  category: string
+  digest_title: string
+  sinks: json
+  silence_days: int
+  dry_run: bool
+  workspace: string
+  state_dir: string
+  state_commit: bool
 
 schema notify_output:
   posted: bool
@@ -925,6 +949,56 @@ tool load_pending:
         oldest_published = oldest.date().isoformat()
         span_days = max(0, (datetime.datetime.now(datetime.timezone.utc) - oldest).days)
 
+    # A digest that finds nothing exits here, posting nothing. Correct —
+    # and indistinguishable from a healthy quiet week, run after run. So
+    # when the queue is empty, ask how long this category has actually been
+    # silent, from the digests it is RECORDED to have delivered.
+    #
+    # digests.jsonl is the oracle rather than a counter of empty runs: it
+    # measures what a reader would have seen, survives the collect/digest
+    # split, and needs no new state. A category that never delivered has no
+    # baseline to be late against, so it stays quiet.
+    silence_days, silence_alert = 0, False
+    alert_after = int({{input.silence_alert_days}} or 0)
+    if not items and alert_after > 0:
+        last_ts = ''
+        dpath = os.path.join(cdir, 'digests.jsonl')
+        if os.path.exists(dpath):
+            with open(dpath, encoding='utf-8') as fh:
+                for ln in fh:
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        last_ts = json.loads(ln).get('ts') or last_ts
+                    except Exception:
+                        pass
+        if last_ts:
+            try:
+                then = datetime.datetime.fromisoformat(last_ts)
+                if then.tzinfo is None:
+                    then = then.replace(tzinfo=datetime.timezone.utc)
+                silence_days = max(0, (datetime.datetime.now(datetime.timezone.utc) - then).days)
+            except Exception:
+                silence_days = 0
+        # Once per window, not once per run: a daily category would
+        # otherwise shout every morning for as long as it stays broken,
+        # which trains the reader to ignore exactly the signal that matters.
+        if silence_days >= alert_after:
+            spath = os.path.join(cdir, 'silence.json')
+            since_alert = alert_after
+            if os.path.exists(spath):
+                try:
+                    with open(spath, encoding='utf-8') as fh:
+                        prev = json.load(fh).get('last_alert_ts') or ''
+                    at = datetime.datetime.fromisoformat(prev)
+                    if at.tzinfo is None:
+                        at = at.replace(tzinfo=datetime.timezone.utc)
+                    since_alert = (datetime.datetime.now(datetime.timezone.utc) - at).days
+                except Exception:
+                    since_alert = alert_after
+            silence_alert = since_alert >= alert_after
+
     nonce = os.urandom(8).hex()
     editorial_fenced = ('<<<UNTRUSTED_EDITORIAL ' + nonce + '>>>' + chr(10) +
                         (editorial or '') + chr(10) +
@@ -932,6 +1006,7 @@ tool load_pending:
     print(json.dumps({'has_items': bool(items), 'category': category, 'items': items,
                       'items_count': len(items), 'overflow_count': overflow,
                       'oldest_published': oldest_published, 'span_days': span_days,
+                      'silence_days': silence_days, 'silence_alert': silence_alert,
                       'snapshot_ids': snapshot_ids, 'recent_topics': chr(10).join(recent),
                       'editorial': editorial_fenced, 'editorial_nonce': nonce,
                       'digest_title': digest_title, 'sinks': sinks},
@@ -1092,6 +1167,106 @@ tool notify:
          'summary': 'delivered ' + str(delivered) + '/' + str(len(payloads)) +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
 
+## Announce this category's OWN silence, deterministically and without an
+## LLM: the queue is empty and no digest has been delivered for
+## silence_alert_days. It posts to the SAME sinks the digest uses, because
+## a warning nobody reads is the failure it exists to prevent — and it
+## stamps silence.json so a broken category warns once per window instead
+## of every morning.
+##
+## Written after 2026-08-13→18, when the collector stopped feeding the
+## queue and five daily digests exited green, posting nothing and telling
+## nobody. `finished` is not `delivered`.
+tool notify_silence:
+  input: silence_input
+  output: notify_output
+  language: py
+  script: |
+    import json, os, datetime, subprocess, urllib.request
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    category = {{input.category}}
+    digest_title = {{input.digest_title}}
+    sinks = {{input.sinks}} or []
+    silence_days = int({{input.silence_days}} or 0)
+    dry_run = {{input.dry_run}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    state_commit = {{input.state_commit}}
+    webhooks_file = {{secrets.webhooks.path}}
+
+    def out(o):
+        print(json.dumps(o, ensure_ascii=False))
+        raise SystemExit(0)
+
+    title = digest_title or category
+    text = (':warning: **' + title + ' — aucune veille depuis ' + str(silence_days) +
+            ' jour(s)**' + chr(10) + chr(10) +
+            "La file de la catégorie `" + category + "` est vide : le digest s'exécute " +
+            "normalement mais n'a rien à publier. Cela signale en général une collecte " +
+            "interrompue (flux en panne, run bloqué), pas une actualité calme." + chr(10) +
+            chr(10) + "_Message automatique — il ne se répétera pas avant " +
+            str(silence_days and silence_days or 0) + " jour(s)._")
+    if not sinks:
+        out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
+             'summary': 'silence of ' + str(silence_days) + 'd for ' + category +
+                        ' -- no sinks configured, nothing announced'})
+    payloads = [((s.get('webhook') or ''),
+                 {'text': text, 'channel': s.get('channel') or '',
+                  'username': s.get('username') or 'Vigie',
+                  'icon_emoji': ':warning:'}) for s in sinks]
+    if dry_run:
+        for name, p in payloads:
+            print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'])
+        out({'posted': False, 'dry_run': True, 'delivered': 0,
+             'targets': [n for n, _ in payloads],
+             'summary': 'dry-run: silence alert prepared for ' + category +
+                        ' (' + str(silence_days) + 'd), nothing posted'})
+    whmap = {}
+    if webhooks_file and os.path.exists(webhooks_file):
+        with open(webhooks_file, encoding='utf-8') as fh:
+            whmap = json.load(fh)
+    delivered, failures, targets = 0, [], []
+    for name, p in payloads:
+        url = whmap.get(name)
+        if not url:
+            failures.append(name + ': not in the bound webhooks secret')
+            continue
+        req = urllib.request.Request(url, data=json.dumps(p).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json',
+                                              'User-Agent': 'feed-watch (iterion)'}, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=20):
+                delivered += 1
+                targets.append(name + '->' + (p['channel'] or 'default'))
+        except Exception as e:
+            failures.append(name + ': ' + type(e).__name__ + ': ' + str(e)[:200])
+    # Stamp the window even when every post failed: retrying the same
+    # unreachable webhook every morning adds noise, not information, and
+    # the failure is already on the run.
+    cdir = os.path.join(ws, state_dir, category)
+    os.makedirs(cdir, exist_ok=True)
+    with open(os.path.join(cdir, 'silence.json'), 'w', encoding='utf-8') as fh:
+        json.dump({'last_alert_ts': datetime.datetime.now(datetime.timezone.utc)
+                   .replace(microsecond=0).isoformat(),
+                   'silence_days': silence_days,
+                   'delivered': delivered}, fh, ensure_ascii=False)
+    if state_commit:
+        try:
+            subprocess.run(['git', '-C', ws, 'add', state_dir], check=True)
+            if subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
+                subprocess.run(['git', '-C', ws, 'commit', '-m',
+                                'chore(feed-watch): silence alert ' + category +
+                                ' (' + str(silence_days) + 'd)'], check=True)
+                subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD'])
+        except Exception as e:
+            # Best effort: an unstamped window costs one duplicate alert,
+            # never the alert itself.
+            print('feed-watch: could not persist silence.json: ' + str(e)[:200])
+    out({'posted': delivered > 0, 'dry_run': False, 'delivered': delivered, 'targets': targets,
+         'summary': 'silence alert for ' + category + ' (' + str(silence_days) + 'd): delivered ' +
+                    str(delivered) + '/' + str(len(payloads)) +
+                    ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
+
 ## Clear EXACTLY the digested snapshot from the queue (items collected
 ## mid-digest survive — safer than Huginn's retained_events:0, which
 ## clears whatever is there), archive the digest for future semantic
@@ -1232,7 +1407,8 @@ workflow feed_watch:
     sinks: "{{outputs.plan.sinks}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
-    max_items: "{{vars.max_digest_items}}"
+    max_items: "{{vars.max_digest_items}}",
+    silence_alert_days: "{{vars.silence_alert_days}}"
   }
 
   ## Unreachable (plan hard-fails on an invalid mode) — the compiler
@@ -1249,6 +1425,21 @@ workflow feed_watch:
   dedup_queue -> done
 
   ## Empty queue → done with zero LLM cost.
+  ## An empty queue that has stayed empty too long is news in itself —
+  ## announce it, then stop. Ordered before the plain empty-queue exit so
+  ## the guard actually gets a chance to fire.
+  load_pending -> notify_silence when silence_alert with {
+    category: "{{outputs.load_pending.category}}",
+    digest_title: "{{outputs.load_pending.digest_title}}",
+    sinks: "{{outputs.load_pending.sinks}}",
+    silence_days: "{{outputs.load_pending.silence_days}}",
+    dry_run: "{{vars.dry_run}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}",
+    state_commit: "{{vars.state_commit}}"
+  }
+  notify_silence -> done
+
   load_pending -> done when not has_items
   load_pending -> synthesize when has_items with {
     category: "{{outputs.load_pending.category}}",
