@@ -201,4 +201,23 @@ func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
 	if _, stillRunning := c.state.running[issueID]; stillRunning {
 		t.Error("issue still tracked as running")
 	}
+
+	// Operator visibility, same as the pause arm: the card moves to the
+	// awaiting-input column and the refusal is surfaced as a dispatch
+	// skip — otherwise the ticket strands invisibly (claimed, no worker,
+	// no badge, absent from the running/retry tables).
+	states, err := ft.RefreshStates(context.Background(), []string{issueID})
+	if err != nil {
+		t.Fatalf("RefreshStates: %v", err)
+	}
+	if got := states[issueID]; got != native.StateAwaitingInput {
+		t.Errorf("issue state = %q, want %q", got, native.StateAwaitingInput)
+	}
+	skip, visible := c.state.dispatchSkips[issueID]
+	if !visible {
+		t.Fatal("source-changed park must surface as a dispatch skip")
+	}
+	if skip.Reason == "" {
+		t.Error("dispatch skip must carry the resume --force / cancel reason")
+	}
 }

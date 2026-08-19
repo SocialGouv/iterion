@@ -405,8 +405,16 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// sibling from entry would replay the prefix (agents, tools,
 		// already-paid artefacts). Park: keep the claim, keep last_run,
 		// do not retry. The operator resumes THIS run with --force or
-		// cancels it before asking for a new one.
+		// cancels it before asking for a new one. Same operator
+		// visibility as the pause arm below — badge, awaiting-input
+		// column, and a dashboard skip entry — otherwise the ticket
+		// strands invisibly: claimed, no live worker, no badge, and
+		// absent from the snapshot's running and retry tables.
 		c.stampLastRun(issueID, r)
+		c.setAwaitingInput(issueID, true)
+		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
+			"bot source changed since the last run started — resume with --force or cancel this run before a new dispatch")
 		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console, or cancel this run before a new dispatch.", r.Identifier, r.RunID)
 		c.fireSnapshot()
 		return

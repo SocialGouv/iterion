@@ -60,15 +60,23 @@ type state struct {
 	// candidates in tick); an entry is cleared the moment its issue
 	// successfully claims. Actor-goroutine-owned; no mutex needed.
 	dispatchSkips map[string]DispatchSkipView
+	// lastRunHoldWarned records the "refusing a fresh sibling" warn
+	// already emitted for an issue (value = the reason). The dispatchSkips
+	// entry can't carry this dedup: dispatch() deletes it before
+	// resolveRunID runs, so a held card (live running/queued last_run)
+	// would re-warn every poll. Cleared when the hold resolves and the
+	// dispatch proceeds. Actor-goroutine-owned; no mutex needed.
+	lastRunHoldWarned map[string]string
 }
 
 func newState() *state {
 	return &state{
-		running:       map[string]*runningEntry{},
-		retries:       map[string]*retryEntry{},
-		slotsByState:  map[string]int{},
-		tombstones:    map[string]struct{}{},
-		dispatchSkips: map[string]DispatchSkipView{},
+		running:           map[string]*runningEntry{},
+		retries:           map[string]*retryEntry{},
+		slotsByState:      map[string]int{},
+		tombstones:        map[string]struct{}{},
+		dispatchSkips:     map[string]DispatchSkipView{},
+		lastRunHoldWarned: map[string]string{},
 	}
 }
 

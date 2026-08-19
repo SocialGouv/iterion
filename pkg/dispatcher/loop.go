@@ -413,9 +413,9 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	}
 	// A fired retry remains authoritative until every synchronous dispatch
 	// decision has succeeded. In particular, an empty PrevRunID may encode a
-	// deliberate fresh restart after a source-change failure; consuming it in
-	// resolveRunID would let a lifecycle-probe failure make the next tick fall
-	// back to the stale persisted last_run pointer.
+	// deliberate fresh retry after a failure with no resumable run; consuming
+	// it in resolveRunID would let a lifecycle-probe failure make the next tick
+	// fall back to the stale persisted last_run pointer.
 	delete(c.state.retries, iss.ID)
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -614,9 +614,8 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// scheduled retry (an in-memory retryEntry existed). It gates the
 	// cross-restart fallback below: a retry entry carries a DELIBERATE
 	// resume-vs-fresh decision, and an empty PrevRunID on it means "run
-	// fresh" — e.g. scheduleRetry dropped a doomed resume because the bot
-	// source changed. The persisted last_run pointer must not override
-	// that decision.
+	// fresh" — e.g. the prior attempt failed before it produced a resumable
+	// run. The persisted last_run pointer must not override that decision.
 	hadRetryEntry := false
 	if cur, present := c.state.retries[iss.ID]; present {
 		hadRetryEntry = true
@@ -643,14 +642,11 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// other adapters silently fall through to a fresh runID.
 	//
 	// Gated on !hadRetryEntry: when a retry entry WAS present its
-	// PrevRunID is authoritative — including an empty value meaning
-	// "scheduleRetry deliberately dropped a doomed resume (bot source
-	// changed since the prior run) — run fresh". Without this guard the
-	// fallback re-reads the persisted last_run_id (still failed_resumable
-	// on disk) and re-resumes the same source-changed run on the very
-	// next poll, an infinite resume→fail→revert loop that strands the
-	// ticket. scheduleRetry's in-memory drop alone can't survive this
-	// re-resolution. See pkg/dispatcher/retry.go isResumeSourceChanged.
+	// PrevRunID is authoritative — including an empty value meaning "the
+	// previous failure had no resumable run — retry fresh". Without this
+	// guard the fallback could re-read an older persisted last_run_id and
+	// override the retry decision after a synchronous dispatch probe deferred
+	// the first attempt.
 	if resumeFromRunID == "" && !hadRetryEntry {
 		type lastRunLookup interface {
 			LastRunForIssue(id string) (string, error)
@@ -690,27 +686,26 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// About to mint. A live / waiting / still-resumable last_run must
 	// never become a sibling planner from entry — not on reboot, not
 	// because a retry entry dropped PrevRunID, not because the
-	// workspace probe failed open.
+	// workspace probe failed open. A finished last_run does NOT hold
+	// the card: dragging it back to an eligible column is the
+	// operator's re-queue gesture (see lastRunForbidsFresh).
 	if prev := c.lastRunID(iss.ID); prev != "" {
 		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
 			reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
-			if _, already := c.state.dispatchSkips[iss.ID]; !already {
+			// Dedup via lastRunHoldWarned, NOT dispatchSkips: dispatch()
+			// deletes the skip entry before resolveRunID runs, so the
+			// entry never survives into the next tick and a held card
+			// would re-warn every poll otherwise.
+			if c.state.lastRunHoldWarned[iss.ID] != reason {
+				c.state.lastRunHoldWarned[iss.ID] = reason
 				c.logger.Warn("dispatcher: %s: %s", iss.Identifier, reason)
 			}
 			c.recordDispatchSkip(iss, reason)
-			if status == store.RunStatusFinished {
-				if target := c.cfg.Load().Agent.CompletedState; target != "" && target != iss.WorkflowState {
-					if err := c.tracker.UpdateState(ctx, iss.ID, target); err != nil {
-						c.logger.Warn("dispatcher: %s last run finished, move to %q: %v", iss.Identifier, target, err)
-					} else {
-						c.logger.Info("dispatcher: %s last run %s already finished — filed as %q, refusing a fresh sibling", iss.Identifier, prev, target)
-					}
-				}
-			}
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)
 			return "", "", attempt, false
 		}
 	}
+	delete(c.state.lastRunHoldWarned, iss.ID)
 	freshID, err := store.GenerateRunID()
 	if err != nil {
 		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)

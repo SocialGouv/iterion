@@ -168,11 +168,11 @@ sibling planner from the workflow entry:
 
 | `last_run` status | On the next tick / boot |
 |---|---|
-| `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). |
-| `running` / `queued` | Hold. Do not mint. After orphan promotion the run becomes resumable. |
+| `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). Only dispatcher-owned runs move the card — a pipelines-launched paused run keeps its card in place for the admission sweep, and still blocks any fresh mint. |
+| `running` / `queued` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
 | `failed_resumable` / `cancelled` | Resume the **same** run id. |
-| `finished` | Do not relaunch. File the ticket (`completed_state`). |
-| none, or hard `failed`, and the ticket is explicitly eligible | The only legitimate fresh run. |
+| `finished` | No hold: a fresh run is allowed — dragging the card back to an eligible column **is** the re-queue gesture. |
+| none, or hard `failed`, and the ticket is explicitly eligible | The only other legitimate fresh run. |
 
 The stranded-pause sweep (`reconcileStrandedPaused`) also runs while
 the dispatcher is **paused**, so a studio restart with `desired: paused`
@@ -181,8 +181,9 @@ that re-pauses on a later human node is picked up by the same sweep —
 the dispatcher worker already returned when the run first parked, so
 `finishRun` is not in the loop.
 
-To really start over: cancel or finish the old run, or drag a
-hard-failed ticket back to `ready`. A reboot is not a from-scratch.
+To really start over: drag a `finished` or hard-`failed` ticket back to
+`ready`. A `cancelled` `last_run` is **resumed from its checkpoint**, not
+replaced — a reboot is not a from-scratch, and neither is cancel.
 
 ### In-progress transition (`agent.running_state`)
 

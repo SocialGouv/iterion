@@ -432,16 +432,17 @@ waiting, the dispatcher **does not mint a new run id**.
 
 | `last_run` | Dispatcher action |
 |---|---|
-| `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input`. No auto-resume (no answers). |
-| `running` / `queued` | Hold. Never start a sibling from the workflow entry. |
+| `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input` (dispatcher-owned runs). No auto-resume (no answers). |
+| `running` / `queued` | Hold while the owner lives. An orphaned run (no live lock, past the grace window) is promoted to `failed_resumable` / `failed` first — never a sibling from the workflow entry. |
 | `failed_resumable` / `cancelled` | `Engine.Resume` on the **same** id. |
-| `finished` | Do not relaunch; file the ticket. |
+| `finished` | Fresh run allowed — dragging the card back to `ready` is the re-queue gesture. |
 | none, or hard `failed` + ticket explicitly back in `ready` | Fresh run. |
 
 `iterion resume --force` (or the studio force-resume) continues **this**
 run after a bot edit. If that resume parks again on a later human node,
 the next dispatcher tick re-parks the same card — it does not start the
-workflow over. To throw the work away, cancel or finish the old run first.
+workflow over. To throw the work away, finish the run or let it fail
+hard: a `cancelled` run is resumed from its checkpoint, not replaced.
 
 See [dispatcher](dispatcher.md#paused-runs--the-awaiting_input-column--parked-sweep).
 

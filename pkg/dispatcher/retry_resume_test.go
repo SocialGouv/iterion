@@ -14,13 +14,15 @@ func TestLastRunForbidsFresh(t *testing.T) {
 		store.RunStatusPausedOperator,
 		store.RunStatusRunning,
 		store.RunStatusQueued,
-		store.RunStatusFinished,
 		store.RunStatusFailedResumable,
 		store.RunStatusCancelled,
 	} {
 		if !lastRunForbidsFresh(status) {
 			t.Errorf("lastRunForbidsFresh(%s) = false, want true", status)
 		}
+	}
+	if lastRunForbidsFresh(store.RunStatusFinished) {
+		t.Error("finished last_run must not hold the card — dragging it back to an eligible column is the re-queue gesture")
 	}
 	if lastRunForbidsFresh(store.RunStatusFailed) {
 		t.Error("hard-failed last_run may start fresh when the ticket is explicitly eligible")

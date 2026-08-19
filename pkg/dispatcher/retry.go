@@ -125,8 +125,12 @@ func isResumeSourceChanged(err error) bool {
 
 // lastRunForbidsFresh reports statuses that still own the ticket: the
 // dispatcher must re-park, resume, or hold — never mint a sibling
-// planner from the workflow entry. The only legitimate fresh run is
-// no last_run, or a hard-failed / vanished last_run plus an
+// planner from the workflow entry. finished is deliberately NOT in the
+// set: the work completed, and dragging the card back to an eligible
+// column is the operator's deliberate re-queue gesture — with last_run
+// never cleared by any surface, forbidding finished would make a fresh
+// run for that card unobtainable forever. The other legitimate fresh
+// starts are no last_run, or a hard-failed / vanished last_run plus an
 // explicitly eligible ticket.
 func lastRunForbidsFresh(status store.RunStatus) bool {
 	switch status {
@@ -134,7 +138,6 @@ func lastRunForbidsFresh(status store.RunStatus) bool {
 		store.RunStatusPausedOperator,
 		store.RunStatusRunning,
 		store.RunStatusQueued,
-		store.RunStatusFinished,
 		store.RunStatusFailedResumable,
 		store.RunStatusCancelled:
 		return true
@@ -143,14 +146,28 @@ func lastRunForbidsFresh(status store.RunStatus) bool {
 	}
 }
 
+// orphanRunGraceWindow shields a just-created run from the dead-owner
+// probe: its launcher may sit between the run-record write and the lock
+// acquisition, so a young running/queued run is never judged. Mirrors
+// runview's orphanGraceWindow (pkg/runview/service_lifecycle.go).
+const orphanRunGraceWindow = 2 * time.Minute
+
 // resumableRunID returns the runID iff the corresponding run record
 // can be auto-resumed by the dispatcher — i.e. its on-disk status is
 // failed_resumable, cancelled, or paused_operator. paused_waiting_human
 // is deliberately excluded (no answers → immediate re-pause); that
 // status is re-parked, not resumed. Returns "" if the run is missing,
-// hard-failed, or any error reading the store. An empty result is NOT
-// a licence to mint a sibling: resolveRunID still consults
-// lastRunForbidsFresh before GenerateRunID.
+// hard-failed, finished, or any error reading the store. An empty
+// result is NOT a licence to mint a sibling: resolveRunID still
+// consults lastRunForbidsFresh before GenerateRunID.
+//
+// A running/queued status first goes through the dead-owner probe
+// (promoteIfOrphaned): the only orphan reaper lives in
+// runview.Service.reconcileOrphans, which `iterion dispatch
+// --no-server` never runs — without a dispatcher-side probe a run left
+// "running" on disk by a SIGKILL/host crash would hold its ticket
+// forever. Local disk I/O only; context.Background is fine on the
+// actor per the ADR-028 Step 3 boundary (same as runStatusOnDisk).
 // Best-effort: store IO errors are debug-logged, never fatal.
 func (c *Dispatcher) resumableRunID(runID string) string {
 	if runID == "" || c.storeDir == "" {
@@ -161,18 +178,69 @@ func (c *Dispatcher) resumableRunID(runID string) string {
 		c.logger.Debug("dispatcher: open store for resume check: %v", err)
 		return ""
 	}
-	r, err := s.LoadRun(context.Background(), runID)
+	ctx := context.Background()
+	r, err := s.LoadRun(ctx, runID)
 	if err != nil {
 		c.logger.Debug("dispatcher: cannot read run %s for resume check: %v", runID, err)
 		return ""
 	}
-	switch r.Status {
+	status := r.Status
+	if status == store.RunStatusRunning || status == store.RunStatusQueued {
+		status = c.promoteIfOrphaned(ctx, s, r)
+	}
+	switch status {
 	case store.RunStatusFailedResumable,
 		store.RunStatusCancelled,
 		store.RunStatusPausedOperator:
 		return runID
 	}
 	return ""
+}
+
+// promoteIfOrphaned re-examines a running/queued run whose owner may be
+// dead, mirroring runview.Service.reconcileOrphans: a just-created run
+// is shielded by the grace window, then a non-blocking LockRun is the
+// liveness probe — grabbing it proves no live process owns the run
+// (both the dispatcher's engine_runner and runview launches lock their
+// run for its whole lifetime, and flock is auto-released on crash). A
+// run nobody holds is promoted to failed_resumable (checkpoint present
+// → the caller resumes it) or failed (no recovery point → a fresh run
+// becomes legitimate), and the new status is returned. A held lock
+// (live owner), a store without cross-process lock authority, or any
+// error leaves the status untouched — the ticket is held, never
+// clobbered.
+func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemRunStore, r *store.Run) store.RunStatus {
+	status := r.Status
+	if !s.Capabilities().CrossProcessLock {
+		return status
+	}
+	if time.Since(r.CreatedAt) < orphanRunGraceWindow {
+		return status
+	}
+	lock, err := s.LockRun(ctx, r.ID)
+	if err != nil {
+		return status // a live owner holds the lock
+	}
+	defer func() { _ = lock.Unlock() }()
+	// Re-load under the lock — the owner may have released between the
+	// first read and now after persisting a terminal status.
+	cur, err := s.LoadRun(ctx, r.ID)
+	if err != nil {
+		return status
+	}
+	if cur.Status != store.RunStatusRunning && cur.Status != store.RunStatusQueued {
+		return cur.Status
+	}
+	newStatus := store.RunStatusFailed
+	if cur.Checkpoint != nil {
+		newStatus = store.RunStatusFailedResumable
+	}
+	if err := s.UpdateRunStatus(ctx, cur.ID, newStatus, "process orphaned: dispatcher found run '"+string(cur.Status)+"' with no live owner"); err != nil {
+		c.logger.Debug("dispatcher: orphan promotion %s: %v", cur.ID, err)
+		return status
+	}
+	c.logger.Info("dispatcher: last run %s was %s with no live owner — promoted to %s", cur.ID, cur.Status, newStatus)
+	return newStatus
 }
 
 // isSandboxSetupError reports whether the run failed before the

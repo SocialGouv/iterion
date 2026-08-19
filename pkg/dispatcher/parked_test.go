@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -215,6 +216,7 @@ func TestDispatch_RefusesFreshRunWhenLastRunIsPaused(t *testing.T) {
 				t.Fatalf("CreateRun: %v", err)
 			}
 			run.Status = status
+			run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: "native:fixture"}
 			if err := runStore.SaveRun(context.Background(), run); err != nil {
 				t.Fatalf("SaveRun: %v", err)
 			}
@@ -262,6 +264,13 @@ func TestDispatch_RefusesFreshRunWhenLastRunIsPaused(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
+			// An out-of-band resume can pause while an earlier dispatcher
+			// retry is still pending. The persisted pause supersedes it.
+			retryTimer := time.AfterFunc(time.Hour, func() {})
+			c.state.retries[iss.ID] = &retryEntry{
+				IssueID: iss.ID, Identifier: iss.ID, Attempt: 3, Timer: retryTimer,
+			}
+			t.Cleanup(func() { retryTimer.Stop() })
 
 			c.dispatch(context.Background(), tracker.Issue{
 				ID: iss.ID, Identifier: iss.ID, Title: iss.Title,
@@ -289,6 +298,9 @@ func TestDispatch_RefusesFreshRunWhenLastRunIsPaused(t *testing.T) {
 			}
 			if _, running := c.state.running[iss.ID]; running {
 				t.Errorf("issue must not be tracked as a live worker")
+			}
+			if _, retrying := c.state.retries[iss.ID]; retrying {
+				t.Errorf("re-park must consume a stale pending retry")
 			}
 		})
 	}
@@ -349,24 +361,168 @@ func TestDispatch_RefusesFreshRunWhenLastRunIsStillLive(t *testing.T) {
 	}
 }
 
-func TestDispatch_FilesFinishedLastRunInsteadOfMinting(t *testing.T) {
+// TestDispatch_MintsFreshWhenLastRunFinished: a finished last_run does
+// NOT hold the card. Dragging it back to an eligible column is the
+// operator's deliberate re-queue gesture — and since no surface ever
+// clears last_run_id, forbidding fresh here would make a new run for
+// that card unobtainable forever (review R16dca9).
+func TestDispatch_MintsFreshWhenLastRunFinished(t *testing.T) {
 	fx := newLastRunFixture(t, store.RunStatusFinished, native.StateInProgress)
 	fx.disp.dispatch(context.Background(), tracker.Issue{
 		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
 		WorkflowState: native.StateInProgress,
 	})
+	fx.disp.workersWG.Wait()
+	if fx.launched != 1 {
+		t.Fatalf("finished last_run: launched %d time(s), want 1 fresh run", fx.launched)
+	}
+	if fx.lastSpec.RunID == "" || fx.lastSpec.RunID == fx.runID {
+		t.Errorf("spec run = %q, want a freshly minted id (not %q)", fx.lastSpec.RunID, fx.runID)
+	}
+	if fx.lastSpec.ResumeFromRunID != "" {
+		t.Errorf("spec resumeFrom = %q, want empty (fresh run, not a resume)", fx.lastSpec.ResumeFromRunID)
+	}
+}
+
+// TestDispatch_PausedLastRunNotDispatcherOwnedStaysPut: a paused run
+// launched from the pipelines control center or the studio console
+// (no dispatcher RunSource) must NOT have its card yanked into
+// awaiting_input — the admission sweep only reconciles in_progress
+// tickets, so the move would strand it. The card stays put; the guard
+// still refuses the fresh sibling.
+func TestDispatch_PausedLastRunNotDispatcherOwnedStaysPut(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusPausedWaitingHuman, native.StateInProgress)
+	run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	run.Source = nil // pipelines / studio launch
+	if err := fx.runStore.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
 	if fx.launched != 0 {
-		t.Fatalf("finished last_run launched %d fresh run(s), want 0", fx.launched)
+		t.Fatalf("paused last_run launched %d fresh run(s), want 0", fx.launched)
 	}
 	got, err := fx.board.Get(fx.issue.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.State != "review" {
-		t.Errorf("card state = %q, want review (completed_state)", got.State)
+	if got.State != native.StateInProgress {
+		t.Errorf("card state = %q, want %q (foreign paused run must not be re-parked)", got.State, native.StateInProgress)
 	}
-	if got.LastRunID != fx.runID {
-		t.Errorf("last_run = %q, want the finished run", got.LastRunID)
+	if got.AwaitingInput {
+		t.Error("awaiting-input badge must not be set on a foreign card")
+	}
+	if _, skipped := fx.disp.state.dispatchSkips[fx.issue.ID]; !skipped {
+		t.Error("the refused mint must surface as a dispatch skip")
+	}
+}
+
+// TestDispatch_PromotesOrphanedRunningLastRun covers the --no-server
+// deployment: no runview orphan reaper is in-process, so the dispatcher
+// itself must promote a run left "running" by a SIGKILL/host crash
+// (lock free, past the grace window) instead of holding the ticket
+// forever. No checkpoint → failed → a fresh run is legitimate.
+func TestDispatch_PromotesOrphanedRunningLastRun(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusRunning, native.StateInProgress)
+	run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	run.CreatedAt = time.Now().Add(-3 * time.Minute) // past the grace window
+	if err := fx.runStore.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
+	fx.disp.workersWG.Wait()
+	if fx.launched != 1 {
+		t.Fatalf("orphaned running last_run (no checkpoint): launched %d, want 1 fresh run", fx.launched)
+	}
+	got, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusFailed {
+		t.Errorf("orphan status = %q, want %q (no checkpoint)", got.Status, store.RunStatusFailed)
+	}
+}
+
+// TestDispatch_ResumesOrphanedRunningLastRunWithCheckpoint: same dead
+// owner, but the run has a checkpoint — promotion lands on
+// failed_resumable and the dispatcher resumes the SAME run id.
+func TestDispatch_ResumesOrphanedRunningLastRunWithCheckpoint(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusRunning, native.StateInProgress)
+	run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	run.CreatedAt = time.Now().Add(-3 * time.Minute)
+	run.Checkpoint = &store.Checkpoint{}
+	if err := fx.runStore.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if _, _, err := fx.disp.workspaces.CreateForRun(fx.issue.ID, fx.runID); err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
+	fx.disp.workersWG.Wait()
+	if fx.launched != 1 {
+		t.Fatalf("orphaned running last_run (checkpoint): launched %d, want 1 resume", fx.launched)
+	}
+	if fx.lastSpec.RunID != fx.runID || fx.lastSpec.ResumeFromRunID != fx.runID {
+		t.Errorf("spec run=%q resumeFrom=%q, want both %q", fx.lastSpec.RunID, fx.lastSpec.ResumeFromRunID, fx.runID)
+	}
+}
+
+// TestDispatch_HoldsLiveLockedRun: a running/queued last_run whose lock
+// is held by a live owner must be held — the dead-owner probe must
+// never clobber in-flight work, even past the grace window.
+func TestDispatch_HoldsLiveLockedRun(t *testing.T) {
+	for _, status := range []store.RunStatus{store.RunStatusRunning, store.RunStatusQueued} {
+		t.Run(string(status), func(t *testing.T) {
+			fx := newLastRunFixture(t, status, native.StateInProgress)
+			run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			run.CreatedAt = time.Now().Add(-3 * time.Minute)
+			if err := fx.runStore.SaveRun(context.Background(), run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			lock, err := fx.runStore.LockRun(context.Background(), fx.runID)
+			if err != nil {
+				t.Fatalf("LockRun: %v", err)
+			}
+			defer func() { _ = lock.Unlock() }()
+
+			fx.disp.dispatch(context.Background(), tracker.Issue{
+				ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+				WorkflowState: native.StateInProgress,
+			})
+			if fx.launched != 0 {
+				t.Fatalf("live %s last_run launched %d fresh run(s), want 0", status, fx.launched)
+			}
+			got, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			if got.Status != status {
+				t.Errorf("live run status = %q, want %q (untouched by the probe)", got.Status, status)
+			}
+		})
 	}
 }
 
@@ -418,6 +574,7 @@ func TestDispatch_RefusesFreshSiblingWhenWorkspaceUnmanaged(t *testing.T) {
 type lastRunFixture struct {
 	disp     *Dispatcher
 	board    *native.Store
+	runStore *store.FilesystemRunStore
 	issue    *native.Issue
 	runID    string
 	launched int
@@ -437,6 +594,9 @@ func newLastRunFixture(t *testing.T, status store.RunStatus, cardState string) *
 		t.Fatalf("CreateRun: %v", err)
 	}
 	run.Status = status
+	// Dispatcher-spawned runs carry a RunSource stamp — the re-park paths
+	// key off it to leave pipelines/studio-launched cards to their owner.
+	run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: "native:fixture"}
 	if err := runStore.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
@@ -451,7 +611,7 @@ func newLastRunFixture(t *testing.T, status store.RunStatus, cardState string) *
 	if err := ns.SetLastRun(iss.ID, runID, ""); err != nil {
 		t.Fatalf("SetLastRun: %v", err)
 	}
-	fx := &lastRunFixture{board: ns, issue: iss, runID: runID}
+	fx := &lastRunFixture{board: ns, issue: iss, runID: runID, runStore: runStore}
 	runner := &StubRunner{Handler: func(_ context.Context, spec DispatchSpec) error {
 		fx.lastSpec = spec
 		fx.launched++
