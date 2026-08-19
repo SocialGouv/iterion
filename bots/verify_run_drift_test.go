@@ -215,6 +215,7 @@ func TestVerifyRunDriftTailPresentInAllBots(t *testing.T) {
 		"e2e-coverage/main.bot":        "verify_run",
 		"dep-update-guard/main.bot":    "verify_run",
 		"adr-cartograph/main.bot":      "verify_run",
+		"instrument/main.bot":          "verify_run",
 		// docs-refresh dropped the build-verify apparatus (a docs-only
 		// campaign can't break the build) — commit 8aee22894, converges on
 		// scope_ok ∧ docs_aligned alone. No verify_run node to guard.

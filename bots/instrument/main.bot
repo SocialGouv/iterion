@@ -301,12 +301,15 @@ prompt campaign_system:
   instrumentation_complete AND the tree is green — so under-reporting
   only costs a pass, and over-reporting lands you right back here.
 
-  The gate re-runs `{{vars.scratch_dir}}/verify.sh` (authored on the
-  first pass). If the failure log shows the SCRIPT itself is broken —
-  an environment flag it lacks, a stale package scope — fix the script
-  in place (it must still faithfully run this repo's real build+test);
-  do not burn passes re-reporting complete against a gate that cannot
-  go green.
+  The gate re-runs `{{vars.scratch_dir}}/verify.sh`, authored by a
+  SEPARATE release-engineer agent on the first pass. If the failure log
+  shows the SCRIPT itself is broken — an environment flag it lacks, a
+  stale package scope — DELETE it (`rm {{vars.scratch_dir}}/verify.sh`)
+  and say why in your summary: the release engineer re-authors it fresh
+  for the current tree on the same pass. You never write or edit
+  verify.sh yourself — a gate only stays a gate while the graded party
+  cannot hold the pen. Do not burn passes re-reporting complete against
+  a script nobody re-authors.
 
 prompt campaign_user:
   Repository: {{vars.workspace_dir}}

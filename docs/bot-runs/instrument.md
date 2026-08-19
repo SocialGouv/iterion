@@ -82,3 +82,24 @@ logs; opt-in tracing).
   a repo this size; the docs' `iterion dispatch /nonexistent-config.yaml`
   smoke is the correct first live probe (a user-input error like a
   missing `.bot` is deliberately never reported).
+- Adversarial review (post-run, 3 parallel reviewers, executed proofs):
+  - *errtrack*: 2 high + 1 medium, all real — scrubFields was one level
+    deep (nested `password:` reached the transport, and a CYCLIC logged
+    value stack-overflowed the process via `%v`), event meta surfaces
+    (ServerName/Environment/Release/…) unscrubbed, common token shapes
+    (Slack/AIza/JWT/key=value) unmatched; plus bare `"auth"` in
+    sensitiveKeys over-redacted `pr_author`. All fixed with red-first
+    regression tests (commit on the instrumentation branch).
+  - *bundle*: 1 medium — the frictions-fix clause licensing the campaign
+    to EDIT verify.sh was a gate bypass (out-of-tree, invisible to the
+    in-loop review, probe-reused forever, vacuous on targets without a
+    CI drift gate; both halves executed). Reworded: the campaign may
+    only DELETE the script, verify_build re-authors it. + instrument
+    added to the verify_probe/verify_run guard-test lists; stale
+    byte-share header fixed in the bundle's forge-mr-create copy.
+  - *seams*: nothing high/critical — DSN-unset byte-parity, re-panic
+    semantics, 2s flush bound (measured 2.01s on a hanging ingest),
+    dispatch JSON default + human override all proven. Assumed as-is:
+    the documented Fatalf→degrade on the infallible embedded-SPA path,
+    the throwaway logger in claudesdk's defensive errorf, the discarded
+    per-surface ServerName on second Init (cosmetic).
