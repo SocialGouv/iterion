@@ -479,7 +479,7 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 		return false
 	}
 	status := r.Status
-	if status == store.RunStatusRunning || status == store.RunStatusQueued {
+	if status == store.RunStatusRunning {
 		status = c.promoteIfOrphaned(context.Background(), rs, r)
 		if status != r.Status {
 			// promoteIfOrphaned re-reads under the run lock. Keep the record

@@ -146,9 +146,9 @@ func lastRunForbidsFresh(status store.RunStatus) bool {
 	}
 }
 
-// orphanRunGraceWindow shields a just-created run from the dead-owner
+// orphanRunGraceWindow shields a just-created running run from the dead-owner
 // probe: its launcher may sit between the run-record write and the lock
-// acquisition, so a young running/queued run is never judged. Mirrors
+// acquisition, so a young run is never judged. Mirrors
 // runview's orphanGraceWindow (pkg/runview/service_lifecycle.go).
 const orphanRunGraceWindow = 2 * time.Minute
 
@@ -164,7 +164,7 @@ const orphanRunGraceWindow = 2 * time.Minute
 // result is NOT a licence to mint a sibling: resolveRunID still
 // consults lastRunForbidsFresh before GenerateRunID.
 //
-// A running/queued status first goes through the dead-owner probe
+// A running status first goes through the dead-owner probe
 // (promoteIfOrphaned): the only orphan reaper lives in
 // runview.Service.reconcileOrphans, which `iterion dispatch
 // --no-server` never runs — without a dispatcher-side probe a run left
@@ -188,7 +188,7 @@ func (c *Dispatcher) resumableRunID(runID string) string {
 		return ""
 	}
 	status := r.Status
-	if status == store.RunStatusRunning || status == store.RunStatusQueued {
+	if status == store.RunStatusRunning {
 		status = c.promoteIfOrphaned(ctx, s, r)
 	}
 	switch status {
@@ -200,7 +200,7 @@ func (c *Dispatcher) resumableRunID(runID string) string {
 	return ""
 }
 
-// promoteIfOrphaned re-examines a running/queued run whose owner may be
+// promoteIfOrphaned re-examines a running run whose owner may be
 // dead, mirroring runview.Service.reconcileOrphans: a just-created run
 // is shielded by the grace window, then a non-blocking LockRun is the
 // liveness probe — grabbing it proves no live process owns the run
@@ -231,7 +231,10 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 	if err != nil {
 		return status
 	}
-	if cur.Status != store.RunStatusRunning && cur.Status != store.RunStatusQueued {
+	// Queued runs intentionally have no lock owner while they wait for a
+	// pipelines concurrency slot. A free lock is therefore evidence of an
+	// orphan only for running, matching runview.Service.reconcileOrphans.
+	if cur.Status != store.RunStatusRunning {
 		return cur.Status
 	}
 	newStatus := store.RunStatusFailed

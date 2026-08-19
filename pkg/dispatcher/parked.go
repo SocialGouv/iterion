@@ -160,7 +160,11 @@ func (c *Dispatcher) reparkClaimedIfLastRunWaiting(iss tracker.Issue) bool {
 	if !isDispatcherPausedRun(r) {
 		return false
 	}
-	c.reparkToAwaitingInput(iss, runID)
+	if !c.reparkToAwaitingInput(iss, runID) {
+		// No awaiting-input column: the retained claim keeps the paused card
+		// safe, while the skip explains why it is held in its current lane.
+		c.recordDispatchSkip(iss, "last run "+runID+" is still paused — held in place because the awaiting-input move failed")
+	}
 	c.fireSnapshot()
 	return true
 }

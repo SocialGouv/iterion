@@ -169,7 +169,8 @@ sibling planner from the workflow entry:
 | `last_run` status | On the next tick / boot |
 |---|---|
 | `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). Only dispatcher-owned runs move the card — a pipelines-launched paused run keeps its card in place for the admission sweep, and still blocks any fresh mint. |
-| `running` / `queued` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
+| `running` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
+| `queued` | Hold without probing the run lock. Pipeline-queued runs deliberately have no lock owner until a concurrency slot opens; their queue owner advances their state machine. |
 | `failed_resumable` / `cancelled` | Resume the **same** run id. |
 | `finished` | No hold: a fresh run is allowed — dragging the card back to an eligible column **is** the re-queue gesture. |
 | none, or hard `failed`, and the ticket is explicitly eligible | The only other legitimate fresh run. |

@@ -371,6 +371,30 @@ func TestReconcileStrandedPaused_FailedMoveStaysClaimedAndVisible(t *testing.T) 
 	}
 }
 
+func TestDispatch_PausedRunFailedMoveStaysClaimedAndVisible(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusPausedWaitingHuman, native.StateInProgress)
+	fx.disp.tracker = &rejectAwaitingInputTracker{Adapter: native.NewAdapter(fx.board)}
+
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
+
+	got, err := fx.board.Get(fx.issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateInProgress {
+		t.Errorf("card state = %q, want unchanged %q", got.State, native.StateInProgress)
+	}
+	if got.Claim == "" {
+		t.Error("dispatch-path failed move must retain the protective claim")
+	}
+	if _, visible := fx.disp.state.dispatchSkips[fx.issue.ID]; !visible {
+		t.Error("dispatch-path failed move must surface an operator-visible dispatch skip")
+	}
+}
+
 func TestDispatch_RefusesFreshRunWhenLastRunIsStillLive(t *testing.T) {
 	for _, status := range []store.RunStatus{
 		store.RunStatusRunning,
@@ -528,11 +552,11 @@ func TestDispatch_ResumesOrphanedRunningLastRunWithCheckpoint(t *testing.T) {
 	}
 }
 
-// TestDispatch_HoldsLiveLockedRun: a running/queued last_run whose lock
-// is held by a live owner must be held — the dead-owner probe must
+// TestDispatch_HoldsLiveLockedRun: a running last_run whose lock is held by
+// a live owner must be held — the dead-owner probe must
 // never clobber in-flight work, even past the grace window.
 func TestDispatch_HoldsLiveLockedRun(t *testing.T) {
-	for _, status := range []store.RunStatus{store.RunStatusRunning, store.RunStatusQueued} {
+	for _, status := range []store.RunStatus{store.RunStatusRunning} {
 		t.Run(string(status), func(t *testing.T) {
 			fx := newLastRunFixture(t, status, native.StateInProgress)
 			run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
@@ -571,6 +595,42 @@ func TestDispatch_HoldsLiveLockedRun(t *testing.T) {
 				t.Errorf("live-run hold must happen before Claim, got %q", card.Claim)
 			}
 		})
+	}
+}
+
+func TestDispatch_HoldsOldQueuedRunWithoutLock(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusQueued, native.StateInProgress)
+	run, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	run.CreatedAt = time.Now().Add(-3 * time.Minute)
+	if err := fx.runStore.SaveRun(context.Background(), run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// Pipeline-queued runs have no lock owner by design. Even after the
+	// running-run grace window, the dispatcher must leave one to its queue.
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
+	if fx.launched != 0 {
+		t.Fatalf("queued last_run launched %d fresh run(s), want 0", fx.launched)
+	}
+	got, err := fx.runStore.LoadRun(context.Background(), fx.runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusQueued {
+		t.Errorf("queued run status = %q, want %q (never orphan-reaped)", got.Status, store.RunStatusQueued)
+	}
+	card, err := fx.board.Get(fx.issue.ID)
+	if err != nil {
+		t.Fatalf("Get card: %v", err)
+	}
+	if card.Claim != "" {
+		t.Errorf("queued-run hold must happen before Claim, got %q", card.Claim)
 	}
 }
 

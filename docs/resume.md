@@ -433,7 +433,8 @@ waiting, the dispatcher **does not mint a new run id**.
 | `last_run` | Dispatcher action |
 |---|---|
 | `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input` (dispatcher-owned runs). No auto-resume (no answers). |
-| `running` / `queued` | Hold while the owner lives. An orphaned run (no live lock, past the grace window) is promoted to `failed_resumable` / `failed` first — never a sibling from the workflow entry. |
+| `running` | Hold while the owner lives. An orphaned run (no live lock, past the grace window) is promoted to `failed_resumable` / `failed` first — never a sibling from the workflow entry. |
+| `queued` | Hold without a lock probe: pipeline-queued runs have no lock owner until their concurrency slot opens. |
 | `failed_resumable` / `cancelled` | `Engine.Resume` on the **same** id. |
 | `finished` | Fresh run allowed — dragging the card back to `ready` is the re-queue gesture. |
 | none, or hard `failed` + ticket explicitly back in `ready` | Fresh run. |
