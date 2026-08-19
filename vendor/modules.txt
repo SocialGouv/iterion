@@ -349,6 +349,21 @@ github.com/ethpandaops/codex-agent-sdk-go/internal/version
 ## explicit; go 1.23
 github.com/fsnotify/fsnotify
 github.com/fsnotify/fsnotify/internal
+# github.com/getsentry/sentry-go v0.48.0
+## explicit; go 1.25.0
+github.com/getsentry/sentry-go
+github.com/getsentry/sentry-go/attribute
+github.com/getsentry/sentry-go/internal/debug
+github.com/getsentry/sentry-go/internal/debuglog
+github.com/getsentry/sentry-go/internal/http
+github.com/getsentry/sentry-go/internal/httputils
+github.com/getsentry/sentry-go/internal/otel/baggage
+github.com/getsentry/sentry-go/internal/otel/baggage/internal/baggage
+github.com/getsentry/sentry-go/internal/protocol
+github.com/getsentry/sentry-go/internal/ratelimit
+github.com/getsentry/sentry-go/internal/telemetry
+github.com/getsentry/sentry-go/internal/util
+github.com/getsentry/sentry-go/report
 # github.com/glebarez/go-sqlite v1.22.0
 ## explicit; go 1.17
 github.com/glebarez/go-sqlite
@@ -867,6 +882,7 @@ golang.org/x/sync/singleflight
 # golang.org/x/sys v0.47.0
 ## explicit; go 1.25.0
 golang.org/x/sys/cpu
+golang.org/x/sys/execabs
 golang.org/x/sys/plan9
 golang.org/x/sys/unix
 golang.org/x/sys/windows
