@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,8 +221,11 @@ func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
 	if !visible {
 		t.Fatal("source-changed park must surface as a dispatch skip")
 	}
-	if skip.Reason == "" {
-		t.Error("dispatch skip must carry the resume --force / cancel reason")
+	if !strings.Contains(skip.Reason, "resume with --force") {
+		t.Errorf("dispatch skip must carry the force-resume remedy, got %q", skip.Reason)
+	}
+	if strings.Contains(skip.Reason, "before a new dispatch") {
+		t.Errorf("dispatch skip must not claim that cancellation frees a fresh dispatch, got %q", skip.Reason)
 	}
 	// A claimed parked ticket is absent from ListCandidates, but its sticky
 	// explanation must survive candidate pruning while our claim is journalled.

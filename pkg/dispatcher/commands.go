@@ -415,8 +415,9 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// The bot source changed since this run started. Minting a
 		// sibling from entry would replay the prefix (agents, tools,
 		// already-paid artefacts). Park: keep the claim, keep last_run,
-		// do not retry. The operator resumes THIS run with --force or
-		// cancels it before asking for a new one. Same operator
+		// do not retry. The operator resumes THIS run with --force; cancel
+		// is not an escape because cancelled last_runs remain resumable and
+		// still forbid a fresh sibling. Same operator
 		// visibility as the pause arm below — badge, awaiting-input
 		// column, and a dashboard skip entry — otherwise the ticket
 		// strands invisibly: claimed, no live worker, no badge, and
@@ -425,8 +426,8 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		c.setAwaitingInput(issueID, true)
 		c.moveToAwaitingInput(issueID, r.Identifier)
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
-			"bot source changed since the last run started — resume with --force or cancel this run before a new dispatch")
-		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console, or cancel this run before a new dispatch.", r.Identifier, r.RunID)
+			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket because a cancelled last_run is resumed from its checkpoint")
+		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch because a cancelled last_run is resumed from its checkpoint.", r.Identifier, r.RunID)
 		c.fireSnapshot()
 		return
 	}

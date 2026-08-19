@@ -115,7 +115,8 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 // run started (pkg/runtime/resume.go: "workflow source has changed ...
 // re-run from scratch or use --force"). finishRun parks the ticket
 // instead of minting a sibling: the operator resumes THIS run with
-// --force, or cancels it before asking for a new one. The runtime
+// --force. Cancelling is not an escape: cancelled last_runs are resumed
+// from their checkpoint and still forbid a fresh sibling. The runtime
 // exposes a typed sentinel in-process and retains a compatibility
 // fallback for detached/mixed-version boundaries that flatten errors
 // to text.
