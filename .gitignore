@@ -147,13 +147,13 @@ e2e/.workspaces/
 # claude_code sub-invocations mirror skills into THEIR cwd too
 # (pkg/*/.claude/, e2e/.claude/), and a worktree finalize would
 # wip-bank that junk. .claude/ is runtime state at any depth — except
-# the vendored codex fork, whose committed .claude/rules/ are its own
-# project content (re-included below; tracked files are unaffected by
-# ignore rules either way, the exception keeps future adds friction-free).
-# The exception is narrowed to rules/ ONLY: the fork is an active work
-# target, so a bare `!…/.claude/` would re-open the wip-bank hole there
-# for the very runtime junk (skills/, *.local.json) this rule exists to
-# stop — git must descend into the dir, then re-ignore its other children.
+# the vendored codex fork's committed .claude/rules/, which is its own
+# project content. The exception is deliberately narrow: the fork is an
+# active work target, so a bare `!…/.claude/` would re-open the wip-bank
+# hole there for the very junk (skills/, *.local.json) this rule stops.
+# Hence three lines — descend into the dir, re-ignore its other children,
+# re-include rules/. (Tracked files are unaffected by ignore rules either
+# way; the exception keeps future adds under rules/ friction-free.)
 **/.claude/
 !third_party/codex-agent-sdk-go/.claude/
 third_party/codex-agent-sdk-go/.claude/*
