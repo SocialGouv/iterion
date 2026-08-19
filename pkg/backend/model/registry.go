@@ -18,6 +18,7 @@ import (
 	openaiprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/openai"
 	vertexprovider "github.com/SocialGouv/claw-code-go/pkg/api/providers/vertex"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -134,7 +135,7 @@ func (r *Registry) registerDefaults() {
 			}
 			cfg.OAuthToken = authToken
 			claudeForfaitWarnOnce.Do(func() {
-				fmt.Fprintln(os.Stderr, "⚠️  claw: "+
+				iterlog.NewFromEnv(os.Stderr).Warn("claw: %s",
 					secrets.SubscriptionOAuthNotice(secrets.ProviderAnthropic))
 			})
 		}

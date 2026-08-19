@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Proxy is the iterion HTTP / HTTPS CONNECT proxy. It enforces a
@@ -231,7 +233,7 @@ func (p *Proxy) Start(addr string) error {
 		// proxy doesn't quietly stop accepting connections while the
 		// rest of the run keeps trying to use it.
 		if err := p.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintf(os.Stderr, "netproxy: serve stopped with error: %v\n", err)
+			iterlog.NewFromEnv(os.Stderr).Error("netproxy: serve stopped with error: %v", err)
 		}
 	}()
 	p.running = true
