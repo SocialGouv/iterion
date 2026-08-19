@@ -472,8 +472,8 @@ tool fetch_feeds:
   output: fetch_output
   language: py
   script: |
-    import json, os, re, gzip, email.utils, datetime, socket, ipaddress
-    import urllib.request
+    import json, os, re, gzip, time, email.utils, datetime, socket, ipaddress
+    import urllib.request, urllib.error
     from urllib.parse import urlsplit
     import xml.etree.ElementTree as ET
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -607,11 +607,29 @@ tool fetch_feeds:
             'User-Agent': 'feed-watch/1.0 (iterion; +https://github.com/SocialGouv/iterion)',
             'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
             'Accept-Encoding': 'gzip, identity'})
-        with _opener.open(req, timeout=timeout) as r:
-            raw = r.read(4 * 1024 * 1024)
-        if raw[:2] == b'\x1f\x8b':
-            raw = gzip.decompress(raw)
-        return raw
+        # One retry on a TRANSIENT server-side failure. Aggregators are
+        # flaky under load — hnrss.org returned 502 for 9 feeds on a run and
+        # served all of them seconds later — and a feed missed is not a feed
+        # deferred: nothing re-reads the window nobody fetched. Retried only
+        # on 5xx/timeout, never on a 4xx (a wrong URL will stay wrong), and
+        # the SSRF validation above has already run for this host.
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with _opener.open(req, timeout=timeout) as r:
+                    raw = r.read(4 * 1024 * 1024)
+                if raw[:2] == b'\x1f\x8b':
+                    raw = gzip.decompress(raw)
+                return raw
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code < 500:
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+        raise last
 
     def entry_from(el, feed_url):
         d = {'id': '', 'url': '', 'title': '', 'published': '', 'summary': ''}
