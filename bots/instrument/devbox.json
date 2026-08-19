@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
+  "packages": [
+    "gh@2.96.0",
+    "glab@1.108.0"
+  ],
+  "env": {
+    "DEVBOX_NO_PROMPT": "true"
+  }
+}

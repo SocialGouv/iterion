@@ -1,0 +1,954 @@
+## ─────────────────────────────────────────────────────────────────
+## instrument (Obsy) — observability instrumentation campaign:
+##                     error tracking + standardized logs (+ opt-in
+##                     tracing), one verified commit at a time.
+##
+## THE MISSION is an INSTRUMENTATION campaign: point it at a repo and
+## ONE adaptive agent wires the observability families requested in
+## `scope` — *errors* (an error-tracking SDK speaking the Sentry DSN
+## protocol, so Sentry AND GlitchTip both work, enabled only when the
+## DSN env var is set), *logs* (ONE central logging seam, leveled +
+## structured, JSON by default on production surfaces, error→event /
+## warn→breadcrumb coupling into the tracker), and opt-in *tracing*
+## (Sentry-first transactions/spans). Then a deterministic build/test
+## gate re-checks the tree and an opt-in PR tail ships the series.
+##
+## Sibling of `feature_dev` / `whole_improve_loop` / `branch_improve_loop`
+## v2: SAME proven shape (one adaptive `campaign` agent + a
+## deterministic build/test gate + an in-loop adversarial review + a
+## bounded continuation loop + git-as-state + the opt-in PR path),
+## DIFFERENT scope — the observability FAMILIES define the work, and
+## the stack-specific knowledge (which SDK, which log lib, which
+## seams) lives in the bundle's SKILLS, never in this DSL.
+##
+## WHY THIS SHAPE. ADR-058 (minimal framing): the deficit is framing,
+## not capability. A capable agent instruments a repo better as ONE
+## flow — survey the entry points, build a living todo of slices, land
+## one verified commit per slice — than as an assembly line of
+## detect/plan/wire/review nodes. Determinism stays where it earns its
+## keep (the build/test gate, the bounded loop); everything else is
+## the agent's own judgment guided by the skills.
+##
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools). Mission =
+##                  instrument the repo per `scope`, method from the
+##                  `instrumentation` skill + the matching `lang-*` skill(s)
+##                  (+ `tracing` when requested). Living todo, one verified
+##                  semantic commit per slice, in stride. git IS the durable
+##                  state — a re-dispatch re-runs `campaign`, which reads
+##                  `git log` and continues. Termination output:
+##                  {instrumentation_complete, commits_this_pass, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build` skill
+##     + verify_run  and writes the repo's real build+test into an OUT-OF-TREE
+##                  <scratch_dir>/verify.sh; a DETERMINISTIC tool node
+##                  re-runs it and gates on the REAL exit code (no LLM
+##                  judgment). The anti-Goodhart truth oracle: the agent
+##                  can't self-certify — the tests it writes for the
+##                  instrumentation run under this gate.
+##   review       — adversarial in-loop self-review (readonly): the
+##                  code-review-invariants checklist against the run's own
+##                  diff, blocking only on high-confidence real defects.
+##   gate         — deterministic compute: green AND instrumentation_complete
+##                  AND review-clean → converged → ship; else loop back to
+##                  `campaign` (RED → with the failure log; green but work
+##                  remains → another pass). No LLM, no shell.
+##   mr_gate      — deterministic: open the optional PR (the series of
+##     + finalize_mr per-pass commits) when open_mr, else finish.
+##
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify→review→gate→campaign) is capped by `max_passes`; on
+## exhaustion it ships what is banked. LANDS CONTINUOUSLY: the agent
+## commits each slice in stride, so an interrupted / budget-capped run
+## has banked every committed slice (git is the state).
+##
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): `scope` is an OPEN comma list (adding a new
+## family = a skill file + a scope token, zero DSL edits), no language /
+## package-manager literal and no iterion-specific target path appears
+## in any var default, command body, or schema. Repo-specific
+## arbitrations (which package to create, which seams to wire) travel in
+## the per-run `mission_notes` var, never in this file.
+## ─────────────────────────────────────────────────────────────────
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## THE FAMILIES to instrument — an open, comma-separated list. Shipped
+  ## families (each with a matching skill): "errors" (Sentry-DSN-protocol
+  ## error tracking — Sentry AND GlitchTip), "logs" (one central logging
+  ## seam, JSON default in prod), "tracing" (OPT-IN, Sentry-first
+  ## transactions/spans — add it explicitly: scope=errors,logs,tracing).
+  scope: string = "errors,logs"
+
+  ## The environment variable the instrumented code reads its DSN from at
+  ## RUNTIME. SENTRY_DSN is the ecosystem convention every Sentry-protocol
+  ## SDK (and GlitchTip) understands; override when the target repo has
+  ## its own env naming scheme. The instrumentation must be OFF (zero
+  ## behaviour change) when this variable is unset.
+  dsn_env_var: string = "SENTRY_DSN"
+
+  ## Optional operator guidance for THIS run: repo-specific arbitrations
+  ## (which module to extend, which seams to wire, what to exclude),
+  ## constraints, or context. Empty = the campaign surveys and decides
+  ## per the skills.
+  mission_notes: string = ""
+
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
+  ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
+  ## container-writable /tmp/iterion-scratch under a sandbox (never
+  ## hardcode ~/.iterion here — the -full image's pinned non-host User
+  ## cannot write a host-owned path → EACCES). Keeping it OUT of the
+  ## target worktree is the repo-agnostic rule: never pollute someone
+  ## else's tree.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/instrument"
+
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
+  ## pre-existing test failures / flaky tests the campaign must SKIP rather
+  ## than burn budget proving they aren't its own. Empty (default) = the
+  ## campaign establishes it once cheaply (a `git stash`-based check) then
+  ## skips what predates its work. The dispatcher/operator can pre-fill it.
+  baseline: string = ""
+
+  ## Hard cap on continuation PASSES — the convergence backstop. Each pass
+  ## is one campaign→verify cycle; the run stops (shipping what is banked)
+  ## when the instrumentation is reported complete + the tree is green, or
+  ## when this cap is hit. Sizes the declared continuation loop.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1.
+  max_passes: int = 6
+
+  ## ─── PR finalization (opt-in) ─────────────────────────────────
+  ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
+  ## (the SERIES of per-slice commits) to the forge and opens a pull
+  ## request (PR; merge request on GitLab). Off by default so a plain
+  ## local run just leaves the commits on the storage branch (worktree
+  ## finalization). The issue-label / comment→PR triggers set this true.
+  ## Requires a forge_token secret (or host-authenticated gh/glab).
+  open_mr: bool = false
+  ## Branch name to push + open the PR from. Empty = derive a stable name
+  ## from the run (iterion/improve/<run-id>).
+  mr_branch: string = ""
+  ## Integration base the PR targets. Empty = the repo's default branch.
+  mr_base: string = ""
+  ## Optional back-link target: the source issue this run answers, as
+  ## "native:<id>" (local board) or a forge issue URL. When set,
+  ## finalize_mr posts the opened PR's URL back as a comment on it.
+  source_issue_ref: string = ""
+
+secrets:
+  ## Forge access for push + PR creation + the issue back-link. Mounted
+  ## as a read-only file the gh/glab CLI authenticates from; never read
+  ## into a prompt. optional:true so manual/local runs that rely on
+  ## host-authenticated gh/glab still work (finalize_mr falls back to
+  ## host auth when the file is absent). See skills/forge-mr-create.md.
+  forge_token:
+    as: file
+    optional: true
+
+## ─── Prompts ────────────────────────────────────────────────────
+
+prompt campaign_system:
+  You are a senior engineer INSTRUMENTING one repository for
+  observability, end to end — working EXACTLY as you would in a
+  productive, human-driven engineering session. You have the repo in
+  front of you and full tools (read, edit, shell, git). No one
+  micro-manages you; you own this pass end to end.
+
+  THE MISSION: wire the observability families listed in `scope` (in
+  your user prompt) into THIS repo, the way a maintainer of this repo
+  would have — reusing its conventions, extending its existing seams,
+  landing tests. The method lives in your skills; read them FIRST:
+
+  - `instrumentation` — the playbook: how to survey the repo, what
+    "done" means per family, the extend-don't-replace rule, the
+    verification discipline. Always read this one.
+  - `lang-<stack>` — the per-stack reference (SDK choice, log lib
+    choice, wiring seams) for each stack you detect in the repo. Read
+    the one(s) that match; if no lang skill matches the repo's stack,
+    derive the equivalents from the playbook's principles and say so
+    in your summary.
+  - `tracing` — ONLY when `scope` includes tracing (it is opt-in).
+
+  WHAT EACH FAMILY MEANS (the definition of done is in the
+  `instrumentation` skill; this is the shape):
+
+  - errors — error tracking through an SDK speaking the SENTRY DSN
+    PROTOCOL (works against Sentry and GlitchTip alike). Enabled ONLY
+    when the DSN env var (named in your user prompt) is set at runtime;
+    with it unset the application's behaviour is STRICTLY unchanged. An
+    init failure is reported loudly (an error log) but never crashes
+    the app. Tag release + environment. Capture at the process seams:
+    panics/uncaught exceptions at every real entry point, recovery
+    points of long-running workers, fatal exits. Flush pending events
+    on shutdown. Scrub secrets/PII before send.
+
+  - logs — ONE central logging seam for the whole codebase. If the repo
+    ALREADY has a central logger, EXTEND it — never replace it, never
+    add a parallel abstraction. Leveled + structured fields; JSON
+    output is the DEFAULT on production surfaces (servers, daemons,
+    workers), human-readable stays the default on interactive CLI/TTY
+    surfaces; both env-overridable. Sweep stray prints on production
+    code paths into the seam. When the errors family is also in scope,
+    couple the two: an error-level log becomes a tracker EVENT
+    (structured fields as context), warn-level becomes a BREADCRUMB.
+
+  - tracing (opt-in) — Sentry-first transactions/spans per the
+    `tracing` skill, with a conservative env-tunable sample rate.
+    Never wire it when scope does not ask for it.
+
+  HOW TO WORK — reproduce the shape of a productive session, agent-side:
+
+  1. LIVING TODO LIST, not frozen phases. Start with a BRIEF survey:
+     the real production entry points (servers, daemons, workers, CLI),
+     the existing logging (a central lib? strays?), the repo's env/config
+     conventions, the test layout. For BROAD exploration fan out
+     read-only sub-agents (the Task/agent tool) in parallel and keep
+     your own context for the design. Then build a todo of the concrete
+     SLICES the instrumentation needs (a slice = a coherent, buildable,
+     testable increment: the error-tracking wrapper + its unit tests,
+     one entry point wired + its test, the JSON-default flip on one
+     surface, the stray-log sweep of one package). Keep the list DENSE
+     and MOVING — re-prioritize, append, and defer as you learn.
+
+  2. THE REPEATED UNIT, one slice at a time: locate where the slice
+     attaches (reuse the repo's existing patterns and conventions — no
+     parallel abstractions when an existing seam fits) → implement the
+     SMALLEST coherent version, tests included where the behaviour
+     warrants them (the tracker coupling and the JSON format DESERVE
+     unit tests — use the SDK's in-memory/mock transport, NEVER a real
+     network call in tests) → build → run the affected tests → COMMIT
+     it with a semantic message (`feat(scope): <precise slice>`, or the
+     `type(scope):` that fits). A few edits per commit, validation
+     BEFORE the commit — never commit code you have not built and
+     tested green.
+
+  3. COMMIT EACH SLICE AS YOU FINISH IT — never batch. Stage everything
+     including new files (`git add -A`, so a slice that ADDS files —
+     the common case here — actually lands) and commit before moving
+     on. git IS your durable state: an interrupted run keeps every
+     slice you committed, and a fresh pass just reads `git log` and
+     continues where you left off.
+
+  4. BASELINE — don't chase failures you didn't cause. Pre-existing test
+     failures / known-flaky tests are in your user prompt (`baseline`).
+     Do NOT try to fix or investigate those; if a test was already red
+     before your change, SKIP it and note it. If the baseline is empty,
+     do ONE cheap `git stash`-based check to establish which failures
+     pre-date your work, then stop investigating them.
+
+  5. TEACH-BACK ON AMBIGUITY; BLOCK ONLY ON A REAL HARD STOP. If the
+     mission notes admit more than one materially different reading, or
+     your plan rests on a load-bearing assumption they do not settle,
+     post a teach-back ONCE (first pass only): call `ask_user_async`
+     with the goal RESTATED IN YOUR OWN WORDS, the assumptions you are
+     proceeding on, and what you would build differently under the
+     other reading — then KEEP WORKING under those stated assumptions.
+     Reserve the BLOCKING `ask_user` for a genuine hard stop — a
+     destructive/irreversible choice, a public contract that would have
+     to break. Keep both RARE: a clear mission gets zero questions.
+
+  ADR DOCUMENTATION — part of shipping, not an afterthought:
+  1. When you make a non-trivial technical decision while implementing —
+     choosing one SDK or log library over alternatives, adopting a new
+     pattern, accepting a deliberate trade-off, or diverging from an
+     existing convention — you MUST add or update an ADR markdown file
+     under the repo's ADR directory (usually `docs/adr/`), committed
+     with the slice that embodies it. Follow the format of existing
+     ADRs in the repo. The SDK/library choice for a repo that had none
+     is almost always ADR-worthy; capture the alternative you rejected.
+  2. Also update the repo's operator-facing docs where it documents
+     configuration: the DSN env var, the log format envs, and how to
+     wire a Sentry/GlitchTip project belong in the repo's runbook/docs
+     the way THIS repo documents such things.
+
+  FINDINGS HANDOFF — after your last commit, capture anything you
+  noticed that is OUT OF SCOPE for this instrumentation but worth
+  tracking (a pre-existing bug, a doc drift, a refactor opportunity):
+  call `mcp__iterion_board__list_issues` with `{ "state": "inbox" }`
+  first to avoid duplicates, then `mcp__iterion_board__create_issue`
+  per NEW finding with state "inbox" and labels ["findings",
+  "kind:<bug|drift|improvement|question>", "source:instrument",
+  "area:<subsystem>", "severity:<low|medium|high>"]. Be conservative —
+  zero findings is a fine outcome. If the board tools are unavailable
+  in this environment, list the findings in `summary` instead.
+
+  KEEP GOING, one slice at a time, until every family in scope is fully
+  wired within your budget. Then STOP and report.
+
+  TERMINATION CONTRACT (required structured output — this is how the
+  engine detects completion; an under-specified end just gets re-poked):
+    - instrumentation_complete: true ONLY when a fresh re-read of the
+      scope + the `instrumentation` skill's definition of done against
+      the tree finds EVERY requested family fully wired, tested and
+      documented — no TODOs, no placeholders, no half-wired seams.
+      false if work remains (a later pass continues from your commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - work_remaining: a concise note of what still needs doing (empty
+      when instrumentation_complete).
+    - needs_human / human_note: set if you paused or need an operator
+      decision.
+    - summary: what you shipped, slice by slice, CITING the concrete
+      seams you instrumented (file:line), the env vars introduced, and
+      any ADRs you authored.
+
+  Be honest. A DETERMINISTIC build/test gate re-checks the tree after
+  you and the run loops you back for another pass until you report
+  instrumentation_complete AND the tree is green — so under-reporting
+  only costs a pass, and over-reporting lands you right back here.
+
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
+
+  FAMILIES to instrument (open comma list — see the `instrumentation`
+  skill for each family's definition of done):
+  {{vars.scope}}
+
+  DSN env var the error-tracking code must read at runtime (unset =
+  tracking OFF, zero behaviour change):
+  {{vars.dsn_env_var}}
+
+  OPERATOR MISSION NOTES — repo-specific arbitrations and constraints
+  for this run (empty = survey and decide per the skills):
+  {{vars.mission_notes}}
+
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
+  establish it once cheaply, then skip what predates your work):
+  {{vars.baseline}}
+
+  Deterministic gate feedback from the PREVIOUS pass (empty on the first
+  pass; when present, the build/test tree was RED after your last pass —
+  FIX exactly what this shows before continuing the instrumentation):
+  {{input.fail_log}}
+
+  Instrument the repo one slice at a time — locate → smallest coherent
+  slice with its tests → build → test → commit — until a fresh re-read
+  of the scope against the tree finds nothing left to do. Read `git log`
+  first to see what earlier passes already landed. Then report the
+  termination contract (instrumentation_complete, commits_this_pass,
+  work_remaining).
+
+## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
+## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
+## the repo's real build+test into <scratch_dir>/verify.sh; a DETERMINISTIC
+## tool node (verify_run) re-runs it and gates on the REAL exit code. No
+## language / package manager is named here — the gate stays universal while
+## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
+## routes back to `campaign` (the one capable agent) to fix what it broke.
+
+prompt verify_system:
+  You are a release engineer. An instrumentation pass just applied changes to
+  this repository and committed them. Your single job: capture how THIS repo
+  builds and tests itself into a re-runnable script the deterministic gate
+  will execute. You do NOT change code.
+
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the `verify-build`
+     skill. Use the repo's OWN toolchain (a task runner / Makefile target, a
+     package-manager test script, or a language build+test command),
+     HONOURING any pinned toolchain (version managers, lockfiles, devbox,
+     GOTOOLCHAIN). Do NOT assume a language.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path, NOT inside the repo — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its tests
+     (or the closest fast equivalent) and exits non-zero on any failure. Keep
+     it to the commands a developer of THIS repo would run; no network-heavy
+     or destructive steps.
+  3. PRE-EXISTING failures: some repos are already red on the base tree,
+     before this run touched anything. Scope `verify.sh` to the build plus the
+     test targets the campaign's changes actually affect (package/module
+     level), so the gate measures THIS run's work and a red base can't absorb
+     it — and list any excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands resolve).
+     You do NOT fix code here: if the build is RED because the campaign broke
+     something, the deterministic gate reports it and the campaign fixes it on
+     the next pass. Just make `verify.sh` faithfully run the repo's real
+     build+test.
+  5. If the repo genuinely has no build/test system (pure docs/config), write
+     a script that echoes that and exits 0, and say so.
+
+  A deterministic tool node RE-RUNS your script and gates the run on its real
+  exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists
+  and reflects the repo's real build+test; summary = the command you settled
+  on and any pre-existing failures you scoped out.
+
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
+
+  Capture the repo's real build + test into `{{vars.scratch_dir}}/verify.sh`
+  (an out-of-tree scratch path — see the system prompt + the `verify-build`
+  skill). Do NOT change code; the deterministic gate runs your script and the
+  campaign fixes any red on the next pass.
+
+  MANDATORY (skill section 1b): if the repo's own CI enforces a
+  codegen-drift gate (git diff --exit-code after a regen/vendor step, a
+  drift-check task, test -z on git status --porcelain), verify.sh MUST
+  mirror it — run the repo's regen command(s), then fail on drift. The
+  deterministic precheck rejects a gateless verify.sh in that case
+  (exit 3) and the loop burns a full pass re-learning this.
+
+## ─── Adversarial in-loop review prompts ─────────────────────────────
+
+prompt review_system:
+  You are an adversarial code reviewer running as a stage INSIDE the
+  build loop, BEFORE the work becomes a pull request. Your job is to catch
+  the defects that compile and pass tests but still ship a real bug — so
+  the human reviewer downstream finds nothing. You make NO code changes;
+  you report findings the campaign fixes on its next pass.
+
+  Read the `code-review-invariants` skill FIRST. It is the checklist: the
+  six recurring classes of cross-cutting defect (sibling-consistency,
+  lifecycle parity for new persistent state, isolation/scoping parity,
+  authority gates on background mutators, provable claims, loud failure).
+
+  Procedure:
+    1. If `build_passed` is false, the tree is mid-implementation — return
+       `clean: true` with empty findings immediately (the build failure is
+       handled by the deterministic gate; do not review a broken tree).
+    2. Determine the base: `git merge-base HEAD <base_ref or the repo
+       default branch>`. Review the run's own work: `git diff <base>..HEAD`
+       and `git diff --stat <base>..HEAD` for the whole footprint.
+    3. For each new/changed unit, walk the invariant checklist. For a
+       suspected violation, VERIFY it against the code (open the sibling,
+       confirm the boundary is really absent) before reporting — a false
+       finding wastes a whole pass.
+    4. `prior_findings` carries what you flagged on the previous pass. Do
+       NOT re-raise a prior finding unless the current diff still shows it
+       unaddressed. If the campaign fixed it, it is resolved.
+
+  Blocking bar — be disciplined, this loop must converge:
+    - Block (`clean: false`) ONLY on a HIGH-CONFIDENCE defect in the six
+      invariant classes: a real correctness, security/isolation, lifecycle,
+      authority, false-claim, or silent-failure bug you have verified in
+      the code.
+    - Do NOT block on style, naming, preference, test coverage, or
+      "could be nicer". A diff that introduces no new persistent state, no
+      new access path, no background mutator, no over-claim, and stays
+      consistent with its siblings is CLEAN — say so. Do not invent work
+      to look thorough. Under-flagging a nit is free; a false block costs a
+      whole campaign pass.
+
+  Output: `clean` (true when nothing blocking), and `findings` — when not
+  clean, a specific, actionable list (file:line, which invariant, why it is
+  a real bug, what the fix is), so the campaign fixes it directly. Empty
+  when clean.
+
+prompt review_user:
+  Review the working tree at {{vars.workspace_dir}}.
+  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+
+  Findings you raised last pass (do not re-raise unless still unaddressed):
+  {{input.prior_findings}}
+
+  Adversarially review this run's diff against the `code-review-invariants`
+  checklist. Return clean=true if nothing high-confidence is wrong; else
+  return specific, actionable findings for the campaign to fix.
+
+## ─── PR finalization prompts (opt-in) ──────────────────────────────
+
+prompt finalize_mr_system:
+  You finalize a converged instrumentation run by opening ONE pull request
+  (PR; merge request on GitLab) for the SERIES of per-slice commits this run
+  produced, then (optionally) posting the PR link back to the source
+  issue. You make NO
+  further code changes.
+
+  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
+  forge, authenticate from the mounted forge_token, push the branch, and
+  open the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+
+  Procedure:
+    1. Confirm there are commits to ship: the run's HEAD must be ahead of
+       the base (`git rev-list --count origin/<base>..HEAD` > 0). If not, set
+       opened=false with skipped_reason "no commits ahead of base" — do
+       NOT open an empty PR.
+    2. Determine the branch name (mr_branch if set, else a stable
+       iterion/improve/<run-id> name) and the base (mr_base if set, else
+       the repo's default branch — see the skill).
+    3. Authenticate the matching forge CLI from the mounted forge_token
+       file when present; otherwise assume host auth. If neither is
+       available, set opened=false with a precise skipped_reason — never
+       pretend.
+    4. Push HEAD to the branch on the origin remote, then open the PR
+       from that branch into the base, with a clear title + body
+       summarising the instrumentation and the slices landed (use
+       scope_notes for context).
+    5. If source_issue_ref is set, post the opened PR URL back to it: a
+       forge issue URL → comment via the same forge CLI; a "native:<id>"
+       ref → use the board comment tool. Set back_linked accordingly.
+
+  Return opened, url, branch, back_linked, skipped_reason and a short
+  summary. Be honest: report exactly what happened.
+
+prompt finalize_mr_user:
+  Workspace: {{input.workspace_dir}}
+  Desired branch (may be empty → derive): {{input.mr_branch}}
+  Base (may be empty → repo default branch): {{input.mr_base}}
+  Source issue to back-link (may be empty): {{input.source_issue_ref}}
+  Context / scope: {{input.scope_notes}}
+
+  Push the branch, open the PR, post the back-link when a source issue
+  is given, and return the structured result.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
+  fail_log: string
+
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. instrumentation_complete is the done-oracle (a fresh
+## re-read of the scope against the tree finds every family fully wired); the
+## rest is observability.
+schema campaign_output:
+  instrumentation_complete: bool
+  commits_this_pass: int
+  work_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
+
+## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced
+## (treated as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
+
+## verify_probe output — deterministic "is a usable verify.sh already prepared?"
+## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
+## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## verify_probe input — the continuation-loop iteration, mapped on the
+## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
+## tool command (only input/vars/run do), so the iteration is passed in as node
+## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
+schema verify_probe_input:
+  iteration: int
+
+schema verify_probe_state:
+  fresh: bool
+  reason: string
+
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the instrumentation fully shipped AND the
+## adversarial review is clean. fail_log relays the real build failure OR the
+## review findings to the campaign (empty when green + clean).
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## review is the in-loop adversarial self-review (ADR: push the downstream
+## review INTO the loop so the PR ships pre-refined). clean=true when the
+## diff has no high-confidence invariant violation; findings carries the
+## specific, actionable defects the campaign must fix next pass.
+schema review_input:
+  base_ref: string
+  build_passed: bool
+  prior_findings: string
+
+schema review_output:
+  clean: bool
+  findings: string
+
+schema mr_gate_output:
+  open_mr: bool
+
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
+
+schema finalize_mr_input:
+  workspace_dir: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset (read/edit/shell/git) so it works exactly like a native Claude
+## Code session: brief survey, a living todo of slices, one verified
+## commit per slice, in stride. session: fresh — a fresh pass re-derives
+## its todo from the scope + `git log` (git is the durable state).
+## interaction: async — an ambiguous mission gets a non-blocking
+## teach-back (ask_user_async: restate + assumptions, keep working) while
+## the blocking ask_user stays for genuine hard stops (kept rare by the
+## contract). Board capabilities power the end-of-pass findings handoff.
+agent campaign:
+  description: "Campaign: instrument & commit slices"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  session: fresh
+  interaction: async
+  capabilities: [board.read, board.create]
+
+## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
+## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
+## (~$0.69/13k tok EVERY pass); once pass 1 has authored verify.sh, re-authoring
+## it every pass is pure waste. This tool answers "reuse it?" in ~50ms of
+## subprocess: fresh=true when verify.sh exists, is non-empty, and passes
+## `sh -n` — AND this is not the first pass (iteration>0), so pass 1 of every run
+## always (re)generates verify.sh for the CURRENT tree, defeating a stale script
+## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
+## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+tool verify_probe:
+  command: `SCRATCH={{vars.scratch_dir}} ITER={{input.iteration}} python3 -c "
+import os, subprocess, json
+scratch = os.environ.get('SCRATCH', '.')
+script = os.path.join(scratch, 'verify.sh')
+try:
+    iteration = int(os.environ.get('ITER', '0') or '0')
+except ValueError:
+    iteration = 0
+fresh = False
+if iteration <= 0:
+    reason = 'first pass of this run: (re)generate verify.sh for the current tree'
+elif not os.path.isfile(script):
+    reason = 'no verify.sh in the scratch dir yet'
+elif os.path.getsize(script) == 0:
+    reason = 'verify.sh is empty'
+else:
+    chk = subprocess.run(['sh', '-n', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if chk.returncode != 0:
+        reason = 'verify.sh failed the sh -n syntax check: ' + (chk.stdout or '')[-300:]
+    else:
+        fresh = True
+        reason = 'verify.sh present and valid; reuse it (skip verify_build)'
+print(json.dumps({'fresh': fresh, 'reason': reason}))
+"`
+  input: verify_probe_input
+  output: verify_probe_state
+
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
+## per-slice session. medium: mechanical capture of the repo's
+## build/test.
+agent verify_build:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  session: fresh
+  interaction: human
+
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
+## package manager appears here — it executes whatever verify_build wrote, so
+## the gate stays universal while the verdict stays deterministic. python3 for
+## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
+tool verify_run:
+  description: "Verify gate: run build+tests (real exit code)"
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    raise SystemExit(0)
+def tree_state():
+    try:
+        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        if p.returncode != 0:
+            return None
+        return set(l for l in p.stdout.splitlines() if l.strip())
+    except Exception:
+        return None
+pre = tree_state()
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
+    rc = 124
+except Exception as e:
+    out = 'verify_run could not execute the script: ' + str(e)
+    rc = 1
+# Deterministic codegen-drift tail (stack-agnostic; the gate stays
+# deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
+# CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
+# must not leave new changes in the tree (regen output belongs in a commit).
+if rc == 0:
+    import glob
+    def has_drift_gate(text):
+        for l in text.splitlines():
+            # git diff --exit-code is the canonical build-failing gate.
+            if 'diff' in l and '--exit-code' in l:
+                return True
+            # --quiet / status --porcelain also appear as commit-if-changed
+            # control flow in updater workflows (e.g. a Homebrew tap bump) --
+            # only count them when the same line actually fails the build.
+            gated = ('exit 1' in l) or ('|| exit' in l) or ('test -z' in l) or ('[ -z' in l)
+            if gated and (('diff' in l and '--quiet' in l) or 'status --porcelain' in l):
+                return True
+        return False
+    ci_hit = ''
+    for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
+        for f in sorted(glob.glob(os.path.join(ws, pat))):
+            try:
+                if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
+                    ci_hit = os.path.relpath(f, ws)
+                    break
+            except OSError:
+                pass
+        if ci_hit:
+            break
+    if ci_hit:
+        try:
+            vs = open(script, encoding='utf-8', errors='replace').read()
+        except OSError:
+            vs = ''
+        if not has_drift_gate(vs):
+            rc = 3
+            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+    if rc == 0 and pre is not None:
+        post = tree_state()
+        if post is not None:
+            fresh = sorted(post - pre)
+            if fresh:
+                rc = 4
+                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## review — adversarial in-loop self-review (readonly). Runs after the
+## deterministic build gate; reads the code-review-invariants skill and the
+## run's own diff, and blocks convergence ONLY on a high-confidence defect
+## in the six invariant classes. This is the refinement the downstream
+## reviewer would otherwise do — moved INTO the loop so the PR ships clean.
+## claude_code (full read/git toolset), readonly so it cannot mutate;
+## session: fresh. Convergent by design: light no-op on a red build, strict
+## no-re-raise, blocks only verified real bugs (see review_system).
+agent review:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+  readonly: true
+
+## gate — the deterministic continuation decision. Reads the build result
+## (outputs.verify_run.passed), the campaign's termination output
+## (outputs.campaign.instrumentation_complete), AND the adversarial review
+## verdict (outputs.review.clean), all fresh in the loop BODY (the same
+## discipline whole_improve_loop's gate uses to read the loop-head safely).
+## converged = green AND fully wired AND review-clean. fail_log carries the
+## real build failure (RED build) or the review findings (green but dirty) to
+## the campaign; empty when green + clean. No LLM, no shell.
+compute gate:
+  description: "Convergence check: instrumentation complete & gates green"
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.campaign.instrumentation_complete && outputs.review.clean"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
+
+## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
+compute mr_gate:
+  output: mr_gate_output
+  expr:
+    open_mr: "vars.open_mr"
+
+## finalize_mr — opt-in PR creation shipping the SERIES of per-slice
+## commits. claude_code so the bundled forge-mr-create skill is mirrored and
+## the board comment tool (native back-link) is available.
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent (claude_code, opus); entering it with NO push credential mounted
+## burns a whole turn just to REDISCOVER, in shell, that it can't push (~$0.26
+## observed on branch-improve-loop run 019f415c — this node is byte-shared).
+## This tool answers "is there a push credential?" in ~100ms of subprocess so
+## the graph only pays finalize_mr when a push can actually happen. python3 for
+## safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+agent finalize_mr:
+  backend: "claude_code"
+  model: "${ITERION_INSTRUMENT_MR_MODEL:-claude-opus-5}"
+  reasoning_effort: "${ITERION_INSTRUMENT_MR_EFFORT:-medium}"
+  input: finalize_mr_input
+  output: finalize_mr_output
+  system: finalize_mr_system
+  user: finalize_mr_user
+  tools: [bash, read_file, glob, grep]
+  capabilities: [board.read, board.comment]
+  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal);
+  ## forge_auth_probe guarantees the node is only entered when a push
+  ## credential exists.
+  tool_max_steps: 20
+
+## surface_pr_link — DETERMINISTIC result-link emitter for the studio run
+## summary. finalize_mr is an LLM agent, but the studio surfaces a run's
+## headline PR link from the deterministic `[iterion] preview_url=… kind=pr`
+## directive a tool node prints on stdout — never from agent prose. Reached
+## only when finalize_mr actually opened a PR (opened=true ⇒ url set); the
+## python guard drops an empty url so the scanner never sees a malformed
+## directive. read-only, idempotent.
+schema surface_pr_link_input:
+  url: string
+
+tool surface_pr_link:
+  input: surface_pr_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=pr scope=external')
+"`
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow instrument:
+  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
+  ## (the survey is the campaign's own first move, not a blocking upstream
+  ## plan node). A re-dispatch's campaign reads `git log` and continues
+  ## from the slices earlier passes banked.
+  entry: campaign
+
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
+  ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
+  ## operator's main checkout is untouched during the run, (b) on convergence
+  ## the commits land on a persistent branch `iterion/run/<friendly-name>` AND
+  ## fast-forward the operator's currently-checked-out branch (best-effort,
+  ## skipped with a warning on conflict).
+  worktree: auto
+
+  ## No `sandbox:` block (ADR-082): isolation is the platform's job —
+  ## the engine sandboxes by default (`sandbox: auto` reads the target
+  ## repo's devcontainer, else the default image). The bot declares only
+  ## its own toolchain in the sibling devbox.json (gh/glab for the PR
+  ## tail); the target repo's toolchain comes from the target's own
+  ## devcontainer/devbox.json.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "3h"
+    max_cost_usd: 100
+
+  compaction:
+    threshold: 0.9
+    preserve_recent: 8
+
+  ## Each pass: the campaign ships instrumentation slices (committing each
+  ## in stride), then the deterministic build/test gate re-checks the tree.
+  campaign -> verify_probe with {
+    iteration: "{{loop.continuation_loop.iteration}}"
+  }
+  ## verify_probe reuses an already-valid verify.sh (skipping the LLM
+  ## verify_build) on passes 2+; the first pass of every run regenerates it for
+  ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
+  verify_probe -> verify_run when fresh
+  verify_probe -> verify_build when not fresh
+  verify_build -> verify_run
+  ## After the deterministic build gate, the adversarial review inspects the
+  ## run's diff (the refinement pass moved in-loop), then the gate decides.
+  verify_run -> review with {
+    base_ref:       "{{vars.mr_base}}",
+    build_passed:   "{{outputs.verify_run.passed}}",
+    prior_findings: "{{outputs.gate.fail_log}}"
+  }
+  review -> gate
+
+  ## Converged (green AND the campaign reports every family fully wired) →
+  ## ship what is banked (optional PR, else finish).
+  gate -> mr_gate when converged
+  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## agent fixes what it broke; green-but-more-work carries an empty log so the
+  ## agent simply continues the instrumentation. This closes the single declared
+  ## loop (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
+  ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
+  ## output on its back-edge, which would read a loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
+  }
+  ## continuation_loop exhausted (max_passes hit while work remains) → ship
+  ## what is banked anyway (every committed slice is real, landed work).
+  ## Unconditional fallthrough after the loop-back retries are spent.
+  gate -> mr_gate
+
+  ## Converged (or capped) → optional PR path, else finish. finalize_mr pushes
+  ## the run's HEAD (the series of per-slice commits) + opens the PR and
+  ## (when source_issue_ref is set) posts the URL back. The mission notes
+  ## ride along as the PR's scope context.
+  mr_gate -> forge_auth_probe when open_mr
+  mr_gate -> done when not open_mr
+
+  ## Push credential present → finalize_mr pushes + opens the PR; absent →
+  ## finish cleanly (commits are on the engine's iterion/run/<name> storage
+  ## branch for a manual push) instead of paying an agent turn to rediscover it.
+  forge_auth_probe -> finalize_mr when available with {
+    workspace_dir:    "{{vars.workspace_dir}}",
+    mr_branch:        "{{vars.mr_branch}}",
+    mr_base:          "{{vars.mr_base}}",
+    source_issue_ref: "{{vars.source_issue_ref}}",
+    scope_notes:      "{{vars.mission_notes}}"
+  }
+  forge_auth_probe -> done when not available
+  ## PR opened → surface its URL as a headline result-link in the run summary
+  ## (deterministic stdout directive → preview_url_available kind=pr), then
+  ## finish. Nothing opened (empty diff / refused PR) → straight to done.
+  finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
+  finalize_mr -> done when not opened
+  surface_pr_link -> done
