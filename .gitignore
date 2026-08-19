@@ -150,8 +150,14 @@ e2e/.workspaces/
 # the vendored codex fork, whose committed .claude/rules/ are its own
 # project content (re-included below; tracked files are unaffected by
 # ignore rules either way, the exception keeps future adds friction-free).
+# The exception is narrowed to rules/ ONLY: the fork is an active work
+# target, so a bare `!…/.claude/` would re-open the wip-bank hole there
+# for the very runtime junk (skills/, *.local.json) this rule exists to
+# stop — git must descend into the dir, then re-ignore its other children.
 **/.claude/
 !third_party/codex-agent-sdk-go/.claude/
+third_party/codex-agent-sdk-go/.claude/*
+!third_party/codex-agent-sdk-go/.claude/rules/
 
 # docs-refresh bot cache (neutral repo-root dotfile it writes by design)
 .docs-refresh-cache.json
