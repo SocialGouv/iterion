@@ -131,6 +131,7 @@ type Engine struct {
 	sandboxHostStateOverride string                   // CLI/Launch-level override for sandbox.host_state ("auto"|"none"|""); set via WithSandboxHostStateOverride
 	sandboxHostStateDefault  string                   // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
 	loopBudgetGuardOverride  string                   // CLI/Launch-level loop_budget_guard override ("on"|"off"|""); highest precedence, above the workflow block; set via WithLoopBudgetGuard
+	repoDevboxOverride       string                   // CLI/Launch-level repo_devbox override ("on"|"off"|""); highest precedence, above the workflow block; set via WithRepoDevbox
 	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
 	contributions            *Contributions           // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions

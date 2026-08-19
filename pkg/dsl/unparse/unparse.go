@@ -610,6 +610,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "loop_budget_guard", wf.LoopBudgetGuard)
 		}
 
+		if wf.RepoDevbox != "" {
+			writeProp(&w.b, "repo_devbox", wf.RepoDevbox)
+		}
+
 		if wf.Permission != "" {
 			writeProp(&w.b, "permission", wf.Permission)
 		}

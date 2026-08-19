@@ -528,6 +528,45 @@ workflow campaign:
   loop_budget_guard: off    # this loop must burn its cap, not stop short
 ```
 
+### The target repo's toolchain — `repo_devbox:`
+
+Two `devbox.json` files can supply a run's binaries, and both are
+honoured: the **bot's own**, shipped beside its `main.bot`, and the
+**target repo's**, at the workspace root. `repo_devbox:` governs the
+second one only.
+
+It exists because "the repo pins a toolchain" and "this run needs that
+toolchain" are not the same statement. A run that *builds* the repo needs
+it. A run that reads a diff and writes comments does not — and pays for it
+anyway: on iterion's own tree that bill is **319 Nix paths, 406 MiB
+downloaded, 1.8 GiB unpacked** (a desktop GUI stack among them), before
+the first node executes, on every review. A cold install can also outlast
+the window a sandbox has to come up, which turns a cost into a dead run.
+
+Default **on** — a repo that pins its toolchain usually pins it to be
+built. Switched off through the usual chain: `--repo-devbox off` (on `run`
+and `resume`) → the workflow's `repo_devbox: off` → `ITERION_REPO_DEVBOX`
+→ the default `on`. An invalid value is diagnostic **C134**, not a silent
+fall back. The bot's own `devbox.json` is never affected: a bot that
+declares `crane` needs `crane` whatever repo it is pointed at.
+
+A declined source is **reported, not dropped** — the
+`sandbox_devbox_provisioned` event carries `skipped_sources: ["repo"]`
+with the config it declined, and the run logs it. Without that, the only
+trace of the decision would be a binary missing later, which reads as an
+agent bug.
+
+The override does **not** travel onto the cloud queue: what a cloud runner
+needs is the *workflow's* declaration, which rides the `.bot` itself. So a
+bot's `repo_devbox: off` holds in cloud, while `--repo-devbox` is a local
+run's override.
+
+```iter
+workflow review_pr:
+  entry: review
+  repo_devbox: off    # this run reads the repo, it does not build it
+```
+
 ### Edge forms
 
 ```iter

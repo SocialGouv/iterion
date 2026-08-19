@@ -650,6 +650,7 @@ type jsonWorkflowDecl struct {
 	Compress        string                `json:"compress,omitempty"`
 	AutoMemory      string                `json:"auto_memory,omitempty"`
 	LoopBudgetGuard string                `json:"loop_budget_guard,omitempty"`
+	RepoDevbox      string                `json:"repo_devbox,omitempty"`
 	Permission      string                `json:"permission,omitempty"`
 	Allow           []string              `json:"allow,omitempty"`
 	Ask             []string              `json:"ask,omitempty"`
@@ -1254,6 +1255,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		Compress:        w.Compress,
 		AutoMemory:      w.AutoMemory,
 		LoopBudgetGuard: w.LoopBudgetGuard,
+		RepoDevbox:      w.RepoDevbox,
 		Permission:      w.Permission,
 		Allow:           w.Allow,
 		Ask:             w.Ask,
@@ -1835,6 +1837,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		Compress:        jw.Compress,
 		AutoMemory:      jw.AutoMemory,
 		LoopBudgetGuard: jw.LoopBudgetGuard,
+		RepoDevbox:      jw.RepoDevbox,
 		Permission:      jw.Permission,
 		Allow:           jw.Allow,
 		Ask:             jw.Ask,

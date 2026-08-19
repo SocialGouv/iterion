@@ -1254,6 +1254,18 @@ Generate it with `devbox install` in the bot's directory and commit both
 files — the engine copies the lock alongside the config, so a locked project
 installs exactly what it was authored against.
 
+**A run that does not BUILD the target repo can decline its toolchain.**
+`repo_devbox: off` on the `workflow` block skips the *target repo's*
+`devbox.json` (never the bot's own) — precedence `--repo-devbox` → workflow
+→ `ITERION_REPO_DEVBOX` → **on**, diagnostic C134, and the declined source is
+reported on the `sandbox_devbox_provisioned` event rather than dropped in
+silence. Reviewers ship with it off (`review-pr`, `revi-converse`): reading a
+diff bought nothing from iterion's own 319 Nix paths / 1.8 GiB, and the cold
+realise outlasted the sandbox start window often enough to kill runs. Fixers
+and updaters (`branch-improve-loop`, `dep-update-guard`, `feature-dev`) keep
+it **on** — they build what they change. See
+[docs/dsl.md](docs/dsl.md#the-target-repos-toolchain--repo_devbox).
+
 Two things to know when writing one:
 
 - **Non-interactive PATH is the trap.** `tool` nodes run through a

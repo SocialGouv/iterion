@@ -78,6 +78,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.LoopBudgetGuard = p.expectIdent()
 			p.skipNewlines()
 
+		case TokenRepoDevbox:
+			p.next() // consume "repo_devbox"
+			p.expect(TokenColon)
+			wd.RepoDevbox = p.expectIdent()
+			p.skipNewlines()
+
 		case TokenPermission:
 			p.next() // consume "permission"
 			p.expect(TokenColon)

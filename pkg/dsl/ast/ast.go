@@ -763,13 +763,17 @@ type WorkflowDecl struct {
 	// LoopBudgetGuard switches the back-edge affordability guard: on|off
 	// ("" = unset → ITERION_LOOP_BUDGET_GUARD → on).
 	LoopBudgetGuard string
-	Permission      string        // permission gate mode: off|ask|deny ("" = unset → off)
-	Allow           []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
-	Ask             []string      // permission ask rules
-	Deny            []string      // permission deny rules
-	Sandbox         *SandboxBlock // sandbox: short or block form (nil = inherit global default)
-	Edges           []*Edge       // directed edges between nodes
-	Span            Span
+	// RepoDevbox switches provisioning of the TARGET REPO's devbox.json:
+	// on|off ("" = unset → ITERION_REPO_DEVBOX → on). The BOT's own
+	// devbox.json is never affected — a bot's declared tools are its own.
+	RepoDevbox string
+	Permission string        // permission gate mode: off|ask|deny ("" = unset → off)
+	Allow      []string      // permission allow rules (Claude-Code `Tool(pattern)` syntax)
+	Ask        []string      // permission ask rules
+	Deny       []string      // permission deny rules
+	Sandbox    *SandboxBlock // sandbox: short or block form (nil = inherit global default)
+	Edges      []*Edge       // directed edges between nodes
+	Span       Span
 }
 
 // BudgetBlock represents execution limits for a workflow.

@@ -502,6 +502,7 @@ func (c *compiler) compile() *Workflow {
 		Compress:        wf.Compress,
 		AutoMemory:      wf.AutoMemory,
 		LoopBudgetGuard: wf.LoopBudgetGuard,
+		RepoDevbox:      wf.RepoDevbox,
 		Permission:      wf.Permission,
 		PermissionAllow: wf.Allow,
 		PermissionAsk:   wf.Ask,

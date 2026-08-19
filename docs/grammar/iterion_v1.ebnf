@@ -165,6 +165,7 @@ interaction_mode = "none" | "human" | "llm" | "llm_or_human" | "review" ;
 compress_mode = "off" | "on" | "ultra" ;
 auto_memory_mode = "off" | "on" ;
 loop_budget_guard_mode = "off" | "on" ;
+repo_devbox_mode = "off" | "on" ;
 permission_mode = "off" | "ask" | "deny" ;
 
 compaction_block = "compaction" ":" NEWLINE INDENT
@@ -305,6 +306,7 @@ workflow_member = vars_decl | attachments_decl | mcp_config_block
                 | "compress" ":" compress_mode NEWLINE
                 | "auto_memory" ":" auto_memory_mode NEWLINE
                 | "loop_budget_guard" ":" loop_budget_guard_mode NEWLINE
+                | "repo_devbox" ":" repo_devbox_mode NEWLINE
                 | "permission" ":" permission_mode NEWLINE
                 | "allow" ":" string_list NEWLINE
                 | "ask" ":" string_list NEWLINE

@@ -74,6 +74,14 @@ func WithLoopBudgetGuard(mode string) EngineOption {
 	return func(e *Engine) { e.loopBudgetGuardOverride = mode }
 }
 
+// WithRepoDevbox sets the run-level repo_devbox override ("on"|"off"),
+// deciding whether the TARGET REPO's devbox.json is installed. Highest
+// precedence in the chain — above the workflow block, ITERION_REPO_DEVBOX
+// and the built-in on. Empty means "no override".
+func WithRepoDevbox(mode string) EngineOption {
+	return func(e *Engine) { e.repoDevboxOverride = mode }
+}
+
 // WithSandboxDefaultImage sets the image ref used as fallback when
 // `sandbox: auto` is active but no .devcontainer/devcontainer.json is
 // found. Empty string lets the runtime pick the built-in default
