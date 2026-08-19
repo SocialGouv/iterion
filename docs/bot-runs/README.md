@@ -73,6 +73,7 @@ first bilan for a bot lands.
 | Renovacy | `secured-renovacy` | dependency upgrade pipeline | [secured-renovacy.md](secured-renovacy.md) |
 | Bmady | `bmady` | BMAD multi-persona human-gated delivery | [bmady.md](bmady.md) |
 | Devy | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
+| Obsy | `instrument` | observability instrumentation (Sentry/GlitchTip errors + JSON logs; opt-in tracing) | [instrument.md](instrument.md) |
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
 | Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
 | Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |

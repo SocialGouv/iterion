@@ -1,0 +1,75 @@
+name: instrument
+display_name: Obsy
+icon: 📡
+version: 0.1.0
+## 0.1.0 — initial release. ADR-058 minimal-framing shape (the proven
+## feature-dev/branch-improve-loop chassis): ONE adaptive `campaign`
+## agent + the deterministic build/test gate + the in-loop adversarial
+## review + a bounded continuation loop + the opt-in PR tail. Stack
+## knowledge lives in the bundle skills (instrumentation playbook,
+## lang-go/js/python, opt-in tracing); the DSL enumerates no language.
+description: |
+  Observability instrumentation campaign — one capable agent wires a
+  repo for error tracking and standardized logs, one verified semantic
+  commit at a time. `scope` is an open family list: *errors* (an SDK
+  speaking the Sentry DSN protocol — Sentry AND GlitchTip — enabled
+  only when the DSN env var is set, loud non-fatal init, release/
+  environment tags, capture at process seams, flush on shutdown,
+  scrubbing), *logs* (ONE central logging seam — extended, never
+  replaced — leveled + structured, JSON by default on production
+  surfaces, error→event / warn→breadcrumb coupling into the tracker),
+  and opt-in *tracing* (Sentry-first transactions/spans, env-tunable
+  sampling). A deterministic build/test gate + bounded continuation
+  loop re-poke the campaign until every requested family is fully
+  wired, tested and documented; an opt-in tail opens the pull request.
+when_to_use: |
+  Use to instrument a repository for observability: add Sentry/
+  GlitchTip-compatible error tracking, standardize logging onto one
+  structured lib with JSON output in production, or both (default
+  scope "errors,logs"; add "tracing" explicitly for performance
+  traces). Point repo-specific arbitrations (which module to extend,
+  which seams to wire) through `mission_notes`. Not the route for
+  general feature work (feature-dev) or for building dashboards —
+  this bot wires the emission side only.
+author: SocialGouv (devthejo) — instrument/main.bot
+schema_version: 1
+
+dispatch_vars:
+  mission_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+  ## Board/comment-dispatched runs open a pull request at the end
+  ## and post the URL back onto the source issue. CLI runs keep the
+  ## defaults (open_mr=false) so a plain local run just commits.
+  open_mr: "true"
+  source_issue_ref: "{{issue.id}}"
+
+## Forge access for the PR push + creation + the issue back-link.
+## The auto-provisioner requests these scopes and binds the connection
+## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
+forge:
+  ## issue_labeled: labeling an issue (e.g. "instrument") launches Obsy
+  ## to wire the requested observability and open a PR back-linked to
+  ## the issue. pull_request_comment: the on-demand `/obsy <notes>`
+  ## slash command.
+  events: [issue_labeled, pull_request_comment]
+  token_scopes:
+    pull_requests: write     # open the PR
+    repository: write         # push the branch
+    issues: write             # post the PR URL back onto the source issue
+  secret: forge_token
+
+invocations:
+  - kind: command
+    mode: board
+    args_var: mission_notes
+    command: { name: obsy, aliases: [instrument], scope: any, min_replier_role: maintainer, opens_mr: true }
+  - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [mission_notes, scope, dsn_env_var]
+  hidden: [source_issue_ref]

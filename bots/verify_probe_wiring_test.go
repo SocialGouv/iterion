@@ -31,6 +31,7 @@ func TestVerifyProbeLoopIterationWiring(t *testing.T) {
 		"branch-improve-loop/main.bot",
 		"whole-improve-loop/main.bot",
 		"feature-dev/main.bot",
+		"instrument/main.bot",
 	}
 	for _, rel := range bots {
 		rel := rel

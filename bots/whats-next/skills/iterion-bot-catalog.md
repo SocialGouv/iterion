@@ -300,6 +300,7 @@ dispatcher routes on it), never the persona.
 | Vigie | `feed-watch` |
 | Goldy | `golden-master` |
 | Heartbeat (always-on demo) | `heartbeat` |
+| Obsy | `instrument` |
 | Triagy | `issue-triage` |
 | Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
@@ -817,6 +818,34 @@ long-lived bot running as a stream of fresh, individually-budgeted runs
 rather than one immortal run. No LLM, no API keys.
 
 - **Path**: `examples/keepalive/main.bot`
+
+### `instrument` — Obsy
+
+Observability instrumentation campaign — one capable agent wires a
+repo for error tracking and standardized logs, one verified semantic
+commit at a time. `scope` is an open family list: *errors* (an SDK
+speaking the Sentry DSN protocol — Sentry AND GlitchTip — enabled
+only when the DSN env var is set, loud non-fatal init, release/
+environment tags, capture at process seams, flush on shutdown,
+scrubbing), *logs* (ONE central logging seam — extended, never
+replaced — leveled + structured, JSON by default on production
+surfaces, error→event / warn→breadcrumb coupling into the tracker),
+and opt-in *tracing* (Sentry-first transactions/spans, env-tunable
+sampling). A deterministic build/test gate + bounded continuation
+loop re-poke the campaign until every requested family is fully
+wired, tested and documented; an opt-in tail opens the pull request.
+
+- **Use when**:
+  Use to instrument a repository for observability: add Sentry/
+  GlitchTip-compatible error tracking, standardize logging onto one
+  structured lib with JSON output in production, or both (default
+  scope "errors,logs"; add "tracing" explicitly for performance
+  traces). Point repo-specific arbitrations (which module to extend,
+  which seams to wire) through `mission_notes`. Not the route for
+  general feature work (feature-dev) or for building dashboards —
+  this bot wires the emission side only.
+- **Vars**: `baseline` (string), `dsn_env_var` (string), `max_passes` (int), `mission_notes` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/instrument/main.bot`
 
 ### `issue-triage` — Triagy
 
