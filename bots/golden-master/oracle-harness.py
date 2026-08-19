@@ -1011,7 +1011,8 @@ def pending_rebaselines(gm_dir):
                 obj = json.loads(body)
             except ValueError:
                 obj = None
-            if not isinstance(obj, dict):
+            if not isinstance(obj, dict) or \
+                    not (isinstance(obj.get("id"), str) and obj.get("id")):
                 obj = {"id": "UNPARSEABLE", "raw": body[:120]}
             out.append(obj)
         return out
@@ -1227,6 +1228,7 @@ def validate_feature_coverage(coverage):
                 "feature-coverage.json maps %r to no corpus entry. A mapping to "
                 "nothing is an exclusion wearing a map's clothes — move it to "
                 "`exclusions` with its reason, or point it at real entries." % (m,))
+    seen_excl = set()
     for x in coverage["exclusions"]:
         feat = x.get("feature")
         reason = x.get("reason")
@@ -1238,6 +1240,11 @@ def validate_feature_coverage(coverage):
             raise SystemExit("feature-coverage.json both maps AND excludes %r — "
                              "two verdicts on one feature, and nobody chose"
                              % feat)
+        if feat in seen_excl:
+            raise SystemExit("feature-coverage.json excludes %r twice — two "
+                             "reasons, and nobody chose which one stands"
+                             % feat)
+        seen_excl.add(feat)
         if not (isinstance(reason, str) and reason.strip()):
             raise SystemExit(
                 "feature-coverage.json carries an exclusion without a written "
@@ -2086,6 +2093,10 @@ def _selftest():
                       lambda: validate_feature_coverage(
                           {"features": [{"feature": "a", "entries": ["1"]},
                                         {"feature": "a", "entries": ["2"]}]}))
+        named_refusal("feature exclue deux fois -> refus nomme",
+                      lambda: validate_feature_coverage(
+                          {"exclusions": [{"feature": "a", "reason": "x"},
+                                          {"feature": "a", "reason": "y"}]}))
         named_refusal("feature mappee ET exclue -> refus nomme",
                       lambda: validate_feature_coverage(
                           {"features": [{"feature": "a", "entries": ["1"]}],
@@ -2208,6 +2219,9 @@ def _selftest():
               pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
         ledger(("request", '[]'))
         check("bloc JSON valide mais non-objet -> escalade nommee, pas une traceback",
+              pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
+        ledger(("request", '{"lot": "1"}'))
+        check("bloc objet SANS id -> escalade nommee, pas un KeyError",
               pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
 
         # 9. Scellement : derivable partout, jamais dans le parent du worktree
@@ -2424,9 +2438,13 @@ def main():
         return
 
     if mode != "record":
-        seal_holdout(gm_dir, sealed_dir)
-        if holdout_committed_in_tree(gm_dir) and \
-                not seal_committed_opted_in(gm_dir):
+        try:
+            seal_holdout(gm_dir, sealed_dir)
+            awaiting = holdout_committed_in_tree(gm_dir) and \
+                not seal_committed_opted_in(gm_dir)
+        except SystemExit as e:
+            bail(str(e))
+        if awaiting:
             # Machine-readable, not only prose: a set nobody ever consumes is
             # a debt of the NET's owner, and a supervising process needs a
             # field to see it — a notice string is where debts go to hide.
