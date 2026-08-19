@@ -241,3 +241,22 @@ outcome, the worker's report must SAY SO by outcome id ("engine-target is now
 unreachable through this contract"), so the operator re-plans (a new lot
 through another path) or arbitrates — while the campaign is still running,
 not at the post-mortem.
+
+## Defect disposition — fixed and RECORDED, never merely reproduced
+
+The net's fidelity doctrine and this clause compose; they do not conflict.
+The net records the status quo, bugs included — that is precisely what makes
+a fix a MEASURABLE, declared delta instead of an ambient drift. What this
+clause sets is the PROGRAMME's default for an identified defect (from an
+audit pass, a sweep, a lot report):
+
+- **Default: remediate.** The defect becomes a remediation lot — the fix,
+  its behaviour change through the re-baseline ledger (cause, act, verdict),
+  and one entry in the programme's defects register: found where, fixed by
+  which commit, judged by which rite ids.
+- **Exception: preserve, in writing.** Keeping a defect is a BUSINESS
+  decision — recorded with its reason and its owner, never a silence and
+  never the worker's call. "Faithful to baseline" alone is not a reason.
+- The defects register is a committed artefact, and "no defect unfixed and
+  unarbitrated" belongs in the programme's outcomes — same conjunction, same
+  refusal to converge around a named debt.
