@@ -440,7 +440,18 @@ tool lot_verify:
                         "protects the references from being rewritten to make "
                         "this run green.")
     else:
-        code, log = run("git diff --name-only %s -- %s" % (base, refs_dir))
+        # The JUDGE's own machinery is as immutable as the references it
+        # compares: a lot that rewrites the runner or the harness can make
+        # every later gate — and every later re-measurement — answer green
+        # without measuring anything, and no reference would have moved.
+        # Measured as a real gap: refs_dir alone left both scripts open.
+        gm_dir = os.path.dirname(refs_dir.rstrip("/")) or ".golden-master"
+        judged = [refs_dir,
+                  os.path.join(gm_dir, "verify-oracle.sh"),
+                  os.path.join(gm_dir, "harness.py"),
+                  os.path.join(gm_dir, "canon")]
+        code, log = run("git diff --name-only %s -- %s"
+                        % (base, " ".join(judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
@@ -448,10 +459,11 @@ tool lot_verify:
             report["refs_changed"] = changed
             report["refs_untouched"] = not changed
             if changed:
-                problems.append("%d oracle reference(s) were MODIFIED during this "
+                problems.append("%d oracle artefact(s) were MODIFIED during this "
                                 "lot: %s. Either the lot changed behaviour it was "
-                                "not supposed to change, or the net was edited to "
-                                "hide that it did. Both are stop conditions."
+                                "not supposed to change, or the net (its references, "
+                                "its runner, its harness, its canonicaliser) was "
+                                "edited to hide that it did. Both are stop conditions."
                                 % (len(changed), ", ".join(changed[:20])))
 
     report["log_tail"] = "\n".join(problems)[-6000:]
