@@ -77,7 +77,7 @@ holds — a tag without the substance is a declaration, and the net does not gra
 [
   {"probe":"write_create","required":true,
    "catches":"a creation path broken by an upgrade — form binding, converter registration, validation chains — while every read and even the update lane stay green",
-   "shape":"a `write` entry, method != GET, that INSERTS through the application's own form or API; `readback` shows the created resource"},
+   "shape":"a `write` entry, method != GET, that INSERTS through the application's own form or API; `readback` shows the created resource — that the readback truly renders it, and not just any 200, is the probe author's duty: the harness only refuses a write without a readback"},
   {"probe":"error_then_corrected","required":true,
    "catches":"an error state that sticks to the re-rendered form and turns every later submission into a refusal — the journey real users make, invisible to any single-shot write",
    "shape":"a `write` entry with `steps` (>= 2): an invalid submission, then its correction; the reference captures the whole trail plus the readback"},
@@ -163,8 +163,10 @@ corpus id that does not exist (evidence that is not there). Record mode is exemp
 is how a net under construction earns its inventory.
 
 A NEW net declares standard 3. An existing net keeps its declared standard until its owner
-raises it — a raise is a net extension, through the ledger like any other, and the verdict
-carries the `standard` figure so a net below the current one is visible, never silent.
+raises it — a raise is a PAIRED change: `standard` in config.json and the committed
+`standard-mark` file move in the same commit, and the gate refuses both directions of drift
+between the two. The verdict carries the `standard` figure so a net below the current one is
+visible, never silent.
 
 ## The corpus file
 

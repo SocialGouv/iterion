@@ -1008,9 +1008,12 @@ def pending_rebaselines(gm_dir):
         for body in re.findall(r"<!-- iterion:rebaseline-%s\n(.*?)\n-->" % kind,
                                text, re.S):
             try:
-                out.append(json.loads(body))
+                obj = json.loads(body)
             except ValueError:
-                out.append({"id": "UNPARSEABLE", "raw": body[:120]})
+                obj = None
+            if not isinstance(obj, dict):
+                obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+            out.append(obj)
         return out
 
     requests = blocks("request")
@@ -1047,8 +1050,13 @@ def route_regex(pattern):
     shipped real 404s.
     """
     out = []
-    for seg in pattern.split("/"):
+    segs = pattern.split("/")
+    for i, seg in enumerate(segs):
         if seg == "**":
+            if i != len(segs) - 1:
+                raise SystemExit("route pattern %r uses `**` before the tail — "
+                                 "the doctrine says a tail, and a mid-path "
+                                 "`**` silently widens the perimeter" % pattern)
             out.append(".*")
         elif seg == "*" or (seg.startswith("{") and seg.endswith("}")) or seg.startswith(":"):
             out.append("[^/]+")
@@ -1196,19 +1204,41 @@ def validate_feature_coverage(coverage):
                              "objects — a malformed inventory is a named "
                              "refusal, never a traceback" % key)
         coverage[key] = block
+    seen = set()
     for m in coverage["features"]:
+        feat = m.get("feature")
+        if not isinstance(feat, str) or not feat:
+            raise SystemExit("feature-coverage.json maps a non-string feature "
+                             "id (%r) — the probe prints strings, so this "
+                             "mapping can never match and reads as coverage"
+                             % (feat,))
+        if feat in seen:
+            raise SystemExit("feature-coverage.json maps %r twice — the second "
+                             "mapping silently wins, and nobody chose which"
+                             % feat)
+        seen.add(feat)
         entries = m.get("entries")
         if entries is not None and not isinstance(entries, list):
             raise SystemExit("feature-coverage.json maps %r with `entries` that "
                              "is not a list (%r) — a string would be read one "
-                             "character at a time" % (m.get("feature"), entries))
-        if not (m.get("feature") and (entries or [])):
+                             "character at a time" % (feat, entries))
+        if not (entries or []):
             raise SystemExit(
                 "feature-coverage.json maps %r to no corpus entry. A mapping to "
                 "nothing is an exclusion wearing a map's clothes — move it to "
                 "`exclusions` with its reason, or point it at real entries." % (m,))
     for x in coverage["exclusions"]:
-        if not (x.get("feature") and (x.get("reason") or "").strip()):
+        feat = x.get("feature")
+        reason = x.get("reason")
+        if not isinstance(feat, str) or not feat:
+            raise SystemExit("feature-coverage.json excludes a non-string "
+                             "feature id (%r) — it can never match the probe"
+                             % (feat,))
+        if feat in seen:
+            raise SystemExit("feature-coverage.json both maps AND excludes %r — "
+                             "two verdicts on one feature, and nobody chose"
+                             % feat)
+        if not (isinstance(reason, str) and reason.strip()):
             raise SystemExit(
                 "feature-coverage.json carries an exclusion without a written "
                 "reason (%r). An exclusion is a decision; a decision has a "
@@ -1229,7 +1259,7 @@ def standard_mark_verdict(gm_dir, std):
         try:
             with open(mark_path, encoding="utf-8") as f:
                 mark = int(f.read().strip())
-        except ValueError:
+        except (OSError, ValueError):
             return "bail", "standard-mark is unreadable — it must hold one integer"
         if std < mark:
             return "bail", ("config declares standard %d but standard-mark says "
@@ -1325,8 +1355,13 @@ def seal_committed_opted_in(gm_dir):
     can only widen what the gate consumes, never soften a verdict, which is
     why an environment form is tolerable here at all.
     """
-    if os.environ.get("GM_SEAL_COMMITTED") == "1":
+    env = os.environ.get("GM_SEAL_COMMITTED")
+    if env == "1":
         return True
+    if env not in (None, "", "0"):
+        raise SystemExit("GM_SEAL_COMMITTED=%r is neither 1 nor 0 — a truthy "
+                         "spelling silently ignored would leave the operator "
+                         "sure of an opt-in that never happened" % env)
     try:
         with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
             v = json.load(f).get("seal_committed", False)
@@ -2041,6 +2076,42 @@ def _selftest():
             f.write('{"seal_committed": "true"}')
         named_refusal("seal_committed chaine -> refus nomme, pas un silence",
                       lambda: seal_committed_opted_in(sdir2))
+        named_refusal("reason non-string -> refus nomme",
+                      lambda: validate_feature_coverage(
+                          {"exclusions": [{"feature": "a", "reason": 42}]}))
+        named_refusal("feature non-string -> refus nomme",
+                      lambda: validate_feature_coverage(
+                          {"features": [{"feature": 42, "entries": ["1"]}]}))
+        named_refusal("feature mappee deux fois -> refus nomme",
+                      lambda: validate_feature_coverage(
+                          {"features": [{"feature": "a", "entries": ["1"]},
+                                        {"feature": "a", "entries": ["2"]}]}))
+        named_refusal("feature mappee ET exclue -> refus nomme",
+                      lambda: validate_feature_coverage(
+                          {"features": [{"feature": "a", "entries": ["1"]}],
+                           "exclusions": [{"feature": "a", "reason": "x"}]}))
+        prev_env = os.environ.pop("GM_SEAL_COMMITTED", None)
+        os.environ["GM_SEAL_COMMITTED"] = "yes"
+        try:
+            named_refusal("GM_SEAL_COMMITTED=yes -> refus nomme, pas un silence",
+                          lambda: seal_committed_opted_in(tempfile.mkdtemp()))
+        finally:
+            if prev_env is None:
+                os.environ.pop("GM_SEAL_COMMITTED", None)
+            else:
+                os.environ["GM_SEAL_COMMITTED"] = prev_env
+        named_refusal("`**` hors queue -> refus nomme",
+                      lambda: route_regex("/x/**/y"))
+        check("`**` en queue -> matche la queue",
+              bool(route_regex("/x/**").match("/x/a/b")), True)
+        udir = tempfile.mkdtemp(prefix="gm-selftest-umark-")
+        upath = os.path.join(udir, "standard-mark")
+        with open(upath, "w", encoding="utf-8") as f:
+            f.write("3")
+        os.chmod(upath, 0)
+        check("standard-mark illisible -> bail, jamais une traceback",
+              standard_mark_verdict(udir, 3)[0], "bail")
+        os.chmod(upath, 0o600)
         mdir = tempfile.mkdtemp(prefix="gm-selftest-mark-")
         with open(os.path.join(mdir, "standard-mark"), "w", encoding="utf-8") as f:
             f.write("3\n")
@@ -2134,6 +2205,9 @@ def _selftest():
               ["R-A-1", "R-B-1"])
         ledger(("request", 'pas du json'))
         check("bloc illisible -> escalade nommee",
+              pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
+        ledger(("request", '[]'))
+        check("bloc JSON valide mais non-objet -> escalade nommee, pas une traceback",
               pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
 
         # 9. Scellement : derivable partout, jamais dans le parent du worktree
