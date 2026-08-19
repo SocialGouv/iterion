@@ -51,7 +51,10 @@ func main() {
 	// and iterion behaves exactly as it did. Init sits after the .env
 	// load so a project can carry its DSN there, and before anything
 	// else runs so the very first panic is already covered.
-	errtrack.Init(errtrack.Config{Logger: bootLogger(), ServerName: invokedCommand()})
+	// The root has no logger of its own yet; NewFromEnv honours
+	// ITERION_LOG_FORMAT so a failed init does not break the JSON
+	// stream of a server/runner/dispatch process.
+	errtrack.Init(errtrack.Config{Logger: iterlog.NewFromEnv(os.Stderr), ServerName: invokedCommand()})
 	defer errtrack.Flush()
 	defer func() {
 		if r := recover(); r != nil {
@@ -87,19 +90,6 @@ func main() {
 		errtrack.Flush()
 		os.Exit(1)
 	}
-}
-
-// bootLogger is the minimal stderr logger the root command uses before
-// a subcommand builds its own — currently only to report a failed
-// errtrack init. It honours ITERION_LOG_FORMAT so the line does not
-// break the JSON stream of a server/runner/dispatch process.
-func bootLogger() *iterlog.Logger {
-	format := iterlog.FormatHuman
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("ITERION_LOG_FORMAT")), "json") {
-		format = iterlog.FormatJSON
-	}
-	level, _ := iterlog.ResolveLevel("", "ITERION_LOG_LEVEL")
-	return iterlog.NewWithFormat(level, os.Stderr, format)
 }
 
 // invokedCommand returns the full command path being run
