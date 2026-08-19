@@ -1309,7 +1309,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer func() { _ = w.Close() }()
 		r.registerLogWriter(msg.RunID, w)
 		defer r.unregisterLogWriter(msg.RunID)
-		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
+		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
 	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)

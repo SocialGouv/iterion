@@ -281,6 +281,28 @@ func (l *Logger) emit(level Level, emoji string, msg string) {
 	_, _ = io.WriteString(l.w, line)
 }
 
+// WithWriter returns a fork of l writing to w instead of l's own
+// writer, keeping the level, the FORMAT, the inherited fields and the
+// hook slot. It is how a per-run logger tees into a buffer without
+// leaving the seam: building a fresh Logger there would silently reset
+// the format to human (breaking the JSON stream of a runner pod that
+// tees into its own stdout) and drop the tracker hook, so a run's
+// error lines would never reach error tracking.
+//
+// The mutex is shared with l, so a fork whose w also writes to l's
+// writer still interleaves atomically with the parent's own lines.
+func (l *Logger) WithWriter(w io.Writer) *Logger {
+	if l == nil {
+		return nil
+	}
+	if w == nil {
+		w = io.Discard
+	}
+	out := l.withFields(nil)
+	out.w = w
+	return out
+}
+
 // WithField returns a fork of l carrying the given (key, value) pair
 // in its context. The fork shares the underlying writer and mutex so
 // concurrent writes from parent + child interleave atomically.

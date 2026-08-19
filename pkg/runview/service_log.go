@@ -194,7 +194,7 @@ func (s *Service) prepareRunLog(runID string) (*RunLogBuffer, *iterlog.Logger) {
 	s.runLogs[runID] = buf
 	s.runLogsMu.Unlock()
 
-	perRunLogger := iterlog.New(s.logger.Level(), io.MultiWriter(s.logger.Writer(), buf))
+	perRunLogger := s.logger.WithWriter(io.MultiWriter(s.logger.Writer(), buf))
 	return buf, perRunLogger
 }
 
