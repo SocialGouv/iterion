@@ -1462,6 +1462,24 @@ tool oracle_run:
         return os.path.join(root, "gm-holdout-%s-%s" % (os.path.basename(ap) or "default", tag))
 
 
+    def seal_committed_opted_in(gm_dir):
+        """The convergence gate's opt-in to consume a COMMITTED held-out set.
+
+        Two forms, either suffices: `"seal_committed": true` in config.json —
+        written by the net's owner, committed, auditable, the preferred form —
+        or GM_SEAL_COMMITTED=1 in the environment for a hand-run gate. The flag
+        can only widen what the gate consumes, never soften a verdict, which is
+        why an environment form is tolerable here at all.
+        """
+        if os.environ.get("GM_SEAL_COMMITTED") == "1":
+            return True
+        try:
+            with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
+                return json.load(f).get("seal_committed") is True
+        except (OSError, ValueError):
+            return False
+
+
     def holdout_committed_in_tree(gm_dir):
         """True when mutants/holdout/ carries COMMITTED entries.
 
@@ -1496,7 +1514,7 @@ tool oracle_run:
         """
         src = os.path.join(gm_dir, "mutants", "holdout")
         if os.path.isdir(src) and holdout_committed_in_tree(gm_dir) \
-                and os.environ.get("GM_SEAL_COMMITTED") != "1":
+                and not seal_committed_opted_in(gm_dir):
             return bool(os.path.isdir(sealed_dir) and os.listdir(sealed_dir))
         os.makedirs(sealed_dir, exist_ok=True)
         if os.path.isdir(src):
@@ -2181,6 +2199,17 @@ tool oracle_run:
                     os.environ.pop("GM_SEAL_COMMITTED", None)
                 else:
                     os.environ["GM_SEAL_COMMITTED"] = prev_seal
+            repo3 = os.path.join(sroot, "config-form")
+            gmd3 = mk_holdout(repo3)
+            with open(os.path.join(gmd3, "config.json"), "w", encoding="utf-8") as f:
+                f.write('{"seal_committed": true}')
+            for cmd in ("git init -q", "git add -A",
+                        "git -c user.email=t@t -c user.name=t commit -qm seed"):
+                run(cmd, repo3, timeout=60)
+            check("opt-in par config.json -> le jeu committe se scelle",
+                  [seal_holdout(gmd3, os.path.join(sroot, "sealed3")),
+                   os.path.isdir(os.path.join(gmd3, "mutants", "holdout", "t01"))],
+                  [True, False])
 
             # 8b. Registre : une demande sans acte bloque ; un `replaces` acte la
             #     chaine ; un bloc illisible escalade, ne se devine pas.
@@ -2416,11 +2445,12 @@ tool oracle_run:
         if mode != "record":
             seal_holdout(gm_dir, sealed_dir)
             if holdout_committed_in_tree(gm_dir) and \
-                    os.environ.get("GM_SEAL_COMMITTED") != "1":
+                    not seal_committed_opted_in(gm_dir):
                 note(report, "a fresh held-out set is COMMITTED under mutants/holdout/ "
                              "and awaits its own convergence gate: this gate leaves it "
-                             "in place and scores without it. GM_SEAL_COMMITTED=1 is "
-                             "that gate's explicit opt-in.")
+                             "in place and scores without it. `\"seal_committed\": true` "
+                             "in config.json (or GM_SEAL_COMMITTED=1) is that gate's "
+                             "explicit opt-in.")
             held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
             # The held-out set lives outside the workspace once sealed. If the
             # sealed directory moved or was wiped, it is GONE — and the archetype
