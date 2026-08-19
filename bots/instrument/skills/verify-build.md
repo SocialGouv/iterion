@@ -39,13 +39,6 @@ and the correct toolchain:
   `go.mod`'s `go` directive is newer than the installed `go version`, use the
   project's wrapper (e.g. `devbox run -- go …`) or `GOTOOLCHAIN=auto go …` so
   the pinned toolchain is fetched, rather than failing on "requires go >= X".
-- **Go in a sandboxed git worktree: disable VCS stamping.** The run's
-  workspace is a git *worktree* whose gitdir lives outside the sandbox
-  mounts, so `go build`'s VCS probe can fail with `error obtaining VCS
-  status: exit status 128` even though git itself works. Put
-  `export GOFLAGS="-buildvcs=false"` at the top of verify.sh — the
-  binary's stamped identity is irrelevant to a build+test gate.
-  (Observed live 2026-08-19, run 01a01a51: the gate burned a pass on it.)
   - **devbox is first-class inside the iterion sandbox** — when the repo
     pins its toolchain via `devbox.json`, prefer `devbox run -- …`; the engine
     lays the whole `$HOME` subtree user-writable so the wrapper's cache/home
@@ -58,6 +51,13 @@ and the correct toolchain:
     the real toolchain (`go`, `node`, `cargo`, `python`) directly on `PATH`, so
     you may fall back ONCE to the bare tool — `command -v go && go build ./...
     && go test ./...` — rather than retrying the wrapper.
+- **Go in a sandboxed git worktree: disable VCS stamping.** The run's
+  workspace is a git *worktree* whose gitdir lives outside the sandbox
+  mounts, so `go build`'s VCS probe can fail with `error obtaining VCS
+  status: exit status 128` even though git itself works. Put
+  `export GOFLAGS="-buildvcs=false"` at the top of verify.sh — the
+  binary's stamped identity is irrelevant to a build+test gate.
+  (Observed live 2026-08-19, run 01a01a51: the gate burned a pass on it.)
 - **Language defaults (only when there is no wrapper):**
   - Go (`go.mod`): `go build ./... && go test ./...`
   - Node (`package.json`): pick the package manager from the lockfile

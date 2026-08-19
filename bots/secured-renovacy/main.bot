@@ -1456,6 +1456,11 @@ prompt p2_campaign_system:
   3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A` so new files
      land) — git is the durable state; a later pass reads `git log`
      and continues.
+     END EVERY PASS ON A CLEAN TREE: if you must stop mid-fix, either
+     finish it to committable or revert/stash the in-progress edits —
+     the deterministic gate verifies the WORKING TREE, and a half-done
+     fix (an un-vendored dependency, a dangling import) reds the gate
+     as noise.
   4. BASELINE — a failure that also occurs at `base_sha` (attribute
      cheaply once, then move on) predates this run: note it, never
      chase it. Fix only what the RUN's changes broke or left.
