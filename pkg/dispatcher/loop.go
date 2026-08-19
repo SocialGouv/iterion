@@ -360,6 +360,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	if !c.resolveExplicitBot(cfg, iss) {
 		return
 	}
+	// Durable last_run holds are read-only decisions. Resolve the indefinite
+	// ones before Claim so a live/foreign-paused run or an unowned resume
+	// workspace does not generate a Claim+Release board event pair every poll.
+	// Dispatcher-owned pauses deliberately fall through: the claim is what
+	// makes their re-park atomic with respect to other dispatchers.
+	if c.lastRunHoldBeforeClaim(iss) {
+		return
+	}
 	// Past the bot guards: this issue is dispatchable, so drop any skip
 	// entry a prior tick recorded (the operator fixed the bot name or
 	// added the route). Cleared here rather than on claim so a downstream
@@ -451,6 +459,75 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		entry:               entry,
 		spec:                spec,
 	})
+}
+
+// lastRunHoldBeforeClaim handles persisted states that cannot make progress
+// through dispatch and would otherwise cause an unbounded Claim+Release loop.
+// It may promote a dead running/queued run; promoted resumable/hard-failed
+// states fall through so normal resume/fresh resolution can proceed.
+func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
+	prev := c.lastRunID(iss.ID)
+	if prev == "" {
+		return false
+	}
+	rs, err := c.openRunStore()
+	if err != nil {
+		return false
+	}
+	r, err := rs.LoadRun(context.Background(), prev)
+	if err != nil {
+		return false
+	}
+	status := r.Status
+	if status == store.RunStatusRunning || status == store.RunStatusQueued {
+		status = c.promoteIfOrphaned(context.Background(), rs, r)
+	}
+	switch status {
+	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		if isDispatcherPausedRun(r) {
+			return false
+		}
+		reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+		c.recordLastRunHold(iss, reason)
+		return true
+	case store.RunStatusRunning, store.RunStatusQueued:
+		reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+
+	resumeID := ""
+	if retry, ok := c.state.retries[iss.ID]; ok && retry.PrevRunID != "" {
+		resumeID = retry.PrevRunID
+	} else if status == store.RunStatusFailedResumable || status == store.RunStatusCancelled {
+		resumeID = prev
+	}
+	if resumeID == "" {
+		return false
+	}
+	_, exists, managed, err := c.workspaces.resumeGenerationState(iss.ID, resumeID)
+	if err != nil {
+		reason := fmt.Sprintf("workspace ownership probe failed for run %s: %v", resumeID, err)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+	if exists && !managed {
+		reason := fmt.Sprintf("run %s has no managed v2 workspace ownership — refusing a fresh sibling", resumeID)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+	return false
+}
+
+func (c *Dispatcher) recordLastRunHold(iss tracker.Issue, reason string) {
+	if c.state.lastRunHoldWarned == nil {
+		c.state.lastRunHoldWarned = map[string]string{}
+	}
+	if c.state.lastRunHoldWarned[iss.ID] != reason {
+		c.state.lastRunHoldWarned[iss.ID] = reason
+		c.logger.Warn("dispatcher: %s: %s", iss.Identifier, reason)
+	}
+	c.recordDispatchSkip(iss, reason)
 }
 
 func (c *Dispatcher) dispatchWorkspaceLifecycle(
@@ -657,8 +734,9 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			}
 		}
 	}
+	missingResumeWorkspace := false
 	if resumeFromRunID != "" {
-		_, managed, err := c.workspaces.resumeGeneration(iss.ID, resumeFromRunID)
+		_, exists, managed, err := c.workspaces.resumeGenerationState(iss.ID, resumeFromRunID)
 		if err != nil {
 			reason := fmt.Sprintf("workspace ownership probe failed for run %s: %v", resumeFromRunID, err)
 			c.logger.Warn("dispatcher: %s: %s — dispatch deferred", iss.Identifier, reason)
@@ -666,7 +744,13 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)
 			return "", "", attempt, false
 		}
-		if !managed {
+		if !exists {
+			// The persisted run survived but its ephemeral workspace did not.
+			// There is no unowned path to protect and Engine.Resume cannot use
+			// the vanished workspace, so restart in a fresh isolated generation.
+			resumeFromRunID = ""
+			missingResumeWorkspace = true
+		} else if !managed {
 			// Pre-v2 paths were derived through a many-to-one sanitizer, so
 			// ownership cannot be proven from the directory name. Never run
 			// hooks in a new v2 workspace while Engine.Resume silently restores
@@ -674,13 +758,13 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			// from entry either: a live last_run is durable. Defer; leave
 			// the old directory untouched for operator recovery.
 			reason := fmt.Sprintf("run %s has no managed v2 workspace ownership — refusing a fresh sibling", resumeFromRunID)
-			c.logger.Warn("dispatcher: %s: %s; legacy/unowned workspace left untouched", iss.Identifier, reason)
-			c.recordDispatchSkip(iss, reason)
+			c.recordLastRunHold(iss, reason)
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)
 			return "", "", attempt, false
 		}
 	}
 	if resumeFromRunID != "" {
+		delete(c.state.lastRunHoldWarned, iss.ID)
 		return resumeFromRunID, resumeFromRunID, attempt, true
 	}
 	// About to mint. A live / waiting / still-resumable last_run must
@@ -689,18 +773,10 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// workspace probe failed open. A finished last_run does NOT hold
 	// the card: dragging it back to an eligible column is the
 	// operator's re-queue gesture (see lastRunForbidsFresh).
-	if prev := c.lastRunID(iss.ID); prev != "" {
+	if prev := c.lastRunID(iss.ID); prev != "" && !missingResumeWorkspace {
 		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
 			reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
-			// Dedup via lastRunHoldWarned, NOT dispatchSkips: dispatch()
-			// deletes the skip entry before resolveRunID runs, so the
-			// entry never survives into the next tick and a held card
-			// would re-warn every poll otherwise.
-			if c.state.lastRunHoldWarned[iss.ID] != reason {
-				c.state.lastRunHoldWarned[iss.ID] = reason
-				c.logger.Warn("dispatcher: %s: %s", iss.Identifier, reason)
-			}
-			c.recordDispatchSkip(iss, reason)
+			c.recordLastRunHold(iss, reason)
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)
 			return "", "", attempt, false
 		}

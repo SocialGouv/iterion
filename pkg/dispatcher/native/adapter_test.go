@@ -174,6 +174,13 @@ func TestListForRepark(t *testing.T) {
 	if err := s.Claim(theirs.ID, "other-host"); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
+	ours, _ := s.Create(native.Issue{Title: "ours", State: native.StateInProgress})
+	if err := s.SetLastRun(ours.ID, "run-ours", ""); err != nil {
+		t.Fatalf("SetLastRun ours: %v", err)
+	}
+	if err := s.Claim(ours.ID, "me"); err != nil {
+		t.Fatalf("Claim ours: %v", err)
+	}
 	fresh, _ := s.Create(native.Issue{Title: "fresh", State: native.StateReady})
 	_, _ = s.Create(native.Issue{Title: "inbox", State: native.StateInbox})
 
@@ -193,6 +200,9 @@ func TestListForRepark(t *testing.T) {
 	}
 	if ids[theirs.ID] {
 		t.Error("another daemon's claim must be excluded")
+	}
+	if ids[ours.ID] {
+		t.Error("an already-handled claim from this daemon must not be re-parked every tick")
 	}
 	if ids[fresh.ID] {
 		t.Error("a card with no last_run cannot be re-parked")

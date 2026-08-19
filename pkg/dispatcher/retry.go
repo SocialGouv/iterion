@@ -153,10 +153,13 @@ func lastRunForbidsFresh(status store.RunStatus) bool {
 const orphanRunGraceWindow = 2 * time.Minute
 
 // resumableRunID returns the runID iff the corresponding run record
-// can be auto-resumed by the dispatcher — i.e. its on-disk status is
-// failed_resumable, cancelled, or paused_operator. paused_waiting_human
-// is deliberately excluded (no answers → immediate re-pause); that
-// status is re-parked, not resumed. Returns "" if the run is missing,
+// can be resumed by an already-authorized dispatcher retry — i.e. its
+// on-disk status is failed_resumable, cancelled, or paused_operator.
+// On restart, reparkClaimedIfLastRunWaiting intercepts dispatcher-owned
+// paused_operator before this helper is reached; the status remains here for
+// an in-memory retry decision in the same process. paused_waiting_human is
+// deliberately excluded (no answers → immediate re-pause); that status is
+// re-parked, not resumed. Returns "" if the run is missing,
 // hard-failed, finished, or any error reading the store. An empty
 // result is NOT a licence to mint a sibling: resolveRunID still
 // consults lastRunForbidsFresh before GenerateRunID.

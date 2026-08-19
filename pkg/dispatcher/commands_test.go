@@ -557,6 +557,14 @@ func TestDispatch_SkipsUnresolvableExplicitBot(t *testing.T) {
 	if snap := c.buildSnapshot(); len(snap.DispatchSkips) != 1 || snap.DispatchSkips[0].IssueID != "fake:ghost" {
 		t.Fatalf("snapshot DispatchSkips = %+v, want one fake:ghost entry", c.buildSnapshot().DispatchSkips)
 	}
+
+	// Warn-dedup state is candidate-scoped too: a deleted or terminal ticket
+	// must not retain an entry for the daemon lifetime.
+	c.state.lastRunHoldWarned["fake:gone"] = "held"
+	cmdCandidates{issues: nil}.apply(c, context.Background())
+	if _, ok := c.state.lastRunHoldWarned["fake:gone"]; ok {
+		t.Fatal("lastRunHoldWarned entry survived after issue left candidates")
+	}
 }
 
 // pumpCandidates drains the cmdCandidates that tick()'s off-actor discovery

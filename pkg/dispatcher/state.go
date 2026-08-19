@@ -65,7 +65,8 @@ type state struct {
 	// entry can't carry this dedup: dispatch() deletes it before
 	// resolveRunID runs, so a held card (live running/queued last_run)
 	// would re-warn every poll. Cleared when the hold resolves and the
-	// dispatch proceeds. Actor-goroutine-owned; no mutex needed.
+	// dispatch proceeds, or pruned when the issue leaves the candidate set.
+	// Actor-goroutine-owned; no mutex needed.
 	lastRunHoldWarned map[string]string
 }
 

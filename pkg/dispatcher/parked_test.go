@@ -418,6 +418,9 @@ func TestDispatch_PausedLastRunNotDispatcherOwnedStaysPut(t *testing.T) {
 	if got.AwaitingInput {
 		t.Error("awaiting-input badge must not be set on a foreign card")
 	}
+	if got.Claim != "" {
+		t.Errorf("foreign paused hold must happen before Claim, got %q", got.Claim)
+	}
 	if _, skipped := fx.disp.state.dispatchSkips[fx.issue.ID]; !skipped {
 		t.Error("the refused mint must surface as a dispatch skip")
 	}
@@ -522,6 +525,13 @@ func TestDispatch_HoldsLiveLockedRun(t *testing.T) {
 			if got.Status != status {
 				t.Errorf("live run status = %q, want %q (untouched by the probe)", got.Status, status)
 			}
+			card, err := fx.board.Get(fx.issue.ID)
+			if err != nil {
+				t.Fatalf("Get card: %v", err)
+			}
+			if card.Claim != "" {
+				t.Errorf("live-run hold must happen before Claim, got %q", card.Claim)
+			}
 		})
 	}
 }
@@ -544,11 +554,32 @@ func TestDispatch_ResumesFailedResumableSameID(t *testing.T) {
 	}
 }
 
+func TestDispatch_MintsFreshWhenResumableWorkspaceIsMissing(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusFailedResumable, native.StateInProgress)
+	// No workspace shape exists: the store survived but the workspace root
+	// was ephemeral or removed. There is no foreign path to protect, and the
+	// old run cannot be resumed, so dispatch must start an isolated fresh run.
+	fx.disp.dispatch(context.Background(), tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	})
+	fx.disp.workersWG.Wait()
+	if fx.launched != 1 {
+		t.Fatalf("missing resume workspace launched %d time(s), want 1 fresh run", fx.launched)
+	}
+	if fx.lastSpec.RunID == "" || fx.lastSpec.RunID == fx.runID {
+		t.Errorf("spec run = %q, want a fresh id distinct from %q", fx.lastSpec.RunID, fx.runID)
+	}
+	if fx.lastSpec.ResumeFromRunID != "" {
+		t.Errorf("spec resumeFrom = %q, want empty for missing workspace", fx.lastSpec.ResumeFromRunID)
+	}
+}
+
 func TestDispatch_RefusesFreshSiblingWhenWorkspaceUnmanaged(t *testing.T) {
 	fx := newLastRunFixture(t, store.RunStatusFailedResumable, native.StateInProgress)
 	// A directory exists but no v2 ownership marker — the historic
 	// "starting fresh" path. Must defer, not mint.
-	legacy := filepath.Join(fx.disp.workspaces.root, "not-a-v2-workspace")
+	legacy := fx.disp.workspaces.PathForRun(fx.issue.ID, fx.runID)
 	if err := os.MkdirAll(legacy, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -568,6 +599,9 @@ func TestDispatch_RefusesFreshSiblingWhenWorkspaceUnmanaged(t *testing.T) {
 	}
 	if got.LastRunID != fx.runID {
 		t.Errorf("last_run = %q, want the existing run", got.LastRunID)
+	}
+	if got.Claim != "" {
+		t.Errorf("unmanaged workspace hold must happen before Claim, got claim %q", got.Claim)
 	}
 }
 

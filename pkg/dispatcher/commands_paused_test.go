@@ -175,11 +175,14 @@ func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
 	c, err := New(Options{
 		Config: cfg, Tracker: ft, Runner: &StubRunner{},
 		Workspaces: ws, Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}),
-		HostMarker: "test",
+		HostMarker: "test", StoreDir: dir,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	c.claims.Record(claimEntry{
+		IssueID: issueID, Identifier: "fake#src", Marker: "test", ClaimedAt: time.Now().UTC(),
+	})
 	c.state.running[issueID] = &runningEntry{
 		IssueID: issueID, Identifier: "fake#src", RunID: "run-src-1",
 		WorkflowState: "in_progress", WorkspacePath: filepath.Join(wsDir, "x"),
@@ -219,5 +222,11 @@ func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
 	}
 	if skip.Reason == "" {
 		t.Error("dispatch skip must carry the resume --force / cancel reason")
+	}
+	// A claimed parked ticket is absent from ListCandidates, but its sticky
+	// explanation must survive candidate pruning while our claim is journalled.
+	cmdCandidates{issues: nil}.apply(c, context.Background())
+	if _, visible := c.state.dispatchSkips[issueID]; !visible {
+		t.Error("source-changed dispatch skip was pruned while the parked claim is still held")
 	}
 }

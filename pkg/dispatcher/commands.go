@@ -167,18 +167,29 @@ func (m cmdCandidates) apply(c *Dispatcher, ctx context.Context) {
 	sortCandidates(candidates)
 
 	// Prune dispatch-skip entries whose issue is no longer an eligible,
-	// unclaimed candidate — it was claimed, closed, or dragged out of the
-	// ready lane, so the stale "won't dispatch" reason should disappear
-	// from the UI. Issues that re-skip below re-populate the map; ones
-	// that became dispatchable are cleared by dispatch() when they claim.
-	if len(c.state.dispatchSkips) > 0 {
+	// unclaimed candidate — it was closed or dragged out of the ready lane,
+	// so the stale "won't dispatch" reason should disappear from the UI.
+	// A journalled claim is the exception: deliberately parked cards are absent
+	// from ListCandidates but their operator-facing reason must remain visible.
+	// Issues that re-skip below re-populate the map; ones that became
+	// dispatchable are cleared by dispatch() when they claim.
+	if len(c.state.dispatchSkips) > 0 || len(c.state.lastRunHoldWarned) > 0 {
 		live := make(map[string]struct{}, len(candidates))
 		for _, iss := range candidates {
 			live[iss.ID] = struct{}{}
 		}
-		for id := range c.state.dispatchSkips {
-			if _, ok := live[id]; !ok {
-				delete(c.state.dispatchSkips, id)
+		if len(c.state.dispatchSkips) > 0 {
+			for id := range c.state.dispatchSkips {
+				if _, ok := live[id]; !ok && !c.claims.Contains(id) {
+					delete(c.state.dispatchSkips, id)
+				}
+			}
+		}
+		if len(c.state.lastRunHoldWarned) > 0 {
+			for id := range c.state.lastRunHoldWarned {
+				if _, ok := live[id]; !ok {
+					delete(c.state.lastRunHoldWarned, id)
+				}
 			}
 		}
 	}
@@ -727,10 +738,12 @@ func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
 // external tracker that rejects the transition leaves the card in place — the
 // retained claim already blocks re-dispatch, so this is a display-only
 // refinement, never load-bearing.
-func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) {
+func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) bool {
 	if err := c.tracker.UpdateState(context.Background(), issueID, native.StateAwaitingInput); err != nil {
 		c.logger.Info("dispatcher: %s stays in place (no awaiting-input column): %v", identifier, err)
+		return false
 	}
+	return true
 }
 
 // maybeTransitionToCompleted moves a cleanly-finished issue from

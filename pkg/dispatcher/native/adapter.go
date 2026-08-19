@@ -118,10 +118,13 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 // ListForRepark returns cards this dispatcher may re-park after a
 // reboot or an out-of-band resume: any eligible state (plus
 // in_progress, the crash-recovery lane) that already has a last_run
-// and is unclaimed or claimed by marker. Cards already in
+// and is unclaimed. Cards already claimed by this daemon were handled when
+// the claim was acquired; excluding them makes a missing awaiting_input
+// column a one-shot best-effort move instead of an every-tick retry. Cards
+// already in
 // awaiting_input stay with ListAwaitingInput / reconcileParked.
 // Consumed by reconcileStrandedPaused via optional-interface assertion.
-func (a *Adapter) ListForRepark(marker string) ([]tracker.Issue, error) {
+func (a *Adapter) ListForRepark(_ string) ([]tracker.Issue, error) {
 	b := a.store.Board()
 	seen := make(map[string]bool, len(b.States))
 	states := make([]string, 0, len(b.States))
@@ -147,7 +150,7 @@ func (a *Adapter) ListForRepark(marker string) ([]tracker.Issue, error) {
 		if iss.LastRunID == "" {
 			continue
 		}
-		if iss.Claim != "" && iss.Claim != marker {
+		if iss.Claim != "" {
 			continue
 		}
 		out = append(out, toTrackerIssue(iss))

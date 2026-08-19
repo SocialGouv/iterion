@@ -19,7 +19,13 @@ func TestClaimJournalRoundTrip(t *testing.T) {
 	j := newClaimJournal(dir, quietLogger())
 	j.Record(claimEntry{IssueID: "gh:1", Identifier: "gh#1", Marker: "rog-42", ClaimedAt: time.Now().UTC()})
 	j.Record(claimEntry{IssueID: "gh:2", Identifier: "gh#2", Marker: "rog-42", ClaimedAt: time.Now().UTC()})
+	if !j.Contains("gh:1") || !j.Contains("gh:2") || j.Contains("gh:missing") {
+		t.Fatal("Contains did not reflect journalled claims")
+	}
 	j.Remove("gh:1")
+	if j.Contains("gh:1") {
+		t.Fatal("Contains retained a removed claim")
+	}
 
 	// A fresh journal (successor daemon) sees exactly the un-released claim.
 	j2 := newClaimJournal(dir, quietLogger())
@@ -34,6 +40,9 @@ func TestClaimJournalNilAndCorrupt(t *testing.T) {
 	var j *claimJournal
 	j.Record(claimEntry{IssueID: "x"})
 	j.Remove("x")
+	if j.Contains("x") {
+		t.Fatal("nil journal Contains must be false")
+	}
 	if got := j.Load(); got != nil {
 		t.Fatalf("nil journal Load = %v, want nil", got)
 	}

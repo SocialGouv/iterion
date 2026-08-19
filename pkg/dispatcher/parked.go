@@ -112,7 +112,7 @@ func (c *Dispatcher) lastRunID(issueID string) string {
 // reparkToAwaitingInput moves a card whose last_run is still paused
 // back to the awaiting-input column, same run id. Caller owns the
 // claim (so ListCandidates stays away even if the column is missing).
-func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) {
+func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) bool {
 	// A retry can coexist with the persisted pause when the run was
 	// resumed out-of-band while its dispatcher retry timer was pending.
 	// Re-parking supersedes that stale retry: leaving it behind would keep
@@ -123,15 +123,16 @@ func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) {
 		}
 		delete(c.state.retries, iss.ID)
 	}
-	c.stampLastRun(iss.ID, &runningEntry{
-		IssueID: iss.ID, Identifier: iss.Identifier, RunID: runID,
-	})
 	c.setAwaitingInput(iss.ID, true)
-	c.moveToAwaitingInput(iss.ID, iss.Identifier)
+	moved := c.moveToAwaitingInput(iss.ID, iss.Identifier)
+	if !moved {
+		return false
+	}
 	c.logger.Info(
 		"dispatcher: %s last run %s is still paused — re-parked in awaiting-input, refusing a fresh run",
 		iss.Identifier, runID,
 	)
+	return true
 }
 
 // reparkClaimedIfLastRunWaiting stops a fresh dispatch when last_run is
@@ -225,8 +226,7 @@ func (c *Dispatcher) reconcileStrandedPaused(ctx context.Context) {
 			}
 			continue
 		}
-		c.reparkToAwaitingInput(iss, runID)
-		moved = true
+		moved = c.reparkToAwaitingInput(iss, runID) || moved
 	}
 	if moved {
 		c.fireSnapshot()

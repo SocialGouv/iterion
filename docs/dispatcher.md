@@ -315,6 +315,10 @@ untouched for operator recovery. To reclaim legacy directories, first confirm
 that no active/resumable run still references them, then inspect and move or
 delete them manually; automatic cleanup would risk deleting a different
 issue's colliding legacy workspace.
+If neither a run-scoped nor stable workspace shape exists at all (for example,
+an ephemeral workspace root disappeared while the run store survived), there
+is no unowned path to protect and the run cannot be resumed: the dispatcher
+starts a fresh isolated generation instead.
 The resolver also refuses workspaces whose symlink resolution lands outside the
 configured root.
 
