@@ -101,9 +101,10 @@ does too.
 
 | Seam | What it reports |
 |---|---|
-| CLI top level ([cmd/iterion/main.go](../cmd/iterion/main.go)) | any panic escaping a command — captured, flushed, then **re-panicked** so the process still dies the way it did |
+| CLI top level ([cmd/iterion/main.go](../cmd/iterion/main.go)) | a panic escaping a command on the main goroutine — captured, flushed, then **re-panicked** so the process still dies the way it did. Go cannot recover another goroutine's panic from here, which is why the worker seams below capture in their own recovery blocks |
 | CLI fatal path | the error that ends the process with exit 1, before `os.Exit` skips every defer. A user-input error (exit 2 — bad flag, missing file) is a typo, not an incident, and is never reported |
-| [pkg/server/gosafe.go](../pkg/server/gosafe.go) | a panic in a fire-and-forget server goroutine (audit insert, `MarkUsed`, invitation mail), with the task label |
+| [pkg/server/gosafe.go](../pkg/server/gosafe.go) and [cloudpublisher](../pkg/server/cloudpublisher/publisher.go) `goSafeDetached` | a panic in a fire-and-forget background goroutine (audit insert, `MarkUsed`, invitation mail), with the task label |
+| The dispatcher actor, its polling loop, and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
 | The central logger, on the daemons | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event |
 | [pkg/alert](../pkg/alert/errtrack.go) | run health: `run_failed` and `budget_exceeded` as errors, `stall` and `budget_warning` as warnings, `stall_recovered` as a breadcrumb |
 

@@ -30,6 +30,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -1200,7 +1201,14 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 	go func() {
 		defer p.detached.Done()
 		defer func() {
-			if r := recover(); r != nil && p.logger != nil {
+			r := recover()
+			if r == nil {
+				return
+			}
+			// A no-op unless SENTRY_DSN is set; the recovery semantics
+			// are unchanged either way.
+			errtrack.CapturePanicFields(r, map[string]any{"task": label, "surface": "cloudpublisher.goSafeDetached"})
+			if p.logger != nil {
 				p.logger.Error("cloudpublisher: detached task %q panicked: %v", label, r)
 			}
 		}()
