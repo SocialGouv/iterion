@@ -148,20 +148,22 @@ so nothing can bypass it — including events the SDK generates itself.
 ### Smoke test
 
 With the DSN exported, the cheapest end-to-end check is a command that
-fails:
+fails on the *fatal* path (exit 1):
 
 ```sh
 export SENTRY_DSN='https://<key>@<host>/<project>'
 export SENTRY_ENVIRONMENT=smoke-test
 
-iterion run /nonexistent.bot    # a fatal error -> one event
+iterion dispatch /nonexistent-config.yaml   # exit 1 -> one event
 ```
 
-An event named after the error should appear in the project within a
-few seconds, tagged with the release and `smoke-test`. Unset
-`SENTRY_DSN` and run the same command: nothing is sent, and the
-terminal output is byte-for-byte what it was.
+Within a few seconds the project should show one event carrying the
+read error, tagged `release: iterion@<version>+<commit>`, `environment:
+smoke-test`, and the context `{"command": "iterion dispatch"}`.
 
-To verify the log coupling instead, run a daemon with a DSN set and
-make it log an error (for instance point `iterion dispatch` at an
-unreadable config): the line appears both on stderr and as an event.
+Then unset `SENTRY_DSN` and run the same command: **nothing is sent**,
+and the exit code and terminal output are byte-for-byte what they were.
+
+Note that `iterion run /nonexistent.bot` is *not* a useful smoke test:
+a missing file is a user-input error (exit 2) and those are
+deliberately never reported.
