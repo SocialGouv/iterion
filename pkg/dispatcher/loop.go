@@ -22,7 +22,8 @@ import (
 //
 // When the dispatcher is paused, the dispatch step is skipped — runs
 // already in flight continue, stall detection still fires, retries
-// still queue. Paused means "no new work", not "stop everything".
+// still queue, and stranded paused last_runs are re-parked. Paused
+// means "no new work", not "stop everything".
 func (c *Dispatcher) tick(ctx context.Context) {
 	cfg := c.cfg.Load()
 	c.state.lastTickAt = time.Now().UTC()
@@ -30,6 +31,9 @@ func (c *Dispatcher) tick(ctx context.Context) {
 	c.reconcileStalled(ctx, cfg)
 	c.refreshRunningStates(ctx)
 	c.reconcileParked(ctx)
+	// Reclaim paused last_runs even while dispatch is suspended: a
+	// reboot with desired=paused must re-park, never mint a sibling.
+	c.reconcileStrandedPaused(ctx)
 
 	if c.paused.Load() {
 		c.fireSnapshot()
@@ -356,6 +360,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	if !c.resolveExplicitBot(cfg, iss) {
 		return
 	}
+	// Durable last_run holds are read-only decisions. Resolve the indefinite
+	// ones before Claim so a live/foreign-paused run or an unowned resume
+	// workspace does not generate a Claim+Release board event pair every poll.
+	// Dispatcher-owned pauses deliberately fall through: the claim is what
+	// makes their re-park atomic with respect to other dispatchers.
+	if c.lastRunHoldBeforeClaim(iss) {
+		return
+	}
 	// Past the bot guards: this issue is dispatchable, so drop any skip
 	// entry a prior tick recorded (the operator fixed the bot name or
 	// added the route). Cleared here rather than on claim so a downstream
@@ -382,6 +394,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		return
 	}
 
+	// A studio restart drops the claim that parked a human/operator
+	// pause. in_progress stays eligible, and paused_waiting_human is
+	// not resumable — without this guard we minted a NEW run from
+	// entry and rewrote the planner. Re-park; do not start fresh.
+	if c.reparkClaimedIfLastRunWaiting(iss) {
+		return
+	}
+
 	runID, resumeFromRunID, attempt, ok := c.resolveRunID(ctx, iss)
 	if !ok {
 		return
@@ -401,9 +421,9 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	}
 	// A fired retry remains authoritative until every synchronous dispatch
 	// decision has succeeded. In particular, an empty PrevRunID may encode a
-	// deliberate fresh restart after a source-change failure; consuming it in
-	// resolveRunID would let a lifecycle-probe failure make the next tick fall
-	// back to the stale persisted last_run pointer.
+	// deliberate fresh retry after a failure with no resumable run; consuming
+	// it in resolveRunID would let a lifecycle-probe failure make the next tick
+	// fall back to the stale persisted last_run pointer.
 	delete(c.state.retries, iss.ID)
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -439,6 +459,84 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		entry:               entry,
 		spec:                spec,
 	})
+}
+
+// lastRunHoldBeforeClaim handles persisted states that cannot make progress
+// through dispatch and would otherwise cause an unbounded Claim+Release loop.
+// It may promote a dead running/queued run; promoted resumable/hard-failed
+// states fall through so normal resume/fresh resolution can proceed.
+func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
+	prev := c.lastRunID(iss.ID)
+	if prev == "" {
+		return false
+	}
+	rs, err := c.openRunStore()
+	if err != nil {
+		return false
+	}
+	r, err := rs.LoadRun(context.Background(), prev)
+	if err != nil {
+		return false
+	}
+	status := r.Status
+	if status == store.RunStatusRunning {
+		status = c.promoteIfOrphaned(context.Background(), rs, r)
+		if status != r.Status {
+			// promoteIfOrphaned re-reads under the run lock. Keep the record
+			// aligned with the returned status so ownership checks below do
+			// not judge a newly-paused dispatcher run from the stale
+			// running/queued snapshot loaded above.
+			if cur, loadErr := rs.LoadRun(context.Background(), prev); loadErr == nil {
+				r = cur
+			}
+		}
+	}
+	switch status {
+	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		if isDispatcherPausedRun(r) {
+			return false
+		}
+		reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+		c.recordLastRunHold(iss, reason)
+		return true
+	case store.RunStatusRunning, store.RunStatusQueued:
+		reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+
+	resumeID := ""
+	if retry, ok := c.state.retries[iss.ID]; ok && retry.PrevRunID != "" {
+		resumeID = retry.PrevRunID
+	} else if status == store.RunStatusFailedResumable || status == store.RunStatusCancelled {
+		resumeID = prev
+	}
+	if resumeID == "" {
+		return false
+	}
+	_, exists, managed, err := c.workspaces.resumeGenerationState(iss.ID, resumeID)
+	if err != nil {
+		reason := fmt.Sprintf("workspace ownership probe failed for run %s: %v", resumeID, err)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+	if exists && !managed {
+		reason := fmt.Sprintf("run %s has no managed v2 workspace ownership — refusing a fresh sibling", resumeID)
+		c.recordLastRunHold(iss, reason)
+		return true
+	}
+	return false
+}
+
+func (c *Dispatcher) recordLastRunHold(iss tracker.Issue, reason string) {
+	if c.state.lastRunHoldWarned == nil {
+		c.state.lastRunHoldWarned = map[string]string{}
+	}
+	if c.state.lastRunHoldWarned[iss.ID] != reason {
+		c.state.lastRunHoldWarned[iss.ID] = reason
+		c.logger.Warn("dispatcher: %s: %s", iss.Identifier, reason)
+	}
+	c.recordDispatchSkip(iss, reason)
 }
 
 func (c *Dispatcher) dispatchWorkspaceLifecycle(
@@ -602,9 +700,8 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// scheduled retry (an in-memory retryEntry existed). It gates the
 	// cross-restart fallback below: a retry entry carries a DELIBERATE
 	// resume-vs-fresh decision, and an empty PrevRunID on it means "run
-	// fresh" — e.g. scheduleRetry dropped a doomed resume because the bot
-	// source changed. The persisted last_run pointer must not override
-	// that decision.
+	// fresh" — e.g. the prior attempt failed before it produced a resumable
+	// run. The persisted last_run pointer must not override that decision.
 	hadRetryEntry := false
 	if cur, present := c.state.retries[iss.ID]; present {
 		hadRetryEntry = true
@@ -631,14 +728,11 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// other adapters silently fall through to a fresh runID.
 	//
 	// Gated on !hadRetryEntry: when a retry entry WAS present its
-	// PrevRunID is authoritative — including an empty value meaning
-	// "scheduleRetry deliberately dropped a doomed resume (bot source
-	// changed since the prior run) — run fresh". Without this guard the
-	// fallback re-reads the persisted last_run_id (still failed_resumable
-	// on disk) and re-resumes the same source-changed run on the very
-	// next poll, an infinite resume→fail→revert loop that strands the
-	// ticket. scheduleRetry's in-memory drop alone can't survive this
-	// re-resolution. See pkg/dispatcher/retry.go isResumeSourceChanged.
+	// PrevRunID is authoritative — including an empty value meaning "the
+	// previous failure had no resumable run — retry fresh". Without this
+	// guard the fallback could re-read an older persisted last_run_id and
+	// override the retry decision after a synchronous dispatch probe deferred
+	// the first attempt.
 	if resumeFromRunID == "" && !hadRetryEntry {
 		type lastRunLookup interface {
 			LastRunForIssue(id string) (string, error)
@@ -649,8 +743,9 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			}
 		}
 	}
+	missingResumeWorkspace := false
 	if resumeFromRunID != "" {
-		_, managed, err := c.workspaces.resumeGeneration(iss.ID, resumeFromRunID)
+		_, exists, managed, err := c.workspaces.resumeGenerationState(iss.ID, resumeFromRunID)
 		if err != nil {
 			reason := fmt.Sprintf("workspace ownership probe failed for run %s: %v", resumeFromRunID, err)
 			c.logger.Warn("dispatcher: %s: %s — dispatch deferred", iss.Identifier, reason)
@@ -658,23 +753,56 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)
 			return "", "", attempt, false
 		}
-		if !managed {
+		if !exists {
+			// The persisted run survived but its ephemeral workspace did not.
+			// There is no unowned path to protect and Engine.Resume cannot use
+			// the vanished workspace, so restart in a fresh isolated generation.
+			resumeFromRunID = ""
+			missingResumeWorkspace = true
+		} else if !managed {
 			// Pre-v2 paths were derived through a many-to-one sanitizer, so
 			// ownership cannot be proven from the directory name. Never run
 			// hooks in a new v2 workspace while Engine.Resume silently restores
-			// a different legacy/missing WorkDir; restart safely instead and
-			// leave the old directory untouched for operator recovery.
-			c.logger.Warn(
-				"dispatcher: %s run %s has no managed v2 workspace ownership — starting fresh; legacy/unowned workspace left untouched",
-				iss.Identifier,
-				resumeFromRunID,
-			)
-			resumeFromRunID = ""
+			// a different legacy/missing WorkDir — and never mint a sibling
+			// from entry either: a live last_run is durable. Defer; leave
+			// the old directory untouched for operator recovery.
+			reason := fmt.Sprintf("run %s has no managed v2 workspace ownership — refusing a fresh sibling", resumeFromRunID)
+			c.recordLastRunHold(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
 		}
 	}
 	if resumeFromRunID != "" {
+		delete(c.state.lastRunHoldWarned, iss.ID)
 		return resumeFromRunID, resumeFromRunID, attempt, true
 	}
+	// About to mint. A live / waiting / still-resumable last_run must
+	// never become a sibling planner from entry — not on reboot, not
+	// because a retry entry dropped PrevRunID, not because the
+	// workspace probe failed open. A finished last_run does NOT hold
+	// the card: dragging it back to an eligible column is the
+	// operator's re-queue gesture (see lastRunForbidsFresh).
+	if prev := c.lastRunID(iss.ID); prev != "" && !missingResumeWorkspace {
+		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
+			// An empty retry target was authoritative when the retry was
+			// scheduled, but the durable run can become resumable later (for
+			// example after orphan promotion). Adopt that now-current target
+			// so the next tick resumes with the same attempt count instead of
+			// repeating Claim -> Release forever.
+			if hadRetryEntry && (status == store.RunStatusFailedResumable ||
+				status == store.RunStatusCancelled ||
+				status == store.RunStatusPausedOperator) {
+				if retry := c.state.retries[iss.ID]; retry != nil && retry.PrevRunID == "" {
+					retry.PrevRunID = prev
+				}
+			}
+			reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+			c.recordLastRunHold(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
+		}
+	}
+	delete(c.state.lastRunHoldWarned, iss.ID)
 	freshID, err := store.GenerateRunID()
 	if err != nil {
 		c.logger.Warn("dispatcher: mint run id for %s: %v", iss.Identifier, err)

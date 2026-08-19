@@ -224,6 +224,23 @@ func TestWorkspaceResumeGenerationDoesNotAdoptLegacyPath(t *testing.T) {
 	}
 }
 
+func TestWorkspaceResumeGenerationStateDistinguishesMissingFromUnmanaged(t *testing.T) {
+	w, err := NewWorkspaces(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	const issueID, runID = "native:resume-state", "run-resume-state"
+	if generation, exists, managed, err := w.resumeGenerationState(issueID, runID); err != nil || exists || managed || generation != "" {
+		t.Fatalf("missing shape = (%q, %t, %t, %v), want empty, false, false, nil", generation, exists, managed, err)
+	}
+	if err := os.MkdirAll(w.PathForRun(issueID, runID), 0o755); err != nil {
+		t.Fatalf("mkdir unmanaged run shape: %v", err)
+	}
+	if generation, exists, managed, err := w.resumeGenerationState(issueID, runID); err != nil || !exists || managed || generation != runID {
+		t.Fatalf("unmanaged shape = (%q, %t, %t, %v), want %q, true, false, nil", generation, exists, managed, err, runID)
+	}
+}
+
 func TestWorkspaceResumeGenerationRejectsInvalidRunShapeBeforeStableFallback(t *testing.T) {
 	w, err := NewWorkspaces(t.TempDir())
 	if err != nil {

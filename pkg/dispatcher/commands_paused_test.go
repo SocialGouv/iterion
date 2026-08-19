@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,5 +138,99 @@ func TestFinishRun_PausedForInputIsParkedNotRetried(t *testing.T) {
 				t.Errorf("slot not freed: slotsByState[in_progress] = %d, want 0", c.state.slotsByState["in_progress"])
 			}
 		})
+	}
+}
+
+// TestFinishRun_SourceChangedParksNoSibling: a doomed resume (bot
+// source changed) must not mint a sibling from entry. The ticket stays
+// claimed on the same last_run so the operator can resume --force.
+func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
+	const issueID = "fake:source-changed-1"
+	ft := newFakeTracker()
+	ft.add(tracker.Issue{
+		ID: issueID, Identifier: "fake#src",
+		Title: "bot edited", WorkflowState: "in_progress",
+	})
+	if err := ft.Claim(context.Background(), issueID, "test"); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	dir := t.TempDir()
+	wsDir := filepath.Join(dir, "ws")
+	cfg := &Config{
+		Name:     "test",
+		Workflow: filepath.Join(t.TempDir(), "fake.bot"),
+		Tracker:  TrackerConfig{Kind: "fake"},
+		Polling:  PollingConfig{IntervalMS: 50},
+		Agent: AgentConfig{
+			MaxConcurrent: 4, MaxRetryBackoffMS: 1000,
+			RunningState: "in_progress", FailedState: "blocked",
+		},
+		Workspace: WorkspaceConfig{Root: wsDir},
+	}
+	cfg.applyDefaults()
+	ws, err := NewWorkspaces(wsDir)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	c, err := New(Options{
+		Config: cfg, Tracker: ft, Runner: &StubRunner{},
+		Workspaces: ws, Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}),
+		HostMarker: "test", StoreDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.claims.Record(claimEntry{
+		IssueID: issueID, Identifier: "fake#src", Marker: "test", ClaimedAt: time.Now().UTC(),
+	})
+	c.state.running[issueID] = &runningEntry{
+		IssueID: issueID, Identifier: "fake#src", RunID: "run-src-1",
+		WorkflowState: "in_progress", WorkspacePath: filepath.Join(wsDir, "x"),
+		StartedAt: time.Now(), Attempt: 0, TransitionedFromState: "ready",
+	}
+	c.state.slotsByState["in_progress"] = 1
+
+	c.finishRun(context.Background(), issueID, runtime.ErrWorkflowSourceChanged)
+
+	ft.mu.Lock()
+	_, claimed := ft.claims[issueID]
+	ft.mu.Unlock()
+	if !claimed {
+		t.Error("claim was released — a source-changed ticket would be re-dispatched")
+	}
+	if _, queued := c.state.retries[issueID]; queued {
+		t.Error("a retry was scheduled — next attempt would mint a sibling")
+	}
+	if _, stillRunning := c.state.running[issueID]; stillRunning {
+		t.Error("issue still tracked as running")
+	}
+
+	// Operator visibility, same as the pause arm: the card moves to the
+	// awaiting-input column and the refusal is surfaced as a dispatch
+	// skip — otherwise the ticket strands invisibly (claimed, no worker,
+	// no badge, absent from the running/retry tables).
+	states, err := ft.RefreshStates(context.Background(), []string{issueID})
+	if err != nil {
+		t.Fatalf("RefreshStates: %v", err)
+	}
+	if got := states[issueID]; got != native.StateAwaitingInput {
+		t.Errorf("issue state = %q, want %q", got, native.StateAwaitingInput)
+	}
+	skip, visible := c.state.dispatchSkips[issueID]
+	if !visible {
+		t.Fatal("source-changed park must surface as a dispatch skip")
+	}
+	if !strings.Contains(skip.Reason, "resume with --force") {
+		t.Errorf("dispatch skip must carry the force-resume remedy, got %q", skip.Reason)
+	}
+	if strings.Contains(skip.Reason, "before a new dispatch") {
+		t.Errorf("dispatch skip must not claim that cancellation frees a fresh dispatch, got %q", skip.Reason)
+	}
+	// A claimed parked ticket is absent from ListCandidates, but its sticky
+	// explanation must survive candidate pruning while our claim is journalled.
+	cmdCandidates{issues: nil}.apply(c, context.Background())
+	if _, visible := c.state.dispatchSkips[issueID]; !visible {
+		t.Error("source-changed dispatch skip was pruned while the parked claim is still held")
 	}
 }

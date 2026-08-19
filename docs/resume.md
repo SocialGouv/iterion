@@ -424,6 +424,29 @@ re-invoked after the answer:
 This keeps multi-turn interaction attached to the same node rather than
 mistaking the pause for a completed human node.
 
+## Dispatcher and last_run
+
+A run is durable across a studio or dispatcher restart. If the board card
+still points at that run (`issue.last_run`) and the status is live or
+waiting, the dispatcher **does not mint a new run id**.
+
+| `last_run` | Dispatcher action |
+|---|---|
+| `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input` (dispatcher-owned runs). No auto-resume (no answers). |
+| `running` | Hold while the owner lives. An orphaned run (no live lock, past the grace window) is promoted to `failed_resumable` / `failed` first — never a sibling from the workflow entry. |
+| `queued` | Hold without a lock probe: pipeline-queued runs have no lock owner until their concurrency slot opens. |
+| `failed_resumable` / `cancelled` | `Engine.Resume` on the **same** id. |
+| `finished` | Fresh run allowed — dragging the card back to `ready` is the re-queue gesture. |
+| none, or hard `failed` + ticket explicitly back in `ready` | Fresh run. |
+
+`iterion resume --force` (or the studio force-resume) continues **this**
+run after a bot edit. If that resume parks again on a later human node,
+the next dispatcher tick re-parks the same card — it does not start the
+workflow over. To throw the work away, finish the run or let it fail
+hard: a `cancelled` run is resumed from its checkpoint, not replaced.
+
+See [dispatcher](dispatcher.md#paused-runs--the-awaiting_input-column--parked-sweep).
+
 ## Failure behavior
 
 Most runtime errors use the checkpoint-aware failure path: LLM/delegate errors,

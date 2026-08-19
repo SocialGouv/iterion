@@ -355,31 +355,38 @@ func (w *Workspaces) ownerPathForRun(issueID, runID string) string {
 }
 
 // resumeGeneration returns the active, verified workspace shape that owns a
-// resumable run. A unique run shape wins over a stable workspace retained from
-// an older keep-mode dispatch; if that unique shape exists but is invalid, we
-// fail closed instead of falling through to an unrelated stable workspace.
-// The probes are deliberately lock-free: they run on the dispatcher actor and
-// must never wait behind a worker's recursive delete. Invalid ownership shapes
-// return managed=false so a fresh generation can be isolated; operational
-// filesystem failures are returned so dispatch is deferred visibly.
+// resumable run. It preserves the historical compact result for lifecycle
+// callers; resumeGenerationState exposes the separate exists bit needed by
+// resolveRunID to distinguish a missing workspace (safe fresh restart) from an
+// existing but unowned/corrupt shape (fail closed).
 func (w *Workspaces) resumeGeneration(issueID, runID string) (string, bool, error) {
-	exists, err := w.generationShapeExists(issueID, runID)
+	generation, _, managed, err := w.resumeGenerationState(issueID, runID)
+	return generation, managed, err
+}
+
+// resumeGenerationState probes the run-scoped shape first, then the stable
+// workspace retained from an older keep-mode dispatch. If the unique run shape
+// exists but is invalid, it wins and we do not fall through to an unrelated
+// stable workspace. The probes are deliberately lock-free: they run on the
+// dispatcher actor and must never wait behind a worker's recursive delete.
+func (w *Workspaces) resumeGenerationState(issueID, runID string) (generation string, exists, managed bool, err error) {
+	exists, err = w.generationShapeExists(issueID, runID)
 	if err != nil {
-		return runID, false, err
+		return runID, false, false, err
 	}
 	if exists {
-		managed, err := w.generationIsManaged(issueID, runID)
-		return runID, managed, err
+		managed, err = w.generationIsManaged(issueID, runID)
+		return runID, true, managed, err
 	}
 	exists, err = w.generationShapeExists(issueID, "")
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	if exists {
-		managed, err := w.generationIsManaged(issueID, "")
-		return "", managed, err
+		managed, err = w.generationIsManaged(issueID, "")
+		return "", true, managed, err
 	}
-	return "", false, nil
+	return "", false, false, nil
 }
 
 func (w *Workspaces) generationShapeExists(issueID, runID string) (bool, error) {

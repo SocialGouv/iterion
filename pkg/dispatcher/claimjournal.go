@@ -118,6 +118,19 @@ func (j *claimJournal) Load() []claimEntry {
 	return out
 }
 
+// Contains reports whether this dispatcher still owns an unreleased tracker
+// claim for issueID. It lets candidate-based UI pruning retain diagnostics for
+// deliberately parked, claimed cards that ListCandidates correctly omits.
+func (j *claimJournal) Contains(issueID string) bool {
+	if j == nil {
+		return false
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	_, ok := j.entries[issueID]
+	return ok
+}
+
 // persistLocked rewrites the journal atomically (tmp + rename). Called
 // under j.mu. A write failure is logged, not fatal: the in-memory view
 // stays correct for this process; only crash recovery degrades.

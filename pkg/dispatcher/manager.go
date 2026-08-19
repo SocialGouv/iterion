@@ -134,14 +134,12 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	intent := resolveBootIntent(persisted, m.cfg != nil)
 	switch intent {
 	case DesiredRunning, DesiredPaused:
-		if startErr := m.Start(); startErr != nil {
+		// Pause BEFORE the actor's first tick when restoring a paused
+		// session. Start-then-Pause raced the immediate boot tick and
+		// minted sibling runs for in_progress tickets whose last_run
+		// was still paused_waiting_human.
+		if startErr := m.start(intent == DesiredPaused); startErr != nil {
 			opts.Logger.Warn("manager: auto-start declined: %v", startErr)
-			break
-		}
-		if intent == DesiredPaused {
-			if pauseErr := m.Pause(); pauseErr != nil {
-				opts.Logger.Warn("manager: restore pause after auto-start: %v", pauseErr)
-			}
 		}
 	}
 	return m, nil
@@ -251,6 +249,13 @@ var ErrAlreadyRunning = errors.New("manager: already running")
 // an error and stays in StateError when the start sequence fails (bad
 // workflow, missing tracker creds, port conflict, …).
 func (m *Manager) Start() error {
+	return m.start(false)
+}
+
+// start is Start with an optional already-paused actor. paused=true
+// sets the flag BEFORE the actor loop so the immediate first tick
+// cannot dispatch (or mint a sibling) before Pause() would have run.
+func (m *Manager) start(paused bool) error {
 	m.mu.Lock()
 	if m.cur != nil {
 		m.mu.Unlock()
@@ -302,18 +307,30 @@ func (m *Manager) Start() error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	if paused {
+		c.paused.Store(true)
+	}
 	c.Start(ctx)
 
 	m.mu.Lock()
 	m.cur = c
 	m.runner = runner
 	m.cancel = cancel
-	m.state = ManagerStateRunning
+	if paused {
+		m.state = ManagerStatePaused
+	} else {
+		m.state = ManagerStateRunning
+	}
 	m.lastErr = nil
 	m.startedAt = time.Now().UTC()
 	m.mu.Unlock()
-	m.persistDesired(DesiredRunning)
-	m.logger.Info("manager: dispatcher started (workflow=%s, tracker=%s)", cfg.Workflow, trk.Name())
+	if paused {
+		m.persistDesired(DesiredPaused)
+		m.logger.Info("manager: dispatcher started paused (workflow=%s, tracker=%s)", cfg.Workflow, trk.Name())
+	} else {
+		m.persistDesired(DesiredRunning)
+		m.logger.Info("manager: dispatcher started (workflow=%s, tracker=%s)", cfg.Workflow, trk.Name())
+	}
 	return nil
 }
 

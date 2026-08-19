@@ -162,6 +162,30 @@ lifecycle: run `finished` → `agent.completed_state`, hard `failed` →
 genuinely still awaits the operator. The cloud board coordinator runs
 the same sweep for cloud-launched cards.
 
+A reboot (new PID) drops the park-claim. `in_progress` stays eligible
+for crash-recovery, but a live `last_run` is **never** replaced by a
+sibling planner from the workflow entry:
+
+| `last_run` status | On the next tick / boot |
+|---|---|
+| `paused_waiting_human` / `paused_operator` | Re-park: `awaiting_input`, same `last_run`, no auto-resume (no answers). Only dispatcher-owned runs move the card — a pipelines-launched paused run keeps its card in place for the admission sweep, and still blocks any fresh mint. |
+| `running` | Hold while the owner process lives (run lock held). A dead owner (SIGKILL, host crash — lock free, past the 2-minute grace window) is promoted by the dispatcher itself: checkpoint → `failed_resumable` (then resumed), none → `failed` (a fresh run becomes legitimate). This works in `--no-server` deployments too, which have no runview orphan reaper. |
+| `queued` | Hold without probing the run lock. Pipeline-queued runs deliberately have no lock owner until a concurrency slot opens; their queue owner advances their state machine. |
+| `failed_resumable` / `cancelled` | Resume the **same** run id. |
+| `finished` | No hold: a fresh run is allowed — dragging the card back to an eligible column **is** the re-queue gesture. |
+| none, or hard `failed`, and the ticket is explicitly eligible | The only other legitimate fresh run. |
+
+The stranded-pause sweep (`reconcileStrandedPaused`) also runs while
+the dispatcher is **paused**, so a studio restart with `desired: paused`
+re-parks without dispatching. An out-of-band `iterion resume --force`
+that re-pauses on a later human node is picked up by the same sweep —
+the dispatcher worker already returned when the run first parked, so
+`finishRun` is not in the loop.
+
+To really start over: drag a `finished` or hard-`failed` ticket back to
+`ready`. A `cancelled` `last_run` is **resumed from its checkpoint**, not
+replaced — a reboot is not a from-scratch, and neither is cancel.
+
 ### In-progress transition (`agent.running_state`)
 
 After `tracker.Claim` succeeds, the dispatcher transitions the issue
@@ -285,12 +309,17 @@ without requiring an observed retirement transition.
 Directories created by older versions directly under
 `<workspace.root>/<sanitized-issue-id>/` are deliberately not adopted or
 deleted: the old sanitizer was many-to-one, so ownership cannot be proven from
-the name. A resumable run with only such a legacy/unowned workspace is restarted
-fresh in v2 while the old directory is left untouched for operator recovery.
-This loss of resume continuity is an accepted one-time migration cost. To
-reclaim legacy directories, first confirm that no active/resumable run still
-references them, then inspect and move or delete them manually; automatic
-cleanup would risk deleting a different issue's colliding legacy workspace.
+the name. A resumable run with only such a legacy/unowned workspace is **not**
+restarted fresh — that would mint a sibling planner and replay the prefix.
+Dispatch is deferred (visible as a skip) and the old directory is left
+untouched for operator recovery. To reclaim legacy directories, first confirm
+that no active/resumable run still references them, then inspect and move or
+delete them manually; automatic cleanup would risk deleting a different
+issue's colliding legacy workspace.
+If neither a run-scoped nor stable workspace shape exists at all (for example,
+an ephemeral workspace root disappeared while the run store survived), there
+is no unowned path to protect and the run cannot be resumed: the dispatcher
+starts a fresh isolated generation instead.
 The resolver also refuses workspaces whose symlink resolution lands outside the
 configured root.
 

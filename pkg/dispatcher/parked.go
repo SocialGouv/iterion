@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
@@ -43,6 +45,11 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 		return
 	}
 	cfg := c.cfg.Load()
+	rs, err := c.openRunStore()
+	if err != nil {
+		c.logger.Debug("dispatcher: open store for parked sweep: %v", err)
+		return
+	}
 	moved := false
 	for _, iss := range parked {
 		if _, running := c.state.running[iss.ID]; running {
@@ -53,7 +60,7 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 			continue
 		}
 		var target string
-		switch c.runStatusOnDisk(runID) {
+		switch runStatusFrom(rs, runID) {
 		case store.RunStatusFinished:
 			target = cfg.Agent.CompletedState
 			c.logger.Info("dispatcher: %s resumed out-of-band and finished (run=%s) — moving awaiting-input card to %q", iss.Identifier, runID, target)
@@ -85,22 +92,207 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 	}
 }
 
+// lastRunID is the tracker's persisted last_run pointer, or "" when
+// the adapter has no lookup (github/forgejo) or the card has never
+// been dispatched. Native-only today, same seam as stampLastRun.
+func (c *Dispatcher) lastRunID(issueID string) string {
+	look, ok := c.tracker.(interface {
+		LastRunForIssue(id string) (string, error)
+	})
+	if !ok {
+		return ""
+	}
+	runID, err := look.LastRunForIssue(issueID)
+	if err != nil || runID == "" {
+		return ""
+	}
+	return runID
+}
+
+// reparkToAwaitingInput moves a card whose last_run is still paused
+// back to the awaiting-input column, same run id. Caller owns the
+// claim (so ListCandidates stays away even if the column is missing).
+func (c *Dispatcher) reparkToAwaitingInput(iss tracker.Issue, runID string) bool {
+	// A retry can coexist with the persisted pause when the run was
+	// resumed out-of-band while its dispatcher retry timer was pending.
+	// Re-parking supersedes that stale retry: leaving it behind would keep
+	// a phantom row in the dashboard and reuse its attempt on a later run.
+	if retry, ok := c.state.retries[iss.ID]; ok {
+		if retry.Timer != nil {
+			retry.Timer.Stop()
+		}
+		delete(c.state.retries, iss.ID)
+	}
+	c.setAwaitingInput(iss.ID, true)
+	moved := c.moveToAwaitingInput(iss.ID, iss.Identifier)
+	if !moved {
+		return false
+	}
+	c.logger.Info(
+		"dispatcher: %s last run %s is still paused — re-parked in awaiting-input, refusing a fresh run",
+		iss.Identifier, runID,
+	)
+	return true
+}
+
+// reparkClaimedIfLastRunWaiting stops a fresh dispatch when last_run is
+// already paused for a human or the operator. The ticket must already
+// be claimed by this tick (so ListCandidates stays away). Returns true
+// when the caller must abort — the card is parked again, same run.
+// Only dispatcher-owned runs are re-parked (see isDispatcherPausedRun);
+// other paused runs still block the mint via lastRunForbidsFresh in
+// resolveRunID, just without touching the card.
+func (c *Dispatcher) reparkClaimedIfLastRunWaiting(iss tracker.Issue) bool {
+	runID := c.lastRunID(iss.ID)
+	if runID == "" {
+		return false
+	}
+	rs, err := c.openRunStore()
+	if err != nil {
+		c.logger.Debug("dispatcher: open store for re-park check: %v", err)
+		return false
+	}
+	r, err := rs.LoadRun(context.Background(), runID)
+	if err != nil {
+		c.logger.Debug("dispatcher: cannot read run %s for re-park check: %v", runID, err)
+		return false
+	}
+	if !isDispatcherPausedRun(r) {
+		return false
+	}
+	if !c.reparkToAwaitingInput(iss, runID) {
+		// No awaiting-input column: the retained claim keeps the paused card
+		// safe, while the skip explains why it is held in its current lane.
+		c.recordDispatchSkip(iss, "last run "+runID+" is still paused — held in place because the awaiting-input move failed")
+	}
+	c.fireSnapshot()
+	return true
+}
+
+// reconcileStrandedPaused re-parks eligible cards whose last_run is
+// still paused for a human or the operator. The usual case is a
+// studio reboot: SweepStaleClaims dropped the park-claim, in_progress
+// is eligible, and without this sweep the next dispatch would mint a
+// sibling from entry. Also catches an out-of-band `iterion resume`
+// that re-paused on a later human node — the dispatcher worker had
+// already returned, so finishRun never moved the card.
+//
+// Only dispatcher-owned runs are re-parked (see isDispatcherPausedRun):
+// a pipelines-launched run belongs to the admission sweep's state
+// machine, which only reconciles in_progress tickets — exiling its
+// card to awaiting_input would strand it there after the answer.
+//
+// Runs on every tick, including while paused: reclaim is re-park,
+// never a fresh run.
+func (c *Dispatcher) reconcileStrandedPaused(ctx context.Context) {
+	lister, ok := c.tracker.(interface {
+		ListForRepark(marker string) ([]tracker.Issue, error)
+	})
+	if !ok {
+		return
+	}
+	cards, err := lister.ListForRepark(c.hostMarker)
+	if err != nil {
+		c.logger.Warn("dispatcher: stranded-pause sweep list: %v", err)
+		return
+	}
+	if len(cards) == 0 {
+		return
+	}
+	rs, err := c.openRunStore()
+	if err != nil {
+		c.logger.Debug("dispatcher: open store for stranded-pause sweep: %v", err)
+		return
+	}
+	moved := false
+	for _, iss := range cards {
+		if _, running := c.state.running[iss.ID]; running {
+			continue
+		}
+		runID := c.lastRunID(iss.ID)
+		if runID == "" {
+			continue
+		}
+		r, err := rs.LoadRun(ctx, runID)
+		if err != nil || !isDispatcherPausedRun(r) {
+			continue
+		}
+		// Claim before the column move so a concurrent tick cannot
+		// dispatch if awaiting_input is missing on a custom board.
+		c.claims.Record(claimEntry{
+			IssueID: iss.ID, Identifier: iss.Identifier,
+			Marker: c.hostMarker, ClaimedAt: time.Now().UTC(),
+		})
+		if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+			c.claims.Remove(iss.ID)
+			if !errors.Is(err, tracker.ErrClaimConflict) {
+				c.logger.Warn("dispatcher: stranded-pause claim %s: %v", iss.Identifier, err)
+			}
+			continue
+		}
+		if c.reparkToAwaitingInput(iss, runID) {
+			moved = true
+			continue
+		}
+		// The claim is load-bearing when the board cannot represent the
+		// awaiting-input column: releasing it would make the paused card a
+		// dispatch candidate again. Keep it, but surface the in-place park
+		// in the dashboard instead of leaving an invisible claimed card.
+		c.recordDispatchSkip(iss, "last run "+runID+" is still paused — held in place because the awaiting-input move failed")
+	}
+	if moved {
+		c.fireSnapshot()
+	}
+}
+
+// isDispatcherPausedRun reports whether the run sits on a human/operator
+// pause AND belongs to the dispatcher (RunSource stamps every dispatch).
+// A run launched from the pipelines control center or the studio console
+// (Source nil or another kind) is left to its owner's state machine —
+// re-parking its card would only move the problem.
+func isDispatcherPausedRun(r *store.Run) bool {
+	if r == nil {
+		return false
+	}
+	if r.Status != store.RunStatusPausedWaitingHuman && r.Status != store.RunStatusPausedOperator {
+		return false
+	}
+	return r.Source != nil && r.Source.Kind == store.RunSourceKindDispatcher
+}
+
+// openRunStore builds the filesystem run store once for a sweep —
+// store.New does MkdirAll + gitignore housekeeping, too expensive to
+// repeat per card on the actor goroutine every tick.
+func (c *Dispatcher) openRunStore() (*store.FilesystemRunStore, error) {
+	if c.storeDir == "" {
+		return nil, errors.New("no store dir")
+	}
+	return store.New(c.storeDir, store.WithLogger(c.logger))
+}
+
+// runStatusFrom reads a run's persisted status from an already-open
+// store. Best-effort — any read error returns the empty status, which
+// the sweeps treat as "leave the card alone".
+func runStatusFrom(s *store.FilesystemRunStore, runID string) store.RunStatus {
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		return ""
+	}
+	return r.Status
+}
+
 // runStatusOnDisk reads a run's persisted status straight from the store.
-// Best-effort — any read error returns the empty status, which the parked
-// sweep treats as "leave the card alone" (mirrors resumableRunID).
+// Best-effort — any read error returns the empty status, which the guard
+// treats as "leave the card alone". One-shot callers only; sweeps open
+// the store once and use runStatusFrom.
 func (c *Dispatcher) runStatusOnDisk(runID string) store.RunStatus {
 	if runID == "" || c.storeDir == "" {
 		return ""
 	}
-	s, err := store.New(c.storeDir, store.WithLogger(c.logger))
+	s, err := c.openRunStore()
 	if err != nil {
-		c.logger.Debug("dispatcher: open store for parked sweep: %v", err)
+		c.logger.Debug("dispatcher: open store for status check: %v", err)
 		return ""
 	}
-	r, err := s.LoadRun(context.Background(), runID)
-	if err != nil {
-		c.logger.Debug("dispatcher: cannot read run %s for parked sweep: %v", runID, err)
-		return ""
-	}
-	return r.Status
+	return runStatusFrom(s, runID)
 }

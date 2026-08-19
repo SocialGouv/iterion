@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 )
 
 // seedManagerFixture writes the minimum on-disk state for NewManager to
@@ -129,6 +132,51 @@ func TestNewManager_RestoresPersistedPausedState(t *testing.T) {
 	defer m.Stop()
 	if got := m.Status().State; got != ManagerStatePaused {
 		t.Errorf("state = %q, want paused (persisted paused)", got)
+	}
+	if cur := m.Current(); cur == nil || !cur.IsPaused() {
+		t.Error("actor must be started already-paused so the first tick cannot dispatch")
+	}
+}
+
+// TestNewManager_RestoresPausedWithoutDispatching is the boot race
+// behind issue 426: Start-then-Pause let the immediate first tick
+// mint a sibling for an eligible ticket. Restoring desired=paused
+// must set the flag before that tick.
+func TestNewManager_RestoresPausedWithoutDispatching(t *testing.T) {
+	t.Setenv("ITERION_DISPATCHER_AUTOSTART", "")
+	dir := seedManagerFixture(t)
+	ns := newTestNativeStore(t, dir)
+	iss, err := ns.Create(native.Issue{Title: "do not launch", State: native.StateReady})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := saveDesiredState(runtimeStatePath(dir), DesiredPaused); err != nil {
+		t.Fatalf("seed runtime state: %v", err)
+	}
+	m, err := NewManager(ManagerOptions{
+		StoreDir:    dir,
+		NativeStore: ns,
+		Logger:      newTestLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Stop()
+	if got := m.Status().State; got != ManagerStatePaused {
+		t.Fatalf("state = %q, want paused", got)
+	}
+	// The actor's first tick is immediate and asynchronous. Give it
+	// time to run; a raced Start-then-Pause would have claimed this.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		got, gerr := ns.Get(iss.ID)
+		if gerr != nil {
+			t.Fatalf("Get: %v", gerr)
+		}
+		if got.State != native.StateReady || got.Claim != "" {
+			t.Fatalf("paused boot dispatched: state=%q claim=%q", got.State, got.Claim)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
