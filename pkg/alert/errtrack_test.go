@@ -47,16 +47,26 @@ func TestNewTrackerSinkNilWhenDisabled(t *testing.T) {
 	}
 }
 
+// errtrack.Init installs a client once per PROCESS, so the transport
+// has to outlive any one test.
+var (
+	trackerTransport   = &memTransport{}
+	trackerTransportOn sync.Once
+)
+
 func TestTrackerSinkForwardsAlerts(t *testing.T) {
-	tr := &memTransport{}
-	if !errtrack.Init(errtrack.Config{
-		DSN:       "https://publickey@localhost/1",
-		Transport: tr,
-		Logger:    iterlog.New(iterlog.LevelError, io.Discard),
-	}) {
+	tr := trackerTransport
+	trackerTransportOn.Do(func() {
+		errtrack.Init(errtrack.Config{
+			DSN:       "https://publickey@localhost/1",
+			Transport: tr,
+			Logger:    iterlog.New(iterlog.LevelError, io.Discard),
+		})
+	})
+	if !errtrack.Enabled() {
 		t.Fatal("errtrack.Init returned false with a valid DSN")
 	}
-	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+	before := len(tr.all())
 
 	sink := NewTrackerSink()
 	if sink == nil {
@@ -81,7 +91,7 @@ func TestTrackerSinkForwardsAlerts(t *testing.T) {
 	sink.Notify(context.Background(), Alert{Kind: KindStallRecovered, RunID: "run-3"})
 	errtrack.Flush()
 
-	events := tr.all()
+	events := tr.all()[before:]
 	if len(events) != 2 {
 		t.Fatalf("want 2 events (failure + budget warning), got %d", len(events))
 	}

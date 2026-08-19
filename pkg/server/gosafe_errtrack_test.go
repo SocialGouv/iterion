@@ -39,21 +39,36 @@ func (t *memTransport) all() []*sentry.Event {
 	return out
 }
 
+// trackerTransport is the single in-memory transport of this test
+// binary. errtrack.Init installs a client once per PROCESS, so the
+// transport has to outlive any one test — a per-test transport would
+// simply never be wired on a second call (or a `-count=2` re-run).
+var (
+	trackerTransport   = &memTransport{}
+	trackerTransportOn sync.Once
+)
+
+func enableTracker(t *testing.T) *memTransport {
+	t.Helper()
+	trackerTransportOn.Do(func() {
+		errtrack.Init(errtrack.Config{
+			DSN:       "https://publickey@localhost/1",
+			Transport: trackerTransport,
+			Logger:    iterlog.New(iterlog.LevelError, io.Discard),
+		})
+	})
+	if !errtrack.Enabled() {
+		t.Fatal("errtrack.Init returned false with a valid DSN")
+	}
+	return trackerTransport
+}
+
 // A panic in a fire-and-forget server goroutine is the exact incident
 // the tracker exists for — and the one case where a nil logger would
 // otherwise leave no trace at all.
 func TestGoSafeCapturesPanicToTheTracker(t *testing.T) {
-	tr := &memTransport{}
-	// errtrack.Init is once-per-process; this package's suite has no
-	// other caller, so this call owns it.
-	if !errtrack.Init(errtrack.Config{
-		DSN:       "https://publickey@localhost/1",
-		Transport: tr,
-		Logger:    iterlog.New(iterlog.LevelError, io.Discard),
-	}) {
-		t.Fatal("errtrack.Init returned false with a valid DSN")
-	}
-	t.Cleanup(func() { sentry.CurrentHub().BindClient(nil) })
+	tr := enableTracker(t)
+	before := len(tr.all())
 
 	s := &Server{} // nil logger: the tracker is the only witness
 	done := make(chan struct{})
@@ -66,13 +81,22 @@ func TestGoSafeCapturesPanicToTheTracker(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("goSafe fn never ran")
 	}
-	errtrack.Flush()
 
-	events := tr.all()
-	if len(events) != 1 {
-		t.Fatalf("want 1 captured panic, got %d", len(events))
+	// `done` closes as fn unwinds, i.e. BEFORE goSafe's own recover
+	// defer has run — so poll for the capture rather than racing it.
+	var events []*sentry.Event
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		errtrack.Flush()
+		if events = tr.all(); len(events) > before || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	ev := events[0]
+	if len(events)-before != 1 {
+		t.Fatalf("want 1 captured panic, got %d", len(events)-before)
+	}
+	ev := events[len(events)-1]
 	if !strings.Contains(ev.Message, "nil map write") &&
 		(len(ev.Exception) == 0 || !strings.Contains(ev.Exception[0].Value, "nil map write")) {
 		t.Fatalf("captured event does not name the panic: %+v", ev)
