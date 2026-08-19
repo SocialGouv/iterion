@@ -16,7 +16,6 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
-	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
@@ -36,27 +35,6 @@ func resolveRunnerSandboxDefault(configured string) string {
 		return v
 	}
 	return "auto"
-}
-
-// parseLevel resolves a string level from the loader, falling back to
-// info on parse failure. Shared by the cloud-mode subcommands
-// (runner, server, migrate) so a typo in the env var doesn't break
-// boot.
-func parseLevel(s string) iterlog.Level {
-	if l, err := iterlog.ParseLevel(s); err == nil {
-		return l
-	}
-	return iterlog.LevelInfo
-}
-
-// parseLogFormat resolves the iterlog.Format from the validated config.
-// Validation upstream guarantees only "human" and "json" reach this
-// path, so the fallback to FormatHuman is purely defensive.
-func parseLogFormat(f iterconfig.LogFormat) iterlog.Format {
-	if f == iterconfig.LogFormatJSON {
-		return iterlog.FormatJSON
-	}
-	return iterlog.FormatHuman
 }
 
 var runnerConfigPath string
@@ -91,7 +69,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: ITERION_MODE must be 'cloud' (got %q)", cfg.Mode)
 	}
 
-	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
 	logger.Info("runner: starting")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

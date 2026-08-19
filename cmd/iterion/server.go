@@ -215,7 +215,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// directly. We bypass cli.RunStudio because it auto-discovers a
 	// filesystem store, which doesn't make sense when persistence
 	// lives in Mongo.
-	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
 	logger.Info("server: starting (mode=cloud)")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

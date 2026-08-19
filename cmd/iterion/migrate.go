@@ -143,7 +143,7 @@ func runMigrateOrgs(cmd *cobra.Command, _ []string) error {
 	if cfg.Mongo.URI == "" {
 		return errors.New("migrate orgs: ITERION_MONGO_URI is required")
 	}
-	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
@@ -228,7 +228,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		return errors.New("migrate: ITERION_MONGO_URI and ITERION_S3_BUCKET are required")
 	}
 
-	logger := iterlog.NewWithFormat(parseLevel(cfg.Log.Level), cmd.ErrOrStderr(), parseLogFormat(cfg.Log.Format))
+	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
 
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
