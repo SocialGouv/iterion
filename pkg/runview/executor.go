@@ -227,7 +227,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		}
 	}
 	if spec.Logger == nil {
-		spec.Logger = iterlog.New(iterlog.LevelInfo, os.Stderr)
+		spec.Logger = iterlog.NewFromEnv(os.Stderr)
 	}
 
 	reg := model.NewRegistry()

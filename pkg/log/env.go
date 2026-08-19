@@ -33,6 +33,22 @@ func ParseFormat(s string) Format {
 // it layers YAML and the per-entry-point default (JSON for the
 // server/runner/dispatcher) on top of the same env vars.
 func NewFromEnv(w io.Writer) *Logger {
-	level, _ := ResolveLevel("", EnvLevel)
+	return NewFallback(LevelInfo, w)
+}
+
+// NewFallback is NewFromEnv for a library seam whose caller handed it
+// no logger and whose own default verbosity is not info — the native
+// board store keeps to warnings, for one.
+//
+// The format always comes from ITERION_LOG_FORMAT, so a fallback line
+// never breaks the JSON stream of the process that ended up emitting
+// it; defaultLevel only holds until ITERION_LOG_LEVEL says otherwise.
+func NewFallback(defaultLevel Level, w io.Writer) *Logger {
+	level := defaultLevel
+	if v := strings.TrimSpace(os.Getenv(EnvLevel)); v != "" {
+		if parsed, err := ParseLevel(v); err == nil {
+			level = parsed
+		}
+	}
 	return NewWithFormat(level, w, ParseFormat(os.Getenv(EnvFormat)))
 }

@@ -172,17 +172,18 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 		// `--force` overrides protections; we accept the risk because the
 		// engine owns the worktree's lifecycle. Best-effort: errors are
 		// logged but do not fail the run. When no logger is configured
-		// the failure goes to stderr so it isn't completely silent —
-		// otherwise the worktree directory leaks on disk with no trace.
+		// the failure goes through a stderr fallback so it isn't
+		// completely silent — otherwise the worktree directory leaks on
+		// disk with no trace.
 		rmCmd, rmCancel := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath)
 		out, rmErr := rmCmd.CombinedOutput()
 		rmCancel()
 		if rmErr != nil {
-			if logger != nil {
-				logger.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
-			} else {
-				fmt.Fprintf(os.Stderr, "runtime: git worktree remove %s failed: %v\noutput: %s\n", wtPath, rmErr, string(out))
+			l := logger
+			if l == nil {
+				l = iterlog.NewFallback(iterlog.LevelWarn, os.Stderr)
 			}
+			l.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
 		}
 	}
 	return worktreeContext{

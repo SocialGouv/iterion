@@ -640,7 +640,7 @@ func New(ctx context.Context, cfg Config) (*Runner, error) {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = iterlog.New(iterlog.LevelInfo, os.Stderr)
+		cfg.Logger = iterlog.NewFromEnv(os.Stderr)
 	}
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = os.TempDir()

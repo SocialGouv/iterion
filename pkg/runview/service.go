@@ -793,7 +793,7 @@ func WithoutWorkspaceTracking() ServiceOption {
 // caller wires WithStore, storeDir may be "" — the service uses the
 // injected store directly without resolving a filesystem path.
 func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
-	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
+	logger := iterlog.NewFromEnv(os.Stderr)
 
 	s := &Service{
 		storeDir:         storeDir,
