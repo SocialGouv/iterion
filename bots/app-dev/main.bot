@@ -289,11 +289,12 @@ prompt campaign_system:
      cursor files.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-slice,
      either finish it to committable or discard the in-progress edits
-     — `git restore -- <the paths you touched>`, never a blanket
-     `git clean` (the workspace may be the operator's own checkout).
-     The deterministic gate verifies the WORKING TREE, and a half-
-     done slice (an un-vendored dependency, a dangling import) reds
-     the gate as noise.
+     — `git restore --staged --worktree -- <the paths you touched>`
+     and delete any new files you created; never a blanket `git clean`
+     (the workspace may be the operator's own checkout). The
+     deterministic gate verifies the WORKING TREE, and a half-done
+     slice (an un-vendored dependency, a dangling import) reds the
+     gate as noise.
 
   4. BASELINE — don't chase failures you didn't cause. Pre-existing
      failures are in your user prompt (`baseline`) — greenfield runs
