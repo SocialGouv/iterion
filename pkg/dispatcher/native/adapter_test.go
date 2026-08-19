@@ -153,6 +153,52 @@ func TestAdapterComment(t *testing.T) {
 	}
 }
 
+func TestListForRepark(t *testing.T) {
+	a, s := newAdapter(t)
+	ready, _ := s.Create(native.Issue{Title: "ready", State: native.StateReady})
+	if err := s.SetLastRun(ready.ID, "run-ready", ""); err != nil {
+		t.Fatalf("SetLastRun ready: %v", err)
+	}
+	progress, _ := s.Create(native.Issue{Title: "wip", State: native.StateInProgress})
+	if err := s.SetLastRun(progress.ID, "run-wip", ""); err != nil {
+		t.Fatalf("SetLastRun progress: %v", err)
+	}
+	parked, _ := s.Create(native.Issue{Title: "parked", State: native.StateAwaitingInput})
+	if err := s.SetLastRun(parked.ID, "run-parked", ""); err != nil {
+		t.Fatalf("SetLastRun parked: %v", err)
+	}
+	theirs, _ := s.Create(native.Issue{Title: "theirs", State: native.StateInProgress})
+	if err := s.SetLastRun(theirs.ID, "run-theirs", ""); err != nil {
+		t.Fatalf("SetLastRun theirs: %v", err)
+	}
+	if err := s.Claim(theirs.ID, "other-host"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	fresh, _ := s.Create(native.Issue{Title: "fresh", State: native.StateReady})
+	_, _ = s.Create(native.Issue{Title: "inbox", State: native.StateInbox})
+
+	got, err := a.ListForRepark("me")
+	if err != nil {
+		t.Fatalf("ListForRepark: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, iss := range got {
+		ids[iss.ID] = true
+	}
+	if !ids[ready.ID] || !ids[progress.ID] {
+		t.Fatalf("want ready + in_progress with last_run, got %+v", ids)
+	}
+	if ids[parked.ID] {
+		t.Error("awaiting_input belongs to ListAwaitingInput, not ListForRepark")
+	}
+	if ids[theirs.ID] {
+		t.Error("another daemon's claim must be excluded")
+	}
+	if ids[fresh.ID] {
+		t.Error("a card with no last_run cannot be re-parked")
+	}
+}
+
 func TestAdapterUpdateState(t *testing.T) {
 	a, s := newAdapter(t)
 	iss, _ := s.Create(native.Issue{Title: "x", State: "ready"})

@@ -4,7 +4,31 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+func TestLastRunForbidsFresh(t *testing.T) {
+	for _, status := range []store.RunStatus{
+		store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
+		store.RunStatusRunning,
+		store.RunStatusQueued,
+		store.RunStatusFinished,
+		store.RunStatusFailedResumable,
+		store.RunStatusCancelled,
+	} {
+		if !lastRunForbidsFresh(status) {
+			t.Errorf("lastRunForbidsFresh(%s) = false, want true", status)
+		}
+	}
+	if lastRunForbidsFresh(store.RunStatusFailed) {
+		t.Error("hard-failed last_run may start fresh when the ticket is explicitly eligible")
+	}
+	if lastRunForbidsFresh("") {
+		t.Error("unknown/unreadable status must not block a fresh run")
+	}
+}
 
 func TestIsResumeSourceChanged(t *testing.T) {
 	cases := []struct {

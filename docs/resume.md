@@ -424,6 +424,27 @@ re-invoked after the answer:
 This keeps multi-turn interaction attached to the same node rather than
 mistaking the pause for a completed human node.
 
+## Dispatcher and last_run
+
+A run is durable across a studio or dispatcher restart. If the board card
+still points at that run (`issue.last_run`) and the status is live or
+waiting, the dispatcher **does not mint a new run id**.
+
+| `last_run` | Dispatcher action |
+|---|---|
+| `paused_waiting_human` / `paused_operator` | Re-park the card in `awaiting_input`. No auto-resume (no answers). |
+| `running` / `queued` | Hold. Never start a sibling from the workflow entry. |
+| `failed_resumable` / `cancelled` | `Engine.Resume` on the **same** id. |
+| `finished` | Do not relaunch; file the ticket. |
+| none, or hard `failed` + ticket explicitly back in `ready` | Fresh run. |
+
+`iterion resume --force` (or the studio force-resume) continues **this**
+run after a bot edit. If that resume parks again on a later human node,
+the next dispatcher tick re-parks the same card — it does not start the
+workflow over. To throw the work away, cancel or finish the old run first.
+
+See [dispatcher](dispatcher.md#paused-runs--the-awaiting_input-column--parked-sweep).
+
 ## Failure behavior
 
 Most runtime errors use the checkpoint-aware failure path: LLM/delegate errors,

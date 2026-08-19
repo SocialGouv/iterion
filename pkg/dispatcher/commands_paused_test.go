@@ -139,3 +139,66 @@ func TestFinishRun_PausedForInputIsParkedNotRetried(t *testing.T) {
 		})
 	}
 }
+
+// TestFinishRun_SourceChangedParksNoSibling: a doomed resume (bot
+// source changed) must not mint a sibling from entry. The ticket stays
+// claimed on the same last_run so the operator can resume --force.
+func TestFinishRun_SourceChangedParksNoSibling(t *testing.T) {
+	const issueID = "fake:source-changed-1"
+	ft := newFakeTracker()
+	ft.add(tracker.Issue{
+		ID: issueID, Identifier: "fake#src",
+		Title: "bot edited", WorkflowState: "in_progress",
+	})
+	if err := ft.Claim(context.Background(), issueID, "test"); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	dir := t.TempDir()
+	wsDir := filepath.Join(dir, "ws")
+	cfg := &Config{
+		Name:     "test",
+		Workflow: filepath.Join(t.TempDir(), "fake.bot"),
+		Tracker:  TrackerConfig{Kind: "fake"},
+		Polling:  PollingConfig{IntervalMS: 50},
+		Agent: AgentConfig{
+			MaxConcurrent: 4, MaxRetryBackoffMS: 1000,
+			RunningState: "in_progress", FailedState: "blocked",
+		},
+		Workspace: WorkspaceConfig{Root: wsDir},
+	}
+	cfg.applyDefaults()
+	ws, err := NewWorkspaces(wsDir)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	c, err := New(Options{
+		Config: cfg, Tracker: ft, Runner: &StubRunner{},
+		Workspaces: ws, Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{}),
+		HostMarker: "test",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.state.running[issueID] = &runningEntry{
+		IssueID: issueID, Identifier: "fake#src", RunID: "run-src-1",
+		WorkflowState: "in_progress", WorkspacePath: filepath.Join(wsDir, "x"),
+		StartedAt: time.Now(), Attempt: 0, TransitionedFromState: "ready",
+	}
+	c.state.slotsByState["in_progress"] = 1
+
+	c.finishRun(context.Background(), issueID, runtime.ErrWorkflowSourceChanged)
+
+	ft.mu.Lock()
+	_, claimed := ft.claims[issueID]
+	ft.mu.Unlock()
+	if !claimed {
+		t.Error("claim was released — a source-changed ticket would be re-dispatched")
+	}
+	if _, queued := c.state.retries[issueID]; queued {
+		t.Error("a retry was scheduled — next attempt would mint a sibling")
+	}
+	if _, stillRunning := c.state.running[issueID]; stillRunning {
+		t.Error("issue still tracked as running")
+	}
+}

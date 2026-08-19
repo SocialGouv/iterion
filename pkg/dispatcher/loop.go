@@ -22,7 +22,8 @@ import (
 //
 // When the dispatcher is paused, the dispatch step is skipped — runs
 // already in flight continue, stall detection still fires, retries
-// still queue. Paused means "no new work", not "stop everything".
+// still queue, and stranded paused last_runs are re-parked. Paused
+// means "no new work", not "stop everything".
 func (c *Dispatcher) tick(ctx context.Context) {
 	cfg := c.cfg.Load()
 	c.state.lastTickAt = time.Now().UTC()
@@ -30,6 +31,9 @@ func (c *Dispatcher) tick(ctx context.Context) {
 	c.reconcileStalled(ctx, cfg)
 	c.refreshRunningStates(ctx)
 	c.reconcileParked(ctx)
+	// Reclaim paused last_runs even while dispatch is suspended: a
+	// reboot with desired=paused must re-park, never mint a sibling.
+	c.reconcileStrandedPaused(ctx)
 
 	if c.paused.Load() {
 		c.fireSnapshot()
@@ -382,6 +386,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 		return
 	}
 
+	// A studio restart drops the claim that parked a human/operator
+	// pause. in_progress stays eligible, and paused_waiting_human is
+	// not resumable — without this guard we minted a NEW run from
+	// entry and rewrote the planner. Re-park; do not start fresh.
+	if c.reparkClaimedIfLastRunWaiting(iss) {
+		return
+	}
+
 	runID, resumeFromRunID, attempt, ok := c.resolveRunID(ctx, iss)
 	if !ok {
 		return
@@ -662,18 +674,42 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 			// Pre-v2 paths were derived through a many-to-one sanitizer, so
 			// ownership cannot be proven from the directory name. Never run
 			// hooks in a new v2 workspace while Engine.Resume silently restores
-			// a different legacy/missing WorkDir; restart safely instead and
-			// leave the old directory untouched for operator recovery.
-			c.logger.Warn(
-				"dispatcher: %s run %s has no managed v2 workspace ownership — starting fresh; legacy/unowned workspace left untouched",
-				iss.Identifier,
-				resumeFromRunID,
-			)
-			resumeFromRunID = ""
+			// a different legacy/missing WorkDir — and never mint a sibling
+			// from entry either: a live last_run is durable. Defer; leave
+			// the old directory untouched for operator recovery.
+			reason := fmt.Sprintf("run %s has no managed v2 workspace ownership — refusing a fresh sibling", resumeFromRunID)
+			c.logger.Warn("dispatcher: %s: %s; legacy/unowned workspace left untouched", iss.Identifier, reason)
+			c.recordDispatchSkip(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
 		}
 	}
 	if resumeFromRunID != "" {
 		return resumeFromRunID, resumeFromRunID, attempt, true
+	}
+	// About to mint. A live / waiting / still-resumable last_run must
+	// never become a sibling planner from entry — not on reboot, not
+	// because a retry entry dropped PrevRunID, not because the
+	// workspace probe failed open.
+	if prev := c.lastRunID(iss.ID); prev != "" {
+		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
+			reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
+			if _, already := c.state.dispatchSkips[iss.ID]; !already {
+				c.logger.Warn("dispatcher: %s: %s", iss.Identifier, reason)
+			}
+			c.recordDispatchSkip(iss, reason)
+			if status == store.RunStatusFinished {
+				if target := c.cfg.Load().Agent.CompletedState; target != "" && target != iss.WorkflowState {
+					if err := c.tracker.UpdateState(ctx, iss.ID, target); err != nil {
+						c.logger.Warn("dispatcher: %s last run finished, move to %q: %v", iss.Identifier, target, err)
+					} else {
+						c.logger.Info("dispatcher: %s last run %s already finished — filed as %q, refusing a fresh sibling", iss.Identifier, prev, target)
+					}
+				}
+			}
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
+		}
 	}
 	freshID, err := store.GenerateRunID()
 	if err != nil {
