@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -100,7 +101,7 @@ func (d *boardDispatcher) tick(ctx context.Context) int {
 		}
 		claimed++
 		d.wg.Add(1)
-		go d.processCard(ctx, c)
+		errtrack.Go("server.boardDispatch.processCard", func() { d.processCard(ctx, c) })
 	}
 	return claimed
 }

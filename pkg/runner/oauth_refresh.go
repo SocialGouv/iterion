@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -39,7 +40,7 @@ func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files 
 		if secrets.OAuthKind(kind) != secrets.OAuthKindClaudeCode {
 			continue
 		}
-		goTracked("runner.refreshAnthropicOAuth", func() { r.refreshAnthropicLoop(stop, hc, runID, path) })
+		errtrack.Go("runner.refreshAnthropicOAuth", func() { r.refreshAnthropicLoop(stop, hc, runID, path) })
 	}
 }
 

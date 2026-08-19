@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 )
 
@@ -42,7 +43,7 @@ func (c *runConn) handleSubscribeLogs(env runWSEnvelope) {
 	c.mu.Unlock()
 
 	c.sendAck(env.AckID)
-	go c.pumpLogs(sub)
+	errtrack.Go("server.runWS.pumpLogs", func() { c.pumpLogs(sub) })
 }
 
 // pumpLogs forwards log chunks to the WS as log_chunk envelopes. The

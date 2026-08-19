@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -247,8 +248,8 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
-	go c.writePump()
-	go c.readPump()
+	errtrack.Go("server.hub.writePump", c.writePump)
+	errtrack.Go("server.hub.readPump", c.readPump)
 }
 
 // readPump reads and discards incoming messages, detecting disconnection.

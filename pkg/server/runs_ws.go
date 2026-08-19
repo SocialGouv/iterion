@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -228,7 +229,7 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	if id, ok := auth.FromContext(r.Context()); ok {
 		rc.identity = id
 	}
-	go rc.run()
+	errtrack.Go("server.runWS", rc.run)
 }
 
 // runConn owns one WS subscription. The read pump parses inbound
@@ -301,7 +302,7 @@ func newRunConn(s *Server, conn *websocket.Conn, runID string) *runConn {
 
 func (c *runConn) run() {
 	defer c.close()
-	go c.writePump()
+	errtrack.Go("server.runWS.writePump", c.writePump)
 	c.readPump()
 }
 
@@ -442,7 +443,7 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	c.mu.Lock()
 	c.eventSub = sub
 	c.mu.Unlock()
-	go c.pumpEvents(sub)
+	errtrack.Go("server.runWS.pumpEvents", func() { c.pumpEvents(sub) })
 }
 
 // snapshot builds the subscribe-time snapshot from whichever store this

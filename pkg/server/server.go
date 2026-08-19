@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -482,7 +483,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 	}
 	s.hub = NewHub(logger)
-	go s.hub.Run()
+	errtrack.Go("server.hub", s.hub.Run)
 	// File watcher is only meaningful in local mode where the studio
 	// SPA is editing files on disk that the server should hot-reload.
 	// In cloud mode the server pod has no local source tree (workflows
@@ -494,7 +495,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if err != nil {
 			logger.Warn("file watcher disabled: %v", err)
 		} else {
-			go s.watcher.Start()
+			errtrack.Go("server.fileWatcher", s.watcher.Start)
 		}
 	}
 	// Wire the run console service. A failure here is non-fatal: we log a

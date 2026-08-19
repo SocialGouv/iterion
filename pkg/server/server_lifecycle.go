@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -50,13 +51,13 @@ func (s *Server) ListenAndServe() error {
 	// is best-effort — it walks the staging root, deletes dirs older
 	// than uploadStagingTTL, and stops when s.shutdown closes.
 	if s.runs != nil {
-		go s.runStagedUploadReaper()
+		errtrack.Go("server.stagedUploadReaper", s.runStagedUploadReaper)
 	}
 	// Studio's built-in pipeline launcher: start ready tickets (dragged into
 	// Todo) when a concurrency slot frees. Only when no external dispatcher
 	// owns the board (which would otherwise race to claim the same tickets).
 	if s.pipelineAdmissionEnabled() {
-		go s.runPipelineAdmissionLoop()
+		errtrack.Go("server.pipelineAdmissionLoop", s.runPipelineAdmissionLoop)
 	}
 	// Teach the run service's concurrency gate about slots held open by
 	// pipelines that died and need a human. Wired regardless of the admission
@@ -115,7 +116,7 @@ func (s *Server) ListenAndServe() error {
 	// in-memory store grows unbounded under brute-force attempts
 	// or distracted users.
 	if mss, ok := s.oidcStates.(*oidc.MemoryStateStore); ok {
-		go func() {
+		errtrack.Go("server.oidcStateSweeper", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
@@ -123,7 +124,7 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			mss.StartSweeper(ctx, 0) // 0 = use store TTL as interval
-		}()
+		})
 	}
 	// Forge OAuth token refresh: keep oauth_app connection tokens (and their
 	// managed forge_token secrets) fresh so bot runs never read an expired
