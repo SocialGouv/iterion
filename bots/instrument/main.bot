@@ -228,13 +228,14 @@ prompt campaign_system:
      the common case here — actually lands) and commit before moving
      on. git IS your durable state: an interrupted run keeps every
      slice you committed, and a fresh pass just reads `git log` and
-     continues where you left off. END EVERY PASS ON A CLEAN TREE: if
-     you must stop mid-slice, either finish it to committable or
-     discard the in-progress edits — `git restore -- <the paths you
-     touched>`, never a blanket `git clean` (the workspace may be the
-     operator's own checkout). The deterministic gate
-     verifies the WORKING TREE, and a half-slice (an un-vendored
-     `go get`, a dangling import) reds the gate as noise.
+     continues where you left off.
+     END EVERY PASS ON A CLEAN TREE: if you must stop mid-slice, either
+     finish it to committable or discard the in-progress edits — `git
+     restore --staged --worktree -- <the paths you touched>` and delete
+     any new files you created; never a blanket `git clean` (the
+     workspace may be the operator's own checkout). The deterministic
+     gate verifies the WORKING TREE, and a half-done slice (an
+     un-vendored dependency, a dangling import) reds the gate as noise.
 
   4. BASELINE — don't chase failures you didn't cause. Pre-existing test
      failures / known-flaky tests are in your user prompt (`baseline`).

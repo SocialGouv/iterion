@@ -48,8 +48,11 @@ var numberedBullet = regexp.MustCompile(`^\d+\. `)
 
 // cleanTreeClause returns the clause, lower-cased, stripped of backticks and
 // whitespace-collapsed, so an assertion matches regardless of where the
-// prompt's line wrapping falls. Truncating early can only make an assertion
-// FAIL, never silently pass — every one below asserts presence.
+// prompt's line wrapping falls. The scan runs to the contract's next
+// numbered rule (or the prompt block's own end, at column 0) and THROUGH
+// blank lines: the `git clean` check below asserts ABSENCE, so an early
+// stop would let an offending mention hide in text the assertion never
+// inspected — under-capture is only safe for the presence assertions.
 func cleanTreeClause(t *testing.T, botPath string) string {
 	t.Helper()
 	src, err := os.ReadFile(botPath)
@@ -64,9 +67,15 @@ func cleanTreeClause(t *testing.T, botPath string) string {
 	}
 	body := []string{strings.TrimSpace(strings.Split(after, "\n")[0])}
 	for _, line := range strings.Split(after, "\n")[1:] {
+		if line != "" && !strings.HasPrefix(line, " ") {
+			break // column 0: the prompt block itself ended
+		}
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || numberedBullet.MatchString(trimmed) {
+		if numberedBullet.MatchString(trimmed) {
 			break
+		}
+		if trimmed == "" {
+			continue
 		}
 		body = append(body, trimmed)
 	}
@@ -80,13 +89,19 @@ func TestCleanTreeClauseNamesASafeDiscardVerb(t *testing.T) {
 		t.Run(bot, func(t *testing.T) {
 			clause := cleanTreeClause(t, bot)
 
-			// A named verb. Without one the agent picks its own, and the
-			// obvious pick writes to a ref shared with the operator's repo.
-			if !strings.Contains(clause, "git restore") {
-				t.Errorf("clean-tree clause names no restore command.\n"+
+			// A named verb, in its FULL form. Without one the agent picks its
+			// own, and the obvious pick writes to a ref shared with the
+			// operator's repo. The bare `git restore -- <paths>` is not
+			// enough either: it restores the worktree FROM the index, which
+			// the contract's own pre-commit `git add -A` habit turns into a
+			// no-op, and it never removes newly created files.
+			if !strings.Contains(clause, "git restore --staged --worktree") {
+				t.Errorf("clean-tree clause does not name the full restore form "+
+					"(git restore --staged --worktree).\n"+
 					"  Why it is there: an unnamed \"discard\" leaves `git stash` "+
-					"as a reasonable reading, and a run worktree shares refs/stash "+
-					"with the operator's repo.\n  Clause as parsed: %q", clause)
+					"as a reasonable reading (a run worktree shares refs/stash "+
+					"with the operator's repo), and a bare `git restore` no-ops "+
+					"on staged edits.\n  Clause as parsed: %q", clause)
 			}
 
 			// A blanket clean, un-negated, is worse than the stash it replaced:

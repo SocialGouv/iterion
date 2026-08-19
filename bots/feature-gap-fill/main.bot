@@ -181,10 +181,11 @@ prompt campaign_system:
      NOT keep a separate worklist / cursor file — the todo list lives in
      your working memory, the commits are the record.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-item, either
-     finish it to committable or discard the in-progress edits —
-     `git restore -- <the paths you touched>`, never a blanket
-     `git clean` (the workspace may be the operator's own checkout).
-     The deterministic gate verifies the WORKING TREE, and a half-done
+     finish it to committable or discard the in-progress edits — `git
+     restore --staged --worktree -- <the paths you touched>` and
+     delete any new files you created; never a blanket `git clean`
+     (the workspace may be the operator's own checkout). The
+     deterministic gate verifies the WORKING TREE, and a half-done
      item (an un-vendored dependency, a dangling import) reds the gate
      as noise.
 
