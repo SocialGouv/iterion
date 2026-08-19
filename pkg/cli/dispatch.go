@@ -15,6 +15,7 @@ import (
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -55,6 +56,12 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 		return err
 	}
 	logger := logCfg.NewLogger(os.Stderr)
+	// Couple the daemon's logger to the error tracker (no-op unless
+	// SENTRY_DSN is set): error lines become events, warn lines
+	// breadcrumbs. Init already ran at the CLI root.
+	errtrack.Init(errtrack.Config{Logger: logger, ServerName: "iterion-dispatch"})
+	errtrack.AttachLogHook(logger)
+	defer errtrack.Flush()
 
 	cwd, err := os.Getwd()
 	if err != nil {

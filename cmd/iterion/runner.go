@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -70,6 +71,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}
 
 	logger := cfg.Log.NewLogger(cmd.ErrOrStderr())
+	errtrack.Init(errtrack.Config{Logger: logger, ServerName: "iterion-runner"})
+	errtrack.AttachLogHook(logger)
+	defer errtrack.Flush()
 	logger.Info("runner: starting")
 
 	rootCtx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)

@@ -18,6 +18,8 @@ import (
 	_ "time/tzdata"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/spf13/cobra"
 )
 
@@ -45,6 +47,21 @@ func main() {
 	// vars take precedence; .env only fills in missing keys.
 	loadDotEnvFromCwd()
 
+	// Error tracking is opt-in: with SENTRY_DSN unset this is a no-op
+	// and iterion behaves exactly as it did. Init sits after the .env
+	// load so a project can carry its DSN there, and before anything
+	// else runs so the very first panic is already covered.
+	errtrack.Init(errtrack.Config{Logger: bootLogger(), ServerName: invokedCommand()})
+	defer errtrack.Flush()
+	defer func() {
+		if r := recover(); r != nil {
+			errtrack.CapturePanic(r)
+			// Re-panic: the tracker observes the crash, it does not
+			// change how the process dies.
+			panic(r)
+		}
+	}()
+
 	rejectUnknownSubcommands(rootCmd)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -59,10 +76,42 @@ func main() {
 		// Exit 2 for user-input errors (bad flag, missing file, …) so
 		// shell scripts can branch on the distinction; 1 otherwise.
 		if errors.Is(err, cli.ErrUserInput) {
+			// A typo is not an incident: user-input errors are never
+			// reported to the tracker.
+			errtrack.Flush()
 			os.Exit(2)
 		}
+		// os.Exit skips the deferred flush, so the fatal error is
+		// captured AND flushed here or it never leaves the process.
+		errtrack.CaptureError(err, map[string]any{"command": invokedCommand()})
+		errtrack.Flush()
 		os.Exit(1)
 	}
+}
+
+// bootLogger is the minimal stderr logger the root command uses before
+// a subcommand builds its own — currently only to report a failed
+// errtrack init. It honours ITERION_LOG_FORMAT so the line does not
+// break the JSON stream of a server/runner/dispatch process.
+func bootLogger() *iterlog.Logger {
+	format := iterlog.FormatHuman
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ITERION_LOG_FORMAT")), "json") {
+		format = iterlog.FormatJSON
+	}
+	level, _ := iterlog.ResolveLevel("", "ITERION_LOG_LEVEL")
+	return iterlog.NewWithFormat(level, os.Stderr, format)
+}
+
+// invokedCommand returns the full command path being run
+// ("iterion runner", "iterion remote runs launch"), used to tag tracker
+// events with the surface they came from. Flags and their values are
+// deliberately dropped — they carry operator data.
+func invokedCommand() string {
+	cmd, _, err := rootCmd.Find(os.Args[1:])
+	if err != nil || cmd == nil {
+		return rootCmd.Name()
+	}
+	return cmd.CommandPath()
 }
 
 // rejectUnknownSubcommands makes every GROUP command — one that only

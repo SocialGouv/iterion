@@ -197,11 +197,18 @@ func CaptureMessage(level sentry.Level, msg string, fields map[string]any) {
 //
 // Use it INSIDE an existing recover() block; it never recovers on its
 // own, so a caller's panic semantics are unchanged.
-func CapturePanic(r any) {
+func CapturePanic(r any) { CapturePanicFields(r, nil) }
+
+// CapturePanicFields is CapturePanic with structured context — the
+// label of the goroutine that died, the run it belonged to.
+func CapturePanicFields(r any, fields map[string]any) {
 	if !enabled.Load() || r == nil {
 		return
 	}
-	sentry.CurrentHub().Recover(r)
+	sentry.WithScope(func(scope *sentry.Scope) {
+		applyFields(scope, fields)
+		sentry.CurrentHub().Recover(r)
+	})
 	sentry.Flush(flushTimeout)
 }
 
