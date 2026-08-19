@@ -108,3 +108,58 @@ func TestMongoApiKey_GetOwnedRefusesWhatIsNotYours(t *testing.T) {
 		})
 	}
 }
+
+// The store stamps tenant_id from the CONTEXT and filters reads by it, so a
+// key created under one tenant's context but scoped to another team is
+// unreachable by the team it was meant to fund — a run there resolves nothing
+// and falls back to the platform credential, silently. This pins the contract
+// the api-keys HTTP layer must honour: create under the context of the team
+// the key is FOR.
+func TestMongoApiKey_ScopeWithoutMatchingTenantIsUnreachable(t *testing.T) {
+	s, ctx := mongoKeyStore(t)
+
+	// The defect shape: written under team-a's context, scoped to team-b.
+	if err := s.Create(store.WithTenant(ctx, "team-a"), ApiKey{
+		ID: "mis-stamped", ScopeTeamID: "team-b",
+		Provider: ProviderAnthropic, Name: "meant for team-b", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.ListByTeam(store.WithTenant(ctx, "team-b"), "team-b", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a key stamped with another tenant must NOT be reachable as team-b's, got %d", len(got))
+	}
+
+	// The correct shape: written under the context of the team it is for.
+	if err := s.Create(store.WithTenant(ctx, "team-b"), ApiKey{
+		ID: "well-stamped", ScopeTeamID: "team-b",
+		Provider: ProviderAnthropic, Name: "for team-b", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("create scoped: %v", err)
+	}
+	got, err = s.ListByTeam(store.WithTenant(ctx, "team-b"), "team-b", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "well-stamped" {
+		t.Fatalf("team-b must see exactly its own key, got %+v", got)
+	}
+	// From team-a's context the WELL-stamped key is out of reach — while the
+	// mis-stamped one still answers, which is the whole asymmetry: the row is
+	// visible to whoever created it and not to whoever it belongs to.
+	other, err := s.ListByTeam(store.WithTenant(ctx, "team-a"), "team-b", "")
+	if err != nil {
+		t.Fatalf("list from team-a: %v", err)
+	}
+	for _, k := range other {
+		if k.ID == "well-stamped" {
+			t.Fatalf("team-b's key must not be reachable from team-a's context")
+		}
+	}
+	if len(other) != 1 || other[0].ID != "mis-stamped" {
+		t.Fatalf("the mis-stamped row is the one that answers here, got %+v", other)
+	}
+}
