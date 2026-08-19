@@ -481,6 +481,15 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 	status := r.Status
 	if status == store.RunStatusRunning || status == store.RunStatusQueued {
 		status = c.promoteIfOrphaned(context.Background(), rs, r)
+		if status != r.Status {
+			// promoteIfOrphaned re-reads under the run lock. Keep the record
+			// aligned with the returned status so ownership checks below do
+			// not judge a newly-paused dispatcher run from the stale
+			// running/queued snapshot loaded above.
+			if cur, loadErr := rs.LoadRun(context.Background(), prev); loadErr == nil {
+				r = cur
+			}
+		}
 	}
 	switch status {
 	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
@@ -775,6 +784,18 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// operator's re-queue gesture (see lastRunForbidsFresh).
 	if prev := c.lastRunID(iss.ID); prev != "" && !missingResumeWorkspace {
 		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
+			// An empty retry target was authoritative when the retry was
+			// scheduled, but the durable run can become resumable later (for
+			// example after orphan promotion). Adopt that now-current target
+			// so the next tick resumes with the same attempt count instead of
+			// repeating Claim -> Release forever.
+			if hadRetryEntry && (status == store.RunStatusFailedResumable ||
+				status == store.RunStatusCancelled ||
+				status == store.RunStatusPausedOperator) {
+				if retry := c.state.retries[iss.ID]; retry != nil && retry.PrevRunID == "" {
+					retry.PrevRunID = prev
+				}
+			}
 			reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
 			c.recordLastRunHold(iss, reason)
 			c.releaseClaim(ctx, iss.ID, iss.Identifier)

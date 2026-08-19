@@ -333,6 +333,44 @@ func TestReconcileStrandedPaused_ReparksInProgressEvenWhenPaused(t *testing.T) {
 	}
 }
 
+type rejectAwaitingInputTracker struct {
+	*native.Adapter
+}
+
+func (t *rejectAwaitingInputTracker) UpdateState(ctx context.Context, id, state string) error {
+	if state == native.StateAwaitingInput {
+		return tracker.ErrTransitionRejected
+	}
+	return t.Adapter.UpdateState(ctx, id, state)
+}
+
+func TestReconcileStrandedPaused_FailedMoveStaysClaimedAndVisible(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusPausedWaitingHuman, native.StateInProgress)
+	fx.disp.tracker = &rejectAwaitingInputTracker{Adapter: native.NewAdapter(fx.board)}
+
+	fx.disp.reconcileStrandedPaused(context.Background())
+
+	got, err := fx.board.Get(fx.issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateInProgress {
+		t.Errorf("card state = %q, want unchanged %q", got.State, native.StateInProgress)
+	}
+	if got.Claim == "" {
+		t.Error("failed awaiting-input move must retain the protective claim")
+	}
+	if !got.AwaitingInput {
+		t.Error("failed column move must still retain the awaiting-input badge")
+	}
+	if !fx.disp.claims.Contains(fx.issue.ID) {
+		t.Error("failed column move must retain its claim journal entry")
+	}
+	if _, visible := fx.disp.state.dispatchSkips[fx.issue.ID]; !visible {
+		t.Error("failed column move must surface an operator-visible dispatch skip")
+	}
+}
+
 func TestDispatch_RefusesFreshRunWhenLastRunIsStillLive(t *testing.T) {
 	for _, status := range []store.RunStatus{
 		store.RunStatusRunning,
@@ -548,6 +586,54 @@ func TestDispatch_ResumesFailedResumableSameID(t *testing.T) {
 	fx.disp.workersWG.Wait()
 	if fx.launched != 1 {
 		t.Fatalf("resumable last_run launched %d time(s), want 1 resume", fx.launched)
+	}
+	if fx.lastSpec.RunID != fx.runID || fx.lastSpec.ResumeFromRunID != fx.runID {
+		t.Errorf("spec run=%q resumeFrom=%q, want both %q", fx.lastSpec.RunID, fx.lastSpec.ResumeFromRunID, fx.runID)
+	}
+}
+
+func TestDispatch_EmptyRetryAdoptsNewlyResumableLastRun(t *testing.T) {
+	fx := newLastRunFixture(t, store.RunStatusFailedResumable, native.StateInProgress)
+	if _, _, err := fx.disp.workspaces.CreateForRun(fx.issue.ID, fx.runID); err != nil {
+		t.Fatalf("CreateForRun: %v", err)
+	}
+	fx.disp.state.retries[fx.issue.ID] = &retryEntry{
+		IssueID: fx.issue.ID, Identifier: fx.issue.ID,
+		Attempt: 2, Fired: true, PrevRunID: "",
+	}
+	issue := tracker.Issue{
+		ID: fx.issue.ID, Identifier: fx.issue.ID, Title: fx.issue.Title,
+		WorkflowState: native.StateInProgress,
+	}
+
+	// The first pass discovers that the formerly-fresh retry target is now
+	// resumable. It releases the claim after rewriting the in-memory retry
+	// target, rather than churning forever with an authoritative empty id.
+	fx.disp.dispatch(context.Background(), issue)
+	retry := fx.disp.state.retries[fx.issue.ID]
+	if retry == nil || retry.PrevRunID != fx.runID {
+		t.Fatalf("retry target = %+v, want PrevRunID %q", retry, fx.runID)
+	}
+	if fx.launched != 0 {
+		t.Fatalf("first reconciliation pass launched %d run(s), want 0", fx.launched)
+	}
+	got, err := fx.board.Get(fx.issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Claim != "" {
+		t.Errorf("reconciliation pass retained claim %q", got.Claim)
+	}
+
+	// The next poll resumes the same run and preserves the retry attempt.
+	fx.disp.dispatch(context.Background(), issue)
+	running := fx.disp.state.running[fx.issue.ID]
+	if running == nil || running.Attempt != 2 {
+		t.Fatalf("running entry = %+v, want preserved retry attempt 2", running)
+	}
+	fx.disp.workersWG.Wait()
+	if fx.launched != 1 {
+		t.Fatalf("second pass launched %d run(s), want 1 resume", fx.launched)
 	}
 	if fx.lastSpec.RunID != fx.runID || fx.lastSpec.ResumeFromRunID != fx.runID {
 		t.Errorf("spec run=%q resumeFrom=%q, want both %q", fx.lastSpec.RunID, fx.lastSpec.ResumeFromRunID, fx.runID)

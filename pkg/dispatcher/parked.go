@@ -226,7 +226,15 @@ func (c *Dispatcher) reconcileStrandedPaused(ctx context.Context) {
 			}
 			continue
 		}
-		moved = c.reparkToAwaitingInput(iss, runID) || moved
+		if c.reparkToAwaitingInput(iss, runID) {
+			moved = true
+			continue
+		}
+		// The claim is load-bearing when the board cannot represent the
+		// awaiting-input column: releasing it would make the paused card a
+		// dispatch candidate again. Keep it, but surface the in-place park
+		// in the dashboard instead of leaving an invisible claimed card.
+		c.recordDispatchSkip(iss, "last run "+runID+" is still paused — held in place because the awaiting-input move failed")
 	}
 	if moved {
 		c.fireSnapshot()
