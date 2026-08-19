@@ -3,14 +3,13 @@ name: forge-mr-create
 description: How to push the current run's branch and open ONE pull request (merge request on GitLab) on GitHub (gh), GitLab (glab) or Forgejo/Gitea (REST), authenticating from the mounted forge_token, then post the PR URL back to the source issue. Read this before the finalize_mr node pushes or opens anything.
 ---
 
-<!-- DUPLICATE — one of five byte-identical copies (iterion has no
-     skill-sharing primitive; see CLAUDE.md "If a skill ends up duplicated
-     across multiple bundles"). Edit one, edit all five:
-       bots/app-dev/skills/forge-mr-create.md
-       bots/branch-improve-loop/skills/forge-mr-create.md
-       bots/docs-refresh/skills/forge-mr-create.md
-       bots/feature-dev/skills/forge-mr-create.md
-       bots/whole-improve-loop/skills/forge-mr-create.md -->
+<!-- DIVERGED copy — this file carries docs-refresh's own amend-mode
+     delta on top of the skill the other bundles byte-share (iterion has
+     no skill-sharing primitive; see CLAUDE.md "If a skill ends up
+     duplicated across multiple bundles"). Do NOT blind-sync it from the
+     shared copies (app-dev / branch-improve-loop / feature-dev /
+     instrument / whole-improve-loop) — port shared fixes by hand and
+     keep the delta. -->
 
 # Opening a pull request from a finished run
 

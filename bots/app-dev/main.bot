@@ -288,10 +288,10 @@ prompt campaign_system:
      and a fresh pass reads `git log` and continues. No worklist /
      cursor files.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-slice,
-     either finish it to committable or revert/stash the in-progress
-     edits — the deterministic gate verifies the WORKING TREE, and a
-     half-done slice (an un-vendored dependency, a dangling import)
-     reds the gate as noise.
+     either finish it to committable or discard the in-progress edits
+     — the deterministic gate verifies the WORKING TREE, and a half-
+     done slice (an un-vendored dependency, a dangling import) reds
+     the gate as noise.
 
   4. BASELINE — don't chase failures you didn't cause. Pre-existing
      failures are in your user prompt (`baseline`) — greenfield runs

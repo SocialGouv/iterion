@@ -146,8 +146,12 @@ e2e/.workspaces/
 
 # claude_code sub-invocations mirror skills into THEIR cwd too
 # (pkg/*/.claude/, e2e/.claude/), and a worktree finalize would
-# wip-bank that junk. .claude/ is runtime state at any depth.
+# wip-bank that junk. .claude/ is runtime state at any depth — except
+# the vendored codex fork, whose committed .claude/rules/ are its own
+# project content (re-included below; tracked files are unaffected by
+# ignore rules either way, the exception keeps future adds friction-free).
 **/.claude/
+!third_party/codex-agent-sdk-go/.claude/
 
 # docs-refresh bot cache (neutral repo-root dotfile it writes by design)
 .docs-refresh-cache.json
