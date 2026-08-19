@@ -135,9 +135,14 @@ it states its routes:
 - **`feature_probe`** — a command printing `<feature-id> <source>` per line, `#` comments
   allowed. It runs with the application UP and `GM_BASE_URL` exported, so it can walk the
   **served navigation graph** (menus, links, per persona) AND read the **tree's own
-  catalogues** (message keys, templates, job declarations). At least two independent sources
-  are required — the harness refuses a single-source inventory, because each source only shows
-  what it shows: the crawl cannot see a job, the catalogue cannot see what the server hides.
+  catalogues** (message keys, templates, job declarations). What the harness CHECKS is
+  exact and narrower than independence: at least two distinct source LABELS across the
+  inventory as a whole. A single feature witnessed by one source is legitimate — a
+  scheduled job never appears in a navigation crawl. What the check canNOT prove is that
+  the labels name genuinely independent walkers: a probe printing one walker's output
+  under two labels satisfies it. That independence is the probe author's duty, and it is
+  judged by reading the probe script — the harness only refuses the inventories that do
+  not even claim it.
 - **`feature-coverage.json`** — the committed inventory answering the probe: every feature
   mapped to the corpus entries that exercise it, or excluded WITH a written reason.
 

@@ -234,6 +234,13 @@ CONJUNCTION TERM of programme convergence. They live in
 - **A programme is converged iff every outcome is met or arbitrated.** A
   campaign whose lots are exhausted while an outcome is neither ends RED,
   naming it — the exact analogue of `pending_rebaselines` at the net level.
+- **Where the gate lives today — read this honestly.** This bot's graph does
+  NOT yet execute the conjunction: enforcement is the CAMPAIGN RUNNER's duty
+  (the loop that chains runs evaluates the outcomes after the last lot; the
+  reference implementation was falsified red-then-green before being
+  believed). A campaign driven without such a runner does not enforce
+  outcomes — declaring them still documents, but nothing refuses. A
+  graph-native gate in this bot is the roadmap, not the present.
 
 And the escalation duty that prevents the silent starvation in the first
 place: when a lot blocks and that block starves the dependency chain of any
@@ -259,4 +266,6 @@ audit pass, a sweep, a lot report):
   never the worker's call. "Faithful to baseline" alone is not a reason.
 - The defects register is a committed artefact, and "no defect unfixed and
   unarbitrated" belongs in the programme's outcomes — same conjunction, same
-  refusal to converge around a named debt.
+  refusal to converge around a named debt (and the same honesty clause as
+  above: the conjunction is executed by the campaign runner, not yet by this
+  bot's graph).

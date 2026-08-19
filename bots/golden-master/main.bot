@@ -1390,6 +1390,80 @@ tool oracle_run:
         return unmapped, stale, broken
 
 
+    def validate_feature_coverage(coverage):
+        """Shape-checks the committed inventory and returns it NORMALISED.
+
+        Every refusal is named — a malformed inventory must never surface as a
+        traceback: the report with its defaults would be lost and the cause with
+        it. Normalisation matters as much as the checks: a `features: null` that
+        merely passed validation would still crash the gap computation.
+        """
+        if not isinstance(coverage, dict):
+            raise SystemExit("feature-coverage.json must be an object, got %s"
+                             % type(coverage).__name__)
+        for key in ("features", "exclusions"):
+            block = coverage.get(key) or []
+            if not isinstance(block, list) or any(not isinstance(x, dict) for x in block):
+                raise SystemExit("feature-coverage.json `%s` must be a list of "
+                                 "objects — a malformed inventory is a named "
+                                 "refusal, never a traceback" % key)
+            coverage[key] = block
+        for m in coverage["features"]:
+            entries = m.get("entries")
+            if entries is not None and not isinstance(entries, list):
+                raise SystemExit("feature-coverage.json maps %r with `entries` that "
+                                 "is not a list (%r) — a string would be read one "
+                                 "character at a time" % (m.get("feature"), entries))
+            if not (m.get("feature") and (entries or [])):
+                raise SystemExit(
+                    "feature-coverage.json maps %r to no corpus entry. A mapping to "
+                    "nothing is an exclusion wearing a map's clothes — move it to "
+                    "`exclusions` with its reason, or point it at real entries." % (m,))
+        for x in coverage["exclusions"]:
+            if not (x.get("feature") and (x.get("reason") or "").strip()):
+                raise SystemExit(
+                    "feature-coverage.json carries an exclusion without a written "
+                    "reason (%r). An exclusion is a decision; a decision has a "
+                    "cause or it is a hole." % (x,))
+        return coverage
+
+
+    def standard_mark_verdict(gm_dir, std):
+        """(level, message) for the standard ratchet — 'bail', 'note' or 'ok'.
+
+        The mark file is the owner's committed memory of the standard reached;
+        config.json is the live declaration. Divergence in either direction is a
+        named refusal: a vanished `standard` field must not read as a legitimate
+        standard-2 net, and a raise must move both declarations in one commit.
+        """
+        mark_path = os.path.join(gm_dir, "standard-mark")
+        if os.path.isfile(mark_path):
+            try:
+                with open(mark_path, encoding="utf-8") as f:
+                    mark = int(f.read().strip())
+            except ValueError:
+                return "bail", "standard-mark is unreadable — it must hold one integer"
+            if std < mark:
+                return "bail", ("config declares standard %d but standard-mark says "
+                                "%d was reached: a standard only comes down through "
+                                "the ledger, with its cause. Restore `standard` in "
+                                "config.json, or record the downgrade as a net "
+                                "change and lower the mark in the same commit."
+                                % (std, mark))
+            if std > mark:
+                return "bail", ("config declares standard %d but standard-mark "
+                                "still says %d: raise the mark in the SAME commit "
+                                "as the config — the pair moving together is what "
+                                "makes the ratchet auditable." % (std, mark))
+            return "ok", ""
+        if std >= 3:
+            return "note", ("standard %d declared without a standard-mark file: "
+                            "commit one (a single integer) so a later silent "
+                            "downgrade cannot read as a legitimate standard-2 net."
+                            % std)
+        return "ok", ""
+
+
     def feature_coverage(gm_dir, config, corpus, ws):
         """Runs the target's `feature_probe` against the LIVE application, honours
         the committed inventory, returns (unmapped, stale, total, excluded).
@@ -1411,20 +1485,12 @@ tool oracle_run:
         coverage = {}
         cov_path = os.path.join(gm_dir, "feature-coverage.json")
         if os.path.isfile(cov_path):
-            with open(cov_path, encoding="utf-8") as f:
-                coverage = json.load(f)
-        for m in coverage.get("features", []):
-            if not (m.get("feature") and (m.get("entries") or [])):
-                raise SystemExit(
-                    "feature-coverage.json maps %r to no corpus entry. A mapping to "
-                    "nothing is an exclusion wearing a map's clothes — move it to "
-                    "`exclusions` with its reason, or point it at real entries." % (m,))
-        for x in coverage.get("exclusions", []):
-            if not (x.get("feature") and (x.get("reason") or "").strip()):
-                raise SystemExit(
-                    "feature-coverage.json carries an exclusion without a written "
-                    "reason (%r). An exclusion is a decision; a decision has a "
-                    "cause or it is a hole." % (x,))
+            try:
+                with open(cov_path, encoding="utf-8") as f:
+                    coverage = json.load(f)
+            except ValueError as e:
+                raise SystemExit("feature-coverage.json is not valid JSON: %s" % e)
+        coverage = validate_feature_coverage(coverage)
 
         unmapped, stale, broken = feature_gaps(features, coverage, corpus)
         if broken:
@@ -1475,9 +1541,14 @@ tool oracle_run:
             return True
         try:
             with open(os.path.join(gm_dir, "config.json"), encoding="utf-8") as f:
-                return json.load(f).get("seal_committed") is True
+                v = json.load(f).get("seal_committed", False)
         except (OSError, ValueError):
             return False
+        if isinstance(v, bool):
+            return v
+        raise SystemExit("config `seal_committed` must be JSON true or false, got %r "
+                         "— a mistyped opt-in silently ignored would leave the set "
+                         "unconsumed with no one told" % (v,))
 
 
     def holdout_committed_in_tree(gm_dir):
@@ -2128,7 +2199,7 @@ tool oracle_run:
                   route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
                   ["POST /list"])
 
-            # 8c. Features : l'etage au-dessus des routes — non-mappee, perimee,
+            # 8b. Features : l'etage au-dessus des routes — non-mappee, perimee,
             #     preuve inexistante, exigence de deux sources.
             fcorpus = {"entries": [{"id": "1"}, {"id": "2"}]}
             feats = {"catalog.search": ["i18n", "nav"], "catalog.export": ["nav"]}
@@ -2160,7 +2231,42 @@ tool oracle_run:
                   parse_feature_probe("a nav\n# c\na i18n\nb i18n\n"),
                   {"a": ["i18n", "nav"], "b": ["i18n"]})
 
-            # 8d. Scellement : un jeu frais se scelle ; un jeu COMMITTE attend sa
+            # 8e. Garde-fous de forme : inventaire malforme = refus nomme, jamais
+            #     une traceback ; opt-in mal type = refus nomme, jamais un silence ;
+            #     le standard est un cliquet — les deux sens de derive refusent.
+            def named_refusal(name, fn):
+                try:
+                    fn()
+                    check(name, "aucun-refus", "SystemExit")
+                except SystemExit:
+                    check(name, "SystemExit", "SystemExit")
+            named_refusal("features: liste de chaines -> refus nomme",
+                          lambda: validate_feature_coverage({"features": ["a"]}))
+            named_refusal("entries: chaine -> refus nomme",
+                          lambda: validate_feature_coverage(
+                              {"features": [{"feature": "a", "entries": "12"}]}))
+            check("inventaire null normalise en listes",
+                  validate_feature_coverage({"features": None, "exclusions": None}),
+                  {"features": [], "exclusions": []})
+            sdir2 = tempfile.mkdtemp(prefix="gm-selftest-optin-")
+            with open(os.path.join(sdir2, "config.json"), "w", encoding="utf-8") as f:
+                f.write('{"seal_committed": "true"}')
+            named_refusal("seal_committed chaine -> refus nomme, pas un silence",
+                          lambda: seal_committed_opted_in(sdir2))
+            mdir = tempfile.mkdtemp(prefix="gm-selftest-mark-")
+            with open(os.path.join(mdir, "standard-mark"), "w", encoding="utf-8") as f:
+                f.write("3\n")
+            check("standard sous la marque -> bail (retrogradation nommee)",
+                  standard_mark_verdict(mdir, 2)[0], "bail")
+            check("standard au-dessus de la marque -> bail (paire desynchronisee)",
+                  standard_mark_verdict(mdir, 4)[0], "bail")
+            check("standard egal a la marque -> ok",
+                  standard_mark_verdict(mdir, 3), ("ok", ""))
+            check("standard 3 sans marque -> note",
+                  standard_mark_verdict(tempfile.mkdtemp(prefix="gm-nm-"), 3)[0],
+                  "note")
+
+            # 8c. Scellement : un jeu frais se scelle ; un jeu COMMITTE attend sa
             #     propre porte (le sceller brulerait sa notation et laisserait des
             #     suppressions non committees) ; l'opt-in est explicite.
             sroot = tempfile.mkdtemp(prefix="gm-selftest-seal-")
@@ -2211,7 +2317,7 @@ tool oracle_run:
                    os.path.isdir(os.path.join(gmd3, "mutants", "holdout", "t01"))],
                   [True, False])
 
-            # 8b. Registre : une demande sans acte bloque ; un `replaces` acte la
+            # 8d. Registre : une demande sans acte bloque ; un `replaces` acte la
             #     chaine ; un bloc illisible escalade, ne se devine pas.
             ldir = tempfile.mkdtemp(prefix="gm-selftest-ledger-")
             lp = os.path.join(ldir, "REBASELINE.md")
@@ -2300,6 +2406,7 @@ tool oracle_run:
                   "routes_total": 0, "routes_excluded": 0,
                   "standard": 2, "unmapped_features": [], "stale_features": [],
                   "features_total": 0, "features_excluded": 0,
+                  "holdout_awaiting_gate": False,
                   "pending_rebaselines": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
                   "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
@@ -2331,6 +2438,18 @@ tool oracle_run:
         except (TypeError, ValueError):
             bail("config `standard` is not an integer: %r" % (config.get("standard"),))
         report["standard"] = std
+
+        # A raise is a one-way ratchet — see standard_mark_verdict for why both
+        # directions of config/mark drift are refusals.
+        level, msg = standard_mark_verdict(gm_dir, std)
+        if level == "bail":
+            bail(msg)
+        elif level == "note":
+            note(report, msg)
+        if std < 3 and config.get("feature_probe"):
+            note(report, "config declares a feature_probe but standard %d does not "
+                         "consume it — raise to standard 3 or remove the probe; a "
+                         "probe nobody runs reads as coverage." % std)
 
         try:
             canon = load_canon(gm_dir)
@@ -2446,11 +2565,18 @@ tool oracle_run:
             seal_holdout(gm_dir, sealed_dir)
             if holdout_committed_in_tree(gm_dir) and \
                     not seal_committed_opted_in(gm_dir):
+                # Machine-readable, not only prose: a set nobody ever consumes is
+                # a debt of the NET's owner, and a supervising process needs a
+                # field to see it — a notice string is where debts go to hide.
+                report["holdout_awaiting_gate"] = True
                 note(report, "a fresh held-out set is COMMITTED under mutants/holdout/ "
                              "and awaits its own convergence gate: this gate leaves it "
                              "in place and scores without it. `\"seal_committed\": true` "
                              "in config.json (or GM_SEAL_COMMITTED=1) is that gate's "
-                             "explicit opt-in.")
+                             "explicit opt-in — and the owner's next campaign MUST "
+                             "consume the set; a committed set with no gate on its "
+                             "horizon narrows the counter-test while reading as "
+                             "prepared.")
             held_meta = load_mutants(gm_dir, holdout=True, sealed_dir=sealed_dir)
             # The held-out set lives outside the workspace once sealed. If the
             # sealed directory moved or was wiped, it is GONE — and the archetype
