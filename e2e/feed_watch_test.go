@@ -357,7 +357,7 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &archived); err != nil {
 		t.Fatalf("digests.jsonl is not one JSON object per line: %v", err)
 	}
-	archived["ts"] = time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02T15:04:05")
+	archived["ts"] = time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02T15:04:05-07:00")
 	staleRow, _ := json.Marshal(archived)
 	if err := os.WriteFile(digestsPath, append(staleRow, '\n'), 0o600); err != nil {
 		t.Fatal(err)

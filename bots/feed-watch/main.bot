@@ -249,6 +249,11 @@ schema plan_output:
   editorial: string
   digest_title: string
   sinks: json
+  ## Optional per-category template for the silence warning. Empty falls
+  ## back to the built-in English text: this bot bakes in no language, and
+  ## the one message whose whole value is that a human reads it must not be
+  ## the exception. Placeholders: {title} {category} {days} {window}.
+  silence_message: string
 
 schema fetch_input:
   targets: json
@@ -376,6 +381,12 @@ schema silence_input:
   digest_title: string
   sinks: json
   silence_days: int
+  ## The suppression window actually enforced (silence_alert_days). The
+  ## message must state THIS, not silence_days: an alert that misreports
+  ## its own cadence spends the trust it exists to build.
+  silence_window: int
+  ## Operator-supplied message template ("" = the built-in English text).
+  silence_message: string
   dry_run: bool
   workspace: string
   state_dir: string
@@ -434,7 +445,7 @@ if not isinstance(cats, dict) or not cats:
 if category and category not in cats:
     raise SystemExit('feed-watch: unknown category ' + repr(category) + ' -- config has: ' + ', '.join(sorted(cats)))
 collect = mode == 'collect'
-targets, editorial, title, sinks = [], '', '', []
+targets, editorial, title, sinks, silence_message = [], '', '', [], ''
 if collect:
     keys = [category] if category else sorted(cats)
     targets = [{'key': k, 'feeds': (cats[k].get('feeds') or [])} for k in keys]
@@ -445,7 +456,8 @@ else:
     editorial = c.get('editorial') or ''
     title = c.get('digest_title') or category
     sinks = c.get('sinks') or []
-print(json.dumps({'collect': collect, 'digest': not collect, 'category': category, 'targets': targets, 'editorial': editorial, 'digest_title': title, 'sinks': sinks}, ensure_ascii=False))
+    silence_message = c.get('silence_message') or ''
+print(json.dumps({'collect': collect, 'digest': not collect, 'category': category, 'targets': targets, 'editorial': editorial, 'digest_title': title, 'sinks': sinks, 'silence_message': silence_message}, ensure_ascii=False))
 "`
   output: plan_output
 
@@ -1188,6 +1200,8 @@ tool notify_silence:
     digest_title = {{input.digest_title}}
     sinks = {{input.sinks}} or []
     silence_days = int({{input.silence_days}} or 0)
+    silence_window = int({{input.silence_window}} or 0)
+    silence_message = {{input.silence_message}} or ''
     dry_run = {{input.dry_run}}
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
@@ -1199,13 +1213,18 @@ tool notify_silence:
         raise SystemExit(0)
 
     title = digest_title or category
-    text = (':warning: **' + title + ' — aucune veille depuis ' + str(silence_days) +
-            ' jour(s)**' + chr(10) + chr(10) +
-            "La file de la catégorie `" + category + "` est vide : le digest s'exécute " +
-            "normalement mais n'a rien à publier. Cela signale en général une collecte " +
-            "interrompue (flux en panne, run bloqué), pas une actualité calme." + chr(10) +
-            chr(10) + "_Message automatique — il ne se répétera pas avant " +
-            str(silence_days and silence_days or 0) + " jour(s)._")
+    # English by default and overridable per category, because this bot
+    # bakes in no language (see the header) and this is the one message
+    # whose entire value is that a human reads and acts on it.
+    default_text = (':warning: **{title} — nothing to report for {days} day(s)**' + chr(10) + chr(10) +
+                    'The `{category}` queue is empty: the digest runs normally but has nothing '
+                    'to publish. That usually means collection stopped (a dead feed, a blocked '
+                    'run), not a quiet news week.' + chr(10) + chr(10) +
+                    '_Automatic message — it will not repeat for {window} day(s)._')
+    text = (silence_message or default_text)
+    for k, v in (('{title}', title), ('{category}', category),
+                 ('{days}', str(silence_days)), ('{window}', str(silence_window))):
+        text = text.replace(k, v)
     if not sinks:
         out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'targets': [],
              'summary': 'silence of ' + str(silence_days) + 'd for ' + category +
@@ -1251,17 +1270,53 @@ tool notify_silence:
                    'silence_days': silence_days,
                    'delivered': delivered}, fh, ensure_ascii=False)
     if state_commit:
+        # Same contract as commit_state's _commit_push_state, not a weaker
+        # copy of it: refuse to commit anything outside the state dir, and
+        # rebase-retry the push, because concurrent category runs share this
+        # branch. A single fire-and-forget push loses the stamp on exactly
+        # the deployment (ephemeral clones) where losing it means alerting
+        # every morning — the fatigue silence.json exists to prevent.
         try:
             subprocess.run(['git', '-C', ws, 'add', state_dir], check=True)
-            if subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
+            staged = subprocess.run(['git', '-C', ws, 'diff', '--cached', '--name-only'],
+                                    capture_output=True, text=True).stdout.split(chr(10))
+            pfx = state_dir.rstrip('/') + '/'
+            outside = [x for x in staged if x.strip() and x != state_dir and not x.startswith(pfx)]
+            if outside:
+                # Log and skip rather than hard-fail: the alert is already
+                # posted, and refusing to stamp costs one duplicate warning
+                # where committing someone else's staged work costs trust.
+                print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
+                      repr(state_dir) + ': ' + ', '.join(outside[:5]))
+            elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
                                 ' (' + str(silence_days) + 'd)'], check=True)
-                subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD'])
+                br = subprocess.run(['git', '-C', ws, 'rev-parse', '--abbrev-ref', 'HEAD'],
+                                    capture_output=True, text=True).stdout.strip() or 'HEAD'
+                for _ in range(5):
+                    if subprocess.run(['git', '-C', ws, 'push', 'origin', 'HEAD']).returncode == 0:
+                        break
+                    if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
+                                       'origin', br]).returncode != 0:
+                        subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
+                        print('feed-watch: could not push silence.json (rebase conflict)')
+                        break
+                else:
+                    print('feed-watch: could not push silence.json after 5 attempts')
         except Exception as e:
             # Best effort: an unstamped window costs one duplicate alert,
             # never the alert itself.
             print('feed-watch: could not persist silence.json: ' + str(e)[:200])
+    # A warning that reached NOBODY is the very silent-green outcome this
+    # node exists to end: the operator would see one more finished run and
+    # learn nothing, for another window. Stamp first (retrying an
+    # unreachable webhook every morning is noise), then fail loudly — the
+    # same rule the sibling `notify` applies to a total delivery failure.
+    if payloads and delivered == 0:
+        raise SystemExit('feed-watch: silence alert for ' + category + ' (' + str(silence_days) +
+                         'd) reached NOBODY -- all ' + str(len(payloads)) + ' post(s) failed: ' +
+                         '; '.join(failures))
     out({'posted': delivered > 0, 'dry_run': False, 'delivered': delivered, 'targets': targets,
          'summary': 'silence alert for ' + category + ' (' + str(silence_days) + 'd): delivered ' +
                     str(delivered) + '/' + str(len(payloads)) +
@@ -1335,7 +1390,7 @@ tool commit_state:
         with open(tmp, 'w', encoding='utf-8') as fh:
             fh.write(chr(10).join(kept) + (chr(10) if kept else ''))
         os.replace(tmp, ppath)
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     arch = os.path.join(cdir, 'digests.jsonl')
     digests = []
     if os.path.exists(arch):
@@ -1433,6 +1488,8 @@ workflow feed_watch:
     digest_title: "{{outputs.load_pending.digest_title}}",
     sinks: "{{outputs.load_pending.sinks}}",
     silence_days: "{{outputs.load_pending.silence_days}}",
+    silence_window: "{{vars.silence_alert_days}}",
+    silence_message: "{{outputs.plan.silence_message}}",
     dry_run: "{{vars.dry_run}}",
     workspace: "{{vars.workspace_dir}}",
     state_dir: "{{vars.state_dir}}",
