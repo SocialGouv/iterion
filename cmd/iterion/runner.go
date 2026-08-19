@@ -277,6 +277,15 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// terminationGracePeriodSeconds is the hard external bound (must be >=
 	// DrainTimeout + margin so a capped run checkpoints cleanly).
 	go func() {
+		// A panic here would take the pod down on its way out with no
+		// trace: main's recover only covers its own goroutine. Capture,
+		// then let it die exactly as it did.
+		defer func() {
+			if p := recover(); p != nil {
+				errtrack.CapturePanicFields(p, map[string]any{"surface": "runner.drain"})
+				panic(p)
+			}
+		}()
 		<-rootCtx.Done()
 		logger.Info("runner: shutdown signal received (drain mode=%s ceiling=%s)", r.DrainMode(), r.DrainTimeout())
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), r.DrainTimeout())

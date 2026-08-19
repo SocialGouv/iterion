@@ -64,7 +64,9 @@ func (r *Runner) sandboxRunObserver(ctx context.Context, runID, tenantID string,
 			r.cfg.Logger.Warn("runner: sandbox driver %q does not support mid-run secret refresh; a long run may push with a stale token", run.Driver())
 			return
 		}
-		go r.refreshSandboxFileSecretsLoop(ctx, tenantID, refs, refresher)
+		goTracked("runner.refreshSandboxFileSecrets", func() {
+			r.refreshSandboxFileSecretsLoop(ctx, tenantID, refs, refresher)
+		})
 	}
 }
 

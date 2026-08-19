@@ -687,7 +687,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// nats-jetstream scaler — this gauge gives operators a parallel
 	// signal in their own dashboards without competing with the scaler.
 	if r.cfg.Metrics != nil {
-		go r.pollPending(loopCtx)
+		goTracked("runner.pollPending", func() { r.pollPending(loopCtx) })
 	}
 	// K8s sandbox reaper (ADR-070): at boot + on a ticker, a healthy
 	// runner force-deletes the orphaned sandbox pod + both Secrets +
@@ -697,7 +697,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// closing the OOM-with-surviving-pod plaintext-credential leak that
 	// the ownerReference cascade misses (the pod UID survives a container
 	// restart). No-op when not in-cluster / no NATS. See reaper.go.
-	go r.runSandboxReaper(loopCtx)
+	goTracked("runner.sandboxReaper", func() { r.runSandboxReaper(loopCtx) })
 	// Stamp Event.LogOffset from the per-run log writer on stores that
 	// support the hook (mongo + filesystem both do) — the cloud twin of
 	// the runview Service wiring, powering per-node log slicing.
@@ -946,7 +946,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// would invite split-brain when JetStream redelivers to a sibling pod).
 	// The cause makes the redelivery auto-resume without manual intervention.
 	hbDone := make(chan struct{})
-	go r.heartbeat(runCtx, runCancel, lock, delivery, hbDone)
+	goTracked("runner.heartbeat", func() { r.heartbeat(runCtx, runCancel, lock, delivery, hbDone) })
 	// Cancel runCtx *before* waiting on hbDone, otherwise we deadlock:
 	// heartbeat only exits on ctx.Done(), and the outer `defer runCancel`
 	// at function entry is LIFO-last so it would run after this defer.
@@ -1240,7 +1240,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
 			refreshCtx, stopRefresh := context.WithCancel(ctx)
 			defer stopRefresh()
-			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+			goTracked("runner.refreshFileSecrets", func() {
+				r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+			})
 		}
 	}
 	// Same rotation problem for the token GIT uses. Independent of the file
@@ -1251,7 +1253,9 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		if ref := r.gitCredentialSecretRef(ctx); ref != "" {
 			gitCredCtx, stopGitCred := context.WithCancel(ctx)
 			defer stopGitCred()
-			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+			goTracked("runner.refreshGitCredentials", func() {
+				r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, msg.RunID, workDir, msg.RepoURL)
+			})
 		}
 	}
 

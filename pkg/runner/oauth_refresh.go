@@ -39,7 +39,7 @@ func (r *Runner) startOAuthRefreshers(stop <-chan struct{}, runID string, files 
 		if secrets.OAuthKind(kind) != secrets.OAuthKindClaudeCode {
 			continue
 		}
-		go r.refreshAnthropicLoop(stop, hc, runID, path)
+		goTracked("runner.refreshAnthropicOAuth", func() { r.refreshAnthropicLoop(stop, hc, runID, path) })
 	}
 }
 
