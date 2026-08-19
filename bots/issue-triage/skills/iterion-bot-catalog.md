@@ -573,7 +573,7 @@ schemes by default (opt into internal feeds with
   synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
-- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
 ### `golden-master` — Goldy

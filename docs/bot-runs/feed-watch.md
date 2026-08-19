@@ -4,6 +4,70 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-08-19 — the veille came back, and the bot learned to report its own silence
+
+- Status: **resolved** (the 13→18 outage) + hardening shipped
+- Versions: bot 1.2.0 → 1.3.0 · iterion v3.47.0
+
+### The outage closed
+
+The re-seed was enough. The scheduled collect of 2026-08-18 17:00 UTC ran with
+no intervention (`new=4`, `committed=true`, pushed `a9f0610`), and this
+morning's chain ran end to end on its own:
+
+| step | evidence |
+|---|---|
+| collect 05:00 | finished |
+| digest cyber 06:00 | `items=108`, `span_days=6`, delivered **2/2** at 06:03:27Z |
+| the header | `🛡️ Veille Cyber — 13 au 19 août 2026 · Synthèse couvrant 6 jours` |
+
+So the state push had simply been frozen since 13/08; once it restarts,
+everything works. No hidden cluster cause — `kubectl exec` had already
+cleared the network, the feeds, the cache and the clock.
+
+### The gap that let it run five days
+
+**`finished` is not `delivered`.** A digest whose queue is empty exits at
+`plan → load_pending → done`: no LLM, no post, green status — indistinguishable
+from a healthy quiet week, every morning. The knowledge was already in the
+operator's memory since 10/08 and the outage still lasted five days, so the
+missing piece was never knowledge: it was an ALERT.
+
+### What ships (1.3.0)
+
+`silence_alert_days` (default 3, 0 disables). When the queue is empty AND no
+digest has been delivered for that many days, a deterministic `notify_silence`
+tool posts a short warning **on the same sinks as the digest** — a warning
+nobody reads is the failure it exists to prevent.
+
+- The oracle is `digests.jsonl`, not a counter of empty runs: it measures what
+  a READER would have seen, survives the collect/digest split, needs no new
+  state. A category that never delivered has no baseline and stays quiet.
+- `silence.json` stamps the window so a broken category warns once per window,
+  not every morning — the surest way to train a reader to ignore the one
+  signal that matters.
+- The stamp is written even when every post fails: retrying an unreachable
+  webhook daily adds noise, not information, and the failure is on the run.
+- Zero LLM on this path.
+
+Verified against a copy of the real production state, with the last digest
+back-dated to reproduce 13→18:
+
+```
+silence_days: 6   silence_alert: true    -> notify_silence -> #veille-vigie-secu, #vigie
+silence_days: 6   silence_alert: false   (silence.json fresh — no repeat)
+```
+
+The third case (a non-empty queue never alerts) is a literal guard,
+`if not items and alert_after > 0`, so it was read rather than run: exercising
+it would have spent an LLM call on the agent node for no added proof.
+
+### Still open
+
+`hnrss.org` has been 502 for 9 feeds since at least 17/08 — third-party
+outage, the whole HackerNews slice of the veille is mute. Replace the source
+if it persists.
+
 ## 2026-08-18 — Vigie silent since 13 Aug: the collect stopped finding anything new (runs 01a00e17, 01a00e4e)
 
 - Status: **partially diagnosed — re-seeded, root cause NOT closed**

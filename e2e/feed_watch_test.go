@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"time"
 )
 
 // feedWatchTool extracts a tool node from the compiled feed-watch fixture.
@@ -239,6 +240,7 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	loadInputs := map[string]any{
 		"category": "demo", "editorial": plan["editorial"], "digest_title": plan["digest_title"],
 		"sinks": plan["sinks"], "workspace": ws, "state_dir": ".feed-watch", "max_items": 150,
+		"silence_alert_days": 3,
 	}
 	pending, stderr, err := runPy(t, ws, subScript(t, loadScript, loadInputs, ""))
 	if err != nil {
@@ -253,6 +255,11 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	snapshot := pending["snapshot_ids"].([]any)
 	if len(snapshot) != 3 {
 		t.Fatalf("snapshot_ids = %v, want 3", snapshot)
+	}
+	// A queue with items is never silent, whatever the digest history —
+	// the guard that makes the silence alert impossible to misfire.
+	if pending["silence_alert"] != false {
+		t.Fatalf("a non-empty queue must never raise a silence alert: %v", pending["silence_alert"])
 	}
 
 	// notify — dry-run prepares payloads, delivers nothing.
@@ -330,6 +337,70 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	}
 	if !strings.Contains(pending["recent_topics"].(string), "Demo headline") {
 		t.Fatalf("recent_topics should carry the archived digest, got %q", pending["recent_topics"])
+	}
+	// An empty queue right after a delivered digest is an ordinary quiet
+	// morning, not a silence worth announcing.
+	if pending["silence_alert"] != false {
+		t.Fatalf("a digest delivered moments ago must not raise a silence alert: %v", pending)
+	}
+
+	// The silence guard, end to end. A digest whose queue is empty exits
+	// green and posts nothing — which is exactly how a broken collector went
+	// unnoticed for five days (2026-08-13 → 18). Back-date the delivered
+	// digest and the same empty queue must now speak up.
+	digestsPath := filepath.Join(ws, ".feed-watch", "demo", "digests.jsonl")
+	raw, err := os.ReadFile(digestsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archived map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &archived); err != nil {
+		t.Fatalf("digests.jsonl is not one JSON object per line: %v", err)
+	}
+	archived["ts"] = time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02T15:04:05-07:00")
+	staleRow, _ := json.Marshal(archived)
+	if err := os.WriteFile(digestsPath, append(staleRow, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pending, stderr, err = runPy(t, ws, subScript(t, loadScript, loadInputs, ""))
+	if err != nil {
+		t.Fatalf("load_pending #3 failed: %v\nstderr: %s", err, stderr)
+	}
+	if pending["silence_alert"] != true {
+		t.Fatalf("6 days without a delivered digest must raise the alert: %v", pending)
+	}
+	if got := pending["silence_days"].(float64); got < 5 {
+		t.Fatalf("silence_days = %v, want ~6", got)
+	}
+
+	// …once per window, not once per run: a daily category would otherwise
+	// shout every morning, which trains the reader to ignore it.
+	stamp := filepath.Join(ws, ".feed-watch", "demo", "silence.json")
+	if err := os.WriteFile(stamp, []byte(`{"last_alert_ts": "`+
+		time.Now().UTC().Format("2006-01-02T15:04:05")+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pending, stderr, err = runPy(t, ws, subScript(t, loadScript, loadInputs, ""))
+	if err != nil {
+		t.Fatalf("load_pending #4 failed: %v\nstderr: %s", err, stderr)
+	}
+	if pending["silence_alert"] != false {
+		t.Fatalf("a fresh silence.json must suppress the repeat: %v", pending)
+	}
+
+	// Disabling it is a real off switch, not a smaller number.
+	offInputs := map[string]any{}
+	for k, v := range loadInputs {
+		offInputs[k] = v
+	}
+	offInputs["silence_alert_days"] = 0
+	os.Remove(stamp)
+	pending, stderr, err = runPy(t, ws, subScript(t, loadScript, offInputs, ""))
+	if err != nil {
+		t.Fatalf("load_pending #5 failed: %v\nstderr: %s", err, stderr)
+	}
+	if pending["silence_alert"] != false {
+		t.Fatalf("silence_alert_days=0 must disable the guard: %v", pending)
 	}
 }
 
