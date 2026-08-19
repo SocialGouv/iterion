@@ -182,6 +182,12 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/observability.md](docs/observability.md) — process logs and error
+  tracking: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
+  `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`), which surfaces default to JSON,
+  what a Sentry/GlitchTip project receives (panics, fatal exits, error logs,
+  run alerts), the scrubbing, and the smoke test. Read it when a deployment
+  needs to answer "what crashed, how often, since which release".
 
 ## Development setup
 
@@ -1642,5 +1648,9 @@ head sha, off by default so the developer keeps the choice.
 - CLI built with Cobra (`github.com/spf13/cobra`) — one file per command in `cmd/iterion/`
 - `CGO_ENABLED=0`, version/commit injected via ldflags from `package.json` + git
 - External LLM SDK: claw-code-go (vendored), used directly via `claw-code-go/pkg/api`
-- Event-driven observability via `events.jsonl` — no structured logging library
+- Observability: run-scoped events in `events.jsonl`; process logs through the
+  in-house structured logger `pkg/log` (JSON by default on server / runner /
+  dispatcher); optional error tracking through `pkg/errtrack` (sentry-go, the
+  Sentry DSN protocol — Sentry or GlitchTip), enabled only when `SENTRY_DSN`
+  is set. See [docs/observability.md](docs/observability.md)
 - Output abstraction: `Printer` (`pkg/cli/output.go`) with human and JSON modes
