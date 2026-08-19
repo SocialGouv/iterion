@@ -203,3 +203,41 @@ Lot ids that must be `done` first. A lot whose dependencies are unmet is
 skipped with a reason rather than attempted — the compatibility matrix is a hard
 edge in the graph, and running a lot out of order produces failures that look
 like defects in code that is perfectly fine.
+
+## Outcomes — what the programme OWES, mechanically
+
+A programme can process every lot and still miss what it was for. Measured on
+a real campaign: the contract chained an engine migration behind framework
+majors, the majors blocked on measured bounds (correctly — their lots forbade
+behaviour drift), the chain starved, every remaining lot landed as a proof
+lot, and the campaign concluded GREEN with its headline expectation unmet.
+Nothing was wrong at any single gate; the miss lived one level above them all.
+
+The fix is the same one the re-baseline ledger got: expectations become a
+CONJUNCTION TERM of programme convergence. They live in
+`.modernize/outcomes.json` — machine-readable, committed, next to the plan:
+
+```json
+{"outcomes": [
+  {"id": "engine-target",
+   "states": "the served stack runs on the second engine, oracle green there",
+   "check": "GM_ENGINE=pg GM_CONFIG=config-pg.json bash ci/oracle-gate.sh",
+   "arbitration": ""}
+]}
+```
+
+- `check` runs on HEAD and exits 0 iff the outcome is MET. Like every gate,
+  it is a command, never a claim.
+- `arbitration` is the ONLY other way an outcome closes: a written, dated
+  decision by the programme's owner ("deferred to the cloud contract,
+  2026-08-19, <who>") — never by the worker, never by silence.
+- **A programme is converged iff every outcome is met or arbitrated.** A
+  campaign whose lots are exhausted while an outcome is neither ends RED,
+  naming it — the exact analogue of `pending_rebaselines` at the net level.
+
+And the escalation duty that prevents the silent starvation in the first
+place: when a lot blocks and that block starves the dependency chain of any
+outcome, the worker's report must SAY SO by outcome id ("engine-target is now
+unreachable through this contract"), so the operator re-plans (a new lot
+through another path) or arbitrates — while the campaign is still running,
+not at the post-mortem.
