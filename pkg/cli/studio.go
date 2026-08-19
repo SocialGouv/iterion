@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -257,7 +258,16 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	// view works without a separately-running `iterion dispatch`. The
 	// store lives at <store-dir>/dispatcher/ and is auto-initialized
 	// with the default board on first use.
-	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
+	// Human console format by default — the studio is a surface an
+	// operator watches — but ITERION_LOG_FORMAT / ITERION_LOG_LEVEL still
+	// win, which the hardcoded constructor used to deny. Coupled to the
+	// error tracker (a no-op unless SENTRY_DSN is set) so an error line
+	// from a locally-hosted server reaches the same incident stream as
+	// the cloud one; `iterion server` in local mode lands here too.
+	logger := iterlog.NewFromEnv(os.Stderr)
+	errtrack.Init(errtrack.Config{Logger: logger, ServerName: "iterion-studio"})
+	errtrack.AttachLogHook(logger)
+	defer errtrack.Flush()
 	resolvedStoreDir := store.ResolveStoreDir(dir, opts.StoreDir)
 
 	// Local (non-cloud) secret store: a machine-global sealed file

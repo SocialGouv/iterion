@@ -47,7 +47,9 @@ when empty) are the names log shippers key on — Loki labels, ES
 mappings — and do not change across versions.
 
 **Human is the default on the interactive surfaces**: `iterion run`,
-`iterion studio`, and every other CLI command an operator watches.
+`iterion studio` (and `iterion server` in local mode, which serves the
+same studio), and every other CLI command an operator watches — but
+they honour the env vars too.
 
 Both are a default, never a cage: `ITERION_LOG_FORMAT=human` on a
 runner pod and `ITERION_LOG_FORMAT=json` on a CLI invocation both work.
@@ -105,7 +107,7 @@ does too.
 | CLI fatal path | the error that ends the process with exit 1, before `os.Exit` skips every defer. A user-input error (exit 2 — bad flag, missing file) is a typo, not an incident, and is never reported |
 | [pkg/server/gosafe.go](../pkg/server/gosafe.go) and [cloudpublisher](../pkg/server/cloudpublisher/publisher.go) `goSafeDetached` | a panic in a fire-and-forget background goroutine (audit insert, `MarkUsed`, invitation mail), with the task label |
 | The dispatcher actor, its polling loop, and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
-| The central logger, on the daemons | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event |
+| The central logger, on the daemons and the studio | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event |
 | [pkg/alert](../pkg/alert/errtrack.go) | run health: `run_failed` and `budget_exceeded` as errors, `stall` and `budget_warning` as warnings, `stall_recovered` as a breadcrumb |
 
 Pending events are flushed (2 s bound) on shutdown and on the fatal
