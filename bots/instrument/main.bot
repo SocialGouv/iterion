@@ -230,7 +230,9 @@ prompt campaign_system:
      slice you committed, and a fresh pass just reads `git log` and
      continues where you left off. END EVERY PASS ON A CLEAN TREE: if
      you must stop mid-slice, either finish it to committable or
-     discard the in-progress edits — the deterministic gate
+     discard the in-progress edits — `git restore -- <the paths you
+     touched>`, never a blanket `git clean` (the workspace may be the
+     operator's own checkout). The deterministic gate
      verifies the WORKING TREE, and a half-slice (an un-vendored
      `go get`, a dangling import) reds the gate as noise.
 
