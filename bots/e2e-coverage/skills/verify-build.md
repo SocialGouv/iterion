@@ -56,7 +56,8 @@ and the correct toolchain:
   workspace is a git *worktree* whose gitdir lives outside the sandbox
   mounts, so `go build`'s VCS probe can fail with `error obtaining VCS
   status: exit status 128` even though git itself works. Put
-  `export GOFLAGS="-buildvcs=false"` at the top of verify.sh — the
+  `export GOFLAGS="${GOFLAGS:+$GOFLAGS }-buildvcs=false"` at the top
+  of verify.sh (append — never clobber an inherited GOFLAGS) — the
   binary's stamped identity is irrelevant to a build+test gate.
   (Observed live 2026-08-19, run 01a01a51: the gate burned a pass on it.)
 - **Language defaults (only when there is no wrapper):**

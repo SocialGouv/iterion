@@ -219,8 +219,10 @@ prompt campaign_system:
      committed test, and a fresh pass reads the matrix + `git log` and
      continues where you left off.
      END EVERY PASS ON A CLEAN TREE: if you must stop mid-gap, either
-     finish it to committable or revert/stash the in-progress edits —
-     the deterministic gate verifies the WORKING TREE, and a half-done
+     finish it to committable or discard the in-progress edits —
+     `git restore -- <the paths you touched>`, never a blanket
+     `git clean` (the workspace may be the operator's own checkout).
+     The deterministic gate verifies the WORKING TREE, and a half-done
      gap (an un-vendored dependency, a dangling import) reds the gate
      as noise.
 
