@@ -234,7 +234,7 @@ func applyFields(scope *sentry.Scope, fields map[string]any) {
 	if len(scrubbed) == 0 {
 		return
 	}
-	scope.SetContext(contextKey, sentry.Context(scrubbed))
+	scope.SetContext(contextKey, scrubbed)
 }
 
 // reset returns the package to its off state. Test-only: production

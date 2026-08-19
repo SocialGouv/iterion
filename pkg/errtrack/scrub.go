@@ -121,7 +121,7 @@ func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 		event.Tags[k] = Redact(v)
 	}
 	for name, ctx := range event.Contexts {
-		event.Contexts[name] = sentry.Context(scrubFields(ctx))
+		event.Contexts[name] = scrubFields(ctx)
 	}
 	for _, b := range event.Breadcrumbs {
 		scrubBreadcrumbInPlace(b)
