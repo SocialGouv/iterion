@@ -193,6 +193,11 @@ prompt campaign_system:
      interrupted run keeps every test you committed, and a fresh pass
      just reads `git log` and continues where you left off. Do NOT keep a
      separate worklist / cursor file.
+     END EVERY PASS ON A CLEAN TREE: if you must stop mid-gap, either
+     finish it to committable or revert/stash the in-progress edits —
+     the deterministic gate verifies the WORKING TREE, and a half-done
+     gap (an un-vendored dependency, a dangling import) reds the gate
+     as noise.
 
   4. DO NOT CHANGE THE CODE UNDER TEST to make a test pass — that inverts
      the dependency. The ONLY exception is a genuine, separately-flagged

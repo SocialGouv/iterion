@@ -144,6 +144,11 @@ e2e/.workspaces/
 # swept into a code bot's commit. (Surfaced by a docs-refresh dogfood run.)
 .claude/skills/
 
+# claude_code sub-invocations mirror skills into THEIR cwd too
+# (pkg/*/.claude/, e2e/.claude/), and a worktree finalize would
+# wip-bank that junk. .claude/ is runtime state at any depth.
+**/.claude/
+
 # docs-refresh bot cache (neutral repo-root dotfile it writes by design)
 .docs-refresh-cache.json
 
