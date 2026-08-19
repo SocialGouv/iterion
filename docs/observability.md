@@ -54,6 +54,13 @@ they honour the env vars too.
 Both are a default, never a cage: `ITERION_LOG_FORMAT=human` on a
 runner pod and `ITERION_LOG_FORMAT=json` on a CLI invocation both work.
 
+The format holds for the WHOLE process, not just its own lines. A run's
+per-run logger (the one teed into `run.log` and the studio console) is a
+`WithWriter` fork of the process logger, so it keeps the format, the
+fields and the tracker hook; a library seam handed no logger at all
+falls back to `log.NewFromEnv` / `log.NewFallback`, which read the same
+two env vars. Nothing in `pkg/**` writes a diagnostic around the seam.
+
 ## Error tracking
 
 ### What it is
@@ -105,10 +112,18 @@ does too.
 |---|---|
 | CLI top level ([cmd/iterion/main.go](../cmd/iterion/main.go)) | a panic escaping a command on the main goroutine — captured, flushed, then **re-panicked** so the process still dies the way it did. Go cannot recover another goroutine's panic from here, which is why the worker seams below capture in their own recovery blocks |
 | CLI fatal path | the error that ends the process with exit 1, before `os.Exit` skips every defer. A user-input error (exit 2 — bad flag, missing file) is a typo, not an incident, and is never reported |
-| [pkg/server/gosafe.go](../pkg/server/gosafe.go) and [cloudpublisher](../pkg/server/cloudpublisher/publisher.go) `goSafeDetached` | a panic in a fire-and-forget background goroutine (audit insert, `MarkUsed`, invitation mail), with the task label |
-| The dispatcher actor, its polling loop, and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
-| The central logger, on the daemons and the studio | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event |
+| [pkg/server/gosafe.go](../pkg/server/gosafe.go) and [cloudpublisher](../pkg/server/cloudpublisher/publisher.go) `goSafeDetached` | a panic in a fire-and-forget background goroutine (audit insert, `MarkUsed`, invitation mail), with the task label. These CONTAIN the panic — the task was best-effort |
+| `errtrack.Go` / `errtrack.TrackPanic` ([pkg/errtrack/crash.go](../pkg/errtrack/crash.go)) | a panic in a detached goroutine of the three daemons, tagged with the `surface` that raised it: the server's hub, file watchers, staged-upload reaper, pipeline admission loop, OIDC sweeper, board-dispatch workers and WS/PTY pumps; the runner pod's lease heartbeat, sandbox reaper, queue-depth gauge and credential refreshers; the dispatcher's actor loop and config watcher. This guard **re-panics** — those goroutines hold jobs the process cannot do without, so the crash stays a crash |
+| The dispatcher actor's inner recover blocks and runtime fan-out branches | already recover and log at error level, so the log coupling reports them — no extra call site |
+| The central logger, on the daemons and the studio | every **error** line becomes an event with the record's fields as context; every **warn** line becomes a breadcrumb attached to the next event. A run's own logger is a fork of the process one, so a run's error lines reach the tracker too |
 | [pkg/alert](../pkg/alert/errtrack.go) | run health: `run_failed` and `budget_exceeded` as errors, `stall` and `budget_warning` as warnings, `stall_recovered` as a breadcrumb |
+
+A goroutine added later joins the first class or the second by choosing
+its helper: `goSafe` when the work is best-effort and the process should
+survive it, `errtrack.Go` when its death is a crash worth reporting.
+Library-internal goroutines outside the three daemons (run-stream
+tailers, the event bus, supervisors) keep their own recover-and-log
+path, which the log coupling reports.
 
 Pending events are flushed (2 s bound) on shutdown and on the fatal
 path.
