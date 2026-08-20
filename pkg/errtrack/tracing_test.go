@@ -163,3 +163,39 @@ func TestSpansAreScrubbedBeforeSend(t *testing.T) {
 		t.Errorf("scrubbing destroyed a harmless span field: %v", got.Data["model"])
 	}
 }
+
+// A context that still carries a FINISHED transaction — exactly what a
+// run launched from an API request holds by the time it makes its first
+// LLM call — silently orphans any child started on it: the SDK drops a
+// child finished after its transaction was sent. This test pins that
+// SDK behaviour (the reason StartIndependent exists) and proves the
+// independent form survives the same context.
+func TestIndependentSpanSurvivesAFinishedParentTransaction(t *testing.T) {
+	tr := enable(t, Config{TracesSampleRate: rate(1)})
+
+	parent := sentry.StartSpan(context.Background(), "http.server",
+		sentry.WithTransactionName("GET /api/runs"))
+	deadCtx := parent.Context()
+	parent.Finish()
+	Flush()
+	if got := len(transactions(tr.all())); got != 1 {
+		t.Fatalf("expected the request transaction alone, got %d", got)
+	}
+
+	// The orphan: a child of the finished transaction is never exported.
+	_, orphan := StartSpan(deadCtx, "llm.generate", "anthropic/claude-opus-5")
+	orphan.Finish(nil)
+	Flush()
+	if got := len(transactions(tr.all())); got != 1 {
+		t.Fatalf("a child of a finished transaction should be dropped by the SDK; transport now has %d", got)
+	}
+
+	// The fix: the independent form exports regardless of the context.
+	span := StartIndependent("llm.generate", "anthropic/claude-opus-5")
+	span.SetTag("llm.provider", "anthropic")
+	span.Finish(nil)
+	Flush()
+	if got := len(transactions(tr.all())); got != 2 {
+		t.Fatalf("StartIndependent should export its own transaction; transport has %d", got)
+	}
+}

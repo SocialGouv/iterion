@@ -192,3 +192,36 @@ func TestNumericValuesSurviveASensitiveKeyName(t *testing.T) {
 		t.Errorf("nested credential = %v", nested["auth_token"])
 	}
 }
+
+// Transactions carry the full request envelope (sentryhttp SetRequest),
+// so iterion's own request-borne credentials must be scrubbed: the
+// X-Iterion-Run bearer (bare hex — only the header NAME identifies it)
+// and the OAuth callback's code/state query parameters.
+func TestRequestCredentialsAreScrubbedFromTransactions(t *testing.T) {
+	ev := &sentry.Event{
+		Type: "transaction",
+		Request: &sentry.Request{
+			Headers: map[string]string{
+				"X-Iterion-Run": "3f9a1c0d2b4e5f60718293a4b5c6d7e8",
+				"Accept":        "application/json",
+			},
+			QueryString: "code=authcode1234567&state=csrf9876543&redirect_uri=https%3A%2F%2Fapp%2Fcb",
+			URL:         "https://host/api/auth/oidc/callback?code=authcode1234567",
+		},
+	}
+	got := scrubEvent(ev, nil)
+	if v := got.Request.Headers["X-Iterion-Run"]; strings.Contains(v, "3f9a1c0d") {
+		t.Errorf("X-Iterion-Run bearer leaked: %q", v)
+	}
+	if got.Request.Headers["Accept"] != "application/json" {
+		t.Errorf("benign header over-redacted: %q", got.Request.Headers["Accept"])
+	}
+	for _, s := range []string{got.Request.QueryString, got.Request.URL} {
+		if strings.Contains(s, "authcode1234567") || strings.Contains(s, "csrf9876543") {
+			t.Errorf("OAuth code/state leaked: %q", s)
+		}
+	}
+	if !strings.Contains(got.Request.QueryString, "redirect_uri") {
+		t.Errorf("benign query param destroyed: %q", got.Request.QueryString)
+	}
+}

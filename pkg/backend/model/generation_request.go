@@ -195,7 +195,10 @@ func callAndAggregate(
 	req api.CreateMessageRequest,
 	opts GenerationOptions,
 ) (*aggregatedResponse, error) {
-	ctx, span := errtrack.StartSpan(ctx, llmSpanOp, opts.Model)
+	// Independent transaction, never a child: this runs on a context
+	// derived from the LAUNCH request, whose transaction finished long
+	// ago — a child of it would be silently dropped by the SDK.
+	span := errtrack.StartIndependent(llmSpanOp, opts.Model)
 	span.SetTag("llm.provider", modelProvider(opts.Model))
 	span.SetTag("llm.model", wireModelID(opts.Model))
 

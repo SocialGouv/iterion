@@ -2,6 +2,7 @@ package errtrack
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -23,6 +24,20 @@ var sensitiveKeys = []string{
 	"authorization", "cookie", "secret", "token", "password", "passwd",
 	"api_key", "apikey", "credential", "private_key", "dsn", "session",
 	"bearer",
+	// iterion's own request-borne credential: the ephemeral run bearer
+	// authorizing the board-MCP / ask_user HTTP transports. Bare hex, so
+	// no value pattern can catch it — the header NAME is the signal.
+	"x-iterion-run",
+}
+
+// sensitiveQueryParams are query-string parameter names whose VALUE is
+// a credential without matching any sensitiveKeys fragment — the OAuth
+// authorization `code` and CSRF `state` on the SSO / forge callbacks.
+// Kept separate from sensitiveKeys: as prose, "code" and "state" are
+// everywhere ("exit code=1"), but as QUERY PARAMETERS they are precise.
+var sensitiveQueryParams = map[string]bool{
+	"code":  true,
+	"state": true,
 }
 
 // secretPatterns redact a secret embedded in an otherwise-useful
@@ -259,14 +274,57 @@ func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 			}
 			event.Request.Headers[k] = Redact(event.Request.Headers[k])
 		}
-		event.Request.QueryString = Redact(event.Request.QueryString)
+		event.Request.QueryString = scrubQueryString(event.Request.QueryString)
 		event.Request.Cookies = redacted
-		event.Request.URL = Redact(event.Request.URL)
+		event.Request.URL = scrubURL(event.Request.URL)
 		event.Request.Data = Redact(event.Request.Data)
 	}
 	// The user record is identity data we never need for triage.
 	event.User = sentry.User{}
 	return event
+}
+
+// scrubQueryString redacts the values of credential-bearing query
+// parameters — the sensitiveKeys fragments plus the OAuth callback
+// params (`code`, `state`) — and leaves the rest intact, then applies
+// the pattern pass on the survivors. A string that does not parse as a
+// query falls back to the plain pattern pass.
+func scrubQueryString(q string) string {
+	if q == "" {
+		return q
+	}
+	values, err := url.ParseQuery(q)
+	if err != nil {
+		return Redact(q)
+	}
+	for key, vals := range values {
+		lk := strings.ToLower(key)
+		if isSensitiveKey(key) || sensitiveQueryParams[lk] {
+			for i := range vals {
+				vals[i] = redacted
+			}
+			continue
+		}
+		for i := range vals {
+			vals[i] = Redact(vals[i])
+		}
+	}
+	return values.Encode()
+}
+
+// scrubURL applies the pattern pass to the URL and the query-parameter
+// pass to its query part, so a credential riding a full URL (the OAuth
+// callback with ?code=…) is caught in both renderings.
+func scrubURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return Redact(raw)
+	}
+	u.RawQuery = scrubQueryString(u.RawQuery)
+	return Redact(u.String())
 }
 
 // scrubBreadcrumb is the SDK's BeforeBreadcrumb hook.

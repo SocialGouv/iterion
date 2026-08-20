@@ -20,10 +20,13 @@ type Span struct{ span *sentry.Span }
 //
 // op is the machine-facing operation ("llm.generate"); name is the
 // low-cardinality label ("anthropic/claude-opus-5"). When ctx carries a
-// parent (an in-flight HTTP request) the result is a child span;
-// otherwise it is a standalone transaction — which is the shape of
-// everything iterion does off a request, and the reason name must stay
-// a bounded set rather than, say, a run id.
+// parent span the result is a child span; otherwise it is a standalone
+// transaction. ONLY use it for work that lives and dies INSIDE the
+// parent's lifetime (a step of the HTTP request being traced): a child
+// finished after its transaction was sent is silently dropped by the
+// SDK, and a run launched from an API request keeps that request's
+// (long-finished) transaction in its context — use StartIndependent for
+// any background lifetime.
 func StartSpan(ctx context.Context, op, name string) (context.Context, *Span) {
 	if !tracing.Load() {
 		return ctx, nil
@@ -31,6 +34,23 @@ func StartSpan(ctx context.Context, op, name string) (context.Context, *Span) {
 	s := sentry.StartSpan(ctx, op, sentry.WithTransactionName(op+" "+name))
 	s.Description = name
 	return s.Context(), &Span{span: s}
+}
+
+// StartIndependent times one unit of work as its OWN transaction,
+// deliberately ignoring any span the caller's context may carry. This
+// is the right shape for background lifetimes — a run's LLM call, a
+// worker step — whose context is derived from a launch request: the
+// request's transaction finished long ago, so parenting under it would
+// orphan the span (never exported), and inspecting the finished span
+// cross-goroutine would race. name must stay a bounded set (a
+// provider/model), never a run id.
+func StartIndependent(op, name string) *Span {
+	if !tracing.Load() {
+		return nil
+	}
+	s := sentry.StartSpan(context.Background(), op, sentry.WithTransactionName(op+" "+name))
+	s.Description = name
+	return &Span{span: s}
 }
 
 // SetData attaches a measurement to the span — token counts, sizes.
