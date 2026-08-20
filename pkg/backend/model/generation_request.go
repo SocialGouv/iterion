@@ -10,6 +10,7 @@ import (
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 )
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,20 @@ func wireModelID(spec string) string {
 		return spec[i+1:]
 	}
 	return spec
+}
+
+// llmSpanOp is the operation name every in-process provider call is
+// traced under, so one query in Sentry covers them all.
+const llmSpanOp = "llm.generate"
+
+// modelProvider is wireModelID's other half: the routing prefix of a
+// model spec ("anthropic/claude-opus-5" → "anthropic"), or "default"
+// when the spec is bare and the registry picks the provider.
+func modelProvider(spec string) string {
+	if i := strings.Index(spec, "/"); i >= 0 {
+		return spec[:i]
+	}
+	return "default"
 }
 
 func buildRequest(opts GenerationOptions, messages []api.Message, extraTools []api.Tool, toolChoice *api.ToolChoice) (api.CreateMessageRequest, error) {
@@ -169,15 +184,25 @@ func fireOnRequest(opts GenerationOptions, messageCount int) {
 // callAndAggregate calls StreamResponse, aggregates the stream, fires the
 // OnResponse hook, and returns the aggregated result. On StreamResponse
 // failure it fires OnResponse with the error and returns nil, err.
+//
+// This is iterion's ONE hand-instrumented tracing seam: every in-process
+// provider call funnels through here, and one call is a unit of work
+// worth timing. A run is not — it lasts minutes to hours, so it gets no
+// transaction of its own.
 func callAndAggregate(
 	ctx context.Context,
 	client api.APIClient,
 	req api.CreateMessageRequest,
 	opts GenerationOptions,
 ) (*aggregatedResponse, error) {
+	ctx, span := errtrack.StartSpan(ctx, llmSpanOp, opts.Model)
+	span.SetTag("llm.provider", modelProvider(opts.Model))
+	span.SetTag("llm.model", wireModelID(opts.Model))
+
 	start := time.Now()
 	ch, err := client.StreamResponse(ctx, req)
 	if err != nil {
+		span.Finish(err)
 		if opts.OnResponse != nil {
 			opts.OnResponse(ResponseInfo{
 				Latency: time.Since(start),
@@ -189,6 +214,10 @@ func callAndAggregate(
 
 	agg := aggregateStream(ctx, ch)
 	latency := time.Since(start)
+	span.SetData("llm.input_tokens", agg.usage.InputTokens)
+	span.SetData("llm.output_tokens", agg.usage.OutputTokens)
+	span.SetData("llm.cache_read_tokens", agg.usage.CacheReadTokens)
+	span.Finish(agg.err)
 
 	// Thinking metrics. Preferred source is the provider's exact billed
 	// count (usage.output_tokens_details, captured from message_delta);

@@ -148,3 +148,47 @@ func TestRedactCommonSecretShapes(t *testing.T) {
 		t.Errorf("over-redaction of benign prose: %q -> %q", benign, got)
 	}
 }
+
+// A credential is text; a count is a number. The key filter has to keep
+// "token" (for access_token and friends), so the numeric exemption is
+// what stops it from destroying every token count iterion measures.
+func TestNumericValuesSurviveASensitiveKeyName(t *testing.T) {
+	got := scrubFields(map[string]any{
+		"input_tokens":  1200,
+		"total_tokens":  int64(1250),
+		"cost_usd":      0.42,
+		"session_count": 3,
+		"access_token":  "ghp_0123456789abcdefghij",
+		"api_key":       "sk-live-0123456789abcdef",
+		"nested": map[string]any{
+			"output_tokens": 50,
+			"auth_token":    "hunter2hunter2",
+		},
+	})
+
+	for k, want := range map[string]any{
+		"input_tokens":  1200,
+		"total_tokens":  int64(1250),
+		"cost_usd":      0.42,
+		"session_count": 3,
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %v, want the measurement %v", k, got[k], want)
+		}
+	}
+	for _, k := range []string{"access_token", "api_key"} {
+		if got[k] != redacted {
+			t.Errorf("%s = %v — a credential must never survive", k, got[k])
+		}
+	}
+	nested, ok := got["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested = %T", got["nested"])
+	}
+	if nested["output_tokens"] != 50 {
+		t.Errorf("nested count = %v", nested["output_tokens"])
+	}
+	if nested["auth_token"] != redacted {
+		t.Errorf("nested credential = %v", nested["auth_token"])
+	}
+}

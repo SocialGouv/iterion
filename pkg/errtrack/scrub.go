@@ -84,6 +84,24 @@ func isSensitiveKey(k string) bool {
 	return false
 }
 
+// isMeasurement reports whether a value is a plain number.
+//
+// A credential is text: never an int, never a float. So a numeric value
+// is safe to send even under a name the key filter distrusts — and that
+// exemption is what keeps `input_tokens: 1200` a usable measurement
+// instead of `[redacted]`, since "token" has to stay in sensitiveKeys
+// for `access_token` and friends. Over-redaction destroys an event as
+// surely as a leak: the same reasoning already anchors the key=value
+// regex so `tokens=48657` survives.
+func isMeasurement(v any) bool {
+	switch v.(type) {
+	case bool, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
 // maxScrubDepth bounds the recursive field walk. Past the cap the value
 // is dropped to the redaction marker rather than rendered: fmt's %v does
 // not detect cycles, so stringifying an arbitrarily deep (or cyclic)
@@ -103,7 +121,7 @@ func scrubFields(fields map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(fields))
 	for k, v := range fields {
-		if isSensitiveKey(k) {
+		if isSensitiveKey(k) && !isMeasurement(v) {
 			out[k] = redacted
 			continue
 		}
@@ -151,11 +169,12 @@ func scrubValue(v any, depth int) any {
 		iter := rv.MapRange()
 		for iter.Next() {
 			key := fmt.Sprint(iter.Key().Interface())
-			if isSensitiveKey(key) {
+			val := iter.Value().Interface()
+			if isSensitiveKey(key) && !isMeasurement(val) {
 				out[key] = redacted
 				continue
 			}
-			out[key] = scrubValue(iter.Value().Interface(), depth+1)
+			out[key] = scrubValue(val, depth+1)
 		}
 		return out
 	case reflect.Slice, reflect.Array:
@@ -172,11 +191,12 @@ func scrubValue(v any, depth int) any {
 			if !f.IsExported() {
 				continue
 			}
-			if isSensitiveKey(f.Name) {
+			fv := rv.Field(i).Interface()
+			if isSensitiveKey(f.Name) && !isMeasurement(fv) {
 				out[f.Name] = redacted
 				continue
 			}
-			out[f.Name] = scrubValue(rv.Field(i).Interface(), depth+1)
+			out[f.Name] = scrubValue(fv, depth+1)
 		}
 		return out
 	default:
