@@ -123,6 +123,131 @@ var remoteAdminDLQCmd = &cobra.Command{
 	}),
 }
 
+// --- platform LLM credentials (DB-backed env fallback) ---
+
+var (
+	remoteLLMFromEnv  string
+	remoteLLMFromFile string
+	remoteLLMProvider string
+	remoteLLMName     string
+	remoteLLMDefault  bool
+	remoteLLMKeyData  string
+)
+
+var remoteAdminLLMCmd = &cobra.Command{
+	Use:   "llm",
+	Short: "Platform LLM credentials — rotate the deployment's provider keys/forfait without a redeploy",
+}
+
+var remoteAdminLLMKeysCmd = &cobra.Command{
+	Use:   "api-keys",
+	Short: "Platform provider API keys (metadata list by default)",
+	Args:  cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/api-keys")
+	}),
+}
+
+var remoteAdminLLMKeysCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Add a platform key (--provider + --name; value from --from-env/--from-file/stdin)",
+	Args:  cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if remoteLLMProvider == "" || remoteLLMName == "" {
+			return fmt.Errorf("--provider and --name are required")
+		}
+		value, err := cli.ReadSecretValue(remoteLLMFromEnv, remoteLLMFromFile, true)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteAdminLLMKeyCreate(cmd.Context(), c, p, remoteLLMProvider, remoteLLMName, value, remoteLLMDefault)
+	}),
+}
+
+var remoteAdminLLMKeysRotateCmd = &cobra.Command{
+	Use:   "rotate <key-id>",
+	Short: "Replace a platform key's value (from --from-env/--from-file/stdin)",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		value, err := cli.ReadSecretValue(remoteLLMFromEnv, remoteLLMFromFile, true)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteAdminLLMKeyRotate(cmd.Context(), c, p, args[0], value)
+	}),
+}
+
+var remoteAdminLLMKeysUpdateCmd = &cobra.Command{
+	Use:   "update <key-id>",
+	Short: "Update a platform key's metadata (--data JSON)",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", "/api/admin/llm/api-keys/"+args[0], remoteLLMKeyData, "patch JSON")
+	}),
+}
+
+var remoteAdminLLMKeysDeleteCmd = &cobra.Command{
+	Use:   "delete <key-id>",
+	Short: "Delete a platform key",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/api-keys/"+args[0], nil)
+	}),
+}
+
+var remoteAdminLLMOAuthCmd = &cobra.Command{
+	Use:   "oauth",
+	Short: "Platform OAuth-forfait connections (list by default)",
+	Args:  cobra.NoArgs,
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/oauth/connections")
+	}),
+}
+
+var remoteAdminLLMOAuthSetCmd = &cobra.Command{
+	Use:   "set <kind>",
+	Short: "Store a forfait blob (claude_code credentials.json / codex auth.json) from --from-file/--from-env/stdin",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		blob, err := cli.ReadSecretBlob(remoteLLMFromEnv, remoteLLMFromFile)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+args[0]+"/credentials", blob)
+	}),
+}
+
+var remoteAdminLLMOAuthConnectCmd = &cobra.Command{
+	Use:   "connect [kind]",
+	Short: "Connect a forfait via the browser code flow (default kind: claude_code)",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		kind := "claude_code"
+		if len(args) == 1 {
+			kind = args[0]
+		}
+		return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind)
+	}),
+}
+
+var remoteAdminLLMOAuthRefreshCmd = &cobra.Command{
+	Use:   "refresh <kind>",
+	Short: "Force-refresh a forfait's access token",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+args[0]+"/refresh", nil)
+	}),
+}
+
+var remoteAdminLLMOAuthDeleteCmd = &cobra.Command{
+	Use:   "delete <kind>",
+	Short: "Disconnect a platform forfait",
+	Args:  cobra.ExactArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/oauth/"+args[0], nil)
+	}),
+}
+
 // --- org SSO ---
 
 var remoteSSOData string
@@ -224,7 +349,20 @@ var remotePluginsCmd = &cobra.Command{
 func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd)
+
+	for _, c := range []*cobra.Command{remoteAdminLLMKeysCreateCmd, remoteAdminLLMKeysRotateCmd, remoteAdminLLMOAuthSetCmd} {
+		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the value from this environment variable")
+		c.Flags().StringVar(&remoteLLMFromFile, "from-file", "", "Read the value from this file")
+	}
+	remoteAdminLLMKeysCreateCmd.Flags().StringVar(&remoteLLMProvider, "provider", "", "LLM provider (anthropic|openai|…)")
+	remoteAdminLLMKeysCreateCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name")
+	remoteAdminLLMKeysCreateCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make this the provider's default platform key")
+	remoteAdminLLMKeysUpdateCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON (literal or @file)")
+	remoteAdminLLMKeysCmd.AddCommand(remoteAdminLLMKeysCreateCmd, remoteAdminLLMKeysRotateCmd, remoteAdminLLMKeysUpdateCmd, remoteAdminLLMKeysDeleteCmd)
+	remoteAdminLLMOAuthCmd.AddCommand(remoteAdminLLMOAuthSetCmd, remoteAdminLLMOAuthConnectCmd, remoteAdminLLMOAuthRefreshCmd, remoteAdminLLMOAuthDeleteCmd)
+	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

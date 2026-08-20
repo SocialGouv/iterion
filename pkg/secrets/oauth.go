@@ -51,6 +51,19 @@ const OrgOwnerPrefix = "org:"
 // shared forfait credential is stored.
 func OrgOwnerKey(tenantID string) string { return OrgOwnerPrefix + tenantID }
 
+// PlatformOwnerKey is the synthetic owner key under which the DEPLOYMENT's
+// own forfait credential is stored — the DB-backed form of the platform
+// fallback that historically lived only in runner-pod env
+// (CLAUDE_CODE_OAUTH_TOKEN et al.). Same OrgOwnerKey trick: an ordinary
+// OAuthRecord under a reserved owner reuses the whole store/seal/refresh
+// machinery without a schema change. The cloud publisher consults it LAST
+// (after user, org, and the mutualised pool) for the OAuth kinds a run
+// still lacks; managed by super-admins via /api/admin/llm/oauth. The
+// prefix-with-colon shape matches OrgOwnerPrefix's convention and cannot
+// collide with a real user id (UUID/email) or an OrgOwnerKey (always
+// "org:<team-uuid>").
+const PlatformOwnerKey = "platform:"
+
 // OAuthRecord is the per-(user, kind) sealed credential bundle.
 //
 // SealedPayload is opaque to iterion — it holds the verbatim

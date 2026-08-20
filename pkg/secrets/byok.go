@@ -41,6 +41,19 @@ func withApiKeyTenantFilter(ctx context.Context, base bson.M) (bson.M, error) {
 // keys.
 var ErrApiKeyTenantMissing = errors.New("secrets: ApiKey store called without tenant context")
 
+// PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
+// provider API keys are stored — the DB-backed form of the platform env
+// fallback (ANTHROPIC_API_KEY et al. on the runner pod). Platform keys are
+// ordinary ApiKey rows with TenantID = ScopeTeamID = PlatformTenantID,
+// written and read under store.WithTenant(ctx, PlatformTenantID), so the
+// whole store (tenant filter, defaults, rotation, MarkUsed) is reused with
+// zero schema change — the ApiKeyStore counterpart of PlatformOwnerKey.
+// Team ids are UUIDs, so the prefix-with-colon shape cannot collide with a
+// real tenant. The cloud publisher consults these LAST (after tenant BYOK,
+// OAuth-forfait, and the mutualised pool) for the providers a run still
+// lacks; managed by super-admins via /api/admin/llm/api-keys.
+const PlatformTenantID = "platform:"
+
 // Provider enumerates the supported LLM credential providers. The
 // string values are stable wire identifiers; do not rename without a
 // migration. Naming mirrors what the model registry consumes.

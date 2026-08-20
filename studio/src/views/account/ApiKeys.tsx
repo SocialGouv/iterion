@@ -14,12 +14,15 @@ import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
+  type ApiKeyScope,
   type ApiKeyView,
   type Provider,
   createMyApiKey,
+  createPlatformApiKey,
   createTeamApiKey,
   deleteApiKey,
   listMyApiKeys,
+  listPlatformApiKeys,
   listTeamApiKeys,
   updateApiKey,
 } from "@/api/byok";
@@ -32,15 +35,18 @@ const PROVIDER_OPTIONS: Provider[] = [
   "azure",
   "openrouter",
   "xai",
+  "zai",
 ];
 
 interface Props {
-  // When team is set, manage that team's keys; otherwise manage the
-  // current user's personal keys.
+  // When team is set, manage that team's keys; when platform is set
+  // (super-admin), manage the deployment's own fallback keys; otherwise
+  // manage the current user's personal keys.
   team?: { id: string; name: string };
+  platform?: boolean;
 }
 
-export default function ApiKeysPanel({ team }: Props) {
+export default function ApiKeysPanel({ team, platform = false }: Props) {
   const { activeRole, user } = useAuth();
   // BYOK stores (/api/me/api-keys, /api/teams/{id}/api-keys) are only wired
   // in cloud mode — gate on server_info BEFORE fetching so local/desktop
@@ -48,11 +54,17 @@ export default function ApiKeysPanel({ team }: Props) {
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
   const queryClient = useQueryClient();
-  const teamKey = team?.id ?? "mine";
+  const teamKey = platform ? "platform" : team?.id ?? "mine";
   const queryKey = ["api-keys", teamKey];
+  const mutScope: ApiKeyScope = platform
+    ? { platform: true }
+    : team
+      ? { team_id: team.id }
+      : { mine: true };
   const query = useQuery<ApiKeyView[]>({
     queryKey,
-    queryFn: () => (team ? listTeamApiKeys(team.id) : listMyApiKeys()),
+    queryFn: () =>
+      platform ? listPlatformApiKeys() : team ? listTeamApiKeys(team.id) : listMyApiKeys(),
     enabled: isCloud,
   });
   const keys = query.data ?? [];
@@ -81,9 +93,11 @@ export default function ApiKeysPanel({ team }: Props) {
     is_default: false,
   });
 
-  const canManage = team
-    ? activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false)
-    : true; // Personal keys are always editable by their owner.
+  const canManage = platform
+    ? (user?.is_super_admin ?? false) // Platform keys fund every tenant.
+    : team
+      ? activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false)
+      : true; // Personal keys are always editable by their owner.
 
   // Post-mutation refresh: clear the shared error slot and refetch the list.
   const reload = () => {
@@ -96,7 +110,9 @@ export default function ApiKeysPanel({ team }: Props) {
     setAdding(true);
     setMutErr(null);
     try {
-      if (team) {
+      if (platform) {
+        await createPlatformApiKey(draft);
+      } else if (team) {
         await createTeamApiKey(team.id, draft);
       } else {
         await createMyApiKey(draft);
@@ -113,7 +129,7 @@ export default function ApiKeysPanel({ team }: Props) {
 
   const toggleDefault = async (k: ApiKeyView) => {
     try {
-      await updateApiKey(team ? { team_id: team.id } : { mine: true }, k.id, {
+      await updateApiKey(mutScope, k.id, {
         is_default: !k.is_default,
       });
       reload();
@@ -131,7 +147,7 @@ export default function ApiKeysPanel({ team }: Props) {
     });
     if (!ok) return;
     try {
-      await deleteApiKey(team ? { team_id: team.id } : { mine: true }, k.id);
+      await deleteApiKey(mutScope, k.id);
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -160,7 +176,11 @@ export default function ApiKeysPanel({ team }: Props) {
       {dialog}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">
-          {team ? `${team.name} — Team API keys` : "My API keys"}
+          {platform
+            ? "Platform API keys"
+            : team
+              ? `${team.name} — Team API keys`
+              : "My API keys"}
         </h2>
         {canManage && (
           <Button
@@ -241,7 +261,15 @@ export default function ApiKeysPanel({ team }: Props) {
       ) : keys.length === 0 ? (
         <EmptyState message="No keys yet." />
       ) : (
-        <Table caption={team ? `${team.name} team API keys` : "My API keys"}>
+        <Table
+          caption={
+            platform
+              ? "Platform API keys"
+              : team
+                ? `${team.name} team API keys`
+                : "My API keys"
+          }
+        >
           <THead>
             <Th>Provider</Th>
             <Th>Name</Th>

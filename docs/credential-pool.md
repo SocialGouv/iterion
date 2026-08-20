@@ -5,7 +5,9 @@ Pro/Max or ChatGPT **subscription**, or a personal **API key** of any
 provider — and how a run with no credential of its own draws on it.
 
 Read [cloud-llm-credentials.md](cloud-llm-credentials.md) first: the pool is
-the **fourth and last** tier of the credential resolution described there.
+the **fourth** tier of the credential resolution described there — below it
+sit only the deployment's own platform credentials (DB-backed) and the
+runner-pod env backstop.
 
 ## The one-paragraph model
 

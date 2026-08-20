@@ -47,6 +47,23 @@ type Credentials struct {
 	// runner uses it to seed the App-bot git committer identity, which a
 	// bare installation token can't self-resolve. Empty for PAT/OAuth runs.
 	ForgeAppBotLogin string
+	// PlatformSourced names the slots (provider names / OAuth kinds) the
+	// platform tier filled — see RunBundle.PlatformSourced. Consumers that
+	// scope metering or policy per tenant must treat these as the
+	// deployment's own credential, not the tenant's.
+	PlatformSourced []string
+}
+
+// IsPlatformSourced reports whether the named credential slot (a provider
+// name like "anthropic" or an OAuth kind like "claude_code") was filled by
+// the platform tier rather than the tenant's own stores.
+func (c Credentials) IsPlatformSourced(slot string) bool {
+	for _, s := range c.PlatformSourced {
+		if s == slot {
+			return true
+		}
+	}
+	return false
 }
 
 // APIKey returns the plaintext API key for the requested provider

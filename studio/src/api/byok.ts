@@ -11,7 +11,8 @@ export type Provider =
   | "vertex"
   | "azure"
   | "openrouter"
-  | "xai";
+  | "xai"
+  | "zai";
 
 export interface ApiKeyView {
   id: string;
@@ -100,41 +101,70 @@ export async function createMyApiKey(input: {
   });
 }
 
-// ---- Mutations shared between team + user keys ----
+// ---- Platform-scoped keys (super-admin) ----
+//
+// The deployment's own DB-backed provider credentials — the fallback tier
+// serving every run that resolved no tenant credential, replacing the
+// runner-pod env vars that used to require a redeploy to rotate.
+
+export async function listPlatformApiKeys(): Promise<ApiKeyView[]> {
+  const res = await send<{ keys: ApiKeyView[] }>(`/admin/llm/api-keys`);
+  return res.keys ?? [];
+}
+
+export async function createPlatformApiKey(input: {
+  provider: Provider;
+  name: string;
+  secret: string;
+  is_default?: boolean;
+}): Promise<ApiKeyView> {
+  return send(`/admin/llm/api-keys`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+// ---- Mutations shared between team, user and platform keys ----
+
+export type ApiKeyScope = { team_id: string } | { mine: true } | { platform: true };
+
+function apiKeyRoot(scope: ApiKeyScope, keyID: string): string {
+  if ("team_id" in scope) return `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`;
+  if ("platform" in scope) return `/admin/llm/api-keys/${encodeURIComponent(keyID)}`;
+  return `/me/api-keys/${encodeURIComponent(keyID)}`;
+}
 
 export async function updateApiKey(
-  scope: { team_id: string } | { mine: true },
+  scope: ApiKeyScope,
   keyID: string,
   input: { name?: string; is_default?: boolean; secret?: string },
 ): Promise<ApiKeyView> {
-  const root = "team_id" in scope
-    ? `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`
-    : `/me/api-keys/${encodeURIComponent(keyID)}`;
-  return send(root, {
+  return send(apiKeyRoot(scope, keyID), {
     method: "PATCH",
     body: JSON.stringify(input),
   });
 }
 
 export async function deleteApiKey(
-  scope: { team_id: string } | { mine: true },
+  scope: ApiKeyScope,
   keyID: string,
 ): Promise<void> {
-  const root = "team_id" in scope
-    ? `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`
-    : `/me/api-keys/${encodeURIComponent(keyID)}`;
-  await send(root, { method: "DELETE" });
+  await send(apiKeyRoot(scope, keyID), { method: "DELETE" });
 }
 
-// ---- OAuth-forfait (per-user OR per-org) ----
+// ---- OAuth-forfait (per-user, per-org, or platform) ----
 
 // OAuthScope selects the owner the credential is stored against: the
-// authenticated user (personal, the default) or a team/org (admin-only,
-// used as a fallback for automated runs with no human owner).
-export type OAuthScope = { mine: true } | { teamId: string };
+// authenticated user (personal, the default), a team/org (admin-only,
+// used as a fallback for automated runs with no human owner), or the
+// PLATFORM (super-admin — the deployment's own fallback forfait, last
+// tier before the runner-pod env).
+export type OAuthScope = { mine: true } | { teamId: string } | { platform: true };
 
 function oauthBase(scope: OAuthScope): string {
-  return "mine" in scope ? `/me/oauth` : `/teams/${encodeURIComponent(scope.teamId)}/oauth`;
+  if ("teamId" in scope) return `/teams/${encodeURIComponent(scope.teamId)}/oauth`;
+  if ("platform" in scope) return `/admin/llm/oauth`;
+  return `/me/oauth`;
 }
 
 export interface OAuthAuthorizeStart {
