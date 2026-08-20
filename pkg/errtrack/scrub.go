@@ -24,20 +24,28 @@ var sensitiveKeys = []string{
 	"authorization", "cookie", "secret", "token", "password", "passwd",
 	"api_key", "apikey", "credential", "private_key", "dsn", "session",
 	"bearer",
-	// iterion's own request-borne credential: the ephemeral run bearer
-	// authorizing the board-MCP / ask_user HTTP transports. Bare hex, so
-	// no value pattern can catch it — the header NAME is the signal.
-	"x-iterion-run",
+	// iterion's own request-borne credentials as a FAMILY: X-Iterion-Run
+	// (the ephemeral run bearer on the board-MCP / ask_user transports)
+	// and X-Iterion-Refresh (the session refresh fallback for SDK
+	// clients) are bare tokens no value pattern can catch — the header
+	// NAME is the signal, and matching the prefix closes the class
+	// instead of chasing each header. An X-Iterion-* header carries
+	// protocol state, never diagnostic value worth shipping.
+	"x-iterion-",
 }
 
 // sensitiveQueryParams are query-string parameter names whose VALUE is
 // a credential without matching any sensitiveKeys fragment — the OAuth
-// authorization `code` and CSRF `state` on the SSO / forge callbacks.
-// Kept separate from sensitiveKeys: as prose, "code" and "state" are
-// everywhere ("exit code=1"), but as QUERY PARAMETERS they are precise.
+// authorization `code` and CSRF `state` on the SSO / forge callbacks,
+// and `sig`, the presigned-attachment HMAC that authenticates a
+// download for its whole TTL (a traced URL carrying it would be a
+// replayable grant to a run artifact). Kept separate from
+// sensitiveKeys: as prose, "code" and "state" are everywhere
+// ("exit code=1"), but as QUERY PARAMETERS they are precise.
 var sensitiveQueryParams = map[string]bool{
 	"code":  true,
 	"state": true,
+	"sig":   true,
 }
 
 // secretPatterns redact a secret embedded in an otherwise-useful

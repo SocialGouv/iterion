@@ -67,13 +67,16 @@ func enableGenerationTracing(t *testing.T) *spanTransport {
 	return genTransport
 }
 
-// DECLARATION ORDER MATTERS: this must run before the test below turns
-// tracing on, because errtrack's Init is once-per-process. It is the
-// off-state proof for the generation seam — the shape every deployment
-// that has not set SENTRY_TRACES_SAMPLE_RATE runs in.
+// The off-state proof for the generation seam — the shape every
+// deployment that has not set SENTRY_TRACES_SAMPLE_RATE runs in.
+// errtrack's Init is once-per-process, so when another test in the
+// package (in whatever order -shuffle picked) has already enabled
+// tracing, the off state is simply not observable here any more: SKIP
+// rather than fail — pkg/errtrack's own tests (which have a test-only
+// reset) keep the off-state covered regardless of order.
 func TestGenerationEmitsNoTransactionWhenTracingIsOff(t *testing.T) {
 	if errtrack.TracingEnabled() {
-		t.Fatal("tracing is already on — a test declared earlier enabled it")
+		t.Skip("tracing already enabled by another test in this process; off-state covered by pkg/errtrack's own tests")
 	}
 	client := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hi", "end_turn")}}
 
