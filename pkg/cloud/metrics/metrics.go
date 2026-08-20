@@ -191,20 +191,31 @@ func (r *Registry) Handler() http.Handler {
 	return promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{Registry: r.reg})
 }
 
-// StartServer binds a dedicated HTTP listener for /metrics. Returns
-// the *http.Server so the caller can Shutdown it cleanly. addr is
-// host:port (e.g. ":9090"); empty addr disables the listener and
-// returns nil, nil.
+// Mount is an extra route served alongside /metrics on the same
+// listener. The runner uses it for its probe endpoints, which the chart
+// already points at this port.
+type Mount struct {
+	Path    string
+	Handler http.Handler
+}
+
+// StartServer binds a dedicated HTTP listener for /metrics plus any
+// extra mounts. Returns the *http.Server so the caller can Shutdown it
+// cleanly. addr is host:port (e.g. ":9090"); empty addr disables the
+// listener and returns nil, nil.
 //
 // On listener-bind failure StartServer returns the error
 // synchronously so an operator who configured ITERION_METRICS_ADDR
 // observes the gap at boot, not in a silent goroutine.
-func (r *Registry) StartServer(addr string, logger *iterlog.Logger) (*http.Server, error) {
+func (r *Registry) StartServer(addr string, logger *iterlog.Logger, mounts ...Mount) (*http.Server, error) {
 	if addr == "" {
 		return nil, nil
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", r.Handler())
+	for _, m := range mounts {
+		mux.Handle(m.Path, m.Handler)
+	}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,

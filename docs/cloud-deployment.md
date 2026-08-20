@@ -430,8 +430,19 @@ For a real install + workflow exec, see the `cloud-e2e` CI job in
 
 | Path | Behaviour |
 |---|---|
-| `/healthz` | 200 if the HTTP listener is up — covers liveness probe |
-| `/readyz` | Pings Mongo + NATS + S3 with 1s sub-deadline each, 503 on any failure — covers readiness probe |
+| `/healthz` | 200 if the HTTP listener is up — covers liveness (and the startup probe) |
+| `/readyz` | Pings Mongo + NATS + S3 + Valkey with a 1s sub-deadline each. 503 while draining, or when a **critical** dependency (Mongo) is down; a failing non-critical one reports `status: degraded` and still answers **200** |
 
 The `/readyz` JSON response details which dependency is failing so the
 operator can debug from `kubectl describe pod`.
+
+Only Mongo gates readiness because every replica pings the same backends:
+a critical check on a shared dependency converts a 15s blip into a
+fleet-wide outage — all pods leave the Service at once and the ingress
+503s even the routes that never touch it. The runner exposes the same two
+paths on its metrics port, where `/healthz` reports the consume **loop**
+(busy vs wedged) rather than an open socket.
+
+Sizing the exit: `probes.preStopDelaySeconds + config.server.shutdownDelay
++ 30s teardown ≤ server.terminationGracePeriodSeconds`. Full reference:
+[probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md).

@@ -60,7 +60,7 @@ How to verify: `helm template ./charts/iterion -f values-prod.yaml | grep image:
 - [ ] **Prometheus** scrapes `/metrics` on the server. The chart's `metrics.podMonitor.enabled` switch wires this when prometheus-operator is installed.
 - [ ] **OTLP traces** exported to a collector if you have one. Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or the traces-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) on server + runner.
 - [ ] **Log format** is JSON in production. `ITERION_LOG_FORMAT=json` set on server + runner; verified by piping a server log line through `jq`.
-- [ ] **Alert rules** exist for: `/readyz` 503 > 1m, NATS queue depth > 100 sustained, runner OOM kills, Trivy failed scan, JWT signing-key proximity to expiry.
+- [ ] **Alert rules** exist for: `/readyz` 503 > 1m, `/readyz` **200 with `"status":"degraded"`** > 5m (a NATS/S3/Valkey outage no longer 503s by design — see [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md) — so without this rule it is invisible), NATS queue depth > 100 sustained, runner OOM kills, Trivy failed scan, JWT signing-key proximity to expiry.
 - [ ] **Runbook** linked from each alert. The runbook is `cloud-troubleshooting.md` plus alert-specific notes.
 
 How to verify: kill a runner pod; `/api/runs/<id>/events` should not stream new events (run hangs); the alert for queue-depth or stale-run should fire within its configured window.

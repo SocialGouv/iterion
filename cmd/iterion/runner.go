@@ -127,12 +127,17 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	}
 	defer closeCloudStoreWithTimeout(st)
 
-	// 4. Prometheus metrics on a dedicated port. Bound before the
-	//    consumer loop starts so the kubelet readiness probe lands
-	//    on the same listener if we ever fold metrics into it.
+	// 4. Prometheus metrics + the kubelet probes on a dedicated port.
+	//    Bound before the runner is built so a port conflict surfaces at
+	//    boot; until runner.New publishes the health source the probes
+	//    answer "starting" (503 on /readyz), which is the honest state.
 	mreg := metrics.New()
 	metricsAddr := fmt.Sprintf(":%d", cfg.Metrics.Port)
-	metricsSrv, err := mreg.StartServer(metricsAddr, logger)
+	health := &runner.HealthProvider{}
+	metricsSrv, err := mreg.StartServer(metricsAddr, logger,
+		metrics.Mount{Path: "/healthz", Handler: health.LivenessHandler()},
+		metrics.Mount{Path: "/readyz", Handler: health.ReadinessHandler()},
+	)
 	if err != nil {
 		return fmt.Errorf("runner: start metrics: %w", err)
 	}
@@ -270,6 +275,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)
 	}
+	health.Set(r.Health)
 
 	// SIGTERM handling: stop fetching, then drain per DrainMode — lame-duck
 	// (let the in-flight run finish) or interrupt (cancel + checkpoint for

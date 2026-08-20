@@ -33,6 +33,13 @@ server:
     - "0.0.0.0"
   port: 4891
   metricsPort: 9090
+  # k8s hard bound before SIGKILL. Must cover the whole exit sequence:
+  #   probes.preStopDelaySeconds
+  #   + config.server.shutdownDelay
+  #   + config.server.shutdownTeardown
+  # With the defaults: 0 + 5 + 30 = 35s, inside 60. Raise this whenever you
+  # widen any of the three.
+  terminationGracePeriodSeconds: 60
   resources:
     requests:
       cpu: 100m
@@ -199,6 +206,23 @@ config:
     region: us-east-1
     bucket: iterion-artifacts
     usePathStyle: true
+  server:
+    # Lame-duck window on SIGTERM: /readyz answers 503 for this long while
+    # the listener still accepts, giving the endpoints controller time to
+    # pull the pod out of the Service before its socket closes. Otherwise
+    # every rolling deploy and every HPA scale-down refuses connections
+    # still routed to the terminating pod (502s, dropped forge webhooks).
+    # Must fit inside server.terminationGracePeriodSeconds alongside the
+    # teardown below — see the arithmetic there. Set "0s" to disable the
+    # window; an EMPTY value does not disable it, it just omits the env var
+    # and lets the binary's own 5s default apply.
+    shutdownDelay: 5s
+    # What the process spends AFTER that window: draining in-flight runs,
+    # then letting in-flight HTTP requests finish. This is the ceiling on
+    # an operator's own work — a large artifact upload or a streamed
+    # response is cut when it expires — so raise it for a deployment that
+    # serves long requests (and raise the grace period to match).
+    shutdownTeardown: 30s
   runner:
     workdir: /tmp/iterion
     concurrency: 1
@@ -408,8 +432,31 @@ probes:
     path: /readyz
     initialDelaySeconds: 3
     periodSeconds: 5
-    timeoutSeconds: 1
+    # Must exceed the server's per-dependency ping deadline (1s, applied
+    # concurrently across Mongo/NATS/S3/Valkey — so the handler answers in
+    # max(ping), not sum). At 1s the kubelet would abort a probe that was
+    # about to report a merely-degraded backend, failing readiness on the
+    # exact case the critical/degraded split exists to survive.
+    timeoutSeconds: 3
     failureThreshold: 3
+  # The boot budget. A cloud server connects NATS + S3 + Mongo and ensures
+  # the schema of ~28 collections BEFORE it binds its listener, so on a cold
+  # or contended Mongo it can outlast the liveness budget above (10s + 3×10s)
+  # and get killed into a CrashLoop that reads like an application bug. While
+  # a startupProbe is failing, liveness and readiness are suspended — so this
+  # threshold, not theirs, is what bounds a slow boot.
+  startup:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30 # 30 × 5s = 150s of boot budget
+  # Belt-and-braces for ingress controllers that route to the Service
+  # ClusterIP instead of to endpoints (nginx `service-upstream`), where the
+  # readiness flip alone does not divert traffic. The hook runs BEFORE
+  # SIGTERM, so its seconds ADD to config.server.shutdownDelay — hence the
+  # default of 0 (the in-process window is the primary mechanism). If you
+  # raise it, raise server.terminationGracePeriodSeconds by as much.
+  preStopDelaySeconds: 0
 
 # --- Pod security ---------------------------------------------------
 serviceAccount:

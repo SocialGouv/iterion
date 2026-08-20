@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/audit"
@@ -247,6 +248,27 @@ type Server struct {
 	// reaper, future periodic tasks) can stop without polling the HTTP
 	// server's state.
 	shutdown chan struct{}
+
+	// readyzInflight holds the names of readiness checks whose previous
+	// probe has not returned yet. A driver that ignores its context never
+	// returns, and the kubelet re-probes every few seconds — so without
+	// this, every probe would abandon another pair of captive goroutines
+	// (measured: ~5.7 KB retained per probe, ~100 MB/day) until the pod is
+	// OOMKilled. That is a SIGKILL: no drain, no lame-duck window, nothing
+	// — the exact outcome the rest of this file exists to avoid. Skipping
+	// a still-running check bounds the leak at one goroutine per check
+	// instead of one per probe.
+	readyzInflight sync.Map // check name -> *readyzProbe
+
+	// draining is set at the very top of Shutdown, before anything is torn
+	// down, so /readyz answers 503 while the listener is still accepting.
+	// That lame-duck window is what lets the endpoints controller pull this
+	// pod out of the Service before its socket closes — without it every
+	// rolling deploy and every HPA scale-down refuses connections that were
+	// still being routed here (lost webhooks, 502s in the studio).
+	// /healthz stays 200 throughout: a liveness failure would make the
+	// kubelet kill the pod mid-drain.
+	draining atomic.Bool
 
 	// browserSessions is the per-run Chromium CDP session registry,
 	// shared with the runtime. Nil disables the Browser pane's live
