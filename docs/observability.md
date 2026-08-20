@@ -235,7 +235,9 @@ That is the **whole** list, and deliberately so:
   a server that also serves an SPA.
 - The engine's node loop, the store and the dispatcher are **not**
   instrumented. One hand-made seam, done well, beats a tree of spans
-  nobody reads.
+  nobody reads. That includes `iterion dispatch`'s own little
+  loopback mux (healthz + `/api/server/info` + the SPA): it is not the
+  API server, and tracing a static-file host buys nothing.
 
 Only the CLI-agent backends' *in-process* path is covered: a
 `claude_code` / `codex` / `pi` / `kimi` / `grok` node shells out to its
