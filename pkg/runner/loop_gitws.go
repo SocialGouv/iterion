@@ -220,6 +220,15 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// validated canonical https host to an internal address must not be
 	// auto-followed by git.
 	if err := r.runGitEnv(ctx, "", tok, gitEnv, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
+		if tok == "" {
+			// The clone ran with NO forge credential in the run's bundle —
+			// for a private repo that fails on symptoms that never name this
+			// cause ("could not read Username…"). The usual reason: the
+			// workflow declares no forge_token secret, so the repo-targeted
+			// launch's SecretOverrides had nothing to fill (overrides only
+			// populate DECLARED secrets).
+			return "", fmt.Errorf("%w (clone ran credential-less: no forge_token/gitlab_token/github_token in the run's sealed bundle — a private repo needs the workflow to declare a forge_token secret for the launch override to fill)", err)
+		}
 		return "", err
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {

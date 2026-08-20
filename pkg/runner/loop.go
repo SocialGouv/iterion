@@ -1163,11 +1163,19 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// see the credentials in ctx. The result lives only in ctx; the runner
 	// process itself stays clean of plaintext keys.
 	ctx, cleanup, credErr := r.injectCredentials(ctx, msg)
-	if credErr != nil {
-		r.cfg.Logger.Warn("runner: credentials inject %s: %v (continuing without)", msg.RunID, credErr)
-	}
 	if cleanup != nil {
 		defer cleanup()
+	}
+	if credErr != nil {
+		// A run whose publisher sealed credentials the runner cannot open
+		// MUST NOT proceed without them: everything downstream fails on
+		// symptoms that never name this cause (a credential-less clone, an
+		// unauthenticated LLM call). Returning routes through the ordinary
+		// nak/redelivery path — the sealed bundle deliberately survives
+		// non-terminal outcomes precisely so a redelivery can re-fetch it.
+		// A run with no bundle at all (SecretsRef == "") still proceeds:
+		// injectCredentials returns nil for that legitimate case.
+		return fmt.Errorf("runner: credentials inject %s: %w", msg.RunID, credErr)
 	}
 
 	// Usage cap, pre-flight. Placed after the credentials (which name the
