@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -130,10 +131,14 @@ type PodManifestInput struct {
 // caSecretKey is the Secret data key + projected filename for the egress
 // inspection CA. caMountDir is where the Secret volume is mounted in the
 // pod; caContainerPath is the resulting in-pod CA file path.
+// trustStoreSecretKey is the sibling PKCS12 truststore for JVM clients
+// (egress CA + system roots — see netproxy.JavaTrustStorePKCS12).
 const (
-	caSecretKey     = "egress-ca.pem"
-	caMountDir      = "/run/iterion-ca"
-	caContainerPath = caMountDir + "/" + caSecretKey
+	caSecretKey             = "egress-ca.pem"
+	caMountDir              = "/run/iterion-ca"
+	caContainerPath         = caMountDir + "/" + caSecretKey
+	trustStoreSecretKey     = "egress-truststore.p12"
+	trustStoreContainerPath = caMountDir + "/" + trustStoreSecretKey
 )
 
 // BuildPodManifest renders the YAML for a sibling pod that hosts a
@@ -396,6 +401,19 @@ func caInjection(secretName string, envSlice *[]any) (volumes, volumeMounts []an
 	} {
 		*envSlice = upsertEnv(*envSlice, name, caContainerPath)
 	}
+	// JVMs read NONE of the above — their trust is a keystore-typed file,
+	// and the first `gradlew build` behind the inspecting proxy dies in
+	// SunCertPathBuilder without one. The secret ships a ready PKCS12
+	// truststore (egress CA + system roots); the two dedicated vars are
+	// the stable contract for build scripts, and JAVA_TOOL_OPTIONS (read
+	// by every JVM at startup) makes the common case zero-touch. Appended,
+	// not replaced: devbox/nix hooks legitimately put encoding flags
+	// there, and a java command line still overrides both.
+	*envSlice = upsertEnv(*envSlice, "ITERION_JAVA_TRUSTSTORE", trustStoreContainerPath)
+	*envSlice = upsertEnv(*envSlice, "ITERION_JAVA_TRUSTSTORE_PASSWORD", netproxy.JavaTrustStorePassword)
+	*envSlice = appendEnv(*envSlice, "JAVA_TOOL_OPTIONS",
+		"-Djavax.net.ssl.trustStore="+trustStoreContainerPath+
+			" -Djavax.net.ssl.trustStorePassword="+netproxy.JavaTrustStorePassword)
 	volumes = []any{
 		map[string]any{
 			"name": "iterion-egress-ca",
@@ -403,6 +421,7 @@ func caInjection(secretName string, envSlice *[]any) (volumes, volumeMounts []an
 				"secretName": secretName,
 				"items": []any{
 					map[string]any{"key": caSecretKey, "path": caSecretKey},
+					map[string]any{"key": trustStoreSecretKey, "path": trustStoreSecretKey},
 				},
 			},
 		},
@@ -420,10 +439,17 @@ func caInjection(secretName string, envSlice *[]any) (volumes, volumeMounts []an
 // BuildCASecret renders the per-run Secret holding the egress
 // TLS-inspection CA (the public CA cert only — the private key never
 // leaves the runner). Applied by the driver before the pod so the pod
-// can mount it. The data is the PEM, base64-encoded under caSecretKey.
+// can mount it. The data is the PEM under caSecretKey plus a ready
+// PKCS12 truststore for JVM clients under trustStoreSecretKey — the
+// CA-bundle env vars cover OpenSSL/curl/git/Node/python/nix but a JVM
+// only trusts a keystore-typed file.
 func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte, owner *OwnerReference) ([]byte, error) {
 	if namespace == "" || name == "" {
 		return nil, fmt.Errorf("kubernetes: CA secret namespace and name are required")
+	}
+	trustStore, _, err := netproxy.JavaTrustStorePKCS12(caPEM)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes: CA secret: %w", err)
 	}
 	labels := map[string]string{
 		LabelManaged:   "true",
@@ -445,7 +471,8 @@ func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte, ow
 		"metadata":   meta,
 		"type":       "Opaque",
 		"data": map[string]any{
-			caSecretKey: base64.StdEncoding.EncodeToString(caPEM),
+			caSecretKey:         base64.StdEncoding.EncodeToString(caPEM),
+			trustStoreSecretKey: base64.StdEncoding.EncodeToString(trustStore),
 		},
 	}
 	return json.MarshalIndent(secret, "", "  ")
@@ -633,6 +660,31 @@ func upsertEnv(env []any, name, value string) []any {
 		}
 		if existing, _ := m["name"].(string); existing == name {
 			env[i] = map[string]any{"name": name, "value": value}
+			return env
+		}
+	}
+	return append(env, map[string]any{"name": name, "value": value})
+}
+
+// appendEnv appends value to an existing space-separated env var
+// instead of replacing it (JAVA_TOOL_OPTIONS-shaped vars accumulate
+// flags from several owners). Idempotent: a value already present is
+// not appended twice.
+func appendEnv(env []any, name, value string) []any {
+	for i, e := range env {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if existing, _ := m["name"].(string); existing == name {
+			current, _ := m["value"].(string)
+			if strings.Contains(current, value) {
+				return env
+			}
+			if current != "" {
+				current += " "
+			}
+			env[i] = map[string]any{"name": name, "value": current + value}
 			return env
 		}
 	}
