@@ -41,6 +41,14 @@ func withApiKeyTenantFilter(ctx context.Context, base bson.M) (bson.M, error) {
 // keys.
 var ErrApiKeyTenantMissing = errors.New("secrets: ApiKey store called without tenant context")
 
+// platformScope is the single reserved literal both platform scopes derive
+// from: one concept — "the deployment itself" — indexed in two namespaces
+// (api-key tenant ids and OAuth owner keys). The prefix-with-colon shape
+// cannot collide with a real tenant/user id (UUIDs, emails) nor with an
+// OrgOwnerKey (always "org:<team-uuid>"). Renames migrate BOTH exported
+// names at once by construction.
+const platformScope = "platform:"
+
 // PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
 // provider API keys are stored — the DB-backed form of the platform env
 // fallback (ANTHROPIC_API_KEY et al. on the runner pod). Platform keys are
@@ -48,11 +56,10 @@ var ErrApiKeyTenantMissing = errors.New("secrets: ApiKey store called without te
 // written and read under store.WithTenant(ctx, PlatformTenantID), so the
 // whole store (tenant filter, defaults, rotation, MarkUsed) is reused with
 // zero schema change — the ApiKeyStore counterpart of PlatformOwnerKey.
-// Team ids are UUIDs, so the prefix-with-colon shape cannot collide with a
-// real tenant. The cloud publisher consults these LAST (after tenant BYOK,
+// The cloud publisher consults these LAST (after tenant BYOK,
 // OAuth-forfait, and the mutualised pool) for the providers a run still
 // lacks; managed by super-admins via /api/admin/llm/api-keys.
-const PlatformTenantID = "platform:"
+const PlatformTenantID = platformScope
 
 // Provider enumerates the supported LLM credential providers. The
 // string values are stable wire identifiers; do not rename without a

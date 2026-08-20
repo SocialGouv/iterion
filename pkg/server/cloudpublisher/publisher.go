@@ -339,6 +339,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		GenericSecretHosts: map[string][]string{},
 		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
+		PlatformSourced:    map[string]bool{},
 	}
 
 	// 1. BYOK API keys.
@@ -559,28 +560,14 @@ type credResolution struct {
 	grant      *credpool.Grant
 }
 
-// wireFamily groups credential slots that authenticate the same wire, so
-// the platform tier never fills a slot that would SHADOW a credential the
-// run already holds in another shape: the claude_code delegate ranks a ctx
-// API key (and a z.ai facade key) above a ctx OAuth dir, so filling
-// APIKeys[anthropic] next to a tenant's own claude_code forfait would make
-// every call spend the platform key instead of the credential the tenant
-// chose. Slots outside the two shared wires are their own family.
-func wireFamily(slot string) string {
-	switch slot {
-	case string(secrets.ProviderAnthropic), string(secrets.ProviderZAI), string(secrets.OAuthKindClaudeCode):
-		return "anthropic-wire"
-	case string(secrets.ProviderOpenAI), string(secrets.OAuthKindCodex):
-		return "openai-wire"
-	default:
-		return slot
-	}
-}
-
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
 // tenant tiers and the pool from the platform stores — the DB-backed form
 // of the runner-pod env fallback, so rotating the deployment's credential
-// is one CLI call instead of a redeploy. Filled slots are recorded on
+// is one CLI call instead of a redeploy. It fills per WIRE FAMILY
+// (secrets.WireFamily), never adding a credential to a wire the run
+// already holds in another shape — the delegates rank a ctx API key above
+// a ctx OAuth dir, so a platform key filled next to a tenant's own forfait
+// would silently serve every call. Filled slots are recorded on
 // bundle.PlatformSourced so the runner's usage-cap scope check keeps
 // metering them on the shared platform key rather than per tenant.
 //
@@ -593,12 +580,12 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 	}
 	taken := map[string]bool{}
 	for prov := range bundle.APIKeys {
-		taken[wireFamily(string(prov))] = true
+		taken[secrets.WireFamily(string(prov))] = true
 	}
 	for kind := range bundle.OAuthCredentials {
-		taken[wireFamily(kind)] = true
+		taken[secrets.WireFamily(kind)] = true
 	}
-	fillable := func(slot string) bool { return !taken[wireFamily(slot)] }
+	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] }
 
 	// Platform API keys live under the sentinel tenant; the ctx tenant must
 	// match or the store's isolation filter (correctly) returns nothing.
@@ -622,8 +609,8 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 						continue
 					}
 					bundle.APIKeys[prov] = string(r.Plaintext)
-					bundle.PlatformSourced = append(bundle.PlatformSourced, string(prov))
-					taken[wireFamily(string(prov))] = true
+					bundle.PlatformSourced[string(prov)] = true
+					taken[secrets.WireFamily(string(prov))] = true
 					usedIDs = append(usedIDs, r.KeyID)
 					p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
 				}
@@ -641,8 +628,12 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 		}
 	}
 
-	// Platform OAuth-forfait blobs under the reserved owner key.
-	if p.oauthForfait != nil {
+	// Platform OAuth-forfait blobs under the reserved owner key. Skipped —
+	// like the api-key read above via its `missing` guard — when no OAuth
+	// kind is still fillable, so a run already funded on both wires costs
+	// zero extra store reads here.
+	if p.oauthForfait != nil &&
+		(fillable(string(secrets.OAuthKindClaudeCode)) || fillable(string(secrets.OAuthKindCodex))) {
 		records, err := p.oauthForfait.ListByUser(ctx, secrets.PlatformOwnerKey)
 		if err != nil {
 			p.logger.Warn("cloudpublisher: platform oauth list: %v", err)
@@ -658,8 +649,8 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 				continue
 			}
 			bundle.OAuthCredentials[string(rec.Kind)] = payload
-			bundle.PlatformSourced = append(bundle.PlatformSourced, string(rec.Kind))
-			taken[wireFamily(string(rec.Kind))] = true
+			bundle.PlatformSourced[string(rec.Kind)] = true
+			taken[secrets.WireFamily(string(rec.Kind))] = true
 			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, rec.Kind)
 		}
 	}

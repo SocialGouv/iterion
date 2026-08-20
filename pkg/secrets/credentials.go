@@ -47,23 +47,38 @@ type Credentials struct {
 	// runner uses it to seed the App-bot git committer identity, which a
 	// bare installation token can't self-resolve. Empty for PAT/OAuth runs.
 	ForgeAppBotLogin string
-	// PlatformSourced names the slots (provider names / OAuth kinds) the
+	// PlatformSourced marks the slots (provider names / OAuth kinds) the
 	// platform tier filled — see RunBundle.PlatformSourced. Consumers that
 	// scope metering or policy per tenant must treat these as the
 	// deployment's own credential, not the tenant's.
-	PlatformSourced []string
+	PlatformSourced map[string]bool
 }
 
 // IsPlatformSourced reports whether the named credential slot (a provider
 // name like "anthropic" or an OAuth kind like "claude_code") was filled by
 // the platform tier rather than the tenant's own stores.
 func (c Credentials) IsPlatformSourced(slot string) bool {
-	for _, s := range c.PlatformSourced {
-		if s == slot {
-			return true
-		}
+	return c.PlatformSourced[slot]
+}
+
+// WireFamily groups credential slots (Provider names and OAuthKinds) that
+// authenticate the same wire. Two slots in one family are alternative
+// shapes of the same access — an API key and an OAuth blob the delegates
+// rank against each other — so a resolver filling gaps must treat the
+// family, not the slot, as the unit ("don't add a second credential to a
+// wire the run already holds"): the claude_code delegate ranks a ctx API
+// key (and a z.ai facade key) above a ctx OAuth dir, so pairing a fallback
+// key with a run's own forfait would silently switch every call onto the
+// fallback. Slots outside the two shared wires are their own family.
+func WireFamily(slot string) string {
+	switch slot {
+	case string(ProviderAnthropic), string(ProviderZAI), string(OAuthKindClaudeCode):
+		return "anthropic-wire"
+	case string(ProviderOpenAI), string(OAuthKindCodex):
+		return "openai-wire"
+	default:
+		return slot
 	}
-	return false
 }
 
 // APIKey returns the plaintext API key for the requested provider

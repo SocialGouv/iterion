@@ -224,7 +224,10 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	platformFilled := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys:              map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-platform"},
 		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
-		PlatformSourced:      []string{string(secrets.ProviderAnthropic), delegate.BackendClaudeCode},
+		PlatformSourced: map[string]bool{
+			string(secrets.ProviderAnthropic): true,
+			delegate.BackendClaudeCode:        true,
+		},
 	})
 	if got := usageCapKey(platformFilled, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
 		t.Errorf("platform-sourced bundle = %q, want the platform meter", got)
@@ -237,7 +240,7 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 			secrets.ProviderAnthropic: "sk-tenant",
 			secrets.ProviderOpenAI:    "sk-platform",
 		},
-		PlatformSourced: []string{string(secrets.ProviderOpenAI)},
+		PlatformSourced: map[string]bool{string(secrets.ProviderOpenAI): true},
 	})
 	if got := usageCapKey(mixed, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7")) {
 		t.Errorf("tenant anthropic + platform openai = %q, want the tenant meter", got)

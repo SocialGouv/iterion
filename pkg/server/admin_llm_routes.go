@@ -1,12 +1,9 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"net/http"
-	"time"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -22,6 +19,11 @@ import (
 // consts' docs. The cloud publisher consults them as the LAST tier
 // (after tenant BYOK, OAuth and the mutualised pool); the runner env
 // remains the final backstop.
+//
+// The handlers are thin wrappers: they scope the request to the platform
+// sentinel, guard that the addressed row IS a platform one, and delegate
+// to the shared byok/oauth handlers — audit routing to the platform log
+// happens inside auditApiKey / the auditPlatform calls below.
 //
 // Super-admin only: these credentials fund every tenant with nothing of
 // its own, so managing them is a platform decision.
@@ -45,144 +47,63 @@ func (s *Server) registerAdminLLMRoutes() {
 	}
 }
 
-// platformKeyCtx scopes the store context to the sentinel platform tenant.
-// The api-keys store derives tenant_id from the context on both write
-// (stamps the row) and read (filters), so this — not the caller's active
-// team requireAuth stamped — is what makes a platform key land under, and
-// resolve from, secrets.PlatformTenantID.
-func platformKeyCtx(r *http.Request) context.Context {
-	return store.WithTenant(r.Context(), secrets.PlatformTenantID)
+// platformScopedReq re-scopes the store context to the sentinel platform
+// tenant. The api-keys store derives tenant_id from the context on both
+// write (stamps the row) and read (filters); the admin routes carry no
+// {id} path value, so apiKeyTenantCtx falls through to this ctx and the
+// shared byok handlers operate on the platform scope.
+func (s *Server) platformScopedReq(r *http.Request) *http.Request {
+	return r.WithContext(store.WithTenant(r.Context(), secrets.PlatformTenantID))
 }
 
 func (s *Server) handleAdminListPlatformApiKeys(w http.ResponseWriter, r *http.Request) {
+	r = s.platformScopedReq(r)
 	// Platform keys are always team-wide rows ("" requesting user →
 	// user-scoped rows excluded, which the create path never writes).
-	keys, err := s.apiKeys.ListByTeam(platformKeyCtx(r), secrets.PlatformTenantID, "")
+	keys, err := s.apiKeys.ListByTeam(r.Context(), secrets.PlatformTenantID, "")
 	s.writeApiKeyList(w, keys, err)
 }
 
 func (s *Server) handleAdminCreatePlatformApiKey(w http.ResponseWriter, r *http.Request) {
-	id, _ := auth.FromContext(r.Context())
-	var req createApiKeyReq
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	provider, err := secrets.ParseProvider(req.Provider)
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
-		return
-	}
-	if req.Secret == "" || req.Name == "" {
-		httpError(w, http.StatusBadRequest, "name + secret required")
-		return
-	}
-	keyID := secrets.NewApiKeyID()
-	sealed, err := secrets.SealAPIKey(s.sealer, keyID, []byte(req.Secret))
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "seal: %v", err)
-		return
-	}
-	key := secrets.ApiKey{
-		ID:           keyID,
-		ScopeTeamID:  secrets.PlatformTenantID,
-		Provider:     provider,
-		Name:         req.Name,
-		Last4:        secrets.Last4(req.Secret),
-		SealedSecret: sealed,
-		IsDefault:    req.IsDefault,
-		CreatedBy:    id.UserID,
-		CreatedAt:    time.Now().UTC(),
-		Fingerprint:  secrets.FingerprintSHA256(req.Secret),
-	}
-	ctx := platformKeyCtx(r)
-	if err := s.apiKeys.Create(ctx, key); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return
-	}
-	if req.IsDefault {
-		if err := s.apiKeys.ClearDefault(ctx, secrets.PlatformTenantID, "", provider, keyID); err != nil {
-			httpError(w, http.StatusInternalServerError, "key %s created but clearing previous default failed: %v", keyID, err)
-			return
-		}
-	}
-	s.auditPlatform(r, "", "platform.llm_key.created", "platform_llm_key", keyID, map[string]any{"name": key.Name, "provider": string(provider)})
-	writeJSON(w, s.toApiKeyView(key))
+	s.handleCreateApiKey(w, s.platformScopedReq(r), secrets.PlatformTenantID, "")
 }
 
-// getPlatformApiKey fetches a key under the platform tenant and verifies
-// the row really is a platform one. The Mongo store's tenant filter
+// requirePlatformApiKey verifies the addressed row really is a platform
+// one before the shared handler runs. The Mongo store's tenant filter
 // already guarantees it; the explicit ScopeTeamID check keeps the
 // guarantee under stores that don't filter by context (memory), so a
 // super-admin route can never mutate a tenant's row by id.
-func (s *Server) getPlatformApiKey(w http.ResponseWriter, r *http.Request) (secrets.ApiKey, bool) {
-	keyID := r.PathValue("key_id")
-	key, err := s.apiKeys.Get(platformKeyCtx(r), keyID)
+func (s *Server) requirePlatformApiKey(w http.ResponseWriter, r *http.Request) bool {
+	key, err := s.apiKeys.Get(r.Context(), r.PathValue("key_id"))
 	if err != nil {
 		if errors.Is(err, secrets.ErrApiKeyNotFound) {
 			httpError(w, http.StatusNotFound, "key not found")
-			return secrets.ApiKey{}, false
+			return false
 		}
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return secrets.ApiKey{}, false
+		return false
 	}
 	if key.ScopeTeamID != secrets.PlatformTenantID {
 		httpError(w, http.StatusNotFound, "key not found")
-		return secrets.ApiKey{}, false
+		return false
 	}
-	return key, true
+	return true
 }
 
 func (s *Server) handleAdminUpdatePlatformApiKey(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.getPlatformApiKey(w, r)
-	if !ok {
+	r = s.platformScopedReq(r)
+	if !s.requirePlatformApiKey(w, r) {
 		return
 	}
-	var req updateApiKeyReq
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Name != nil {
-		key.Name = *req.Name
-	}
-	if req.Secret != nil && *req.Secret != "" {
-		sealed, err := secrets.SealAPIKey(s.sealer, key.ID, []byte(*req.Secret))
-		if err != nil {
-			httpError(w, http.StatusInternalServerError, "seal: %v", err)
-			return
-		}
-		key.SealedSecret = sealed
-		key.Last4 = secrets.Last4(*req.Secret)
-		key.Fingerprint = secrets.FingerprintSHA256(*req.Secret)
-	}
-	if req.IsDefault != nil {
-		key.IsDefault = *req.IsDefault
-	}
-	ctx := platformKeyCtx(r)
-	if err := s.apiKeys.Update(ctx, key); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return
-	}
-	if key.IsDefault {
-		if err := s.apiKeys.ClearDefault(ctx, secrets.PlatformTenantID, "", key.Provider, key.ID); err != nil {
-			httpError(w, http.StatusInternalServerError, "key updated but clearing previous default failed: %v", err)
-			return
-		}
-	}
-	s.auditPlatform(r, "", "platform.llm_key.updated", "platform_llm_key", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
-	writeJSON(w, s.toApiKeyView(key))
+	s.handleUpdateApiKey(w, r)
 }
 
 func (s *Server) handleAdminDeletePlatformApiKey(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.getPlatformApiKey(w, r)
-	if !ok {
+	r = s.platformScopedReq(r)
+	if !s.requirePlatformApiKey(w, r) {
 		return
 	}
-	if err := s.apiKeys.Delete(platformKeyCtx(r), key.ID); err != nil {
-		httpError(w, http.StatusInternalServerError, "%s", err.Error())
-		return
-	}
-	s.auditPlatform(r, "", "platform.llm_key.deleted", "platform_llm_key", key.ID, map[string]any{"name": key.Name, "provider": string(key.Provider)})
-	w.WriteHeader(http.StatusNoContent)
+	s.handleDeleteApiKey(w, r)
 }
 
 // ---- platform OAuth-forfait (claude_code / codex) ----

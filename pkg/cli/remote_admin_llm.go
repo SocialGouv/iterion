@@ -11,37 +11,11 @@ import (
 
 // remote admin llm — platform LLM credentials (super-admin): the DB-backed
 // form of the runner-pod env fallback. Values are never taken from argv.
-
-const adminLLMKeysBase = "/api/admin/llm/api-keys"
+// Key CRUD rides the shared api-keys helpers under scope "platform"
+// (remote_secrets.go); only the OAuth connect flow and the blob reader
+// are specific to this surface.
 
 func adminLLMOAuthBase(kind string) string { return "/api/admin/llm/oauth/" + kind }
-
-// RemoteAdminLLMKeyCreate adds a platform provider API key.
-func RemoteAdminLLMKeyCreate(ctx context.Context, c *RemoteClient, p *Printer, provider, name, value string, isDefault bool) error {
-	req := map[string]any{"provider": provider, "name": name, "secret": value}
-	if isDefault {
-		req["is_default"] = true
-	}
-	raw, err := c.Call(ctx, "POST", adminLLMKeysBase, req, nil)
-	if err != nil {
-		return err
-	}
-	PrintRemoteJSON(p, raw)
-	return nil
-}
-
-// RemoteAdminLLMKeyRotate replaces a platform key's sealed value — the
-// one-call rotation that used to be a k8s secret edit + redeploy. New
-// launches and resumes pick the fresh value immediately; in-flight runs
-// keep their sealed snapshot until they finish or fail-resume.
-func RemoteAdminLLMKeyRotate(ctx context.Context, c *RemoteClient, p *Printer, keyID, value string) error {
-	raw, err := c.Call(ctx, "PATCH", adminLLMKeysBase+"/"+keyID, map[string]string{"secret": value}, nil)
-	if err != nil {
-		return err
-	}
-	PrintRemoteJSON(p, raw)
-	return nil
-}
 
 // ReadSecretBlob resolves a possibly multi-line secret payload (e.g. a
 // credentials.json) from --from-env, a file, or — unlike ReadSecretValue's

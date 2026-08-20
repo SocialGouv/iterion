@@ -37,7 +37,9 @@ func ReadSecretValue(fromEnv, fromFile string, stdinOK bool) (string, error) {
 }
 
 // remoteSecretsBase returns the REST prefix for a scope: the active
-// team's store, or the personal (/api/me) store.
+// team's store, the personal (/api/me) store, or the super-admin
+// platform store (/api/admin/llm — api-keys only; the deployment's own
+// fallback credentials).
 func remoteSecretsBase(ctx context.Context, c *RemoteClient, scope, teamFlag, resource string) (string, error) {
 	switch scope {
 	case "", "team":
@@ -48,8 +50,10 @@ func remoteSecretsBase(ctx context.Context, c *RemoteClient, scope, teamFlag, re
 		return "/api/teams/" + team + "/" + resource, nil
 	case "me":
 		return "/api/me/" + resource, nil
+	case "platform":
+		return "/api/admin/llm/" + resource, nil
 	default:
-		return "", fmt.Errorf("invalid --scope %q (want team|me)", scope)
+		return "", fmt.Errorf("invalid --scope %q (want team|me|platform)", scope)
 	}
 }
 
@@ -89,6 +93,24 @@ func RemoteAPIKeysCreate(ctx context.Context, c *RemoteClient, p *Printer, scope
 		req["is_default"] = true
 	}
 	raw, err := c.Call(ctx, "POST", base, req, nil)
+	if err != nil {
+		return err
+	}
+	PrintRemoteJSON(p, raw)
+	return nil
+}
+
+// RemoteAPIKeysRotate replaces a key's sealed value in place — for the
+// platform scope this is the one-call rotation that used to be a k8s
+// secret edit + redeploy. New launches and resumes pick the fresh value
+// immediately; in-flight runs keep their sealed snapshot until they
+// finish or fail-resume.
+func RemoteAPIKeysRotate(ctx context.Context, c *RemoteClient, p *Printer, scope, teamFlag, keyID, value string) error {
+	base, err := remoteSecretsBase(ctx, c, scope, teamFlag, "api-keys")
+	if err != nil {
+		return err
+	}
+	raw, err := c.Call(ctx, "PATCH", base+"/"+keyID, map[string]string{"secret": value}, nil)
 	if err != nil {
 		return err
 	}

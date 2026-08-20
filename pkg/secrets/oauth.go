@@ -58,11 +58,10 @@ func OrgOwnerKey(tenantID string) string { return OrgOwnerPrefix + tenantID }
 // OAuthRecord under a reserved owner reuses the whole store/seal/refresh
 // machinery without a schema change. The cloud publisher consults it LAST
 // (after user, org, and the mutualised pool) for the OAuth kinds a run
-// still lacks; managed by super-admins via /api/admin/llm/oauth. The
-// prefix-with-colon shape matches OrgOwnerPrefix's convention and cannot
-// collide with a real user id (UUID/email) or an OrgOwnerKey (always
-// "org:<team-uuid>").
-const PlatformOwnerKey = "platform:"
+// still lacks; managed by super-admins via /api/admin/llm/oauth. Shares
+// its literal with PlatformTenantID (see platformScope in byok.go) — one
+// concept, two index namespaces.
+const PlatformOwnerKey = platformScope
 
 // OAuthRecord is the per-(user, kind) sealed credential bundle.
 //

@@ -33,14 +33,6 @@ func seedKey(t *testing.T, st secrets.ApiKeyStore, sealer secrets.Sealer, teamID
 	}
 }
 
-func hasSlot(sourced []string, slot string) bool {
-	for _, s := range sourced {
-		if s == slot {
-			return true
-		}
-	}
-	return false
-}
 
 // A run that resolved nothing anywhere gets the platform credentials —
 // one per wire family — and the bundle records which slots the platform
@@ -73,7 +65,7 @@ func TestPlatformTier_credentiallessRunGetsThePlatformCredentials(t *testing.T) 
 		t.Fatalf("claude_code blob = %q, want the platform forfait", got)
 	}
 	for _, slot := range []string{"openai", "claude_code"} {
-		if !hasSlot(b.PlatformSourced, slot) {
+		if !b.PlatformSourced[slot] {
 			t.Errorf("PlatformSourced = %v, missing %q — the usage cap would meter this per tenant", b.PlatformSourced, slot)
 		}
 	}
@@ -104,7 +96,7 @@ func TestPlatformTier_tenantKeyWinsItsSlotPlatformFillsTheRest(t *testing.T) {
 	if got := b.APIKeys[secrets.ProviderOpenAI]; got != "sk-openai-platform" {
 		t.Fatalf("openai key = %q, want the platform gap-fill", got)
 	}
-	if hasSlot(b.PlatformSourced, "anthropic") || !hasSlot(b.PlatformSourced, "openai") {
+	if b.PlatformSourced["anthropic"] || !b.PlatformSourced["openai"] {
 		t.Errorf("PlatformSourced = %v, want exactly the gap-filled slot", b.PlatformSourced)
 	}
 }

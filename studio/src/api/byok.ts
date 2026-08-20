@@ -63,75 +63,39 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// ---- Team-scoped BYOK ----
+// ---- BYOK API keys (team, personal, or platform scope) ----
 
-export async function listTeamApiKeys(teamID: string): Promise<ApiKeyView[]> {
-  const res = await send<{ keys: ApiKeyView[] }>(`/teams/${encodeURIComponent(teamID)}/api-keys`);
-  return res.keys ?? [];
-}
-
-export async function createTeamApiKey(teamID: string, input: {
-  provider: Provider;
-  name: string;
-  secret: string;
-  is_default?: boolean;
-}): Promise<ApiKeyView> {
-  return send(`/teams/${encodeURIComponent(teamID)}/api-keys`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-// ---- User-scoped BYOK ----
-
-export async function listMyApiKeys(): Promise<ApiKeyView[]> {
-  const res = await send<{ keys: ApiKeyView[] }>(`/me/api-keys`);
-  return res.keys ?? [];
-}
-
-export async function createMyApiKey(input: {
-  provider: Provider;
-  name: string;
-  secret: string;
-  is_default?: boolean;
-}): Promise<ApiKeyView> {
-  return send(`/me/api-keys`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-// ---- Platform-scoped keys (super-admin) ----
-//
-// The deployment's own DB-backed provider credentials — the fallback tier
-// serving every run that resolved no tenant credential, replacing the
-// runner-pod env vars that used to require a redeploy to rotate.
-
-export async function listPlatformApiKeys(): Promise<ApiKeyView[]> {
-  const res = await send<{ keys: ApiKeyView[] }>(`/admin/llm/api-keys`);
-  return res.keys ?? [];
-}
-
-export async function createPlatformApiKey(input: {
-  provider: Provider;
-  name: string;
-  secret: string;
-  is_default?: boolean;
-}): Promise<ApiKeyView> {
-  return send(`/admin/llm/api-keys`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-// ---- Mutations shared between team, user and platform keys ----
-
+// ApiKeyScope selects the store the key lives in: a team's, the
+// authenticated user's, or the PLATFORM's (super-admin — the deployment's
+// own DB-backed fallback keys, replacing the runner-pod env vars that used
+// to require a redeploy to rotate).
 export type ApiKeyScope = { team_id: string } | { mine: true } | { platform: true };
 
-function apiKeyRoot(scope: ApiKeyScope, keyID: string): string {
-  if ("team_id" in scope) return `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`;
-  if ("platform" in scope) return `/admin/llm/api-keys/${encodeURIComponent(keyID)}`;
-  return `/me/api-keys/${encodeURIComponent(keyID)}`;
+function apiKeyBase(scope: ApiKeyScope): string {
+  if ("team_id" in scope) return `/teams/${encodeURIComponent(scope.team_id)}/api-keys`;
+  if ("platform" in scope) return `/admin/llm/api-keys`;
+  return `/me/api-keys`;
+}
+
+export async function listApiKeys(scope: ApiKeyScope): Promise<ApiKeyView[]> {
+  const res = await send<{ keys: ApiKeyView[] }>(apiKeyBase(scope));
+  return res.keys ?? [];
+}
+
+export async function createApiKey(scope: ApiKeyScope, input: {
+  provider: Provider;
+  name: string;
+  secret: string;
+  is_default?: boolean;
+}): Promise<ApiKeyView> {
+  return send(apiKeyBase(scope), {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listMyApiKeys(): Promise<ApiKeyView[]> {
+  return listApiKeys({ mine: true });
 }
 
 export async function updateApiKey(
@@ -139,7 +103,7 @@ export async function updateApiKey(
   keyID: string,
   input: { name?: string; is_default?: boolean; secret?: string },
 ): Promise<ApiKeyView> {
-  return send(apiKeyRoot(scope, keyID), {
+  return send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
@@ -149,7 +113,7 @@ export async function deleteApiKey(
   scope: ApiKeyScope,
   keyID: string,
 ): Promise<void> {
-  await send(apiKeyRoot(scope, keyID), { method: "DELETE" });
+  await send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, { method: "DELETE" });
 }
 
 // ---- OAuth-forfait (per-user, per-org, or platform) ----

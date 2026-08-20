@@ -17,13 +17,9 @@ import {
   type ApiKeyScope,
   type ApiKeyView,
   type Provider,
-  createMyApiKey,
-  createPlatformApiKey,
-  createTeamApiKey,
+  createApiKey,
   deleteApiKey,
-  listMyApiKeys,
-  listPlatformApiKeys,
-  listTeamApiKeys,
+  listApiKeys,
   updateApiKey,
 } from "@/api/byok";
 
@@ -54,17 +50,22 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
   const queryClient = useQueryClient();
-  const teamKey = platform ? "platform" : team?.id ?? "mine";
-  const queryKey = ["api-keys", teamKey];
-  const mutScope: ApiKeyScope = platform
+  // The three-way scope is derived ONCE; every branch below keys off it.
+  const scope: ApiKeyScope = platform
     ? { platform: true }
     : team
       ? { team_id: team.id }
       : { mine: true };
+  const teamKey = platform ? "platform" : team?.id ?? "mine";
+  const queryKey = ["api-keys", teamKey];
+  const title = platform
+    ? "Platform API keys"
+    : team
+      ? `${team.name} — Team API keys`
+      : "My API keys";
   const query = useQuery<ApiKeyView[]>({
     queryKey,
-    queryFn: () =>
-      platform ? listPlatformApiKeys() : team ? listTeamApiKeys(team.id) : listMyApiKeys(),
+    queryFn: () => listApiKeys(scope),
     enabled: isCloud,
   });
   const keys = query.data ?? [];
@@ -110,13 +111,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     setAdding(true);
     setMutErr(null);
     try {
-      if (platform) {
-        await createPlatformApiKey(draft);
-      } else if (team) {
-        await createTeamApiKey(team.id, draft);
-      } else {
-        await createMyApiKey(draft);
-      }
+      await createApiKey(scope, draft);
       setShowAdd(false);
       setDraft({ provider: "anthropic", name: "", secret: "", is_default: false });
       reload();
@@ -129,7 +124,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
 
   const toggleDefault = async (k: ApiKeyView) => {
     try {
-      await updateApiKey(mutScope, k.id, {
+      await updateApiKey(scope, k.id, {
         is_default: !k.is_default,
       });
       reload();
@@ -147,7 +142,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     });
     if (!ok) return;
     try {
-      await deleteApiKey(mutScope, k.id);
+      await deleteApiKey(scope, k.id);
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -175,13 +170,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
     <div className="space-y-4">
       {dialog}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          {platform
-            ? "Platform API keys"
-            : team
-              ? `${team.name} — Team API keys`
-              : "My API keys"}
-        </h2>
+        <h2 className="text-lg font-semibold">{title}</h2>
         {canManage && (
           <Button
             variant="primary"
@@ -261,15 +250,7 @@ export default function ApiKeysPanel({ team, platform = false }: Props) {
       ) : keys.length === 0 ? (
         <EmptyState message="No keys yet." />
       ) : (
-        <Table
-          caption={
-            platform
-              ? "Platform API keys"
-              : team
-                ? `${team.name} team API keys`
-                : "My API keys"
-          }
-        >
+        <Table caption={title}>
           <THead>
             <Th>Provider</Th>
             <Th>Name</Th>
