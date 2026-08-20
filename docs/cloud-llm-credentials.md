@@ -30,6 +30,17 @@ blob — indistinguishable from a personal forfait — but is metered against
 the lender's own ceilings and the run's `max_cost_usd` is clamped to what
 remains of them. See [credential-pool.md](credential-pool.md).
 
+A **fifth** source is the **platform tier**: the deployment's own
+credentials, stored sealed in the database under reserved scopes
+(`secrets.PlatformTenantID` for API keys, `secrets.PlatformOwnerKey` for
+forfait blobs) and managed by super-admins via `iterion remote admin llm …`
+or the studio's Admin → LLM credentials console. The publisher fills, per
+wire family, only the slots the four tiers above left empty — the DB-backed
+form of the runner-pod env fallback (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` from the `iterion-forfait`/`iterion-llm` k8s
+secrets), which **remains the final backstop** below it. See the dedicated
+section at the end of this doc.
+
 ## Decision shortcut
 
 - **Sovereign `web_search` / any claw feature** → needs claw. An Anthropic
@@ -152,6 +163,57 @@ iterion remote api POST /api/teams/<team-id>/oauth/codex/credentials \
   --data "@$HOME/.codex/auth.json"
 iterion remote api GET /api/teams/<team-id>/oauth/connections
 ```
+
+## Platform credentials — rotate the deployment's fallback without a redeploy
+
+The credential every tenant-less run used to inherit from the runner pod's
+env (`CLAUDE_CODE_OAUTH_TOKEN` via the `iterion-forfait` k8s secret,
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` via `iterion-llm`) can now live in the
+database instead: super-admin-managed rows the publisher resolves at every
+launch **and every resume**, seals into the per-run bundle, and hands to the
+runner exactly like a tenant credential. Rotation is one CLI call — no k8s
+secret edit, no rollout:
+
+```sh
+# Provider API keys (metered):
+iterion remote admin llm api-keys                      # list (metadata only)
+iterion remote admin llm api-keys create --provider anthropic --name prod \
+  --from-file ~/anthropic.key
+iterion remote admin llm api-keys rotate <key-id> --from-env NEW_KEY
+iterion remote admin llm api-keys delete <key-id>
+
+# Forfait blobs (claude_code credentials.json / codex auth.json):
+iterion remote admin llm oauth                         # list connections
+iterion remote admin llm oauth connect claude_code     # browser code flow
+iterion remote admin llm oauth set claude_code --from-file ~/.claude/.credentials.json
+iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
+iterion remote admin llm oauth refresh claude_code
+iterion remote admin llm oauth delete claude_code
+```
+
+Semantics worth knowing:
+
+- **Position in the chain**: after tenant BYOK, user/org forfaits and the
+  mutualised pool; before the env fallback. A pool-granted run is never
+  double-served (the donation would be shadowed while still consuming the
+  donor's quota), and a slot is only filled when the run holds nothing on
+  the same **wire family** — a platform `anthropic` key never shadows a
+  tenant's own `claude_code` forfait (the delegate ranks a ctx API key above
+  a ctx OAuth dir on the same wire).
+- **Rotation reach**: new launches and resumes re-resolve, so a
+  `failed_resumable` run picks the fresh value on resume. In-flight runs
+  keep the sealed snapshot they launched with.
+- **Refresh for free**: a platform forfait stored via the browser flow (or a
+  full `credentials.json` with its refresh token) is renewed by the same
+  background refresh worker as user/org records.
+- **Usage-cap scope stays whole**: bundle slots the platform filled are
+  marked (`RunBundle.PlatformSourced`) so `ITERION_USAGE_CAP_*` metering
+  keeps pooling them on the single platform meter instead of fragmenting it
+  per tenant ([usage-caps.md](usage-caps.md)).
+- **Migration**: push the values currently in the k8s secrets through the
+  commands above, then the env vars become a pure backstop you can empty at
+  leisure. An empty platform store keeps today's behaviour byte-identical.
+- Every mutation lands in the platform audit log (`/api/admin/audit`).
 
 ## Related
 

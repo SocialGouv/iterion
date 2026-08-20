@@ -51,6 +51,18 @@ const OrgOwnerPrefix = "org:"
 // shared forfait credential is stored.
 func OrgOwnerKey(tenantID string) string { return OrgOwnerPrefix + tenantID }
 
+// PlatformOwnerKey is the synthetic owner key under which the DEPLOYMENT's
+// own forfait credential is stored — the DB-backed form of the platform
+// fallback that historically lived only in runner-pod env
+// (CLAUDE_CODE_OAUTH_TOKEN et al.). Same OrgOwnerKey trick: an ordinary
+// OAuthRecord under a reserved owner reuses the whole store/seal/refresh
+// machinery without a schema change. The cloud publisher consults it LAST
+// (after user, org, and the mutualised pool) for the OAuth kinds a run
+// still lacks; managed by super-admins via /api/admin/llm/oauth. Shares
+// its literal with PlatformTenantID (see platformScope in byok.go) — one
+// concept, two index namespaces.
+const PlatformOwnerKey = platformScope
+
 // OAuthRecord is the per-(user, kind) sealed credential bundle.
 //
 // SealedPayload is opaque to iterion — it holds the verbatim
@@ -280,7 +292,16 @@ func (s *MemoryOAuthStore) ListByUser(_ context.Context, userID string) ([]OAuth
 func (s *MemoryOAuthStore) Delete(_ context.Context, userID string, kind OAuthKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.m, mkOAuthKey(userID, kind))
+	// Report ErrOAuthNotFound for a missing key, matching MongoOAuthStore
+	// (DeleteOneChecked). Without parity, a caller that keys behaviour on
+	// the outcome — e.g. auditing a delete only when something was actually
+	// removed — is correct against Mongo but silently wrong under the memory
+	// store used by tests and local mode.
+	key := mkOAuthKey(userID, kind)
+	if _, ok := s.m[key]; !ok {
+		return ErrOAuthNotFound
+	}
+	delete(s.m, key)
 	return nil
 }
 

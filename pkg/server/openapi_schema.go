@@ -57,6 +57,16 @@ func routeSchemas() map[string]routeOp {
 		"GET /api/admin/orgs/{id}":   {response: orgView{}},
 		"PATCH /api/admin/orgs/{id}": {request: updateOrgReq{}, response: orgView{}},
 
+		// Platform LLM credentials (super-admin) — the DB-backed env fallback.
+		"GET /api/admin/llm/api-keys": {
+			response: struct {
+				Keys []apiKeyView `json:"keys"`
+			}{},
+		},
+		"POST /api/admin/llm/api-keys":            {request: createApiKeyReq{}, response: apiKeyView{}},
+		"PATCH /api/admin/llm/api-keys/{key_id}":  {request: updateApiKeyReq{}, response: apiKeyView{}},
+		"DELETE /api/admin/llm/api-keys/{key_id}": {},
+
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
 			response: struct {

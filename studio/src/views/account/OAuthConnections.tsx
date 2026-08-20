@@ -58,7 +58,8 @@ export default function OAuthConnections({
   scope?: OAuthScope;
   org?: boolean;
 }) {
-  const scopeKey = "teamId" in scope ? scope.teamId : "mine";
+  const isPlatform = "platform" in scope;
+  const scopeKey = "teamId" in scope ? scope.teamId : isPlatform ? "platform" : "mine";
   const queryClient = useQueryClient();
   const query = useQuery<OAuthConnection[]>({
     queryKey: ["oauth-connections", scopeKey],
@@ -96,7 +97,7 @@ export default function OAuthConnections({
   };
 
   const onConnected = () => {
-    if (org) addToast(ORG_TOS_WARNING, "warning", { persistent: true });
+    if (org || isPlatform) addToast(ORG_TOS_WARNING, "warning", { persistent: true });
     reload();
   };
 
@@ -187,16 +188,22 @@ export default function OAuthConnections({
       {dialog}
       <div>
         <h2 className="text-lg font-semibold">
-          {org ? "Org Claude subscription" : "Model subscriptions"}
+          {isPlatform
+            ? "Platform subscriptions"
+            : org
+              ? "Org Claude subscription"
+              : "Model subscriptions"}
         </h2>
         <p className="text-sm text-fg-muted mt-1">
-          {org
-            ? "Connect a Claude subscription (forfait) at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal subscription — runs launched by a member with their own connection use that instead."
-            : "Connect your personal Claude Pro/Max or ChatGPT subscription so iterion can run agents on your behalf via the official Claude Code / Codex CLIs. The blob is sealed at rest."}
+          {isPlatform
+            ? "The deployment's own fallback forfait: it funds every run that resolved no tenant credential (and that the mutualised pool did not serve). Stored sealed in the database — rotating it here replaces the runner-pod env variable and needs no redeploy."
+            : org
+              ? "Connect a Claude subscription (forfait) at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal subscription — runs launched by a member with their own connection use that instead."
+              : "Connect your personal Claude Pro/Max or ChatGPT subscription so iterion can run agents on your behalf via the official Claude Code / Codex CLIs. The blob is sealed at rest."}
         </p>
       </div>
 
-      {org && (
+      {(org || isPlatform) && (
         <InlineBanner tone="warning" layout="inline">
           {ORG_TOS_WARNING}
         </InlineBanner>

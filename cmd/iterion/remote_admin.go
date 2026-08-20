@@ -123,6 +123,130 @@ var remoteAdminDLQCmd = &cobra.Command{
 	}),
 }
 
+// --- platform LLM credentials (DB-backed env fallback) ---
+
+var (
+	remoteLLMFromEnv  string
+	remoteLLMFromFile string
+	remoteLLMProvider string
+	remoteLLMName     string
+	remoteLLMDefault  bool
+	remoteLLMKeyData  string
+)
+
+var remoteAdminLLMCmd = &cobra.Command{
+	Use:   "llm",
+	Short: "Platform LLM credentials — rotate the deployment's provider keys/forfait without a redeploy",
+}
+
+var remoteAdminLLMKeysCmd = &cobra.Command{
+	Use:   "api-keys [create|rotate|update|delete] [key-id]",
+	Short: "Platform provider API keys: list (default) or act on one (values from --from-env/--from-file/stdin)",
+	Args:  cobra.MaximumNArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/api-keys")
+		}
+		action := args[0]
+		needID := func() (string, error) {
+			if len(args) < 2 {
+				return "", fmt.Errorf("usage: admin llm api-keys %s <key-id>", action)
+			}
+			return args[1], nil
+		}
+		switch action {
+		case "create":
+			if len(args) != 1 {
+				return fmt.Errorf("usage: admin llm api-keys create --provider <p> --name <n> (value on --from-env/--from-file/stdin); %q is not a positional argument", args[1])
+			}
+			if remoteLLMProvider == "" || remoteLLMName == "" {
+				return fmt.Errorf("--provider and --name are required")
+			}
+			value, err := cli.ReadSecretValue(remoteLLMFromEnv, remoteLLMFromFile, true)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, "platform", "", remoteLLMProvider, remoteLLMName, value, remoteLLMDefault)
+		case "rotate":
+			id, err := needID()
+			if err != nil {
+				return err
+			}
+			value, err := cli.ReadSecretValue(remoteLLMFromEnv, remoteLLMFromFile, true)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteAPIKeysRotate(cmd.Context(), c, p, "platform", "", id, value)
+		case "update":
+			id, err := needID()
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", "/api/admin/llm/api-keys/"+id, remoteLLMKeyData, "patch JSON")
+		case "delete":
+			id, err := needID()
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/api-keys/"+id, nil)
+		default:
+			return fmt.Errorf("unknown api-keys action %q (want create|rotate|update|delete)", action)
+		}
+	}),
+}
+
+var remoteAdminLLMOAuthCmd = &cobra.Command{
+	Use:   "oauth [set|connect|refresh|delete] [kind]",
+	Short: "Platform OAuth-forfait: list connections (default) or act on one kind (claude_code|codex)",
+	Args:  cobra.MaximumNArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/llm/oauth/connections")
+		}
+		action := args[0]
+		needKind := func() (string, error) {
+			if len(args) < 2 {
+				return "", fmt.Errorf("usage: admin llm oauth %s <kind>", action)
+			}
+			return args[1], nil
+		}
+		switch action {
+		case "set":
+			// The forfait blob (claude_code credentials.json / codex auth.json).
+			kind, err := needKind()
+			if err != nil {
+				return err
+			}
+			blob, err := cli.ReadSecretBlob(remoteLLMFromEnv, remoteLLMFromFile)
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+kind+"/credentials", blob)
+		case "connect":
+			// Browser code flow; only claude_code supports it, so it defaults.
+			kind := "claude_code"
+			if len(args) == 2 {
+				kind = args[1]
+			}
+			return cli.RemoteAdminLLMOAuthConnect(cmd.Context(), c, p, kind)
+		case "refresh":
+			kind, err := needKind()
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/llm/oauth/"+kind+"/refresh", nil)
+		case "delete":
+			kind, err := needKind()
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/llm/oauth/"+kind, nil)
+		default:
+			return fmt.Errorf("unknown oauth action %q (want set|connect|refresh|delete)", action)
+		}
+	}),
+}
+
 // --- org SSO ---
 
 var remoteSSOData string
@@ -224,7 +348,18 @@ var remotePluginsCmd = &cobra.Command{
 func init() {
 	remoteAdminOrgsCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
 	remoteAdminUsersCmd.Flags().StringVar(&remoteAdminData, "data", "", "Request body JSON (literal or @file)")
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd)
+
+	for _, c := range []*cobra.Command{remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd} {
+		c.Flags().StringVar(&remoteLLMFromEnv, "from-env", "", "Read the secret value from this environment variable")
+		c.Flags().StringVar(&remoteLLMFromFile, "from-file", "", "Read the secret value from this file")
+	}
+	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMProvider, "provider", "", "LLM provider for create (anthropic|openai|…)")
+	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMName, "name", "", "Key display name for create")
+	remoteAdminLLMKeysCmd.Flags().BoolVar(&remoteLLMDefault, "default", false, "Make the created key the provider's default")
+	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
+	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

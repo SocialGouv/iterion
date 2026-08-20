@@ -339,6 +339,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		GenericSecretHosts: map[string][]string{},
 		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
+		PlatformSourced:    map[string]bool{},
 	}
 
 	// 1. BYOK API keys.
@@ -511,6 +512,19 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		}
 	}
 
+	// 5. Platform tier — the deployment's own DB-backed credentials, the
+	//    last stop before the runner's env fallback (which stays: an empty
+	//    platform store keeps today's behaviour byte-identical). Fills only
+	//    the slots tiers 1–4 left empty, per WIRE FAMILY, so a platform key
+	//    can never shadow a credential the run already holds in another
+	//    shape (delegate precedence ranks an API key above an OAuth dir on
+	//    the same wire). Skipped entirely when the pool granted: a granted
+	//    run runs on its donor — filling alongside would outrank the lent
+	//    credential while still consuming the donor's quota and slot.
+	if res.grant == nil {
+		p.fillFromPlatform(ctx, runID, &bundle)
+	}
+
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
 		return res, nil
 	}
@@ -544,6 +558,109 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 type credResolution struct {
 	secretsRef string
 	grant      *credpool.Grant
+}
+
+// fillFromPlatform fills the API-key and OAuth slots still empty after the
+// tenant tiers and the pool from the platform stores — the DB-backed form
+// of the runner-pod env fallback, so rotating the deployment's credential
+// is one CLI call instead of a redeploy. It fills per WIRE FAMILY
+// (secrets.WireFamily), never adding a credential to a wire the run
+// already holds in another shape — the delegates rank a ctx API key above
+// a ctx OAuth dir, so a platform key filled next to a tenant's own forfait
+// would silently serve every call. Filled slots are recorded on
+// bundle.PlatformSourced so the runner's usage-cap scope check keeps
+// metering them on the shared platform key rather than per tenant.
+//
+// Best-effort like the pool: a degraded store read or unseal failure logs
+// and leaves the slot to the env fallback — it must never fail a launch
+// that env can still serve.
+func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *secrets.RunBundle) {
+	if p.sealer == nil {
+		return
+	}
+	taken := map[string]bool{}
+	for prov := range bundle.APIKeys {
+		taken[secrets.WireFamily(string(prov))] = true
+	}
+	for kind := range bundle.OAuthCredentials {
+		taken[secrets.WireFamily(kind)] = true
+	}
+	fillable := func(slot string) bool { return !taken[secrets.WireFamily(slot)] }
+
+	// Platform API keys live under the sentinel tenant; the ctx tenant must
+	// match or the store's isolation filter (correctly) returns nothing.
+	if p.apiKeys != nil {
+		missing := make([]secrets.Provider, 0, len(allKnownProviders))
+		for _, prov := range allKnownProviders {
+			if fillable(string(prov)) {
+				missing = append(missing, prov)
+			}
+		}
+		if len(missing) > 0 {
+			pctx := store.WithTenant(ctx, secrets.PlatformTenantID)
+			resolved, err := secrets.Resolve(pctx, p.apiKeys, secrets.PlatformTenantID, "", missing, nil, p.sealer)
+			if err != nil {
+				p.logger.Warn("cloudpublisher: platform api-key resolve: %v", err)
+			} else {
+				now := time.Now().UTC()
+				usedIDs := make([]string, 0, len(resolved))
+				// Iterate `missing` (allKnownProviders order), NOT the
+				// resolved map: when the platform holds two keys on one wire
+				// family (anthropic + zai both map to "anthropic-wire"),
+				// fillable() lets only the first through — and map iteration
+				// order is randomised, so which key funds a run would flip
+				// between launches. The provider slice fixes the winner.
+				for _, prov := range missing {
+					r, ok := resolved[prov]
+					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
+						continue
+					}
+					bundle.APIKeys[prov] = string(r.Plaintext)
+					bundle.PlatformSourced[string(prov)] = true
+					taken[secrets.WireFamily(string(prov))] = true
+					usedIDs = append(usedIDs, r.KeyID)
+					p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, prov)
+				}
+				if len(usedIDs) > 0 {
+					ids, t := usedIDs, now
+					p.goSafeDetached("platform-apikey-markused", func() {
+						bg, cancel := context.WithTimeout(store.WithTenant(context.Background(), secrets.PlatformTenantID), 5*time.Second)
+						defer cancel()
+						for _, id := range ids {
+							_ = p.apiKeys.MarkUsed(bg, id, t)
+						}
+					})
+				}
+			}
+		}
+	}
+
+	// Platform OAuth-forfait blobs under the reserved owner key. Skipped —
+	// like the api-key read above via its `missing` guard — when no OAuth
+	// kind is still fillable, so a run already funded on both wires costs
+	// zero extra store reads here.
+	if p.oauthForfait != nil &&
+		(fillable(string(secrets.OAuthKindClaudeCode)) || fillable(string(secrets.OAuthKindCodex))) {
+		records, err := p.oauthForfait.ListByUser(ctx, secrets.PlatformOwnerKey)
+		if err != nil {
+			p.logger.Warn("cloudpublisher: platform oauth list: %v", err)
+			return
+		}
+		for _, rec := range records {
+			if !fillable(string(rec.Kind)) {
+				continue
+			}
+			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
+			if err != nil {
+				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
+				continue
+			}
+			bundle.OAuthCredentials[string(rec.Kind)] = payload
+			bundle.PlatformSourced[string(rec.Kind)] = true
+			taken[secrets.WireFamily(string(rec.Kind))] = true
+			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, rec.Kind)
+		}
+	}
 }
 
 // poolWantOrder is the order the pool is asked for a credential when a run

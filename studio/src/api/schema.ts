@@ -38,6 +38,156 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/llm/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/api-keys */
+        get: operations["getAdminLlmApiKeys"];
+        put?: never;
+        /** POST /api/admin/llm/api-keys */
+        post: operations["postAdminLlmApiKeys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/api-keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/llm/api-keys/{key_id} */
+        delete: operations["deleteAdminLlmApiKeysByKeyId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/admin/llm/api-keys/{key_id} */
+        patch: operations["patchAdminLlmApiKeysByKeyId"];
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/llm/oauth/connections */
+        get: operations["getAdminLlmOauthConnections"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/admin/llm/oauth/{kind} */
+        delete: operations["deleteAdminLlmOauthByKind"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/{kind}/authorize/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/llm/oauth/{kind}/authorize/complete */
+        post: operations["postAdminLlmOauthByKindAuthorizeComplete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/{kind}/authorize/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/llm/oauth/{kind}/authorize/start */
+        post: operations["postAdminLlmOauthByKindAuthorizeStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/{kind}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/llm/oauth/{kind}/credentials */
+        post: operations["postAdminLlmOauthByKindCredentials"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/llm/oauth/{kind}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/llm/oauth/{kind}/refresh */
+        post: operations["postAdminLlmOauthByKindRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/orgs": {
         parameters: {
             query?: never;
@@ -5119,6 +5269,17 @@ export interface components {
             nodes: components["schemas"]["WireNode"][];
             stale_hash?: boolean;
         };
+        apiKeyView: {
+            created_at: string;
+            fingerprint?: string;
+            id: string;
+            is_default: boolean;
+            last4?: string;
+            last_used_at?: string;
+            name: string;
+            provider: string;
+            scope_user_id?: string;
+        };
         authResponse: {
             access_token?: string;
             active_org_id?: string;
@@ -5128,6 +5289,12 @@ export interface components {
             expires_at?: string;
             orgs: components["schemas"]["orgTreeView"][];
             user: components["schemas"]["userView"];
+        };
+        createApiKeyReq: {
+            is_default?: boolean;
+            name: string;
+            provider: string;
+            secret: string;
         };
         createOrgReq: {
             name: string;
@@ -5307,6 +5474,11 @@ export interface components {
             reason?: string;
             status: string;
         };
+        updateApiKeyReq: {
+            is_default?: boolean;
+            name?: string;
+            secret?: string;
+        };
         updateOrgReq: {
             memory_quota_bytes?: number;
             monthly_cost_cap_usd?: number;
@@ -5354,6 +5526,216 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmApiKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        keys: components["schemas"]["apiKeyView"][];
+                    };
+                };
+            };
+        };
+    };
+    postAdminLlmApiKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["createApiKeyReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["apiKeyView"];
+                };
+            };
+        };
+    };
+    deleteAdminLlmApiKeysByKeyId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchAdminLlmApiKeysByKeyId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["updateApiKeyReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["apiKeyView"];
+                };
+            };
+        };
+    };
+    getAdminLlmOauthConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminLlmOauthByKind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmOauthByKindAuthorizeComplete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmOauthByKindAuthorizeStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmOauthByKindCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminLlmOauthByKindRefresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
