@@ -1,32 +1,33 @@
-# Observability — logs and error tracking
+# Observability — logs, error tracking and tracing
 
-iterion has two observability layers, and they answer different
-questions:
+iterion's observability layers answer different questions:
 
 | Layer | Question it answers | Where it lives |
 |---|---|---|
 | Run events (`events.jsonl`) | *What did this run do?* | the run store, the studio, `iterion report` |
 | **Process logs** | *What is this process doing right now?* | stdout/stderr of the server / runner / dispatcher |
 | **Error tracking** | *Is the deployment healthy — what crashed, how often, since which release?* | a Sentry or GlitchTip project |
+| **Tracing** | *Where did the time go — which API routes are slow, which provider calls are expensive?* | the same Sentry/GlitchTip project (Performance) |
 
 Run events are documented in
 [persisted-formats.md](persisted-formats.md). This page covers the
-other two: how to configure them, and what an operator gets.
+other three: how to configure them, and what an operator gets.
 
 ## Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SENTRY_DSN` | *unset* | **The master switch for error tracking.** Unset ⇒ nothing is initialised and iterion behaves exactly as it did. Set ⇒ panics, fatal errors, error logs and run alerts are reported. |
+| `SENTRY_DSN` | *unset* | **The master switch for error tracking AND tracing.** Unset ⇒ nothing is initialised and iterion behaves exactly as it did. Set ⇒ panics, fatal errors, error logs and run alerts are reported. |
 | `SENTRY_ENVIRONMENT` | *unset* | Tags every event with the deployment (`production`, `staging`, …). Set it — untagged events from several deployments land in one undifferentiated stream. |
+| `SENTRY_TRACES_SAMPLE_RATE` | *unset* (= **tracing off**) | A fraction in `[0, 1]`: how many units of work become a transaction. A **second** opt-in on top of the DSN. |
 | `ITERION_LOG_FORMAT` | `human` on the CLI, **`json`** on server / runner / dispatcher | `human` (emoji console lines) or `json` (one object per line). |
 | `ITERION_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug`, `trace`. |
 
-`SENTRY_DSN` and `SENTRY_ENVIRONMENT` are the SDK's standard names, not
-`ITERION_*` ones, so the DSN you copy from the project page drops into
-the deployment recipe unchanged. They are read from the process
-environment, and — like every other iterion env var — from a `.env`
-next to the project (see `loadDotEnvFromCwd`).
+The `SENTRY_*` names are the SDK's standards, not `ITERION_*` ones, so
+the DSN you copy from the project page drops into the deployment recipe
+unchanged. They are read from the process environment, and — like every
+other iterion env var — from a `.env` next to the project (see
+`loadDotEnvFromCwd`).
 
 ## Logs
 
@@ -149,9 +150,13 @@ Everything passes the SDK's `BeforeSend` hook before it leaves the
 process ([pkg/errtrack/scrub.go](../pkg/errtrack/scrub.go)):
 
 - fields, tags and headers whose **name** looks sensitive
-  (`authorization`, `cookie`, `token`, `secret`, `password`, `api_key`,
-  `credential`, `private_key`, `dsn`, `session`, `bearer`, `auth`) are
-  replaced with `[redacted]` whatever their value;
+  (`authorization`, `cookie`, `token`, `secret`, `password`, `passwd`,
+  `api_key`, `apikey`, `credential`, `private_key`, `dsn`, `session`,
+  `bearer`) are replaced with `[redacted]` whatever their value —
+  **unless the value is a number**, since a credential is text and the
+  exemption is what keeps `input_tokens: 1200` a measurement instead of
+  `[redacted]`. Bare `auth` is deliberately *not* in the list:
+  substring matching would eat `author` / `pr_author`;
 - credential-shaped **substrings** are redacted inside otherwise-useful
   text: URL userinfo (`https://key:secret@host` — the shape of a DSN),
   the `sk-` / `xai-` / `ghp_` / `glpat-` / `iap_` / `iwh_` token
@@ -159,8 +164,11 @@ process ([pkg/errtrack/scrub.go](../pkg/errtrack/scrub.go)):
   `__ITERION_SECRET_*__` placeholders, and email addresses;
 - the **user record** (id, email, ip) is cleared unconditionally.
 
-Scrubbing is on the SDK's own send hook rather than at the call sites,
+Scrubbing is on the SDK's own send hooks rather than at the call sites,
 so nothing can bypass it — including events the SDK generates itself.
+Transaction envelopes take a *different* hook (`BeforeSendTransaction`),
+which gets the same scrubber, walking every span's name/op/description/
+tags/data.
 
 ### Smoke test
 
@@ -184,3 +192,94 @@ and the exit code and terminal output are byte-for-byte what they were.
 Note that `iterion run /nonexistent.bot` is *not* a useful smoke test:
 a missing file is a user-input error (exit 2) and those are
 deliberately never reported.
+
+## Tracing
+
+### Turning it on
+
+Tracing rides the **same DSN and the same client** as error tracking —
+there is no second SDK and no second init. It needs a **second**
+opt-in:
+
+```sh
+export SENTRY_DSN='https://<key>@<host>/<project>'
+export SENTRY_TRACES_SAMPLE_RATE=0.05      # 5% of units of work
+```
+
+`SENTRY_TRACES_SAMPLE_RATE` unset, `0`, unparsable, or outside `[0, 1]`
+⇒ **tracing is off even with the DSN set**. The refusal of a value that
+is set but unusable is loud (one error-level line naming the variable)
+and never costs you error tracking. The SDK does not read this variable
+on its own; `errtrack.Init` resolves it and configures the client.
+
+**Sampling guidance.** Keep production between **0.05 and 0.1**. Every
+sampled unit of work is an envelope on the wire and a row in your
+project's quota, and iterion's expensive surfaces (the studio SPA
+polling, run-console requests) are chatty. `1.0` is for a smoke test or
+a local session, not for a deployment.
+
+### What gets traced
+
+| Seam | Shape |
+|---|---|
+| **Every API request** ([pkg/server/server.go](../pkg/server/server.go), the root handler) | one transaction named after the **route pattern** — `GET /api/runs/{id}`, not `GET /api/runs/019f83…`, so a thousand run ids stay one entry in the performance view. Status, method and the request context ride along |
+| **Every in-process LLM call** ([pkg/backend/model/generation_request.go](../pkg/backend/model/generation_request.go), `callAndAggregate`) | one `llm.generate` span tagged `llm.provider` / `llm.model` and carrying the call's input/output/cache-read token counts. Under an in-flight request it nests inside that request's transaction; off a request — the normal shape for a run — it is a standalone transaction |
+
+That is the **whole** list, and deliberately so:
+
+- **A run gets no transaction.** Runs last minutes to hours; a span
+  tree spanning a whole campaign is unreadable and its envelope is
+  enormous. Use the run's own `events.jsonl` (and the studio timeline)
+  for "what did this run do" — that is what it is for.
+- **404s are not traced.** The SDK ignores them by default, which suits
+  a server that also serves an SPA.
+- The engine's node loop, the store and the dispatcher are **not**
+  instrumented. One hand-made seam, done well, beats a tree of spans
+  nobody reads. That includes `iterion dispatch`'s own little
+  loopback mux (healthz + `/api/server/info` + the SPA): it is not the
+  API server, and tracing a static-file host buys nothing.
+
+Only the CLI-agent backends' *in-process* path is covered: a
+`claude_code` / `codex` / `pi` / `kimi` / `grok` node shells out to its
+own CLI, which iterion does not trace.
+
+### Relationship to the OpenTelemetry wiring
+
+iterion also has an **independent** OTel exporter
+([pkg/cloud/tracing](../pkg/cloud/tracing/tracing.go)) driven by
+`OTEL_EXPORTER_OTLP_ENDPOINT`, feeding the `otel.Tracer` spans in
+`pkg/runtime`, `pkg/runner` and a couple of server handlers. The two
+are complementary and share nothing: point one, the other, or both.
+Sentry tracing needs no collector; OTLP needs one but reaches a
+vendor-neutral backend.
+
+### GlitchTip caveat
+
+GlitchTip accepts transaction envelopes and renders basic performance
+data, but does **not** implement Sentry's full performance product —
+no span metrics or dashboards, no profiling, no session replay. The
+instrumentation is identical either way; what differs is what you will
+see. On GlitchTip, keep the sample rate at the low end: you are paying
+the wire cost for a thinner view.
+
+### Smoke test
+
+```sh
+export SENTRY_DSN='https://<key>@<host>/<project>'
+export SENTRY_ENVIRONMENT=smoke-test
+export SENTRY_TRACES_SAMPLE_RATE=1.0        # smoke only — never a deployment
+
+iterion studio --no-browser-pane --port 4891 &
+curl -s localhost:4891/api/v1/bots > /dev/null
+```
+
+Within a few seconds, **Performance** should show a transaction named
+`GET /api/v1/bots`, tagged with the same `release` and `environment` as
+your error events. Launch any bot on the `claw` backend and an
+`llm.generate` transaction appears alongside it, tagged with the
+provider and model that served it.
+
+Then unset `SENTRY_TRACES_SAMPLE_RATE` and repeat: **no transaction is
+produced**, the handler chain is the one that shipped before tracing
+existed (the middleware is the identity function), and error tracking
+keeps working exactly as above.

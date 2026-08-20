@@ -148,3 +148,90 @@ func TestRedactCommonSecretShapes(t *testing.T) {
 		t.Errorf("over-redaction of benign prose: %q -> %q", benign, got)
 	}
 }
+
+// A credential is text; a count is a number. The key filter has to keep
+// "token" (for access_token and friends), so the numeric exemption is
+// what stops it from destroying every token count iterion measures.
+func TestNumericValuesSurviveASensitiveKeyName(t *testing.T) {
+	got := scrubFields(map[string]any{
+		"input_tokens":  1200,
+		"total_tokens":  int64(1250),
+		"cost_usd":      0.42,
+		"session_count": 3,
+		"access_token":  "ghp_0123456789abcdefghij",
+		"api_key":       "sk-live-0123456789abcdef",
+		"nested": map[string]any{
+			"output_tokens": 50,
+			"auth_token":    "hunter2hunter2",
+		},
+	})
+
+	for k, want := range map[string]any{
+		"input_tokens":  1200,
+		"total_tokens":  int64(1250),
+		"cost_usd":      0.42,
+		"session_count": 3,
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %v, want the measurement %v", k, got[k], want)
+		}
+	}
+	for _, k := range []string{"access_token", "api_key"} {
+		if got[k] != redacted {
+			t.Errorf("%s = %v — a credential must never survive", k, got[k])
+		}
+	}
+	nested, ok := got["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested = %T", got["nested"])
+	}
+	if nested["output_tokens"] != 50 {
+		t.Errorf("nested count = %v", nested["output_tokens"])
+	}
+	if nested["auth_token"] != redacted {
+		t.Errorf("nested credential = %v", nested["auth_token"])
+	}
+}
+
+// Transactions carry the full request envelope (sentryhttp SetRequest),
+// so iterion's own request-borne credentials must be scrubbed: the
+// X-Iterion-Run bearer (bare hex — only the header NAME identifies it)
+// and the OAuth callback's code/state query parameters.
+func TestRequestCredentialsAreScrubbedFromTransactions(t *testing.T) {
+	ev := &sentry.Event{
+		Type: "transaction",
+		Request: &sentry.Request{
+			Headers: map[string]string{
+				"X-Iterion-Run":     "3f9a1c0d2b4e5f60718293a4b5c6d7e8",
+				"X-Iterion-Refresh": "9d8c7b6a5f4e3d2c1b0a998877665544",
+				"Accept":            "application/json",
+			},
+			QueryString: "code=authcode1234567&state=csrf9876543&sig=a1b2c3d4e5f60718&exp=1755640000&redirect_uri=https%3A%2F%2Fapp%2Fcb",
+			URL:         "https://host/api/auth/oidc/callback?code=authcode1234567",
+		},
+	}
+	got := scrubEvent(ev, nil)
+	if v := got.Request.Headers["X-Iterion-Run"]; strings.Contains(v, "3f9a1c0d") {
+		t.Errorf("X-Iterion-Run bearer leaked: %q", v)
+	}
+	if v := got.Request.Headers["X-Iterion-Refresh"]; strings.Contains(v, "9d8c7b6a") {
+		t.Errorf("X-Iterion-Refresh session token leaked: %q", v)
+	}
+	if got.Request.Headers["Accept"] != "application/json" {
+		t.Errorf("benign header over-redacted: %q", got.Request.Headers["Accept"])
+	}
+	for _, s := range []string{got.Request.QueryString, got.Request.URL} {
+		if strings.Contains(s, "authcode1234567") || strings.Contains(s, "csrf9876543") {
+			t.Errorf("OAuth code/state leaked: %q", s)
+		}
+	}
+	if strings.Contains(got.Request.QueryString, "a1b2c3d4e5f60718") {
+		t.Errorf("presigned-attachment sig leaked: %q", got.Request.QueryString)
+	}
+	if !strings.Contains(got.Request.QueryString, "exp=1755640000") {
+		t.Errorf("benign exp param destroyed: %q", got.Request.QueryString)
+	}
+	if !strings.Contains(got.Request.QueryString, "redirect_uri") {
+		t.Errorf("benign query param destroyed: %q", got.Request.QueryString)
+	}
+}

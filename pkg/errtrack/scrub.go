@@ -2,6 +2,7 @@ package errtrack
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strings"
@@ -23,6 +24,28 @@ var sensitiveKeys = []string{
 	"authorization", "cookie", "secret", "token", "password", "passwd",
 	"api_key", "apikey", "credential", "private_key", "dsn", "session",
 	"bearer",
+	// iterion's own request-borne credentials as a FAMILY: X-Iterion-Run
+	// (the ephemeral run bearer on the board-MCP / ask_user transports)
+	// and X-Iterion-Refresh (the session refresh fallback for SDK
+	// clients) are bare tokens no value pattern can catch — the header
+	// NAME is the signal, and matching the prefix closes the class
+	// instead of chasing each header. An X-Iterion-* header carries
+	// protocol state, never diagnostic value worth shipping.
+	"x-iterion-",
+}
+
+// sensitiveQueryParams are query-string parameter names whose VALUE is
+// a credential without matching any sensitiveKeys fragment — the OAuth
+// authorization `code` and CSRF `state` on the SSO / forge callbacks,
+// and `sig`, the presigned-attachment HMAC that authenticates a
+// download for its whole TTL (a traced URL carrying it would be a
+// replayable grant to a run artifact). Kept separate from
+// sensitiveKeys: as prose, "code" and "state" are everywhere
+// ("exit code=1"), but as QUERY PARAMETERS they are precise.
+var sensitiveQueryParams = map[string]bool{
+	"code":  true,
+	"state": true,
+	"sig":   true,
 }
 
 // secretPatterns redact a secret embedded in an otherwise-useful
@@ -84,6 +107,24 @@ func isSensitiveKey(k string) bool {
 	return false
 }
 
+// isMeasurement reports whether a value is a plain number.
+//
+// A credential is text: never an int, never a float. So a numeric value
+// is safe to send even under a name the key filter distrusts — and that
+// exemption is what keeps `input_tokens: 1200` a usable measurement
+// instead of `[redacted]`, since "token" has to stay in sensitiveKeys
+// for `access_token` and friends. Over-redaction destroys an event as
+// surely as a leak: the same reasoning already anchors the key=value
+// regex so `tokens=48657` survives.
+func isMeasurement(v any) bool {
+	switch v.(type) {
+	case bool, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
 // maxScrubDepth bounds the recursive field walk. Past the cap the value
 // is dropped to the redaction marker rather than rendered: fmt's %v does
 // not detect cycles, so stringifying an arbitrarily deep (or cyclic)
@@ -103,7 +144,7 @@ func scrubFields(fields map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(fields))
 	for k, v := range fields {
-		if isSensitiveKey(k) {
+		if isSensitiveKey(k) && !isMeasurement(v) {
 			out[k] = redacted
 			continue
 		}
@@ -151,11 +192,12 @@ func scrubValue(v any, depth int) any {
 		iter := rv.MapRange()
 		for iter.Next() {
 			key := fmt.Sprint(iter.Key().Interface())
-			if isSensitiveKey(key) {
+			val := iter.Value().Interface()
+			if isSensitiveKey(key) && !isMeasurement(val) {
 				out[key] = redacted
 				continue
 			}
-			out[key] = scrubValue(iter.Value().Interface(), depth+1)
+			out[key] = scrubValue(val, depth+1)
 		}
 		return out
 	case reflect.Slice, reflect.Array:
@@ -172,11 +214,12 @@ func scrubValue(v any, depth int) any {
 			if !f.IsExported() {
 				continue
 			}
-			if isSensitiveKey(f.Name) {
+			fv := rv.Field(i).Interface()
+			if isSensitiveKey(f.Name) && !isMeasurement(fv) {
 				out[f.Name] = redacted
 				continue
 			}
-			out[f.Name] = scrubValue(rv.Field(i).Interface(), depth+1)
+			out[f.Name] = scrubValue(fv, depth+1)
 		}
 		return out
 	default:
@@ -185,10 +228,11 @@ func scrubValue(v any, depth int) any {
 	}
 }
 
-// scrubEvent is the SDK's BeforeSend hook: the last checkpoint before
-// anything leaves the process. It walks the payload surfaces that can
-// carry operator data — message, exception values, tags, contexts,
-// request headers/query — and redacts each in place.
+// scrubEvent is the SDK's BeforeSend AND BeforeSendTransaction hook:
+// the last checkpoint before anything leaves the process. It walks the
+// payload surfaces that can carry operator data — message, exception
+// values, tags, contexts, request headers/query, spans — and redacts
+// each in place.
 func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	if event == nil {
 		return nil
@@ -224,6 +268,12 @@ func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	for _, b := range event.Breadcrumbs {
 		scrubBreadcrumbInPlace(b)
 	}
+	// Transaction events carry their timing tree here. Mutating the
+	// spans is safe: the SDK pre-serialises them only after the
+	// BeforeSend* hooks have run.
+	for _, s := range event.Spans {
+		scrubSpanInPlace(s)
+	}
 	if event.Request != nil {
 		for k := range event.Request.Headers {
 			if isSensitiveKey(k) {
@@ -232,14 +282,57 @@ func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 			}
 			event.Request.Headers[k] = Redact(event.Request.Headers[k])
 		}
-		event.Request.QueryString = Redact(event.Request.QueryString)
+		event.Request.QueryString = scrubQueryString(event.Request.QueryString)
 		event.Request.Cookies = redacted
-		event.Request.URL = Redact(event.Request.URL)
+		event.Request.URL = scrubURL(event.Request.URL)
 		event.Request.Data = Redact(event.Request.Data)
 	}
 	// The user record is identity data we never need for triage.
 	event.User = sentry.User{}
 	return event
+}
+
+// scrubQueryString redacts the values of credential-bearing query
+// parameters — the sensitiveKeys fragments plus the OAuth callback
+// params (`code`, `state`) — and leaves the rest intact, then applies
+// the pattern pass on the survivors. A string that does not parse as a
+// query falls back to the plain pattern pass.
+func scrubQueryString(q string) string {
+	if q == "" {
+		return q
+	}
+	values, err := url.ParseQuery(q)
+	if err != nil {
+		return Redact(q)
+	}
+	for key, vals := range values {
+		lk := strings.ToLower(key)
+		if isSensitiveKey(key) || sensitiveQueryParams[lk] {
+			for i := range vals {
+				vals[i] = redacted
+			}
+			continue
+		}
+		for i := range vals {
+			vals[i] = Redact(vals[i])
+		}
+	}
+	return values.Encode()
+}
+
+// scrubURL applies the pattern pass to the URL and the query-parameter
+// pass to its query part, so a credential riding a full URL (the OAuth
+// callback with ?code=…) is caught in both renderings.
+func scrubURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return Redact(raw)
+	}
+	u.RawQuery = scrubQueryString(u.RawQuery)
+	return Redact(u.String())
 }
 
 // scrubBreadcrumb is the SDK's BeforeBreadcrumb hook.

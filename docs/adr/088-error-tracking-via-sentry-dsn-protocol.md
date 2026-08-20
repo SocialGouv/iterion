@@ -8,6 +8,10 @@
   `Redact`),
   [pkg/errtrack/hook.go](../../pkg/errtrack/hook.go)
   (`LogHook`, `AttachLogHook`),
+  [pkg/errtrack/tracing.go](../../pkg/errtrack/tracing.go) +
+  [http.go](../../pkg/errtrack/http.go) +
+  [span.go](../../pkg/errtrack/span.go) (`TracingEnabled`,
+  `HTTPMiddleware`, `StartSpan` — see the 2026-08-20 addendum),
   [pkg/log/log.go](../../pkg/log/log.go) (`Hook`, `SetHook`),
   [pkg/alert/errtrack.go](../../pkg/alert/errtrack.go) (`TrackerSink`)
 - **Runbook**: [docs/observability.md](../observability.md)
@@ -111,3 +115,60 @@ the tracker (`alert.TrackerSink`), which is the right relationship.
 - `pkg/log` now has a hook slot. It is single-consumer by design — if a
   second consumer ever appears, the slot becomes a slice, not a second
   logging abstraction.
+
+## Addendum — 2026-08-20: tracing, opt-in on the same client
+
+The decision above closed with *"Tracing stays OTel's job; incidents
+are Sentry-protocol's"*. That still holds for the OTLP path
+([pkg/cloud/tracing](../../pkg/cloud/tracing/tracing.go)), which is
+untouched — but it read as "iterion will never emit a Sentry
+transaction", and a deployment already paying for a Sentry/GlitchTip
+project should not need a collector to answer *"which route is slow"*.
+Tracing is therefore wired **on the same client**, and stays off unless
+asked for. The two paths are independent and complementary: point one,
+the other, or both.
+
+- **A second opt-in, not a consequence of the first.**
+  `SENTRY_TRACES_SAMPLE_RATE` in `[0, 1]` enables it; unset, `0`,
+  unparsable or out of range ⇒ off even with a DSN set. The SDK does
+  not read that variable natively, so `Init` resolves it and sets
+  `EnableTracing` / `TracesSampleRate`. A value that is set but unusable
+  is reported loudly and never costs error tracking — same rule as a
+  malformed DSN. Off is the safe default even though the family was
+  requested at build time: a transaction per request is quota an
+  operator turns on deliberately.
+- **Auto-instrumentation for HTTP, exactly one hand-made span.** The
+  server's root handler is wrapped with the SDK's own `sentryhttp`
+  (behind `errtrack.HTTPMiddleware`, so `pkg/server` does not import
+  the SDK); the one hand seam is the in-process provider call in
+  `pkg/backend/model.callAndAggregate`. The engine's node loop, the
+  store and the dispatcher are deliberately NOT instrumented — one
+  seam done well beats a span tree nobody reads.
+- **A run is not a transaction.** Runs last minutes to hours.
+  Transactions are request-scoped or call-scoped; a run's story is
+  already `events.jsonl`, which is the layer built for it. This is the
+  non-goal most likely to be "fixed" by a later pass, hence recorded.
+- **Zero overhead when off, provably.** `HTTPMiddleware` returns the
+  identity function and `StartSpan` returns a nil handle plus the
+  caller's own context, so an un-traced deployment runs the same
+  handler chain and allocates nothing. Both are asserted, not asserted
+  *about*.
+- **Transaction naming is a design constraint, not a detail.** The SDK
+  names a transaction from `http.Request.Pattern`, which the mux stamps
+  during routing — but the auth layer forwards a `WithContext` copy, so
+  the outermost middleware always sees it empty and every run id would
+  become its own transaction. The server resolves the registered
+  pattern up front and hands it to the middleware.
+- **Transactions need their own scrubbing hook.** `BeforeSend` never
+  sees them; `BeforeSendTransaction` gets the same scrubber, extended
+  to walk spans. Wiring one without the other would have shipped an
+  unscrubbed wire path.
+- **Consequence — the key filter gained a numeric exemption.** Span
+  measurements exposed that `token` in `sensitiveKeys` was redacting
+  `input_tokens` as readily as `access_token`. A credential is text, so
+  a numeric value is now exempt: over-redaction destroys an event as
+  surely as a leak.
+- **GlitchTip renders transactions but not Sentry's performance
+  product** (no span metrics, no profiling, no replay). The
+  instrumentation is identical; the caveat is about what the operator
+  sees, and lives in the runbook.

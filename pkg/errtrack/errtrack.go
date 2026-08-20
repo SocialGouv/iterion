@@ -75,6 +75,11 @@ type Config struct {
 	// ServerName tags events with the process identity (a CLI command
 	// name, a runner pod). Empty ⇒ the SDK's default (the hostname).
 	ServerName string
+	// TracesSampleRate overrides SENTRY_TRACES_SAMPLE_RATE, the tracing
+	// dial. A pointer because 0 is meaningful: nil ⇒ read the env,
+	// &0 ⇒ tracing explicitly off. Mainly a test seam — a deployment
+	// turns the dial with the env var.
+	TracesSampleRate *float64
 }
 
 // Init installs the Sentry client when a DSN is configured and reports
@@ -110,6 +115,8 @@ func doInit(cfg Config) bool {
 		release = defaultRelease()
 	}
 
+	rate := resolveTracesSampleRate(cfg, cfg.Logger)
+
 	err := sentry.Init(sentry.ClientOptions{
 		Dsn:              dsn,
 		Environment:      env,
@@ -119,6 +126,11 @@ func doInit(cfg Config) bool {
 		AttachStacktrace: true,
 		BeforeSend:       scrubEvent,
 		BeforeBreadcrumb: scrubBreadcrumb,
+		// Transaction events bypass BeforeSend entirely; without this
+		// hook every span would reach the wire unscrubbed.
+		BeforeSendTransaction: scrubEvent,
+		EnableTracing:         rate > 0,
+		TracesSampleRate:      rate,
 	})
 	if err != nil {
 		// Loud, never fatal: a broken DSN costs error tracking, not the
@@ -128,7 +140,8 @@ func doInit(cfg Config) bool {
 		cfg.Logger.Error("errtrack: error tracking disabled — %s", Redact(err.Error()))
 		return false
 	}
-	cfg.Logger.Debug("errtrack: error tracking enabled (release=%s environment=%s)", release, env)
+	tracing.Store(rate > 0)
+	cfg.Logger.Debug("errtrack: error tracking enabled (release=%s environment=%s traces_sample_rate=%v)", release, env, rate)
 	return true
 }
 
@@ -241,5 +254,6 @@ func applyFields(scope *sentry.Scope, fields map[string]any) {
 // code initialises once and never tears down.
 func reset() {
 	enabled.Store(false)
+	tracing.Store(false)
 	initOnce = sync.Once{}
 }
