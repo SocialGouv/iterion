@@ -251,6 +251,7 @@ const sidebar = [
       { text: 'Cloud admin guide', link: '/cloud-admin-guide' },
       { text: 'Cloud admin bootstrap', link: '/cloud-admin' },
       { text: 'Cloud backup', link: '/cloud-backup' },
+      { text: 'Probes & graceful shutdown', link: '/probes-and-graceful-shutdown' },
       { text: 'Cloud troubleshooting', link: '/cloud-troubleshooting' },
       { text: 'Public exposure checklist', link: '/cloud-public-exposure-checklist' },
       { text: 'CI performance (BuildKit operator)', link: '/ci-performance-buildkit-operator' },

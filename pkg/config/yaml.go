@@ -137,7 +137,8 @@ type yamlRunnerConfig struct {
 }
 
 type yamlServerConfig struct {
-	HealthzPort *int `yaml:"healthz_port"`
+	ShutdownDelay    *string `yaml:"shutdown_delay"`
+	ShutdownTeardown *string `yaml:"shutdown_teardown"`
 }
 
 type yamlMetricsConfig struct {
@@ -225,7 +226,20 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 		}
 	}
 	if y.Server != nil {
-		applyInt(y.Server.HealthzPort, &cfg.Server.HealthzPort)
+		if y.Server.ShutdownDelay != nil {
+			d, err := time.ParseDuration(*y.Server.ShutdownDelay)
+			if err != nil {
+				return fmt.Errorf("server.shutdown_delay: %w", err)
+			}
+			cfg.Server.ShutdownDelay = d
+		}
+		if y.Server.ShutdownTeardown != nil {
+			d, err := time.ParseDuration(*y.Server.ShutdownTeardown)
+			if err != nil {
+				return fmt.Errorf("server.shutdown_teardown: %w", err)
+			}
+			cfg.Server.ShutdownTeardown = d
+		}
 	}
 	if y.Metrics != nil {
 		applyInt(y.Metrics.Port, &cfg.Metrics.Port)

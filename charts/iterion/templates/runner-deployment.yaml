@@ -173,21 +173,40 @@ spec:
             {{- toYaml .Values.runner.resources | nindent 12 }}
           # The metrics listener is bound unconditionally by the runner
           # binary (the chart `metrics.enabled` flag only gates the
-          # PodMonitor scrape config), so it doubles as a liveness probe
-          # for the consume loop. Plan §F T-40.
+          # PodMonitor scrape config), and it also serves the probes.
+          # Plan §F T-40.
           ports:
             - name: metrics
               containerPort: {{ default .Values.server.metricsPort .Values.runner.metricsPort }}
               protocol: TCP
+          {{- if (.Values.probes.startup).enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          # /healthz reports the consume LOOP, not just an open socket: it
+          # stays green while a run is in flight (the loop is blocked inside
+          # it by design, for hours) and fails only when an idle loop has
+          # stopped cycling — the one state a restart actually fixes. A
+          # tcpSocket probe could not tell those apart, so a runner with a
+          # dead consumer stayed Ready forever, consuming nothing.
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: metrics
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 3
             failureThreshold: 3
+          # /readyz goes 503 for the whole lame-duck drain, so a pod
+          # finishing its run is distinguishable from one taking work.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 10

@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -527,6 +528,13 @@ type Runner struct {
 	current *inFlight          // non-nil while a run is being processed; guarded by mu
 	cancel  context.CancelFunc // loop-context canceller installed by Run; guarded by mu
 
+	// Probe state (see health.go). lastTick is the unix-nano stamp of the
+	// consume loop's most recent iteration — what tells a wedged loop from
+	// an idle one, and (non-zero) that the loop started at all. draining is
+	// set at the top of Shutdown.
+	draining atomic.Bool
+	lastTick atomic.Int64
+
 	// logWriters maps an in-flight run to its RunLogStore batching
 	// writer so the store's LogPositionFn hook (logWriterTotal) can
 	// stamp Event.LogOffset. See runlog_writer.go.
@@ -680,6 +688,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.mu.Unlock()
 	defer cancel()
 
+	r.tick() // the probes' "started" signal (health.go)
 	r.cfg.Logger.Info("runner: started, runnerID=%s workdir=%s", r.cfg.RunnerID, r.cfg.WorkDir)
 
 	// NATS queue depth gauge: every PendingPoll the runner samples the
@@ -712,6 +721,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	for {
+		// Liveness stamp: proof the loop is still cycling. An idle loop
+		// ticks every FetchWait; a busy one stops ticking, which the probe
+		// reads as "busy", not "wedged" (see health.go).
+		r.tick()
 		select {
 		case <-loopCtx.Done():
 			r.cfg.Logger.Info("runner: ctx done — exiting loop")
@@ -756,6 +769,9 @@ func (r *Runner) Run(ctx context.Context) error {
 // terminationGracePeriodSeconds remains the hard bound and the orphan
 // sweeper recovers anything the SIGKILL leaves `running`. No state is lost.
 func (r *Runner) Shutdown(ctx context.Context) error {
+	// Flip readiness first: a pod that may sit in a lame-duck drain for
+	// hours must not look like a fresh one to an operator or a rollout.
+	r.draining.Store(true)
 	r.mu.Lock()
 	cur := r.current
 	cancel := r.cancel
@@ -879,6 +895,11 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	r.mu.Lock()
 	r.current = inflight
 	r.mu.Unlock()
+	// Registered LAST, so it runs FIRST on the way out. Beyond the close
+	// ordering below, that position bounds the liveness probe's blind
+	// spot: between clearing current and the loop's next tick the runner
+	// reads "idle with an old tick", so this must not drift later in the
+	// defer chain (health.go).
 	defer func() {
 		// Close before nilling: a Shutdown that captured the cur
 		// pointer must always observe the channel close.

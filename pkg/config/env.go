@@ -79,9 +79,16 @@ func loadEnv(cfg *Config) error {
 		return err
 	}
 
-	if err := lookupInt("ITERION_HEALTHZ_PORT", &cfg.Server.HealthzPort); err != nil {
+	delay, err := ShutdownDelayFromEnv(cfg.Server.ShutdownDelay)
+	if err != nil {
 		return err
 	}
+	cfg.Server.ShutdownDelay = delay
+	teardown, err := ShutdownTeardownFromEnv(cfg.Server.ShutdownTeardown)
+	if err != nil {
+		return err
+	}
+	cfg.Server.ShutdownTeardown = teardown
 	if err := lookupInt("ITERION_METRICS_PORT", &cfg.Metrics.Port); err != nil {
 		return err
 	}
@@ -202,6 +209,85 @@ func lookupDuration(key string, dst *time.Duration) error {
 		return fmt.Errorf("%s: %w", key, err)
 	}
 	*dst = d
+	return nil
+}
+
+// Names of the two halves of a server's exit budget. They live here, with
+// every other ITERION_* name, so there is exactly one parser per variable:
+// Load() overlays them onto Config, and surfaces that do NOT run the full
+// loader (the local studio) read the same values through
+// ShutdownDelayFromEnv / ShutdownTeardownFromEnv rather than re-deriving
+// the name and the accepted format.
+const (
+	EnvShutdownDelay    = "ITERION_SHUTDOWN_DELAY"
+	EnvShutdownTeardown = "ITERION_SHUTDOWN_TEARDOWN"
+)
+
+// ShutdownDelayFromEnv resolves the lame-duck window, falling back to def
+// when the variable is unset. It applies the SAME rule as Validate() —
+// see checkShutdownDelay.
+func ShutdownDelayFromEnv(def time.Duration) (time.Duration, error) {
+	d, err := durationFromEnv(EnvShutdownDelay, def)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkShutdownDelay(d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// ShutdownTeardownFromEnv resolves the post-lame-duck teardown budget,
+// falling back to def when the variable is unset. It applies the SAME
+// rule as Validate() — see checkShutdownTeardown.
+func ShutdownTeardownFromEnv(def time.Duration) (time.Duration, error) {
+	d, err := durationFromEnv(EnvShutdownTeardown, def)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkShutdownTeardown(d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// durationFromEnv returns the parsed variable or def when it is unset. A
+// malformed value is an error, never a silent fallback: an operator who
+// wrote "5" instead of "5s" must see it now rather than discover months
+// later that the window was never in effect.
+func durationFromEnv(key string, def time.Duration) (time.Duration, error) {
+	v, ok := lookup(key)
+	if !ok {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q invalid (want a duration like 5s): %w", key, v, err)
+	}
+	return d, nil
+}
+
+// checkShutdownDelay and checkShutdownTeardown are each budget's SINGLE
+// rule, shared by Validate() (the loader path, used by `iterion server`)
+// and by the FromEnv helpers (surfaces that skip the loader — `iterion
+// studio`, and `iterion server --mode local`, which routes to RunStudio
+// and therefore never reaches Validate). Without that sharing the same
+// chart would accept in `mode: local` what it rejects in `mode: cloud`.
+func checkShutdownDelay(d time.Duration) error {
+	if d < 0 {
+		return fmt.Errorf("%s %s invalid (want >= 0)", EnvShutdownDelay, d)
+	}
+	return nil
+}
+
+func checkShutdownTeardown(d time.Duration) error {
+	// Zero hands runs.Drain and http.Server.Shutdown an ALREADY-EXPIRED
+	// context: in-flight runs never flip to failed_resumable and every
+	// in-flight request is cut at once — the opposite of a graceful
+	// shutdown, and silent.
+	if d <= 0 {
+		return fmt.Errorf("%s %s invalid (want > 0)", EnvShutdownTeardown, d)
+	}
 	return nil
 }
 

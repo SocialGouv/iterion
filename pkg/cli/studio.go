@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
@@ -214,6 +215,23 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		botsPaths = botregistry.DefaultPaths(dir)
 	}
 
+	// Lame-duck window, off by default: a Ctrl-C'd local studio must stop
+	// now. `iterion server --mode local` (the chart's StatefulSet shape)
+	// lands here too, and it IS behind a Service — hence the env override.
+	// Read through pkg/config so there is one owner of the variable name
+	// and its accepted format, even though this path skips the full loader.
+	shutdownDelay, err := iterconfig.ShutdownDelayFromEnv(0)
+	if err != nil {
+		return err
+	}
+	// Teardown budget: long enough to let in-flight runs reach their
+	// cancel points and flip to failed_resumable, bounded so a wedged
+	// subprocess can't hold the studio process forever.
+	teardown, err := iterconfig.ShutdownTeardownFromEnv(60 * time.Second)
+	if err != nil {
+		return err
+	}
+
 	cfg := server.Config{
 		Port:                   opts.Port,
 		Bind:                   opts.Bind,
@@ -227,6 +245,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 		MaxUploadsPerRun:       opts.MaxUploadsPerRun,
 		AllowedUploadMIMEs:     opts.AllowUploadMime,
 		MaxConcurrentPipelines: opts.MaxConcurrentPipelines,
+		ShutdownDelay:          shutdownDelay,
 		// Local mode: the studio process is implicitly trusted to
 		// its TTY user. CSRF protection still gates write endpoints
 		// via Origin allowlisting; cross-tenant isolation does not
@@ -397,16 +416,14 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 
 	select {
 	case <-ctx.Done():
-		// 60 s drain budget: long enough to let in-flight runs reach
-		// their cancel points + flip persisted status to
-		// failed_resumable, but bounded so a wedged subprocess can't
-		// hold the studio process forever. Server.Shutdown calls
-		// runs.Drain (which uses this ctx) and then http.Server.Shutdown
-		// in sequence, so the budget is shared across both phases.
+		// Server.Shutdown splits the teardown budget between runs.Drain
+		// and http.Server.Shutdown; the lame-duck window (0 unless
+		// ITERION_SHUTDOWN_DELAY is set) is added on top so it never eats
+		// into the drain.
 		if p.Format == OutputHuman {
-			p.Line("\nShutdown signal received — draining in-flight runs (up to 60s)…")
+			p.Line("\nShutdown signal received — draining in-flight runs (up to %s)…", teardown)
 		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownDelay+teardown)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:

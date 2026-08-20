@@ -346,19 +346,6 @@ func (s *Server) ListenAndServe() error {
 	return s.server.Serve(ln)
 }
 
-// Shutdown gracefully shuts down the server.
-//
-// Order matters: HTTP-level shutdown (Server.Shutdown) drains in-flight
-// requests, while the run console service drains in-process workflow
-// goroutines. We do the workflow drain first so any cancel events
-// reach the on-disk store before the file watcher stops broadcasting
-// and clients drop. The drain ctx is the caller-supplied shutdown
-// deadline.
-//
-// Drain (rather than Stop) is intentional: it flips each in-flight
-// run to failed_resumable and emits EventRunInterrupted so the next
-// boot can offer one-click resume and clients can distinguish
-// shutdown-induced termination from user-initiated cancel.
 // startUserNotify builds the usernotify dispatcher (web-push sink), attaches
 // it to the event spine, and starts the reconciliation sweep. No-op when the
 // feature is off. The dispatcher subscribes on the shared EventsBus (cloud
@@ -404,9 +391,78 @@ func (s *Server) startUserNotify() {
 	s.logger.Info("server: user notifications enabled (web push)")
 }
 
+// drainBudgetShare is the fraction of the caller's shutdown deadline the
+// run-console drain may consume; the remainder is reserved for the HTTP
+// shutdown so in-flight requests keep a real window.
+const drainBudgetShare = 2.0 / 3.0
+
+// drainBudget derives a context holding drainBudgetShare of ctx's
+// remaining deadline. An undeadlined ctx passes through unchanged
+// (nothing to divide).
+func drainBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, time.Duration(float64(remaining)*drainBudgetShare))
+}
+
+// ShutdownDelay reports the configured lame-duck window so an entrypoint
+// can size its Shutdown context to cover it plus the teardown itself.
+func (s *Server) ShutdownDelay() time.Duration { return s.cfg.ShutdownDelay }
+
+// beginDrain opens the lame-duck window: /readyz starts answering 503
+// while the listener is still accepting, then we wait ShutdownDelay for
+// the endpoints controller to pull this pod out of the Service. Without
+// that pause the socket closes while traffic is still being routed here,
+// which is a connection-refused — a 502 for a studio user, a dropped
+// delivery for a forge webhook.
+//
+// The wait is bounded by ctx, so a caller whose deadline is already tight
+// skips ahead rather than sitting out the full delay. Note that a SECOND
+// signal does NOT shorten it: both entrypoints derive the shutdown context
+// from context.Background(), so once the exit sequence starts it runs to
+// completion or to its own deadline.
+func (s *Server) beginDrain(ctx context.Context) {
+	s.draining.Store(true)
+	if s.cfg.ShutdownDelay <= 0 {
+		return
+	}
+	s.logger.Info("server: draining — /readyz now 503, waiting %s for endpoint removal", s.cfg.ShutdownDelay)
+	timer := time.NewTimer(s.cfg.ShutdownDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// Shutdown gracefully shuts down the server.
+//
+// Order matters. The lame-duck flip comes first (see beginDrain), then the
+// run console service drains in-process workflow goroutines, and the
+// HTTP-level shutdown drains in-flight requests last. The workflow drain
+// precedes it so any cancel events reach the on-disk store before the file
+// watcher stops broadcasting and clients drop.
+//
+// Drain (rather than Stop) is intentional: it flips each in-flight
+// run to failed_resumable and emits EventRunInterrupted so the next
+// boot can offer one-click resume and clients can distinguish
+// shutdown-induced termination from user-initiated cancel.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.beginDrain(ctx)
 	if s.runs != nil {
-		s.runs.Drain(ctx)
+		// Sub-budget: Drain and the HTTP shutdown below share the caller's
+		// deadline, so a drain that eats all of it would leave
+		// server.Shutdown an already-expired context — cutting in-flight
+		// requests at the exact moment we're trying to let them finish.
+		drainCtx, cancel := drainBudget(ctx)
+		s.runs.Drain(drainCtx)
+		cancel()
 	}
 	// Stop the dispatcher before the HTTP server tears down so its
 	// shutdown() path can release in-flight claims to a clean state.

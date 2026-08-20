@@ -544,23 +544,32 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CookieSecure:           cfg.Auth.CookieSecure,
 		DisableAuth:            disableAuth,
 		Metrics:                mreg,
-		// /readyz pings each dependency under a 1s deadline so kubelet
-		// readiness probes flip to "not ready" the moment a backend
-		// drops, instead of returning 200 against a stub.
+		// /readyz pings each dependency under a 1s deadline. Only Mongo is
+		// CRITICAL (it is the store — without it the pod serves nothing
+		// real): the others are reported as "degraded" in the probe body
+		// and left at 200. Every replica pings the same backends, so
+		// gating readiness on all of them turns a 15s NATS/S3 blip into a
+		// fleet-wide outage — all pods leave the Service at once and the
+		// ingress 503s even the routes that never touch them.
 		ReadinessChecks: map[string]server.ReadinessCheck{
-			"mongo": st.Ping,
-			"nats":  natsConn.Ping,
-			"s3":    bc.Ping,
-			"valkey": func(ctx context.Context) error {
+			"mongo": {Ping: st.Ping, Critical: true},
+			"nats":  {Ping: natsConn.Ping},
+			"s3":    {Ping: bc.Ping},
+			"valkey": {Ping: func(ctx context.Context) error {
 				if redisClient == nil {
 					return nil // not configured → not a dependency
 				}
 				return redisClient.Ping(ctx)
-			},
+			}},
 		},
+		// Lame-duck window: /readyz answers 503 for this long before the
+		// listener closes, so the endpoints controller can pull the pod
+		// out of the Service first (no connection-refused on a deploy or
+		// an HPA scale-down).
+		ShutdownDelay: cfg.Server.ShutdownDelay,
 	}, logger)
 
-	return runServerLoop(rootCtx, srv, mreg, cfg.Metrics.Port, logger)
+	return runServerLoop(rootCtx, srv, mreg, cfg.Metrics.Port, cfg.Server.ShutdownTeardown, logger)
 }
 
 // cloudStores bundles every Mongo-backed store the cloud server wires
@@ -853,10 +862,10 @@ func botsPathsFromEnv() []string {
 // runServerLoop starts the dedicated Prometheus metrics listener and
 // the main HTTP server, then blocks until SIGINT/SIGTERM (via the
 // parent rootCtx) or the server returns an error. On signal it runs a
-// 30s graceful shutdown; on listen error it propagates the error
-// upstream. Metrics startup is synchronous so a port-conflict surfaces
-// at boot, not later.
-func runServerLoop(rootCtx context.Context, srv *server.Server, mreg *metrics.Registry, metricsPort int, logger *iterlog.Logger) error {
+// graceful shutdown bounded by teardown; on listen error it propagates
+// the error upstream. Metrics startup is synchronous so a port-conflict
+// surfaces at boot, not later.
+func runServerLoop(rootCtx context.Context, srv *server.Server, mreg *metrics.Registry, metricsPort int, teardown time.Duration, logger *iterlog.Logger) error {
 	// Prometheus metrics on a dedicated port (plan §F T-40). Bound
 	// synchronously so a port-conflict surfaces at boot, not later.
 	metricsAddr := fmt.Sprintf(":%d", metricsPort)
@@ -871,7 +880,12 @@ func runServerLoop(rootCtx context.Context, srv *server.Server, mreg *metrics.Re
 
 	select {
 	case <-rootCtx.Done():
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// The teardown budget sits ON TOP of the lame-duck delay the
+		// server waits out first — otherwise the delay would eat the
+		// window in-flight requests need. k8s
+		// terminationGracePeriodSeconds must cover the sum (the chart
+		// comments the arithmetic).
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), srv.ShutdownDelay()+teardown)
 		defer shutdownCancel()
 		return srv.Shutdown(shutdownCtx)
 	case err := <-errCh:

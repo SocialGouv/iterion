@@ -185,6 +185,15 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/probes-and-graceful-shutdown.md](docs/probes-and-graceful-shutdown.md) —
+  what `/healthz` and `/readyz` promise on the server AND the runner, the
+  lame-duck window (`ITERION_SHUTDOWN_DELAY`) that keeps a deploy or an HPA
+  scale-down from refusing in-flight connections, why only Mongo gates
+  readiness (a critical check on a shared backend turns a blip into a
+  fleet-wide outage), the startup probe that covers a slow cloud boot, and
+  the `terminationGracePeriodSeconds` arithmetic. Read it on 502s during a
+  deploy, a CrashLoop at boot, or a runner that reads `Ready` while the
+  queue sits still.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),

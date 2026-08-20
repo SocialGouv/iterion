@@ -32,7 +32,13 @@ kubectl -n <ns> exec deploy/iterion -- nc -zv <mongo-host> 27017
 kubectl -n <ns> exec deploy/iterion -- aws --endpoint-url $S3_ENDPOINT s3 ls s3://$S3_BUCKET/runs/
 ```
 
-If `/readyz` returns 503: the server can reach itself but cannot reach Mongo, NATS, or blob storage. The body lists which probe failed.
+Reading the `/readyz` body:
+
+- **503 `{"status":"draining"}`** — the pod is shutting down and no dependency was even pinged. Expected during a rolling deploy or an HPA scale-down; it lasts `ITERION_SHUTDOWN_DELAY` (5s by default) and is what stops the load balancer routing to a pod whose listener is about to close.
+- **503 `{"status":"degraded", …}`** — a *critical* dependency (Mongo) is unreachable. The `checks` map names it.
+- **200 `{"status":"degraded", …}`** — a *non-critical* dependency (NATS, S3, Valkey) is failing. The pod deliberately stays in the Service: every replica pings the same backends, so removing them all converts a blip into a total outage. Fix the dependency, but the ingress keeps serving.
+
+Full reference: [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md).
 
 ## Symptoms → diagnosis → fix
 
@@ -78,9 +84,9 @@ Fix:
 - NetworkPolicy: see [networkpolicy-egress example](../charts/iterion/examples/networkpolicy-egress.yaml). The chart's default egress allows DNS only; cluster traffic is *not* implicit.
 - TLS mismatch: cloud Mongo (Atlas, etc.) often requires TLS — set `ITERION_MONGO_URI=mongodb+srv://...?tls=true&retryWrites=true`.
 
-### `/readyz` 503 with `s3: AccessDenied`
+### `/readyz` 200 `degraded` with `s3: AccessDenied`
 
-**Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server.
+**Probable cause**: S3 credentials are wrong, the bucket doesn't exist, or the bucket policy denies the iterion server. S3 is non-critical for readiness, so the pod stays in the Service and the probe answers 200 — but artifact reads and writes fail, so treat it as urgent anyway.
 
 Diagnose:
 1. `kubectl exec deploy/iterion -- env | grep -E 'S3|AWS'`
