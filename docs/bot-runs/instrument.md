@@ -4,6 +4,42 @@ Newest first. Bot: [bots/instrument/](../../bots/instrument/) — observability
 instrumentation campaign (Sentry/GlitchTip error tracking + standardized
 logs; opt-in tracing).
 
+## 2026-08-20 — second dogfood: the opt-in tracing family (run 01a01db3)
+
+- Status: **validated**
+- Versions: bot 0.1.0 (+ the #460/#462 contract fixes) · iterion `fb4a453d5` (v3.50.2)
+- Method: same chassis, `scope=errors,logs,tracing` (the tracing opt-in
+  exercised for the first time), `--max-cost-usd 45 --merge-into none`,
+  mission_notes = tracing arbitrations (dial via SENTRY_TRACES_SAMPLE_RATE
+  read in errtrack.Init — sentry-go does not read it natively; sentryhttp
+  on the API server behind an identity-when-off errtrack.HTTPMiddleware;
+  exactly ONE hand seam: the in-process LLM call; no run-length
+  transactions).
+- Result: **converged in ONE pass** (vs 3 on the first dogfood — the
+  clean-tree clause and the verify-build GOFLAGS gotcha landed between
+  the two runs and no friction recurred). $29.10, 41.6 min, 6 commits on
+  `iterion/run/blastoff-wail-pyrebloom-b28b` (`c5a2424`).
+- Value: `pkg/errtrack` tracing dial (off unless the env parses > 0, loud
+  on unparsable, Config.TracesSampleRate test seam), one Sentry
+  transaction per API request named by route, one span per provider call
+  in pkg/backend/model/generation.go, tracing_test.go + server
+  tracing_test.go on the in-memory transport, docs/observability.md
+  Tracing section + ADR-088 dated addendum. Host verification: full
+  `task check` exit=0 (128 pkgs). Live smoke: ephemeral server with
+  rate=1 → the two `http.server` transactions visible in the project's
+  Performance page, named by route.
+- Findings / misses: the campaign verified errors+logs already complete
+  and spent the whole pass on tracing — the "expect zero work there"
+  mission note prevented re-litigating. It also self-documented the
+  one-surface scope choice (final commit). Nothing over-claimed; review
+  clean on the first pass.
+- Engine/bot hardening: none needed — the run surfaced no new engine or
+  bot friction (first frictionless run of the fleet's chassis on this
+  repo).
+- Lessons for next run: the fleet-propagated lessons demonstrably
+  compound (3 passes → 1); a scope var carrying an already-done family
+  costs one cheap verification, not a wasted pass.
+
 ## 2026-08-19 — first dogfood: instrument iterion itself (run 01a01a51)
 
 - Status: **validated**
