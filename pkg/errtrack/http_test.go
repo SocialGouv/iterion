@@ -30,7 +30,7 @@ func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 func (h *hijackableRecorder) ReadFrom(r io.Reader) (int64, error) {
-	return io.Copy(h.ResponseRecorder.Body, r)
+	return io.Copy(h.Body, r)
 }
 
 func TestHTTPMiddlewareIsTheIdentityWhenTracingIsOff(t *testing.T) {
