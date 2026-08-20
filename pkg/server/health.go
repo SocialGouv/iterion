@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
 
 // healthResponse is the JSON envelope returned by /healthz and /readyz.
@@ -16,6 +17,22 @@ type healthResponse struct {
 	Version string            `json:"version,omitempty"` // build version
 	Commit  string            `json:"commit,omitempty"`  // build commit
 	Checks  map[string]string `json:"checks,omitempty"`  // per-dependency status (cloud only)
+	// UsageCap echoes the process' usage-cap policy (ITERION_USAGE_CAP_*).
+	// Config, not a secret — a guard nobody can observe is a guard nobody
+	// can trust: this is the only surface where an operator can verify the
+	// cap actually reached the deployment.
+	UsageCap string `json:"usage_cap,omitempty"`
+}
+
+// usageCapSummary renders the env-resolved usage-cap policy for the
+// health envelope. A malformed value is reported, not hidden — the
+// enforcement paths refuse to start on it, so the probe must say why.
+func usageCapSummary() string {
+	pol, err := usagecap.FromEnv()
+	if err != nil {
+		return "invalid: " + err.Error()
+	}
+	return pol.String()
 }
 
 // defaultReadinessTimeout caps each individual readiness check when the
@@ -31,10 +48,11 @@ const defaultReadinessTimeout = 1 * time.Second
 // Cloud-ready plan §F (T-37).
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeHealthJSON(w, http.StatusOK, healthResponse{
-		Status:  "ok",
-		Mode:    s.deployMode(),
-		Version: appinfo.Version,
-		Commit:  appinfo.Commit,
+		Status:   "ok",
+		Mode:     s.deployMode(),
+		Version:  appinfo.Version,
+		Commit:   appinfo.Commit,
+		UsageCap: usageCapSummary(),
 	})
 }
 
@@ -47,10 +65,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	checks := s.cfg.ReadinessChecks
 	resp := healthResponse{
-		Status:  "ok",
-		Mode:    s.deployMode(),
-		Version: appinfo.Version,
-		Commit:  appinfo.Commit,
+		Status:   "ok",
+		Mode:     s.deployMode(),
+		Version:  appinfo.Version,
+		Commit:   appinfo.Commit,
+		UsageCap: usageCapSummary(),
 	}
 	if len(checks) == 0 {
 		writeHealthJSON(w, http.StatusOK, resp)
