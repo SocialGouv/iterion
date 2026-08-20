@@ -33,9 +33,18 @@ logs; opt-in tracing).
   mission note prevented re-litigating. It also self-documented the
   one-surface scope choice (final commit). Nothing over-claimed; review
   clean on the first pass.
-- Engine/bot hardening: none needed — the run surfaced no new engine or
-  bot friction (first frictionless run of the fleet's chassis on this
-  repo).
+- Engine/bot hardening: the RUN was frictionless (first run of the
+  fleet's chassis on this repo with zero chassis friction), but Revi's
+  merge gate then caught what the in-loop review had not, across three
+  review rounds + one post-merge pass: LLM spans born as orphans of the
+  launch request's finished transaction (→ `StartIndependent`, then a
+  cloned hub in #464 — the global-scope leak contaminated later error
+  events' trace context, reproduced red-first), and the request
+  envelope shipping iterion's own credentials (`X-Iterion-*` bearers,
+  OAuth `code`/`state`, presigned `sig`) once sentryhttp populated a
+  previously-dead scrub surface. Lesson: an in-loop reviewer reads the
+  DIFF; the gate reviewer re-reads the diff against the WHOLE tree's
+  seams (launch context flow, auth headers) — both are needed.
 - Lessons for next run: the fleet-propagated lessons demonstrably
   compound (3 passes → 1); a scope var carrying an already-done family
   costs one cheap verification, not a wasted pass.
