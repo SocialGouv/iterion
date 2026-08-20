@@ -182,12 +182,14 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
-- [docs/observability.md](docs/observability.md) — process logs and error
-  tracking: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
-  `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`), which surfaces default to JSON,
-  what a Sentry/GlitchTip project receives (panics, fatal exits, error logs,
-  run alerts), the scrubbing, and the smoke test. Read it when a deployment
-  needs to answer "what crashed, how often, since which release".
+- [docs/observability.md](docs/observability.md) — process logs, error
+  tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
+  `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
+  which surfaces default to JSON, what a Sentry/GlitchTip project receives
+  (panics, fatal exits, error logs, run alerts — plus, when the sample rate
+  is set, one transaction per API request and per in-process LLM call), the
+  scrubbing, and the smoke tests. Read it when a deployment needs to answer
+  "what crashed, how often, since which release" or "where did the time go".
 
 ## Development setup
 
@@ -1652,5 +1654,10 @@ head sha, off by default so the developer keeps the choice.
   in-house structured logger `pkg/log` (JSON by default on server / runner /
   dispatcher); optional error tracking through `pkg/errtrack` (sentry-go, the
   Sentry DSN protocol — Sentry or GlitchTip), enabled only when `SENTRY_DSN`
-  is set. See [docs/observability.md](docs/observability.md)
+  is set. **Tracing rides the same client** as a SECOND opt-in
+  (`SENTRY_TRACES_SAMPLE_RATE` in `[0,1]`, off otherwise): one transaction per
+  API request (route-named) and one per in-process LLM call — never per run,
+  which is `events.jsonl`'s job. Independent of the OTLP exporter in
+  `pkg/cloud/tracing`. Extend `pkg/errtrack`, never add a second tracker.
+  See [docs/observability.md](docs/observability.md) + ADR-088
 - Output abstraction: `Printer` (`pkg/cli/output.go`) with human and JSON modes
