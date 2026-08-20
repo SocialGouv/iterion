@@ -185,10 +185,11 @@ func scrubValue(v any, depth int) any {
 	}
 }
 
-// scrubEvent is the SDK's BeforeSend hook: the last checkpoint before
-// anything leaves the process. It walks the payload surfaces that can
-// carry operator data — message, exception values, tags, contexts,
-// request headers/query — and redacts each in place.
+// scrubEvent is the SDK's BeforeSend AND BeforeSendTransaction hook:
+// the last checkpoint before anything leaves the process. It walks the
+// payload surfaces that can carry operator data — message, exception
+// values, tags, contexts, request headers/query, spans — and redacts
+// each in place.
 func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	if event == nil {
 		return nil
@@ -223,6 +224,12 @@ func scrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	}
 	for _, b := range event.Breadcrumbs {
 		scrubBreadcrumbInPlace(b)
+	}
+	// Transaction events carry their timing tree here. Mutating the
+	// spans is safe: the SDK pre-serialises them only after the
+	// BeforeSend* hooks have run.
+	for _, s := range event.Spans {
+		scrubSpanInPlace(s)
 	}
 	if event.Request != nil {
 		for k := range event.Request.Headers {
