@@ -156,6 +156,9 @@ var remoteAdminLLMKeysCmd = &cobra.Command{
 		}
 		switch action {
 		case "create":
+			if len(args) != 1 {
+				return fmt.Errorf("usage: admin llm api-keys create --provider <p> --name <n> (value on --from-env/--from-file/stdin); %q is not a positional argument", args[1])
+			}
 			if remoteLLMProvider == "" || remoteLLMName == "" {
 				return fmt.Errorf("--provider and --name are required")
 			}

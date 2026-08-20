@@ -51,9 +51,10 @@ func RemoteAdminLLMOAuthConnect(ctx context.Context, c *RemoteClient, p *Printer
 	if _, err := c.Call(ctx, "POST", adminLLMOAuthBase(kind)+"/authorize/start", nil, &start); err != nil {
 		return err
 	}
-	p.Line("Open this URL in a browser, authorize, then paste the code below:")
-	p.Line("  %s", start.AuthorizeURL)
-	// Prompt on stderr so a piped stdout still carries only the JSON result.
+	// URL + prompt on stderr so a piped stdout carries ONLY the final JSON
+	// result (`oauth connect | jq` must not choke on the human preamble).
+	fmt.Fprintln(os.Stderr, "Open this URL in a browser, authorize, then paste the code below:")
+	fmt.Fprintln(os.Stderr, "  "+start.AuthorizeURL)
 	fmt.Fprint(os.Stderr, "code (code#state): ")
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	code := strings.TrimSpace(line)

@@ -38,8 +38,8 @@ func (s *llmSpyKeyStore) Create(ctx context.Context, k secrets.ApiKey) error {
 // newAdminLLMServer boots a cloud-shaped server through the real
 // New()/routes() path so the admin endpoints are reached through the
 // production auth middleware. Returns the store spy, the raw stores, the
-// live server, and a super-admin + plain-member bearer.
-func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore, secrets.Sealer, *httptest.Server, string, string) {
+// audit store, the live server, and a super-admin + plain-member bearer.
+func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore, secrets.Sealer, audit.Store, *httptest.Server, string, string) {
 	t.Helper()
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -65,12 +65,13 @@ func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore
 	}
 	spy := &llmSpyKeyStore{ApiKeyStore: secrets.NewMemoryApiKeyStore()}
 	oauth := secrets.NewMemoryOAuthStore()
+	auditStore := audit.NewMemoryStore()
 	s := New(Config{
 		WorkDir:                 t.TempDir(),
 		SkipProjectRegistration: true,
 		AuthService:             svc,
 		AuthSigner:              signer,
-		Audit:                   audit.NewMemoryStore(),
+		Audit:                   auditStore,
 		ApiKeys:                 spy,
 		OAuthForfait:            oauth,
 		Sealer:                  sealer,
@@ -86,7 +87,7 @@ func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore
 	}
 	hs := httptest.NewServer(s.handler)
 	t.Cleanup(hs.Close)
-	return spy, oauth, sealer, hs, adminTok, userTok
+	return spy, oauth, sealer, auditStore, hs, adminTok, userTok
 }
 
 func llmDo(t *testing.T, hs *httptest.Server, method, path, token, body string) (int, []byte) {
@@ -114,7 +115,7 @@ func llmDo(t *testing.T, hs *httptest.Server, method, path, token, body string) 
 // created under the sentinel tenant, listed without its plaintext, rotated
 // to a fresh sealed value, deleted.
 func TestAdminLLM_PlatformKeyLifecycle(t *testing.T) {
-	spy, _, sealer, hs, adminTok, _ := newAdminLLMServer(t)
+	spy, _, sealer, _, hs, adminTok, _ := newAdminLLMServer(t)
 
 	code, body := llmDo(t, hs, "POST", "/api/admin/llm/api-keys", adminTok,
 		`{"provider":"anthropic","name":"prod","secret":"sk-ant-platform-v1"}`)
@@ -182,7 +183,7 @@ func TestAdminLLM_PlatformKeyLifecycle(t *testing.T) {
 // The admin surface must never reach a TENANT's row by id: the sentinel
 // scope is the boundary in both directions.
 func TestAdminLLM_TenantKeyIsInvisibleToTheAdminSurface(t *testing.T) {
-	spy, _, sealer, hs, adminTok, _ := newAdminLLMServer(t)
+	spy, _, sealer, _, hs, adminTok, _ := newAdminLLMServer(t)
 	id := secrets.NewApiKeyID()
 	sealed, err := secrets.SealAPIKey(sealer, id, []byte("sk-tenant-own"))
 	if err != nil {
@@ -209,7 +210,7 @@ func TestAdminLLM_TenantKeyIsInvisibleToTheAdminSurface(t *testing.T) {
 // Platform credentials fund every tenant — managing them is a super-admin
 // decision, and nobody below that (nor anonymous) may even list them.
 func TestAdminLLM_NonSuperAdminIsRefused(t *testing.T) {
-	_, _, _, hs, _, userTok := newAdminLLMServer(t)
+	_, _, _, _, hs, _, userTok := newAdminLLMServer(t)
 	cases := []struct {
 		method, path, token string
 		want                int
@@ -232,7 +233,7 @@ func TestAdminLLM_NonSuperAdminIsRefused(t *testing.T) {
 // reserved owner key — the exact record the publisher's platform tier and
 // the background refresh worker read.
 func TestAdminLLM_OAuthPasteStoresUnderThePlatformOwner(t *testing.T) {
-	_, oauth, sealer, hs, adminTok, _ := newAdminLLMServer(t)
+	_, oauth, sealer, _, hs, adminTok, _ := newAdminLLMServer(t)
 
 	code, body := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok,
 		`{"claudeAiOauth":{"accessToken":"sk-ant-platform-forfait"}}`)
@@ -265,5 +266,57 @@ func TestAdminLLM_OAuthPasteStoresUnderThePlatformOwner(t *testing.T) {
 	}
 	if _, err := oauth.Get(context.Background(), secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode); err == nil {
 		t.Fatal("record still present after disconnect")
+	}
+}
+
+// The platform audit log is what one uses to check on super-admins, so it
+// must record only what actually happened: a REJECTED connect or a delete
+// of a credential that was never there must forge no "connected"/"deleted"
+// event. Regression for the audit-on-failure class (the audit used to fire
+// at the caller, unconditionally after the delegate helper returned).
+func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
+	_, oauth, _, auditStore, hs, adminTok, _ := newAdminLLMServer(t)
+	ctx := context.Background()
+
+	platformOAuthEvents := func() int {
+		evs, err := auditStore.ListPlatform(ctx, audit.Page{})
+		if err != nil {
+			t.Fatalf("list platform audit: %v", err)
+		}
+		n := 0
+		for _, e := range evs {
+			if strings.HasPrefix(e.Action, "platform.llm_oauth.") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// A rejected paste (empty body → 400) must not audit "connected".
+	if code, _ := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok, ""); code != http.StatusBadRequest {
+		t.Fatalf("empty paste: status=%d, want 400", code)
+	}
+	// A delete of an absent connection (404→204 no-op) must not audit "deleted".
+	if code, _ := llmDo(t, hs, "DELETE", "/api/admin/llm/oauth/codex", adminTok, ""); code >= 300 {
+		t.Fatalf("delete absent: status=%d, want 2xx no-op", code)
+	}
+	if n := platformOAuthEvents(); n != 0 {
+		t.Fatalf("a rejected connect / no-op delete forged %d platform oauth event(s)", n)
+	}
+
+	// A real connect, then a real delete, DO audit — exactly one each.
+	if code, _ := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok,
+		`{"claudeAiOauth":{"accessToken":"sk-ant-real"}}`); code != http.StatusOK {
+		t.Fatal("real connect failed")
+	}
+	// Guard the fixture: the connect really landed under the platform owner.
+	if _, err := oauth.Get(ctx, secrets.PlatformOwnerKey, secrets.OAuthKindClaudeCode); err != nil {
+		t.Fatalf("connect did not store: %v", err)
+	}
+	if code, _ := llmDo(t, hs, "DELETE", "/api/admin/llm/oauth/claude_code", adminTok, ""); code >= 300 {
+		t.Fatal("real delete failed")
+	}
+	if n := platformOAuthEvents(); n != 2 {
+		t.Fatalf("real connect+delete produced %d platform oauth events, want 2", n)
 	}
 }

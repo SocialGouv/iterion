@@ -54,8 +54,8 @@ func (s *Server) handleTeamCompleteOAuth(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusForbidden, "forbidden")
 		return
 	}
+	// Audit fires inside completeOAuthForOwner on success only.
 	s.completeOAuthForOwner(w, r, secrets.OrgOwnerKey(teamID), secrets.OAuthKind(r.PathValue("kind")))
-	s.auditTenant(r, teamID, "oauth.org.connected", "oauth_forfait", r.PathValue("kind"), map[string]any{"flow": "browser"})
 }
 
 func (s *Server) handleTeamUploadOAuth(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +66,6 @@ func (s *Server) handleTeamUploadOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.uploadOAuthForOwner(w, r, secrets.OrgOwnerKey(teamID), secrets.OAuthKind(r.PathValue("kind")))
-	s.auditTenant(r, teamID, "oauth.org.connected", "oauth_forfait", r.PathValue("kind"), map[string]any{"flow": "paste"})
 }
 
 func (s *Server) handleTeamRefreshOAuth(w http.ResponseWriter, r *http.Request) {
@@ -87,5 +86,4 @@ func (s *Server) handleTeamDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deleteOAuthForOwner(w, r, secrets.OrgOwnerKey(teamID), secrets.OAuthKind(r.PathValue("kind")))
-	s.auditTenant(r, teamID, "oauth.org.deleted", "oauth_forfait", r.PathValue("kind"), nil)
 }

@@ -33,7 +33,6 @@ func seedKey(t *testing.T, st secrets.ApiKeyStore, sealer secrets.Sealer, teamID
 	}
 }
 
-
 // A run that resolved nothing anywhere gets the platform credentials —
 // one per wire family — and the bundle records which slots the platform
 // filled so the runner's usage-cap scope keeps metering them as ONE
@@ -67,6 +66,35 @@ func TestPlatformTier_credentiallessRunGetsThePlatformCredentials(t *testing.T) 
 	for _, slot := range []string{"openai", "claude_code"} {
 		if !b.PlatformSourced[slot] {
 			t.Errorf("PlatformSourced = %v, missing %q — the usage cap would meter this per tenant", b.PlatformSourced, slot)
+		}
+	}
+}
+
+// Two platform keys on ONE wire family (anthropic + zai both map to
+// "anthropic-wire") — fillable() lets only one through, and which one must
+// be DETERMINISTIC across launches, not a coin-flip on Go's randomised map
+// iteration. allKnownProviders order fixes anthropic (index 0) as the
+// winner every time.
+func TestPlatformTier_sameWireFamilyPicksADeterministicWinner(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	keys := secrets.NewMemoryApiKeyStore()
+	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderAnthropic, "sk-ant-platform")
+	seedKey(t, keys, sealer, secrets.PlatformTenantID, secrets.ProviderZAI, "sk-zai-platform")
+
+	// Many independent resolutions: without the fix, map-iteration order
+	// flips the winner between them and this loop is flaky.
+	for i := 0; i < 30; i++ {
+		p := &Publisher{
+			apiKeys:    keys,
+			runSecrets: secrets.NewMemoryRunSecretsStore(),
+			sealer:     sealer,
+			logger:     testLogger(),
+		}
+		rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+		b := resolveBundle(t, p, rs, sealer, "run-1", "team1", "webhook:cfg-1")
+		if b.APIKeys[secrets.ProviderAnthropic] != "sk-ant-platform" || b.APIKeys[secrets.ProviderZAI] != "" {
+			t.Fatalf("iter %d: anthropic=%q zai=%q — same-wire winner is non-deterministic",
+				i, b.APIKeys[secrets.ProviderAnthropic], b.APIKeys[secrets.ProviderZAI])
 		}
 	}
 }

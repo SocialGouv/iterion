@@ -604,8 +604,15 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 			} else {
 				now := time.Now().UTC()
 				usedIDs := make([]string, 0, len(resolved))
-				for prov, r := range resolved {
-					if len(r.Plaintext) == 0 || !fillable(string(prov)) {
+				// Iterate `missing` (allKnownProviders order), NOT the
+				// resolved map: when the platform holds two keys on one wire
+				// family (anthropic + zai both map to "anthropic-wire"),
+				// fillable() lets only the first through — and map iteration
+				// order is randomised, so which key funds a run would flip
+				// between launches. The provider slice fixes the winner.
+				for _, prov := range missing {
+					r, ok := resolved[prov]
+					if !ok || len(r.Plaintext) == 0 || !fillable(string(prov)) {
 						continue
 					}
 					bundle.APIKeys[prov] = string(r.Plaintext)

@@ -118,9 +118,13 @@ func (s *Server) handleAdminListPlatformOAuth(w http.ResponseWriter, r *http.Req
 	s.listOAuthForOwner(w, r, secrets.PlatformOwnerKey)
 }
 
+// The OAuth handlers carry no audit call: it fires inside the shared
+// *OAuthForOwner helpers on the store-write success path (auditOAuthByOwner
+// routes a PlatformOwnerKey mutation to the platform log), so a rejected
+// connect/delete never forges an event.
+
 func (s *Server) handleAdminUploadPlatformOAuth(w http.ResponseWriter, r *http.Request) {
 	s.uploadOAuthForOwner(w, r, secrets.PlatformOwnerKey, secrets.OAuthKind(r.PathValue("kind")))
-	s.auditPlatform(r, "", "platform.llm_oauth.connected", "platform_llm_oauth", r.PathValue("kind"), map[string]any{"flow": "paste"})
 }
 
 func (s *Server) handleAdminStartPlatformOAuth(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +133,6 @@ func (s *Server) handleAdminStartPlatformOAuth(w http.ResponseWriter, r *http.Re
 
 func (s *Server) handleAdminCompletePlatformOAuth(w http.ResponseWriter, r *http.Request) {
 	s.completeOAuthForOwner(w, r, secrets.PlatformOwnerKey, secrets.OAuthKind(r.PathValue("kind")))
-	s.auditPlatform(r, "", "platform.llm_oauth.connected", "platform_llm_oauth", r.PathValue("kind"), map[string]any{"flow": "browser"})
 }
 
 func (s *Server) handleAdminRefreshPlatformOAuth(w http.ResponseWriter, r *http.Request) {
@@ -138,5 +141,4 @@ func (s *Server) handleAdminRefreshPlatformOAuth(w http.ResponseWriter, r *http.
 
 func (s *Server) handleAdminDeletePlatformOAuth(w http.ResponseWriter, r *http.Request) {
 	s.deleteOAuthForOwner(w, r, secrets.PlatformOwnerKey, secrets.OAuthKind(r.PathValue("kind")))
-	s.auditPlatform(r, "", "platform.llm_oauth.deleted", "platform_llm_oauth", r.PathValue("kind"), nil)
 }

@@ -10,30 +10,42 @@ import (
 
 // ReadSecretValue resolves a secret's value from --from-env, @file, or
 // stdin — never from a positional argument (process lists leak argv).
+//
+// An empty resolved value is an ERROR, not an accepted secret: the server's
+// rotate/create path treats an empty `secret` as "leave unchanged", so a
+// `rotate` fed an empty source (an unset-then-empty env, a truncated file,
+// a bare newline on stdin) would return 200 OK with the OLD key still live
+// — the operator believes they rotated a compromised credential when they
+// did not. Rejecting here closes every input path and every caller at once.
 func ReadSecretValue(fromEnv, fromFile string, stdinOK bool) (string, error) {
+	var v string
 	switch {
 	case fromEnv != "":
-		v, ok := os.LookupEnv(fromEnv)
+		val, ok := os.LookupEnv(fromEnv)
 		if !ok {
 			return "", fmt.Errorf("environment variable %s is not set", fromEnv)
 		}
-		return v, nil
+		v = val
 	case fromFile != "":
 		b, err := os.ReadFile(fromFile)
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimRight(string(b), "\n"), nil
+		v = strings.TrimRight(string(b), "\n")
 	case stdinOK:
 		r := bufio.NewReader(os.Stdin)
 		line, err := r.ReadString('\n')
 		if err != nil && line == "" {
 			return "", fmt.Errorf("read secret from stdin: %w", err)
 		}
-		return strings.TrimRight(line, "\n"), nil
+		v = strings.TrimRight(line, "\n")
 	default:
 		return "", fmt.Errorf("provide the value via --from-env <VAR>, --from-file <path>, or pipe it on stdin")
 	}
+	if v == "" {
+		return "", fmt.Errorf("secret value is empty — a create/rotate with an empty secret is a silent no-op; check the source")
+	}
+	return v, nil
 }
 
 // remoteSecretsBase returns the REST prefix for a scope: the active
