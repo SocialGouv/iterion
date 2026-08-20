@@ -291,6 +291,22 @@ func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
 		}
 		return n
 	}
+	// The insert is deliberately DETACHED (auditWrite → goSafe), so the
+	// count is an eventual state: reading it the instant the response
+	// lands sees the write only most of the time. Poll for the expected
+	// value — a 5%-per-run flake on the required `race` check otherwise.
+	waitPlatformOAuthEvents := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		n := -1
+		for time.Now().Before(deadline) {
+			if n = platformOAuthEvents(); n == want {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("platform oauth events = %d, want %d", n, want)
+	}
 
 	// A rejected paste (empty body → 400) must not audit "connected".
 	if code, _ := llmDo(t, hs, "POST", "/api/admin/llm/oauth/claude_code/credentials", adminTok, ""); code != http.StatusBadRequest {
@@ -300,6 +316,9 @@ func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
 	if code, _ := llmDo(t, hs, "DELETE", "/api/admin/llm/oauth/codex", adminTok, ""); code >= 300 {
 		t.Fatalf("delete absent: status=%d, want 2xx no-op", code)
 	}
+	// Settle first: an immediate read could pass merely because a forged
+	// event had not been written YET, which is the opposite of proof.
+	time.Sleep(200 * time.Millisecond)
 	if n := platformOAuthEvents(); n != 0 {
 		t.Fatalf("a rejected connect / no-op delete forged %d platform oauth event(s)", n)
 	}
@@ -316,7 +335,5 @@ func TestAdminLLM_OAuthAuditsOnlyRealMutations(t *testing.T) {
 	if code, _ := llmDo(t, hs, "DELETE", "/api/admin/llm/oauth/claude_code", adminTok, ""); code >= 300 {
 		t.Fatal("real delete failed")
 	}
-	if n := platformOAuthEvents(); n != 2 {
-		t.Fatalf("real connect+delete produced %d platform oauth events, want 2", n)
-	}
+	waitPlatformOAuthEvents(2)
 }
