@@ -223,7 +223,7 @@ a local session, not for a deployment.
 | Seam | Shape |
 |---|---|
 | **Every API request** ([pkg/server/server.go](../pkg/server/server.go), the root handler) | one transaction named after the **route pattern** — `GET /api/runs/{id}`, not `GET /api/runs/019f83…`, so a thousand run ids stay one entry in the performance view. Status, method and the request context ride along |
-| **Every in-process LLM call** ([pkg/backend/model/generation_request.go](../pkg/backend/model/generation_request.go), `callAndAggregate`) | one `llm.generate` span tagged `llm.provider` / `llm.model` and carrying the call's input/output/cache-read token counts. Under an in-flight request it nests inside that request's transaction; off a request — the normal shape for a run — it is a standalone transaction |
+| **Every in-process LLM call** ([pkg/backend/model/generation_request.go](../pkg/backend/model/generation_request.go), `callAndAggregate`) | one `llm.generate` transaction tagged `llm.provider` / `llm.model` and carrying the call's input/output/cache-read token counts. Always **standalone, on an isolated hub** — a run's context still carries its launch request's long-finished transaction, so nesting under it would orphan the span (never exported) and pollute the global error trace context |
 
 That is the **whole** list, and deliberately so:
 

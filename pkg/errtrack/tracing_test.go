@@ -3,6 +3,7 @@ package errtrack
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -197,5 +198,41 @@ func TestIndependentSpanSurvivesAFinishedParentTransaction(t *testing.T) {
 	Flush()
 	if got := len(transactions(tr.all())); got != 2 {
 		t.Fatalf("StartIndependent should export its own transaction; transport has %d", got)
+	}
+}
+
+// StartIndependent must not leak its transaction onto the process-global
+// hub scope: sentry.StartSpan installs the span on the hub's scope and,
+// for a transaction, doFinish never restores what was there — so on the
+// global hub every LATER error event would inherit the trace context of
+// a stale (or, under parallel generations, arbitrary) llm.generate
+// transaction. The independent span therefore rides a CLONED hub.
+func TestIndependentSpanDoesNotContaminateGlobalErrorTraceContext(t *testing.T) {
+	tr := enable(t, Config{TracesSampleRate: rate(1)})
+
+	span := StartIndependent("llm.generate", "anthropic/claude-opus-5")
+	span.Finish(nil)
+	Flush()
+	txs := transactions(tr.all())
+	if len(txs) != 1 {
+		t.Fatalf("expected the llm transaction, got %d", len(txs))
+	}
+	llmTrace := txs[0].Contexts["trace"]["trace_id"]
+
+	CaptureError(errors.New("boom after generation"), nil)
+	Flush()
+	var errEvent *sentry.Event
+	for _, e := range tr.all() {
+		if e.Type != "transaction" {
+			errEvent = e
+		}
+	}
+	if errEvent == nil {
+		t.Fatal("no error event captured")
+	}
+	if tc, ok := errEvent.Contexts["trace"]; ok {
+		if tc["trace_id"] == llmTrace {
+			t.Fatalf("error event inherited the finished llm transaction's trace context (%v) — StartIndependent leaked its span onto the global hub scope", llmTrace)
+		}
 	}
 }

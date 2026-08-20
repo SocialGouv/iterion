@@ -48,7 +48,14 @@ func StartIndependent(op, name string) *Span {
 	if !tracing.Load() {
 		return nil
 	}
-	s := sentry.StartSpan(context.Background(), op, sentry.WithTransactionName(op+" "+name))
+	// An isolated hub: sentry.StartSpan installs the new span on the
+	// hub's scope and, for a transaction, never restores what was there
+	// — so the process-global hub would leave every later error event
+	// linked to a stale (or, under parallel generations, arbitrary)
+	// llm.generate trace. The clone shares the client, so the
+	// transaction still ships.
+	ctx := sentry.SetHubOnContext(context.Background(), sentry.CurrentHub().Clone())
+	s := sentry.StartSpan(ctx, op, sentry.WithTransactionName(op+" "+name))
 	s.Description = name
 	return &Span{span: s}
 }
