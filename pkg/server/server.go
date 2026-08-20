@@ -567,7 +567,13 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// every /api/* call requires a valid bearer / cookie. DEV
 	// override: cfg.DisableAuth synthesizes a super-admin Identity
 	// instead of rejecting unauthenticated requests.
-	s.handler = s.authMiddleware(s.mux)
+	// Outermost: one Sentry transaction per request, named after the
+	// route pattern rather than the URL. Identity middleware unless
+	// SENTRY_TRACES_SAMPLE_RATE turned tracing on, so the chain below
+	// is untouched on a deployment that did not ask for it.
+	s.handler = errtrack.HTTPMiddleware(errtrack.HTTPOptions{RouteName: s.routePattern})(
+		s.authMiddleware(s.mux),
+	)
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Bind, fmt.Sprintf("%d", cfg.Port)),
 		Handler:           s.handler,

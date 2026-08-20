@@ -51,10 +51,16 @@ var (
 func enableTracker(t *testing.T) *memTransport {
 	t.Helper()
 	trackerTransportOn.Do(func() {
+		fullSampling := 1.0
 		errtrack.Init(errtrack.Config{
 			DSN:       "https://publickey@localhost/1",
 			Transport: trackerTransport,
 			Logger:    iterlog.New(iterlog.LevelError, io.Discard),
+			// Tracing on, so the same single Init also covers the
+			// request-transaction wiring (see tracing_test.go). Only a
+			// test that drives srv.handler produces transactions; the
+			// rest of the suite substitutes srv.mux.
+			TracesSampleRate: &fullSampling,
 		})
 	})
 	if !errtrack.Enabled() {

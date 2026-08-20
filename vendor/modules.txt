@@ -353,6 +353,7 @@ github.com/fsnotify/fsnotify/internal
 ## explicit; go 1.25.0
 github.com/getsentry/sentry-go
 github.com/getsentry/sentry-go/attribute
+github.com/getsentry/sentry-go/http
 github.com/getsentry/sentry-go/internal/debug
 github.com/getsentry/sentry-go/internal/debuglog
 github.com/getsentry/sentry-go/internal/http
@@ -362,6 +363,7 @@ github.com/getsentry/sentry-go/internal/otel/baggage/internal/baggage
 github.com/getsentry/sentry-go/internal/protocol
 github.com/getsentry/sentry-go/internal/ratelimit
 github.com/getsentry/sentry-go/internal/telemetry
+github.com/getsentry/sentry-go/internal/traceutils
 github.com/getsentry/sentry-go/internal/util
 github.com/getsentry/sentry-go/report
 # github.com/glebarez/go-sqlite v1.22.0
