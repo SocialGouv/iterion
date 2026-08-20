@@ -39,6 +39,13 @@ vars:
   adversarial: bool = true
   source_issue_ref: string = ""
 
+secrets:
+  ## Forge access for the cloud clone/push on repo-targeted launches.
+  ## optional: local runs keep host-authenticated git.
+  forge_token:
+    as: file
+    optional: true
+
 ## ─── Prompts ───────────────────────────────────────────────────────
 
 prompt campaign_system:
