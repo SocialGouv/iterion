@@ -104,6 +104,19 @@ func apiKeyTenantCtx(r *http.Request) context.Context {
 	return r.Context()
 }
 
+// auditApiKey routes an api-key mutation to the right audit log: platform
+// rows (ScopeTeamID == secrets.PlatformTenantID) are super-admin actions on
+// the deployment's own fallback credentials and land in the PLATFORM log —
+// a tenant-scoped row under the sentinel tenant would be readable by
+// nobody. Every other row is ordinary tenant BYOK.
+func (s *Server) auditApiKey(r *http.Request, teamID, suffix, keyID string, meta map[string]any) {
+	if teamID == secrets.PlatformTenantID {
+		s.auditPlatform(r, "", "platform.llm_key."+suffix, "platform_llm_key", keyID, meta)
+		return
+	}
+	s.auditTenant(r, teamID, "byok."+suffix, "byok", keyID, meta)
+}
+
 func (s *Server) handleListTeamApiKeys(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
@@ -195,7 +208,7 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 			return
 		}
 	}
-	s.auditTenant(r, teamID, "byok.created", "byok", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
+	s.auditApiKey(r, teamID, "created", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
 	writeJSON(w, s.toApiKeyView(key))
 }
 
@@ -248,7 +261,7 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.auditTenant(r, key.ScopeTeamID, "byok.updated", "byok", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
+	s.auditApiKey(r, key.ScopeTeamID, "updated", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
 	writeJSON(w, s.toApiKeyView(key))
 }
 
@@ -273,7 +286,7 @@ func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	s.auditTenant(r, key.ScopeTeamID, "byok.deleted", "byok", key.ID, map[string]any{"name": key.Name, "provider": string(key.Provider)})
+	s.auditApiKey(r, key.ScopeTeamID, "deleted", key.ID, map[string]any{"name": key.Name, "provider": string(key.Provider)})
 	w.WriteHeader(http.StatusNoContent)
 }
 

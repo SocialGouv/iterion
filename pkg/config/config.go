@@ -334,9 +334,23 @@ type RunnerConfig struct {
 	DrainTimeout time.Duration `yaml:"drain_timeout"`
 }
 
-// ServerConfig holds server-specific settings (HTTP API + healthz port).
+// ServerConfig holds server-specific settings.
 type ServerConfig struct {
-	HealthzPort int `yaml:"healthz_port"`
+	// ShutdownDelay is the lame-duck window on SIGTERM: /readyz answers
+	// 503 for this long while the listener still accepts, giving the
+	// endpoints controller time to remove the pod from the Service before
+	// its socket closes. Set it to 0 to shut down immediately.
+	ShutdownDelay time.Duration `yaml:"shutdown_delay"`
+
+	// ShutdownTeardown is what the process spends AFTER the lame-duck
+	// window: draining in-flight runs, then letting in-flight HTTP
+	// requests finish. It is the ceiling on an operator's own work — a
+	// long upload or a streaming endpoint is cut when it expires — so it
+	// is a knob, not a constant.
+	//
+	// k8s terminationGracePeriodSeconds must cover
+	// preStop + ShutdownDelay + ShutdownTeardown.
+	ShutdownTeardown time.Duration `yaml:"shutdown_teardown"`
 }
 
 // MetricsConfig holds the Prometheus metrics endpoint port.
@@ -381,7 +395,8 @@ func Defaults() Config {
 			DrainTimeout: 8 * time.Hour,
 		},
 		Server: ServerConfig{
-			HealthzPort: 4891,
+			ShutdownDelay:    5 * time.Second,
+			ShutdownTeardown: 30 * time.Second,
 		},
 		Metrics: MetricsConfig{
 			Port: 9090,
@@ -476,8 +491,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("ITERION_LOG_LEVEL %q invalid (want error|warn|info|debug|trace)", c.Log.Level)
 	}
 
-	if c.Server.HealthzPort < 1 || c.Server.HealthzPort > 65535 {
-		return fmt.Errorf("ITERION_HEALTHZ_PORT %d invalid (want 1-65535)", c.Server.HealthzPort)
+	if err := checkShutdownDelay(c.Server.ShutdownDelay); err != nil {
+		return err
+	}
+	if err := checkShutdownTeardown(c.Server.ShutdownTeardown); err != nil {
+		return err
 	}
 	if c.Metrics.Port < 1 || c.Metrics.Port > 65535 {
 		return fmt.Errorf("ITERION_METRICS_PORT %d invalid (want 1-65535)", c.Metrics.Port)

@@ -39,6 +39,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Hard bound before SIGKILL. Must cover preStop + the lame-duck window
+      # (config.server.shutdownDelay, during which /readyz is 503 so the pod
+      # leaves the Service) + config.server.shutdownTeardown.
+      terminationGracePeriodSeconds: {{ .Values.server.terminationGracePeriodSeconds | default 60 }}
       containers:
         - name: iterion
           image: {{ include "iterion.image" . }}
@@ -81,6 +85,27 @@ spec:
             - secretRef:
                 name: {{ default (printf "%s-smtp" (include "iterion.fullname" .)) .Values.secrets.smtp.existingSecret }}
             {{- end }}
+          {{- if .Values.probes.preStopDelaySeconds }}
+          lifecycle:
+            # Runs BEFORE SIGTERM. Only needed for ingress controllers that
+            # bypass endpoints; the in-process lame-duck window
+            # (config.server.shutdownDelay) is the primary mechanism.
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.probes.preStopDelaySeconds }}"]
+          {{- end }}
+          {{- if (.Values.probes.startup).enabled }}
+          # Suspends liveness + readiness until the server binds its listener,
+          # so a slow cloud boot (Mongo/NATS/S3 + schema ensure) cannot be
+          # mistaken for a hung process and CrashLoop the pod.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}

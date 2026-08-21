@@ -35,6 +35,19 @@ data:
   {{- end }}
   {{- end }}
   {{- end }}
+  {{- with .Values.config.server.shutdownDelay }}
+  # Lame-duck window: on SIGTERM the server answers 503 on /readyz for this
+  # long while its listener still accepts, so the endpoints controller can
+  # remove the pod from the Service before the socket closes. Without it a
+  # rolling deploy — and every HPA scale-down — refuses connections that
+  # were still being routed here. See docs/probes-and-graceful-shutdown.md.
+  ITERION_SHUTDOWN_DELAY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.server.shutdownTeardown }}
+  # What follows that window: the run drain + in-flight HTTP requests.
+  # terminationGracePeriodSeconds must cover preStop + delay + this.
+  ITERION_SHUTDOWN_TEARDOWN: {{ . | quote }}
+  {{- end }}
   ITERION_RUNNER_WORKDIR: {{ .Values.config.runner.workdir | quote }}
   ITERION_RUNNER_CONCURRENCY: {{ .Values.config.runner.concurrency | quote }}
   ITERION_HEARTBEAT_INTERVAL: {{ .Values.config.runner.heartbeat | quote }}

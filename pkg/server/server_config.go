@@ -295,7 +295,27 @@ type Config struct {
 
 	// ReadinessTimeout caps each ReadinessCheck individually. Defaults
 	// to 1s when zero.
+	//
+	// Keep it well BELOW the kubelet's probe period (5s in the chart).
+	// Checks run concurrently and a check still running from an earlier
+	// probe is reported as stalled rather than re-launched — so a value
+	// above the period would make a slow-but-honest dependency read as
+	// stalled. It must also stay below the probe's own timeoutSeconds,
+	// since the handler can take ReadinessTimeout + readinessWaitGrace.
 	ReadinessTimeout time.Duration
+
+	// ShutdownDelay is the lame-duck window Shutdown holds open after
+	// flipping /readyz to 503 and before tearing anything down, so the
+	// endpoints controller has time to pull this pod out of the Service.
+	// Zero (the default) tears down without pausing — right for the
+	// desktop app, tests and a Ctrl-C'd local studio; cloud wiring sets it
+	// from ITERION_SHUTDOWN_DELAY. The caller's Shutdown context must
+	// budget for it on top of the teardown itself.
+	//
+	// Zero does NOT mean /readyz keeps answering 200: the flip is
+	// unconditional, so the probe stays honest for however long the
+	// teardown itself takes. The delay only controls the pause before it.
+	ShutdownDelay time.Duration
 
 	// Mode advertises the deployment mode in the health response.
 	// Defaults to "local" when empty for backward compat with callers
@@ -449,6 +469,18 @@ type Config struct {
 }
 
 // ReadinessCheck is the contract /readyz invokes on each external
-// dependency. It MUST be cheap (HEAD/ping) and MUST respect the
+// dependency. Ping MUST be cheap (HEAD/ping) and MUST respect the
 // supplied context's deadline.
-type ReadinessCheck func(ctx context.Context) error
+//
+// Critical decides what a failure MEANS. Every replica pings the same
+// backends, so a critical check turns a dependency blip into a fleet-wide
+// outage: all pods leave the Service at once and the ingress 503s
+// everything, including the routes that never touch that dependency. Mark
+// a dependency critical only when the pod genuinely cannot serve without
+// it (Mongo — the store IS the product); everything else is reported in
+// the checks map with status "degraded" and a 200, and alerting picks it
+// up from there.
+type ReadinessCheck struct {
+	Ping     func(ctx context.Context) error
+	Critical bool
+}

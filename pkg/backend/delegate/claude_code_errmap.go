@@ -93,6 +93,11 @@ func isAuthErrorResult(s string) bool {
 		"invalid x-api-key",
 		"oauth token has expired",
 		"oauth token expired",
+		// The CLI's no-credential render (a pod where neither the OAuth
+		// forfait nor an API key reached the spawn): a bare
+		// "Not logged in \u00b7 Please run /login" in exit 0.
+		"not logged in",
+		"please run /login",
 	} {
 		if strings.Contains(low, sig) {
 			return true

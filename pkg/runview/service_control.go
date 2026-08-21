@@ -324,6 +324,21 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 		return nil, fmt.Errorf("run %q is already merged into %q at %s", runID, r.MergedInto, r.MergedCommit)
 	}
 	repoRoot := mergeRepoRoot(r)
+	remote := repoRoot == "" && r.RepoURL != ""
+	token := ""
+	if remote {
+		// Repo-targeted run: the runner workspace is gone, the storage
+		// branch lives on the forge. Materialise the server-side merge
+		// clone and run the exact same pipeline a local run gets.
+		if s.forgeToken != nil {
+			if token, err = s.forgeToken(ctx, r); err != nil {
+				return nil, fmt.Errorf("forge token for the merge of %s: %w", runID, err)
+			}
+		}
+		if repoRoot, err = s.ensureRepoTargetedMergeRoot(ctx, r, token, req.MergeInto); err != nil {
+			return nil, err
+		}
+	}
 	if repoRoot == "" {
 		return nil, fmt.Errorf("run %q has no resolvable repo root", runID)
 	}
@@ -333,7 +348,7 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// outside the studio), there's nothing to squash — a redundant squash
 	// would just build a confusing empty commit. Reconcile to "merged" and
 	// return a no-op success instead.
-	if ok, rcErr := s.reconcileOutOfBandMerge(ctx, r, resolveMergeTargetForPersistence(req.MergeInto, repoRoot)); rcErr != nil {
+	if ok, rcErr := s.reconcileOutOfBandMerge(ctx, r, repoRoot, resolveMergeTargetForPersistence(req.MergeInto, repoRoot)); rcErr != nil {
 		return nil, rcErr
 	} else if ok {
 		return &MergeResponse{
@@ -391,8 +406,22 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 		return nil, mergeErr
 	}
 
-	// Success: persist the new state.
-	return s.persistMergeSuccess(ctx, r, res.MergedCommit, res.MergedInto, store.MergeStrategy(res.Strategy))
+	// Success. A repo-targeted merge only exists once the forge has it:
+	// push first, persist after, then drop the re-creatable clone.
+	if remote {
+		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, res.MergedInto); pushErr != nil {
+			r.MergeStatus = store.MergeStatusFailed
+			if saveErr := s.store.SaveRun(ctx, r); saveErr != nil && s.logger != nil {
+				s.logger.Warn("runview: persist merge failure for %s: %v", runID, saveErr)
+			}
+			return nil, fmt.Errorf("merged in the server-side clone but the push failed — %s does NOT carry the merge: %w", res.MergedInto, pushErr)
+		}
+	}
+	resp, err := s.persistMergeSuccess(ctx, r, res.MergedCommit, res.MergedInto, store.MergeStrategy(res.Strategy))
+	if err == nil && remote {
+		s.removeRepoTargetedMergeRoot(r.ID)
+	}
+	return resp, err
 }
 
 // reconcileOutOfBandMerge marks r as merged when its FinalCommit is
@@ -404,11 +433,10 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 // it reconciled, (false, nil) when there's nothing to do, and
 // (false, err) when the persist failed — the caller decides whether
 // that is fatal (PerformMerge) or best-effort (snapshot read).
-func (s *Service) reconcileOutOfBandMerge(ctx context.Context, r *store.Run, target string) (bool, error) {
+func (s *Service) reconcileOutOfBandMerge(ctx context.Context, r *store.Run, repoRoot, target string) (bool, error) {
 	if r == nil || r.FinalCommit == "" {
 		return false, nil
 	}
-	repoRoot := mergeRepoRoot(r)
 	if repoRoot == "" {
 		return false, nil
 	}
@@ -649,6 +677,22 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 	if target == "" {
 		target = resolveMergeTargetForPersistence("current", repoRoot)
 	}
+	if remote := mergeRepoRoot(r) == "" && r.RepoURL != ""; remote {
+		token := ""
+		if s.forgeToken != nil {
+			if token, err = s.forgeToken(ctx, r); err != nil {
+				return nil, fmt.Errorf("forge token for the merge of %s: %w", runID, err)
+			}
+		}
+		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, target); pushErr != nil {
+			return nil, fmt.Errorf("conflict resolved and committed in the server-side clone but the push failed — %s does NOT carry the merge: %w", target, pushErr)
+		}
+		resp, perr := s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash)
+		if perr == nil {
+			s.removeRepoTargetedMergeRoot(r.ID)
+		}
+		return resp, perr
+	}
 	return s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash)
 }
 
@@ -671,6 +715,11 @@ func (s *Service) AbortMergeConflict(ctx context.Context, runID string) error {
 	r.PendingMergeInto = ""
 	if err := s.store.SaveRun(ctx, r); err != nil {
 		return fmt.Errorf("runview: persist abort: %w", err)
+	}
+	if mergeRepoRoot(r) == "" && r.RepoURL != "" {
+		// Repo-targeted run: the server-side clone is disposable — drop
+		// it so a retried merge starts from a fresh checkout.
+		s.removeRepoTargetedMergeRoot(r.ID)
 	}
 	return nil
 }
@@ -700,6 +749,11 @@ func (s *Service) loadRunForMerge(ctx context.Context, runID string) (*store.Run
 		return nil, "", err
 	}
 	repoRoot := mergeRepoRoot(r)
+	if repoRoot == "" && r.RepoURL != "" && s.hasRepoTargetedMergeRoot(r.ID) {
+		// Repo-targeted run mid-conflict: the server-side merge clone
+		// (materialised by PerformMergeCtx) is the working tree.
+		repoRoot = s.repoTargetedMergeRoot(r.ID)
+	}
 	if repoRoot == "" {
 		return nil, "", fmt.Errorf("run %q has no resolvable repo root", runID)
 	}

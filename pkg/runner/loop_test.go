@@ -85,6 +85,12 @@ func TestShutdown_NoInFlight_NoOp(t *testing.T) {
 	if err := r.Shutdown(context.Background()); err != nil {
 		t.Errorf("expected nil err, got %v", err)
 	}
+	// …and the pod stops advertising itself as available. The early
+	// `current == nil` return must not skip this: a runner that leaves
+	// idle still leaves.
+	if !r.Health().Draining {
+		t.Error("Shutdown did not flip readiness — the pod still reads as taking work")
+	}
 }
 
 // TestShutdown_CompleteMode_LetsRunFinish is the lame-duck proof: on
@@ -113,6 +119,12 @@ func TestShutdown_CompleteMode_LetsRunFinish(t *testing.T) {
 	}
 	if cancelled.Load() {
 		t.Fatal("lame-duck Shutdown cancelled the in-flight run — it must let it finish")
+	}
+	// Readiness flips at the START of the drain, not at its end: the
+	// lame-duck can last hours and an operator must see which pods are on
+	// their way out for that whole time.
+	if h := r.Health(); !h.Draining || !h.Busy {
+		t.Errorf("mid-drain Health = %+v, want draining with the run still in flight", h)
 	}
 
 	// Run finishes naturally → Shutdown returns, still never cancelling.

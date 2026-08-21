@@ -1070,20 +1070,24 @@ def route_gaps(routes, corpus, exclusions):
     """Routes the corpus does not cover and the exclusions do not justify.
 
     `routes` : [{"method": "GET"|None, "pattern": "/x/{id}"}]
-    `exclusions` : {pattern: reason} — validated by the caller (reason
-    mandatory there; here they are simply honoured).
+    `exclusions` : {pattern | "METHOD pattern": reason} — validated by the
+    caller (reason mandatory there; here they are simply honoured). Both key
+    shapes count because the refusal message prints `METHOD pattern`: an
+    exclusion transcribed verbatim from that message must be honoured, and a
+    bare pattern excludes the route whatever its method.
     """
     paths = [(e.get("method", "GET").upper(), e.get("path", "").split("?")[0])
              for e in corpus["entries"] if e.get("path")]
     uncovered = []
     for r in routes:
-        if r["pattern"] in exclusions:
+        shown = (r["method"] + " " if r["method"] else "") + r["pattern"]
+        if r["pattern"] in exclusions or shown in exclusions:
             continue
         rx = route_regex(r["pattern"])
         hit = any((r["method"] is None or r["method"] == m) and rx.match(p)
                   for m, p in paths)
         if not hit:
-            uncovered.append((r["method"] + " " if r["method"] else "") + r["pattern"])
+            uncovered.append(shown)
     return uncovered
 
 
@@ -2025,6 +2029,11 @@ def _selftest():
               route_gaps(routes, rcorpus, {}), ["GET /admin/"])
         check("exclusion justifiee honoree",
               route_gaps(routes, rcorpus, {"/admin/": "retiree du perimetre"}), [])
+        check("exclusion transcrite du message de refus (METHOD pattern) honoree",
+              route_gaps(routes, rcorpus, {"GET /admin/": "retiree du perimetre"}), [])
+        check("l'exclusion d'une autre methode n'excuse pas la route",
+              route_gaps(routes, rcorpus, {"POST /admin/": "retiree du perimetre"}),
+              ["GET /admin/"])
         check("un GET ne couvre pas un POST",
               route_gaps([{"method": "POST", "pattern": "/list"}], rcorpus, {}),
               ["POST /list"])

@@ -182,6 +182,16 @@ type CleanResult struct {
 	// RegistrationsPruned counts the per-worktree administrative entries
 	// dropped from parent repositories after a successful deletion.
 	RegistrationsPruned int `json:"registrations_pruned,omitempty"`
+
+	// Scratch is the out-of-tree half of the sweep: ${PROJECT_SCRATCH_DIR}
+	// entries nothing has written to within --older-than. Kept apart from
+	// Deleted because the two answer different questions — a worktree's
+	// fate is decided by what git can prove, a scratch entry's by whether
+	// anything still touches it.
+	Scratch        []CleanedScratch `json:"scratch,omitempty"`
+	ScratchScanned int              `json:"scratch_scanned,omitempty"`
+	ScratchBytes   int64            `json:"scratch_bytes_reclaimed,omitempty"`
+	ScratchErrors  []string         `json:"scratch_errors,omitempty"`
 }
 
 // cleanGitTimeout bounds every git invocation the sweep makes. A wedged
@@ -373,6 +383,10 @@ func RunClean(opts CleanOptions, p *Printer) error {
 	result.DeletedCount = len(result.Deleted)
 	result.FailedCount = len(result.Failed)
 
+	// The out-of-tree half. Run last so a scratch error can never cost the
+	// operator the worktree report they came for.
+	sweepStoreScratch(stores, opts, now, &result)
+
 	if err := renderCleanResult(p, result); err != nil {
 		return err
 	}
@@ -404,7 +418,7 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 
 	root := absStore(store.GlobalIterionDataDir())
 	var stores []string
-	if hasWorktreeDir(root) {
+	if isSweepableStore(root) {
 		stores = append(stores, root)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "projects"))
@@ -419,7 +433,7 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 			continue
 		}
 		dir := filepath.Join(root, "projects", e.Name())
-		if hasWorktreeDir(dir) {
+		if isSweepableStore(dir) {
 			stores = append(stores, dir)
 		}
 	}
@@ -446,7 +460,21 @@ func absStore(dir string) string {
 }
 
 func hasWorktreeDir(storeDir string) bool {
-	info, err := os.Stat(filepath.Join(storeDir, "worktrees"))
+	return isDir(filepath.Join(storeDir, "worktrees"))
+}
+
+// isSweepableStore reports whether a directory holds anything this
+// command reclaims. Worktrees are not the only answer: a workspace can
+// accumulate gigabytes of ${PROJECT_SCRATCH_DIR} while never running a
+// `worktree: auto` bot, and keying discovery on worktrees alone made
+// those stores invisible to --all-projects — a sweep that silently covers
+// part of the machine is worse than one that admits it found nothing.
+func isSweepableStore(storeDir string) bool {
+	return hasWorktreeDir(storeDir) || isDir(filepath.Join(storeDir, "scratch"))
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
 
@@ -1401,6 +1429,10 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 		// tree may be half removed.
 		renderCleanFailures(p, r)
 		renderCleanSpared(p, r)
+		renderCleanScratch(p, r)
+		if r.DryRun && len(r.Scratch) > 0 {
+			p.Line("dry run — nothing was deleted; re-run with --apply")
+		}
 		return nil
 	}
 
@@ -1451,6 +1483,7 @@ func renderCleanResult(p *Printer, r CleanResult) error {
 		p.Line("dropped %d stale worktree registration(s)", r.RegistrationsPruned)
 	}
 	renderCleanSpared(p, r)
+	renderCleanScratch(p, r)
 	if r.DryRun {
 		p.Line("dry run — nothing was deleted; re-run with --apply")
 	}

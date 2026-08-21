@@ -58,6 +58,14 @@ type RunBundle struct {
 	// bot's commits are attributed to the App bot, not the neutral fallback.
 	// Empty for PAT/OAuth connections (the token's own /user resolves them).
 	ForgeAppBotLogin string `json:"forge_app_bot_login,omitempty"`
+	// PlatformSourced marks the credential slots the PLATFORM tier filled —
+	// provider names for APIKeys entries ("anthropic", …) and OAuth kinds
+	// for OAuthCredentials entries ("claude_code", "codex"); the two
+	// namespaces never overlap. The runner's usage-cap scope check needs
+	// it: a platform credential riding the bundle must still be metered on
+	// the shared platform key, not fragmented per tenant as if the tenant
+	// had brought its own.
+	PlatformSourced map[string]bool `json:"platform_sourced,omitempty"`
 }
 
 // RunSecretsRecord is the persisted form of a sealed bundle. _id is

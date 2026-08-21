@@ -140,6 +140,72 @@ func waitServerHealthy(t *testing.T, base string, exitCh <-chan error, stderr *b
 	t.Fatalf("subprocess never became healthy on /healthz\nstderr:\n%s", stderr.String())
 }
 
+// lameDuckWindow is the ITERION_SHUTDOWN_DELAY the boot test runs with:
+// long enough to poll the terminating server, short enough not to drag
+// the suite.
+const lameDuckWindow = 5 * time.Second
+
+// assertLameDuck proves the graceful-shutdown contract on a server that
+// has just been SIGTERM'd but has NOT exited yet: /readyz already says
+// 503 "draining" (so the endpoints controller can pull the pod) while
+// /healthz still says 200 (so the kubelet does not kill it mid-drain) and
+// the listener still accepts connections.
+//
+// Without that window the listener closes while traffic is still routed
+// here — a connection-refused, i.e. a 502 for a studio user and a dropped
+// delivery for a forge webhook, on every rolling deploy and every HPA
+// scale-down.
+//
+// Mutation coverage: drop the draining check in handleReadyz, or set
+// ShutdownDelay to 0 in RunStudio → the poll never sees a 503 and this
+// fails.
+func assertLameDuck(t *testing.T, base string, exitCh <-chan error, stderr *bytes.Buffer) {
+	t.Helper()
+
+	deadline := time.Now().Add(lameDuckWindow)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-exitCh:
+			t.Fatalf("server exited during its lame-duck window (%v) — /readyz never got a chance to say draining\nstderr:\n%s", err, stderr.String())
+		default:
+		}
+		resp, err := http.Get(base + "/readyz") //nolint:gosec // loopback URL built by the test
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			time.Sleep(20 * time.Millisecond) // drain not started yet
+			continue
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("draining /readyz = %d, want 503; body: %s", resp.StatusCode, body)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode draining /readyz body %q: %v", body, err)
+		}
+		if payload["status"] != "draining" {
+			t.Fatalf("draining /readyz status = %v, want draining", payload["status"])
+		}
+		// Liveness must stay green through the drain, on the same still-open
+		// listener.
+		liveResp, err := http.Get(base + "/healthz") //nolint:gosec // loopback URL built by the test
+		if err != nil {
+			t.Fatalf("GET /healthz during drain: %v", err)
+		}
+		liveBody, _ := io.ReadAll(liveResp.Body)
+		_ = liveResp.Body.Close()
+		if liveResp.StatusCode != http.StatusOK {
+			t.Fatalf("draining /healthz = %d, want 200 (a liveness failure kills the pod mid-drain); body: %s", liveResp.StatusCode, liveBody)
+		}
+		return
+	}
+	t.Fatalf("/readyz never reported draining within the %s lame-duck window\nstderr:\n%s", lameDuckWindow, stderr.String())
+}
+
 // TestServerCommandBootsLocalModeAndShutsDownOnSignal exercises the local
 // mode path of `iterion server` end to end: build the binary, spawn it
 // against an isolated store dir, observe that /healthz + /api/server/info
@@ -193,6 +259,11 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 		"HOME="+homeDir,
 		"ITERION_HOME="+iterionHome,
 		"ITERION_MODE=local",
+		// Lame-duck window, wide enough for the assertions below to
+		// observe it. In a cluster this is what gives the endpoints
+		// controller time to pull the pod out of the Service before its
+		// listener closes.
+		"ITERION_SHUTDOWN_DELAY="+lameDuckWindow.String(),
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -273,6 +344,9 @@ func TestServerCommandBootsLocalModeAndShutsDownOnSignal(t *testing.T) {
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal iterion server: %v", err)
 	}
+
+	assertLameDuck(t, base, exitCh, &stderr)
+
 	select {
 	case err := <-exitCh:
 		if err != nil {

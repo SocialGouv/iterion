@@ -270,6 +270,11 @@ func (s *Server) routes() {
 		}
 	}
 
+	// Platform LLM credentials (super-admin): the DB-backed form of the
+	// runner-pod env fallback. Gates per credential family internally
+	// (api-keys need the BYOK store, oauth the forfait store).
+	s.registerAdminLLMRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban

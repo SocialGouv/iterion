@@ -216,6 +216,35 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	if got := usageCapKey(unrelated, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
 		t.Errorf("unrelated secrets = %q, want the platform meter", got)
 	}
+
+	// A credential the publisher filled from the DB-backed platform tier
+	// rides the bundle exactly like a tenant credential — but it IS the
+	// deployment's single meter. Classifying it per tenant would fragment
+	// the shared window into as many meters as there are teams.
+	platformFilled := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-platform"},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/oauth"},
+		PlatformSourced: map[string]bool{
+			string(secrets.ProviderAnthropic): true,
+			delegate.BackendClaudeCode:        true,
+		},
+	})
+	if got := usageCapKey(platformFilled, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
+		t.Errorf("platform-sourced bundle = %q, want the platform meter", got)
+	}
+
+	// Mixed bundle: the tenant's own anthropic credential next to a
+	// platform-filled slot of another family still meters on the tenant.
+	mixed := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{
+			secrets.ProviderAnthropic: "sk-tenant",
+			secrets.ProviderOpenAI:    "sk-platform",
+		},
+		PlatformSourced: map[string]bool{string(secrets.ProviderOpenAI): true},
+	})
+	if got := usageCapKey(mixed, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7")) {
+		t.Errorf("tenant anthropic + platform openai = %q, want the tenant meter", got)
+	}
 }
 
 func TestUsageGuardFor_NilWithoutAPolicy(t *testing.T) {

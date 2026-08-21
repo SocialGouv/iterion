@@ -92,8 +92,27 @@ func (s *Server) handleDeleteOAuth(w http.ResponseWriter, r *http.Request) {
 // ---- owner-keyed helpers (shared by /me and /teams) ----
 //
 // ownerKey is the OAuthStore "user_id" partition: the authenticated
-// user's id for the personal scope, or secrets.OrgOwnerKey(teamID) for
-// the org scope. Everything below is owner-agnostic.
+// user's id for the personal scope, secrets.OrgOwnerKey(teamID) for the
+// org scope, or secrets.PlatformOwnerKey for the platform scope.
+// Everything below is owner-agnostic.
+
+// auditOAuthByOwner records an oauth-forfait mutation in the log the owner
+// key belongs to — and ONLY on the store-write success path, so a rejected
+// connect/delete never forges a "connected"/"deleted" event (the log used
+// to check on admins must not lie). Placed inside the shared helpers,
+// after the write, so team AND platform surfaces audit identically:
+// keeping the audit at each caller meant it fired even on a 400/404/500
+// return from the helper. A personal (/me) owner key is not audited —
+// unchanged from the per-user endpoints, which never did. verb is
+// "connected" or "deleted".
+func (s *Server) auditOAuthByOwner(r *http.Request, ownerKey, verb string, kind secrets.OAuthKind, meta map[string]any) {
+	switch {
+	case ownerKey == secrets.PlatformOwnerKey:
+		s.auditPlatform(r, "", "platform.llm_oauth."+verb, "platform_llm_oauth", string(kind), meta)
+	case strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix):
+		s.auditTenant(r, strings.TrimPrefix(ownerKey, secrets.OrgOwnerPrefix), "oauth.org."+verb, "oauth_forfait", string(kind), meta)
+	}
+}
 
 func (s *Server) listOAuthForOwner(w http.ResponseWriter, r *http.Request, ownerKey string) {
 	records, err := s.oauthStore.ListByUser(r.Context(), ownerKey)
@@ -235,6 +254,7 @@ func (s *Server) completeOAuthForOwner(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 	s.logger.Info("oauth: owner=%s kind=%s connected via browser flow (expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "browser"})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -260,6 +280,7 @@ func (s *Server) uploadOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		return
 	}
 	s.logger.Info("oauth: owner=%s kind=%s connected (sealed payload, expires=%v)", ownerKey, kind, rec.AccessTokenExpiresAt)
+	s.auditOAuthByOwner(r, ownerKey, "connected", kind, map[string]any{"flow": "paste"})
 	writeJSON(w, toOAuthView(rec))
 }
 
@@ -369,9 +390,10 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 	// Best-effort: disconnecting is the user's actual request, and a
 	// degraded pool store must not trap them into keeping a credential
 	// connected. A pledge left behind is caught at acquisition, which parks
-	// it the first time its credential turns up missing. Only personal
-	// scopes can hold a pledge — an org owner key never does.
-	if s.credPoolPledges != nil && !strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
+	// it the first time its credential turns up missing. Only PERSONAL
+	// scopes can hold a pledge — neither an org owner key nor the platform
+	// owner key ever does, so skip the guaranteed-miss store call for both.
+	if s.credPoolPledges != nil && ownerKey != secrets.PlatformOwnerKey && !strings.HasPrefix(ownerKey, secrets.OrgOwnerPrefix) {
 		if err := s.credPoolPledges.Delete(r.Context(), credpool.PledgeID(ownerKey, credpool.SourceOAuth, string(kind))); err != nil && !errors.Is(err, credpool.ErrNotFound) {
 			s.logger.Warn("credential pool: could not withdraw %s's %s contribution on disconnect: %v (it is parked at the next acquisition)", ownerKey, kind, err)
 		}
@@ -384,5 +406,8 @@ func (s *Server) deleteOAuthForOwner(w http.ResponseWriter, r *http.Request, own
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	// Audited only here — the ErrOAuthNotFound path above returns 204 without
+	// deleting anything, and a "deleted" event for a no-op would be a lie.
+	s.auditOAuthByOwner(r, ownerKey, "deleted", kind, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

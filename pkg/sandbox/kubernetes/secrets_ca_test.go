@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 )
 
 func TestBuildPodManifest_CAInjection(t *testing.T) {
@@ -25,6 +26,10 @@ func TestBuildPodManifest_CAInjection(t *testing.T) {
 		"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
 		"GIT_SSL_CAINFO", "REQUESTS_CA_BUNDLE",
 		caContainerPath, caMountDir, "iterion-egress-ca", "iterion-run-x-ca",
+		// The JVM leg: dedicated vars + a JAVA_TOOL_OPTIONS flag pointing
+		// at the mounted PKCS12 truststore.
+		"ITERION_JAVA_TRUSTSTORE", trustStoreContainerPath,
+		"-Djavax.net.ssl.trustStore=" + trustStoreContainerPath,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("CA-injected manifest missing %q:\n%s", want, s)
@@ -43,8 +48,19 @@ func TestBuildPodManifest_CAInjection(t *testing.T) {
 	}
 }
 
+// testCAPEM returns a real ephemeral CA cert: BuildCASecret derives the
+// JVM truststore from the PEM, so a dummy blob is a named refusal.
+func testCAPEM(t *testing.T) []byte {
+	t.Helper()
+	ca, err := netproxy.NewEphemeralCA()
+	if err != nil {
+		t.Fatalf("ephemeral CA: %v", err)
+	}
+	return ca.CertPEM()
+}
+
 func TestBuildCASecret(t *testing.T) {
-	pem := []byte("-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\n")
+	pem := testCAPEM(t)
 	out, err := BuildCASecret("ns", "iterion-run-x-ca", "x", "friendly", pem, nil)
 	if err != nil {
 		t.Fatalf("BuildCASecret: %v", err)
@@ -64,6 +80,18 @@ func TestBuildCASecret(t *testing.T) {
 	}
 	if string(dec) != string(pem) {
 		t.Errorf("decoded CA data mismatch:\n got %q\nwant %q", dec, pem)
+	}
+	// The JVM truststore ships in the same secret: the CA env vars cover
+	// OpenSSL-family clients but a JVM only trusts a keystore-typed file.
+	tsB64, _ := data[trustStoreSecretKey].(string)
+	if ts, err := base64.StdEncoding.DecodeString(tsB64); err != nil || len(ts) == 0 {
+		t.Errorf("truststore key %s missing/empty in CA secret (err=%v)", trustStoreSecretKey, err)
+	}
+}
+
+func TestBuildCASecretRefusesGarbagePEM(t *testing.T) {
+	if _, err := BuildCASecret("ns", "n", "x", "f", []byte("not a pem"), nil); err == nil {
+		t.Fatal("garbage CA PEM produced a secret, want a named refusal")
 	}
 }
 

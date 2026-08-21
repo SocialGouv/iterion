@@ -35,11 +35,18 @@ import (
 // another tenant spent, and runs that fall back to the deployment's own
 // credential must be pooled together — they really are one meter. The run's
 // resolved credentials answer both: a bundle carrying an Anthropic key or
-// OAuth dir is the tenant's own, anything else is the platform's.
+// OAuth dir the TENANT resolved is the tenant's own; anything else —
+// including a bundle slot the publisher filled from the DB-backed platform
+// tier, which rides the bundle exactly like a tenant credential but is the
+// deployment's single meter — is the platform's.
 func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 	scope := usagecap.ScopePlatform
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		if creds.APIKey(secrets.ProviderAnthropic) != "" || creds.OAuthDir(delegate.BackendClaudeCode) != "" {
+		tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
+			!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
+		tenantOwnOAuth := creds.OAuthDir(delegate.BackendClaudeCode) != "" &&
+			!creds.IsPlatformSourced(delegate.BackendClaudeCode)
+		if tenantOwnKey || tenantOwnOAuth {
 			scope = usagecap.TenantScope(msg.TenantID)
 		}
 	}

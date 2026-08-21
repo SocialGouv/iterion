@@ -107,7 +107,7 @@ func TestPodManifest_NoOwnerNoDeadlineByDefault(t *testing.T) {
 }
 
 func TestCASecret_OwnerReference(t *testing.T) {
-	out, err := BuildCASecret("ns", "iterion-run-x-ca", "x", "friendly", []byte("PEM"), testOwner)
+	out, err := BuildCASecret("ns", "iterion-run-x-ca", "x", "friendly", testCAPEM(t), testOwner)
 	if err != nil {
 		t.Fatalf("BuildCASecret: %v", err)
 	}

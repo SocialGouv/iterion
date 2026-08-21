@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
+	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -382,6 +383,23 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		} {
 			args = append(args, "--env", caEnv+"="+caContainerPath)
 		}
+		// JVMs read none of those — their trust is a keystore-typed file.
+		// Same store as the kubernetes driver ships; see
+		// netproxy.JavaTrustStorePKCS12.
+		trustStore, _, tsErr := netproxy.JavaTrustStorePKCS12(info.ProxyCACert)
+		if tsErr != nil {
+			return nil, fmt.Errorf("docker driver: java truststore: %w", tsErr)
+		}
+		tsHostPath := filepath.Join(caDir, "egress-truststore.p12")
+		if err := os.WriteFile(tsHostPath, trustStore, 0o644); err != nil {
+			return nil, fmt.Errorf("docker driver: write java truststore: %w", err)
+		}
+		const tsContainerPath = "/run/iterion/egress-truststore.p12"
+		args = append(args, "-v", tsHostPath+":"+tsContainerPath+":ro",
+			"--env", "ITERION_JAVA_TRUSTSTORE="+tsContainerPath,
+			"--env", "ITERION_JAVA_TRUSTSTORE_PASSWORD="+netproxy.JavaTrustStorePassword,
+			"--env", "JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore="+tsContainerPath+
+				" -Djavax.net.ssl.trustStorePassword="+netproxy.JavaTrustStorePassword)
 	}
 
 	// PID 1 is `sleep infinity` so the container stays alive while

@@ -11,7 +11,8 @@ export type Provider =
   | "vertex"
   | "azure"
   | "openrouter"
-  | "xai";
+  | "xai"
+  | "zai";
 
 export interface ApiKeyView {
   id: string;
@@ -62,79 +63,72 @@ async function send<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// ---- Team-scoped BYOK ----
+// ---- BYOK API keys (team, personal, or platform scope) ----
 
-export async function listTeamApiKeys(teamID: string): Promise<ApiKeyView[]> {
-  const res = await send<{ keys: ApiKeyView[] }>(`/teams/${encodeURIComponent(teamID)}/api-keys`);
+// ApiKeyScope selects the store the key lives in: a team's, the
+// authenticated user's, or the PLATFORM's (super-admin — the deployment's
+// own DB-backed fallback keys, replacing the runner-pod env vars that used
+// to require a redeploy to rotate).
+export type ApiKeyScope = { team_id: string } | { mine: true } | { platform: true };
+
+function apiKeyBase(scope: ApiKeyScope): string {
+  if ("team_id" in scope) return `/teams/${encodeURIComponent(scope.team_id)}/api-keys`;
+  if ("platform" in scope) return `/admin/llm/api-keys`;
+  return `/me/api-keys`;
+}
+
+export async function listApiKeys(scope: ApiKeyScope): Promise<ApiKeyView[]> {
+  const res = await send<{ keys: ApiKeyView[] }>(apiKeyBase(scope));
   return res.keys ?? [];
 }
 
-export async function createTeamApiKey(teamID: string, input: {
+export async function createApiKey(scope: ApiKeyScope, input: {
   provider: Provider;
   name: string;
   secret: string;
   is_default?: boolean;
 }): Promise<ApiKeyView> {
-  return send(`/teams/${encodeURIComponent(teamID)}/api-keys`, {
+  return send(apiKeyBase(scope), {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
-
-// ---- User-scoped BYOK ----
 
 export async function listMyApiKeys(): Promise<ApiKeyView[]> {
-  const res = await send<{ keys: ApiKeyView[] }>(`/me/api-keys`);
-  return res.keys ?? [];
+  return listApiKeys({ mine: true });
 }
-
-export async function createMyApiKey(input: {
-  provider: Provider;
-  name: string;
-  secret: string;
-  is_default?: boolean;
-}): Promise<ApiKeyView> {
-  return send(`/me/api-keys`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-// ---- Mutations shared between team + user keys ----
 
 export async function updateApiKey(
-  scope: { team_id: string } | { mine: true },
+  scope: ApiKeyScope,
   keyID: string,
   input: { name?: string; is_default?: boolean; secret?: string },
 ): Promise<ApiKeyView> {
-  const root = "team_id" in scope
-    ? `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`
-    : `/me/api-keys/${encodeURIComponent(keyID)}`;
-  return send(root, {
+  return send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
 }
 
 export async function deleteApiKey(
-  scope: { team_id: string } | { mine: true },
+  scope: ApiKeyScope,
   keyID: string,
 ): Promise<void> {
-  const root = "team_id" in scope
-    ? `/teams/${encodeURIComponent(scope.team_id)}/api-keys/${encodeURIComponent(keyID)}`
-    : `/me/api-keys/${encodeURIComponent(keyID)}`;
-  await send(root, { method: "DELETE" });
+  await send(`${apiKeyBase(scope)}/${encodeURIComponent(keyID)}`, { method: "DELETE" });
 }
 
-// ---- OAuth-forfait (per-user OR per-org) ----
+// ---- OAuth-forfait (per-user, per-org, or platform) ----
 
 // OAuthScope selects the owner the credential is stored against: the
-// authenticated user (personal, the default) or a team/org (admin-only,
-// used as a fallback for automated runs with no human owner).
-export type OAuthScope = { mine: true } | { teamId: string };
+// authenticated user (personal, the default), a team/org (admin-only,
+// used as a fallback for automated runs with no human owner), or the
+// PLATFORM (super-admin — the deployment's own fallback forfait, last
+// tier before the runner-pod env).
+export type OAuthScope = { mine: true } | { teamId: string } | { platform: true };
 
 function oauthBase(scope: OAuthScope): string {
-  return "mine" in scope ? `/me/oauth` : `/teams/${encodeURIComponent(scope.teamId)}/oauth`;
+  if ("teamId" in scope) return `/teams/${encodeURIComponent(scope.teamId)}/oauth`;
+  if ("platform" in scope) return `/admin/llm/oauth`;
+  return `/me/oauth`;
 }
 
 export interface OAuthAuthorizeStart {

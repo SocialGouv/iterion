@@ -514,7 +514,7 @@ func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetChec
 		Code:    ErrCodeBudgetExceeded,
 		Message: fmt.Sprintf("budget exceeded: %s (%.0f/%.0f)", exc.dimension, exc.used, exc.limit),
 		NodeID:  nodeID,
-		Hint:    fmt.Sprintf("increase the %s budget or optimize the workflow", exc.dimension),
+		Hint:    fmt.Sprintf("raise budget.%s and resume — local: `iterion resume --max-%s`; cloud: `runs resume --file <workflow with the raised budget>`", exc.dimension, exc.dimension),
 		Cause:   ErrBudgetExceeded,
 	})
 }

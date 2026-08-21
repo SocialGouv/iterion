@@ -43,8 +43,8 @@ func TestLoad_DefaultsApplied(t *testing.T) {
 	if cfg.Runner.Concurrency != d.Runner.Concurrency {
 		t.Errorf("Runner.Concurrency: got %d want %d", cfg.Runner.Concurrency, d.Runner.Concurrency)
 	}
-	if cfg.Server.HealthzPort != d.Server.HealthzPort {
-		t.Errorf("HealthzPort: got %d want %d", cfg.Server.HealthzPort, d.Server.HealthzPort)
+	if cfg.Server.ShutdownDelay != d.Server.ShutdownDelay {
+		t.Errorf("Server.ShutdownDelay: got %s want %s", cfg.Server.ShutdownDelay, d.Server.ShutdownDelay)
 	}
 	if cfg.Log.Format != LogFormatHuman {
 		t.Errorf("Log.Format: got %q want %q", cfg.Log.Format, LogFormatHuman)
@@ -139,6 +139,108 @@ func TestLoad_SandboxDefaultEnv(t *testing.T) {
 				t.Errorf("Sandbox.Default = %q, want %q", cfg.Sandbox.Default, c.want)
 			}
 		})
+	}
+}
+
+// The server's lame-duck window is what keeps a rolling deploy from
+// refusing connections that are still being routed to the terminating
+// pod, so it must be on by default — and an operator must be able to
+// widen it (slow endpoint propagation) or zero it (fast local restarts).
+// The teardown budget that follows it bounds how long in-flight requests
+// may take, so it is a knob too, and it may never be zero.
+func TestLoad_ServerShutdownBudgets(t *testing.T) {
+	clearITERION(t)
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.ShutdownDelay != 5*time.Second {
+		t.Errorf("ShutdownDelay default = %v, want 5s", cfg.Server.ShutdownDelay)
+	}
+	if cfg.Server.ShutdownTeardown != 30*time.Second {
+		t.Errorf("ShutdownTeardown default = %v, want 30s", cfg.Server.ShutdownTeardown)
+	}
+
+	for _, c := range []struct {
+		key     string
+		env     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{EnvShutdownDelay, "15s", 15 * time.Second, false},
+		{EnvShutdownDelay, "0s", 0, false}, // opting out is legitimate
+		{EnvShutdownDelay, "-1s", 0, true},
+		{EnvShutdownDelay, "soon", 0, true},
+		{EnvShutdownTeardown, "2m", 2 * time.Minute, false},
+		// Zero teardown would cut every in-flight request the instant the
+		// lame-duck closes — the opposite of a graceful shutdown.
+		{EnvShutdownTeardown, "0s", 0, true},
+		{EnvShutdownTeardown, "30", 0, true},
+	} {
+		t.Run(c.key+"="+c.env, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv(c.key, c.env)
+			cfg, err := Load(LoadOptions{})
+			if (err != nil) != c.wantErr {
+				t.Fatalf("Load() err = %v, wantErr = %v", err, c.wantErr)
+			}
+			if c.wantErr {
+				return
+			}
+			got := cfg.Server.ShutdownDelay
+			if c.key == EnvShutdownTeardown {
+				got = cfg.Server.ShutdownTeardown
+			}
+			if got != c.want {
+				t.Errorf("%s = %v, want %v", c.key, got, c.want)
+			}
+		})
+	}
+}
+
+// The exported helpers are the SAME parser Load() runs, for surfaces that
+// skip the full loader (the local studio). One owner per variable: if
+// these drifted from Load(), `iterion studio` and `iterion server` would
+// accept different formats for the same env var.
+func TestShutdownBudgetsFromEnv(t *testing.T) {
+	t.Setenv(EnvShutdownDelay, "")
+	if got, err := ShutdownDelayFromEnv(7 * time.Second); err != nil || got != 7*time.Second {
+		t.Errorf("unset → (%v, %v), want (7s, nil)", got, err)
+	}
+	t.Setenv(EnvShutdownDelay, "12s")
+	if got, err := ShutdownDelayFromEnv(0); err != nil || got != 12*time.Second {
+		t.Errorf("12s → (%v, %v), want (12s, nil)", got, err)
+	}
+	// A typo must surface, not silently disable the window.
+	t.Setenv(EnvShutdownDelay, "5")
+	if _, err := ShutdownDelayFromEnv(0); err == nil {
+		t.Error(`"5" accepted, want an error naming the unit`)
+	}
+	t.Setenv(EnvShutdownDelay, "-1s")
+	if _, err := ShutdownDelayFromEnv(0); err == nil {
+		t.Error("negative delay accepted, want an error")
+	}
+
+	t.Setenv(EnvShutdownTeardown, "")
+	if got, err := ShutdownTeardownFromEnv(60 * time.Second); err != nil || got != 60*time.Second {
+		t.Errorf("unset teardown → (%v, %v), want (60s, nil)", got, err)
+	}
+	t.Setenv(EnvShutdownTeardown, "90s")
+	if got, err := ShutdownTeardownFromEnv(60 * time.Second); err != nil || got != 90*time.Second {
+		t.Errorf("90s → (%v, %v), want (90s, nil)", got, err)
+	}
+	// A zero teardown yields an ALREADY-EXPIRED shutdown context: in-flight
+	// runs never flip to failed_resumable and every request is cut. Load()
+	// refuses it, so this path must too — otherwise `iterion server --mode
+	// local` (which routes to RunStudio and skips Load's Validate) would
+	// accept what the same chart rejects in cloud mode.
+	t.Setenv(EnvShutdownTeardown, "0s")
+	if got, err := ShutdownTeardownFromEnv(60 * time.Second); err == nil {
+		t.Errorf("teardown 0s → (%v, nil), want an error (Load() rejects the same value)", got)
+	}
+	t.Setenv(EnvShutdownTeardown, "-5s")
+	if _, err := ShutdownTeardownFromEnv(60 * time.Second); err == nil {
+		t.Error("negative teardown accepted, want an error")
 	}
 }
 

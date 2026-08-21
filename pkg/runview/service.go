@@ -555,6 +555,12 @@ type Service struct {
 	localSecrets secrets.GenericSecretStore
 	localSealer  secrets.Sealer
 
+	// forgeToken resolves the forge credential for a repo-targeted run's
+	// server-side merge (clone + push). Installed by the server via
+	// WithForgeTokenResolver; nil on local studios, where merges happen
+	// in the user's own checkout.
+	forgeToken ForgeTokenResolver
+
 	// completionNotifier POSTs a run-completion webhook when an
 	// in-process run carrying a callback URL reaches a terminal state.
 	// Default-constructed in NewService; never nil for in-process runs.
@@ -698,6 +704,12 @@ func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// WithForgeTokenResolver wires the forge-credential lookup used to merge
+// repo-targeted runs server-side. See ForgeTokenResolver.
+func WithForgeTokenResolver(fn ForgeTokenResolver) ServiceOption {
+	return func(s *Service) { s.forgeToken = fn }
 }
 
 // WithMaxConcurrentPipelines caps how many ROOT pipelines run at once on

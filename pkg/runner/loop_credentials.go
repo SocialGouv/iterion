@@ -66,6 +66,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		GenericRefs:          bundle.GenericSecretRefs,
 		OAuthCredentialFiles: map[string]string{},
 		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
+		// Slot names (not values) — safe to keep past cleanup. The
+		// usage-cap scope check reads them to meter platform-tier
+		// credentials on the shared platform key.
+		PlatformSourced: bundle.PlatformSourced,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
 	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set

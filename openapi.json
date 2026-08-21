@@ -1699,6 +1699,45 @@
         ],
         "type": "object"
       },
+      "apiKeyView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "last4": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "scope_user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "name",
+          "is_default",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "authResponse": {
         "properties": {
           "access_token": {
@@ -1732,6 +1771,28 @@
         "required": [
           "user",
           "orgs"
+        ],
+        "type": "object"
+      },
+      "createApiKeyReq": {
+        "properties": {
+          "is_default": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "secret"
         ],
         "type": "object"
       },
@@ -2353,6 +2414,20 @@
         ],
         "type": "object"
       },
+      "updateApiKeyReq": {
+        "properties": {
+          "is_default": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "updateOrgReq": {
         "properties": {
           "memory_quota_bytes": {
@@ -2434,6 +2509,254 @@
           }
         },
         "summary": "GET /api/admin/audit",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/api-keys": {
+      "get": {
+        "operationId": "getAdminLlmApiKeys",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "keys": {
+                      "items": {
+                        "$ref": "#/components/schemas/apiKeyView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "keys"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/llm/api-keys",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "postAdminLlmApiKeys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/createApiKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiKeyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/admin/llm/api-keys",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteAdminLlmApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/llm/api-keys/{key_id}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchAdminLlmApiKeysByKeyId",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateApiKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/apiKeyView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PATCH /api/admin/llm/api-keys/{key_id}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/oauth/connections": {
+      "get": {
+        "operationId": "getAdminLlmOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/llm/oauth/connections",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteAdminLlmOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/llm/oauth/{kind}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/admin/llm/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminLlmOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/llm/oauth/{kind}/authorize/complete",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminLlmOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/llm/oauth/{kind}/authorize/start",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminLlmOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/llm/oauth/{kind}/credentials",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminLlmOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/llm/oauth/{kind}/refresh",
         "tags": [
           "admin"
         ]

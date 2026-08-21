@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -121,6 +123,46 @@ func (s *Server) handleCommitAndFinalize(w http.ResponseWriter, r *http.Request)
 		s.maybeTransitionMergedIssue(r.Context(), id, res.SourceIssueID)
 	}
 	s.writeJSONFor(w, r, res)
+}
+
+// forgeTokenForRun is the runview.ForgeTokenResolver for repo-targeted
+// merges: it opens the managed forge secret the launch pinned on the run
+// (SecretOverrides["forge_token"]), re-minting it first when it belongs to
+// a github_app connection — those installation tokens live one hour, so a
+// stored value is usually dead by merge time (same point-of-use re-mint
+// the launch path does).
+func (s *Server) forgeTokenForRun(ctx context.Context, r *store.Run) (string, error) {
+	if r == nil || r.RepoURL == "" {
+		return "", nil
+	}
+	secID := r.SecretOverrides["forge_token"]
+	if secID == "" {
+		return "", fmt.Errorf("run %s is repo-targeted but pins no forge_token secret — its connection could not be resolved at launch", r.ID)
+	}
+	o := s.forgeOrchestrator
+	if o == nil || o.Secrets == nil || o.Sealer == nil {
+		return "", fmt.Errorf("forge integrations are not wired on this server — cannot open the run's forge token")
+	}
+	tctx := store.WithTenant(ctx, r.TenantID)
+	if conns, err := o.Connections.ListByTenant(tctx, r.TenantID); err == nil {
+		for i := range conns {
+			if conns[i].ManagedSecretID == secID {
+				// Best-effort: a mint failure keeps the stored token,
+				// which may still be live within its hour.
+				_, _ = o.EnsureManagedSecret(tctx, &conns[i], "merge")
+				break
+			}
+		}
+	}
+	gs, err := o.Secrets.Get(tctx, secID)
+	if err != nil {
+		return "", fmt.Errorf("forge token secret %s: %w", secID, err)
+	}
+	raw, err := secrets.OpenGenericSecret(o.Sealer, gs.ID, gs.SealedSecret)
+	if err != nil {
+		return "", fmt.Errorf("unseal forge token %s: %w", secID, err)
+	}
+	return string(raw), nil
 }
 
 // maybeTransitionMergedIssue fires the dispatcher's MergedState

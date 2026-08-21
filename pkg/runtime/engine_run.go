@@ -81,6 +81,13 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		}
 	}
 
+	// Registered FIRST so it runs LAST, after finalize and after the
+	// sandbox is gone — and it reads e.repoRoot at that point, not now.
+	// Nothing else reclaims ${PROJECT_SCRATCH_DIR}: `iterion runs prune`
+	// only touches runs/, and the worktree sweep only worktrees/, which is
+	// how one project reached 54 GB of it.
+	defer e.sweepScratchOnExit(runID)
+
 	// Enum gate: every launch surface (CLI --var, HTTP launch, dispatcher
 	// bot_args, preset overlay, cloud pickup) funnels its var values into
 	// run.Inputs, so this single check rejects any enum-constrained var
