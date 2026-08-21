@@ -234,9 +234,9 @@ Rules:
 3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
 5. `as <loop>` / `as foreach` cannot originate inside a `fan_out_all`, `fan_out_each`,
-   or llm `multi: true` body (**C244**). The walk stops at the elected join and at
-   structural joins; a loop after a non-elected `await:` is not claimed. Wrap from
-   the join, or use a `subbot`.
+   or llm `multi: true` body (**C244**). The walk stops at structural joins; a loop
+   head elected only by its own back-edge stays in the body. A loop after a
+   non-elected `await:` is not claimed. Wrap from the join, or use a `subbot`.
 
 ## Human node
 

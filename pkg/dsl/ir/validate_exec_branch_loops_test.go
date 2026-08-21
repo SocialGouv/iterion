@@ -56,9 +56,12 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopHeadElectedAsJoin_Allowed(t *testing.T) {
-	// a1 -> a1 as refine gives a1 two incoming sources, so the runtime elects
-	// a1 as the join and runs the loop on the trunk. C244 must not reject it.
+func TestValidateLoopHeadElectedAsJoin_Rejected(t *testing.T) {
+	// a1 -> a1 as refine gives a1 two incoming sources, so findConvergencePoint
+	// elects a1 as the join and "hoists" the loop onto the trunk. That is not
+	// a legal wrap: the a1 branch starts on the convergence node (runs
+	// nothing), the a2 branch swallows the wait_all join, then the trunk
+	// runs the loop and the join a second time. C244 must refuse it.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -86,7 +89,46 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopImplReviewRetryInFanOut_Rejected(t *testing.T) {
+	// The idiomatic per-item retry: impl → review → impl as fix. review is
+	// the loop source and is not a structural join (one non-iteration
+	// predecessor). Same mis-execution as the self-loop head.
+	src := execBranchLoopPrompts + `
+tool impl:
+  command: ` + "`echo`" + `
+  output: s
+
+tool review:
+  command: ` + "`echo`" + `
+  output: s
+
+tool other:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> impl
+  r1 -> other
+  impl -> review
+  review -> impl as fix(3) when not ok
+  review -> join else
+  other -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopInFanOutEachBody_Rejected(t *testing.T) {
@@ -431,9 +473,8 @@ workflow test:
 }
 
 func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
-	// join has await, so the structural stop keeps it out of the body even
-	// if the loop back-edge makes a1 the elected convergence. C244 keys on
-	// the edge source.
+	// join has await, so the structural stop keeps it out of the body.
+	// C244 keys on the edge source (join), which is not in the body.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `

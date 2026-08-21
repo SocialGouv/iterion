@@ -322,19 +322,21 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 
 // execBranchBodyNodes is the set of nodes a parallel branch runs before
 // it hits a join. Shared by C243 (persist) and C244 (loop/foreach). For
-// each fan_out_all / fan_out_each / llm-multi router we elect the same
-// convergence findConvergencePoint would (every incoming edge, loop
-// back-edges included) AND we also stop at any structural join: await
-// != none, or >1 non-iteration predecessors.
+// each fan_out_all / fan_out_each / llm-multi router we walk from every
+// outgoing target and stop at any structural join: await != none, or
+// >1 non-iteration predecessors.
 //
-// The election stop keeps C244 from rejecting a loop head the runtime
-// hoists to the trunk (the back-edge makes that node the elected join).
-// The structural stop keeps a sibling branch from walking past the
-// intended join when election picked an earlier two-source node (evolve:
-// review_claude is targeted by both the topology router and the fan-out,
-// so it is elected, and the gpt branch would otherwise swallow the rest
-// of the bot). Loops after a non-elected await are a remaining
-// execBranch hole, not claimed by C244.
+// We do not stop at findConvergencePoint's elected node. That election
+// counts loop back-edges, so a branch-head self-loop (or impl→review→impl)
+// elects the loop head as the join; the runtime then "hoists" the loop
+// onto the trunk while the sibling branch swallows the real wait_all
+// join. Those graphs mis-execute; C243/C244 must refuse them. Structural
+// joins still keep trunk loops after a real join (and catalog bots like
+// evolve, where review_claude is targeted by both the topology router
+// and the fan-out) legal.
+//
+// Loops after a non-elected await are a remaining execBranch hole, not
+// claimed by C244.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
 	nonIterIn := map[string]map[string]bool{}
@@ -359,9 +361,9 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(id, elected string)
-	walk = func(id, elected string) {
-		if id == "" || id == elected || body[id] || isStructuralJoin(id) {
+	var walk func(id string)
+	walk = func(id string) {
+		if id == "" || body[id] || isStructuralJoin(id) {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -369,7 +371,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, elected)
+			walk(next)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -377,60 +379,13 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		if !ok || !routerSpawnsExecBranch(r) {
 			continue
 		}
-		var fan []*Edge
 		for _, e := range w.Edges {
 			if e.From == r.ID {
-				fan = append(fan, e)
+				walk(e.To)
 			}
-		}
-		elected := compileFindConvergence(w, fan)
-		for _, e := range fan {
-			walk(e.To, elected)
 		}
 	}
 	return body
-}
-
-// compileFindConvergence mirrors pkg/runtime.findConvergencePoint: BFS from
-// each fan edge in declaration order; first node with await != none OR
-// more than one distinct incoming source (loop back-edges included) wins.
-func compileFindConvergence(w *Workflow, fan []*Edge) string {
-	inSources := map[string]map[string]bool{}
-	for _, e := range w.Edges {
-		if inSources[e.To] == nil {
-			inSources[e.To] = map[string]bool{}
-		}
-		inSources[e.To][e.From] = true
-	}
-	maxVisits := len(w.Nodes) + 1
-	for _, start := range fan {
-		visited := map[string]bool{}
-		queue := []string{start.To}
-		for len(queue) > 0 {
-			if len(visited) > maxVisits {
-				break
-			}
-			id := queue[0]
-			queue = queue[1:]
-			if visited[id] {
-				continue
-			}
-			visited[id] = true
-			n, ok := w.Nodes[id]
-			if !ok {
-				continue
-			}
-			if NodeAwaitMode(n) != AwaitNone || len(inSources[id]) > 1 {
-				return id
-			}
-			for _, e := range w.Edges {
-				if e.From == id {
-					queue = append(queue, e.To)
-				}
-			}
-		}
-	}
-	return ""
 }
 
 func routerSpawnsExecBranch(r *RouterNode) bool {
