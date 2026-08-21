@@ -323,6 +323,38 @@ func TestResolveModel_APIKeyEnvIsNotAnOracle(t *testing.T) {
 	}
 }
 
+func TestResolveModel_CredentialNamedModelVarIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("LITELLM_MODEL_API_KEY", "gpt-5.6-sol")
+	got := getResolveModel(t, hs.URL, "${LITELLM_MODEL_API_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (MODEL+KEY is a credential)", got.Resolved)
+	}
+
+	t.Setenv("OPENROUTER_MODEL_KEY", "gpt-5.6-sol")
+	got = getResolveModel(t, hs.URL, "${OPENROUTER_MODEL_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (MODEL+KEY is a credential)", got.Resolved)
+	}
+}
+
+func TestResolveModel_NestedEnvIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("X_MODEL", "ANTHROPIC_API_KEY")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345")
+	got := getResolveModel(t, hs.URL, "${${X_MODEL}}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (nested env form)", got.Resolved)
+	}
+
+	got = getResolveModel(t, hs.URL, "${$X_MODEL}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (nested $X form)", got.Resolved)
+	}
+}
+
 func TestResolveModel_HyphenatedSecretIsNotAnOracle(t *testing.T) {
 	_, hs := newTestServer(t)
 

@@ -1482,6 +1482,10 @@ func TestLooksLikeModelSpec(t *testing.T) {
 		"sonnet",
 		"o1",
 		"o3-mini",
+		"a:b",
+		"bedrock/us.amazon.nova-pro-v1:0",
+		"anthropic.claude-sonnet-4-20250514-v1:0",
+		"ollama/llama3:8b",
 	}
 	for _, s := range yes {
 		if !LooksLikeModelSpec(s) {
@@ -1496,7 +1500,7 @@ func TestLooksLikeModelSpec(t *testing.T) {
 		"../secret",
 		"$HOME",
 		"${VAR}",
-		"a:b",
+		":leading",
 		"hello world",
 		strings.Repeat("a-", 70),
 	}
@@ -1571,7 +1575,39 @@ func TestResolveModelLiteral(t *testing.T) {
 			envValue: "gpt-5.6-sol",
 			want:     "",
 			shapeOK:  true},
-		{name: "nested default rejected when the outer name lacks MODEL",
+		{name: "LITELLM_MODEL_API_KEY is a credential even though it contains MODEL",
+			literal:  "${LITELLM_MODEL_API_KEY}",
+			envKey:   "LITELLM_MODEL_API_KEY",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "OPENROUTER_MODEL_KEY is a credential even though it contains MODEL",
+			literal:  "${OPENROUTER_MODEL_KEY}",
+			envKey:   "OPENROUTER_MODEL_KEY",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "ITERION_VIBE_MODEL_CLAUDE still expands",
+			literal:  "${ITERION_VIBE_MODEL_CLAUDE:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_VIBE_MODEL_CLAUDE",
+			envValue: "anthropic/claude-opus-5",
+			want:     "anthropic/claude-opus-5"},
+		{name: "colonated default still expands",
+			literal:  "${ITERION_TEST_MODEL:-ollama/llama3:8b}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     "ollama/llama3:8b"},
+		{name: "nested ${${X_MODEL}} is refused",
+			literal:  "${${X_MODEL}}",
+			envKey:   "X_MODEL",
+			envValue: "ANTHROPIC_API_KEY",
+			want:     ""},
+		{name: "nested ${$X_MODEL} is refused",
+			literal:  "${$X_MODEL}",
+			envKey:   "X_MODEL",
+			envValue: "ANTHROPIC_API_KEY",
+			want:     ""},
+		{name: "nested ${A:-${B_MODEL:-c}} is refused (more than one $)",
 			literal: "${A:-${B_MODEL:-openai-codex/gpt-5.6-sol}}",
 			want:    ""},
 	}
@@ -1587,6 +1623,33 @@ func TestResolveModelLiteral(t *testing.T) {
 				t.Errorf("ResolveModelLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestModelEnvNameOK(t *testing.T) {
+	yes := []string{
+		"CODEX_MODEL",
+		"ANTHROPIC_MODEL",
+		"ITERION_VIBE_MODEL_CLAUDE",
+		"ITERION_TEST_MODEL",
+	}
+	for _, name := range yes {
+		if !modelEnvNameOK(name) {
+			t.Errorf("modelEnvNameOK(%q) = false, want true", name)
+		}
+	}
+	no := []string{
+		"ANTHROPIC_API_KEY",
+		"GITHUB_TOKEN",
+		"LITELLM_MODEL_API_KEY",
+		"OPENROUTER_MODEL_KEY",
+		"MODEL_REGISTRY_TOKEN",
+		"SOME_OTHER_VAR",
+	}
+	for _, name := range no {
+		if modelEnvNameOK(name) {
+			t.Errorf("modelEnvNameOK(%q) = true, want false", name)
+		}
 	}
 }
 

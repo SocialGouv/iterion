@@ -808,23 +808,26 @@ func ResolveEffortLiteral(s string) string {
 }
 
 // LooksLikeModelSpec reports whether s is shaped like an LLM model
-// identifier (provider/model, a hyphenated/dotted id, or a short
-// registry alias). GET /api/resolve-model uses this as the counterpart
-// of ValidReasoningEfforts: expansions that don't look like a model
+// identifier (provider/model, a hyphenated/dotted/coloned id, or a
+// short registry alias). Colon is interior punctuation — Bedrock
+// (`…-v1:0`) and Ollama (`llama3:8b`) use it — not a leading character.
+// GET /api/resolve-model uses this as the counterpart of
+// ValidReasoningEfforts: expansions that don't look like a model
 // (filesystem paths, $PATH, usernames) come back empty. Shape alone
 // is not an env-oracle defence — API keys (sk-ant-…, ghp_…, xoxb-…)
 // match this grammar — so ResolveModelLiteral also refuses to expand
-// any env var whose name does not contain "MODEL".
+// any env var whose name does not contain "MODEL" or that looks like
+// a credential.
 func LooksLikeModelSpec(s string) bool {
 	s = strings.TrimSpace(s)
 	n := len(s)
 	if n == 0 || n > 128 {
 		return false
 	}
-	if strings.ContainsRune(s, '$') || strings.ContainsAny(s, " \t\n\\:") {
+	if strings.ContainsRune(s, '$') || strings.ContainsAny(s, " \t\n\\") {
 		return false
 	}
-	if s[0] == '/' || s[0] == '.' || s[0] == '-' {
+	if s[0] == '/' || s[0] == '.' || s[0] == '-' || s[0] == ':' {
 		return false
 	}
 	parts := strings.Split(s, "/")
@@ -840,7 +843,7 @@ func LooksLikeModelSpec(s string) bool {
 			c := p[i]
 			switch {
 			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-			case c == '.' || c == '_' || c == '-' || c == '+':
+			case c == '.' || c == '_' || c == '-' || c == '+' || c == ':':
 				hasSep = true
 			default:
 				return false
@@ -870,16 +873,21 @@ func LooksLikeModelSpec(s string) bool {
 // default / the compact env-ref.
 //
 // Env-oracle defence: every referenced var name must contain "MODEL"
-// (case-insensitive). ${ANTHROPIC_API_KEY} / ${GITHUB_TOKEN} resolve
-// to "" even when the value would pass LooksLikeModelSpec. Nested
-// ${A:-${B_MODEL:-c}} is rejected when any referenced name fails the
-// gate — this helper does not support nested model defaults.
+// (case-insensitive) and must not look like a credential (KEY / TOKEN
+// / SECRET / PASSWORD / PRIVATE). ${ANTHROPIC_API_KEY} /
+// ${LITELLM_MODEL_API_KEY} resolve to "" even when the value would
+// pass LooksLikeModelSpec. Nested env forms (${${X}}, ${A:-${B:-c}})
+// are unsupported by this endpoint — more than one `$` returns ""
+// (the canvas still shows a single-level authored default client-side).
 func ResolveModelLiteral(s string) string {
 	if s == "" {
 		return ""
 	}
 	if !strings.ContainsRune(s, '$') {
 		return s
+	}
+	if strings.Count(s, "$") > 1 {
+		return ""
 	}
 	for _, name := range modelEnvRefNames(s) {
 		if !modelEnvNameOK(name) {
@@ -895,10 +903,21 @@ func ResolveModelLiteral(s string) string {
 
 // modelEnvNameOK reports whether an env var is in the model-spec
 // namespace GET /api/resolve-model is allowed to expand. The name
-// must contain "MODEL" (case-insensitive) so credential vars cannot
-// be turned into an env-oracle.
+// must contain "MODEL" and must not contain KEY / TOKEN / SECRET /
+// PASSWORD / PRIVATE (all case-insensitive), so credential vars —
+// including LITELLM_MODEL_API_KEY — cannot be turned into an
+// env-oracle.
 func modelEnvNameOK(name string) bool {
-	return strings.Contains(strings.ToUpper(name), "MODEL")
+	u := strings.ToUpper(name)
+	if !strings.Contains(u, "MODEL") {
+		return false
+	}
+	for _, bad := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PRIVATE"} {
+		if strings.Contains(u, bad) {
+			return false
+		}
+	}
+	return true
 }
 
 // modelEnvRefNames extracts env var names referenced by s in the

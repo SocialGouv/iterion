@@ -169,8 +169,8 @@ type resolveModelResponse struct {
 // pod), not the runner that will execute the bot. The canvas is a
 // preview of this process, not a promise of the runner — same
 // contract as /api/resolve-effort. Only env vars whose names contain
-// "MODEL" are expanded (see ir.ResolveModelLiteral); other names
-// come back empty so the endpoint is not an env-oracle.
+// "MODEL" and do not look like a credential are expanded (see
+// ir.ResolveModelLiteral); nested ${${X}} forms come back empty.
 func (s *Server) handleResolveModel(w http.ResponseWriter, r *http.Request) {
 	literal := r.URL.Query().Get("literal")
 	if len(literal) > maxResolveLiteralBytes {
