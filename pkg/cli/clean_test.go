@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -65,7 +66,10 @@ func (f *cleanFixture) git(dir string, args ...string) string {
 func (f *cleanFixture) gitErr(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	// Same scrub as production (clean.go / pkg/git): an inherited GIT_DIR
+	// would make worktree add write into another repository's admin dir
+	// and fail with "could not open '.git/worktrees/<name>/locked'".
+	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()),
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com",
@@ -82,7 +86,22 @@ func (f *cleanFixture) addWorktree(runID string) string {
 	f.t.Helper()
 	path := filepath.Join(f.store, "worktrees", runID)
 	base := f.git(f.repo, "rev-parse", "main")
-	f.git(f.repo, "worktree", "add", path, base)
+	mustMkdir(f.t, filepath.Join(f.repo, ".git", "worktrees"))
+	var out string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = f.gitErr(f.repo, "worktree", "add", "--detach", path, base)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(out, "/locked") {
+			f.t.Fatalf("git worktree add %s %s in %s: %v\n%s", path, base, f.repo, err, out)
+		}
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+	if err != nil {
+		f.t.Fatalf("git worktree add %s %s in %s: %v\n%s", path, base, f.repo, err, out)
+	}
 	mustWrite(f.t, filepath.Join(path, runID+".txt"), "work by "+runID+"\n")
 	f.git(path, "add", ".")
 	f.git(path, "commit", "-m", "work by "+runID)
@@ -1756,7 +1775,7 @@ func TestClean_TheWholeMirrorIsExcludedFromDirty(t *testing.T) {
 		".claude/.iterion-managed/plugin-hooks.json",
 		".claude/settings.json",
 	} {
-		t.Run(rel, func(t *testing.T) {
+		t.Run(strings.ReplaceAll(rel, "/", "_"), func(t *testing.T) {
 			f := newCleanFixture(t)
 			path := f.addWorktree("mirrored")
 			f.mergeIntoMain("mirrored")
