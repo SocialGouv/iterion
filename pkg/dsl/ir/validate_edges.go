@@ -276,12 +276,17 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 // share no local loop counters; the branch edge selector skips
 // IsBoundedIteration() edges, so a declared loop would compile and then
 // silently not run (and a foreach would be taken as an unguarded
-// unconditional back-edge). A loop that wraps the fan-out from the join
-// (await != none) is on the trunk and is allowed.
+// unconditional back-edge). A loop whose source is the fan-out / llm-multi
+// router itself is the same class: launchBranches never applies loop
+// bookkeeping to those outgoing edges. A loop that wraps the fan-out from
+// the join is on the trunk and is allowed.
 func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	body := execBranchBodyNodes(w)
 	for _, e := range w.Edges {
-		if !e.IsBoundedIteration() || !body[e.From] {
+		if !e.IsBoundedIteration() {
+			continue
+		}
+		if !body[e.From] && !edgeFromExecBranchRouter(w, e) {
 			continue
 		}
 		kind, name := "loop", e.LoopName
@@ -294,23 +299,46 @@ func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	}
 }
 
-// execBranchBodyNodes is the set of nodes reachable from a fan_out_all,
-// fan_out_each, or llm-multi router along outgoing edges, stopping at a
-// join (await != none). Those subgraphs are what launchBranches/execBranch
-// run. The router itself and the join are not in the body.
+func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
+	r, ok := w.Nodes[e.From].(*RouterNode)
+	return ok && routerSpawnsExecBranch(r)
+}
+
+// execBranchBodyNodes is the set of nodes execBranch actually runs:
+// reachable from a fan_out_all / fan_out_each / llm-multi outgoing edge,
+// stopping at the same join the runtime uses. The runtime's
+// findConvergencePoint treats a node as a join when it has await != none
+// OR more than one distinct incoming source. Loop/foreach back-edges must
+// not count as a second source here — they would otherwise turn the body
+// node they re-enter into a "join" and hide the very edges C243 exists to
+// refuse. The router and the join itself are not in the body.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
+	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
+		if e.IsBoundedIteration() {
+			continue
+		}
+		if nonIterIn[e.To] == nil {
+			nonIterIn[e.To] = map[string]bool{}
+		}
+		nonIterIn[e.To][e.From] = true
+	}
+	isJoin := func(id string) bool {
+		n, ok := w.Nodes[id]
+		if !ok {
+			return false
+		}
+		if NodeAwaitMode(n) != AwaitNone {
+			return true
+		}
+		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
 	var walk func(string)
 	walk = func(id string) {
-		n, ok := w.Nodes[id]
-		if !ok || body[id] {
-			return
-		}
-		if NodeAwaitMode(n) != AwaitNone {
+		if _, ok := w.Nodes[id]; !ok || body[id] || isJoin(id) {
 			return
 		}
 		body[id] = true

@@ -241,6 +241,99 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopAfterImplicitJoin_Allowed(t *testing.T) {
+	// collect has two incoming edges and no await: — findConvergencePoint
+	// still treats it as the join, so a loop on collect runs on the trunk.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool collect:
+  command: ` + "`echo`" + `
+  output: s
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> collect
+  a2 -> collect
+  collect -> collect as more(3) when ok
+  collect -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopOnFanOutRouterEdge_Rejected(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1 as more(3)
+  r1 -> a2
+  a1 -> join
+  a2 -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> join
+  join -> a1 as more(3) when ok
+  join -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
+
 func TestValidateLoopOnTrunk_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a:
