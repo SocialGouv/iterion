@@ -90,6 +90,9 @@
           "backend_session_id": {
             "type": "string"
           },
+          "backend_session_state_ref": {
+            "type": "string"
+          },
           "budget_cost_usd": {
             "type": "number"
           },
@@ -152,6 +155,12 @@
           },
           "node_id": {
             "type": "string"
+          },
+          "node_sessions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeSessionSlot"
+            },
+            "type": "object"
           },
           "outputs": {
             "additionalProperties": {
@@ -698,6 +707,29 @@
           "state",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "NodeSessionSlot": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "conversation_ref": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend"
         ],
         "type": "object"
       },
