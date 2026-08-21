@@ -267,3 +267,69 @@ func TestFork_IssueLessParentMintsNoSource(t *testing.T) {
 		t.Errorf("child.Source = %+v, want nil for an issue-less parent (no phantom schedule provenance)", child.Source)
 	}
 }
+
+// A repo-targeted (cloud) parent forks into a repo-targeted child: the
+// clone coordinates and pinned secret overrides travel, and the child
+// NEVER inherits the parent's WorkDir — that path is another pod's
+// already-wiped clone, and inheriting it kills the fork's resume in
+// "populate workspace: no such file or directory" (measured live on
+// 2026-08-20/21, twice).
+func TestFork_RepoTargetedParentCarriesCloneCoordinates(t *testing.T) {
+	dir := t.TempDir()
+	logger := iterlog.Nop()
+	st, err := store.New(dir, store.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	parentID := "run-fork-repo-parent"
+	if _, err := st.CreateRun(context.Background(), parentID, "wf", nil); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	parent, err := st.LoadRun(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("load parent: %v", err)
+	}
+	parent.Checkpoint = &store.Checkpoint{NodeID: "judge"}
+	parent.Status = store.RunStatusFinished
+	parent.Worktree = false
+	parent.WorkDir = "/tmp/iterion/repos/" + parentID // the dead pod's path
+	parent.RepoURL = "https://forge.example/org/app"
+	parent.RepoSHA = "feature/branch"
+	parent.ProjectPath = "org/app"
+	parent.BotID = "golden-master"
+	parent.SecretOverrides = map[string]string{"forge_token": "sec-123"}
+	if err := st.SaveRun(context.Background(), parent); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	turnCP := &store.TurnCheckpoint{
+		RunID: parentID, NodeID: "judge", LoopIter: 0, TurnIndex: 0,
+		Backend: "claude_code", WrittenAt: time.Now().UTC(),
+	}
+	if err := st.WriteTurn(context.Background(), turnCP); err != nil {
+		t.Fatalf("write turn: %v", err)
+	}
+	svc, err := NewService(dir, WithLogger(logger))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	res, err := svc.Fork(context.Background(), ForkSpec{RunID: parentID, NodeID: "judge", TurnIndex: -1})
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	child, err := st.LoadRun(context.Background(), res.NewRunID)
+	if err != nil {
+		t.Fatalf("load child: %v", err)
+	}
+	if child.RepoURL != parent.RepoURL || child.RepoSHA != parent.RepoSHA || child.ProjectPath != parent.ProjectPath {
+		t.Errorf("clone coordinates did not travel: %q/%q/%q", child.RepoURL, child.RepoSHA, child.ProjectPath)
+	}
+	if child.BotID != "golden-master" {
+		t.Errorf("BotID = %q, want golden-master", child.BotID)
+	}
+	if child.SecretOverrides["forge_token"] != "sec-123" {
+		t.Errorf("SecretOverrides did not travel: %v", child.SecretOverrides)
+	}
+	if child.WorkDir != "" {
+		t.Errorf("child inherited the dead pod's WorkDir %q — must stay empty for a repo-targeted fork", child.WorkDir)
+	}
+}

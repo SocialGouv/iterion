@@ -171,8 +171,22 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		child.WorkDir = newWtPath
 		child.RepoRoot = parent.RepoRoot
 		child.BaseCommit = parent.BaseCommit
+	} else if parent.RepoURL != "" {
+		// Repo-targeted parent (cloud): the child's workspace is ITS OWN
+		// clone, made by the runner at resume (prepareRepoWorkspace reads
+		// the message's RepoURL — the resume publisher copies it from this
+		// run doc). Carry the clone coordinates and the pinned secret
+		// overrides; NEVER inherit the parent's WorkDir — that is another
+		// pod's ephemeral, already-wiped clone path, and the fork then
+		// dies in "populate workspace: read workspace source …: no such
+		// file or directory".
+		child.RepoURL = parent.RepoURL
+		child.RepoSHA = parent.RepoSHA
+		child.ProjectPath = parent.ProjectPath
+		child.BotID = parent.BotID
+		child.SecretOverrides = parent.SecretOverrides
 	} else {
-		// Non-worktree parent: child inherits the parent's WorkDir
+		// Non-worktree local parent: child inherits the parent's WorkDir
 		// (typically the user's cwd). Rewind is meaningless; ignore
 		// spec.RewindCode silently.
 		child.WorkDir = parent.WorkDir

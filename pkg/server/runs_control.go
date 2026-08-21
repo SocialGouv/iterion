@@ -231,6 +231,14 @@ func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		NewInputs:  req.NewInputs,
 	})
 	if err != nil {
+		// A node with no turn checkpoint is a caller mistake, not a server
+		// fault: only agent/judge nodes that completed at least one LLM
+		// turn are forkable (tool/compute nodes never checkpoint turns).
+		if errors.Is(err, store.ErrTurnNotFound) {
+			s.httpErrorFor(w, r, http.StatusBadRequest,
+				"fork: %v — only agent/judge nodes that have completed at least one LLM turn can be forked; pick one of the run's agent nodes", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "fork: %v", err)
 		return
 	}
