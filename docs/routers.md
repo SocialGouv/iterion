@@ -74,7 +74,7 @@ workflow example:
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
 
-A bounded loop or `as foreach` **inside** a branch is a compile error (**C244**): parallel bodies have no local loop counters. The walk stops at structural joins (`await:` or multiple non-iteration predecessors), not at a loop head the runtime elects as join because of its own back-edge. A loop after a non-elected `await:` in a sibling branch is not claimed. A loop that re-enters the router from the join is on the trunk and is allowed.
+A bounded loop or `as foreach` **inside** a branch is a compile error (**C244**): parallel bodies have no local loop counters. A back-edge from the join into a body node is the same class. On a multi-edge fan the walk stops at structural joins, not at a loop head elected only by its own back-edge; on `fan_out_each` (one template path) that election is a real join. A loop after a non-elected `await:` in a sibling branch is not claimed. A loop that re-enters the *router* from the join is on the trunk and is allowed.
 
 ---
 

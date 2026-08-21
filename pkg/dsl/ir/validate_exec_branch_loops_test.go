@@ -472,9 +472,10 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
-	// join has await, so the structural stop keeps it out of the body.
-	// C244 keys on the edge source (join), which is not in the body.
+func TestValidateLoopReenteringBodyFromJoin_Rejected(t *testing.T) {
+	// join -> a1 as more is not a wrap-from-join. findConvergencePoint
+	// counts the back-edge, elects a1, the a1 branch runs nothing, and
+	// the a2 branch swallows wait_all. C244 keys on the edge target too.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -500,6 +501,47 @@ workflow test:
   a2 -> join
   join -> a1 as more(3) when ok
   join -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopAfterFanOutEachImplicitChain_Allowed(t *testing.T) {
+	// fan_out_each has one template edge, so writer/collect/refine each
+	// have one non-iteration predecessor. The runtime elects refine
+	// (its own back-edge) as the join; every replay stops there and the
+	// loop runs on the trunk. Not the sibling-swallow case.
+	src := execBranchLoopPrompts + `
+tool gen:
+  command: ` + "`echo`" + `
+  output: s
+
+tool writer:
+  command: ` + "`echo`" + `
+  input: s
+  output: s
+
+tool collect:
+  command: ` + "`echo`" + `
+  output: s
+
+tool refine:
+  command: ` + "`echo`" + `
+  output: s
+
+router items:
+  mode: fan_out_each
+  over: "{{outputs.gen.items}}"
+  as: item
+
+workflow test:
+  entry: gen
+  gen -> items
+  items -> writer
+  writer -> collect
+  collect -> refine
+  refine -> refine as more(3) when ok
+  refine -> done else
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)

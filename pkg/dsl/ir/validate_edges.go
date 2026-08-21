@@ -294,15 +294,19 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 // silently not run (and a foreach would be taken as an unguarded
 // unconditional back-edge). A loop whose source is the fan-out / llm-multi
 // router itself is the same class: launchBranches never applies loop
-// bookkeeping to those outgoing edges. A loop that wraps the fan-out from
-// the join is on the trunk and is allowed.
+// bookkeeping to those outgoing edges. A back-edge from the join into a
+// body node is also C244 (it elects the branch head as the join). A loop
+// that wraps the router from the join is on the trunk and is allowed.
 func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	body := execBranchBodyNodes(w)
 	for _, e := range w.Edges {
 		if !e.IsBoundedIteration() {
 			continue
 		}
-		if !body[e.From] && !edgeFromExecBranchRouter(w, e) {
+		// Source in the body (or the fan-out router) — skipped at run time.
+		// Target in the body — join -> branch-head as more elects the head
+		// as the join and the sibling swallows wait_all (Ra060bd).
+		if !body[e.From] && !body[e.To] && !edgeFromExecBranchRouter(w, e) {
 			continue
 		}
 		kind, name := "loop", e.LoopName
@@ -326,22 +330,29 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 // outgoing target and stop at any structural join: await != none, or
 // >1 non-iteration predecessors.
 //
-// We do not stop at findConvergencePoint's elected node. That election
-// counts loop back-edges, so a branch-head self-loop (or impl→review→impl)
-// elects the loop head as the join; the runtime then "hoists" the loop
-// onto the trunk while the sibling branch swallows the real wait_all
-// join. Those graphs mis-execute; C243/C244 must refuse them. Structural
-// joins still keep trunk loops after a real join (and catalog bots like
-// evolve, where review_claude is targeted by both the topology router
-// and the fan-out) legal.
+// On a multi-edge fan (fan_out_all / llm multi) we do not stop at a
+// node findConvergencePoint elects only because of a loop back-edge:
+// that election swallows the real wait_all join in the sibling
+// (a -> a as refine, impl→review→impl). Structural joins still keep
+// trunk loops after a real join and catalog bots like evolve legal.
+//
+// On a single-edge fan (fan_out_each) every replay is the same path,
+// so electing a loop head as the join is correct — the walk stops
+// there (allIn > 1, matching findConvergencePoint) and a trunk loop
+// after the implicit collector is not C244.
 //
 // Loops after a non-elected await are a remaining execBranch hole, not
 // claimed by C244.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
+	allIn := map[string]map[string]bool{}
 	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
+		if allIn[e.To] == nil {
+			allIn[e.To] = map[string]bool{}
+		}
+		allIn[e.To][e.From] = true
 		if e.IsBoundedIteration() {
 			continue
 		}
@@ -361,9 +372,12 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(id string)
-	walk = func(id string) {
+	var walk func(id string, stopOnElected bool)
+	walk = func(id string, stopOnElected bool) {
 		if id == "" || body[id] || isStructuralJoin(id) {
+			return
+		}
+		if stopOnElected && len(allIn[id]) > 1 {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -371,7 +385,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next)
+			walk(next, stopOnElected)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -379,10 +393,15 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		if !ok || !routerSpawnsExecBranch(r) {
 			continue
 		}
+		var fan []*Edge
 		for _, e := range w.Edges {
 			if e.From == r.ID {
-				walk(e.To)
+				fan = append(fan, e)
 			}
+		}
+		stopOnElected := len(fan) == 1
+		for _, e := range fan {
+			walk(e.To, stopOnElected)
 		}
 	}
 	return body

@@ -80,7 +80,7 @@ Inside the body: `{{each.scan.item}}` (drills into object fields, e.g.
   `each.<name>.empty == true`; gate with `when not each.<name>.empty` if the
   body must not run on an empty list.
 - `as foreach` and `as <loop>` are mutually exclusive on one edge (**C118**).
-- Neither form may originate inside a `fan_out_all`, `fan_out_each`, or llm `multi: true` body (**C244**): parallel branches have no local loop counters. The walk stops at structural joins (`await:` or multiple non-iteration predecessors), not at a loop head elected only by its own back-edge. A loop after a non-elected `await:` in a sibling branch is not claimed. Put a per-item retry in a `subbot`, or wrap the router from the join.
+- Neither form may originate inside a `fan_out_all`, `fan_out_each`, or llm `multi: true` body (**C244**): parallel branches have no local loop counters. A back-edge from the join into a body node is the same class. On a multi-edge fan the walk stops at structural joins, not at a loop head elected only by its own back-edge; on `fan_out_each` that election is a real join. A loop after a non-elected `await:` in a sibling branch is not claimed. Put a per-item retry in a `subbot`, or wrap the *router* from the join.
 
 ## `subbot` — run another `.bot` as a node
 
