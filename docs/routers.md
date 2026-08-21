@@ -74,6 +74,8 @@ workflow example:
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
 
+A bounded loop or `as foreach` **inside** a branch is a compile error (**C243**): parallel bodies have no local loop counters. A loop that re-enters the router from the join is on the trunk and is allowed.
+
 ---
 
 ## `fan_out_each` — data-driven parallel map
@@ -119,7 +121,7 @@ router dispatch:
   depends_on: deps
 ```
 
-Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. See [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md) for the full contract and examples.
+Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A loop or `as foreach` inside the template is **C243** — per-item retry belongs in a `subbot`, not inlined in the branch; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
 
 ---
 
@@ -204,7 +206,7 @@ workflow example:
 
 ### Multi route example
 
-With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`.
+With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies are the same `execBranch` path as `fan_out_all`: a loop or `as foreach` inside a selected branch is **C243**.
 
 ```iter
 router fix_router:

@@ -101,8 +101,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			return result
 		}
 
-		// Loop edges inside fan-out branches are skipped (see helpers.go),
-		// so iteration here reflects the parent loop counters only.
+		// Bounded-iteration edges inside execBranch are skipped (see
+		// edges.go / C243), so iteration here reflects the parent loop
+		// counters only.
 		iter := e.currentLoopIteration(currentNodeID, rs.loopCounters)
 
 		// Emit node_started.

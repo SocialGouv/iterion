@@ -116,6 +116,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | dsl.edges-else | edge `else` fires only when no sibling `when` matched | dsl | covered-deterministic | TestElseEdge_PreferredOverStrayUnconditional (pkg/runtime/else_edge_test.go) | |
 | dsl.edges-loop | bounded loop edge `as name(n)` | dsl | covered-deterministic | TestBoundedLoop (pkg/runtime/engine_test.go) | |
 | dsl.edges-loop-templated-cap | loop cap templated from an upstream output | dsl | covered-deterministic | TestLoopTemplatedCap_FromOutput (pkg/runtime/engine_test.go) | |
+| dsl.edges-loop-in-parallel | bounded `as loop` / `as foreach` inside `fan_out_all`, `fan_out_each`, or llm `multi` is a compile error (C243) | dsl | covered-deterministic | TestValidateLoopInFanOutAllBody_Rejected (pkg/dsl/ir/validate_exec_branch_loops_test.go) | also TestValidateLoopInFanOutEachBody_Rejected, TestValidateForeachInFanOutBody_Rejected, TestValidateLoopInLLMMultiBody_Rejected; runtime skip of leftover IR is TestExecBranch_SkipsLoopEdge / TestExecBranch_SkipsForeachEdge (pkg/runtime/exec_branch_loop_skip_test.go) |
 | dsl.edges-data-mapping | edge `with {…}` data mapping and reference interpolation | dsl | covered-deterministic | TestResolveMapping_InterpolatesSurroundingLiterals (pkg/runtime/engine_resolve_mapping_test.go) | |
 | dsl.refs | reference syntax: input/vars/outputs/artifacts substitution | dsl | covered-deterministic | pkg/dsl/ir/ref_test.go | |
 | dsl.vars-defaults | `vars:` defaults applied when no override is supplied | dsl | covered-deterministic | pkg/dsl/ir/validate_var_default_test.go | |
@@ -157,6 +158,7 @@ Mongo/S3/Valkey. Each had a deterministic front door after all:
 | runtime.budget-warning | budget warning event at the soft threshold, advisory only | runtime | covered-deterministic | TestBudgetWarningEmitted (pkg/runtime/budget_test.go), TestWarnTokensAdvisoryNeverBlocks (pkg/runtime/budget_test.go) | |
 | runtime.budget-shared | budget accounting shared across parallel branches | runtime | covered-deterministic | TestBudgetSharedFirstComeFirstServed (pkg/runtime/budget_test.go) | |
 | runtime.max-parallel-branches | `max_parallel_branches` semaphore bounds concurrency | runtime | covered-deterministic | TestFanOutEach_DAG_BoundedParallelism (pkg/runtime/fan_out_each_test.go) | |
+| runtime.branch-local-loops | a loop inside a parallel branch executes with per-branch counters | runtime | uncovered | | compile-refused by C243 until branch-local execution lands |
 | runtime.workspace-safety | only one mutating branch may run concurrently | runtime | covered-deterministic | TestWorkspaceSafetyRejectsDualMutation (pkg/runtime/budget_test.go) | |
 | runtime.checkpoint | a checkpoint is saved after every successful node | runtime | covered-deterministic | TestCheckpointPreservesUpstreamOutputs (pkg/runtime/engine_test.go) | |
 | runtime.resume-failed | resume from failed_resumable restarts at the failing node | runtime | covered-deterministic | TestResumeFromFailed (pkg/runtime/engine_test.go), TestResumeDoesNotReplayUpstream (pkg/runtime/engine_test.go) | |

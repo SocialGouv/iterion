@@ -94,8 +94,10 @@ available as tooltip/suffix).
 - **`router mode: fan_out_each` + `over:`/`as:`/`key:`/`depends_on:`** — one parallel branch
   per element of a collection, topologically scheduled by `key`/`depends_on`; element exposed
   as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node.
+  A loop or `as foreach` **inside** that template (or a `fan_out_all` / llm `multi` branch)
+  is C243 — use a `subbot` for per-item retry, or wrap the router from the join.
 - **`src -> dst as foreach name(item in "{{coll}}")`** — ordered, stateful iteration; element
-  via `{{each.name.item|index|count|first|last|empty}}`.
+  via `{{each.name.item|index|count|first|last|empty}}`. Trunk only (C243 inside parallel branches).
 - **`resources:` (counting or `["a","b"]` lease pool) + node `needs:`** — bound the concurrency
   of an operation independent of `max_parallel_branches`.
 
@@ -228,6 +230,8 @@ Rules:
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
 3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
+5. `as <loop>` / `as foreach` cannot originate inside a `fan_out_all`, `fan_out_each`,
+   or llm `multi: true` body (**C243**). Wrap from the join, or use a `subbot`.
 
 ## Human node
 

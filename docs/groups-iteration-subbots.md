@@ -80,13 +80,15 @@ Inside the body: `{{each.scan.item}}` (drills into object fields, e.g.
   `each.<name>.empty == true`; gate with `when not each.<name>.empty` if the
   body must not run on an empty list.
 - `as foreach` and `as <loop>` are mutually exclusive on one edge (**C118**).
+- Neither form may originate inside a `fan_out_all`, `fan_out_each`, or llm `multi: true` body (**C243**): parallel branches have no local loop counters. Put a per-item retry in a `subbot`, or wrap the router from the join.
 
 ## `subbot` — run another `.bot` as a node
 
 A `subbot` node runs a child `.bot` as a **real nested run** in the same store.
 Because it is a full run (not a fan-out branch) the child **may contain loops** —
 which is exactly why a per-element quality chain with retry loops is expressed
-as a subbot rather than inlined into a `fan_out_each` branch.
+as a subbot rather than inlined into a `fan_out_each` branch (inlining is
+**C243**).
 
 ```
 subbot run_ticket:

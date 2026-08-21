@@ -141,4 +141,9 @@ const (
 	DiagAsyncOnHuman          DiagCode = "C240" // interaction: async on a human node — only agent/judge can post async questions (error)
 	DiagAwaitAnswersNoTimeout DiagCode = "C241" // await_answers node with no `timeout:` (error — the no-silent-infinity invariant)
 	DiagAwaitAnswersBadFrom   DiagCode = "C242" // await_answers `from:` names a node that is missing or not interaction: async (warning — it can only ever time out)
+	// Parallel-branch bodies (fan_out_all / fan_out_each / llm multi) run
+	// through execBranch, which has no local loop counters. C243 refuses a
+	// bounded-iteration edge (loop or foreach) whose source sits in that
+	// body; the runtime skip of IsBoundedIteration() is defence in depth.
+	DiagLoopInExecBranch DiagCode = "C243"
 )

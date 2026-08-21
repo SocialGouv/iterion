@@ -143,6 +143,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C240** | error | Async interaction on human node | `interaction: async` is set on a `human` node — async questions are posted by agent/judge nodes; a human node IS the blocking question | Move `interaction: async` to the asking agent/judge and use an `await_answers` node as the sync point |
 | **C241** | error | await_answers without timeout | An `await_answers` node has no (or an invalid/non-positive) `timeout:` — the mandatory bound, the "no silent infinity" invariant | Add `timeout: "30m"` (a positive Go duration) |
 | **C242** | warning | await_answers with dead from | An `await_answers` `from:` names a node that is missing or not an `interaction: async` agent/judge — no async question can originate there, so the await can only ever time out | Fix the `from:` reference, or set `interaction: async` on the referenced node |
+| **C243** | error | Loop/foreach in parallel-branch body | A bounded-iteration edge (`as <loop>(…)` or `as foreach`) leaves a node inside a `fan_out_all`, `fan_out_each`, or `llm` `multi: true` body — those subgraphs run through `execBranch`, which has no local loop counters | Move the loop to the trunk (after the join, or wrapping the router from the join), or run the per-item retry as a `subbot` |
 
 > **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
 > the adaptive-recovery firewall on deterministic ACTION tool nodes. The

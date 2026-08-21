@@ -16,14 +16,17 @@ import (
 // This variant does NOT check loop counters — use evaluateEdgesWithLoops for
 // loop-aware selection.
 //
-// Branches inside fan-out call this variant. The runState's loop counters are
-// owned by the main execution loop and not propagated to branches (branches
-// run concurrently with arbitrary topology; sharing the loop counter would
-// be racy and the semantics — global vs per-branch — are not defined). To
-// prevent runaway iteration when a workflow accidentally places a `loop`
-// edge inside a fan-out branch (which would otherwise be selected without
-// the MaxIterations guard), we explicitly skip edges with a LoopName here.
-// The intent matches the existing comment block on the Expression case:
+// Branches inside fan-out / llm-multi call this variant. The runState's
+// loop counters are owned by the main execution loop and not propagated
+// to branches (branches run concurrently with arbitrary topology; sharing
+// the loop counter would be racy and the semantics — global vs per-branch
+// — are not defined). To prevent runaway iteration when a workflow
+// accidentally places a loop or foreach edge inside an execBranch body
+// (which would otherwise be selected without the MaxIterations /
+// collection-exhaustion guard — foreach with an empty Condition is an
+// unconditional back-edge), we skip every IsBoundedIteration() edge.
+// The compiler refuses those graphs (C243); this skip is defence in
+// depth. The intent matches the existing comment on the Expression case:
 // "branches don't iterate, so loop/run namespaces have no meaning."
 func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {
 	var unconditional, elseEdge *ir.Edge
@@ -32,13 +35,19 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]a
 		if edge.From != fromNodeID {
 			continue
 		}
-		if edge.LoopName != "" {
-			// Defensive: a loop edge inside a branch would otherwise iterate
-			// without the MaxIterations cap (which is enforced only by the
-			// main loop's evaluateEdgesWithLoopsRS). Skip with a warning so
-			// the operator notices and restructures the workflow.
-			e.logger.Warn("%s: node %q: edge to %q is a loop edge (%q) inside a fan-out branch — skipped (loop semantics are undefined inside branches)",
-				logPrefix, fromNodeID, edge.To, edge.LoopName)
+		if edge.IsBoundedIteration() {
+			// Defensive: a loop/foreach edge inside a branch would otherwise
+			// iterate without the main loop's MaxIterations / foreach
+			// bookkeeping (evaluateEdgesWithLoopsRS). Skip with a warning
+			// so a hand-built IR or a validator miss cannot run away.
+			kind, name := "loop", edge.LoopName
+			if edge.ForeachName != "" {
+				kind, name = "foreach", edge.ForeachName
+			}
+			if e.logger != nil {
+				e.logger.Warn("%s: node %q: edge to %q is a %s edge (%q) inside a parallel branch — skipped (loop semantics are undefined inside branches)",
+					logPrefix, fromNodeID, edge.To, kind, name)
+			}
 			continue
 		}
 		if edge.Expression != nil {

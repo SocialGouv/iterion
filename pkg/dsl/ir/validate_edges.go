@@ -271,6 +271,76 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 	}
 }
 
+// validateBoundedIterationInExecBranch refuses loop/foreach edges whose
+// source sits in a subgraph executed by execBranch (C243). Those branches
+// share no local loop counters; the branch edge selector skips
+// IsBoundedIteration() edges, so a declared loop would compile and then
+// silently not run (and a foreach would be taken as an unguarded
+// unconditional back-edge). A loop that wraps the fan-out from the join
+// (await != none) is on the trunk and is allowed.
+func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	for _, e := range w.Edges {
+		if !e.IsBoundedIteration() || !body[e.From] {
+			continue
+		}
+		kind, name := "loop", e.LoopName
+		if e.ForeachName != "" {
+			kind, name = "foreach", e.ForeachName
+		}
+		c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
+			"edge %s -> %s is a %s edge (%s) inside a fan_out_all/fan_out_each/llm-multi body; branches have no local loop counters (C243)",
+			e.From, e.To, kind, name)
+	}
+}
+
+// execBranchBodyNodes is the set of nodes reachable from a fan_out_all,
+// fan_out_each, or llm-multi router along outgoing edges, stopping at a
+// join (await != none). Those subgraphs are what launchBranches/execBranch
+// run. The router itself and the join are not in the body.
+func execBranchBodyNodes(w *Workflow) map[string]bool {
+	out := map[string][]string{}
+	for _, e := range w.Edges {
+		out[e.From] = append(out[e.From], e.To)
+	}
+	body := map[string]bool{}
+	var walk func(string)
+	walk = func(id string) {
+		n, ok := w.Nodes[id]
+		if !ok || body[id] {
+			return
+		}
+		if NodeAwaitMode(n) != AwaitNone {
+			return
+		}
+		body[id] = true
+		for _, next := range out[id] {
+			walk(next)
+		}
+	}
+	for id, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(r) {
+			continue
+		}
+		for _, next := range out[id] {
+			walk(next)
+		}
+	}
+	return body
+}
+
+func routerSpawnsExecBranch(r *RouterNode) bool {
+	switch r.RouterMode {
+	case RouterFanOutAll, RouterFanOutEach:
+		return true
+	case RouterLLM:
+		return r.RouterMulti
+	default:
+		return false
+	}
+}
+
 // validateResources flags any node whose `needs:` references a resource the
 // workflow doesn't declare in its `resources:` block. Without this the acquire
 // is a silent no-op and the intended bound (e.g. on Godot sessions) never
