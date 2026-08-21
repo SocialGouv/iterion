@@ -464,7 +464,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				Conversation:     result.PendingConversation,
 				PendingToolUseID: result.PendingToolUseID,
 			}
-			if result.SessionID != "" {
+			if f.session == ir.SessionPersist && result.SessionID != "" {
 				ni.SessionStateBlob = e.packLiveSession(servingBackendName, result.SessionID)
 			}
 			return nil, ni

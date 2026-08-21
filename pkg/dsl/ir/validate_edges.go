@@ -50,11 +50,19 @@ func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
 }
 
 // fanOutBodyNodes is the set of nodes reachable from a fan_out_all or
-// fan_out_each router along outgoing edges, stopping at a join (await).
+// fan_out_each router along outgoing edges, stopping at a join. A join
+// is an explicit `await:` OR a node with multiple distinct incoming
+// sources — the same predicate the runtime's findConvergencePoint uses,
+// so persist on the trunk after an implicit merge is not C243.
 func fanOutBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
+	inSources := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
+		if inSources[e.To] == nil {
+			inSources[e.To] = map[string]bool{}
+		}
+		inSources[e.To][e.From] = true
 	}
 	body := map[string]bool{}
 	var walk func(string)
@@ -63,7 +71,7 @@ func fanOutBodyNodes(w *Workflow) map[string]bool {
 		if !ok || body[id] {
 			return
 		}
-		if NodeAwaitMode(n) != AwaitNone {
+		if NodeAwaitMode(n) != AwaitNone || len(inSources[id]) > 1 {
 			return
 		}
 		body[id] = true

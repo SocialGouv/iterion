@@ -70,6 +70,55 @@ func TestCollectSkipsHardlink(t *testing.T) {
 	}
 }
 
+func TestUnpackMergesWithoutClobberingSiblings(t *testing.T) {
+	h := Header{Backend: "claude_code", SessionID: "sess-1"}
+	blob, err := Pack(h, []File{{Name: "projects/x/sess-1.jsonl", Body: []byte("hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	other := filepath.Join(dir, "projects", "other", "sess-999.jsonl")
+	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("keep-me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(dir, "projects", "x", "sess-2.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sibling), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sibling, []byte("also-keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unpack(blob, h, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "projects", "x", "sess-1.jsonl")); err != nil || string(got) != "hello" {
+		t.Fatalf("unpacked sess-1: %q %v", got, err)
+	}
+	if got, err := os.ReadFile(other); err != nil || string(got) != "keep-me" {
+		t.Fatalf("sibling project clobbered: %q %v", got, err)
+	}
+	if got, err := os.ReadFile(sibling); err != nil || string(got) != "also-keep" {
+		t.Fatalf("sibling session clobbered: %q %v", got, err)
+	}
+}
+
+func TestHasFileDoesNotRequireRead(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "sess-1.jsonl")
+	if err := os.WriteFile(p, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !HasFile(root, "sess-1") {
+		t.Fatal("expected hit")
+	}
+	if HasFile(root, "sess-missing") {
+		t.Fatal("missing session reported present")
+	}
+}
+
 func TestUnpackHeaderMismatch(t *testing.T) {
 	h := Header{Backend: "claude_code", SessionID: "a"}
 	blob, err := Pack(h, nil)

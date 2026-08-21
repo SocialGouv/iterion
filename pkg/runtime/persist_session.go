@@ -89,17 +89,13 @@ func (e *Engine) capability(node ir.Node) (string, bool) {
 }
 
 // injectPersistAndResume mutates nodeInput in place (ADR-089 resolution order).
-// Callers that already placed a mid-node pause blob or fork rehydration
-// must run this BEFORE those overlays, or pass midNode=true.
-func (e *Engine) injectPersistAndResume(ctx context.Context, rs *runState, node ir.Node, nodeInput map[string]any, midNode bool) {
+// Callers that overlay fork/resumeBackend rehydration must run this FIRST.
+func (e *Engine) injectPersistAndResume(ctx context.Context, rs *runState, node ir.Node, nodeInput map[string]any) {
 	if nodeInput == nil {
 		return
 	}
 	llm, ok := node.(ir.LLMNode)
 	if !ok {
-		return
-	}
-	if midNode {
 		return
 	}
 	if llm.GetSession() != ir.SessionPersist {
@@ -300,6 +296,7 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 			if e.logger != nil {
 				e.logger.Warn("[%s/persist] no packed session blob; slot cleared", node.NodeID())
 			}
+			e.emitPersistDegraded(rs, node.NodeID(), "no packed CLI session files (sandbox host_state, missing config dir, or packer error)")
 			if err := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); err != nil {
 				return err
 			}
@@ -315,6 +312,7 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		if e.logger != nil {
 			e.logger.Warn("persist: put slot: %v", err)
 		}
+		e.emitPersistDegraded(rs, node.NodeID(), "backend session store put failed")
 		if cpErr := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); cpErr != nil {
 			return cpErr
 		}
@@ -343,6 +341,15 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		e.deleteSessionBlob(ctx, rs.runID, pauseRef)
 	}
 	return nil
+}
+
+func (e *Engine) emitPersistDegraded(rs *runState, nodeID, reason string) {
+	if e == nil || rs == nil {
+		return
+	}
+	_ = e.emit(rs.ctx, rs.runID, store.EventPersistDegraded, nodeID, map[string]any{
+		"reason": reason,
+	})
 }
 
 func (e *Engine) checkpointPersistDeletion(ctx context.Context, rs *runState, nodeID string) error {

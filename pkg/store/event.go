@@ -319,6 +319,11 @@ const (
 	//   - reason: rule that fired
 	//   - run_id: the run scope
 	EventNetworkBlocked EventType = "network_blocked"
+	// EventPersistDegraded fires when session: persist could not pack or
+	// store the CLI session (sandbox without host_state, empty config
+	// dir, Put failure). The node succeeded; the next visit runs fresh.
+	// Data: reason (short).
+	EventPersistDegraded EventType = "persist_session_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:

@@ -332,7 +332,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// replaying the parent's conversation. session_id flows via the
 	// same key SessionInherit nodes consume, so an inherit-mode forked
 	// node picks it up transparently; independent-mode nodes ignore.
-	e.injectPersistAndResume(ctx, rs, node, nodeInput, false)
+	e.injectPersistAndResume(ctx, rs, node, nodeInput)
 
 	// Fork / resumeFromFailure rehydration overlays the checkpoint's
 	// conversation and session id AFTER persist inject so a stripped

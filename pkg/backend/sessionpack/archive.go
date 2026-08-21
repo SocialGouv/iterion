@@ -140,21 +140,10 @@ func Unpack(blob []byte, want Header, destDir string) error {
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return err
 	}
-	ents, err := os.ReadDir(tmp)
-	if err != nil {
-		return err
-	}
-	for _, e := range ents {
-		src := filepath.Join(tmp, e.Name())
-		dst := filepath.Join(destDir, e.Name())
-		if err := os.RemoveAll(dst); err != nil {
-			return err
-		}
-		if err := os.Rename(src, dst); err != nil {
-			return copyTree(src, dst)
-		}
-	}
-	return nil
+	// Merge per-file into destDir. Never RemoveAll a top-level entry —
+	// destDir is the shared CLI root (~/.claude, ~/.codex), so replacing
+	// `projects/` would wipe every other session on the host.
+	return copyTree(tmp, destDir)
 }
 
 func writeTar(tw *tar.Writer, name string, body []byte) error {
@@ -221,52 +210,69 @@ func copyTree(src, dst string) error {
 	})
 }
 
+func skipAuthName(base string) bool {
+	switch base {
+	case ".credentials.json", "auth.json", ".claude.json":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchSessionFile(root, sessionID, p string, info os.FileInfo) (rel string, ok bool) {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
+	base := info.Name()
+	if skipAuthName(base) || isHardlink(info) {
+		return "", false
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem != sessionID && base != sessionID+".jsonl" {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
 // CollectBySessionID gathers regular files under root whose base name
 // (minus extension) equals sessionID, skipping credential filenames.
 func CollectBySessionID(root, sessionID string) ([]File, error) {
-	skip := map[string]bool{
-		".credentials.json": true,
-		"auth.json":         true,
-		".claude.json":      true,
-	}
 	var files []File
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		rel, ok := matchSessionFile(root, sessionID, p, info)
+		if !ok {
 			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		base := info.Name()
-		if skip[base] {
-			return nil
-		}
-		if isHardlink(info) {
-			return nil
-		}
-		stem := strings.TrimSuffix(base, filepath.Ext(base))
-		if stem != sessionID && base != sessionID+".jsonl" {
-			return nil
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
 		}
 		body, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		files = append(files, File{Name: filepath.ToSlash(rel), Body: body})
+		files = append(files, File{Name: rel, Body: body})
 		return nil
 	})
 	return files, err
 }
 
-// HasFile reports whether CollectBySessionID would find anything.
+// HasFile reports whether a session file exists under root without
+// reading file bodies.
 func HasFile(root, sessionID string) bool {
-	files, err := CollectBySessionID(root, sessionID)
-	return err == nil && len(files) > 0
+	found := false
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if _, ok := matchSessionFile(root, sessionID, p, info); ok {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
