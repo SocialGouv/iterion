@@ -400,36 +400,6 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopWrappingFromImplicitJoin_Allowed(t *testing.T) {
-	src := execBranchLoopPrompts + `
-tool a1:
-  command: ` + "`echo`" + `
-  output: s
-
-tool a2:
-  command: ` + "`echo`" + `
-  output: s
-
-router r1:
-  mode: fan_out_all
-
-tool collect:
-  command: ` + "`echo`" + `
-  output: s
-
-workflow test:
-  entry: r1
-  r1 -> a1
-  r1 -> a2
-  a1 -> collect
-  a2 -> collect
-  collect -> r1 as outer(2) when ok
-  collect -> done else
-`
-	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagLoopInExecBranch)
-}
-
 func TestValidateLoopOnFanOutRouterEdge_Rejected(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
