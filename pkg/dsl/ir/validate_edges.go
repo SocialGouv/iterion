@@ -374,9 +374,12 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(id string, stopOnElected bool, fanTargets map[string]bool)
-	walk = func(id string, stopOnElected bool, fanTargets map[string]bool) {
-		if id == "" || body[id] || isStructuralJoin(id) {
+	// seen is PER ROUTER: memoizing on the shared body would let a walk
+	// that stopped early (stopOnElected) truncate a later, wider walk
+	// through the same node — C243/C244 then depend on w.Nodes map order.
+	var walk func(id string, stopOnElected bool, fanTargets, seen map[string]bool)
+	walk = func(id string, stopOnElected bool, fanTargets, seen map[string]bool) {
+		if id == "" || seen[id] || isStructuralJoin(id) {
 			return
 		}
 		// Downstream loop head on a single-path fan — not the template
@@ -387,9 +390,10 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		if _, ok := w.Nodes[id]; !ok {
 			return
 		}
+		seen[id] = true
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, stopOnElected, fanTargets)
+			walk(next, stopOnElected, fanTargets, seen)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -406,8 +410,9 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 			}
 		}
 		stopOnElected := len(fan) == 1
+		seen := map[string]bool{}
 		for _, e := range fan {
-			walk(e.To, stopOnElected, fanTargets)
+			walk(e.To, stopOnElected, fanTargets, seen)
 		}
 	}
 	return body

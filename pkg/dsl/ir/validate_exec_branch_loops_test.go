@@ -577,6 +577,59 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopNestedFanOutEachInFanOutAll_Rejected(t *testing.T) {
+	// fan_out_each nested in a fan_out_all body. The inner walk stops at
+	// refine (single-path election); the outer walk does not. Sharing one
+	// visited set made C244 depend on w.Nodes map order (R2db4d4).
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool writer:
+  command: ` + "`echo`" + `
+  input: s
+  output: s
+
+tool refine:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+router items:
+  mode: fan_out_each
+  over: "{{outputs.a1.items}}"
+  as: item
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> items
+  items -> writer
+  writer -> refine
+  refine -> refine as more(3) when ok
+  refine -> join else
+  a2 -> join
+  join -> done
+`
+	for i := 0; i < 50; i++ {
+		r := compileFile(t, src)
+		expectDiag(t, r, DiagLoopInExecBranch)
+	}
+}
+
 func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
 	// joiner is the elected convergence (first fan edge reaches it). z also
 	// has await: so the structural stop treats it as a join and does not
