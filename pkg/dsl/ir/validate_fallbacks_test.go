@@ -189,6 +189,24 @@ func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
 	}
 }
 
+func TestFallbackPersistCrossBackendRefused(t *testing.T) {
+	src := fallbackWorkflow("  session: persist\n  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("session: persist + backend-changing fallback must C176, got %+v", cr.Diagnostics)
+	}
+}
+
+func TestFallbackInheritIfAvailableCrossBackendRefused(t *testing.T) {
+	src := fallbackWorkflow("  session: inherit_if_available\n  tools: [read_file, run_command]\n",
+		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("session: inherit_if_available + backend-changing fallback must C176, got %+v", cr.Diagnostics)
+	}
+}
+
 // TestFallbackEnvRefBackendDefersToRuntime: the literal text is not the
 // resolved backend, so a check keyed on it would misfire.
 func TestFallbackEnvRefBackendDefersToRuntime(t *testing.T) {

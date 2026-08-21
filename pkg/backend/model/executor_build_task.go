@@ -418,6 +418,14 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// Attach metadata.
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampFallbackMeta(result.Output, out)
+	if f.session == ir.SessionPersist && result.SessionID != "" {
+		if blob := e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID); len(blob) > 0 {
+			if result.Output == nil {
+				result.Output = map[string]any{}
+			}
+			result.Output[delegate.SessionStateBlobKey] = blob
+		}
+	}
 
 	// Check for a backend interaction signal BEFORE schema validation.
 	// A `_needs_interaction` pause Result (e.g. an LLM ask_user call on a
@@ -444,7 +452,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 			}
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
-			return nil, &ErrNeedsInteraction{
+			ni := &ErrNeedsInteraction{
 				NodeID:    f.id,
 				Questions: questions,
 				SessionID: result.SessionID,
@@ -456,6 +464,10 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				Conversation:     result.PendingConversation,
 				PendingToolUseID: result.PendingToolUseID,
 			}
+			if f.session == ir.SessionPersist && result.SessionID != "" {
+				ni.SessionStateBlob = e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID)
+			}
+			return nil, ni
 		}
 	}
 
@@ -926,6 +938,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.MCPServers = e.resolveTaskMCPServers(f.activeMCPServers)
 	}
 
+	e.unpackInboundSession(ctx, input, backendName)
 	e.applySessionContinuity(&task, f, input)
 	applyResumeContinuity(&task, input)
 
@@ -1192,7 +1205,7 @@ func (e *ClawExecutor) applyAskUserEndpoint(task *delegate.Task) {
 // id (which has produced silent 0-token failures on at least the
 // OpenAI provider).
 func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFields, input map[string]any) {
-	if f.session != ir.SessionInherit && f.session != ir.SessionInheritIfAvailable && f.session != ir.SessionFork {
+	if f.session != ir.SessionInherit && f.session != ir.SessionInheritIfAvailable && f.session != ir.SessionFork && f.session != ir.SessionPersist {
 		return
 	}
 	if sid, ok := input["_session_id"].(string); ok && sid != "" {
@@ -1211,10 +1224,10 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		}
 	} else if e.logger != nil {
 		switch f.session {
-		case ir.SessionInheritIfAvailable:
-			// The tolerant variant: running fresh is the documented
-			// outcome, so this is informational.
-			e.logger.Info("[%s/inherit_if_available] no upstream _session_id; running fresh", f.id)
+		case ir.SessionInheritIfAvailable, ir.SessionPersist:
+			// persist visit-1 and inherit_if_available: running fresh is
+			// the documented outcome, so this is informational.
+			e.logger.Info("[%s/%s] no upstream _session_id; running fresh", f.id, f.session)
 		default:
 			// Plain `inherit` (or `fork`) asked for continuity and did not get
 			// it. This used to be silent, which made a real misconfiguration

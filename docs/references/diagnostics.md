@@ -29,7 +29,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 
 | Code | Severity | Description | Cause | Fix |
 |------|----------|-------------|-------|-----|
-| **C009** | error | Session at convergence point | A node with `await:` (or multiple incoming sources) uses `session: inherit` or `session: fork` | Change to `session: fresh` or `session: artifacts_only` |
+| **C009** | error | Session at convergence point | A node with `await:` (or multiple incoming sources) uses `session: inherit` or `session: fork` | Change to `session: fresh`, `session: artifacts_only`, or `session: persist` |
 | **C010** | error | Multiple unconditional edges | A non-router node has more than one unconditional outgoing edge | Keep only one default edge, or use a router for fan-out |
 | **C011** | error | Ambiguous conditions | Same condition field appears twice with same polarity from the same source | Remove the duplicate edge or use different conditions |
 | **C012** | error | Missing fallback | A node has conditional edges but no unconditional fallback and conditions aren't exhaustive | Add `when not X` to complement `when X`, or add an unconditional edge |
@@ -128,7 +128,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C173** | error | Malformed fallback route | A `fallbacks:` route declares neither backend, model nor provider (it would re-issue the identical failing call), duplicates another route's name, or switches backend without pinning its own `model:` (model specs are not portable across backends) | Give the route a distinct target; a route that changes `backend:` must also set `model:` |
 | **C174** | warning | Command ignored | A per-node `command:` CLI-binary override is set on a backend that ignores it (`claw`/`codex`) — only `claude_code` honors it | Switch to `backend: "claude_code"`, or drop the `command:` |
 | **C175** | warning | Unknown fallback trigger | A `fallbacks:` route's `on:` list names a category the runtime does not classify | Use `usage_window`, `auth`, `unavailable`, `transient_exhausted` or `any` |
-| **C176** | error | Unsafe fallback crossing | A `fallbacks:` route would silently change what the node can DO: it runs on a backend that cannot enforce the node's `permission:` gate, or it crosses the claw⇄CLI boundary on a node with an empty `tools:` list (empty means NO tools on claw and the FULL native toolset on a CLI backend) | Route to a gate-enforcing backend (`claude_code`/`claw`/`pi`), or declare an explicit `tools:` list |
+| **C176** | error | Unsafe fallback crossing | A `fallbacks:` route would silently change what the node can DO: it runs on a backend that cannot enforce the node's `permission:` gate, or it crosses the claw⇄CLI boundary on a node with an empty `tools:` list (empty means NO tools on claw and the FULL native toolset on a CLI backend), or it changes `backend:` on a node with `session: inherit` / `inherit_if_available` / `fork` / `persist` | Route to a gate-enforcing backend (`claude_code`/`claw`/`pi`), declare an explicit `tools:` list, or drop session continuity when crossing backends |
 | **C177** | warning | Fallback capability drift | A `fallbacks:` route runs on a backend that silently ignores one of the node's settings (e.g. `reasoning_effort:`) | Accept the degradation, or pin the route to a backend that honours the setting |
 | **C190** | warning | Supervisor watches non-agent | A `supervisor` `watches:` a node id that isn't an agent node | Watch an agent node, or fix the node id |
 | **C191** | warning | Malformed supervisor | A `supervisor` declaration is malformed (e.g. a bad cooldown duration) | Use a valid Go duration for cooldown |
@@ -143,6 +143,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C240** | error | Async interaction on human node | `interaction: async` is set on a `human` node — async questions are posted by agent/judge nodes; a human node IS the blocking question | Move `interaction: async` to the asking agent/judge and use an `await_answers` node as the sync point |
 | **C241** | error | await_answers without timeout | An `await_answers` node has no (or an invalid/non-positive) `timeout:` — the mandatory bound, the "no silent infinity" invariant | Add `timeout: "30m"` (a positive Go duration) |
 | **C242** | warning | await_answers with dead from | An `await_answers` `from:` names a node that is missing or not an `interaction: async` agent/judge — no async question can originate there, so the await can only ever time out | Fix the `from:` reference, or set `interaction: async` on the referenced node |
+| **C243** | error | Persist in fan-out body | A node with `session: persist` sits in a `fan_out_all` / `fan_out_each` subgraph (before the join) | Move persist to the trunk after the join, or use `session: fresh` on the parallel nodes |
 
 > **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
 > the adaptive-recovery firewall on deterministic ACTION tool nodes. The
@@ -190,7 +191,7 @@ judge -> agent when not approved as retry(3) with { ... }
 ```
 
 **"I get C009 (session at convergence)"**
-Nodes that receive from multiple branches (via `await:` or fan-out) cannot use `session: inherit` or `fork`. Use `session: fresh` or `session: artifacts_only`.
+Nodes that receive from multiple branches (via `await:` or fan-out) cannot use `session: inherit` or `fork`. Use `session: fresh`, `session: artifacts_only`, or `session: persist`.
 
 **"I get C012 (missing fallback)"**
 If you have `when approved`, you need either `when not approved` or an unconditional edge from the same source. Conditions must be exhaustive.

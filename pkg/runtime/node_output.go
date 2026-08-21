@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -117,6 +118,16 @@ func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]any) map
 		return nil
 	}
 	out := output
+	if _, hasBlob := out[delegate.SessionStateBlobKey]; hasBlob || out[delegate.SessionStateKey] != nil || out["_session_state_ref"] != nil {
+		copied := make(map[string]any, len(out))
+		for k, v := range out {
+			copied[k] = v
+		}
+		delete(copied, delegate.SessionStateBlobKey)
+		delete(copied, delegate.SessionStateKey)
+		delete(copied, "_session_state_ref")
+		out = copied
+	}
 	if scrubber, ok := e.executor.(SecretScrubber); ok {
 		// ScrubOutput returns a redacted deep copy (never the original),
 		// so the live output map is safe.

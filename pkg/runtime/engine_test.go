@@ -31,7 +31,12 @@ func hasEventType(events []*store.Event, typ store.EventType) bool {
 // ---------------------------------------------------------------------------
 
 type stubExecutor struct {
-	handlers map[string]func(map[string]any) (map[string]any, error)
+	handlers     map[string]func(map[string]any) (map[string]any, error)
+	hasSessionFn func(backend, sessionID string) bool
+	unpackErr    error
+	packErr      error
+	capBackend   string
+	capOK        *bool
 }
 
 func newStubExecutor() *stubExecutor {
@@ -41,6 +46,34 @@ func newStubExecutor() *stubExecutor {
 func (s *stubExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
 	s.handlers[nodeID] = fn
 }
+
+func (s *stubExecutor) SessionResumeCapability(ir.Node) (string, bool) {
+	if s.capOK != nil {
+		return s.capBackend, *s.capOK
+	}
+	return "claude_code", true
+}
+
+func (s *stubExecutor) PackSession(_ context.Context, _, sessionID string) ([]byte, error) {
+	if s.packErr != nil {
+		return nil, s.packErr
+	}
+	return []byte("pack:" + sessionID), nil
+}
+
+func (s *stubExecutor) UnpackSession(context.Context, string, string, []byte) error {
+	return s.unpackErr
+}
+
+func (s *stubExecutor) HasSession(_ context.Context, backend, sessionID string) bool {
+	if s.hasSessionFn != nil {
+		return s.hasSessionFn(backend, sessionID)
+	}
+	// Virtual sessions exist in the test world unless a test opts out.
+	return true
+}
+
+func (s *stubExecutor) EvictRun(string) {}
 
 func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	if fn, ok := s.handlers[node.NodeID()]; ok {

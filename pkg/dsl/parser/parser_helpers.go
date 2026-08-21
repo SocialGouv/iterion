@@ -40,8 +40,10 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 		return ast.SessionArtifactsOnly
 	case TokenFork:
 		return ast.SessionFork
+	case TokenPersist:
+		return ast.SessionPersist
 	default:
-		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only, persist), got '"+t.Value+"'")
 		return ast.SessionFresh
 	}
 }
@@ -246,7 +248,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenInteraction, TokenInteractionPrompt, TokenInteractionModel,
 		TokenBackend, TokenProvider, TokenAwait, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
-		TokenFork,
+		TokenFork, TokenPersist,
 		TokenFanOutAll, TokenCondition, TokenRoundRobin, TokenLLM, TokenMulti,
 		TokenWaitAll, TokenBestEffort,
 		TokenTrue, TokenFalse,

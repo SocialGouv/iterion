@@ -111,6 +111,7 @@ const (
 	TokenInheritIfAvailable
 	TokenArtifactsOnly
 	TokenFork
+	TokenPersist
 	// Router modes
 	TokenFanOutAll
 	TokenFanOutEach
@@ -293,6 +294,7 @@ var tokenNames = map[TokenType]string{
 	TokenInheritIfAvailable: "inherit_if_available",
 	TokenArtifactsOnly:      "artifacts_only",
 	TokenFork:               "fork",
+	TokenPersist:            "persist",
 	TokenFanOutAll:          "fan_out_all",
 	TokenFanOutEach:         "fan_out_each",
 	TokenCondition:          "condition",
@@ -439,6 +441,7 @@ var keywords = map[string]TokenType{
 	"inherit_if_available":  TokenInheritIfAvailable,
 	"artifacts_only":        TokenArtifactsOnly,
 	"fork":                  TokenFork,
+	"persist":               TokenPersist,
 	"fan_out_all":           TokenFanOutAll,
 	"fan_out_each":          TokenFanOutEach,
 	"condition":             TokenCondition,

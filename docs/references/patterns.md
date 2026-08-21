@@ -115,7 +115,7 @@ workflow parallel_analysis:
 - `fan_out_all` sends to ALL outgoing edges simultaneously
 - `await: wait_all` on the synthesizer makes it wait for both branches
 - Set `max_parallel_branches` in budget to control concurrency
-- `session: inherit` and `session: fork` are forbidden on nodes with `await` (use `fresh` or `artifacts_only`)
+- `session: inherit` and `session: fork` are forbidden on nodes with `await` (use `fresh`, `artifacts_only`, or `persist`)
 
 ---
 

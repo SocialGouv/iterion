@@ -146,7 +146,7 @@ They share the exact property surface:
 | `model`, `backend`, `provider`, `command` | string |
 | `input`, `output`, `publish`, `system`, `user` | identifier reference |
 | `artifact_labels` | tool-ref-style identifier list |
-| `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only` |
+| `session` | `fresh`, `inherit`, `inherit_if_available`, `fork`, `artifacts_only`, `persist` |
 | `tools`, `tool_policy`, `capabilities` | tool-ref list; dotted refs and trailing `.*` are accepted |
 | `skills` | quoted string or dotted-identifier list |
 | `tool_max_steps`, `max_tokens` | integer |

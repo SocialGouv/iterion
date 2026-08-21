@@ -109,6 +109,15 @@ finished/failed transitions.
   "backend_name": "claude_code",
   "backend_conversation": null,
   "backend_pending_tool_use_id": "",
+  "node_sessions": {
+    "writer": {
+      "backend": "claude_code",
+      "session_id": "sess-…",
+      "fingerprint": "…",
+      "state_ref": "ulid"
+    }
+  },
+  "backend_session_state_ref": "",
   "node_attempts": { "review": { "RATE_LIMITED": 1 } },
   "budget_tokens_used": 42000,
   "budget_cost_usd": 1.25,

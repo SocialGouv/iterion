@@ -252,6 +252,11 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		return output, done
 	}
 
+	if llm, ok := node.(ir.LLMNode); ok && llm.GetSession() == ir.SessionPersist {
+		result.err = fmt.Errorf("node %q has session: persist inside a fan-out branch (C243)", currentNodeID)
+		return nil, true
+	}
+
 	nodeInput := e.buildNodeInputRS(currentNodeID, branchScope)
 
 	// Acquire this node's declared resources (`needs:`) before running. This

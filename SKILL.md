@@ -67,11 +67,15 @@ references, tools/capabilities/skills, permissions, MCP, memory, compaction,
 sandboxing, limits, resources, publication, and convergence. Consult the
 grammar instead of guessing a property name.
 
-Use one of the five session modes:
+Use one of the six session modes:
 
 ```text
-fresh | inherit | inherit_if_available | fork | artifacts_only
+fresh | inherit | inherit_if_available | fork | artifacts_only | persist
 ```
+
+`persist` resumes this node's own last CLI session on re-entry (packed
+StateRef, ADR-089). It is not inherit-from-parent. Trunk-only (C243).
+Supported backends: `claude_code`, `pi`, `codex`.
 
 Use one of the six interaction values:
 
@@ -192,7 +196,7 @@ iterion run workflow.bot --var key=value
 ```
 
 Validation emits sparse DSL codes in C001–C199 plus the async-interaction band
-C240–C242, and bundle codes in C200–C234. Do not assume the numeric ranges are
+C240–C243 (`session: persist` is C243), and bundle codes in C200–C234. Do not assume the numeric ranges are
 contiguous. For bundles, also check
 [`docs/bundles.md`](docs/bundles.md). For current CLI flags, use
 `iterion <command> --help` and [`docs/cli-reference.md`](docs/cli-reference.md).

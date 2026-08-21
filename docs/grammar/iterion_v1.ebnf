@@ -157,7 +157,7 @@ llm_prop = "description" ":" STRING_LIT NEWLINE
          | sandbox_decl | cursors_block ;
 
 session_mode = "fresh" | "inherit" | "inherit_if_available"
-             | "fork" | "artifacts_only" ;
+             | "fork" | "artifacts_only" | "persist" ;
 reasoning_effort = "low" | "medium" | "high" | "xhigh" | "max"
                  | "ultracode" | STRING_LIT ;
 await_mode = "wait_all" | "best_effort" ;
