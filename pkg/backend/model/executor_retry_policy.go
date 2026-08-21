@@ -178,6 +178,12 @@ type ErrNeedsInteraction struct {
 	// PendingToolUseID is the ID of the tool_use block in Conversation
 	// that is awaiting an answer. Required when Conversation is non-nil.
 	PendingToolUseID string
+
+	// SessionStateBlob is a packed CLI session (ADR-089). Transient: the
+	// runtime Puts it then drops the slice. Never logged or checkpointed.
+	SessionStateBlob []byte `json:"-"`
+	// SessionStateRef is set when reconstructing ni from a pause checkpoint.
+	SessionStateRef string `json:"-"`
 }
 
 func (e *ErrNeedsInteraction) Error() string {

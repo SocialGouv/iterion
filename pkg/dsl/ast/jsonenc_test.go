@@ -817,3 +817,30 @@ func TestFallbacksRoundtrip(t *testing.T) {
 		t.Error("judge routes lost — the judge encode/decode site is the easy one to forget")
 	}
 }
+
+func TestSessionPersistJSONRoundTrip(t *testing.T) {
+	original := &ast.File{
+		Agents: []*ast.AgentDecl{{
+			Name: "writer",
+			LLMDecl: ast.LLMDecl{
+				Session: ast.SessionPersist,
+				System:  "sys",
+				User:    "usr",
+			},
+		}},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("MarshalFile: %v", err)
+	}
+	if !strings.Contains(string(data), `"persist"`) {
+		t.Fatalf("emitted JSON missing persist: %s", data)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("UnmarshalFile: %v", err)
+	}
+	if restored.Agents[0].Session != ast.SessionPersist {
+		t.Errorf("Session = %v, want persist", restored.Agents[0].Session)
+	}
+}

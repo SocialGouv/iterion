@@ -29,6 +29,7 @@ var sessionModeToStr = map[SessionMode]string{
 	SessionInheritIfAvailable: "inherit_if_available",
 	SessionArtifactsOnly:      "artifacts_only",
 	SessionFork:               "fork",
+	SessionPersist:            "persist",
 }
 
 var strToSessionMode = reverseMap(sessionModeToStr)

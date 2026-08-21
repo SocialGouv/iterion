@@ -87,6 +87,7 @@ const (
 	SessionInheritIfAvailable                    // inherit when _session_id resolves, otherwise fall back to fresh (v0.6.0+)
 	SessionArtifactsOnly                         // only persistent artifacts
 	SessionFork                                  // non-consuming fork from parent session
+	SessionPersist                               // resume this node's own last conversation on re-entry (ADR-089)
 )
 
 func (sm SessionMode) String() string {
@@ -101,6 +102,8 @@ func (sm SessionMode) String() string {
 		return "artifacts_only"
 	case SessionFork:
 		return "fork"
+	case SessionPersist:
+		return "persist"
 	default:
 		return "unknown"
 	}

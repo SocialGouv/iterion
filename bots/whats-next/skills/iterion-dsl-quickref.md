@@ -112,7 +112,7 @@ agent w:
   output:  result_schema
   system:  w_system
   user:    w_user
-  session: fresh                # fresh | inherit | inherit_if_available | fork | artifacts_only
+  session: fresh                # fresh | inherit | inherit_if_available | fork | artifacts_only | persist
   tools:   [bash, read_file, glob, grep, write_file, file_edit]
   tool_max_steps: 30
   max_tokens: 4096              # output cap (per LLM call)
@@ -202,6 +202,9 @@ Session-mode notes:
 - `fork` — clones the parent session but diverges from it.
 - `artifacts_only` — pulls upstream artifacts but no
   conversation history.
+- `persist` — resume **this** node's last conversation on
+  re-entry (ADR-089). Trunk-only (C243); CLI backends with a
+  packed StateRef. Not inherit-from-parent.
 
 ## Edges
 

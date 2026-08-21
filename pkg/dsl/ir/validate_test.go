@@ -130,6 +130,105 @@ workflow test:
 	expectDiag(t, r, DiagSessionAfterConvergence)
 }
 
+func TestValidatePersistAtConvergence_Allowed(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+
+agent after_convergence:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> after_convergence with { result_a: "{{outputs.a1}}" }
+  a2 -> after_convergence with { result_b: "{{outputs.a2}}" }
+  after_convergence -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagSessionAfterConvergence)
+	expectNoDiag(t, r, DiagPersistInFanOut)
+}
+
+func TestValidatePersistInFanOutBody_Rejected(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+
+agent join:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagPersistInFanOut)
+}
+
 func TestValidateFreshAtConvergence_Allowed(t *testing.T) {
 	src := `
 schema s:

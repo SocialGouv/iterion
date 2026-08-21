@@ -769,6 +769,7 @@ const (
 	SessionInheritIfAvailable = types.SessionInheritIfAvailable
 	SessionArtifactsOnly      = types.SessionArtifactsOnly
 	SessionFork               = types.SessionFork
+	SessionPersist            = types.SessionPersist
 )
 
 type RouterMode = types.RouterMode

@@ -681,6 +681,17 @@ const (
 	MergeStatusConflicted MergeStatus = "conflicted"
 )
 
+// NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
+// StateRef names a blob in BackendSessionStore. Empty StateRef means the
+// slot is not rehydratable (id-only is not a slot).
+type NodeSessionSlot struct {
+	Backend         string `json:"backend"`
+	SessionID       string `json:"session_id,omitempty"`
+	Fingerprint     string `json:"fingerprint,omitempty"`
+	StateRef        string `json:"state_ref,omitempty"`
+	ConversationRef string `json:"conversation_ref,omitempty"`
+}
+
 // Checkpoint captures the runtime state at a pause point (human node or
 // backend interaction), enabling exact resume without replaying upstream nodes.
 //
@@ -730,6 +741,11 @@ type Checkpoint struct {
 	// an answer in BackendConversation. Required when BackendConversation
 	// is non-nil.
 	BackendPendingToolUseID string `json:"backend_pending_tool_use_id,omitempty" bson:"backend_pending_tool_use_id,omitempty"`
+	// NodeSessions holds per-node persist slots (ADR-089). Keyed by node id.
+	NodeSessions map[string]NodeSessionSlot `json:"node_sessions,omitempty" bson:"node_sessions,omitempty"`
+	// BackendSessionStateRef is the in-flight CLI ask_user pack (ADR-089).
+	// Distinct from NodeSessions: that map is the last *completed* visit.
+	BackendSessionStateRef string `json:"backend_session_state_ref,omitempty" bson:"backend_session_state_ref,omitempty"`
 	// NodeAttempts records prior failed attempts per (node_id, error_code) so
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).

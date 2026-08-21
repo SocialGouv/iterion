@@ -170,7 +170,7 @@ Important property groups:
 |---|---|
 | Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
 | Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
-| Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only`, `interaction`, `interaction_prompt`, `interaction_model`. |
+| Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
 | Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |

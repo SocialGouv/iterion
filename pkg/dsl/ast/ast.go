@@ -461,6 +461,7 @@ const (
 	SessionInheritIfAvailable = types.SessionInheritIfAvailable
 	SessionArtifactsOnly      = types.SessionArtifactsOnly
 	SessionFork               = types.SessionFork
+	SessionPersist            = types.SessionPersist
 )
 
 // LLMDecl groups the node properties shared verbatim by AgentDecl and

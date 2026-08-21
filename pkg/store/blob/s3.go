@@ -582,6 +582,106 @@ func (c *S3Client) DeleteRunIR(ctx context.Context, runID string) error {
 	return nil
 }
 
+func (c *S3Client) PutBackendSession(ctx context.Context, runID, ref string, body []byte) error {
+	key, err := backendSessionKey(runID, ref)
+	if err != nil {
+		return err
+	}
+	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(c.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String("application/octet-stream"),
+	})
+	if err != nil {
+		return fmt.Errorf("blob: put backend session %s: %w", key, err)
+	}
+	return nil
+}
+
+func (c *S3Client) GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error) {
+	key, err := backendSessionKey(runID, ref)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, fmt.Errorf("blob: get backend session %s: %w", key, err)
+	}
+	defer out.Body.Close()
+	body, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("blob: read backend session %s: %w", key, err)
+	}
+	return body, nil
+}
+
+func (c *S3Client) DeleteBackendSession(ctx context.Context, runID, ref string) error {
+	key, err := backendSessionKey(runID, ref)
+	if err != nil {
+		return err
+	}
+	if _, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("blob: delete backend session %s: %w", key, err)
+	}
+	return nil
+}
+
+func (c *S3Client) DeleteRunBackendSessions(ctx context.Context, runID string) error {
+	prefix, err := backendSessionRunPrefix(runID)
+	if err != nil {
+		return err
+	}
+	var collected []error
+	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for pager.HasMorePages() {
+		if err := ctx.Err(); err != nil {
+			collected = append(collected, err)
+			break
+		}
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
+			continue
+		}
+		if len(page.Contents) == 0 {
+			continue
+		}
+		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
+		for _, obj := range page.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(c.bucket),
+			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		}); err != nil {
+			collected = append(collected, fmt.Errorf("blob: delete session page under %s: %w", prefix, err))
+		}
+	}
+	if len(collected) > 0 {
+		return errors.Join(collected...)
+	}
+	return nil
+}
+
 // DeleteRunToolBlobs sweeps every blob under tools/<runID>/. Mirrors
 // DeleteRunAttachments' batched, best-effort semantics.
 func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {

@@ -70,6 +70,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
+	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
 }
@@ -222,6 +223,48 @@ func testRunFilesStore(t *testing.T, s store.RunStore) {
 	}
 	if files, err := rfs.ListRunFiles(ctx, runID); err != nil || len(files) != 0 {
 		t.Errorf("ListRunFiles after DeleteRun = %v, %v; want empty, nil", files, err)
+	}
+}
+
+func testBackendSessionStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	bss := store.AsBackendSessionStore(s)
+	if bss == nil {
+		t.Skip("backend does not implement BackendSessionStore")
+	}
+	ctx := testCtx()
+	const runID = "run_sesspack"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := bss.GetBackendSession(ctx, runID, "missing"); err == nil {
+		t.Errorf("GetBackendSession(missing): expected error")
+	}
+	body := []byte("packed-session")
+	if err := bss.PutBackendSession(ctx, runID, "ref1", body); err != nil {
+		t.Fatalf("PutBackendSession: %v", err)
+	}
+	got, err := bss.GetBackendSession(ctx, runID, "ref1")
+	if err != nil {
+		t.Fatalf("GetBackendSession: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Errorf("GetBackendSession = %q, want %q", got, body)
+	}
+	if err := bss.DeleteBackendSession(ctx, runID, "ref1"); err != nil {
+		t.Fatalf("DeleteBackendSession: %v", err)
+	}
+	if _, err := bss.GetBackendSession(ctx, runID, "ref1"); err == nil {
+		t.Errorf("Get after Delete: expected error")
+	}
+	if err := bss.PutBackendSession(ctx, runID, "ref2", body); err != nil {
+		t.Fatalf("Put ref2: %v", err)
+	}
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := bss.GetBackendSession(ctx, runID, "ref2"); err == nil {
+		t.Errorf("Get after DeleteRun: expected error")
 	}
 }
 

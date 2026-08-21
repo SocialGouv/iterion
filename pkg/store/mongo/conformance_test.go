@@ -336,3 +336,46 @@ func (b *inMemoryBlob) DeleteRunIR(_ context.Context, runID string) error {
 	delete(b.data, key)
 	return nil
 }
+
+func (b *inMemoryBlob) PutBackendSession(_ context.Context, runID, ref string, body []byte) error {
+	key, err := blob.BackendSessionKey(runID, ref)
+	if err != nil {
+		return err
+	}
+	b.data[key] = append([]byte{}, body...)
+	return nil
+}
+
+func (b *inMemoryBlob) GetBackendSession(_ context.Context, runID, ref string) ([]byte, error) {
+	key, err := blob.BackendSessionKey(runID, ref)
+	if err != nil {
+		return nil, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.ErrArtifactNotFound
+	}
+	return append([]byte{}, body...), nil
+}
+
+func (b *inMemoryBlob) DeleteBackendSession(_ context.Context, runID, ref string) error {
+	key, err := blob.BackendSessionKey(runID, ref)
+	if err != nil {
+		return err
+	}
+	delete(b.data, key)
+	return nil
+}
+
+func (b *inMemoryBlob) DeleteRunBackendSessions(_ context.Context, runID string) error {
+	prefix, err := blob.BackendSessionRunPrefix(runID)
+	if err != nil {
+		return err
+	}
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}

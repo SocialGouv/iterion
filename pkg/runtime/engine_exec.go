@@ -332,6 +332,11 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// replaying the parent's conversation. session_id flows via the
 	// same key SessionInherit nodes consume, so an inherit-mode forked
 	// node picks it up transparently; independent-mode nodes ignore.
+	e.injectPersistAndResume(ctx, rs, node, nodeInput, false)
+
+	// Fork / resumeFromFailure rehydration overlays the checkpoint's
+	// conversation and session id AFTER persist inject so a stripped
+	// inbound id cannot clobber the restart node's pinned session.
 	if rs.resumeBackend.nodeID == currentNodeID {
 		if len(rs.resumeBackend.conversation) > 0 {
 			nodeInput[delegate.ResumeConversationKey] = rs.resumeBackend.conversation
@@ -545,6 +550,10 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// node_verified_action event for observability, then strip the key so
 	// it never reaches schema validation, downstream refs, or the store.
 	e.emitVerifiedActionIfPresent(rs, currentNodeID, output)
+
+	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
+		return "", err
+	}
 
 	rs.outputs[currentNodeID] = output
 

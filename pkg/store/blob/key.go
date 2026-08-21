@@ -117,6 +117,24 @@ func toolBlobRunPrefix(runID string) (string, error) {
 	return fmt.Sprintf("tools/%s/", runID), nil
 }
 
+// backendSessionKey is sessions/<run_id>/<ref>.
+func backendSessionKey(runID, ref string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	if err := store.SanitizePathComponent("session_ref", ref); err != nil {
+		return "", fmt.Errorf("blob: invalid session_ref: %w", err)
+	}
+	return fmt.Sprintf("sessions/%s/%s", runID, ref), nil
+}
+
+func backendSessionRunPrefix(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("sessions/%s/", runID), nil
+}
+
 // runFileKey builds the canonical S3 key for a tool-produced artifact
 // file: runfiles/<run_id>/<rel_path>. Unlike the other blobs, rel_path
 // is a MULTI-segment path (tools may drop nested dirs, e.g.
