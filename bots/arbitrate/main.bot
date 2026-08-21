@@ -1,0 +1,382 @@
+## ═══════════════════════════════════════════════════════════════════
+## arbitrate (Themis) — judge blocked divergence cases against the target
+## repository's WRITTEN arbitration doctrine, and consign every decision.
+##
+## Why this is a separate bot, and not a node inside the modernisation
+## pipeline: the party that benefits from "accepted" must not hold the pen
+## that accepts. "Accepting a divergence" always advances the programme and
+## "refusing" always blocks it, so an arbiter living inside the delivery
+## loop drifts toward yes — which is the net-becomes-a-rubber-stamp failure
+## moved up one storey. This bot runs as its own session, judges against a
+## doctrine it cannot edit, and is refused mechanically when it steps out.
+##
+## THE JUDGE DECIDES, IT NEVER EXECUTES. Canonicalisation stays the net
+## owner's act; re-recording goes through the re-baseline ledger's rite; a
+## defect goes to a lot. The one file this bot may touch is the doctrine's
+## JOURNAL (appending consignment blocks) — the consignment step verifies
+## the tree is otherwise clean and refuses a judge that edited anything.
+##
+## Every decision lands as a machine block: id, case, decision, the doctrine
+## class invoked, the evidence (each item verifiable in a committed
+## artifact), who and when. A decision that is not consigned does not exist.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  ## The programme contract (lot statuses + per-lot reports live next to it).
+  plan_path: string = ".modernize/plan.yaml"
+  ## The written doctrine THIS judge applies. Owned by the contract writer;
+  ## its journal section is where decisions are consigned.
+  doctrine_path: string = ".modernize/ARBITRAGE.md"
+  ## Restrict to one lot id. Empty = every pending blocked case.
+  only_lot: string = ""
+  ## Delegated decisions allowed per lot, counted over the journal's whole
+  ## history. Past it every further case force-escalates: a series of
+  ## arbitrations on one lot is a signal, not a queue to drain.
+  budget_per_lot: int = 2
+
+secrets:
+  ## Forge access for the cloud clone/push on repo-targeted launches.
+  ## optional: local runs keep host-authenticated git.
+  forge_token:
+    as: file
+    optional: true
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema docket_state:
+  nothing_to_do: bool
+  ## JSON list of {lot, report_path} — the blocked cases awaiting judgment.
+  cases_json: string
+  notice: string
+
+schema judge_input:
+  cases_json: string
+
+schema consign_input:
+  verdicts_json: string
+
+schema verdict_state:
+  ## JSON list of {lot, case, decision, doctrine_ref, evidence, bounded_paths,
+  ## rationale}. decision ∈ canonicalize | rebaseline | defect | escalate.
+  verdicts_json: string
+
+schema consign_state:
+  consigned: int
+  escalated: int
+  notice: string
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt judge_system:
+  You are the arbitration judge of a modernisation programme. Lots that hit
+  a divergence they may not close have BLOCKED, each with a measured report.
+  Your job is to decide each case's path by applying the repository's
+  written doctrine — and NOTHING else. You do not negotiate with the
+  doctrine, you do not extend it, and you never execute a decision.
+
+  Your posture, non-negotiable:
+
+  1. REFUSE BY DEFAULT. A case is only decided (canonicalize / rebaseline /
+     defect) when one doctrine class covers it EXACTLY and every proof that
+     class demands is present in a COMMITTED artifact you have read. A
+     partial match, a missing proof, a cause not established, a case where
+     two classes compete, or anything that engages the MEANING of the
+     contract (dropping a traversal, accepting a functional loss) is
+     `escalate`. Escalating is a correct verdict, never a failure.
+  2. EVIDENCE IS CITED, NOT PARAPHRASED. Each evidence item names the file
+     (and section) that carries the proof, so a human can re-read it.
+  3. YOU ARE READ-ONLY. You read the doctrine, the reports, the ledgers.
+     You write NOTHING — no file, no fix, no journal entry. The consignment
+     step after you writes the journal, and it mechanically refuses the
+     whole run if the tree shows any other change.
+  4. A rebaseline decision carries `bounded_paths`: the exact reference
+     paths, copied from the report's MEASURED list — never derived, never
+     completed from memory. No measured list in the report → escalate.
+
+  Return verdict_state: `verdicts_json` is a JSON array, one object per
+  case you were given, each with: lot, case (one line), decision, doctrine_ref
+  (the class id, "" only when escalating), evidence (array of citations),
+  bounded_paths (array, empty unless decision is rebaseline), rationale
+  (one paragraph — the reasoning a human will audit).
+
+prompt judge_user:
+  Repository: `{{vars.workspace_dir}}`.
+
+  Read, in order:
+  1. The doctrine: `{{vars.doctrine_path}}` — the classes, their required
+     proofs, and the decisions already journaled (precedents).
+  2. The pending cases below — for each, its lot report (the `report_path`),
+     and any ledger the report cites.
+
+  Then return one verdict per case, under the posture rules of your system
+  prompt.
+
+  Pending cases (JSON): {{input.cases_json}}
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+tool case_read:
+  output: docket_state
+  language: py
+  script: |
+    import json
+    import os
+    import re
+    import sys
+
+    ws = {{vars.workspace_dir}}
+    plan_path = os.path.join(ws, {{vars.plan_path}})
+    doctrine_path = os.path.join(ws, {{vars.doctrine_path}})
+    only = {{vars.only_lot}}
+
+    out = {"nothing_to_do": True, "cases_json": "[]", "notice": ""}
+
+    def emit(notice):
+        out["notice"] = notice
+        print(json.dumps(out))
+        raise SystemExit(0)
+
+    def refuse(notice):
+        ## A judge without a written law does not improvise one, and a
+        ## docket that cannot be read is a failure to LOOK, not a no-op.
+        out["notice"] = notice
+        print(json.dumps(out))
+        sys.stderr.write("arbitrate: %s\n" % notice)
+        raise SystemExit(1)
+
+    if not os.path.isfile(doctrine_path):
+        refuse("no doctrine at %s — this judge only applies a written one. "
+               "The contract owner writes it; this bot never does."
+               % {{vars.doctrine_path}})
+    if not os.path.isfile(plan_path):
+        refuse("no programme contract at %s — nothing names the blocked lots."
+               % {{vars.plan_path}})
+
+    plan = open(plan_path, encoding="utf-8").read()
+    doctrine = open(doctrine_path, encoding="utf-8").read()
+
+    ## Lots currently blocked, straight from the plan's bookmark fields.
+    ## The bookmark is not EVIDENCE of anything (the gates are), but it is
+    ## exactly what "awaiting a decision" means to the programme.
+    blocked = []
+    for m in re.finditer(r'- id: (\S+)', plan):
+        lot = m.group(1)
+        tail = plan[m.end():]
+        nxt = re.search(r'\n\s*- id: ', tail)
+        block = tail[:nxt.start()] if nxt else tail
+        st = re.search(r'\n\s+status: (\S+)', block)
+        if st and st.group(1) == "blocked":
+            blocked.append(lot)
+
+    if only:
+        blocked = [l for l in blocked if l == only]
+
+    ## Already-journaled decisions: one open case per lot at a time — a case
+    ## whose id is journaled is not pending, whatever its outcome was.
+    journaled = set()
+    for body in re.findall(r'<!-- iterion:arbitrage\n(.*?)\n-->', doctrine, re.S):
+        try:
+            o = json.loads(body)
+        except ValueError:
+            refuse("a journal block in %s does not parse as JSON — escalate "
+                   "to the contract owner, do not guess." % {{vars.doctrine_path}})
+        if isinstance(o, dict) and o.get("lot"):
+            journaled.add(o["lot"] + "\x00" + (o.get("case") or ""))
+
+    cases = []
+    for lot in blocked:
+        report = None
+        for cand in (os.path.join(os.path.dirname(plan_path), "%s-report.md" % lot),):
+            if os.path.isfile(cand):
+                report = os.path.relpath(cand, ws)
+        if report is None:
+            ## Blocked without a committed report = nothing to judge AGAINST.
+            ## Not silent: the notice names it so the operator sees the hole.
+            out["notice"] += ("lot %s is blocked but has no committed report — "
+                             "a case without measurements escalates by absence. " % lot)
+            continue
+        cases.append({"lot": lot, "report_path": report})
+
+    if not cases:
+        emit((out["notice"] or "") + "no pending blocked case to judge.")
+
+    out["nothing_to_do"] = False
+    out["cases_json"] = json.dumps(cases)
+    print(json.dumps(out))
+
+compute docket_gate:
+  output: docket_state
+  expr:
+    nothing_to_do: "outputs.case_read.nothing_to_do"
+    cases_json: "outputs.case_read.cases_json"
+    notice: "outputs.case_read.notice"
+
+judge arbitrate_judge:
+  input: judge_input
+  backend: "claude_code"
+  ## Pin a DIFFERENT model family here when the instance carries its
+  ## credentials — an arbiter sharing the delivery model's blind spots is
+  ## weaker. The default keeps the bot runnable on a single-credential
+  ## instance.
+  model: "${ITERION_ARBITRATE_MODEL:-claude-opus-5}"
+  reasoning_effort: "${ITERION_ARBITRATE_EFFORT:-high}"
+  output: verdict_state
+  system: judge_system
+  user: judge_user
+
+tool consign:
+  input: consign_input
+  output: consign_state
+  language: py
+  script: |
+    import json
+    import os
+    import re
+    import subprocess
+    import sys
+    import time
+
+    ws = {{vars.workspace_dir}}
+    doctrine_rel = {{vars.doctrine_path}}
+    doctrine_path = os.path.join(ws, doctrine_rel)
+    budget = {{vars.budget_per_lot}}
+    run_id = {{run.id}}
+    verdicts_json = {{input.verdicts_json}}
+
+    def die(msg):
+        sys.stderr.write("arbitrate: %s\n" % msg)
+        raise SystemExit(1)
+
+    def git(*args):
+        r = subprocess.run(["git", "-C", ws] + list(args),
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            die("git %s: %s" % (" ".join(args), r.stderr.strip()[:300]))
+        return r.stdout
+
+    ## THE SEPARATION GUARD. The judge is read-only by contract; if the tree
+    ## carries ANY change before consignment, the judge (or something in this
+    ## run) edited the repository, and nothing it decided can be trusted.
+    dirty = [l for l in git("status", "--porcelain").splitlines() if l.strip()]
+    if dirty:
+        die("the tree is dirty before consignment (%s) — a judge that edits "
+            "the repository is not a judge; refusing every verdict of this run."
+            % "; ".join(d.strip() for d in dirty[:5]))
+
+    try:
+        verdicts = json.loads(verdicts_json)
+    except ValueError as e:
+        die("the judge's verdicts do not parse as JSON (%s) — nothing is "
+            "consigned from an unparseable verdict." % e)
+    if not isinstance(verdicts, list) or not verdicts:
+        die("the judge returned no verdict list — every pending case must "
+            "receive one verdict, if only `escalate`.")
+
+    VALID = {"canonicalize", "rebaseline", "defect", "escalate"}
+    doctrine = open(doctrine_path, encoding="utf-8").read()
+
+    ## Per-lot journal counts, for the delegation budget. Human-signed
+    ## entries count toward history but only agent entries consume budget.
+    agent_count = {}
+    for body in re.findall(r'<!-- iterion:arbitrage\n(.*?)\n-->', doctrine, re.S):
+        try:
+            o = json.loads(body)
+        except ValueError:
+            die("an existing journal block does not parse — fix the journal "
+                "before consigning anything new.")
+        if str(o.get("by", "")).startswith("agent:"):
+            agent_count[o.get("lot", "?")] = agent_count.get(o.get("lot", "?"), 0) + 1
+
+    seq = {}
+    blocks = []
+    consigned = escalated = 0
+    for v in verdicts:
+        lot = v.get("lot") or die("a verdict names no lot")
+        decision = v.get("decision")
+        if decision not in VALID:
+            die("verdict for %s has decision %r — not one of %s"
+                % (lot, decision, sorted(VALID)))
+        if decision != "escalate":
+            if not (v.get("doctrine_ref") or "").strip():
+                die("verdict for %s decides %r without a doctrine class — a "
+                    "decision no class covers is an escalation, not a choice."
+                    % (lot, decision))
+            if not v.get("evidence"):
+                die("verdict for %s cites no evidence — refused." % lot)
+        if decision == "rebaseline":
+            paths = v.get("bounded_paths") or []
+            if not paths:
+                die("verdict for %s decides rebaseline without bounded_paths — "
+                    "an unbounded re-record is a regression in disguise." % lot)
+            missing = [p for p in paths if not os.path.isfile(os.path.join(ws, p))]
+            if missing:
+                die("verdict for %s bounds paths that do not exist in the tree "
+                    "(%s) — measured means readable." % (lot, ", ".join(missing[:5])))
+        if decision != "escalate" and agent_count.get(lot, 0) >= budget:
+            ## Budget exhausted: the decision is preserved as prose inside an
+            ## escalation so the human sees what the judge WOULD have done.
+            v["rationale"] = ("[delegation budget of %d reached for this lot — "
+                             "force-escalated] " % budget) + (v.get("rationale") or "")
+            v["decision"] = decision = "escalate"
+        seq[lot] = seq.get(lot, 0) + 1
+        block = {
+            "id": "A-%s-a%d" % (lot, seq[lot]),
+            "lot": lot,
+            "case": (v.get("case") or "").strip(),
+            "decision": decision,
+            "doctrine": v.get("doctrine_ref") or "",
+            "evidence": v.get("evidence") or [],
+            "by": "agent:%s" % run_id,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if decision == "rebaseline":
+            block["bounded_paths"] = v.get("bounded_paths")
+        rationale = (v.get("rationale") or "").strip()
+        blocks.append((block, rationale))
+        if decision == "escalate":
+            escalated += 1
+        else:
+            consigned += 1
+            agent_count[lot] = agent_count.get(lot, 0) + 1
+
+    with open(doctrine_path, "a", encoding="utf-8") as f:
+        for block, rationale in blocks:
+            f.write("\n")
+            if rationale:
+                f.write(rationale + "\n\n")
+            f.write("<!-- iterion:arbitrage\n%s\n-->\n"
+                    % json.dumps(block, ensure_ascii=False))
+
+    git("add", doctrine_rel)
+    git("-c", "user.name=iterion-arbitrate[bot]",
+        "-c", "user.email=iterion-arbitrate@bot.iterion.invalid",
+        "commit", "-m",
+        "arbitrate: %d decision(s) consigned, %d escalated (run %s)"
+        % (consigned, escalated, run_id))
+
+    print(json.dumps({"consigned": consigned, "escalated": escalated,
+                      "notice": "the journal carries the verdicts; the contract "
+                                "owner transcribes accepted decisions into the "
+                                "plan (this judge never holds that pen)."}))
+
+## ─── Workflow ──────────────────────────────────────────────────────
+
+workflow arbitrate:
+  entry: case_read
+  case_read -> docket_gate
+
+  ## A docket with nothing pending is a legitimate no-op.
+  docket_gate -> done when nothing_to_do
+  docket_gate -> arbitrate_judge when not nothing_to_do with {
+    cases_json: "{{outputs.docket_gate.cases_json}}"
+  }
+
+  arbitrate_judge -> consign with {
+    verdicts_json: "{{outputs.arbitrate_judge.verdicts_json}}"
+  }
+  consign -> done
+
+  budget:
+    max_duration: "45m"
+    max_cost_usd: 15

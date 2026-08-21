@@ -287,6 +287,7 @@ dispatcher routes on it), never the persona.
 | Adry | `adr-cartograph` |
 | ReArchi | `adr-rechallenge` |
 | Appy | `app-dev` |
+| Themis | `arbitrate` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Campy | `campaign` |
@@ -398,6 +399,35 @@ pull request (PR; merge request on GitLab).
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
 - **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
+
+### `arbitrate` — Themis
+
+Judges the divergence cases a modernisation programme leaves blocked, by
+applying the target repository's own written arbitration doctrine — and
+nothing else. One adversarial judge, one mechanical consignment: every
+decision lands as a machine block in the doctrine's journal, bounded,
+evidence-cited and committed; anything the doctrine does not cover exactly
+escalates to a human.
+
+The judge DECIDES and never executes: canonicalisation stays the net
+owner's act, re-recording goes through the re-baseline ledger's rite, a
+defect goes to a lot. Separation of powers is enforced mechanically — the
+consignment step refuses a dirty tree (a judge that edited anything is not
+a judge) and force-escalates past a per-lot budget.
+
+- **Use when**:
+  Use when a modernisation lot is BLOCKED on a measured divergence and the
+  target repository carries a written arbitration doctrine (the contract
+  names its path; without one this bot refuses to judge). Typical loop:
+  modernise → blocked with a report → arbitrate → the consigned decision
+  guides the next act (net-owner canonicalisation, ledger re-baseline, or a
+  defect lot) → resume.
+  
+  Do NOT use it to write or extend the doctrine — that is the contract
+  owner's pen. Do NOT use it on divergences whose cause is not established:
+  an unmeasured case escalates by construction.
+- **Vars**: `budget_per_lot` (int), `doctrine_path` (string), `only_lot` (string), `plan_path` (string), `workspace_dir` (string)
+- **Path**: `bots/arbitrate/main.bot`
 
 ### `bmady` — Bmady
 
