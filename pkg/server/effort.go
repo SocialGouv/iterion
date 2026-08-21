@@ -119,6 +119,11 @@ type resolveEffortResponse struct {
 	Resolved string `json:"resolved"`
 }
 
+// maxResolveLiteralBytes caps GET /api/resolve-{model,effort} `literal`
+// query values. A model spec is <128 bytes; 512 is ample headroom for
+// a ${VAR:-default} form and rejects dump-the-environment probes.
+const maxResolveLiteralBytes = 512
+
 // handleResolveEffort answers
 //
 //	GET /api/resolve-effort?literal=<effort-literal>
@@ -128,8 +133,16 @@ type resolveEffortResponse struct {
 // reasoning_effort fields — the studio canvas reads these from the
 // AST and asks the server to expand them so the rendered bar matches
 // the runtime behaviour.
+//
+// Expansion is against THIS process's env (the studio / API server
+// pod), not the runner that will execute the bot. The canvas is a
+// preview of this process, not a promise of the runner.
 func (s *Server) handleResolveEffort(w http.ResponseWriter, r *http.Request) {
 	literal := r.URL.Query().Get("literal")
+	if len(literal) > maxResolveLiteralBytes {
+		writeJSON(w, resolveEffortResponse{})
+		return
+	}
 	writeJSON(w, resolveEffortResponse{Resolved: ir.ResolveEffortLiteral(literal)})
 }
 
@@ -151,8 +164,19 @@ type resolveModelResponse struct {
 // `model:` fields — the studio canvas reads these from the AST and
 // asks the server to expand them so the card shows sol/terra/luna
 // (or whatever the process env actually selected) instead of "env".
+//
+// Expansion is against THIS process's env (the studio / API server
+// pod), not the runner that will execute the bot. The canvas is a
+// preview of this process, not a promise of the runner — same
+// contract as /api/resolve-effort. Only env vars whose names contain
+// "MODEL" are expanded (see ir.ResolveModelLiteral); other names
+// come back empty so the endpoint is not an env-oracle.
 func (s *Server) handleResolveModel(w http.ResponseWriter, r *http.Request) {
 	literal := r.URL.Query().Get("literal")
+	if len(literal) > maxResolveLiteralBytes {
+		writeJSON(w, resolveModelResponse{})
+		return
+	}
 	writeJSON(w, resolveModelResponse{Resolved: ir.ResolveModelLiteral(literal)})
 }
 

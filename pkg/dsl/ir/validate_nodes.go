@@ -811,8 +811,10 @@ func ResolveEffortLiteral(s string) string {
 // identifier (provider/model, a hyphenated/dotted id, or a short
 // registry alias). GET /api/resolve-model uses this as the counterpart
 // of ValidReasoningEfforts: expansions that don't look like a model
-// (filesystem paths, $PATH, usernames, secrets) come back empty so the
-// endpoint cannot be turned into an env-oracle.
+// (filesystem paths, $PATH, usernames) come back empty. Shape alone
+// is not an env-oracle defence — API keys (sk-ant-…, ghp_…, xoxb-…)
+// match this grammar — so ResolveModelLiteral also refuses to expand
+// any env var whose name does not contain "MODEL".
 func LooksLikeModelSpec(s string) bool {
 	s = strings.TrimSpace(s)
 	n := len(s)
@@ -865,7 +867,13 @@ func LooksLikeModelSpec(s string) bool {
 // returns the result only when it LooksLikeModelSpec. Non-env-substituted
 // values are returned unchanged (the author wrote them). Invalid
 // expansions return "" so the studio can fall back to the authored
-// default / the compact env-ref rather than leak process env.
+// default / the compact env-ref.
+//
+// Env-oracle defence: every referenced var name must contain "MODEL"
+// (case-insensitive). ${ANTHROPIC_API_KEY} / ${GITHUB_TOKEN} resolve
+// to "" even when the value would pass LooksLikeModelSpec. Nested
+// ${A:-${B_MODEL:-c}} is rejected when any referenced name fails the
+// gate — this helper does not support nested model defaults.
 func ResolveModelLiteral(s string) string {
 	if s == "" {
 		return ""
@@ -873,11 +881,63 @@ func ResolveModelLiteral(s string) string {
 	if !strings.ContainsRune(s, '$') {
 		return s
 	}
+	for _, name := range modelEnvRefNames(s) {
+		if !modelEnvNameOK(name) {
+			return ""
+		}
+	}
 	expanded := strings.TrimSpace(ExpandEnvWithDefault(s))
 	if LooksLikeModelSpec(expanded) {
 		return expanded
 	}
 	return ""
+}
+
+// modelEnvNameOK reports whether an env var is in the model-spec
+// namespace GET /api/resolve-model is allowed to expand. The name
+// must contain "MODEL" (case-insensitive) so credential vars cannot
+// be turned into an env-oracle.
+func modelEnvNameOK(name string) bool {
+	return strings.Contains(strings.ToUpper(name), "MODEL")
+}
+
+// modelEnvRefNames extracts env var names referenced by s in the
+// forms ${NAME}, ${NAME:-default}, and $NAME. Nested ${A:-${B:-c}}
+// yields both A and B. Names are returned in first-seen order.
+func modelEnvRefNames(s string) []string {
+	var names []string
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			i++
+			continue
+		}
+		j := i + 1
+		if j < len(s) && s[j] == '{' {
+			j++
+		}
+		end := j
+		for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
+			end++
+		}
+		if end > j {
+			add(s[j:end])
+			i = end
+			continue
+		}
+		i++
+	}
+	return names
 }
 
 // ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.

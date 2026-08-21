@@ -25,6 +25,14 @@ function uniqueRouteName(existing: string[]): string {
   return `route_${i}`;
 }
 
+/** DSL ident `[_A-Za-z][_A-Za-z0-9]*` — unparse emits the name raw. */
+function sanitizeRouteName(raw: string): string {
+  return raw
+    .trim()
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/^[0-9]/, "_$&");
+}
+
 /** Per-node `fallbacks:` editor (ADR-087). Hidden until the node has
  *  a route or the operator opens the section, so workflows that don't
  *  use the feature stay uncluttered. */
@@ -78,7 +86,7 @@ export default function FallbacksFields({ value, onChange }: Props) {
           const shown = displayModel(fb.model, live);
           return (
             <div
-              key={`${fb.name}-${i}`}
+              key={i}
               className="border border-border-default rounded p-2 space-y-1"
             >
               <div className="flex items-center justify-between gap-2 mb-1">
@@ -99,9 +107,19 @@ export default function FallbacksFields({ value, onChange }: Props) {
               <TextField
                 label="Name"
                 value={fb.name}
-                onChange={(v) => patch(i, { name: v.trim() })}
+                onChange={(v) => {
+                  const sanitized = sanitizeRouteName(v);
+                  if (sanitized === "") {
+                    const others = fallbacks
+                      .filter((_, j) => j !== i)
+                      .map((other) => other.name);
+                    patch(i, { name: uniqueRouteName(others) });
+                    return;
+                  }
+                  patch(i, { name: sanitized });
+                }}
                 placeholder="api"
-                help="Stable id cited by the fall-through event. Required."
+                help="Stable id cited by the fall-through event. Letters, digits, and _ only."
               />
               <SelectField
                 label="Backend"

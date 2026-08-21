@@ -1508,12 +1508,17 @@ func TestLooksLikeModelSpec(t *testing.T) {
 }
 
 func TestResolveModelLiteral(t *testing.T) {
+	const antKey = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"
+	const ghpKey = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	tests := []struct {
 		name     string
 		literal  string
 		envKey   string
 		envValue string
 		want     string
+		// shapeOK asserts LooksLikeModelSpec(envValue) so the name
+		// gate (not the shape check) is what refused the expansion.
+		shapeOK bool
 	}{
 		{name: "plain spec passes through", literal: "openai-codex/gpt-5.6-sol", want: "openai-codex/gpt-5.6-sol"},
 		{name: "empty stays empty", literal: "", want: ""},
@@ -1522,7 +1527,7 @@ func TestResolveModelLiteral(t *testing.T) {
 			envKey:   "ITERION_TEST_MODEL",
 			envValue: "",
 			want:     "openai-codex/gpt-5.6-sol"},
-		{name: "env wins over default",
+		{name: "env wins over default when the var contains MODEL",
 			literal:  "${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}",
 			envKey:   "ITERION_TEST_MODEL",
 			envValue: "openai-codex/gpt-5.6-terra",
@@ -1542,16 +1547,72 @@ func TestResolveModelLiteral(t *testing.T) {
 			envKey:   "ITERION_TEST_MODEL",
 			envValue: "",
 			want:     ""},
+		{name: "ANTHROPIC_API_KEY is refused even when the value looks like a model",
+			literal:  "${ANTHROPIC_API_KEY}",
+			envKey:   "ANTHROPIC_API_KEY",
+			envValue: antKey,
+			want:     "",
+			shapeOK:  true},
+		{name: "GITHUB_TOKEN is refused even when the value looks like a model",
+			literal:  "${GITHUB_TOKEN}",
+			envKey:   "GITHUB_TOKEN",
+			envValue: ghpKey,
+			want:     "",
+			shapeOK:  true},
+		{name: "hyphenated secret value is refused",
+			literal:  "${GITHUB_TOKEN}",
+			envKey:   "GITHUB_TOKEN",
+			envValue: "xoxb-1234-abcd-efghijkl",
+			want:     "",
+			shapeOK:  true},
+		{name: "name gate refuses a model-shaped value from a non-MODEL var",
+			literal:  "${SOME_OTHER_VAR}",
+			envKey:   "SOME_OTHER_VAR",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "nested default rejected when the outer name lacks MODEL",
+			literal: "${A:-${B_MODEL:-openai-codex/gpt-5.6-sol}}",
+			want:    ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envKey != "" {
 				t.Setenv(tt.envKey, tt.envValue)
 			}
+			if tt.shapeOK && !LooksLikeModelSpec(tt.envValue) {
+				t.Fatalf("precondition: LooksLikeModelSpec(%q) should be true so the name gate is the thing under test", tt.envValue)
+			}
 			if got := ResolveModelLiteral(tt.literal); got != tt.want {
 				t.Errorf("ResolveModelLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestModelEnvRefNames(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"${ANTHROPIC_API_KEY}", []string{"ANTHROPIC_API_KEY"}},
+		{"${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}", []string{"ITERION_TEST_MODEL"}},
+		{"$CODEX_MODEL", []string{"CODEX_MODEL"}},
+		{"${A:-${B_MODEL:-c}}", []string{"A", "B_MODEL"}},
+		{"plain spec", nil},
+	}
+	for _, tt := range tests {
+		got := modelEnvRefNames(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("modelEnvRefNames(%q) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("modelEnvRefNames(%q) = %v, want %v", tt.in, got, tt.want)
+				break
+			}
+		}
 	}
 }
 

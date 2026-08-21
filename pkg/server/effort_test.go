@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -297,6 +298,56 @@ func TestResolveModel_EmptyLiteral(t *testing.T) {
 	got := getResolveModel(t, hs.URL, "")
 	if got.Resolved != "" {
 		t.Errorf("Resolved=%q, want empty for empty literal", got.Resolved)
+	}
+}
+
+func TestResolveModel_APIKeyEnvIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345")
+	got := getResolveModel(t, hs.URL, "${ANTHROPIC_API_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (API key env must not leak)", got.Resolved)
+	}
+
+	t.Setenv("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+	got = getResolveModel(t, hs.URL, "${GITHUB_TOKEN}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (GITHUB_TOKEN must not leak)", got.Resolved)
+	}
+
+	t.Setenv("SOME_OTHER_VAR", "gpt-5.6-sol")
+	got = getResolveModel(t, hs.URL, "${SOME_OTHER_VAR}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (name gate, not shape)", got.Resolved)
+	}
+}
+
+func TestResolveModel_HyphenatedSecretIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("GITHUB_TOKEN", "xoxb-1234-abcd-efghijkl")
+	got := getResolveModel(t, hs.URL, "${GITHUB_TOKEN}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (hyphenated secret must not leak)", got.Resolved)
+	}
+}
+
+func TestResolveModel_LiteralTooLongYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveModel(t, hs.URL, strings.Repeat("a", maxResolveLiteralBytes+1))
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for literal over %d bytes", got.Resolved, maxResolveLiteralBytes)
+	}
+}
+
+func TestResolveEffort_LiteralTooLongYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveEffort(t, hs.URL, strings.Repeat("a", maxResolveLiteralBytes+1))
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for literal over %d bytes", got.Resolved, maxResolveLiteralBytes)
 	}
 }
 

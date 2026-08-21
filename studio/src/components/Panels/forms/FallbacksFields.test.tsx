@@ -40,4 +40,60 @@ describe("FallbacksFields", () => {
     expect(next).toHaveLength(1);
     expect(next[0]!.name).toBe("api");
   });
+
+  it("sanitizes the route name to a DSL ident", () => {
+    const onChange = vi.fn();
+    wrap(
+      <FallbacksFields
+        value={[{ name: "api", model: "openai/gpt-5.5" }]}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByDisplayValue("api"), {
+      target: { value: "api-claw" },
+    });
+    const next = onChange.mock.calls[0]![0] as FallbackDecl[];
+    expect(next[0]!.name).toBe("api_claw");
+
+    onChange.mockClear();
+    fireEvent.change(screen.getByDisplayValue("api"), {
+      target: { value: "1route" },
+    });
+    const leading = onChange.mock.calls[0]![0] as FallbackDecl[];
+    expect(leading[0]!.name).toBe("_1route");
+  });
+
+  it("restores a unique ident when Name is blanked", () => {
+    const onChange = vi.fn();
+    wrap(
+      <FallbacksFields
+        value={[{ name: "terra", model: "openai/gpt-5.5" }]}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByDisplayValue("terra"), {
+      target: { value: "   " },
+    });
+    const next = onChange.mock.calls[0]![0] as FallbackDecl[];
+    expect(next[0]!.name).toBe("api");
+  });
+
+  it("restores route_2 when api is already taken", () => {
+    const onChange = vi.fn();
+    wrap(
+      <FallbacksFields
+        value={[
+          { name: "api", model: "openai/gpt-5.5" },
+          { name: "terra", model: "openai/gpt-5.6-terra" },
+        ]}
+        onChange={onChange}
+      />,
+    );
+    fireEvent.change(screen.getByDisplayValue("terra"), {
+      target: { value: "" },
+    });
+    const next = onChange.mock.calls[0]![0] as FallbackDecl[];
+    expect(next[1]!.name).toBe("route_2");
+    expect(next[0]!.name).toBe("api");
+  });
 });
