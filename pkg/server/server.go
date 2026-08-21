@@ -541,6 +541,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.LaunchPublisher != nil {
 			opts = append(opts, runview.WithLaunchPublisher(cfg.LaunchPublisher))
 		}
+		// Repo-targeted runs merge in a server-side clone; the service
+		// needs the forge credential lookup to clone and push.
+		opts = append(opts, runview.WithForgeTokenResolver(s.forgeTokenForRun))
 		if cfg.StreamSource != nil {
 			opts = append(opts, runview.WithStreamSource(cfg.StreamSource))
 		}
