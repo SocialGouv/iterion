@@ -99,6 +99,13 @@ func (e *Engine) injectPersistAndResume(ctx context.Context, rs *runState, node 
 	if !ok {
 		return
 	}
+	if midNode {
+		return
+	}
+	if llm.GetSession() != ir.SessionPersist {
+		// inherit / fork / inherit_if_available stay on applySessionContinuity.
+		return
+	}
 	backend, supported := e.capability(node)
 	if !supported {
 		if e.logger != nil {
@@ -107,25 +114,17 @@ func (e *Engine) injectPersistAndResume(ctx context.Context, rs *runState, node 
 		stripSessionKeys(nodeInput)
 		return
 	}
-	if midNode {
-		return
-	}
-	switch llm.GetSession() {
-	case ir.SessionPersist:
-		slot, has := rs.nodeSessions[node.NodeID()]
-		if has && slot.StateRef != "" && (backend == "" || slot.Backend == "" || slot.Backend == backend) {
-			if e.unpackSlot(ctx, rs, nodeInput, slot, backend) {
-				return
-			}
-			// Own-slot Get/unpack failure: strip and run fresh. Do not
-			// fall through to HasSession (ADR-089).
-			stripSessionKeys(nodeInput)
+	slot, has := rs.nodeSessions[node.NodeID()]
+	if has && slot.StateRef != "" && (backend == "" || slot.Backend == "" || slot.Backend == backend) {
+		if e.unpackSlot(ctx, rs, nodeInput, slot, backend) {
 			return
 		}
-		e.injectVisit1Seed(ctx, rs, node, nodeInput, backend)
-	case ir.SessionInherit, ir.SessionInheritIfAvailable, ir.SessionFork:
-		e.injectVisit1Seed(ctx, rs, node, nodeInput, backend)
+		// Own-slot Get/unpack failure: strip and run fresh. Do not
+		// fall through to HasSession (ADR-089).
+		stripSessionKeys(nodeInput)
+		return
 	}
+	e.injectVisit1Seed(ctx, rs, node, nodeInput, backend)
 }
 
 func (e *Engine) unpackSlot(ctx context.Context, rs *runState, nodeInput map[string]any, slot store.NodeSessionSlot, backend string) bool {

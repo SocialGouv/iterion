@@ -200,6 +200,45 @@ func TestPersistWipedDirBetweenVisitsRunsFresh(t *testing.T) {
 	}
 }
 
+func TestInheritKeepsSessionIDWithoutHasSession(t *testing.T) {
+	// whats-next chat loop: inherit_if_available must not require packed CLI files.
+	wf := &ir.Workflow{
+		Name:  "inherit_nohas",
+		Entry: "src",
+		Nodes: map[string]ir.Node{
+			"src":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "src"}},
+			"dst":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dst"}, Session: ir.SessionInheritIfAvailable},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "src", To: "dst", With: []*ir.DataMapping{
+				{Key: delegate.SessionIDKey, Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"src", delegate.SessionIDKey}}}, Raw: "{{outputs.src._session_id}}"},
+			}},
+			{From: "dst", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	var got string
+	exec := newStubExecutor()
+	exec.hasSessionFn = func(string, string) bool { return false }
+	exec.on("src", func(map[string]any) (map[string]any, error) {
+		return map[string]any{delegate.SessionIDKey: "sess-nexie-1"}, nil
+	})
+	exec.on("dst", func(in map[string]any) (map[string]any, error) {
+		got, _ = in[delegate.SessionIDKey].(string)
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "run-inherit-nohas", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "sess-nexie-1" {
+		t.Errorf("inherit_if_available must keep _session_id without HasSession, got %q", got)
+	}
+}
+
 func TestPersistLiteralInboundWithHasSessionIsFresh(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "literal_inbound",
@@ -242,7 +281,7 @@ func TestPersistHasSessionFingerprintFromSource(t *testing.T) {
 		Entry: "src",
 		Nodes: map[string]ir.Node{
 			"src":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "src"}},
-			"dst":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dst"}, Session: ir.SessionInherit},
+			"dst":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dst"}, Session: ir.SessionPersist},
 			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
@@ -285,7 +324,7 @@ func TestPersistHasSessionFalseNoSessionID(t *testing.T) {
 		Entry: "src",
 		Nodes: map[string]ir.Node{
 			"src":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "src"}},
-			"dst":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dst"}, Session: ir.SessionInherit},
+			"dst":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "dst"}, Session: ir.SessionPersist},
 			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
 		},
 		Edges: []*ir.Edge{
