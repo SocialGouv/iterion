@@ -304,61 +304,93 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 	return ok && routerSpawnsExecBranch(r)
 }
 
-// execBranchBodyNodes is the set of nodes execBranch actually runs:
-// reachable from a fan_out_all / fan_out_each / llm-multi outgoing edge,
-// stopping at the same join the runtime uses. The runtime's
-// findConvergencePoint treats a node as a join when it has await != none
-// OR more than one distinct incoming source. Loop/foreach back-edges must
-// not count as a second source here — they would otherwise turn the body
-// node they re-enter into a "join" and hide the very edges C243 exists to
-// refuse. The router and the join itself are not in the body.
+// execBranchBodyNodes is the set of nodes execBranch actually runs for
+// each fan_out_all / fan_out_each / llm-multi router: reachable from that
+// router's outgoing edges, stopping at the single convergence node the
+// runtime elects (findConvergencePoint). That election counts every
+// incoming edge, including loop/foreach back-edges, so a loop head is
+// often the join — the branch stops there and the loop runs on the trunk
+// with real counters. Matching that election is what keeps C243 from
+// hard-rejecting those graphs (they compile and run on main today).
+// The elected join itself is not in the body.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
-	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
-		if e.IsBoundedIteration() {
-			continue
-		}
-		if nonIterIn[e.To] == nil {
-			nonIterIn[e.To] = map[string]bool{}
-		}
-		nonIterIn[e.To][e.From] = true
-	}
-	// Same stop as findConvergencePoint, minus loop/foreach back-edges
-	// (those must not turn a body node into a join). Await-less nodes
-	// with >1 non-iteration predecessor are implicit joins: trunk, not body.
-	isJoin := func(id string) bool {
-		n, ok := w.Nodes[id]
-		if !ok {
-			return false
-		}
-		if NodeAwaitMode(n) != AwaitNone {
-			return true
-		}
-		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(string)
-	walk = func(id string) {
-		if _, ok := w.Nodes[id]; !ok || body[id] || isJoin(id) {
+	var walk func(id, join string)
+	walk = func(id, join string) {
+		if id == "" || id == join || body[id] {
+			return
+		}
+		if _, ok := w.Nodes[id]; !ok {
 			return
 		}
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next)
+			walk(next, join)
 		}
 	}
-	for id, node := range w.Nodes {
+	for _, node := range w.Nodes {
 		r, ok := node.(*RouterNode)
 		if !ok || !routerSpawnsExecBranch(r) {
 			continue
 		}
-		for _, next := range out[id] {
-			walk(next)
+		var fan []*Edge
+		for _, e := range w.Edges {
+			if e.From == r.ID {
+				fan = append(fan, e)
+			}
+		}
+		join := compileFindConvergence(w, fan)
+		for _, e := range fan {
+			walk(e.To, join)
 		}
 	}
 	return body
+}
+
+// compileFindConvergence mirrors pkg/runtime.findConvergencePoint: BFS from
+// each fan edge in declaration order; first node with await != none OR
+// more than one distinct incoming source (loop back-edges included) wins.
+func compileFindConvergence(w *Workflow, fan []*Edge) string {
+	inSources := map[string]map[string]bool{}
+	for _, e := range w.Edges {
+		if inSources[e.To] == nil {
+			inSources[e.To] = map[string]bool{}
+		}
+		inSources[e.To][e.From] = true
+	}
+	maxVisits := len(w.Nodes) + 1
+	for _, start := range fan {
+		visited := map[string]bool{}
+		queue := []string{start.To}
+		for len(queue) > 0 {
+			if len(visited) > maxVisits {
+				break
+			}
+			id := queue[0]
+			queue = queue[1:]
+			if visited[id] {
+				continue
+			}
+			visited[id] = true
+			n, ok := w.Nodes[id]
+			if !ok {
+				continue
+			}
+			if NodeAwaitMode(n) != AwaitNone || len(inSources[id]) > 1 {
+				return id
+			}
+			for _, e := range w.Edges {
+				if e.From == id {
+					queue = append(queue, e.To)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func routerSpawnsExecBranch(r *RouterNode) bool {

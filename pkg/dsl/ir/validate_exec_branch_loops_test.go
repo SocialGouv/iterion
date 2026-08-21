@@ -18,6 +18,47 @@ schema s:
 `
 
 func TestValidateLoopInFanOutAllBody_Rejected(t *testing.T) {
+	// Loop target is a distinct dummy so findConvergencePoint still elects
+	// join (a1 has a single incoming source). execBranch runs a1 and would
+	// skip the loop — that is the C243 true positive.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> dummy as refine(5) when ok
+  a1 -> join else
+  dummy -> join
+  a2 -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopHeadElectedAsJoin_Allowed(t *testing.T) {
+	// a1 -> a1 as refine gives a1 two incoming sources, so the runtime elects
+	// a1 as the join and runs the loop on the trunk. C243 must not reject it.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -39,13 +80,13 @@ workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> a1 as refine(5) when ok
+  a1 -> a1 as refine(3) when ok
   a1 -> join else
   a2 -> join
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopInFanOutEachBody_Rejected(t *testing.T) {
@@ -64,6 +105,10 @@ tool verdict:
   input: s
   output: s
 
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
 router items:
   mode: fan_out_each
   over: "{{outputs.gen.items}}"
@@ -79,8 +124,9 @@ workflow test:
   gen -> items
   items -> writer
   writer -> verdict
-  verdict -> writer as refine(5) when not ok
+  verdict -> dummy as refine(5) when not ok
   verdict -> join else
+  dummy -> join
   join -> done
 `
 	r := compileFile(t, src)
@@ -97,6 +143,10 @@ tool a2:
   command: ` + "`echo`" + `
   output: s
 
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
 router r1:
   mode: fan_out_all
 
@@ -109,8 +159,9 @@ workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> a1 as foreach scan(item in "{{outputs.a1.items}}")
+  a1 -> dummy as foreach scan(item in "{{outputs.a1.items}}")
   a1 -> join
+  dummy -> join
   a2 -> join
   join -> done
 `
@@ -128,6 +179,10 @@ tool a2:
   command: ` + "`echo`" + `
   output: s
 
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
 router r1:
   mode: llm
   model: "test-model"
@@ -142,8 +197,9 @@ workflow test:
   entry: r1
   r1 -> a1
   r1 -> a2
-  a1 -> a1 as refine(5) when ok
+  a1 -> dummy as refine(5) when ok
   a1 -> join else
+  dummy -> join
   a2 -> join
   join -> done
 `
@@ -404,7 +460,10 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
+func TestValidateLoopReenteringBodyFromJoin_Rejected(t *testing.T) {
+	// join -> a1 as more gives a1 a second incoming source, so the runtime
+	// elects a1 as the join. The other branch then executes the await node
+	// inside execBranch and skips the loop — C243.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -432,7 +491,57 @@ workflow test:
   join -> done else
 `
 	r := compileFile(t, src)
-	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopAfterNonElectedAwait_Rejected(t *testing.T) {
+	// joiner is the elected convergence (first fan edge reaches it). z also
+	// has await: but execBranch only stops at joiner, so z/w run in the
+	// branch and the loop is skipped — C243 must fire.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool x:
+  command: ` + "`echo`" + `
+  output: s
+
+tool z:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+tool w:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool joiner:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> x
+  x -> joiner
+  a2 -> z
+  z -> w
+  w -> z as refine(3) when ok
+  w -> joiner else
+  joiner -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopOnTrunk_Allowed(t *testing.T) {
