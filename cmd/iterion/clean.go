@@ -106,6 +106,27 @@ clean.
 <store-dir>/worktrees/.state and any other dot-prefixed entry is left
 alone: it holds gate state shared across runs, not one run's checkout.
 
+OUT-OF-TREE SCRATCH
+
+The sweep also reclaims ${PROJECT_SCRATCH_DIR} — the per-workspace
+directory bots use for working files they must not leave in the target
+repo. Nothing else ever did: runs prune only touches runs/ and the
+worktree sweep only worktrees/, which is how a single project reached 54
+GiB of it.
+
+Here the test is age alone, and it has to be. Scratch is deliberately
+SHARED between runs: a subbot child executes in its own container and
+writes into its PARENT's scratch, which is how a fan-in reads what the
+children produced. No entry can be attributed to one run and deleted on
+its behalf. What can be said is that a directory nothing has written to
+within --older-than belongs to no run that is still working — a run that
+is still working writes as it goes. The whole subtree is consulted, not
+the entry's own mtime: writing into a subdirectory does not touch its
+ancestors. Dot-prefixed entries are spared here too.
+
+Runs sweep it themselves on their way out, on the same rule; that is
+ITERION_SCRATCH_RETENTION, and "off" turns it off.
+
 LEVELS (cumulative)
 
   conservative  merged, with a clean tree. Git proves the commits are
