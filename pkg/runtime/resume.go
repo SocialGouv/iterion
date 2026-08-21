@@ -584,7 +584,8 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
-	e.adoptCheckpointSessions(rs)
+	// Do not EvictRun here: pause-resume must keep in-process claw
+	// message history (evictRunSessions already skips ErrRunPaused).
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)

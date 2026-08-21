@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"os"
-	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/sessionpack"
@@ -20,36 +19,30 @@ func (e *ClawExecutor) SessionResumeCapability(node ir.Node) (string, bool) {
 	}
 }
 
-func (e *ClawExecutor) sessionRoot(backend string) string {
-	switch backend {
-	case delegate.BackendClaudeCode:
-		if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-			return d
-		}
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".claude")
-	case delegate.BackendCodex:
-		if d := os.Getenv("CODEX_HOME"); d != "" {
-			return d
-		}
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".codex")
-	case delegate.BackendPi:
-		if e.workDir != "" {
-			return filepath.Join(e.workDir, ".iterion", "pi")
-		}
-		return ""
-	default:
-		return ""
+func (e *ClawExecutor) packerTask() delegate.Task {
+	return delegate.Task{
+		WorkDir:        e.workDir,
+		StoreDir:       e.storeDir,
+		SharedStateDir: e.sharedStateDir,
+		Sandbox:        e.sandbox,
 	}
 }
 
-func (e *ClawExecutor) PackSession(_ context.Context, backend, sessionID string) ([]byte, error) {
-	root := e.sessionRoot(backend)
+func (e *ClawExecutor) PackSession(ctx context.Context, backend, sessionID string) ([]byte, error) {
+	t := e.packerTask()
+	return e.packSessionFrom(ctx, &t, backend, sessionID)
+}
+
+func (e *ClawExecutor) packSessionFrom(ctx context.Context, task *delegate.Task, backend, sessionID string) ([]byte, error) {
+	if task == nil {
+		t := e.packerTask()
+		task = &t
+	}
+	root := delegate.SessionFilesRoot(ctx, *task, backend)
 	if root == "" || sessionID == "" {
 		return nil, os.ErrNotExist
 	}
-	files, err := sessionpack.CollectBySessionID(root, sessionID)
+	files, err := sessionpack.CollectBySessionID(root, sessionID, backend)
 	if err != nil {
 		return nil, err
 	}
@@ -59,24 +52,26 @@ func (e *ClawExecutor) PackSession(_ context.Context, backend, sessionID string)
 	return sessionpack.Pack(sessionpack.Header{Backend: backend, SessionID: sessionID}, files)
 }
 
-func (e *ClawExecutor) UnpackSession(_ context.Context, backend, sessionID string, blob []byte) error {
-	root := e.sessionRoot(backend)
+func (e *ClawExecutor) UnpackSession(ctx context.Context, backend, sessionID string, blob []byte) error {
+	t := e.packerTask()
+	root := delegate.SessionFilesRoot(ctx, t, backend)
 	if root == "" {
 		return os.ErrNotExist
 	}
 	return sessionpack.Unpack(blob, sessionpack.Header{Backend: backend, SessionID: sessionID}, root)
 }
 
-func (e *ClawExecutor) HasSession(_ context.Context, backend, sessionID string) bool {
-	root := e.sessionRoot(backend)
+func (e *ClawExecutor) HasSession(ctx context.Context, backend, sessionID string) bool {
+	t := e.packerTask()
+	root := delegate.SessionFilesRoot(ctx, t, backend)
 	if root == "" || sessionID == "" {
 		return false
 	}
-	return sessionpack.HasFile(root, sessionID)
+	return sessionpack.HasFile(root, sessionID, backend)
 }
 
-func (e *ClawExecutor) packLiveSession(backend, sessionID string) []byte {
-	b, err := e.PackSession(context.Background(), backend, sessionID)
+func (e *ClawExecutor) packLiveSession(ctx context.Context, task *delegate.Task, backend, sessionID string) []byte {
+	b, err := e.packSessionFrom(ctx, task, backend, sessionID)
 	if err != nil {
 		return nil
 	}

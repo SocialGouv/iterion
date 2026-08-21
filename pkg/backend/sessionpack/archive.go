@@ -219,7 +219,7 @@ func skipAuthName(base string) bool {
 	}
 }
 
-func matchSessionFile(root, sessionID, p string, info os.FileInfo) (rel string, ok bool) {
+func matchSessionFile(backend, root, sessionID, p string, info os.FileInfo) (rel string, ok bool) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", false
 	}
@@ -227,8 +227,7 @@ func matchSessionFile(root, sessionID, p string, info os.FileInfo) (rel string, 
 	if skipAuthName(base) || isHardlink(info) {
 		return "", false
 	}
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	if stem != sessionID && base != sessionID+".jsonl" {
+	if !sessionFileNameMatches(backend, sessionID, base) {
 		return "", false
 	}
 	rel, err := filepath.Rel(root, p)
@@ -238,15 +237,28 @@ func matchSessionFile(root, sessionID, p string, info os.FileInfo) (rel string, 
 	return filepath.ToSlash(rel), true
 }
 
-// CollectBySessionID gathers regular files under root whose base name
-// (minus extension) equals sessionID, skipping credential filenames.
-func CollectBySessionID(root, sessionID string) ([]File, error) {
+func sessionFileNameMatches(backend, sessionID, base string) bool {
+	if sessionID == "" {
+		return false
+	}
+	switch backend {
+	case "codex":
+		// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl
+		return strings.HasPrefix(base, "rollout-") && strings.HasSuffix(base, "-"+sessionID+".jsonl")
+	default:
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		return stem == sessionID || base == sessionID+".jsonl"
+	}
+}
+
+// CollectBySessionID gathers regular files under root for sessionID.
+func CollectBySessionID(root, sessionID, backend string) ([]File, error) {
 	var files []File
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, ok := matchSessionFile(root, sessionID, p, info)
+		rel, ok := matchSessionFile(backend, root, sessionID, p, info)
 		if !ok {
 			return nil
 		}
@@ -262,13 +274,13 @@ func CollectBySessionID(root, sessionID string) ([]File, error) {
 
 // HasFile reports whether a session file exists under root without
 // reading file bodies.
-func HasFile(root, sessionID string) bool {
+func HasFile(root, sessionID, backend string) bool {
 	found := false
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if _, ok := matchSessionFile(root, sessionID, p, info); ok {
+		if _, ok := matchSessionFile(backend, root, sessionID, p, info); ok {
 			found = true
 			return filepath.SkipAll
 		}

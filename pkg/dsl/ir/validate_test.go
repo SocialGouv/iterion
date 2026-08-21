@@ -180,6 +180,56 @@ workflow test:
 	expectNoDiag(t, r, DiagPersistInFanOut)
 }
 
+func TestValidatePersistInFanOutWithLoop_Rejected(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+agent b:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+
+agent join:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a
+  r1 -> b
+  a -> b as retry(3)
+  a -> join
+  b -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagPersistInFanOut)
+}
+
 func TestValidatePersistAfterImplicitJoin_Allowed(t *testing.T) {
 	src := `
 schema s:

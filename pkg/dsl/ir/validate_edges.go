@@ -59,6 +59,10 @@ func fanOutBodyNodes(w *Workflow) map[string]bool {
 	inSources := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
+		if e.LoopName != "" {
+			// A back-edge is a cycle, not a fan-out join.
+			continue
+		}
 		if inSources[e.To] == nil {
 			inSources[e.To] = map[string]bool{}
 		}

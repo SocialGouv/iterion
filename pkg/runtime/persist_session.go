@@ -301,6 +301,9 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 				return err
 			}
 		}
+		if old.StateRef != "" {
+			e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
+		}
 		if pauseRef != "" {
 			e.deleteSessionBlob(ctx, rs.runID, pauseRef)
 		}
@@ -315,6 +318,9 @@ func (e *Engine) commitPersistSlot(ctx context.Context, rs *runState, node ir.No
 		e.emitPersistDegraded(rs, node.NodeID(), "backend session store put failed")
 		if cpErr := e.checkpointPersistDeletion(ctx, rs, node.NodeID()); cpErr != nil {
 			return cpErr
+		}
+		if old.StateRef != "" {
+			e.deleteSessionBlob(ctx, rs.runID, old.StateRef)
 		}
 		if pauseRef != "" {
 			e.deleteSessionBlob(ctx, rs.runID, pauseRef)

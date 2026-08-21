@@ -419,7 +419,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	stampDelegateOutputMeta(result.Output, result, servingBackendName)
 	stampFallbackMeta(result.Output, out)
 	if f.session == ir.SessionPersist && result.SessionID != "" {
-		if blob := e.packLiveSession(servingBackendName, result.SessionID); len(blob) > 0 {
+		if blob := e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID); len(blob) > 0 {
 			if result.Output == nil {
 				result.Output = map[string]any{}
 			}
@@ -465,7 +465,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 				PendingToolUseID: result.PendingToolUseID,
 			}
 			if f.session == ir.SessionPersist && result.SessionID != "" {
-				ni.SessionStateBlob = e.packLiveSession(servingBackendName, result.SessionID)
+				ni.SessionStateBlob = e.packLiveSession(ctx, servingTask, servingBackendName, result.SessionID)
 			}
 			return nil, ni
 		}

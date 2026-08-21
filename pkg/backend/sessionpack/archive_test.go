@@ -37,7 +37,7 @@ func TestCollectSkipsAuthFiles(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(root, "auth.json"), []byte("SECRET"), 0o600)
 	_ = os.WriteFile(filepath.Join(root, ".credentials.json"), []byte("SECRET"), 0o600)
 	_ = os.WriteFile(filepath.Join(root, "sess-1.jsonl"), []byte("ok"), 0o600)
-	files, err := CollectBySessionID(root, "sess-1")
+	files, err := CollectBySessionID(root, "sess-1", "claude_code")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCollectSkipsHardlink(t *testing.T) {
 	if err := os.Link(target, link); err != nil {
 		t.Skip("hardlinks not supported")
 	}
-	files, err := CollectBySessionID(root, "sess-1")
+	files, err := CollectBySessionID(root, "sess-1", "claude_code")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +111,35 @@ func TestHasFileDoesNotRequireRead(t *testing.T) {
 	if err := os.WriteFile(p, []byte("ok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !HasFile(root, "sess-1") {
+	if !HasFile(root, "sess-1", "claude_code") {
 		t.Fatal("expected hit")
 	}
-	if HasFile(root, "sess-missing") {
+	if HasFile(root, "sess-missing", "claude_code") {
 		t.Fatal("missing session reported present")
+	}
+}
+
+func TestCollectCodexRolloutName(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "sessions", "2026", "08", "21", "rollout-2026-08-21T10-00-00-threadABC.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := CollectBySessionID(root, "threadABC", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Name != "sessions/2026/08/21/rollout-2026-08-21T10-00-00-threadABC.jsonl" {
+		t.Fatalf("files=%+v", files)
+	}
+	if !HasFile(root, "threadABC", "codex") {
+		t.Fatal("HasFile missed codex rollout")
+	}
+	if HasFile(root, "threadABC", "claude_code") {
+		t.Fatal("claude matcher must not accept rollout-* names")
 	}
 }
 
