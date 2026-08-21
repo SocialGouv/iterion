@@ -547,6 +547,36 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopOnFanOutEachTemplateHead_Rejected(t *testing.T) {
+	// writer is the only fan target. Its self-loop elects it as the join,
+	// so each item branch would run nothing and the loop would fire once
+	// on the trunk. Still C244 — the template head is body.
+	src := execBranchLoopPrompts + `
+tool gen:
+  command: ` + "`echo`" + `
+  output: s
+
+tool writer:
+  command: ` + "`echo`" + `
+  input: s
+  output: s
+
+router items:
+  mode: fan_out_each
+  over: "{{outputs.gen.items}}"
+  as: item
+
+workflow test:
+  entry: gen
+  gen -> items
+  items -> writer
+  writer -> writer as retry(3) when ok
+  writer -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
 func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
 	// joiner is the elected convergence (first fan edge reaches it). z also
 	// has await: so the structural stop treats it as a join and does not

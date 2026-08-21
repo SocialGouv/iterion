@@ -337,9 +337,11 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 // trunk loops after a real join and catalog bots like evolve legal.
 //
 // On a single-edge fan (fan_out_each) every replay is the same path,
-// so electing a loop head as the join is correct — the walk stops
-// there (allIn > 1, matching findConvergencePoint) and a trunk loop
-// after the implicit collector is not C244.
+// so electing a downstream loop head as the join is correct — the
+// walk stops there (allIn > 1, matching findConvergencePoint) and a
+// trunk loop after the implicit collector is not C244. The template
+// head itself stays in the body even when its own back-edge elects
+// it: stopping there would skip the per-item work.
 //
 // Loops after a non-elected await are a remaining execBranch hole, not
 // claimed by C244.
@@ -372,12 +374,14 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(id string, stopOnElected bool)
-	walk = func(id string, stopOnElected bool) {
+	var walk func(id string, stopOnElected bool, fanTargets map[string]bool)
+	walk = func(id string, stopOnElected bool, fanTargets map[string]bool) {
 		if id == "" || body[id] || isStructuralJoin(id) {
 			return
 		}
-		if stopOnElected && len(allIn[id]) > 1 {
+		// Downstream loop head on a single-path fan — not the template
+		// head, whose election would skip per-item work.
+		if stopOnElected && len(allIn[id]) > 1 && !fanTargets[id] {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -385,7 +389,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, stopOnElected)
+			walk(next, stopOnElected, fanTargets)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -394,14 +398,16 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 			continue
 		}
 		var fan []*Edge
+		fanTargets := map[string]bool{}
 		for _, e := range w.Edges {
 			if e.From == r.ID {
 				fan = append(fan, e)
+				fanTargets[e.To] = true
 			}
 		}
 		stopOnElected := len(fan) == 1
 		for _, e := range fan {
-			walk(e.To, stopOnElected)
+			walk(e.To, stopOnElected, fanTargets)
 		}
 	}
 	return body
