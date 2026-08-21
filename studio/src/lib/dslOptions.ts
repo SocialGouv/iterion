@@ -78,6 +78,19 @@ export const REASONING_EFFORT_HELP =
   "For reasoning-capable models (e.g. o-series, claude-extended-thinking). " +
   "ultracode = xhigh + standing consent to orchestrate multi-agent workflows; reliable only on claude-opus-4-8.";
 
+export const FALLBACK_ON_OPTIONS: SelectOption[] = [
+  { value: "usage_window", label: "usage_window" },
+  { value: "unavailable", label: "unavailable" },
+  { value: "transient_exhausted", label: "transient_exhausted" },
+  { value: "auth", label: "auth" },
+  { value: "any", label: "any" },
+];
+
+export const FALLBACKS_HELP =
+  "Ordered alternative routes tried when this node's primary fails (subscription window, model unreachable). " +
+  "A route that changes backend must pin its own model. Empty `on:` defaults to usage_window + unavailable. " +
+  "Judges are never re-routed by the launch-level fallback; only this block applies.";
+
 export const WORKTREE_OPTIONS: SelectOption[] = [
   { value: "auto", label: "auto (per-run worktree)" },
   { value: "none", label: "none (run in place)" },

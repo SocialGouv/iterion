@@ -807,6 +807,79 @@ func ResolveEffortLiteral(s string) string {
 	return ""
 }
 
+// LooksLikeModelSpec reports whether s is shaped like an LLM model
+// identifier (provider/model, a hyphenated/dotted id, or a short
+// registry alias). GET /api/resolve-model uses this as the counterpart
+// of ValidReasoningEfforts: expansions that don't look like a model
+// (filesystem paths, $PATH, usernames, secrets) come back empty so the
+// endpoint cannot be turned into an env-oracle.
+func LooksLikeModelSpec(s string) bool {
+	s = strings.TrimSpace(s)
+	n := len(s)
+	if n == 0 || n > 128 {
+		return false
+	}
+	if strings.ContainsRune(s, '$') || strings.ContainsAny(s, " \t\n\\:") {
+		return false
+	}
+	if s[0] == '/' || s[0] == '.' || s[0] == '-' {
+		return false
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) > 3 {
+		return false
+	}
+	hasSep := len(parts) > 1
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for i := 0; i < len(p); i++ {
+			c := p[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			case c == '.' || c == '_' || c == '-' || c == '+':
+				hasSep = true
+			default:
+				return false
+			}
+		}
+	}
+	if hasSep {
+		return true
+	}
+	// Bare aliases with no hyphen/slash/dot: the few registries accept
+	// as a model id on their own.
+	switch strings.ToLower(s) {
+	case "opus", "sonnet", "haiku":
+		return true
+	}
+	if n >= 2 && (s[0] == 'o' || s[0] == 'O') && s[1] >= '0' && s[1] <= '9' {
+		return true
+	}
+	return false
+}
+
+// ResolveModelLiteral expands env-substituted forms ("${VAR}",
+// "${VAR:-openai-codex/gpt-5.6-sol}") against the process env and
+// returns the result only when it LooksLikeModelSpec. Non-env-substituted
+// values are returned unchanged (the author wrote them). Invalid
+// expansions return "" so the studio can fall back to the authored
+// default / the compact env-ref rather than leak process env.
+func ResolveModelLiteral(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsRune(s, '$') {
+		return s
+	}
+	expanded := strings.TrimSpace(ExpandEnvWithDefault(s))
+	if LooksLikeModelSpec(expanded) {
+		return expanded
+	}
+	return ""
+}
+
 // ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
 // Mirrors the shell parameter-expansion default-value syntax that
 // stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,

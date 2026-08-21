@@ -249,6 +249,57 @@ func TestResolveEffort_EmptyLiteral(t *testing.T) {
 	}
 }
 
+// TestResolveModel_EnvSubstitutionExpands proves ${VAR:-default}
+// forms are expanded server-side when VAR is unset, using the fallback.
+func TestResolveModel_EnvSubstitutionExpands(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_UNSET", "")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_UNSET:-openai-codex/gpt-5.6-sol}")
+	if got.Resolved != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("Resolved=%q, want %q (env fallback should expand)", got.Resolved, "openai-codex/gpt-5.6-sol")
+	}
+}
+
+// TestResolveModel_EnvSubstitutionUsesSetValue proves the endpoint
+// reads the process env, not just the fallback — the case that lets
+// the studio canvas tell sol from terra from luna.
+func TestResolveModel_EnvSubstitutionUsesSetValue(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_SET", "openai-codex/gpt-5.6-terra")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_SET:-openai-codex/gpt-5.6-sol}")
+	if got.Resolved != "openai-codex/gpt-5.6-terra" {
+		t.Errorf("Resolved=%q, want %q (env value should win over fallback)", got.Resolved, "openai-codex/gpt-5.6-terra")
+	}
+}
+
+// TestResolveModel_InvalidExpansionYieldsEmpty proves a literal whose
+// expansion is not a model spec comes back as "". The studio then
+// falls back to displaying the authored default / compact env-ref
+// rather than leaking process env.
+func TestResolveModel_InvalidExpansionYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_HOME", "/home/nobody")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_HOME}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (path is not a model spec)", got.Resolved)
+	}
+}
+
+func TestResolveModel_EmptyLiteral(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveModel(t, hs.URL, "")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for empty literal", got.Resolved)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -288,6 +339,27 @@ func getResolveEffort(t *testing.T, base, literal string) resolveEffortResponse 
 		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, mustReadBody(t, resp))
 	}
 	var out resolveEffortResponse
+	decodeJSONResp(t, resp, &out)
+	return out
+}
+
+func getResolveModel(t *testing.T, base, literal string) resolveModelResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+"/api/resolve-model", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	q := req.URL.Query()
+	q.Set("literal", literal)
+	req.URL.RawQuery = q.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET resolve-model: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, mustReadBody(t, resp))
+	}
+	var out resolveModelResponse
 	decodeJSONResp(t, resp, &out)
 	return out
 }

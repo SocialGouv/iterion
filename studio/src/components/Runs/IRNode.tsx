@@ -13,6 +13,9 @@ import { BackendBadge } from "@/components/icons/BackendBadge";
 import { NodeIcon } from "@/components/icons/NodeIcon";
 import { softColor } from "@/lib/constants";
 
+import { displayModel, modelTooltip } from "@/lib/modelLabel";
+import { useResolvedModel } from "@/hooks/useResolvedModel";
+
 import { statusClasses, type UnifiedStatus } from "./runStatusClasses";
 
 // Maximum pips to show inline before condensing into a "+N" overflow
@@ -120,9 +123,9 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
     : null;
   const hasMeta =
     !!meta && (!!meta.model || !!meta.backend || !!meta.reasoningEffort);
-  const modelLabel = meta?.model
-    ? meta.model.replace(/\$\{.*?\}/g, "env")
-    : undefined;
+  const resolvedModel = useResolvedModel(meta?.model);
+  const modelLabel = displayModel(meta?.model, resolvedModel);
+  const modelTitle = modelTooltip(meta?.model, resolvedModel);
 
   // Clamp the index in case the executions array shrunk (run reset).
   const activeIdx = Math.min(Math.max(selectedIteration, 0), executions.length - 1);
@@ -229,12 +232,12 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
           {modelLabel && (
             <div className="mt-1 flex items-center gap-1 text-caption text-fg-subtle min-w-0">
               <ProviderIcon
-                model={meta?.model}
+                model={resolvedModel || meta?.model}
                 delegate={meta?.backend}
                 size={10}
                 className="shrink-0 opacity-70"
               />
-              <span className="truncate" title={meta?.model}>
+              <span className="truncate" title={modelTitle ?? meta?.model}>
                 {modelLabel}
               </span>
               {meta?.runtimeOverriddenModel && (

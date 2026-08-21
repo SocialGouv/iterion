@@ -133,6 +133,29 @@ func (s *Server) handleResolveEffort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resolveEffortResponse{Resolved: ir.ResolveEffortLiteral(literal)})
 }
 
+// resolveModelResponse is the JSON shape returned by GET /api/resolve-model.
+// Lets the studio canvas display the resolved model id (e.g. "gpt-5.6-sol")
+// for env-substituted literals like "${CODEX_MODEL:-openai-codex/gpt-5.6-sol}"
+// without exposing process env over HTTP — expansions that do not look
+// like a model spec come back empty.
+type resolveModelResponse struct {
+	Resolved string `json:"resolved"`
+}
+
+// handleResolveModel answers
+//
+//	GET /api/resolve-model?literal=<model-literal>
+//
+// with the env-resolved model spec for the supplied literal. The
+// canonical use case is "${VAR:-default}" / "${VAR}" forms in agent
+// `model:` fields — the studio canvas reads these from the AST and
+// asks the server to expand them so the card shows sol/terra/luna
+// (or whatever the process env actually selected) instead of "env".
+func (s *Server) handleResolveModel(w http.ResponseWriter, r *http.Request) {
+	literal := r.URL.Query().Get("literal")
+	writeJSON(w, resolveModelResponse{Resolved: ir.ResolveModelLiteral(literal)})
+}
+
 // handleEffortCapabilities answers
 //
 //	GET /api/effort-capabilities?backend=<name>&model=<canonical-or-alias>

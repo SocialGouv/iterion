@@ -1,6 +1,6 @@
 import { Handle } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { NodeKind } from "@/api/types";
+import type { FallbackDecl, NodeKind } from "@/api/types";
 import { declOf } from "@/lib/documentToGraph";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
@@ -12,6 +12,14 @@ import DiagnosticBadge from "@/components/Diagnostics/DiagnosticBadge";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
 import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import { useResolvedEffort } from "@/hooks/useResolvedEffort";
+import { useResolvedModel, useResolvedModels } from "@/hooks/useResolvedModel";
+import {
+  displayFallbackChain,
+  displayModel,
+  envDefault,
+  fallbackTooltip,
+  modelTooltip,
+} from "@/lib/modelLabel";
 import { SELECTED_BORDER, SELECTED_GLOW, softColor } from "@/lib/constants";
 import { NodeIcon } from "@/components/icons/NodeIcon";
 import { SIDES, POS_MAP } from "./handlePositions";
@@ -44,9 +52,10 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   const hasError = severity === "error";
   const hasWarning = severity === "warning";
 
-  // Two-row meta layout for LLM-driving nodes (agent/judge/router-llm):
-  //   row 1: provider icon + model
-  //   row 2: backend + reasoning_effort + session/await indicators
+  // LLM-driving nodes (agent/judge/router-llm):
+  //   row 1: provider icon + resolved model (not the word "env")
+  //   row 2: authored fallbacks: chain, when present
+  //   row 3: backend + reasoning_effort + session/await indicators
   // Other node kinds keep the legacy single-line subtitle.
   let subtitle = "";
   let providerModel: string | undefined;
@@ -56,6 +65,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   let sessionGlyph: string | undefined;
   let awaitGlyph: string | undefined;
   let isLLMNode = false;
+  let fallbacks: FallbackDecl[] | undefined;
 
   if (kind === "agent" || kind === "judge") {
     const d = declOf(kind, decl);
@@ -64,6 +74,7 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
     providerDelegate = d?.backend;
     backendValue = d?.backend;
     effortLevel = d?.reasoning_effort;
+    fallbacks = d?.fallbacks;
     if (d?.session === "inherit") sessionGlyph = "\u{1F517}";
     else if (d?.session === "fork") sessionGlyph = "\u{1F500}";
     else if (d?.session === "artifacts_only") sessionGlyph = "\u{1F4E6}";
@@ -99,17 +110,20 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
     if (d?.source) subtitle = d.source;
   }
 
-  const modelLabel = providerModel
-    ? providerModel.replace(/\$\{.*?\}/g, "env")
-    : undefined;
-
-  // Substitute env-subst literals so the bar shows the actual level
-  // ("max") instead of the raw "${VAR:-max}". Capabilities feed the
-  // bar's normalisation: a gpt-5 node at "high" renders 4/4 cells.
+  // Substitute env-subst literals so the card shows the actual model
+  // ("gpt-5.6-sol") instead of the word "env", and the effort bar
+  // shows "max" instead of "${VIBE_EFFORT:-max}".
+  const resolvedModel = useResolvedModel(providerModel);
+  const resolvedFallbacks = useResolvedModels((fallbacks ?? []).map((fb) => fb.model));
+  const modelLabel = displayModel(providerModel, resolvedModel);
+  const modelTitle = modelTooltip(providerModel, resolvedModel);
+  const fallbackLabel = displayFallbackChain(fallbacks, resolvedFallbacks);
+  const fallbackTitle = fallbackTooltip(fallbacks, resolvedFallbacks);
+  const modelForIcon = resolvedModel || envDefault(providerModel) || providerModel;
   const resolvedEffort = useResolvedEffort(effortLevel);
   const { capabilities: effortCaps } = useEffortCapabilities(
-    isLLMNode && providerModel ? effortBackendKey(backendValue) : undefined,
-    isLLMNode ? providerModel : undefined,
+    isLLMNode && (modelForIcon || providerModel) ? effortBackendKey(backendValue) : undefined,
+    isLLMNode ? (modelForIcon || providerModel) : undefined,
   );
   const effortSupported = effortCaps?.supported ?? undefined;
 
@@ -196,9 +210,23 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
       <div className="font-semibold text-sm text-fg-default">{isStart ? "Start" : label}</div>
       {!isStart && <div className="text-xs text-fg-muted">{kind}</div>}
       {isLLMNode && modelLabel && (
-        <div className="text-caption text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1">
-          <ProviderIcon model={providerModel} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
+        <div
+          className="text-caption text-fg-subtle mt-0.5 max-w-[160px] flex items-center justify-center gap-1"
+          data-testid="node-model"
+          title={modelTitle}
+        >
+          <ProviderIcon model={modelForIcon} delegate={providerDelegate} size={10} className="shrink-0 opacity-70" />
           <span className="truncate">{modelLabel}</span>
+        </div>
+      )}
+      {isLLMNode && fallbackLabel && (
+        <div
+          className="text-[9px] text-fg-muted mt-0.5 max-w-[160px] flex items-center justify-center gap-0.5"
+          data-testid="node-fallbacks"
+          title={fallbackTitle}
+        >
+          <span aria-hidden>{"\u21aa"}</span>
+          <span className="truncate">{fallbackLabel}</span>
         </div>
       )}
       {isLLMNode && (

@@ -1794,6 +1794,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/resolve-model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/resolve-model */
+        get: operations["getResolveModel"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/routes": {
         parameters: {
             query?: never;
@@ -7891,6 +7908,24 @@ export interface operations {
         };
     };
     getResolveEffort: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getResolveModel: {
         parameters: {
             query?: never;
             header?: never;

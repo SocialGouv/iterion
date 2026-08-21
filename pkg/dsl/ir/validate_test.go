@@ -2,6 +2,7 @@ package ir
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -1462,6 +1463,93 @@ func TestResolveEffortLiteral(t *testing.T) {
 			}
 			if got := ResolveEffortLiteral(tt.literal); got != tt.want {
 				t.Errorf("ResolveEffortLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeModelSpec(t *testing.T) {
+	yes := []string{
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"openai-codex/gpt-5.6-sol",
+		"anthropic/claude-opus-5",
+		"claude-opus-5",
+		"openai/gpt-5.5",
+		"xai/grok-4",
+		"opus",
+		"sonnet",
+		"o1",
+		"o3-mini",
+	}
+	for _, s := range yes {
+		if !LooksLikeModelSpec(s) {
+			t.Errorf("LooksLikeModelSpec(%q) = false, want true", s)
+		}
+	}
+	no := []string{
+		"",
+		"victor",
+		"root",
+		"/home/victor",
+		"../secret",
+		"$HOME",
+		"${VAR}",
+		"a:b",
+		"hello world",
+		strings.Repeat("a-", 70),
+	}
+	for _, s := range no {
+		if LooksLikeModelSpec(s) {
+			t.Errorf("LooksLikeModelSpec(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestResolveModelLiteral(t *testing.T) {
+	tests := []struct {
+		name     string
+		literal  string
+		envKey   string
+		envValue string
+		want     string
+	}{
+		{name: "plain spec passes through", literal: "openai-codex/gpt-5.6-sol", want: "openai-codex/gpt-5.6-sol"},
+		{name: "empty stays empty", literal: "", want: ""},
+		{name: "env-subst with valid default",
+			literal:  "${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     "openai-codex/gpt-5.6-sol"},
+		{name: "env wins over default",
+			literal:  "${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "openai-codex/gpt-5.6-terra",
+			want:     "openai-codex/gpt-5.6-terra"},
+		{name: "non-model expansion clamps to empty",
+			literal:  "${ITERION_TEST_MODEL:-/not/a/model}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     ""},
+		{name: "username-shaped expansion is not a model",
+			literal:  "${ITERION_TEST_MODEL}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "victor",
+			want:     ""},
+		{name: "bare env var unset returns empty",
+			literal:  "${ITERION_TEST_MODEL}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envKey != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+			if got := ResolveModelLiteral(tt.literal); got != tt.want {
+				t.Errorf("ResolveModelLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
 			}
 		})
 	}
