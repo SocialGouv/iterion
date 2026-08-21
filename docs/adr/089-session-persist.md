@@ -25,7 +25,7 @@ C176; fan-out.
 
 ## Context
 
-Film/shorts writer → judge → tool-oracle → back to the **same** writer
+A writer → judge → tool-oracle → back to the **same** writer
 today starts a new conversation every refusal (`session: fresh`, often a
 sibling `correct_*` node).
 
@@ -341,7 +341,7 @@ No test may pass only because `~/.claude` still held the jsonl.
 
 One PR: `dsl,runtime,store: session persist resumes a node's own CLI session (StateRef)`.
 
-Not in this PR: film/shorts; catalog bots; kimi/grok resume; claw
+Not in this PR: catalog-bot migrations; kimi/grok resume; claw
 `conversation_ref`; studio loop collapsing.
 
 Parse-only or twin-less land forbidden.
