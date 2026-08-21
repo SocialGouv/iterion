@@ -304,24 +304,47 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 	return ok && routerSpawnsExecBranch(r)
 }
 
-// execBranchBodyNodes is the set of nodes execBranch actually runs for
-// each fan_out_all / fan_out_each / llm-multi router: reachable from that
-// router's outgoing edges, stopping at the single convergence node the
-// runtime elects (findConvergencePoint). That election counts every
-// incoming edge, including loop/foreach back-edges, so a loop head is
-// often the join — the branch stops there and the loop runs on the trunk
-// with real counters. Matching that election is what keeps C243 from
-// hard-rejecting those graphs (they compile and run on main today).
-// The elected join itself is not in the body.
+// execBranchBodyNodes is the set of nodes a parallel branch runs before
+// it hits a join. For each fan_out_all / fan_out_each / llm-multi router
+// we elect the same convergence findConvergencePoint would (every
+// incoming edge, loop back-edges included) AND we also stop at any
+// structural join: await != none, or >1 non-iteration predecessors.
+//
+// The election stop keeps C243 from rejecting a loop head the runtime
+// hoists to the trunk (the back-edge makes that node the elected join).
+// The structural stop keeps a sibling branch from walking past the
+// intended join when election picked an earlier two-source node (evolve:
+// review_claude is targeted by both the topology router and the fan-out,
+// so it is elected, and the gpt branch would otherwise swallow the rest
+// of the bot). Loops after a non-elected await are a remaining
+// execBranch hole, not claimed by C243.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
+	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
+		if e.IsBoundedIteration() {
+			continue
+		}
+		if nonIterIn[e.To] == nil {
+			nonIterIn[e.To] = map[string]bool{}
+		}
+		nonIterIn[e.To][e.From] = true
+	}
+	isStructuralJoin := func(id string) bool {
+		n, ok := w.Nodes[id]
+		if !ok {
+			return false
+		}
+		if NodeAwaitMode(n) != AwaitNone {
+			return true
+		}
+		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	var walk func(id, join string)
-	walk = func(id, join string) {
-		if id == "" || id == join || body[id] {
+	var walk func(id, elected string)
+	walk = func(id, elected string) {
+		if id == "" || id == elected || body[id] || isStructuralJoin(id) {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -329,7 +352,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, join)
+			walk(next, elected)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -343,9 +366,9 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 				fan = append(fan, e)
 			}
 		}
-		join := compileFindConvergence(w, fan)
+		elected := compileFindConvergence(w, fan)
 		for _, e := range fan {
-			walk(e.To, join)
+			walk(e.To, elected)
 		}
 	}
 	return body

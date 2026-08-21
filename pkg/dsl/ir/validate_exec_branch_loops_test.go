@@ -460,10 +460,10 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopReenteringBodyFromJoin_Rejected(t *testing.T) {
-	// join -> a1 as more gives a1 a second incoming source, so the runtime
-	// elects a1 as the join. The other branch then executes the await node
-	// inside execBranch and skips the loop — C243.
+func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
+	// join has await, so the structural stop keeps it out of the body even
+	// if the loop back-edge makes a1 the elected convergence. C243 keys on
+	// the edge source.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -491,13 +491,14 @@ workflow test:
   join -> done else
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopAfterNonElectedAwait_Rejected(t *testing.T) {
+func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
 	// joiner is the elected convergence (first fan edge reaches it). z also
-	// has await: but execBranch only stops at joiner, so z/w run in the
-	// branch and the loop is skipped — C243 must fire.
+	// has await: so the structural stop treats it as a join and does not
+	// put w in the body. The skip of w→z inside execBranch is a runtime
+	// hole (execBranch only stops at the elected id), not C243.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -541,7 +542,7 @@ workflow test:
   joiner -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopOnTrunk_Allowed(t *testing.T) {
