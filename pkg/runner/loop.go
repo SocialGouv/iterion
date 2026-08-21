@@ -1466,6 +1466,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// a recording failure must never change the run's outcome.
 	if workDir != r.cfg.WorkDir {
 		r.recordRunGitMeta(ctx, msg, workDir, gitBase)
+		// Bank a SUCCESSFUL repo-targeted run to the forge before the
+		// clone is wiped: the worktree-finalization path never fires
+		// here, so without this push a finished run's commits exist
+		// nowhere the server can reach (runs merge: "nothing to merge").
+		if runErr == nil {
+			r.bankRepoWorkspace(ctx, msg, workDir, gitBase)
+		}
 	}
 
 	// Upload any tool-produced artifact files (run reports, SBOMs) from

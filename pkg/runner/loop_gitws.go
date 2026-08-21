@@ -542,3 +542,59 @@ func injectGitToken(rawURL, token string) string {
 	u.User = url.UserPassword("oauth2", token)
 	return u.String()
 }
+
+// bankRepoWorkspace pushes a successful repo-targeted run's work to the
+// forge as a per-run storage branch and records FinalCommit/FinalBranch,
+// so `runs merge` has something to merge. The worktree-finalization path
+// that normally banks a run never fires on this path ("store has no
+// filesystem root — worktree isolation skipped"), which used to leave a
+// FINISHED run's commits only in this pod's soon-wiped clone.
+//
+// Called only when the run succeeded. A push failure never changes the
+// run's outcome — the work is done, and failing the run would re-run all
+// of it — but it is never silent either: the cause lands in
+// FinalBranchError and FinalBranch stays empty, so merge keeps refusing
+// with the truth instead of a bare "nothing to merge".
+func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string) {
+	head, err := gitlib.RevParseHead(workDir)
+	if err != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", msg.RunID, err)
+		return
+	}
+	if base != "" && head == base {
+		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline", msg.RunID)
+		return
+	}
+	branch := "iterion/run-" + msg.RunID
+	tok := ""
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
+	}
+	pushURL := msg.RepoURL
+	if tok != "" {
+		pushURL = injectGitToken(msg.RepoURL, tok)
+	}
+	// --force: the branch is namespaced to THIS run id; a re-banked
+	// attempt owns it entirely.
+	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", pushURL, "HEAD:refs/heads/"+branch)
+
+	// Persist on a background ctx carrying the run's tenant identity (the
+	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	if lerr != nil || run == nil {
+		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
+		return
+	}
+	run.FinalCommit = head
+	if pushErr != nil {
+		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
+		r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — the work exists only in this pod's clone: %v", msg.RunID, branch, pushErr)
+	} else {
+		run.FinalBranch = branch
+		r.cfg.Logger.Info("runner: run %s banked: %s @ %.12s", msg.RunID, branch, head)
+	}
+	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+	}
+}
