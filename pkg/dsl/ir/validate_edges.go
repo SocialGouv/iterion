@@ -34,68 +34,19 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 }
 
 // validatePersistNotInFanOut refuses session: persist on any node that
-// can run inside execBranch (ADR-089 v1 is trunk-only). The join itself
-// (await != none) is not in the body.
+// can run inside execBranch (ADR-089 v1 is trunk-only). Same body set as
+// C244: fan_out_all, fan_out_each, and llm multi. The join is not in the body.
 func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
-	body := fanOutBodyNodes(w)
+	body := execBranchBodyNodes(w)
 	for id, node := range w.Nodes {
 		llm, ok := node.(LLMNode)
 		if !ok || llm.GetSession() != SessionPersist || !body[id] {
 			continue
 		}
 		c.errorf(DiagPersistInFanOut,
-			"node %q has session: persist but sits in a fan_out_all/fan_out_each body; persist is trunk-only in v1 (C243)",
+			"node %q has session: persist but sits in a fan_out_all/fan_out_each/llm-multi body; persist is trunk-only in v1 (C243)",
 			id)
 	}
-}
-
-// fanOutBodyNodes is the set of nodes reachable from a fan_out_all or
-// fan_out_each router along outgoing edges, stopping at a join. A join
-// is an explicit `await:` OR a node with multiple distinct incoming
-// sources — the same predicate the runtime's findConvergencePoint uses,
-// so persist on the trunk after an implicit merge is not C243.
-func fanOutBodyNodes(w *Workflow) map[string]bool {
-	out := map[string][]string{}
-	inSources := map[string]map[string]bool{}
-	for _, e := range w.Edges {
-		out[e.From] = append(out[e.From], e.To)
-		if e.LoopName != "" {
-			// A back-edge is a cycle, not a fan-out join.
-			continue
-		}
-		if inSources[e.To] == nil {
-			inSources[e.To] = map[string]bool{}
-		}
-		inSources[e.To][e.From] = true
-	}
-	body := map[string]bool{}
-	var walk func(string)
-	walk = func(id string) {
-		n, ok := w.Nodes[id]
-		if !ok || body[id] {
-			return
-		}
-		if NodeAwaitMode(n) != AwaitNone || len(inSources[id]) > 1 {
-			return
-		}
-		body[id] = true
-		for _, next := range out[id] {
-			walk(next)
-		}
-	}
-	for id, node := range w.Nodes {
-		r, ok := node.(*RouterNode)
-		if !ok {
-			continue
-		}
-		if r.RouterMode != RouterFanOutAll && r.RouterMode != RouterFanOutEach {
-			continue
-		}
-		for _, next := range out[id] {
-			walk(next)
-		}
-	}
-	return body
 }
 
 // findConvergenceNodes returns the set of node IDs that are convergence points.
@@ -370,10 +321,11 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 }
 
 // execBranchBodyNodes is the set of nodes a parallel branch runs before
-// it hits a join. For each fan_out_all / fan_out_each / llm-multi router
-// we elect the same convergence findConvergencePoint would (every
-// incoming edge, loop back-edges included) AND we also stop at any
-// structural join: await != none, or >1 non-iteration predecessors.
+// it hits a join. Shared by C243 (persist) and C244 (loop/foreach). For
+// each fan_out_all / fan_out_each / llm-multi router we elect the same
+// convergence findConvergencePoint would (every incoming edge, loop
+// back-edges included) AND we also stop at any structural join: await
+// != none, or >1 non-iteration predecessors.
 //
 // The election stop keeps C244 from rejecting a loop head the runtime
 // hoists to the trunk (the back-edge makes that node the elected join).
