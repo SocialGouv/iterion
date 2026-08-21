@@ -335,6 +335,151 @@ workflow test:
 	expectDiag(t, r, DiagPersistInFanOut)
 }
 
+func TestValidatePersistOnLoopHeadInFanOut_Rejected(t *testing.T) {
+	// Sharing execBranchBodyNodes used to inherit an elected-join carve-out:
+	// a -> a as retry elects a as the join, so persist on a compiled clean
+	// even though a is a fan-out target. C243 must still fire.
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+agent b:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: fan_out_all
+
+agent join:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a
+  r1 -> b
+  a -> a as retry(3) when ok
+  a -> join else
+  b -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagPersistInFanOut)
+}
+
+func TestValidatePersistInLLMMultiBody_Rejected(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: llm
+  model: "test-model"
+  multi: true
+
+agent join:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> join
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagPersistInFanOut)
+}
+
+func TestValidatePersistOnLLMSingle_Allowed(t *testing.T) {
+	src := `
+schema s:
+  ok: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+  session: persist
+
+agent a2:
+  model: "m"
+  input: s
+  output: s
+  system: sys
+  user: usr
+
+router r1:
+  mode: llm
+  model: "test-model"
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> done
+  a2 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagPersistInFanOut)
+}
+
 func TestValidateFreshAtConvergence_Allowed(t *testing.T) {
 	src := `
 schema s:

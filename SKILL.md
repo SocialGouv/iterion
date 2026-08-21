@@ -196,7 +196,8 @@ iterion run workflow.bot --var key=value
 ```
 
 Validation emits sparse DSL codes in C001–C199 plus the async-interaction band
-C240–C243 (`session: persist` is C243), and bundle codes in C200–C234. Do not assume the numeric ranges are
+C240–C242, C243 (`session: persist` in a fan-out body), and C244 (loop in a
+parallel-branch body); bundle codes in C200–C234. Do not assume the numeric ranges are
 contiguous. For bundles, also check
 [`docs/bundles.md`](docs/bundles.md). For current CLI flags, use
 `iterion <command> --help` and [`docs/cli-reference.md`](docs/cli-reference.md).

@@ -34,68 +34,19 @@ func (c *compiler) validateInheritAtConvergence(w *Workflow) {
 }
 
 // validatePersistNotInFanOut refuses session: persist on any node that
-// can run inside execBranch (ADR-089 v1 is trunk-only). The join itself
-// (await != none) is not in the body.
+// can run inside execBranch (ADR-089 v1 is trunk-only). Same body set as
+// C244: fan_out_all, fan_out_each, and llm multi. The join is not in the body.
 func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
-	body := fanOutBodyNodes(w)
+	body := execBranchBodyNodes(w)
 	for id, node := range w.Nodes {
 		llm, ok := node.(LLMNode)
 		if !ok || llm.GetSession() != SessionPersist || !body[id] {
 			continue
 		}
 		c.errorf(DiagPersistInFanOut,
-			"node %q has session: persist but sits in a fan_out_all/fan_out_each body; persist is trunk-only in v1 (C243)",
+			"node %q has session: persist but sits in a fan_out_all/fan_out_each/llm-multi body; persist is trunk-only in v1 (C243)",
 			id)
 	}
-}
-
-// fanOutBodyNodes is the set of nodes reachable from a fan_out_all or
-// fan_out_each router along outgoing edges, stopping at a join. A join
-// is an explicit `await:` OR a node with multiple distinct incoming
-// sources — the same predicate the runtime's findConvergencePoint uses,
-// so persist on the trunk after an implicit merge is not C243.
-func fanOutBodyNodes(w *Workflow) map[string]bool {
-	out := map[string][]string{}
-	inSources := map[string]map[string]bool{}
-	for _, e := range w.Edges {
-		out[e.From] = append(out[e.From], e.To)
-		if e.LoopName != "" {
-			// A back-edge is a cycle, not a fan-out join.
-			continue
-		}
-		if inSources[e.To] == nil {
-			inSources[e.To] = map[string]bool{}
-		}
-		inSources[e.To][e.From] = true
-	}
-	body := map[string]bool{}
-	var walk func(string)
-	walk = func(id string) {
-		n, ok := w.Nodes[id]
-		if !ok || body[id] {
-			return
-		}
-		if NodeAwaitMode(n) != AwaitNone || len(inSources[id]) > 1 {
-			return
-		}
-		body[id] = true
-		for _, next := range out[id] {
-			walk(next)
-		}
-	}
-	for id, node := range w.Nodes {
-		r, ok := node.(*RouterNode)
-		if !ok {
-			continue
-		}
-		if r.RouterMode != RouterFanOutAll && r.RouterMode != RouterFanOutEach {
-			continue
-		}
-		for _, next := range out[id] {
-			walk(next)
-		}
-	}
-	return body
 }
 
 // findConvergenceNodes returns the set of node IDs that are convergence points.
@@ -333,6 +284,148 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
 				r.ID, count)
 		}
+	}
+}
+
+// validateBoundedIterationInExecBranch refuses loop/foreach edges whose
+// source sits in a subgraph executed by execBranch (C244). Those branches
+// share no local loop counters; the branch edge selector skips
+// IsBoundedIteration() edges, so a declared loop would compile and then
+// silently not run (and a foreach would be taken as an unguarded
+// unconditional back-edge). A loop whose source is the fan-out / llm-multi
+// router itself is the same class: launchBranches never applies loop
+// bookkeeping to those outgoing edges. A back-edge from the join into a
+// body node is also C244 (it elects the branch head as the join). A loop
+// that wraps the router from the join is on the trunk and is allowed.
+func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	for _, e := range w.Edges {
+		if !e.IsBoundedIteration() {
+			continue
+		}
+		// Source in the body (or the fan-out router) — skipped at run time.
+		// Target in the body — join -> branch-head as more elects the head
+		// as the join and the sibling swallows wait_all (Ra060bd).
+		if !body[e.From] && !body[e.To] && !edgeFromExecBranchRouter(w, e) {
+			continue
+		}
+		kind, name := "loop", e.LoopName
+		if e.ForeachName != "" {
+			kind, name = "foreach", e.ForeachName
+		}
+		c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
+			"edge %s -> %s is a %s edge (%s) inside a fan_out_all/fan_out_each/llm-multi body; branches have no local loop counters (C244)",
+			e.From, e.To, kind, name)
+	}
+}
+
+func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
+	r, ok := w.Nodes[e.From].(*RouterNode)
+	return ok && routerSpawnsExecBranch(r)
+}
+
+// execBranchBodyNodes is the set of nodes a parallel branch runs before
+// it hits a join. Shared by C243 (persist) and C244 (loop/foreach). For
+// each fan_out_all / fan_out_each / llm-multi router we walk from every
+// outgoing target and stop at any structural join: await != none, or
+// >1 non-iteration predecessors.
+//
+// On a multi-edge fan (fan_out_all / llm multi) we do not stop at a
+// node findConvergencePoint elects only because of a loop back-edge:
+// that election swallows the real wait_all join in the sibling
+// (a -> a as refine, impl→review→impl). Structural joins still keep
+// trunk loops after a real join and catalog bots like evolve legal.
+//
+// On a single-edge fan (fan_out_each) every replay is the same path,
+// so electing a downstream loop head as the join is correct — the
+// walk stops there (allIn > 1, matching findConvergencePoint) and a
+// trunk loop after the implicit collector is not C244. The template
+// head itself stays in the body even when its own back-edge elects
+// it: stopping there would skip the per-item work.
+//
+// Loops after a non-elected await are a remaining execBranch hole, not
+// claimed by C244.
+func execBranchBodyNodes(w *Workflow) map[string]bool {
+	out := map[string][]string{}
+	allIn := map[string]map[string]bool{}
+	nonIterIn := map[string]map[string]bool{}
+	for _, e := range w.Edges {
+		out[e.From] = append(out[e.From], e.To)
+		if allIn[e.To] == nil {
+			allIn[e.To] = map[string]bool{}
+		}
+		allIn[e.To][e.From] = true
+		if e.IsBoundedIteration() {
+			continue
+		}
+		if nonIterIn[e.To] == nil {
+			nonIterIn[e.To] = map[string]bool{}
+		}
+		nonIterIn[e.To][e.From] = true
+	}
+	isStructuralJoin := func(id string) bool {
+		n, ok := w.Nodes[id]
+		if !ok {
+			return false
+		}
+		if NodeAwaitMode(n) != AwaitNone {
+			return true
+		}
+		return len(nonIterIn[id]) > 1
+	}
+	body := map[string]bool{}
+	// seen is PER ROUTER: memoizing on the shared body would let a walk
+	// that stopped early (stopOnElected) truncate a later, wider walk
+	// through the same node — C243/C244 then depend on w.Nodes map order.
+	var walk func(id string, stopOnElected bool, fanTargets, seen map[string]bool)
+	walk = func(id string, stopOnElected bool, fanTargets, seen map[string]bool) {
+		if id == "" || seen[id] || isStructuralJoin(id) {
+			return
+		}
+		// Downstream loop head on a single-path fan — not the template
+		// head, whose election would skip per-item work.
+		if stopOnElected && len(allIn[id]) > 1 && !fanTargets[id] {
+			return
+		}
+		if _, ok := w.Nodes[id]; !ok {
+			return
+		}
+		seen[id] = true
+		body[id] = true
+		for _, next := range out[id] {
+			walk(next, stopOnElected, fanTargets, seen)
+		}
+	}
+	for _, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(r) {
+			continue
+		}
+		var fan []*Edge
+		fanTargets := map[string]bool{}
+		for _, e := range w.Edges {
+			if e.From == r.ID {
+				fan = append(fan, e)
+				fanTargets[e.To] = true
+			}
+		}
+		stopOnElected := len(fan) == 1
+		seen := map[string]bool{}
+		for _, e := range fan {
+			walk(e.To, stopOnElected, fanTargets, seen)
+		}
+	}
+	return body
+}
+
+func routerSpawnsExecBranch(r *RouterNode) bool {
+	switch r.RouterMode {
+	case RouterFanOutAll, RouterFanOutEach:
+		return true
+	case RouterLLM:
+		return r.RouterMulti
+	default:
+		return false
 	}
 }
 

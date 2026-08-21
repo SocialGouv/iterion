@@ -89,6 +89,8 @@ func runMergeGit(ctx context.Context, dir, token string, args ...string) (string
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// SanitizeEnv drops GIT_DIR / GIT_COMMON_DIR / GIT_INDEX_FILE so this
+	// clone's cmd.Dir is the repository, not an inherited redirection.
 	cmd.Env = append(gitlib.SanitizeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	text := string(out)
