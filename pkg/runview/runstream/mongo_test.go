@@ -393,5 +393,13 @@ func (nopBlob) GetIRBlob(context.Context, string) ([]byte, error) {
 	return nil, blob.ErrArtifactNotFound
 }
 func (nopBlob) DeleteRunIR(context.Context, string) error { return nil }
+func (nopBlob) PutBackendSession(context.Context, string, string, []byte) error {
+	return nil
+}
+func (nopBlob) GetBackendSession(context.Context, string, string) ([]byte, error) {
+	return nil, blob.ErrArtifactNotFound
+}
+func (nopBlob) DeleteBackendSession(context.Context, string, string) error { return nil }
+func (nopBlob) DeleteRunBackendSessions(context.Context, string) error     { return nil }
 
 var _ blob.Client = nopBlob{}

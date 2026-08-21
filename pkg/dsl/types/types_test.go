@@ -59,6 +59,7 @@ func TestSessionModeString(t *testing.T) {
 		{"inherit if available", SessionInheritIfAvailable, "inherit_if_available"},
 		{"artifacts only", SessionArtifactsOnly, "artifacts_only"},
 		{"fork", SessionFork, "fork"},
+		{"persist", SessionPersist, "persist"},
 		{"out of range", SessionMode(99), "unknown"},
 		{"negative", SessionMode(-1), "unknown"},
 	}

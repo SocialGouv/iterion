@@ -78,7 +78,7 @@ func runSkipCase(t *testing.T, runID string, wf *ir.Workflow) (agentA, dummy int
 	return agentACalls.Load(), dummyCalls.Load()
 }
 
-// TestExecBranch_SkipsLoopEdge is defence in depth for C243: a hand-built
+// TestExecBranch_SkipsLoopEdge is defence in depth for C244: a hand-built
 // IR with a loop inside a fan_out_all branch must take the fallback.
 func TestExecBranch_SkipsLoopEdge(t *testing.T) {
 	wf := skipWorkflow(&ir.Edge{From: "agent_a", To: "dummy", LoopName: "refine", Condition: "retry"})

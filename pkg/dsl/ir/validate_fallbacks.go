@@ -173,6 +173,10 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
+	if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, fb.Backend); reason != "" {
+		c.errorfAt(DiagFallbackUnsafeCross, id, "",
+			"%s %q: fallback %s %s", kind, id, label, reason)
+	}
 
 	// Reasoning effort degrades rather than misleads, so it warns.
 	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
@@ -238,6 +242,20 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 		return ""
 	}
 	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
+}
+
+// sessionContinuityCrossingReason refuses inherit / inherit_if_available /
+// fork / persist when a fallback changes backend (ADR-087 + ADR-089).
+func sessionContinuityCrossingReason(session SessionMode, nodeBackend, routeBackend string) string {
+	if nodeBackend == "" || routeBackend == "" || nodeBackend == routeBackend {
+		return ""
+	}
+	switch session {
+	case SessionInherit, SessionInheritIfAvailable, SessionFork, SessionPersist:
+		return fmt.Sprintf("changes backend from %q to %q on a node with session: %s — session continuity has no cross-backend meaning", nodeBackend, routeBackend, session)
+	default:
+		return ""
+	}
 }
 
 // effectiveNodeBackend mirrors the runtime precedence knowable at

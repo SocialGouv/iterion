@@ -394,6 +394,24 @@ func AsToolBlobStore(s RunStore) ToolBlobStore {
 	return t
 }
 
+// BackendSessionStore persists packed CLI session files for session: persist
+// (ADR-089). Filesystem: runs/<id>/backend-sessions/<ref>. Cloud: S3 under
+// sessions/<runID>/<ref>. Get must work on resume *before* the next Execute.
+type BackendSessionStore interface {
+	PutBackendSession(ctx context.Context, runID, ref string, blob []byte) error
+	GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error)
+	DeleteBackendSession(ctx context.Context, runID, ref string) error
+}
+
+// AsBackendSessionStore returns s as BackendSessionStore, or nil.
+func AsBackendSessionStore(s RunStore) BackendSessionStore {
+	if s == nil {
+		return nil
+	}
+	t, _ := s.(BackendSessionStore)
+	return t
+}
+
 // RunLogStore is an optional interface implemented by stores that
 // persist the run's raw log byte stream (ADR-053). The filesystem
 // store backs it with runs/<id>/run.log (the same file the local

@@ -615,6 +615,9 @@ func (e *ClawExecutor) newElementBuilder(
 			task.ResumeConversation = nil
 			task.ResumePendingToolUseID = ""
 			task.ResumeAnswer = ""
+			task.SessionID = ""
+			task.SessionFingerprint = ""
+			task.ForkSession = false
 		}
 		return bn, backend, task, nil
 	}

@@ -299,6 +299,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 			Backend:          cp.BackendName,
 			Conversation:     cp.BackendConversation,
 			PendingToolUseID: cp.BackendPendingToolUseID,
+			SessionStateRef:  cp.BackendSessionStateRef,
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
@@ -576,8 +577,15 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.roundRobinCounters = roundRobinCounters
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
+	if rs.nodeSessions == nil {
+		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
+	}
+	rs.pauseSessionRef = cp.BackendSessionStateRef
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	// Do not EvictRun here: pause-resume must keep in-process claw
+	// message history (evictRunSessions already skips ErrRunPaused).
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)
@@ -680,6 +688,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// the rest of a resumed run.
 	rs.attachments = e.loadAttachmentInfos(ctx, runID)
 	e.restoreCheckpointState(rs, cp)
+	e.adoptCheckpointSessions(rs)
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)
@@ -803,6 +812,11 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
 	pinBackendRehydration(rs, cp)
+	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
+	if rs.nodeSessions == nil {
+		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
+	}
+	rs.pauseSessionRef = cp.BackendSessionStateRef
 }
 
 // pinBackendRehydration pins a checkpoint's backend conversation (claw) or
@@ -1525,9 +1539,21 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 	}
 
+	if ni.SessionID != "" {
+		nodeInput[delegate.SessionIDKey] = ni.SessionID
+	}
+	if ni.SessionStateRef != "" || rs.pauseSessionRef != "" {
+		ref := ni.SessionStateRef
+		if ref == "" {
+			ref = rs.pauseSessionRef
+		}
+		e.hydratePauseSession(ctx, rs, nodeInput, ni.Backend, ni.SessionID, ref)
+	}
 	// Re-execute the node. The executor will use the session ID for
 	// delegate re-invocation if the backend supports it.
 	execCtx := e.ctxWithIteration(ctx, nodeID, rs.loopCounters)
+	execCtx = model.WithRunID(execCtx, rs.runID)
+	execCtx = model.WithNodeID(execCtx, nodeID)
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	if err != nil {
 		// Check for another interaction request (recursive). depth+1
@@ -1540,6 +1566,13 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 		return e.failRunWithCheckpoint(rs, nodeID,
 			fmt.Sprintf("node %q re-invocation failed: %v", nodeID, err))
+	}
+
+	if err := e.commitPersistSlot(ctx, rs, node, output); err != nil {
+		return err
+	}
+	if llm, ok := node.(ir.LLMNode); !ok || llm.GetSession() != ir.SessionPersist {
+		e.clearPauseRefAfterSuccess(ctx, rs, nodeID)
 	}
 
 	// Store the output and continue execution normally.
@@ -1627,12 +1660,30 @@ func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *mod
 		BackendConversation:     ni.Conversation,
 		BackendPendingToolUseID: ni.PendingToolUseID,
 	}
+	if len(ni.SessionStateBlob) > 0 {
+		ref := newSessionRef()
+		if err := e.putSessionBlob(rs.ctx, rs.runID, ref, ni.SessionStateBlob); err != nil {
+			if e.logger != nil {
+				e.logger.Warn("persist: put pause blob: %v", err)
+			}
+		} else {
+			pi.BackendSessionStateRef = ref
+		}
+		ni.SessionStateBlob = nil
+	}
+	oldPause := rs.pauseSessionRef
+	rs.pauseSessionRef = pi.BackendSessionStateRef
 	if _, isAwait := ni.Questions[delegate.AwaitPendingInteractionsKey]; isAwait {
 		pi.Kind = store.InteractionKindAwait
 		eventExtra["await"] = true
 	}
 	if err := e.doPause(rs, nodeID, ni.Questions, eventExtra, pi); err != nil {
+		// PauseRun may have committed despite the error. Never delete the
+		// new blob (ADR-089). Keep A and the previous pause blob.
 		return err
+	}
+	if oldPause != "" && oldPause != rs.pauseSessionRef {
+		e.deleteSessionBlob(rs.ctx, rs.runID, oldPause)
 	}
 	return ErrRunPaused
 }
@@ -1646,6 +1697,7 @@ type pauseInfo struct {
 	BackendName             string
 	BackendConversation     json.RawMessage
 	BackendPendingToolUseID string
+	BackendSessionStateRef  string
 	// Kind tags the written Interaction (store.InteractionKindAwait for
 	// an await_answers tool escalation, "" for ordinary blocking pauses).
 	Kind string
@@ -1758,6 +1810,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	cp.BackendName = info.BackendName
 	cp.BackendConversation = info.BackendConversation
 	cp.BackendPendingToolUseID = info.BackendPendingToolUseID
+	cp.BackendSessionStateRef = info.BackendSessionStateRef
 	if err := e.store.PauseRun(rs.ctx, rs.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause run: %w", err)
 	}

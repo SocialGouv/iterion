@@ -407,6 +407,10 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	// parked on a human gate, or in flight.
 	orphaned := detachSubbotChildren(run, invalidated)
 
+	// Capture persist blobs to delete AFTER the checkpoint lands
+	// without those refs (ADR-089).
+	dropSessionRefs, dropPauseRef := collectDroppedSessionRefs(cp, dropped, invalidated)
+
 	applyRewind(cp, pivot, dropped, invalidated)
 	for _, ts := range tombstones {
 		// The engine writes a node's next artifact at
@@ -442,6 +446,14 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 	}
 	if err := s.store.SaveCheckpoint(ctx, run.ID, cp); err != nil {
 		return nil, fmt.Errorf("save rewound checkpoint: %w", err)
+	}
+	if bss := store.AsBackendSessionStore(s.store); bss != nil {
+		for _, ref := range dropSessionRefs {
+			_ = bss.DeleteBackendSession(ctx, run.ID, ref)
+		}
+		if dropPauseRef != "" {
+			_ = bss.DeleteBackendSession(ctx, run.ID, dropPauseRef)
+		}
 	}
 
 	tombstoned := s.writeArtifactTombstones(ctx, run.ID, pivot, tombstones)
@@ -574,6 +586,35 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	cp.BackendSessionID = ""
 	cp.BackendConversation = nil
 	cp.BackendPendingToolUseID = ""
+	cp.BackendSessionStateRef = ""
+	if cp.NodeSessions != nil {
+		for _, id := range dropped {
+			delete(cp.NodeSessions, id)
+		}
+		for _, id := range invalidated {
+			delete(cp.NodeSessions, id)
+		}
+	}
+}
+
+func collectDroppedSessionRefs(cp *store.Checkpoint, dropped, invalidated []string) ([]string, string) {
+	if cp == nil {
+		return nil, ""
+	}
+	drop := map[string]bool{}
+	for _, id := range dropped {
+		drop[id] = true
+	}
+	for _, id := range invalidated {
+		drop[id] = true
+	}
+	var refs []string
+	for id, slot := range cp.NodeSessions {
+		if drop[id] && slot.StateRef != "" {
+			refs = append(refs, slot.StateRef)
+		}
+	}
+	return refs, cp.BackendSessionStateRef
 }
 
 // detachSubbotChildren removes, from the run's in-memory SubbotChildren

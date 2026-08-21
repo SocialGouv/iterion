@@ -140,6 +140,16 @@ type Client interface {
 	// the per-run cleanup sweep alongside DeleteRun / DeleteRunToolBlobs.
 	// Idempotent: deleting a non-existent key returns nil.
 	DeleteRunIR(ctx context.Context, runID string) error
+
+	// PutBackendSession stores a packed CLI session (ADR-089) under
+	// sessions/<runID>/<ref>. Idempotent.
+	PutBackendSession(ctx context.Context, runID, ref string, body []byte) error
+	// GetBackendSession returns the packed session or ErrArtifactNotFound.
+	GetBackendSession(ctx context.Context, runID, ref string) ([]byte, error)
+	// DeleteBackendSession removes one packed session. Idempotent.
+	DeleteBackendSession(ctx context.Context, runID, ref string) error
+	// DeleteRunBackendSessions removes sessions/<runID>/. Best-effort.
+	DeleteRunBackendSessions(ctx context.Context, runID string) error
 }
 
 // IRBlobKey returns the canonical layout key for an out-of-band compiled
@@ -237,4 +247,14 @@ func RunFileKey(runID, relPath string) (string, error) {
 // file for a run. Used by DeleteRunFiles and retention sweepers.
 func RunFileRunPrefix(runID string) (string, error) {
 	return runFileRunPrefix(runID)
+}
+
+// BackendSessionKey is sessions/<run_id>/<ref>.
+func BackendSessionKey(runID, ref string) (string, error) {
+	return backendSessionKey(runID, ref)
+}
+
+// BackendSessionRunPrefix is sessions/<run_id>/.
+func BackendSessionRunPrefix(runID string) (string, error) {
+	return backendSessionRunPrefix(runID)
 }

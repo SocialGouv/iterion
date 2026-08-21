@@ -306,6 +306,8 @@ type runState struct {
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
 	events           *runEvents
 	artifactVersions map[string]int
+	nodeSessions     map[string]store.NodeSessionSlot
+	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
 	// gateAnchors memoises the review-gate anchor of each (node, iter), so
 	// the companion and the human are handed the SAME range: the companion
 	// runs before the pause, and re-capturing at pause time would move the
@@ -509,6 +511,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		loopBudgetMarks:    make(map[string]loopBudgetMark),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
+		nodeSessions:       make(map[string]store.NodeSessionSlot),
 		preMarked:          make(map[string]bool),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),

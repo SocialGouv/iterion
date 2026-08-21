@@ -1468,6 +1468,15 @@ const (
 	// session-continuity wiring and by the engine's fork rehydration path
 	// so a forked claude_code node picks up the parent's CLI session.
 	SessionIDKey = "_session_id"
+	// SessionStateKey carries a packed CLI session blob to unpack before
+	// Execute (ADR-089). Internal; stripped before prompts.
+	SessionStateKey = "_session_state"
+	// SessionStateBlobKey is the packed blob on a successful Execute
+	// output; the runtime strips it before storing rs.outputs.
+	SessionStateBlobKey = "_session_state_blob"
+	// SessionFingerprintKey is the provider fingerprint of a CLI session.
+	SessionFingerprintKey = "_session_fingerprint"
+	BackendNameKey        = "_backend"
 )
 
 // AwaitPendingInteractionsKey is the reserved Interaction.Questions key

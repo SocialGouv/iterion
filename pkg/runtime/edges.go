@@ -25,7 +25,7 @@ import (
 // (which would otherwise be selected without the MaxIterations /
 // collection-exhaustion guard — foreach with an empty Condition is an
 // unconditional back-edge), we skip every IsBoundedIteration() edge.
-// The compiler refuses those graphs (C243); this skip is defence in
+// The compiler refuses those graphs (C244); this skip is defence in
 // depth. The intent matches the existing comment on the Expression case:
 // "branches don't iterate, so loop/run namespaces have no meaning."
 func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {

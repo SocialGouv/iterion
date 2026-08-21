@@ -988,6 +988,20 @@ func TestDiagUnknownProperty(t *testing.T) {
 	}
 }
 
+func TestAgentSessionPersist(t *testing.T) {
+	src := `agent worker:
+  model: "claude-4"
+  input: in_s
+  output: out_s
+  system: sys
+  user: usr
+  session: persist
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	assertEq(t, "Session", res.File.Agents[0].Session, ast.SessionPersist)
+}
+
 func TestDiagInvalidSessionMode(t *testing.T) {
 	src := `agent foo:
   model: "m"

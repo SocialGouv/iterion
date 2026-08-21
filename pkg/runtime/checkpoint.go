@@ -22,11 +22,13 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
 		// Persist run-scoped accounting so resume continues from consumed
 		// budget/spend instead of a fresh allowance (see Checkpoint docs).
-		BudgetTokensUsed:     tokens,
-		BudgetCostUSD:        cost,
-		BudgetIterationsUsed: iterations,
-		BudgetElapsedNS:      elapsed.Nanoseconds(),
-		CostUSDTotal:         rs.costUSDTotal,
+		BudgetTokensUsed:       tokens,
+		BudgetCostUSD:          cost,
+		BudgetIterationsUsed:   iterations,
+		BudgetElapsedNS:        elapsed.Nanoseconds(),
+		CostUSDTotal:           rs.costUSDTotal,
+		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
+		BackendSessionStateRef: rs.pauseSessionRef,
 	}
 }
 

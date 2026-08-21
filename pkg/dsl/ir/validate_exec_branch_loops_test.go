@@ -2,7 +2,7 @@ package ir
 
 import "testing"
 
-// C243 — bounded iteration (loop / foreach) inside a subgraph that
+// C244 — bounded iteration (loop / foreach) inside a subgraph that
 // execBranch runs (fan_out_all, fan_out_each, llm multi).
 
 const execBranchLoopPrompts = `
@@ -20,7 +20,7 @@ schema s:
 func TestValidateLoopInFanOutAllBody_Rejected(t *testing.T) {
 	// Loop target is a distinct dummy so findConvergencePoint still elects
 	// join (a1 has a single incoming source). execBranch runs a1 and would
-	// skip the loop — that is the C243 true positive.
+	// skip the loop — that is the C244 true positive.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -58,7 +58,7 @@ workflow test:
 
 func TestValidateLoopHeadElectedAsJoin_Allowed(t *testing.T) {
 	// a1 -> a1 as refine gives a1 two incoming sources, so the runtime elects
-	// a1 as the join and runs the loop on the trunk. C243 must not reject it.
+	// a1 as the join and runs the loop on the trunk. C244 must not reject it.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -268,7 +268,7 @@ workflow test:
 
 func TestValidateLoopAfterImplicitJoin_Allowed(t *testing.T) {
 	// collect has two incoming sources and no await:. Runtime treats that
-	// as a convergence point (findConvergencePoint); C243 must stop the
+	// as a convergence point (findConvergencePoint); C244 must stop the
 	// body walk there too, or a trunk loop after collect is a false positive.
 	src := execBranchLoopPrompts + `
 tool a1:
@@ -432,7 +432,7 @@ workflow test:
 
 func TestValidateLoopReenteringBodyFromJoin_Allowed(t *testing.T) {
 	// join has await, so the structural stop keeps it out of the body even
-	// if the loop back-edge makes a1 the elected convergence. C243 keys on
+	// if the loop back-edge makes a1 the elected convergence. C244 keys on
 	// the edge source.
 	src := execBranchLoopPrompts + `
 tool a1:
@@ -468,7 +468,7 @@ func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
 	// joiner is the elected convergence (first fan edge reaches it). z also
 	// has await: so the structural stop treats it as a join and does not
 	// put w in the body. The skip of w→z inside execBranch is a runtime
-	// hole (execBranch only stops at the elected id), not C243.
+	// hole (execBranch only stops at the elected id), not C244.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `

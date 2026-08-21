@@ -66,6 +66,10 @@ func ApplyRunFallback(w *Workflow, route Fallback) []string {
 			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
 			continue
 		}
+		if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, route.Backend); reason != "" {
+			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
+			continue
+		}
 		// A route that changes backend with no model of its own cannot
 		// work — model specs are not portable — and a route naming the
 		// node's own backend with no model would re-issue the identical

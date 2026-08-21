@@ -170,7 +170,7 @@ Important property groups:
 |---|---|
 | Model execution | `model`, `backend`, `provider`, and the `claude_code`-compatible binary override `command`. See [backends](backends.md) and [delegation](delegation.md). |
 | Data/prompt | `input`, `output`, `system`, `user`, `publish`, `artifact_labels`, `description`. |
-| Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only`, `interaction`, `interaction_prompt`, `interaction_model`. |
+| Conversation | `session: fresh\|inherit\|inherit_if_available\|fork\|artifacts_only\|persist`, `interaction`, `interaction_prompt`, `interaction_model`. `persist` (ADR-089) resumes **this node's own** last CLI conversation on re-entry (claude_code / pi / codex); judges and humans stay graph nodes. Trunk-only (C243). |
 | Tools/access | `tools`, `tool_policy`, `capabilities`, `skills`, `permission`, `mcp`, `sandbox`. |
 | Limits | `tool_max_steps`, `max_tokens`, `reasoning_effort`, `timeout`, `compaction`, `compress`. |
 | Scheduling | `await`, `needs`, and the workspace-safety assertion `readonly`. |
@@ -589,7 +589,7 @@ Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once e
 
 Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
 
-A loop or foreach whose source sits **inside** a `fan_out_all`, `fan_out_each`, or `llm` `multi: true` body is a compile error (**C243**): those subgraphs run as parallel branches with no local loop counters. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) is on the trunk and is allowed. Per-item retry loops belong in a `subbot` until branch-local execution exists; see [composition/iteration/sub-bots](groups-iteration-subbots.md).
+A loop or foreach whose source sits **inside** a `fan_out_all`, `fan_out_each`, or `llm` `multi: true` body is a compile error (**C244**): those subgraphs run as parallel branches with no local loop counters. A loop that wraps the fan-out from the join (`join -> router as outer(N)`) is on the trunk and is allowed. Per-item retry loops belong in a `subbot` until branch-local execution exists; see [composition/iteration/sub-bots](groups-iteration-subbots.md).
 
 Terminal targets `done` and `fail` are reserved and are never declared.
 
@@ -604,7 +604,7 @@ Terminal targets `done` and `fail` are reserved and are never declared.
 
 ## Validation and references
 
-Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242 and C243 (loop in a parallel-branch body); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
+Run `iterion validate workflow.bot` before execution. Diagnostics occupy sparse ranges: DSL/compiler/runtime consistency checks use C001–C199 plus the async-interaction band C240–C242, C243 (`session: persist` in a fan-out body), and C244 (loop in a parallel-branch body); bundle checks use C200–C234. The authoritative list is [references/diagnostics.md](references/diagnostics.md).
 
 - [Readable grammar](references/dsl-grammar.md)
 - [Formal EBNF](grammar/iterion_v1.ebnf)

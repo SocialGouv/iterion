@@ -4779,6 +4779,7 @@ export interface components {
             backend_name?: string;
             backend_pending_tool_use_id?: string;
             backend_session_id?: string;
+            backend_session_state_ref?: string;
             budget_cost_usd?: number;
             budget_elapsed_ns?: number;
             budget_iterations_used?: number;
@@ -4812,6 +4813,9 @@ export interface components {
                 };
             };
             node_id: string;
+            node_sessions?: {
+                [key: string]: components["schemas"]["NodeSessionSlot"];
+            };
             outputs: {
                 [key: string]: {
                     [key: string]: unknown;
@@ -4977,6 +4981,13 @@ export interface components {
             title: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        NodeSessionSlot: {
+            backend: string;
+            conversation_ref?: string;
+            fingerprint?: string;
+            session_id?: string;
+            state_ref?: string;
         };
         PipelineBoardAttempt: {
             /** Format: date-time */

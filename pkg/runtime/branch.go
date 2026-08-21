@@ -102,7 +102,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Bounded-iteration edges inside execBranch are skipped (see
-		// edges.go / C243), so iteration here reflects the parent loop
+		// edges.go / C244), so iteration here reflects the parent loop
 		// counters only.
 		iter := e.currentLoopIteration(currentNodeID, rs.loopCounters)
 
@@ -251,6 +251,11 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	// (or the mandatory timeout) — released on park, see launchBranches.
 	if output, done, handled := e.executeSpecialNodeForBranch(ctx, rs, branchID, currentNodeID, node, branchScope, result, slot); handled {
 		return output, done
+	}
+
+	if llm, ok := node.(ir.LLMNode); ok && llm.GetSession() == ir.SessionPersist {
+		result.err = fmt.Errorf("node %q has session: persist inside a fan-out branch (C243)", currentNodeID)
+		return nil, true
 	}
 
 	nodeInput := e.buildNodeInputRS(currentNodeID, branchScope)
