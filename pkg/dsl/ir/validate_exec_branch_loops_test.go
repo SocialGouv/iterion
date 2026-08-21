@@ -210,6 +210,44 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopAfterImplicitJoin_Allowed(t *testing.T) {
+	// collect has two incoming sources and no await:. Runtime treats that
+	// as a convergence point (findConvergencePoint); C243 must stop the
+	// body walk there too, or a trunk loop after collect is a false positive.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool collect:
+  command: ` + "`echo`" + `
+  output: s
+
+tool refine:
+  command: ` + "`echo`" + `
+  output: s
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> collect
+  a2 -> collect
+  collect -> refine
+  refine -> refine as more(5) when ok
+  refine -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
+
 func TestValidateLoopAfterJoin_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
@@ -241,7 +279,7 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopAfterImplicitJoin_Allowed(t *testing.T) {
+func TestValidateLoopOnImplicitJoin_Allowed(t *testing.T) {
 	// collect has two incoming edges and no await: — findConvergencePoint
 	// still treats it as the join, so a loop on collect runs on the trunk.
 	src := execBranchLoopPrompts + `
