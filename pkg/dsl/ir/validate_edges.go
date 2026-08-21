@@ -325,6 +325,9 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		nonIterIn[e.To][e.From] = true
 	}
+	// Same stop as findConvergencePoint, minus loop/foreach back-edges
+	// (those must not turn a body node into a join). Await-less nodes
+	// with >1 non-iteration predecessor are implicit joins: trunk, not body.
 	isJoin := func(id string) bool {
 		n, ok := w.Nodes[id]
 		if !ok {
