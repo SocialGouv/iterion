@@ -193,19 +193,38 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 		delete(output, "needs_human_input")
 	}
 
-	// Strip metadata keys. This map is returned as `answers` and copied
-	// verbatim into the re-invoked node's input, where a `_`-prefixed key
-	// both joins the reserved namespace the delegates read and — for a node
-	// with no user-prompt template — gets JSON-serialized into the user
-	// message as if it were an answer. Drop the whole namespace rather than
-	// a list, so the next metadata addition cannot reopen this.
-	for k := range output {
-		if strings.HasPrefix(k, "_") {
-			delete(output, k)
-		}
-	}
+	stripInteractionMetadata(output, input)
 
 	return output, needsHuman, nil
+}
+
+// stripInteractionMetadata drops the reserved `_`-prefixed namespace from an
+// interaction answer map, EXCEPT the keys that were actually asked.
+//
+// The map is returned as `answers` and copied verbatim into the re-invoked
+// node's input (runtime.reInvokeBackend), where a `_`-prefixed key both joins
+// the reserved namespace the delegates read and — for a node with no
+// user-prompt template — gets JSON-serialized into the user message as if it
+// were an answer. So the whole namespace goes, rather than a list of known
+// keys: the next metadata addition (`_cost_usd` was one) cannot reopen it.
+//
+// `asked` is the exemption, and it is not optional. sanitizeSchemaKey maps
+// every non-alphanumeric rune to `_`, so a delegate question keyed
+// "(a) which db?" arrives as the answer key `_a__which_db_`. Deleting that
+// discards an answer the LLM did produce: the agent is re-invoked with the
+// question still open, asks it again, and burns interaction depth until
+// maxInteractionDepth fails the run — with no event anywhere saying an answer
+// was dropped. `asked` holds exactly the sanitized question keys, so it is the
+// set the strip must leave alone.
+func stripInteractionMetadata(answers, asked map[string]any) {
+	for k := range answers {
+		if _, wasAsked := asked[k]; wasAsked {
+			continue
+		}
+		if strings.HasPrefix(k, "_") {
+			delete(answers, k)
+		}
+	}
 }
 
 // sanitizeSchemaKey replaces characters that are invalid in JSON Schema
