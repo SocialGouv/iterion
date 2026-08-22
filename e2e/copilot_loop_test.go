@@ -361,9 +361,16 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if len(rev.Fallbacks) == 0 {
 		t.Error("the reviewer declares no fallbacks — a judge never inherits the node's chain, so one provider outage silently removes cross-review")
 	}
+	// The reviewer may sit on ANY gate-enforcing backend — unlike copi it
+	// is `session: fresh`, so a backend-crossing route trips no continuity
+	// rule. What must never happen is a route that cannot hold the gate.
+	gated := map[string]bool{"claude_code": true, "claw": true, "pi": true}
+	if !gated[rev.Backend] {
+		t.Errorf("reviewer runs on %q, which cannot enforce the deny gate", rev.Backend)
+	}
 	for _, fb := range rev.Fallbacks {
-		if fb.Backend != "claw" {
-			t.Errorf("reviewer fallback %q runs on %q: same gate rule as the main chain", fb.Name, fb.Backend)
+		if !gated[fb.Backend] {
+			t.Errorf("reviewer fallback %q runs on %q, which cannot enforce the deny gate", fb.Name, fb.Backend)
 		}
 	}
 	// Different family from the answering model. A reviewer sharing the
@@ -627,6 +634,13 @@ func family(spec string) string {
 	}
 	if i := strings.Index(spec, "/"); i > 0 {
 		return spec[:i]
+	}
+	// A bare claude_code model id carries no provider prefix ("claude-fable-5"),
+	// so comparing it verbatim against "openai" would report two different
+	// families for any two models at all — true here by accident, and useless
+	// as a guard. Map the bare form onto its provider.
+	if strings.HasPrefix(spec, "claude-") {
+		return "anthropic"
 	}
 	return spec
 }

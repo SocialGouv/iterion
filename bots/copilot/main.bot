@@ -577,8 +577,20 @@ compute gate:
 ## Every route stays on claw for the same reason the main chain does:
 ## the `grok` and `kimi` CLI backends cannot enforce `permission: deny`.
 judge review:
-  backend: "claw"
-  model: "${ITERION_COPILOT_REVIEWER_MODEL:-anthropic/claude-fable-5}"
+  ## claude_code, not claw, and the reason is empirical: on a host whose
+  ## only Anthropic credential is the Claude Code OAuth forfait,
+  ## `anthropic/…` on claw is NOT usable (`iterion models` reports the
+  ## Anthropic rows usable via claude_code alone). The reviewer's primary
+  ## would have failed on every turn and fallen through to the openai
+  ## rung — the SAME family as Copi — turning cross-review into a mirror,
+  ## silently, which is the exact failure the family rule exists to stop.
+  ##
+  ## It is legal here where it would not be on `copi`: claude_code is one
+  ## of the three gate-enforcing backends (a PreToolUse hook evaluating
+  ## the same permission.Policy), and `session: fresh` means the
+  ## backend-crossing fallback below trips no session-continuity rule.
+  backend: "claude_code"
+  model: "${ITERION_COPILOT_REVIEWER_MODEL:-claude-fable-5}"
   reasoning_effort: "${ITERION_COPILOT_REVIEWER_EFFORT:-medium}"
   input: review_in
   output: review_out
