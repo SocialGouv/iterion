@@ -441,7 +441,9 @@ type inspection struct {
 	err error
 }
 
-// inspectGit reports what git can prove about a worktree.
+// inspectGitForScan reports what git can prove about a worktree and
+// optionally counts ignored entries. That count is a diagnostic for
+// `iterion clean`; it never changes a deletion verdict.
 //
 // Every answer is refused unless git is talking about THIS directory.
 // Run under a directory merely nested inside some repository — and the
@@ -450,12 +452,6 @@ type inspection struct {
 // enclosing repository instead. Its HEAD, its clean status and its refs
 // then describe a tree this directory has nothing to do with, which reads
 // as a landed, clean worktree and deletes whatever the directory held.
-func inspectGit(path string) inspection {
-	return inspectGitForScan(path, true)
-}
-
-// inspectGitForScan optionally counts ignored entries. That count is a
-// diagnostic for `iterion clean`; it never changes a deletion verdict.
 func inspectGitForScan(path string, countIgnored bool) inspection {
 	// "git could not answer" and "git says this is not a worktree" are
 	// different facts and must not collapse into the same verdict.
