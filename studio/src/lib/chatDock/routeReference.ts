@@ -115,7 +115,11 @@ const REF_SHAPE: Record<ReferenceKind, RegExp | null> = {
   //
   // Trade-off, deliberately taken: a filename containing a space loses
   // its chip and degrades to the plain view reference.
-  bot: /^[A-Za-z0-9._:/-]{1,128}$/,
+  // Bot references are either catalog slugs or workspace-relative paths.
+  // Neither namespace uses `:`. Keeping it out here is important because
+  // explicit drag payloads mint through ref() directly and do not pass the
+  // narrower /bots/:name route check below.
+  bot: /^[A-Za-z0-9._/-]{1,128}$/,
   repo: /^[A-Za-z0-9._:/-]{1,128}$/,
   view: null,
 };
