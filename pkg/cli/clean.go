@@ -43,7 +43,6 @@ const (
 	landingMerged    = worktreepool.LandingMerged
 	landingOwnBranch = worktreepool.LandingOwnBranch
 	landingNowhere   = worktreepool.LandingNowhere
-	landingNested    = worktreepool.LandingNested
 
 	skipRunActive = worktreepool.SkipRunActive
 	skipUnlanded  = worktreepool.SkipUnlanded

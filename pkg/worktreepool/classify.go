@@ -269,12 +269,15 @@ func classify(
 		// Guard 3 — a repository inside the tree, whose objects the outer
 		// repository cannot vouch for.
 		wt.SkipReason = SkipNested
-	} else if opts.RefuseIgnoredEntries && wt.IgnoredEntries > 0 {
-		wt.SkipReason = SkipIgnored
 	} else if opts.OlderThan > 0 && time.Duration(wt.AgeSeconds)*time.Second < opts.OlderThan {
 		wt.SkipReason = SkipTooRecent
 	} else if reason, ok := opts.admission()(wt.Landing, wt.Dirty, wt.DurablyHeld); !ok {
 		wt.SkipReason = reason
+	} else if opts.RefuseIgnoredEntries && wt.IgnoredEntries > 0 {
+		// Admission comes first because dirtiness decides the clean level.
+		// Filing a dirty+ignored tree under ignored alone would offer the
+		// default conservative command even when moderate is required.
+		wt.SkipReason = SkipIgnored
 	} else if resumable {
 		// Only where the entry would otherwise be taken at THIS level:
 		// reporting `resumable` for something the level ladder also holds
@@ -435,12 +438,12 @@ func stillEligible(
 	case LandingNested:
 		return SkipNested, false
 	}
-	if refuseIgnored && insp.ignoredEntries > 0 {
-		return SkipIgnored, false
-	}
 	if reason, ok := admit(insp.landing, insp.dirty, insp.durablyHeld); !ok {
 		wt.Dirty = insp.dirty
 		return reason, false
+	}
+	if refuseIgnored && insp.ignoredEntries > 0 {
+		return SkipIgnored, false
 	}
 	if _, nested, complete := scanTree(ctx, wt.Path); len(nested) > 0 || !complete {
 		wt.NestedRepos = nested
@@ -806,7 +809,9 @@ func worktreeStatus(ctx context.Context, path string, countIgnored bool) (dirty 
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "!!") {
-			ignored++
+			if !isRuntimeIgnoredPath(dequotePath(strings.TrimSpace(line[2:]))) {
+				ignored++
+			}
 			continue
 		}
 		if len(line) < 4 {
@@ -828,6 +833,25 @@ func worktreeStatus(ctx context.Context, path string, countIgnored bool) (dirty 
 		}
 	}
 	return dirty, ignored, nil
+}
+
+// isRuntimeIgnoredPath recognises only top-level state Iterion or its
+// managed runtime writes into every checkout. Repositories commonly ignore
+// `.claude/` as one directory, so git reports the collapsed root rather
+// than the individual skills/settings that isScaffold can identify.
+// Unknown ignored paths remain protected: an ignored `.env` may belong to
+// the operator and unattended cleanup has no authority to decide otherwise.
+func isRuntimeIgnoredPath(path string) bool {
+	path = strings.TrimSuffix(filepath.ToSlash(path), "/")
+	if path == ".claude" || strings.HasPrefix(path, ".claude/") {
+		return true
+	}
+	if path == ".gomodcache" || strings.HasPrefix(path, ".gomodcache/") ||
+		path == ".devbox" || strings.HasPrefix(path, ".devbox/") {
+		return true
+	}
+	first, _, _ := strings.Cut(path, "/")
+	return strings.HasPrefix(first, ".tmp-")
 }
 
 // pruneWorktreeRegistration drops the administrative entry of the one

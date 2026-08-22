@@ -389,6 +389,51 @@ func TestBound_RefusesIgnoredContent(t *testing.T) {
 	}
 }
 
+func TestBound_DoesNotRefuseIgnoredRuntimeScaffold(t *testing.T) {
+	f := newPoolFixture(t)
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "**/.claude/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore runtime scaffold")
+	for i, id := range []string{"old", "new"} {
+		path := f.idle(id)
+		mustWrite(t, filepath.Join(path, ".claude", "skills", "x.md"), "mirrored\n")
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+
+	r := f.enforce(1)
+	if len(r.Reclaimed) != 1 || r.Reclaimed[0].RunID != "old" {
+		t.Fatalf("runtime scaffold disabled reclamation: %+v", r)
+	}
+}
+
+func TestBound_DirtyIgnoredMergedRemedyIsModerate(t *testing.T) {
+	f := newPoolFixture(t)
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "dist/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore output")
+	paths := map[string]string{}
+	for _, id := range []string{"a", "b"} {
+		paths[id] = f.idle(id)
+		f.seedRun(id, store.RunStatusFailed)
+	}
+	mustWrite(t, filepath.Join(f.repo, "later.txt"), "advance main\n")
+	f.git(f.repo, "add", "later.txt")
+	f.git(f.repo, "commit", "-m", "advance main")
+	for _, path := range paths {
+		mustWrite(t, filepath.Join(path, "README.md"), "dirty\n")
+		mustWrite(t, filepath.Join(path, "dist", "output.txt"), "ignored\n")
+	}
+
+	r := f.enforce(1)
+	if r.Spared[SkipLevel] != 2 {
+		t.Fatalf("spared reasons = %v, want dirty entries to retain level reason", r.Spared)
+	}
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level moderate") {
+		t.Fatalf("Remedy = %q, want moderate for dirty merged entries", got)
+	}
+}
+
 // A worktree whose commits only iterion's own per-run refs hold would lose
 // them when the run is reaped, so the bound refuses it even though a ref
 // technically contains its HEAD.
