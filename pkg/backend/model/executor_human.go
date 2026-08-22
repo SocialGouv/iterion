@@ -193,9 +193,17 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 		delete(output, "needs_human_input")
 	}
 
-	// Strip metadata keys.
-	delete(output, "_tokens")
-	delete(output, "_model")
+	// Strip metadata keys. This map is returned as `answers` and copied
+	// verbatim into the re-invoked node's input, where a `_`-prefixed key
+	// both joins the reserved namespace the delegates read and — for a node
+	// with no user-prompt template — gets JSON-serialized into the user
+	// message as if it were an answer. Drop the whole namespace rather than
+	// a list, so the next metadata addition cannot reopen this.
+	for k := range output {
+		if strings.HasPrefix(k, "_") {
+			delete(output, k)
+		}
+	}
 
 	return output, needsHuman, nil
 }

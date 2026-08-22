@@ -542,7 +542,7 @@ func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
 	b.RecordUsage(300, 4.0) // 1 iteration
 	b.RecordUsage(200, 1.5) // 2 iterations
 
-	tokens, cost, iters, elapsed := b.Snapshot()
+	tokens, cost, iters, elapsed, unpTok, unpNodes := b.Snapshot()
 	if tokens != 500 || cost != 5.5 || iters != 2 {
 		t.Fatalf("snapshot = (%d,%v,%d), want (500,5.5,2)", tokens, cost, iters)
 	}
@@ -552,12 +552,12 @@ func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
 
 	// A fresh budget (as newRunState builds on resume) starts at zero...
 	resumed := newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10, MaxIterations: 5, MaxDuration: "1h"}, nil)
-	if t0, _, _, _ := resumed.Snapshot(); t0 != 0 {
+	if t0, _, _, _, _, _ := resumed.Snapshot(); t0 != 0 {
 		t.Fatalf("fresh budget should start at 0 tokens, got %d", t0)
 	}
 	// ...until Restore seeds it from the checkpoint.
-	resumed.Restore(tokens, cost, iters, elapsed)
-	rt, rc, ri, _ := resumed.Snapshot()
+	resumed.Restore(tokens, cost, iters, elapsed, unpTok, unpNodes)
+	rt, rc, ri, _, _, _ := resumed.Snapshot()
 	if rt != 500 || rc != 5.5 || ri != 2 {
 		t.Fatalf("restored = (%d,%v,%d), want (500,5.5,2)", rt, rc, ri)
 	}
@@ -600,7 +600,7 @@ func TestCheckpointCarriesBudgetAccounting(t *testing.T) {
 	if resumed.costUSDTotal != 7.25 {
 		t.Fatalf("resumed costUSDTotal = %v, want 7.25", resumed.costUSDTotal)
 	}
-	tok, cost, _, _ := resumed.budget.Snapshot()
+	tok, cost, _, _, _, _ := resumed.budget.Snapshot()
 	if tok != 400 || cost != 3.0 {
 		t.Fatalf("resumed budget = (%d,%v), want (400,3)", tok, cost)
 	}
@@ -1400,7 +1400,7 @@ func TestSharedBudget_UnpricedSpend(t *testing.T) {
 		}
 	})
 
-	t.Run("re_arms_when_the_cost_ceiling_is_raised", func(t *testing.T) {
+	t.Run("re_arms_on_raise_and_survives_the_read_only_check", func(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
 		if unpriced(b.RecordUsage(50_000, 0)) == nil {
 			t.Fatal("expected the first warning")
@@ -1414,8 +1414,39 @@ func TestSharedBudget_UnpricedSpend(t *testing.T) {
 		if _, raised := b.RaiseCaps(ir.BudgetOverrides{MaxCostUSD: 400}); !raised {
 			t.Fatal("expected the raise to land")
 		}
+
+		// The engine drains overrides then calls Check() before the next node
+		// runs. Check() inspects only exceeded/hard-limited and discards
+		// warnings, so if it could produce this one it would silently eat the
+		// re-arm and no operator would ever see it. It must not appear here…
+		if unpriced(b.Check()) != nil {
+			t.Fatal("the read-only Check() path must never raise (and thus consume) the unpriced warning")
+		}
+		// …and must still be waiting for the next recorded node.
 		if unpriced(b.RecordUsage(50_000, 0)) == nil {
 			t.Error("a raised cost ceiling must re-arm the unpriced warning")
+		}
+	})
+
+	t.Run("counters_ride_the_checkpoint", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+		b.RecordUsage(50_000, 0)
+		b.RecordUsage(30_000, 0)
+		_, _, _, _, unpTok, unpNodes := b.Snapshot()
+		if unpTok != 80_000 || unpNodes != 2 {
+			t.Fatalf("snapshot lost the unpriced volume: %d tokens over %d nodes", unpTok, unpNodes)
+		}
+
+		// Without this, a resumed run re-warns while counting only what ran
+		// after the pause — a partial number reported as if it were the total.
+		resumed := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+		resumed.Restore(0, 0, 2, 0, unpTok, unpNodes)
+		w := unpriced(resumed.RecordUsage(10_000, 0))
+		if w == nil {
+			t.Fatal("expected the warning on the resumed run")
+		}
+		if !strings.Contains(w.detail, "90000 tokens") || !strings.Contains(w.detail, "3 node") {
+			t.Errorf("resumed detail must count the whole run, got %q", w.detail)
 		}
 	})
 
