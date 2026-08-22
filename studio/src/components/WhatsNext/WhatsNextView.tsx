@@ -189,6 +189,7 @@ function WhatsNextConversation({
                           : composerPlaceholder(
                               session.runStatus,
                               !!pendingHumanQuestion,
+                              bot.label,
                             )
                       }
                       onSend={onComposerSend}

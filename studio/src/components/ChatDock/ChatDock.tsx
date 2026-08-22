@@ -294,6 +294,7 @@ function AssistantDock({
                     : composerPlaceholder(
                         session.runStatus,
                         !!composer.pendingHumanQuestion,
+                        bot.label,
                       )
                 }
                 onSend={onComposerSend}
