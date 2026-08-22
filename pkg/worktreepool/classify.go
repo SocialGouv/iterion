@@ -96,6 +96,9 @@ const (
 	SkipTooRecent       = "too-recent"
 	SkipKeepLast        = "keep-last"
 	SkipLevel           = "needs-higher-level"
+	// SkipRemovalFailed means classification admitted the entry but its
+	// filesystem removal failed. The concrete error is reported separately.
+	SkipRemovalFailed = "remove-failed"
 	// SkipResumable: the run is terminal to a poller but `iterion resume`
 	// restarts it in this very worktree. Sparing it is the default and
 	// --include-resumable is the way to say the resume is not wanted —

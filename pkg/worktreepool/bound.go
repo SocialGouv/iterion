@@ -53,10 +53,9 @@ type BudgetReport struct {
 	Reclaimed []Entry
 	// BytesReclaimed is what those directories occupied.
 	BytesReclaimed int64
-	// Spared counts what was over budget and could not be taken, by the
-	// reason it was refused. This is the actionable half of the report:
-	// it is what turns "still over budget" into a sentence naming a
-	// command.
+	// Spared counts candidates examined while the pool was over budget and
+	// not taken, by reason. Refusals do not consume the excess, so a pass
+	// may examine and count more entries than the initial excess.
 	Spared map[string]int
 	// Errors are per-entry failures. The pass never aborts on one.
 	Errors []error
@@ -105,6 +104,7 @@ var sparedLabels = []struct {
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
 	{SkipRunActive, "are owned by a live run"},
+	{SkipRemovalFailed, "could not be removed (see the preceding error)"},
 }
 
 // Remedy is the command that would clear what the bound refused, or empty
@@ -375,6 +375,11 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 			}
 			rememberPoolRefusal(sp, now())
 			report.recordSpared(sp)
+		}
+		// A failed removal is not a classification refusal and must not be
+		// memoized, but it still explains why this pass remains over budget.
+		for range swept.Failed {
+			report.Spared[SkipRemovalFailed]++
 		}
 		if len(swept.Deleted) == 0 {
 			continue

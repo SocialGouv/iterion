@@ -724,6 +724,29 @@ func TestBound_RefreshesLandingWhenHeadMovesDuringEligibility(t *testing.T) {
 	}
 }
 
+func TestBound_ReportsFailedRemovalsInTheAggregateWarning(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+	}
+	r, err := EnforceBudget(f.store, 1, SweepOptions{
+		Remove: func(string) error { return os.ErrPermission },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Spared[SkipRemovalFailed] != 2 || len(r.Errors) != 2 {
+		t.Fatalf("failed pass = %+v, want both removal failures named", r)
+	}
+	if !strings.Contains(r.Summary(), "could not be removed") {
+		t.Fatalf("Summary = %q, want the failed-removal reason", r.Summary())
+	}
+	if got := r.Remedy(f.store); got != "" {
+		t.Fatalf("Remedy = %q, want none because no clean flag resolves a filesystem error", got)
+	}
+}
+
 func TestBound_CancelledContextStopsBeforeClassification(t *testing.T) {
 	f := newPoolFixture(t)
 	for _, id := range []string{"old", "new"} {
@@ -906,7 +929,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 // Every reason the bound can produce must render, or an operator reads
 // "3 worktrees exceed the budget;" with nothing after the semicolon.
 func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
-	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIgnored, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive} {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIgnored, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive, SkipRemovalFailed} {
 		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
 		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
 			t.Errorf("reason %q rendered as %q", reason, got)
