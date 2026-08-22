@@ -541,8 +541,12 @@ The budget honours that difference rather than folding the absence into a
 and the first time it happens under a declared `max_cost_usd` the run emits
 one advisory `budget_warning` on dimension `cost_usd_unpriced`, whose
 `detail` names how many node executions and how many tokens the ceiling
-cannot see. The run continues — an operator may legitimately want it to —
-but the ceiling never again reads as enforced when it is only partial.
+could not see *at that point*. That figure is a floor, not a total: the
+warning is raised once per ceiling — the operator is told, not spammed —
+while the counters keep climbing behind it, so a run that goes on to burn
+forty unpriced nodes was told about the first. The run continues — an
+operator may legitimately want it to — but the ceiling never again reads as
+enforced when it is only partial.
 
 What reaches it is a model absent from both pricing sources — typically one
 newer than the static table. A backend that publishes no dollar figure of

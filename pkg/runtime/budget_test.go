@@ -1348,6 +1348,41 @@ func TestSharedBudget_UnpricedSpend(t *testing.T) {
 		}
 	})
 
+	// The warning fires on the FIRST unpriced node and never again, so its
+	// figures are a floor, not a run total — and the message must not read
+	// like one. A run with 40 unpriced nodes would otherwise be told "1".
+	t.Run("detail_reports_a_floor_not_a_total", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+
+		w := unpriced(b.RecordUsage(50_000, 0))
+		if w == nil {
+			t.Fatal("expected the first unpriced node to warn")
+		}
+		// What it could possibly know at emission time: one node.
+		if !strings.Contains(w.detail, "1 node execution(s)") ||
+			!strings.Contains(w.detail, "50000 tokens") {
+			t.Errorf("detail should carry the counters as of this node: %q", w.detail)
+		}
+		// And it must announce that this is a running figure, since nothing
+		// re-emits and no surface reads the final counters back.
+		if !strings.Contains(w.detail, "as of this node") ||
+			!strings.Contains(w.detail, "keeps growing") {
+			t.Errorf("detail presents a first-node sample as a run total: %q", w.detail)
+		}
+
+		// Drive the run on: the counters climb well past what the operator
+		// was told, which is exactly why the wording is a floor.
+		for i := 0; i < 39; i++ {
+			if again := unpriced(b.RecordUsage(50_000, 0)); again != nil {
+				t.Fatal("cost_usd_unpriced must warn at most once per run")
+			}
+		}
+		if b.unpricedNodes != 40 || b.unpricedTokens != 2_000_000 {
+			t.Fatalf("counters = %d nodes / %d tokens, want 40 / 2000000",
+				b.unpricedNodes, b.unpricedTokens)
+		}
+	})
+
 	t.Run("silent_without_a_cost_ceiling", func(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxTokens: 1_000_000}, nil)
 		if w := unpriced(b.RecordUsage(50_000, 0)); w != nil {

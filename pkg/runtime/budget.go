@@ -430,10 +430,19 @@ func (b *SharedBudget) unpricedWarningLocked() (budgetCheckResult, bool) {
 	// 0.8` of something about to bind). Omitting it is what makes them fall
 	// through to their no-ratio path instead of rendering "0/160" or
 	// replacing a genuine tokens pill.
+	// The figures are a FLOOR, and the wording has to say so. This fires on
+	// the first unpriced node and never again, so on a fresh run it always
+	// reports exactly one node — while the counters keep climbing behind it.
+	// Phrased as a total ("2 nodes totalling 90k tokens"), a run with 40
+	// unpriced nodes and 2M unpriced tokens would understate the invisible
+	// spend by orders of magnitude, on the very surface added to remove an
+	// understatement. Reporting the run's final total needs a surface that
+	// reads the counters back at run end; until then, an honest floor beats
+	// a precise-looking sample.
 	return budgetCheckResult{
 		warning: true, advisory: true, dimension: "cost_usd_unpriced",
 		detail: fmt.Sprintf(
-			"max_cost_usd is only counting part of this run: %d node execution(s) totalling %d tokens had no resolvable price, so their spend is unknown and cannot reach the ceiling.",
+			"max_cost_usd is only counting part of this run: as of this node, %d node execution(s) totalling %d tokens have had no resolvable price, so that spend is unknown and cannot reach the ceiling. Raised once per ceiling — the unpriced total keeps growing after this.",
 			b.unpricedNodes, b.unpricedTokens,
 		),
 	}, true
