@@ -212,6 +212,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.RunID == "" {
 		return nil, fmt.Errorf("runview: run ID is required")
 	}
+	if err := ValidateModelOverridePermissions(spec.Workflow, spec.ModelOverrides, spec.Permission); err != nil {
+		return nil, err
+	}
 	// Materialise the operator's launch-time fallback route onto the
 	// compiled workflow BEFORE anything reads it. The engine is
 	// constructed from the same *ir.Workflow, so writing it here is what

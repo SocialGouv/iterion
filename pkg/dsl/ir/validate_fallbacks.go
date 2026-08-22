@@ -159,7 +159,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
+	if reason := UngatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -197,15 +197,15 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 	return strings.TrimSpace(workflowPermission)
 }
 
-// ungatedCrossingReason returns why a route may not serve a gated node,
-// or "" when it may. Shared by C176 and the launch-time screen so the
-// two can never disagree.
-func ungatedCrossingReason(routeBackend, permission string) string {
+// UngatedCrossingReason returns why a route may not serve a gated node,
+// or "" when it may. Shared by C176 and every launch-time screen so an
+// operator override cannot reach a crossing the compiler refuses.
+func UngatedCrossingReason(routeBackend, permission string) string {
 	if permission == "" || permission == "off" || gateEnforcingBackends[routeBackend] {
 		return ""
 	}
 	return fmt.Sprintf(
-		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would fall back UNGATED",
+		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would execute UNGATED",
 		routeBackend, permission)
 }
 

@@ -102,6 +102,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err != nil {
 			return nil, err
 		}
+		// Fail before persisting/publishing a queued run. The runner repeats
+		// this check in BuildExecutor, but discovering an unsafe backend only
+		// after queue admission would leave a paid launch to fail remotely.
+		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+			return nil, err
+		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
 		if err != nil {
 			return nil, err
