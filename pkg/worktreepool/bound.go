@@ -68,6 +68,10 @@ type BudgetReport struct {
 	// entry has SkipLevel as its primary reason, but the remedy still needs
 	// both --level moderate and --include-resumable.
 	needsIncludeResumable bool
+	// needsAggressive retains the landing fact when the primary refusal is
+	// dirtiness. A dirty own-branch checkout needs aggressive, not the
+	// moderate level sufficient for a dirty merged checkout.
+	needsAggressive bool
 }
 
 // OverBudget reports whether the pool is still above its ceiling after the
@@ -118,7 +122,7 @@ var sparedLabels = []struct {
 // them, which is the honest answer — that pool needs git, by hand.
 func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
-	needsAggressive := r.Spared[SkipOrphan] > 0 || r.Spared[SkipIterionHeldOnly] > 0
+	needsAggressive := r.needsAggressive || r.Spared[SkipOrphan] > 0 || r.Spared[SkipIterionHeldOnly] > 0
 	needsResumable := r.needsIncludeResumable || r.Spared[SkipResumable] > 0
 	if !needsLevel && !needsAggressive && !needsResumable {
 		return ""
@@ -144,6 +148,7 @@ const refusalMemoTTL = 5 * time.Minute
 type memoizedRefusal struct {
 	reason    string
 	resumable bool
+	landing   string
 	expires   time.Time
 }
 
@@ -180,7 +185,7 @@ func rememberPoolRefusal(e Entry, now time.Time) {
 		}
 	}
 	refusalMemo.entries[e.Path] = memoizedRefusal{
-		reason: e.SkipReason, resumable: e.resumable, expires: now.Add(refusalMemoTTL),
+		reason: e.SkipReason, resumable: e.resumable, landing: e.Landing, expires: now.Add(refusalMemoTTL),
 	}
 	refusalMemo.Unlock()
 }
@@ -326,7 +331,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		}
 		if memo, ok := memoizedPoolRefusal(candidates[i].Path, now()); ok {
 			e := candidates[i]
-			e.SkipReason, e.resumable = memo.reason, memo.resumable
+			e.SkipReason, e.resumable, e.Landing = memo.reason, memo.resumable, memo.landing
 			report.recordSpared(e)
 			continue
 		}
@@ -377,6 +382,9 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 
 func (r *BudgetReport) recordSpared(e Entry) {
 	r.Spared[e.SkipReason]++
+	if e.Landing == LandingOwnBranch || e.Landing == LandingOrphan {
+		r.needsAggressive = true
+	}
 	if e.resumable {
 		r.needsIncludeResumable = true
 	}

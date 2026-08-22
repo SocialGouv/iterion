@@ -349,6 +349,23 @@ func TestBound_RefusesDirtyWorktreesAndReportsThemAsOverBudget(t *testing.T) {
 	}
 }
 
+func TestBound_DirtyOwnBranchRemedyIsAggressive(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"a", "b"} {
+		path := f.idle(id)
+		mustWrite(t, filepath.Join(path, "unfinished.txt"), "keep\n")
+		f.seedRun(id, store.RunStatusFailed)
+	}
+
+	r := f.enforce(1)
+	if r.Spared[SkipLevel] != 2 {
+		t.Fatalf("spared reasons = %v, want dirty entries", r.Spared)
+	}
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level aggressive") {
+		t.Fatalf("Remedy = %q, want aggressive for a dirty own-branch checkout", got)
+	}
+}
+
 // A worktree whose commits only iterion's own per-run refs hold would lose
 // them when the run is reaped, so the bound refuses it even though a ref
 // technically contains its HEAD.
@@ -476,8 +493,9 @@ func TestBound_SparesWorktreesOfResumableRuns(t *testing.T) {
 }
 
 // A failed run normally has both facts at once: it is resumable and its
-// tree is dirty. The table keeps one primary reason, but the suggested
-// command must carry both flags or it reclaims nothing on the first try.
+// tree is dirty and its HEAD is still its own branch. The table keeps one
+// primary reason, but the suggested command must carry both the aggressive
+// level and resumability flag or it reclaims nothing on the first try.
 func TestBound_RemedyIncludesBothFlagsForDirtyResumableEntries(t *testing.T) {
 	f := newPoolFixture(t)
 	for _, id := range []string{"r1", "r2"} {
@@ -487,7 +505,7 @@ func TestBound_RemedyIncludesBothFlagsForDirtyResumableEntries(t *testing.T) {
 	}
 
 	r := f.enforce(1)
-	if got := r.Remedy(f.store); !strings.Contains(got, "--level moderate") ||
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level aggressive") ||
 		!strings.Contains(got, "--include-resumable") {
 		t.Fatalf("Remedy = %q, want both dirty and resumable flags", got)
 	}

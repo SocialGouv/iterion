@@ -65,6 +65,9 @@ func evictionAdmission() admission {
 		if landing == LandingOrphan {
 			return SkipOrphan, false
 		}
+		if landing == LandingOwnBranch && !durablyHeld {
+			return SkipIterionHeldOnly, false
+		}
 		if dirty {
 			// Reported as `needs-higher-level` rather than a reason of its
 			// own: what the operator does next IS to pick a level, and
@@ -75,10 +78,7 @@ func evictionAdmission() admission {
 		case LandingMerged:
 			return "", true
 		case LandingOwnBranch:
-			if durablyHeld {
-				return "", true
-			}
-			return SkipIterionHeldOnly, false
+			return "", true // the non-durable case returned above
 		}
 		return SkipLevel, false
 	}
