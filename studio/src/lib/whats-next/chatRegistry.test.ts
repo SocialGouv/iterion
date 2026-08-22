@@ -42,9 +42,18 @@ describe("isChatBot", () => {
   });
 });
 
+// chatBotFromEntry returns null for a non-chat entry; every case below
+// passes one that IS a chat bot, so a null here is a real failure and
+// deserves a named error rather than a non-null assertion.
+function mustConvert(e: BotEntry) {
+  const bot = chatBotFromEntry(e);
+  if (!bot) throw new Error(`entry ${e.name} did not convert to a chat bot`);
+  return bot;
+}
+
 describe("chatBotFromEntry", () => {
   it("maps the manifest shape onto the surface the studio already renders", () => {
-    const bot = chatBotFromEntry(entry())!;
+    const bot = mustConvert(entry());
     expect(bot.id).toBe("copilot");
     expect(bot.label).toBe("Copi");
     expect(bot.seedVar).toBe("initial_message");
@@ -55,18 +64,18 @@ describe("chatBotFromEntry", () => {
   it("resolves the workflow path a launch can actually use", () => {
     // rel_path is workspace-relative (what the run API resolves); the
     // absolute path is the fallback for a server that computed no root.
-    expect(chatBotFromEntry(entry())!.workflowPath).toBe("bots/copilot/main.bot");
-    expect(
-      chatBotFromEntry(entry({ rel_path: undefined }))!.workflowPath,
-    ).toBe("/abs/bots/copilot/main.bot");
+    expect(mustConvert(entry()).workflowPath).toBe("bots/copilot/main.bot");
+    expect(mustConvert(entry({ rel_path: undefined })).workflowPath).toBe(
+      "/abs/bots/copilot/main.bot",
+    );
     // A loose .bot file is already the workflow.
-    expect(
-      chatBotFromEntry(entry({ rel_path: "bots/x/main.bot" }))!.workflowPath,
-    ).toBe("bots/x/main.bot");
+    expect(mustConvert(entry({ rel_path: "bots/x/main.bot" })).workflowPath).toBe(
+      "bots/x/main.bot",
+    );
   });
 
   it("builds the canned-opener form, keeping the free-text escape hatch", () => {
-    const bot = chatBotFromEntry(
+    const bot = mustConvert(
       entry({
         chat: {
           seed_var: "initial_message",
@@ -77,8 +86,12 @@ describe("chatBotFromEntry", () => {
           },
         },
       }),
-    )!;
-    const q = bot.launcherForm!.questions[0];
+    );
+    const q = bot.launcherForm?.questions[0];
+    // The kind is the load-bearing part: a canned opener is a radio with an
+    // escape hatch, and only that shape carries `options` + `allow_other`.
+    expect(q?.kind).toBe("radio");
+    if (q?.kind !== "radio") throw new Error("launcher question is not a radio");
     expect(q.label).toBe("What do you want to ask?");
     expect(q.options).toEqual([
       { value: "Explique C083", label: "A diagnostic" },
@@ -90,7 +103,7 @@ describe("chatBotFromEntry", () => {
   it("ignores a launcher-var pre-fill source it does not implement", () => {
     // A bundle authored against a newer studio must still render — an empty
     // field, not a crash or a dropped bot.
-    const bot = chatBotFromEntry(
+    const bot = mustConvert(
       entry({
         chat: {
           nodes: { chat: { kind: "human", text_field: "message" } },
@@ -100,7 +113,7 @@ describe("chatBotFromEntry", () => {
           ],
         },
       }),
-    )!;
+    );
     expect(bot.launcherVars[0]).toEqual({
       name: "workspace_dir",
       label: "workspace_dir",

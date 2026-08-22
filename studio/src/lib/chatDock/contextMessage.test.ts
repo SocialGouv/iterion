@@ -134,7 +134,7 @@ describe("withPageContext — attached references", () => {
 
   it("caps the list rather than letting the header scroll", () => {
     const many = Array.from({ length: 20 }, (_, i) => ref(`run/${i}`));
-    const header = withPageContext("x", null, many).split("\n")[0];
+    const header = withPageContext("x", null, many).split("\n")[0] ?? "";
     expect(header.split(", ")).toHaveLength(8);
   });
 });
