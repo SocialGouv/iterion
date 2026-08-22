@@ -66,6 +66,11 @@ func extractUsage(output map[string]any) (tokens int, costUSD float64) {
 			costUSD = float64(t)
 		}
 	}
+	// `cost.Annotate` writes `_cost_usd` only when a price was resolved, so
+	// an absent (or zero) key means "no cost data", never "this call was
+	// free" — the cost package says so in as many words and tells callers
+	// not to record a $0 sample. A zero returned here is therefore "unknown";
+	// SharedBudget.RecordUsage is what keeps it out of the enforced axis.
 	return
 }
 

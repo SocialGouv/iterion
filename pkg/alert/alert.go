@@ -91,7 +91,14 @@ func (a Alert) WebhookText() string {
 	if a.Reason != "" {
 		fmt.Fprintf(&b, "\nReason: %s", a.Reason)
 	}
-	if a.Axis != "" {
+	// Only when there IS a ratio. A dimension whose budget_warning payload
+	// carries no used/limit pair (cost_usd_unpriced: tokens burned at an
+	// unknown price, against a dollar ceiling) arrives here with BudgetPct
+	// 0, and "Budget: cost_usd_unpriced at 0%" reads as "0% of the cost
+	// budget used" — the opposite of what the alert says. The axis name
+	// still travels on the event data and to errtrack; it is the percentage
+	// that is meaningless, so it is the percentage that is dropped.
+	if a.Axis != "" && a.BudgetPct > 0 {
 		fmt.Fprintf(&b, "\nBudget: %s at %.0f%%", a.Axis, a.BudgetPct)
 	}
 	if a.Link != "" {
@@ -121,7 +128,12 @@ func (a Alert) AsEventData() map[string]any {
 	}
 	if a.Axis != "" {
 		d["axis"] = a.Axis
-		d["budget_pct"] = a.BudgetPct
+		// Mirrors the `omitempty` on BudgetPct and WebhookText's guard: an
+		// axis-less dimension has no ratio, and publishing 0 would let the
+		// SPA render a percentage nothing measured.
+		if a.BudgetPct > 0 {
+			d["budget_pct"] = a.BudgetPct
+		}
 	}
 	if a.Link != "" {
 		d["link"] = a.Link

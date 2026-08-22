@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,4 +274,64 @@ func TestStartStopTicker(t *testing.T) {
 	m.Start(ctx)
 	m.Stop() // must not panic / double-close
 	m.Stop()
+}
+
+// A budget_warning on a dimension with no used/limit pair (cost_usd_unpriced:
+// tokens burned at a price nothing could resolve, against a dollar ceiling)
+// must reach the operator as its own explanation and NOTHING that looks like a
+// ratio. "Budget: cost_usd_unpriced at 0%" is readable as "0% of the cost
+// budget used" — the opposite of the alert's meaning, on the one surface that
+// exists to reach an operator who is not watching the console.
+func TestBudgetWarningWithoutRatioRendersNoPercentage(t *testing.T) {
+	sink := &captureSink{}
+	m := newTestManager(sink)
+
+	const detail = "max_cost_usd is only counting part of this run: 2 node execution(s) totalling 4000 tokens had no resolvable price."
+	m.Observe(store.Event{
+		RunID: "r1", Type: store.EventBudgetWarning, NodeID: "agent",
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"dimension": "cost_usd_unpriced",
+			"advisory":  true,
+			"detail":    detail,
+			// deliberately no "used" / "limit": this dimension has no axis
+		},
+	})
+
+	waitFor(t, func() bool { return len(sink.snapshot()) == 1 })
+	got := sink.snapshot()[0]
+
+	if got.Reason != detail {
+		t.Errorf("Reason = %q, want the warning's own detail", got.Reason)
+	}
+	if got.Axis != "cost_usd_unpriced" {
+		t.Errorf("Axis = %q — the dimension still travels for diagnostics", got.Axis)
+	}
+	if got.BudgetPct != 0 {
+		t.Errorf("BudgetPct = %v, want 0 (no ratio was reported)", got.BudgetPct)
+	}
+
+	txt := got.WebhookText()
+	if !strings.Contains(txt, detail) {
+		t.Errorf("WebhookText dropped the explanation: %q", txt)
+	}
+	if strings.Contains(txt, "at 0%") || strings.Contains(txt, "Budget: cost_usd_unpriced") {
+		t.Errorf("WebhookText rendered a percentage nothing measured: %q", txt)
+	}
+
+	if _, ok := got.AsEventData()["budget_pct"]; ok {
+		t.Error("AsEventData published budget_pct for a dimension with no ratio")
+	}
+	if got.AsEventData()["axis"] != "cost_usd_unpriced" {
+		t.Errorf("AsEventData dropped the axis: %+v", got.AsEventData())
+	}
+
+	// The guard must not touch a dimension that DOES have a ratio.
+	real := Alert{Kind: KindBudgetWarning, RunName: "r", Axis: "tokens", BudgetPct: 82}
+	if !strings.Contains(real.WebhookText(), "tokens at 82%") {
+		t.Errorf("a real axis lost its ratio line: %q", real.WebhookText())
+	}
+	if real.AsEventData()["budget_pct"] != 82.0 {
+		t.Errorf("a real axis lost budget_pct: %+v", real.AsEventData())
+	}
 }

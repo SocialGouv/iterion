@@ -66,6 +66,13 @@ export function toastForEvent(
       return { message: "Run cancelled", type: "info" };
     case "budget_warning": {
       const dim = e.data?.dimension ?? "budget";
+      // Dimensions without an axis carry no used/limit ratio; their `detail`
+      // is the whole message. Without this the toast reads "Budget warning:
+      // cost_usd_unpriced." and tells the operator nothing.
+      const detail = e.data?.detail;
+      if (typeof detail === "string" && detail !== "") {
+        return { message: `Budget warning: ${detail}`, type: "warning" };
+      }
       const used = e.data?.used;
       const limit = e.data?.limit;
       const pct =

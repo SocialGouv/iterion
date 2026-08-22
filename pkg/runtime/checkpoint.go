@@ -8,7 +8,7 @@ import (
 
 // buildCheckpoint creates a Checkpoint from the current runState.
 func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
-	tokens, cost, iterations, elapsed := rs.budget.Snapshot()
+	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
 	return &store.Checkpoint{
 		NodeID:             nodeID,
 		Outputs:            rs.outputs,
@@ -26,6 +26,8 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		BudgetCostUSD:          cost,
 		BudgetIterationsUsed:   iterations,
 		BudgetElapsedNS:        elapsed.Nanoseconds(),
+		BudgetUnpricedTokens:   unpricedTokens,
+		BudgetUnpricedNodes:    unpricedNodes,
 		CostUSDTotal:           rs.costUSDTotal,
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
 		BackendSessionStateRef: rs.pauseSessionRef,
@@ -52,7 +54,7 @@ func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
 	if cp == nil {
 		return
 	}
-	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS))
+	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS), cp.BudgetUnpricedTokens, cp.BudgetUnpricedNodes)
 	rs.costUSDTotal = cp.CostUSDTotal
 	// Consumption is continuous across the pause, so the persisted loop
 	// prices stay comparable to it and the first crossing after a resume

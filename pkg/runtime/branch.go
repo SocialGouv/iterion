@@ -319,12 +319,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	checks := rs.budget.RecordUsage(tokens, costUSD)
 
 	for _, w := range findWarnings(checks) {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]any{
-			"dimension": w.dimension,
-			"advisory":  w.advisory,
-			"used":      w.used,
-			"limit":     w.limit,
-		}); err != nil {
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {
 			e.logger.Warn("branch %s: failed to emit budget_warning: %v", branchID, err)
 			result.eventErrors++
 		}

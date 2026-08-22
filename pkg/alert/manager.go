@@ -319,6 +319,14 @@ func (m *Manager) budgetAlertLocked(kind Kind, rs *runState, evt store.Event, ax
 		pct = used / limit * 100
 	}
 	var reason string
+	// A warning that explains itself wins over the ratio phrasing: some
+	// dimensions carry no axis (no used/limit), and rendering them as
+	// "crossed the advisory threshold (0/0)" would announce a ceiling that
+	// nothing approached. This is the surface that reaches an operator who
+	// is not watching the console, so it must not speak nonsense.
+	if detail := strData(evt.Data, "detail"); detail != "" && kind != KindBudgetExceeded {
+		return m.alertLocked(kind, rs, evt.NodeID, detail, axis, pct, ts)
+	}
 	switch {
 	case kind == KindBudgetExceeded:
 		reason = fmt.Sprintf("%s budget exhausted (%.0f/%.0f)", axis, used, limit)

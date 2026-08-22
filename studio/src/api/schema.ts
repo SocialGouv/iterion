@@ -4853,6 +4853,8 @@ export interface components {
             budget_elapsed_ns?: number;
             budget_iterations_used?: number;
             budget_tokens_used?: number;
+            budget_unpriced_nodes?: number;
+            budget_unpriced_tokens?: number;
             cost_usd_total?: number;
             interaction_id: string;
             interaction_questions?: {

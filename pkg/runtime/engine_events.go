@@ -129,7 +129,18 @@ func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map
 	case store.EventHumanAnswersRecorded:
 		l.Logf(iterlog.LevelInfo, "📝", "Human answers recorded: %s", nodeID)
 	case store.EventBudgetWarning:
-		l.Warn("Budget warning: %s", nodeID)
+		// Name the axis and, when the payload explains itself, say why. A
+		// bare "Budget warning: <node>" is the one line an operator scrolls
+		// past — and cost_usd_unpriced exists precisely to be noticed.
+		if dim, ok := data["dimension"].(string); ok && dim != "" {
+			if detail, ok := data["detail"].(string); ok && detail != "" {
+				l.Warn("Budget warning [%s] at %s: %s", dim, nodeID, detail)
+			} else {
+				l.Warn("Budget warning [%s]: %s", dim, nodeID)
+			}
+		} else {
+			l.Warn("Budget warning: %s", nodeID)
+		}
 	case store.EventBudgetExceeded:
 		l.Warn("Budget exceeded: %s", nodeID)
 	}
