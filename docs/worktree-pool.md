@@ -30,12 +30,19 @@ Every time a run is about to create a worktree, before `git worktree add`:
 2. **Set live runs aside.** A worktree an executing run owns is never a
    candidate and **never counts against the budget**, so raising
    parallelism never fights the bound and a busy store does not warn on
-   every launch. Answered from run status alone; no git.
+   every launch. Run status plus the per-run process lock distinguish a
+   live owner from a stale `running` record left by SIGKILL or OOM.
 3. **Reclaim the excess, oldest first** — and only the excess. A ceiling is
    a ceiling, not a sweep. Classification is lazy, so a healthy pool pays
    for the few entries it actually reclaims rather than for all of them.
 4. **Warn if it could not get back under**, naming how many, why, and a
    command that would work on that pool.
+
+Above the budget, classification invokes git for candidates and can add
+launch latency. It is bounded to 10 seconds. Refusals are cached for five
+minutes inside a long-lived process (such as Studio); separate one-shot
+`iterion run` processes do not share that cache and may repay the bounded
+classification cost until the pool is cleaned or the budget is raised.
 
 The moment of creation is the only one where acting is both cheap and
 timely. Startup is too early — the pool that filled the disk did not exist

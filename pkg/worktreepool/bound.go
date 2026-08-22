@@ -132,7 +132,7 @@ func (r BudgetReport) Remedy(storeDir string) string {
 	// The bound deliberately has no age floor. Mirror that policy in the
 	// suggested command: `iterion clean` otherwise defaults to 168h and
 	// would spare the recent entries that made the pool exceed its budget.
-	cmd := "iterion clean --store-dir " + storeDir + " --older-than 0"
+	cmd := "iterion clean --store-dir " + shellQuoteArg(storeDir) + " --older-than 0"
 	if needsAggressive {
 		cmd += " --level aggressive"
 	} else if needsLevel {
@@ -146,6 +146,16 @@ func (r BudgetReport) Remedy(storeDir string) string {
 		cmd += " --include-resumable"
 	}
 	return cmd
+}
+
+func shellQuoteArg(arg string) string {
+	if arg != "" && strings.IndexFunc(arg, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("_@%+=:,./-", r))
+	}) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 }
 
 const refusalMemoTTL = 5 * time.Minute
@@ -187,6 +197,17 @@ func rememberPoolRefusal(e Entry, now time.Time) {
 			if !now.Before(cached.expires) {
 				delete(refusalMemo.entries, path)
 			}
+		}
+		// Keep 256 as a hard cap even when every entry is still fresh.
+		if len(refusalMemo.entries) >= 256 {
+			var earliestPath string
+			var earliestExpiry time.Time
+			for path, cached := range refusalMemo.entries {
+				if earliestPath == "" || cached.expires.Before(earliestExpiry) {
+					earliestPath, earliestExpiry = path, cached.expires
+				}
+			}
+			delete(refusalMemo.entries, earliestPath)
 		}
 	}
 	refusalMemo.entries[e.Path] = memoizedRefusal{
@@ -277,6 +298,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	// Resuming restarts in this checkout. Giving that up must remain an
 	// explicit operator choice, regardless of the options a caller passed.
 	opts.IncludeResumable = false
+	opts.reclaimStaleNonTerminal = true
 	opts.Admit = evictionAdmission()
 	opts.OlderThan = 0 // the pool is over NOW; an age floor would defer the whole point
 	opts.KeepLast = 0
@@ -302,7 +324,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	candidates := make([]Entry, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(PoolDir(storeDir), name)
-		if st, ok := statuses[name]; ok && ownsWorktree(st) {
+		if st, ok := statuses[name]; ok && ownsWorktree(st) && runLockHeld(storeDir, name) {
 			report.Held++
 			continue
 		}
@@ -329,8 +351,9 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 
 	// Classification is lazy, and refusals alone are memoized briefly. A
 	// healthy pool pays for the few entries it actually reclaims; a degraded
-	// pool pays once to name what is holding it up, then reuses those safe
-	// refusals on launches during the TTL. Eligibility is never cached.
+	// pool pays once per long-lived process to name what is holding it up,
+	// then reuses those safe refusals on launches during the TTL. Eligibility
+	// is never cached and one-shot CLI processes deliberately share no state.
 	excess := report.Before - budget
 	taken, vanished := 0, 0
 	for i := range candidates {
@@ -347,10 +370,21 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 			report.recordSpared(e)
 			continue
 		}
+		if opts.beforeClassification != nil {
+			opts.beforeClassification(candidates[i].Path)
+		}
 		e := classify(candidates[i].Path, candidates[i].RunID, storeDir, statuses, opts.ScanOptions, now)
 		if err := ctx.Err(); err != nil {
 			markIncomplete(err)
 			break
+		}
+		// A concurrent pass may have removed the directory since ReadDir.
+		// Git silence for a missing cwd looks unlanded; report a harmless
+		// disappearance instead of memoizing that alarm verdict.
+		if _, statErr := os.Lstat(candidates[i].Path); os.IsNotExist(statErr) {
+			vanished++
+			forgetPoolRefusal(candidates[i].Path)
+			continue
 		}
 		if e.SkipReason != "" {
 			rememberPoolRefusal(e, now())

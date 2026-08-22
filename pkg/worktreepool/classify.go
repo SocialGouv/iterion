@@ -238,13 +238,12 @@ func classify(
 		wt.AgeSeconds = int64(age.Seconds())
 	}
 
-	// Guard 1 — an unfinished run owns its worktree. This is checked
-	// against run status, not against the directory's mtime: a run that
-	// spends hours inside a single agent turn stops touching its
-	// worktree, so age alone would declare a live run abandoned.
+	// Guard 1 — an unfinished run owns its worktree while an iterion process
+	// holds its run lock. Status alone is not enough: SIGKILL and OOM leave
+	// `running` on disk, while the kernel releases the process lock.
 	if st, ok := statuses[runID]; ok {
 		wt.RunStatus = string(st)
-		if ownsWorktree(st) {
+		if ownsWorktree(st) && (!opts.reclaimStaleNonTerminal || runLockHeld(storeDir, runID)) {
 			wt.SkipReason = SkipRunActive
 			return wt
 		}
@@ -920,6 +919,17 @@ func pruneWorktreeRegistration(commonDir, resolvedPath string) (bool, error) {
 // the ability to continue.
 func ownsWorktree(st store.RunStatus) bool {
 	return !st.IsTerminal()
+}
+
+// runLockHeld distinguishes a live owner from a stale non-terminal status.
+// Any lock error is treated as ownership: ambiguity must spare the checkout.
+func runLockHeld(storeDir, runID string) bool {
+	lock, err := lockRun(storeDir, runID)
+	if err != nil {
+		return true
+	}
+	releaseLock(lock)
+	return false
 }
 
 // isResumable reports whether `iterion resume` would restart this run in

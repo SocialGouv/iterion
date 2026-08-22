@@ -512,6 +512,23 @@ func TestBound_LiveRunsAreNeitherTakenNorCounted(t *testing.T) {
 		f.idle(id)
 		f.seedRun(id, store.RunStatusRunning)
 	}
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var locks []store.RunLock
+	for _, id := range []string{"live1", "live2", "live3"} {
+		lock, err := s.LockRun(context.Background(), id)
+		if err != nil {
+			t.Fatalf("LockRun(%s): %v", id, err)
+		}
+		locks = append(locks, lock)
+	}
+	defer func() {
+		for _, lock := range locks {
+			_ = lock.Unlock()
+		}
+	}()
 	f.idle("dead")
 	f.seedRun("dead", store.RunStatusFinished)
 
@@ -533,6 +550,24 @@ func TestBound_LiveRunsAreNeitherTakenNorCounted(t *testing.T) {
 	}
 	if !f.exists("dead") {
 		t.Error("the one reclaimable entry was taken while under the ceiling")
+	}
+}
+
+func TestBound_ReclaimsStaleRunningStatusAfterProcessCrash(t *testing.T) {
+	f := newPoolFixture(t)
+	f.idle("stale")
+	f.seedRun("stale", store.RunStatusRunning)
+	f.age("stale", 2)
+	f.idle("new")
+	f.seedRun("new", store.RunStatusFinished)
+	f.age("new", 1)
+
+	r := f.enforce(1)
+	if f.exists("stale") || !f.exists("new") {
+		t.Fatalf("stale running status was treated as live: stale=%v new=%v", f.exists("stale"), f.exists("new"))
+	}
+	if r.Held != 0 || len(r.Reclaimed) != 1 {
+		t.Fatalf("report = %+v, want the stale checkout reclaimed", r)
 	}
 }
 
@@ -676,6 +711,53 @@ func TestBound_MemoizesOnlyRefusalsForAShortInterval(t *testing.T) {
 	third, err := EnforceBudget(f.store, 1, opts)
 	if err != nil || len(third.Reclaimed) != 1 {
 		t.Fatalf("expired refusal was not re-derived: %+v, err=%v", third, err)
+	}
+}
+
+func TestRefusalMemoHasAHardSizeCap(t *testing.T) {
+	refusalMemo.Lock()
+	original := refusalMemo.entries
+	refusalMemo.entries = map[string]memoizedRefusal{}
+	refusalMemo.Unlock()
+	defer func() {
+		refusalMemo.Lock()
+		refusalMemo.entries = original
+		refusalMemo.Unlock()
+	}()
+
+	now := time.Now()
+	for i := 0; i < 300; i++ {
+		rememberPoolRefusal(Entry{Path: "/memo/" + time.Duration(i).String(), SkipReason: SkipLevel}, now)
+	}
+	refusalMemo.Lock()
+	got := len(refusalMemo.entries)
+	refusalMemo.Unlock()
+	if got != 256 {
+		t.Fatalf("memo size = %d, want hard cap 256", got)
+	}
+}
+
+func TestBound_TreatsCandidateRemovedBeforeClassificationAsVanished(t *testing.T) {
+	f := newPoolFixture(t)
+	for i, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+	removed := false
+	r, err := EnforceBudget(f.store, 1, SweepOptions{
+		beforeClassification: func(path string) {
+			if !removed {
+				removed = true
+				_ = os.RemoveAll(path)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Spared[SkipUnlanded] != 0 || r.After != 1 || r.OverBudget() {
+		t.Fatalf("concurrent disappearance misreported as unlanded: %+v", r)
 	}
 }
 
@@ -923,6 +1005,14 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s: Remedy = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestRemedy_QuotesStoreDirectoryForCopyPaste(t *testing.T) {
+	got := BudgetReport{Spared: map[string]int{SkipLevel: 1}}.Remedy("/tmp/iterion store/it's")
+	want := `iterion clean --store-dir '/tmp/iterion store/it'"'"'s' --older-than 0 --level moderate`
+	if got != want {
+		t.Fatalf("Remedy = %q, want %q", got, want)
 	}
 }
 

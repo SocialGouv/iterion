@@ -42,6 +42,10 @@ type ScanOptions struct {
 	// allowed. Nil means the Level ladder — see admission.go for why the
 	// pool bound needs a different rule over the same facts.
 	Admit admission
+	// reclaimStaleNonTerminal lets the automatic bound use the run lock to
+	// distinguish a crashed process from a live one. Explicit clean keeps
+	// its stricter status-only contract.
+	reclaimStaleNonTerminal bool
 }
 
 // now resolves the clock once, so a nil seam does not have to be checked
@@ -85,6 +89,9 @@ type SweepOptions struct {
 	// to prove it is load-bearing. Both are nil in production.
 	DuringEligibility func(string)
 	AfterEligibility  func(string)
+	// beforeClassification is a test seam for the window between the pool
+	// snapshot and one candidate's git inspection. Nil in production.
+	beforeClassification func(string)
 }
 
 // remove resolves the deletion seam.
