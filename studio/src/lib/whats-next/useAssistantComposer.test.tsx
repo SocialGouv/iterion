@@ -92,6 +92,25 @@ describe("useAssistantComposer routing", () => {
     });
   });
 
+  it("does not decorate a constrained ask_user option", async () => {
+    const s = session({
+      messages: [pending({ [ASK_USER_RESPONSE_KEY]: { type: "string" } })],
+    });
+    const { result } = renderHook(() =>
+      useAssistantComposer({
+        bot,
+        session: s,
+        decorate: (text) => `[page context: run/123]\n${text}`,
+      }),
+    );
+
+    await act(() => result.current.onComposerSend("approve", { skills: [] }));
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      [ASK_USER_RESPONSE_KEY]: "approve",
+    });
+  });
+
   it("queues into a live run with the selected skills", async () => {
     const s = session();
     const { result } = renderHook(() => useAssistantComposer({ bot, session: s }));

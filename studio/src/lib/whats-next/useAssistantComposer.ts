@@ -101,10 +101,10 @@ export function useAssistantComposer({
     async (text: string, opts: { skills: string[] }) => {
       const trimmed = text.trim();
       if (trimmed === "") return;
-      // The page-context pointer rides on whatever the operator typed,
-      // including a pause answer — the assistant's next turn must know
-      // where they are, not where they were when the turn started.
-      const decorated = decorate ? decorate(trimmed) : trimmed;
+      // A typed chat answer may carry page context, but ask_user is a
+      // constrained value protocol: an option such as "approve" must reach
+      // the runtime byte-for-byte or exact option matching fails.
+      const decorated = decorate && !pendingIsAskUser ? decorate(trimmed) : trimmed;
       if (pendingHumanQuestion) {
         await submitPending(decorated);
         return;
@@ -142,7 +142,7 @@ export function useAssistantComposer({
       // disjunction above), so the run is live: inject into its inbox.
       await queueMessage(session.runId!, decorated, { skills: opts.skills });
     },
-    [decorate, pendingHumanQuestion, submitPending, session, bot.seedVar],
+    [decorate, pendingHumanQuestion, pendingIsAskUser, submitPending, session, bot.seedVar],
   );
 
   return {
