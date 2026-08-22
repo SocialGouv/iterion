@@ -279,7 +279,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		precreateInputs = nil
 	}
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
-		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
 		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard},
@@ -412,25 +412,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 	_, runLogger := s.prepareRunLog(spec.RunID)
 
-	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow: wf,
-		Store:    s.store,
-		RunID:    spec.RunID,
-		Logger:   runLogger,
-		StoreDir: s.storeDir,
-		Inbox:    s.inboxBinder(),
-		AsyncAsk: s.asyncAskBinder(),
-		// Resolved, not read raw: only a cloud launch persists BotID, so a
-		// studio-launched bundle would otherwise fall back to the workflow
-		// name here and aim the resumed run at a different space than its own
-		// earlier nodes wrote to — an empty memory, and notes landing where
-		// nothing will read them again.
-		BotID:         BotIDForRun(r),
-		AutoMemory:    spec.AutoMemory,
-		BoardRegister: s.boardRegister,
-		LocalSecrets:  s.localSecrets,
-		LocalSealer:   s.localSealer,
-	})
+	executor, err := BuildExecutor(s.resumeExecutorSpec(wf, r, runLogger, spec.AutoMemory))
 	if err != nil {
 		s.dropRunLog(spec.RunID)
 		return nil, err
@@ -470,6 +452,45 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 			}
 			return eng.Resume(ctx, spec.RunID, spec.Answers)
 		})
+}
+
+// resumeExecutorSpec is the executor a resume rebuilds for an EXISTING run.
+//
+// The one thing it must not do is forget what the run was launched with. A
+// resume gets no LaunchSpec — the operator is continuing a run, not starting
+// one — so every launch-time decision has to come back off the run document.
+// Model/backend/effort overrides are persisted there precisely for this, and
+// omitting them does not fail loudly: the executor quietly falls back to the
+// .bot's own model:/backend:/reasoning_effort: while the studio header goes
+// on displaying the choice the operator made.
+//
+// It matters most where it is least visible. A conversational run pauses on
+// its chat node and every operator reply is a Resume, so the chosen model
+// applied to exactly the first turn and nothing after it.
+func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
+	spec := ExecutorSpec{
+		Workflow:      wf,
+		Store:         s.store,
+		Logger:        runLogger,
+		StoreDir:      s.storeDir,
+		Inbox:         s.inboxBinder(),
+		AsyncAsk:      s.asyncAskBinder(),
+		AutoMemory:    autoMemory,
+		BoardRegister: s.boardRegister,
+		LocalSecrets:  s.localSecrets,
+		LocalSealer:   s.localSealer,
+	}
+	if r != nil {
+		spec.RunID = r.ID
+		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
+		// Resolved, not read raw: only a cloud launch persists BotID, so a
+		// studio-launched bundle would otherwise fall back to the workflow
+		// name here and aim the resumed run at a different space than its own
+		// earlier nodes wrote to — an empty memory, and notes landing where
+		// nothing will read them again.
+		spec.BotID = BotIDForRun(r)
+	}
+	return spec
 }
 
 // validateResumable returns nil if r is in a state from which Resume

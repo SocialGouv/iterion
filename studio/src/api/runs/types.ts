@@ -741,13 +741,18 @@ export interface FallbackEntry {
   provider?: string;
 }
 
-// ModelOverrideEntry is one Launch-time per-node/-group model+backend
-// override. Empty backend/model/provider leave that dimension unchanged.
+// ModelOverrideEntry is one Launch-time per-node/-group model+backend+effort
+// override. An empty dimension is left unchanged.
 export interface ModelOverrideEntry {
   selector: string;
   backend?: string;
   model?: string;
   provider?: string;
+  // reasoning_effort for the matched nodes (low|medium|high|xhigh|max|
+  // ultracode). Rejected with a 400 when it is not one of those — the value
+  // reaches the provider verbatim. Wins over the node's DSL reasoning_effort:
+  // AND over a dynamic _reasoning_effort edge mapping.
+  effort?: string;
 }
 
 export interface CreateRunResponse {

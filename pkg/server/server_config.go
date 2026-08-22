@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
@@ -367,6 +368,13 @@ type Config struct {
 	PushSubscriptions webpush.SubscriptionStore
 	NotificationPrefs usernotify.PrefsStore
 	NotificationSent  usernotify.SentStore
+
+	// ModelPrefs persists an operator's chosen model/backend/effort per
+	// opaque scope key (the studio passes a bot id), so the assistant's model
+	// survives the session instead of being re-picked on every launch. File-
+	// backed in local mode, Mongo in cloud. nil ⇒ /api/v1/preferences/model
+	// 404s and the studio falls back to per-launch choices.
+	ModelPrefs modelprefs.Store
 	// WebPushVAPIDPublicKey / WebPushVAPIDPrivateKey are the shared VAPID
 	// sender identity (public key is exposed via server_info by design);
 	// WebPushSubscriber is the VAPID contact (mailto:).

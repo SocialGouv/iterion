@@ -21,6 +21,7 @@ var runOpts struct {
 	modelFor            []string
 	backendFor          []string
 	fallback            string
+	effortFor           []string
 	background          bool
 	mergeInto           string
 	branchName          string
@@ -81,6 +82,7 @@ var runCmd = &cobra.Command{
 			ModelFor:            runOpts.modelFor,
 			BackendFor:          runOpts.backendFor,
 			Fallback:            runOpts.fallback,
+			EffortFor:           runOpts.effortFor,
 			AutoResume:          runOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          runOpts.maxCostUSD,
@@ -133,6 +135,7 @@ func init() {
 	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
 	f.StringVar(&runOpts.fallback, "fallback", "", "Run-level fallback route \"<backend>:<model>\" taken when an agent node's primary fails (e.g. --fallback 'claw:openai/gpt-5.5'). Applies only to agent nodes that declare no fallbacks: of their own, and never to judges. Uses the default trigger set (usage_window, unavailable); author a fallbacks: block for anything finer. See ADR-087.")
 	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code|codex|pi|kimi|grok). Same selector syntax as --model; wins over the node's DSL backend:.")
+	f.StringArrayVar(&runOpts.effortFor, "effort-for", nil, "Per-node/-group reasoning_effort override (repeatable): \"selector=effort\" or a bare \"effort\" for every LLM node (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model; wins over the node's DSL reasoning_effort: AND over a dynamic _reasoning_effort edge mapping.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
 	registerAutoResumeFlag(f, &runOpts.autoResume)
 	rootCmd.AddCommand(runCmd)

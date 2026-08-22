@@ -373,6 +373,14 @@ func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.modelOverrides = o }
 }
 
+// ModelOverrides returns the launch-time overrides this executor applies.
+//
+// Read-only, and exported for the paths that REBUILD an executor for an
+// existing run — resume, in-process and CLI alike. Those paths silently
+// dropped the operator's model choice once; being able to assert it survived
+// is what keeps that from coming back.
+func (e *ClawExecutor) ModelOverrides() ModelOverrides { return e.modelOverrides }
+
 // WithCompressOverride sets the run-level compression override (CLI --compress
 // / studio Launch toggle): on|ultra|off, or "" for "unset, defer to DSL/env".
 // It is the highest-priority input to rewrite.Resolve.

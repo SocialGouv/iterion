@@ -140,6 +140,10 @@ type RunOptions struct {
 	// judges — a weaker judge still emits a well-formed verdict, so a
 	// blanket launch setting must not reach one. See ADR-087.
 	Fallback string
+	// EffortFor is the same shape for reasoning_effort (repeatable
+	// --effort-for). Model, backend and effort are one decision, so the
+	// selector machinery is shared; an invalid level is a flag error.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -485,7 +489,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}
@@ -669,6 +673,22 @@ func buildEngine(
 	bundleHandle *bundle.Bundle,
 	base []runtime.EngineOption,
 ) *runtime.Engine {
+	// Stamp what the operator asked for onto the run document. Without
+	// this the CLI's own --model / --backend / --effort-for were applied to
+	// the executor and then FORGOTTEN: the studio Overview showed no
+	// override, and `iterion resume` had nothing to inherit, so a
+	// CLI-launched run silently reverted to the .bot's own values at the
+	// first resume — the exact failure the resume inheritance was added to
+	// close, still open on the one path that had no other surface.
+	//
+	// The flags were already parsed (and any error surfaced) when the
+	// executor was built, so a parse failure here cannot be new.
+	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
+		if rows := runModelOverrideRows(ov); len(rows) > 0 {
+			base = append(base, runtime.WithModelOverrides(rows))
+		}
+	}
+
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
 	return runtime.New(wf, s, executor,
@@ -859,4 +879,26 @@ func bundleManifestName(b *bundle.Bundle) string {
 		return ""
 	}
 	return b.Manifest.Name
+}
+
+// runModelOverrideRows converts parsed CLI override directives into the
+// persisted shape the run document carries — the same rows the studio
+// stamps, so `runview.ModelOverridesFromRun` folds a CLI-launched run and a
+// studio-launched one identically on resume.
+func runModelOverrideRows(ov model.ModelOverrides) []store.RunModelOverride {
+	rows := ov.Rows()
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.RunModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }

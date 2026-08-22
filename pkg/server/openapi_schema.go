@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/runview"
 )
@@ -103,6 +105,15 @@ func routeSchemas() map[string]routeOp {
 			}{},
 		},
 		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
+
+		// Model registry — known x usable x capabilities x pricing. Typed so
+		// the studio's picker (and every LaunchView node row) reads the same
+		// shape the CLI prints.
+		"GET /api/models":                  {response: modelcatalog.Catalog{}},
+		"GET /api/v1/preferences/model":    {response: modelPrefResponse{}},
+		"PUT /api/v1/preferences/model":    {request: modelPrefRequest{}, response: modelPrefResponse{}},
+		"DELETE /api/v1/preferences/model": {response: modelPrefResponse{}},
+		"GET /api/backends/detect":         {response: detect.Report{}},
 
 		// Global pipeline board — a single execution projection of every
 		// root pipeline (ADR-074). Additive to the native backlog (/board).

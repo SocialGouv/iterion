@@ -43,7 +43,7 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	// Coerce against the model's supported matrix so a recipe asking for "max"
 	// on an OpenAI model is silently clamped rather than rejected at the API.
 	if _, modelID, perr := ParseModelSpec(modelSpec); perr == nil {
-		if effort := coerceEffortForModel(resolveReasoningEffort("", input), modelID); effort != "" {
+		if effort := coerceEffortForModel(e.effortForNode(node, "", input), modelID); effort != "" {
 			genOpts.ProviderOptions = providerOptsForNode(effort)
 		}
 	}

@@ -780,6 +780,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
+	// Resolved once and used twice: on the queued doc (so the Overview shows
+	// what the run was launched with) and on the RunMessage (so the pod
+	// actually applies it). Splitting the two is how the choice used to reach
+	// the UI and nothing else.
+	modelOverrides := runview.RunModelOverrides(spec.ModelOverrides)
 	r := &store.Run{
 		FormatVersion:   store.RunFormatVersion,
 		ID:              runID,
@@ -799,6 +804,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotID:           spec.BotID,
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
+		ModelOverrides:  modelOverrides,
 		// Cap. 3 sharding fields — propagate to the persisted Run so
 		// studio surfaces can render the parent/child relationship,
 		// and onto the published RunMessage below so the runner pod
@@ -913,10 +919,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// operator checkout). RepoRef carries a branch or sha. ProjectPath
 		// is NOT on the wire — the runner clones from RepoURL and the
 		// persisted run doc is the authoritative carrier of the slug.
-		RepoURL: spec.RepoURL,
-		RepoSHA: spec.RepoRef,
-		BotID:   spec.BotID,
-		Budget:  budget,
+		RepoURL:        spec.RepoURL,
+		RepoSHA:        spec.RepoRef,
+		BotID:          spec.BotID,
+		Budget:         budget,
+		ModelOverrides: modelOverridesForWire(modelOverrides),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -1080,6 +1087,13 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		// Republish the model choice the run was launched with. The rows
+		// live on the prior doc; a resume that omits them hands the pod a
+		// message with no overrides, and pkg/runner/loop.go then builds an
+		// executor off the .bot's own model — so in cloud the operator's
+		// choice would expire on the first resume (i.e. the second turn of
+		// any conversational run), invisibly.
+		ModelOverrides: modelOverridesForWire(prior.ModelOverrides),
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
@@ -1391,6 +1405,30 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	}
 	effective.MaxCostUSD = resolved.MaxCostUSD
 	return budgetForWire(&effective)
+}
+
+// modelOverridesForWire converts the persisted launch-time model/backend/
+// provider/effort rows into their queue mirror. Empty publishes as nil so a
+// launch without overrides keeps its payload byte-identical.
+//
+// The rows come from runview.RunModelOverrides, the same conversion that
+// stamps the run document — so what the studio Overview shows and what the
+// runner pod applies cannot drift apart.
+func modelOverridesForWire(rows []store.RunModelOverride) []queue.ModelOverride {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, queue.ModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }
 
 // budgetForWire converts launch-time budget overrides to their queue wire

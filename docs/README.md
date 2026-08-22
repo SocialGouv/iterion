@@ -44,6 +44,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [bundles.md](bundles.md) | Deterministic `.botz` packaging with skills and resources. |
 | [import.md](import.md) | Lossy, non-executing import of Claude Code workflow JavaScript into draft `.bot` files. |
 | [backends.md](backends.md) | Backend/model matrix, harness behavior, and provider support. |
+| [models.md](models.md) | The model registry (`GET /api/models`, `iterion models`), the picker's capability guard, and the operator's persisted model choice. |
 | [delegation.md](delegation.md) | Choosing in-process `model:` calls or delegated CLI `backend:` execution. |
 | [permissions.md](permissions.md) | Workflow/node permission modes and allow/ask/deny rules. |
 | [skills-library.md](skills-library.md) | Local project/global skill library and DSL `skills:` references. |

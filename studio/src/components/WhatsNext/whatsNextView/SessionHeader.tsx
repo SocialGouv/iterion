@@ -11,6 +11,7 @@ import type { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 import { useRunStore } from "@/store/run";
 
 import { humanStatus } from "./humanStatus";
+import SessionModelControl from "./SessionModelControl";
 
 export default function SessionHeader({
   bot,
@@ -109,6 +110,10 @@ export default function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
+        {/* Which model is answering, and the one click that changes it. It
+            sits next to the spend on purpose: the two numbers an operator
+            weighs against each other are cost and capability. */}
+        <SessionModelControl pref={session.modelPref} liveRun={isLive} />
         {(costUSD > 0 || tokensUsed > 0) && (
           <span
             className="text-caption text-fg-subtle"

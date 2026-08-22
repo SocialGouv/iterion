@@ -37,6 +37,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 	s.mux.HandleFunc("GET /api/resolve-model", s.handleResolveModel)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
+	// The model registry: known x usable x capabilities x pricing. It is what
+	// turns the studio's free-text model field into an actual picker.
+	s.mux.HandleFunc("GET /api/models", s.handleModels)
 
 	// Bot registry — exposes the bots discoverable on the host (single
 	// .bot files, .botz bundles) with their declared workflow vars +
@@ -244,6 +247,11 @@ func (s *Server) routes() {
 	// Browser push notifications (subscription CRUD + prefs + test push).
 	if s.webPushEnabled() && s.authSvc != nil {
 		s.registerNotificationRoutes()
+	}
+
+	// The operator's remembered model choice for a long-lived surface.
+	if s.cfg.ModelPrefs != nil {
+		s.registerModelPrefRoutes()
 	}
 
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).

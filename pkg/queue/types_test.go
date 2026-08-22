@@ -172,8 +172,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=7 (2026-08-11) added LoopBudgetGuard for the same reason one layer
 	// down: dropped, the pod re-decides whether a loop stops early or dies at
 	// its ceiling, overruling the operator who said otherwise.
-	if SchemaVersion != 7 {
-		t.Errorf("SchemaVersion = %d, want 7 (bump intentionally)", SchemaVersion)
+	// v=8 (2026-08-22) added ModelOverrides so a launch-time model/backend/
+	// effort choice reaches the pod instead of being dropped at the queue.
+	if SchemaVersion != 8 {
+		t.Errorf("SchemaVersion = %d, want 8 (bump intentionally)", SchemaVersion)
 	}
 }
 
@@ -212,5 +214,54 @@ func TestRunMessage_LoopBudgetGuardSurvivesTheWire(t *testing.T) {
 		if err := out.Validate(); err != nil {
 			t.Errorf("validate: %v", err)
 		}
+	}
+}
+
+// TestModelOverridesSurviveTheWire pins the field that carries an operator's
+// model choice to the runner. A silent drop here is invisible — the run record
+// still shows the chosen model while the pod executes the DSL default — so the
+// round-trip is asserted rather than assumed.
+func TestModelOverridesSurviveTheWire(t *testing.T) {
+	in := &RunMessage{
+		V:            SchemaVersion,
+		RunID:        "r1",
+		WorkflowName: "wf",
+		IRCompiled:   json.RawMessage(`{}`),
+		ModelOverrides: []ModelOverride{
+			{Selector: "reviewer_*", Model: "anthropic/claude-opus-5", Effort: "xhigh"},
+			{Selector: "agent", Backend: "claw", Provider: "anthropic"},
+		},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out RunMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := out.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.ModelOverrides) != 2 {
+		t.Fatalf("ModelOverrides len = %d, want 2 (dropped on the wire)", len(out.ModelOverrides))
+	}
+	if got := out.ModelOverrides[0]; got.Selector != "reviewer_*" || got.Model != "anthropic/claude-opus-5" || got.Effort != "xhigh" {
+		t.Errorf("first override round-tripped as %+v", got)
+	}
+	if got := out.ModelOverrides[1]; got.Backend != "claw" || got.Provider != "anthropic" {
+		t.Errorf("second override round-tripped as %+v", got)
+	}
+}
+
+// TestModelOverridesOmittedWhenEmpty keeps the common launch (no overrides)
+// off the wire entirely rather than publishing an empty array.
+func TestModelOverridesOmittedWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(&RunMessage{V: SchemaVersion, RunID: "r1", WorkflowName: "wf"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte("model_overrides")) {
+		t.Errorf("empty overrides should be omitted, got %s", raw)
 	}
 }

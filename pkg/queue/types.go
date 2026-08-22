@@ -47,7 +47,13 @@ import (
 // bot declaring `off` gets a run that can still strand its work at the cap.
 // The knob decides whether a loop stops early or dies at its ceiling, which
 // is exactly the kind of choice that must not be quietly re-made on the pod.
-const SchemaVersion = 7
+// v=8 (2026-08-22): added ModelOverrides so a launch-time model/backend/effort
+// choice reaches the runner pod. Same direction of failure as v=6 and v=7: the
+// operator picked a model in the studio and the preference was persisted, so a
+// stale runner quietly executing the bot's DSL default would read as "my choice
+// did nothing" with no error anywhere. Rejecting the message is the loud
+// failure that keeps the choice provable.
+const SchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -91,11 +97,18 @@ type RunMessage struct {
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.
-	LoopBudgetGuard string        `json:"loop_budget_guard,omitempty"`
-	BackendConfig   BackendConfig `json:"backend"`
-	Resume          *ResumeSpec   `json:"resume,omitempty"`
-	Trace           TraceContext  `json:"trace"`
-	PublishedAtRFC  string        `json:"published_at"`
+	LoopBudgetGuard string `json:"loop_budget_guard,omitempty"`
+	// ModelOverrides carries the launch-time per-node/-group model, backend,
+	// provider and reasoning-effort retargeting (the wire mirror of
+	// store.RunModelOverride, folded back into model.ModelOverrides by the
+	// runner). Without it the pod runs the bot's DSL defaults, so an operator
+	// who picked a model in the studio — or persisted one as their assistant
+	// preference — would see it applied to the run record and to nothing else.
+	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
+	BackendConfig  BackendConfig   `json:"backend"`
+	Resume         *ResumeSpec     `json:"resume,omitempty"`
+	Trace          TraceContext    `json:"trace"`
+	PublishedAtRFC string          `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted
@@ -175,6 +188,22 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+}
+
+// ModelOverride is one launch-time retargeting rule: every LLM node matching
+// Selector (a node id, an id glob like "reviewer_*", or a node kind keyword
+// such as "agent"/"judge") runs on the named backend/model/provider/effort
+// instead of its DSL value. The wire mirror of store.RunModelOverride, kept
+// local so this schema package stays dependency-free.
+//
+// Empty fields inherit: a rule carrying only Model retargets the model and
+// leaves the node's backend alone.
+type ModelOverride struct {
+	Selector string `json:"selector"`
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

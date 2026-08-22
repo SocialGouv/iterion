@@ -109,13 +109,21 @@ func buildResumeExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}
 	runFallback, err := ir.ParseRunFallbackFlag(opts.Fallback)
 	if err != nil {
 		return nil, err
+	}
+	// Inherit the model the run was LAUNCHED with, then let this attempt's
+	// flags win per field. Without the inheritance a resume silently drops
+	// back to the .bot's own model:/backend:/reasoning_effort:, so an
+	// operator's launch-time choice would last exactly one node — and the
+	// detached studio path resumes through this same CLI.
+	if r != nil {
+		modelOverrides = modelOverrides.MergeOver(runview.ModelOverridesFromRun(r.ModelOverrides))
 	}
 	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
 	if err != nil {

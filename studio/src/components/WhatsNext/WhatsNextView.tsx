@@ -89,6 +89,7 @@ function WhatsNextConversation({
             discoveryError={session.discoveryError}
             onRetryDiscovery={session.retryDiscovery}
             launchRepo={session.launchRepo}
+            modelPref={session.modelPref}
           />
         ) : (
           <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto overflow-hidden">

@@ -87,6 +87,8 @@ type ResumeOptions struct {
 	// silently stopped applying would kill the run on the second
 	// closure. See ADR-087.
 	Fallback string
+	// EffortFor re-applies the launch-time reasoning_effort overrides.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
@@ -281,6 +283,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,
+			EffortFor:       opts.EffortFor,
 		})),
 	)...)
 

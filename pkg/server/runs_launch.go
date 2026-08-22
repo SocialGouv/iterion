@@ -296,6 +296,14 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The effort override reaches the provider verbatim, so an unknown level
+	// has to be rejected at admission rather than surfacing as a mid-run API
+	// error on the first node.
+	if err := validateModelOverrides(req.ModelOverrides); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		span.SetStatus(codes.Error, "invalid model override")
+		return
+	}
 
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.

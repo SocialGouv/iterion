@@ -26,6 +26,7 @@ var resumeOpts struct {
 	modelFor        []string
 	backendFor      []string
 	fallback        string
+	effortFor       []string
 
 	maxCostUSD          float64
 	maxTokens           int
@@ -59,6 +60,7 @@ var resumeCmd = &cobra.Command{
 			ModelFor:        resumeOpts.modelFor,
 			BackendFor:      resumeOpts.backendFor,
 			Fallback:        resumeOpts.fallback,
+			EffortFor:       resumeOpts.effortFor,
 			AutoResume:      resumeOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          resumeOpts.maxCostUSD,
@@ -98,9 +100,10 @@ func init() {
 	f.StringArrayVar(&resumeOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), e.g. 'Bash(go build:*)'. Authorize an action the run paused on, then it proceeds on resume.")
 	f.StringArrayVar(&resumeOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls pause for approval.")
 	f.StringArrayVar(&resumeOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked.")
-	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Re-apply a per-node/-group model override on resume (repeatable): \"selector=model\" or a bare \"model\". Resume does NOT persist the launch overrides, so pass the same --model flags used at run to keep e.g. reviewers on their chosen model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
+	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Override the model on resume (repeatable): \"selector=model\" or a bare \"model\". A resume already INHERITS what the run was launched with (read back off the run document); this layers over it per field, so overriding the effort alone keeps the launched model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
 	f.StringVar(&resumeOpts.fallback, "fallback", "", "Re-apply the run-level fallback route on resume: \"<backend>:<model>\". Resume does NOT persist launch rules, and a long run outliving a quota window is exactly the case that resumes — pass the same --fallback used at run or the route stops applying silently.")
-	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|codex|pi|kimi|grok). Same selector syntax as --model.")
+	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code|pi|kimi|grok; codex is legacy). Same selector syntax as --model.")
+	f.StringArrayVar(&resumeOpts.effortFor, "effort-for", nil, "Re-apply a per-node/-group reasoning_effort override on resume (repeatable): \"selector=effort\" or a bare \"effort\" (low|medium|high|xhigh|max|ultracode). Same selector syntax as --model.")
 	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
 	registerAutoResumeFlag(f, &resumeOpts.autoResume)
 	mustMarkRequired(resumeCmd, "run-id")
