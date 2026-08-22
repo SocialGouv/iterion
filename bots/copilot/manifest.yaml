@@ -40,11 +40,36 @@ dispatch_vars:
 ## Studio launch-form hierarchy: `primary` inputs render top-level in
 ## the declared order; `hidden` vars are internal plumbing kept out of
 ## the form (still settable via --var / bot_args).
-##
-## NOTE: there is deliberately no `chat:` / `rights:` block here yet.
-## The manifest is decoded with yaml.UnmarshalStrict, so an unknown
-## key breaks the WHOLE bundle — those blocks land only once
-## bundle.Manifest carries them.
 launch:
   primary: [initial_message, mode]
   hidden: [chat_context, scope_notes]
+
+## Copi is a CONVERSATIONAL bot — the studio hosts him in the assistant
+## dock. This block is the whole cost of that: bundle.Manifest carries
+## `chat:` now, so a second chat bot needs no studio code (issue #333).
+chat:
+  seed_var: initial_message
+  nodes:
+    seed: {kind: silent}
+    gate: {kind: silent}
+    copi: {kind: banner, label: "Copi is thinking"}
+    ## No `prompt`: Copi's reply IS the chat node's runtime-resolved
+    ## `instructions:`, exactly as for Nexie.
+    chat: {kind: human, text_field: message}
+  launcher:
+    prompt: "What do you want to ask about iterion?"
+    description: "A starting point, or type your own — Copi answers about iterion itself, in whatever workspace he is pointed at."
+    submit_label: "Start the conversation"
+    presets:
+      - value: "Explique-moi ce diagnostic et comment le corriger."
+        label: "Decode a diagnostic (Cxxx)"
+        description: "What the code means, why it fired, how to fix it."
+      - value: "Ce run a échoué / est en pause : diagnostique-le à partir de ses événements."
+        label: "Diagnose a run"
+        description: "Reads the run store: status, checkpoint, events."
+      - value: "Aide-moi à écrire un .bot qui fait ceci : "
+        label: "Draft a workflow"
+        description: "Writes real DSL — a draft you validate yourself."
+      - value: "Quel bot du catalogue dois-je utiliser pour ce que je veux faire ?"
+        label: "Which bot should I use?"
+        description: "Routes you through the catalog and its personas."

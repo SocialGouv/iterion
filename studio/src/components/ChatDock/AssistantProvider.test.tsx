@@ -16,11 +16,22 @@ import { DOCKED_WIDTH_PX, FLOATING_FOOTPRINT_PX } from "./ChatDockShell";
 
 const { botLookup } = vi.hoisted(() => ({ botLookup: vi.fn() }));
 
-vi.mock("@/lib/whats-next/firstClassBots", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/whats-next/firstClassBots")>();
-  return { ...actual, getFirstClassBot: botLookup };
-});
+// The registry is a server fetch now (manifest-driven discovery, #333), so
+// what these tests need is the RESOLUTION, not the transport: mock the hook
+// and keep asserting the one thing this file is about — that a registry with
+// no usable bot degrades to "no assistant" instead of crashing the shell.
+vi.mock("@/hooks/useChatRegistry", () => ({
+  useChatRegistry: () => {
+    const bot = botLookup();
+    return {
+      byId: bot ? { [bot.id]: bot } : {},
+      bots: bot ? [bot] : [],
+      resolve: () => bot,
+      loading: false,
+      error: null,
+    };
+  },
+}));
 
 // The real hook opens a websocket and lists runs on mount; none of that
 // is what this file is about.
@@ -149,8 +160,8 @@ describe("useAssistantReservedWidthPx", () => {
     expect(screen.getByTestId("width").textContent).toBe(String(DOCKED_WIDTH_PX));
   });
 
-  // The registry cannot miss today (the id is a const key), but it
-  // becomes manifest-driven — and then the two conditions would drift.
+  // The registry IS manifest-driven now, so a miss is reachable: a server
+  // that serves no chat bot, or a listing still in flight on a cold load.
   it("reserves nothing when the bot lookup misses", () => {
     botLookup.mockReturnValue(null);
     localStorage.setItem(ASSISTANT_DOCK_KEY, "docked-right");

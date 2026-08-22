@@ -77,6 +77,58 @@ export interface BotEntry {
    *  form regroups its buckets from this; requiredness/validation and the
    *  engine's var resolution are untouched. */
   launch?: BotLaunchHints;
+  /** Conversational-bot declaration (manifest `chat:` block). Present ONLY
+   *  on bots the studio hosts in the assistant dock; absent on every
+   *  ordinary bot, which is what makes this list the chat registry. */
+  chat?: BotChatSurface;
+}
+
+/** BotChatSurface mirrors the manifest `chat:` block (pkg/bundle/chat.go).
+ *  It carries presentation shape only — which node speaks, which one takes
+ *  the reply — never what the bot means. */
+export interface BotChatSurface {
+  /** Overrides for the picker; empty falls back to display_name/description. */
+  label?: string;
+  description?: string;
+  /** Launch var carrying the operator's first message. */
+  seed_var?: string;
+  /** node id → how the transcript renders it. A node absent from the map
+   *  renders as an ordinary run event rather than disappearing. */
+  nodes?: Record<string, BotChatNode>;
+  launcher_vars?: BotChatLauncherVar[];
+  launcher?: BotChatLauncher;
+}
+
+export interface BotChatNode {
+  kind: "banner" | "human" | "silent";
+  label?: string;
+  summary_field?: string;
+  prompt?: string;
+  text_field?: string;
+  approved_field?: string;
+}
+
+export interface BotChatLauncherVar {
+  name: string;
+  label?: string;
+  /** Studio-side pre-fill source. "work_dir" is the only one understood;
+   *  anything else is ignored so a newer bundle degrades to an empty
+   *  field rather than failing to render. */
+  default_from?: string;
+}
+
+export interface BotChatLauncher {
+  prompt?: string;
+  description?: string;
+  submit_label?: string;
+  allow_other?: boolean;
+  presets?: BotChatSeedPreset[];
+}
+
+export interface BotChatSeedPreset {
+  value: string;
+  label?: string;
+  description?: string;
 }
 
 /** BotLaunchHints mirrors the manifest `launch:` block. Unknown var names

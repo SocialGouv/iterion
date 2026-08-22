@@ -11,6 +11,7 @@
 // drifting.
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ASSISTANT_DOCK_KEY } from "@/lib/chatDock/dockState";
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
@@ -67,10 +68,17 @@ afterEach(() => {
 });
 
 function renderDock() {
+  // AssistantProvider discovers its bot registry through react-query now
+  // (#333), so it needs a client. Retries off: the fetch fails under jsdom
+  // and the registry's built-in floor is what these tests then exercise —
+  // which is the production degradation path, not a stub.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <AssistantProvider>
-      <ChatDock />
-    </AssistantProvider>,
+    <QueryClientProvider client={qc}>
+      <AssistantProvider>
+        <ChatDock />
+      </AssistantProvider>
+    </QueryClientProvider>,
   );
 }
 

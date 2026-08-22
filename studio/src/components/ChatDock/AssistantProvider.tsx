@@ -45,14 +45,15 @@ import {
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
+  ASSISTANT_BOT_KEY,
   ASSISTANT_DOCK_KEY,
   readDockState,
   writeDockState,
   type DockState,
 } from "@/lib/chatDock/dockState";
+import { readStringFlag, writeStringFlag } from "@/lib/localStorageFlag";
+import { useChatRegistry } from "@/hooks/useChatRegistry";
 import {
-  DEFAULT_WHATS_NEXT_BOT_ID,
-  getFirstClassBot,
   type FirstClassBot,
 } from "@/lib/whats-next/firstClassBots";
 import {
@@ -89,12 +90,18 @@ interface AssistantDockContextValue {
 }
 
 interface AssistantSessionContextValue {
-  // Null only if the bot registry lookup misses. It can't today —
-  // DEFAULT_WHATS_NEXT_BOT_ID is a const key — but the surfaces below
-  // must degrade rather than crash once that registry becomes
-  // manifest-driven and therefore dynamic.
+  // Null only if the registry is empty. It has a built-in floor, so this is
+  // the "no bots at all" case rather than a lookup miss — but the registry is
+  // manifest-driven and therefore dynamic now, so every surface below
+  // degrades rather than crashes.
   bot: FirstClassBot | null;
   session: UseWhatsNextSession;
+  // Every conversational bot the server offers, and the switch between them.
+  // Both live on the SESSION context, not the dock one: changing bots drops
+  // the session, so a consumer that re-renders on this is already
+  // re-rendering on the session.
+  bots: FirstClassBot[];
+  selectBot: (id: string) => void;
 }
 
 const AssistantDockContext = createContext<AssistantDockContextValue | null>(null);
@@ -155,7 +162,18 @@ function AssistantSessionHost({
   store: RunStore;
   children: ReactNode;
 }) {
-  const bot = getFirstClassBot(DEFAULT_WHATS_NEXT_BOT_ID);
+  const registry = useChatRegistry();
+  // Which chat bot answers, remembered per browser. A choice that resets on
+  // every reload is not a choice: an operator who switched to the iterion
+  // copilot is telling us what they want the dock to be.
+  const [selectedId, setSelectedId] = useState<string>(() =>
+    readStringFlag(ASSISTANT_BOT_KEY, ""),
+  );
+  const bot = registry.resolve(selectedId);
+  const selectBot = useCallback((id: string) => {
+    setSelectedId(id);
+    writeStringFlag(ASSISTANT_BOT_KEY, id);
+  }, []);
   const session = useWhatsNextSession(bot ?? FALLBACK_BOT);
 
   const [dock, setDockState] = useState<DockState>(() =>
@@ -180,8 +198,8 @@ function AssistantSessionHost({
     [store, dock, setDock, dismissedRef, bot],
   );
   const sessionValue = useMemo<AssistantSessionContextValue>(
-    () => ({ bot, session }),
-    [bot, session],
+    () => ({ bot, session, bots: registry.bots, selectBot }),
+    [bot, session, registry.bots, selectBot],
   );
 
   return (

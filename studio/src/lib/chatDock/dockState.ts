@@ -30,6 +30,12 @@ export const DOCK_BREAKPOINT_PX = 1024;
 // steering panel.
 export const ASSISTANT_DOCK_KEY = "iterion.chatDock.assistant";
 
+// Which conversational bot answers in the dock. Persisted per browser so an
+// operator who switched to the iterion copilot finds it there next time; an
+// unknown or removed id falls back to the registry's default rather than
+// leaving the dock empty.
+export const ASSISTANT_BOT_KEY = "iterion.chatDock.assistantBot";
+
 // openedDock picks the presentation when a dock OPENS from closed.
 // Point-in-time check by design: an already-open dock must not re-dock
 // itself on window resize, and the user's explicit dock choice (which

@@ -81,6 +81,13 @@ type Entry struct {
 	// opinion — the form renders every var as before.
 	Launch *bundle.LaunchHints `json:"launch,omitempty" yaml:"launch,omitempty"`
 
+	// Chat mirrors the manifest chat: block — the bot's declaration that it
+	// is a conversational bot the studio hosts in its assistant dock. Nil for
+	// every ordinary bot. Carried by discovery because the studio's chat
+	// registry IS this list: without it the surface falls back to a
+	// hard-coded const, and a second chat bot needs a studio release.
+	Chat *bundle.ChatSurface `json:"chat,omitempty" yaml:"chat,omitempty"`
+
 	// Produces / Consumes mirror the manifest's run-to-run hand-off blocks:
 	// what this bot leaves behind for a later run, and what it wants handed to
 	// it at launch. Carried by discovery because the hand-off is resolved AT
@@ -451,6 +458,7 @@ func parseBundle(dir string) (*Entry, error) {
 		Repo:            m.Repo,
 		ConfigShare:     m.ConfigShare,
 		Launch:          m.Launch,
+		Chat:            m.Chat,
 		Produces:        m.Produces,
 		Consumes:        m.Consumes,
 		Invocations:     bundle.EffectiveInvocations(m),

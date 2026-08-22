@@ -179,6 +179,12 @@ const SELF_LABELLING: ReadonlySet<ReferenceKind> = new Set(["bot", "repo"]);
 // kind requires — the caller then falls back to the route's plain view
 // reference, so a crafted URL costs the operator nothing more than a
 // less specific chip.
+//
+// Exported as `mintReference` below: the explicit drop path (#333) carries
+// ids from a `dataTransfer` payload, which is no more trustworthy than a URL
+// param — a page can put anything on the clipboard-adjacent drag surface.
+// Both paths mint through this one function so the delimiter guarantee holds
+// once rather than per call site.
 function ref(
   kind: ReferenceKind,
   id: string,
@@ -203,6 +209,8 @@ function ref(
     label: SELF_LABELLING.has(kind) ? clean : sanitizeReferenceText(label),
   };
 }
+
+export { ref as mintReference };
 
 // viewRef mints the "you are on this screen" reference. Its ids are
 // literals from the table below — never URL-derived — so it is total

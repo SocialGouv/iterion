@@ -177,6 +177,16 @@ type Manifest struct {
 	// authoring mistake for the studio to surface, never a load error.
 	Launch *LaunchHints `yaml:"launch,omitempty"`
 
+	// Chat declares this bundle as a CONVERSATIONAL bot the studio hosts in
+	// its assistant dock: which node speaks, which one collects the reply,
+	// and what the session launcher asks first. Nil = not a chat bot, which
+	// is every bot but the two that are.
+	//
+	// It lives in the manifest so a second chat bot is a bundle rather than
+	// a studio release — the registry the studio reads is discovery, not a
+	// hard-coded const with a bot id in it.
+	Chat *ChatSurface `yaml:"chat,omitempty"`
+
 	// Produces / Consumes declare the RUN-TO-RUN hand-off: what a bot leaves
 	// behind that a later run can start from, and what a bot wants handed to it
 	// at launch. They are matched BY KIND — a shared vocabulary, never a bot id
@@ -941,6 +951,7 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	// Soft-normalize only — launch names may reference workflow vars,
 	// which the manifest loader cannot see, so nothing here hard-fails.
 	m.Launch = m.Launch.normalized()
+	m.Chat = m.Chat.normalized()
 	// Every attachment value is later joined to the bundle's attachments/
 	// directory and opened as a file by the runtime. Reject absolute or
 	// "../"-escaping values at parse time so a hostile bundle can't turn
@@ -956,6 +967,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	if err := validateInvocations(m.Invocations); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
+	if err := validateChatSurface(m.Chat); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	if err := validateRepoRequirement(m.Repo); err != nil {

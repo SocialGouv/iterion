@@ -12,7 +12,7 @@
 // for the page the operator is on, pinned visibly above the composer and
 // carried as a one-line pointer on every message.
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState, type DragEvent as ReactDragEvent } from "react";
 import { useLocation } from "wouter";
 
 import {
@@ -22,6 +22,15 @@ import {
 } from "@/components/ChatDock/AssistantProvider";
 import ContextChip from "@/components/ChatDock/ContextChip";
 import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
+import AttachedReferences from "@/components/ChatDock/AttachedReferences";
+import BotSwitcher from "@/components/ChatDock/BotSwitcher";
+import {
+  attachReference,
+  detachReference,
+  hasReferenceDrag,
+  readReferenceDrop,
+} from "@/lib/chatDock/dragReference";
+import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -52,7 +61,13 @@ export default function ChatDock() {
     // assistant's isolated one (the app around us sees the default).
     <AssistantStoreScope>
       <AssistantDock
+        // Keyed on the bot: switching correspondents must reset the dock's
+        // own state (attached refs, unread count), not carry one
+        // conversation's leftovers into another's.
+        key={sessionCtx.bot.id}
         bot={sessionCtx.bot}
+        bots={sessionCtx.bots}
+        onSelectBot={sessionCtx.selectBot}
         session={sessionCtx.session}
         dock={dockCtx.dock}
         onDockChange={dockCtx.setDock}
@@ -63,25 +78,65 @@ export default function ChatDock() {
 
 function AssistantDock({
   bot,
+  bots,
+  onSelectBot,
   session,
   dock,
   onDockChange,
 }: {
   bot: FirstClassBot;
+  bots: readonly FirstClassBot[];
+  onSelectBot: (id: string) => void;
   session: UseWhatsNextSession;
   dock: DockState;
   onDockChange: (next: DockState) => void;
 }) {
   const { reference, active, dismissed, dismiss, restore } = useRouteReference();
 
+  // What the operator DROPPED in, cleared once it has gone out with a
+  // message. Held here rather than in the session because it belongs to the
+  // message being composed, not to the conversation.
+  const [attached, setAttached] = useState<readonly TypedReference[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const detach = useCallback((ref: string) => {
+    setAttached((cur) => detachReference(cur, ref));
+  }, []);
+
   // The pointer rides on every message, not just the first: the operator
   // navigates mid-conversation, and the assistant's next turn must know
-  // where they are now.
+  // where they are now. Attached references ride the SAME message and are
+  // consumed by it — re-sending them on every later turn would tell the
+  // assistant the operator is still asking about something they moved on
+  // from.
   const decorate = useCallback(
-    (text: string) => withPageContext(text, active),
-    [active],
+    (text: string) => withPageContext(text, active, attached),
+    [active, attached],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
+
+  // Consume the attachments when a message leaves. Wrapping the composer's
+  // send rather than clearing optimistically: a send that throws keeps the
+  // operator's draft, and it must keep what they attached to it too —
+  // otherwise a transient failure silently strips the pointers and the
+  // retried message asks about nothing.
+  const onComposerSend = useCallback(
+    async (text: string, opts: { skills: string[] }) => {
+      await composer.onComposerSend(text, opts);
+      setAttached([]);
+    },
+    [composer],
+  );
+
+  const onDrop = useCallback((e: ReactDragEvent) => {
+    setDragOver(false);
+    const dropped = readReferenceDrop(e.dataTransfer);
+    // Not a reference drag (a file, a stray selection): let the browser have
+    // it rather than swallowing the event.
+    if (!dropped) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setAttached((cur) => attachReference(cur, dropped));
+  }, []);
 
   const unread = useUnreadWhileClosed(dock, session.messages.length);
   const needsAttention =
@@ -95,6 +150,9 @@ function AssistantDock({
       onDockChange={onDockChange}
       title={ASSISTANT_TITLE}
       titleHint={ASSISTANT_HINT}
+      headerSlot={
+        <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
+      }
       lane={ASSISTANT_LANE}
       bubbleLabel="Open assistant"
       bubbleTitle="Ask the assistant about this page"
@@ -103,6 +161,31 @@ function AssistantDock({
       attention={needsAttention}
       dockedRightMode="self"
     >
+      {/* The whole dock body is the drop target, not just the textarea: an
+          operator dragging a run card aims at the panel, and a 40px-tall
+          bullseye is a feature nobody finds. dragOver only lights up for a
+          drag that actually carries a reference — `types` is readable during
+          dragover even though `getData` is not. */}
+      <div
+        className={`flex-1 min-h-0 flex flex-col ${
+          dragOver ? "outline outline-2 -outline-offset-2 outline-accent" : ""
+        }`}
+        onDragOver={(e) => {
+          if (!hasReferenceDrag(e.dataTransfer)) return;
+          // preventDefault is what makes an element a valid drop target;
+          // without it the browser refuses the drop and shows a "no" cursor.
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          // Only when the pointer leaves the panel itself — dragging across a
+          // child fires dragleave for the child and would flicker the outline.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDragOver(false);
+        }}
+        onDrop={onDrop}
+      >
       <ContextChip
         reference={reference}
         dismissed={dismissed}
@@ -157,6 +240,7 @@ function AssistantDock({
         </div>
       ) : (
         <div className="shrink-0 border-t border-border-default bg-surface-0">
+          <AttachedReferences references={attached} onDetach={detach} />
           {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
               {/* Chip failures already surface via the session's
@@ -211,12 +295,13 @@ function AssistantDock({
                         !!composer.pendingHumanQuestion,
                       )
                 }
-                onSend={composer.onComposerSend}
+                onSend={onComposerSend}
               />
             </div>
           )}
         </div>
       )}
+      </div>
     </ChatDockShell>
   );
 }

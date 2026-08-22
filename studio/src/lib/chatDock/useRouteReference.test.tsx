@@ -6,6 +6,7 @@
 // (dismissing /board's chip must not silence /runs/:id's).
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Router, useLocation } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 
@@ -47,12 +48,16 @@ function Consumer() {
 
 function renderAt(path: string) {
   const { hook, navigate } = memoryLocation({ path });
+  // AssistantProvider now discovers its registry through react-query (#333).
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <AssistantProvider>
-      <Router hook={hook}>
-        <Mounted />
-      </Router>
-    </AssistantProvider>,
+    <QueryClientProvider client={qc}>
+      <AssistantProvider>
+        <Router hook={hook}>
+          <Mounted />
+        </Router>
+      </AssistantProvider>
+    </QueryClientProvider>,
   );
   return { navigate, view };
 }

@@ -71,6 +71,9 @@ export interface ChatDockShellProps {
   // Longer explanation of what typing here does, shown as the chrome's
   // tooltip. Optional but strongly encouraged when two docks coexist.
   titleHint?: string;
+  // Rendered in the header strip next to the title. The assistant puts its
+  // bot switcher here; a host with one fixed correspondent passes nothing.
+  headerSlot?: ReactNode;
   lane?: DockLane;
   // Right-edge width another surface has reserved (see laneRightPx).
   rightInset?: number;
@@ -99,6 +102,7 @@ export function ChatDockShell({
   onDockChange,
   title,
   titleHint,
+  headerSlot,
   lane = 0,
   rightInset = 0,
   bubbleIcon,
@@ -157,6 +161,7 @@ export function ChatDockShell({
         <ChatDockPanel
           title={title}
           titleHint={titleHint}
+          headerSlot={headerSlot}
           onUndock={() => changeDock("floating")}
           onClose={() => changeDock("closed")}
         >
@@ -176,6 +181,7 @@ export function ChatDockShell({
       <ChatDockChrome
         title={title}
         titleHint={titleHint}
+        headerSlot={headerSlot}
         onDockRight={() => changeDock("docked-right")}
         onClose={() => changeDock("closed")}
       />
@@ -299,19 +305,27 @@ export function ChatDockBubble({
 export function ChatDockPanel({
   title,
   titleHint,
+  headerSlot,
   onUndock,
   onClose,
   children,
 }: {
   title: string;
   titleHint?: string;
+  headerSlot?: ReactNode;
   onUndock: () => void;
   onClose: () => void;
   children: ReactNode;
 }) {
   return (
     <div className="h-full w-full flex flex-col bg-surface-1 border-l border-border-default">
-      <ChatDockChrome title={title} titleHint={titleHint} onUndock={onUndock} onClose={onClose} />
+      <ChatDockChrome
+        title={title}
+        titleHint={titleHint}
+        headerSlot={headerSlot}
+        onUndock={onUndock}
+        onClose={onClose}
+      />
       {children}
     </div>
   );
@@ -323,24 +337,29 @@ export function ChatDockPanel({
 export function ChatDockChrome({
   title,
   titleHint,
+  headerSlot,
   onDockRight,
   onUndock,
   onClose,
 }: {
   title: string;
   titleHint?: string;
+  headerSlot?: ReactNode;
   onDockRight?: () => void;
   onUndock?: () => void;
   onClose: () => void;
 }) {
   return (
-    <div className="shrink-0 flex items-center justify-between px-3 py-1 border-b border-border-default bg-surface-2">
-      <span
-        className="text-micro font-medium text-fg-default uppercase tracking-wide"
-        title={titleHint}
-      >
-        {title}
-      </span>
+    <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-1 border-b border-border-default bg-surface-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span
+          className="text-micro font-medium text-fg-default uppercase tracking-wide shrink-0"
+          title={titleHint}
+        >
+          {title}
+        </span>
+        {headerSlot}
+      </div>
       <div className="flex items-center gap-0.5">
         {onDockRight && (
           <IconButton
