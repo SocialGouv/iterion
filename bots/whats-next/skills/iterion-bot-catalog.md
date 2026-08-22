@@ -539,8 +539,8 @@ with blocked lots requalified against the final tree.
 
 ### `copilot` — Copi
 
-Conversational iterion assistant. ONE adaptive agent (claude_code +
-sonnet, bundled skills) in a standing chat loop, whose subject is
+Conversational iterion assistant. ONE adaptive agent (claw, bundled
+skills, a four-provider model ladder) in a standing chat loop, whose subject is
 iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
 semantics, backends, bundles and convergence doctrine. Three
 postures the operator can switch mid-conversation — info (explain
@@ -555,7 +555,9 @@ the work rather than doing it itself. Every turn ends
 at a budget-free chat pause — the session stays reachable for days,
 and a rolling context_brief carries the conversation across server
 restarts, redeploys and cloud pod changes. Only an explicit "close"
-ends the session.
+ends the session. An optional cross-review (`reviewer: on`) has a
+SECOND model, from another family, criticise each answer before you
+read it — off by default, since it costs a full extra call per turn.
 
 - **Use when**:
   Use to ask questions about iterion itself, from anywhere: what a
@@ -568,7 +570,7 @@ ends the session.
   it never edits or commits, so pair it with the bot that does the
   work.
 - **Triggers**: copi, copilot
-- **Vars**: `chat_context` (string), `initial_message` (string), `mode` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `chat_context` (string), `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty

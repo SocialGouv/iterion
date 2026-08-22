@@ -202,11 +202,37 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !ok {
 		t.Fatal("copi agent node missing from copilot/main.bot")
 	}
-	// claude_code is what makes the Skill tool, ask_user with same-session
-	// resume, and the operator-chatbox drain available. A backend swap is
-	// a deliberate decision, not an accident — pin it.
-	if copi.Backend != "claude_code" {
-		t.Errorf("copi backend = %q, want \"claude_code\"", copi.Backend)
+	// claw, and the WHOLE chain stays on claw. Two independent compile-time
+	// rules make that load-bearing rather than stylistic, and both were
+	// verified against the compiler:
+	//   - the `grok` and `kimi` CLI backends cannot enforce this
+	//     workflow's `permission: deny` gate (C176, "the run would fall
+	//     back UNGATED"), so the operator's model ladder can only reach
+	//     those models through claw's provider adapters;
+	//   - a chain that never changes backend never trips C176's
+	//     session-continuity rule, which is what lets the node keep
+	//     `inherit_if_available` below.
+	// A route that quietly moves off claw breaks one or both.
+	if copi.Backend != "claw" {
+		t.Errorf("copi backend = %q, want \"claw\" — a CLI backend cannot enforce the deny gate its fallbacks would need", copi.Backend)
+	}
+	for _, fb := range copi.Fallbacks {
+		if fb.Backend != "claw" {
+			t.Errorf("copi fallback %q runs on backend %q: leaving claw either drops the permission gate or kills session continuity", fb.Name, fb.Backend)
+		}
+	}
+	// On claw the tools: list BINDS (under claude_code's bypassPermissions
+	// it was inert). An empty list here would mean zero tools — a
+	// schema-shaped narrator that can read nothing — and a list that grew
+	// a shell would undo the deny gate's whole point from the other side.
+	if len(copi.Tools) == 0 {
+		t.Error("copi declares no tools: on claw that means NO tools at all, so it could not read a run or a .bot")
+	}
+	for _, tool := range copi.Tools {
+		switch tool {
+		case "bash", "run_command", "write_file", "edit_file":
+			t.Errorf("copi tools: includes %q — on claw this list is enforced, so it is a second way to hand the bot a shell the deny list refuses", tool)
+		}
 	}
 	if copi.Interaction != ir.InteractionHuman {
 		t.Errorf("copi interaction = %v, want human (ask_user must be armed)", copi.Interaction)
@@ -313,6 +339,78 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !ok {
 		t.Fatal("gate compute node missing")
 	}
+	// ── The optional cross-review ──────────────────────────────────
+	//
+	// Every assertion here guards a way the feature can look present and
+	// do nothing, which is the failure an operator would not report.
+
+	// Off by default. It costs a full extra LLM call on EVERY turn of a
+	// standing conversation; a default of "on" is a bill nobody chose.
+	if v, ok := wf.Vars["reviewer"]; !ok {
+		t.Error("no `reviewer` var — the operator could not turn cross-review on")
+	} else if fmt.Sprint(v.Default) != "off" {
+		t.Errorf("reviewer defaults to %v, want \"off\" — an extra model on every turn is opt-in", v.Default)
+	}
+
+	rev, ok := wf.Nodes["review"].(*ir.JudgeNode)
+	if !ok {
+		t.Fatal("review judge node missing — the reviewer var would switch on nothing")
+	}
+	// A judge, not an agent: it renders a verdict on someone else's work
+	// and must not be equipped to redo the work itself.
+	if len(rev.Fallbacks) == 0 {
+		t.Error("the reviewer declares no fallbacks — a judge never inherits the node's chain, so one provider outage silently removes cross-review")
+	}
+	for _, fb := range rev.Fallbacks {
+		if fb.Backend != "claw" {
+			t.Errorf("reviewer fallback %q runs on %q: same gate rule as the main chain", fb.Name, fb.Backend)
+		}
+	}
+	// Different family from the answering model. A reviewer sharing the
+	// author's blind spots agrees for the same reasons the answer was
+	// wrong — the whole value is the independent read.
+	if family(rev.Model) == family(copi.Model) {
+		t.Errorf("reviewer primary %q is the same family as copi's %q — a same-family reviewer is a rubber stamp", rev.Model, copi.Model)
+	}
+	// fresh, never inherited: the reviewer must read the answer as the
+	// operator will, not as its author remembers writing it.
+	if rev.Session != ir.SessionFresh {
+		t.Errorf("reviewer session = %v, want fresh — sharing Copi's session hands it Copi's reasoning", rev.Session)
+	}
+
+	// The routing flag must exclude a closing turn. Two sibling `when`
+	// guards both fire when both are true, so testing `reviewer == on` on
+	// the edge would send a closing turn through done AND the reviewer.
+	var wantsExpr string
+	for _, e := range gate.Exprs {
+		if e.Key == "wants_review" {
+			wantsExpr = e.Raw
+		}
+	}
+	if wantsExpr == "" {
+		t.Error("the gate derives no wants_review flag")
+	} else if !strings.Contains(wantsExpr, "close") {
+		t.Errorf("wants_review = %q does not exclude a closing turn — the run would leave through done and the reviewer at once", wantsExpr)
+	}
+
+	// The critique must be merged DETERMINISTICALLY. Asking the reviewer
+	// to reproduce the answer then critique it invites it to quietly
+	// improve the answer, and the operator could not tell which half they
+	// were reading.
+	compose, ok := wf.Nodes["compose"].(*ir.ComputeNode)
+	if !ok {
+		t.Fatal("compose compute node missing — the critique would have to come back through the reviewer's own prose")
+	}
+	var composed string
+	for _, e := range compose.Exprs {
+		if e.Key == "reply" {
+			composed = e.Raw
+		}
+	}
+	if !strings.Contains(composed, "critique") {
+		t.Errorf("compose does not fold the critique into the reply (expr %q)", composed)
+	}
+
 	var replyExpr string
 	for _, e := range gate.Exprs {
 		if e.Key == "reply" {
@@ -510,4 +608,25 @@ func conversationLoopBound(t *testing.T, wf *ir.Workflow) int {
 	}
 	t.Fatalf("loop %q has no declared bound", e.LoopName)
 	return 0
+}
+
+// family reduces a model spec to its provider prefix ("anthropic/claude-opus-5"
+// → "anthropic"). A bare id with no prefix is its own family.
+//
+// It unwraps `${VAR:-default}` FIRST. The IR keeps env references verbatim —
+// substitution happens at run time — so a naive prefix split compares the
+// env-var NAMES ("${ITERION_COPILOT_MODEL:-openai") instead of the models, and
+// the cross-family assertion would hold for two anthropic defaults purely
+// because their variables are named differently. That is a test that cannot
+// fail, which is worse than no test.
+func family(spec string) string {
+	if strings.HasPrefix(spec, "${") && strings.HasSuffix(spec, "}") {
+		if i := strings.Index(spec, ":-"); i > 0 {
+			spec = spec[i+2 : len(spec)-1]
+		}
+	}
+	if i := strings.Index(spec, "/"); i > 0 {
+		return spec[:i]
+	}
+	return spec
 }
