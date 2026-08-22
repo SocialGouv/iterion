@@ -120,6 +120,10 @@ func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverr
 	if b.maxCostUSD > 0 && o.MaxCostUSD > b.maxCostUSD {
 		b.maxCostUSD = o.MaxCostUSD
 		delete(b.warningsEmitted, "cost_usd")
+		// A raised ceiling deserves a fresh reminder that part of the spend
+		// is still invisible to it — otherwise the operator re-budgets on a
+		// figure they were told once, long ago, was partial.
+		delete(b.warningsEmitted, "cost_usd_unpriced")
 		raised = true
 	}
 	if b.maxTokens > 0 && o.MaxTokens > b.maxTokens {
@@ -220,21 +224,22 @@ type budgetCheckResult struct {
 // check results. tokens and costUSD may be zero if the executor does not
 // report them.
 //
-// costKnown says whether costUSD is a measurement. When a node burned tokens
-// but no price could be resolved for its model, its spend is unknown — adding
-// the zero would let a run drift past max_cost_usd with the ceiling reporting
-// nothing. Those tokens are counted apart and surfaced once (see checkLocked).
+// A zero costUSD means the price could not be resolved, never that the call
+// was free — `cost.Annotate` omits `_cost_usd` rather than write a 0. Adding
+// that zero would let a run drift past max_cost_usd with the ceiling
+// reporting nothing, so tokens burned at an unknown price are counted apart
+// and surfaced once instead (see checkLocked).
 //
 // Because budget enforcement is soft (pre-check and post-record are not
 // atomic), concurrent branches may push usage past the limit. When overage
 // exceeds 20% of the limit, a warning is logged to aid debugging.
-func (b *SharedBudget) RecordUsage(tokens int, costUSD float64, costKnown bool) []budgetCheckResult {
+func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.iterationsUsed++
 	b.tokensUsed += tokens
-	if costKnown {
+	if costUSD > 0 {
 		b.costUsed += costUSD
 	} else if tokens > 0 {
 		// Tokens with no resolvable price: real spend the cost axis cannot
@@ -399,12 +404,16 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	// to know the ceiling is partial before the invoice tells them.
 	if b.maxCostUSD > 0 && b.unpricedNodes > 0 && !b.warningsEmitted["cost_usd_unpriced"] {
 		b.warningsEmitted["cost_usd_unpriced"] = true
+		// No used/limit: this dimension is not an axis with a ratio, and
+		// every other budget_warning consumer reads that pair as one
+		// (`used/limit >= 0.8` of something about to bind). Omitting it is
+		// what makes them fall through to their no-ratio path instead of
+		// rendering "0/160" or replacing a genuine tokens pill.
 		results = append(results, budgetCheckResult{
 			warning: true, advisory: true, dimension: "cost_usd_unpriced",
-			used: b.costUsed, limit: b.maxCostUSD,
 			detail: fmt.Sprintf(
-				"max_cost_usd is only counting part of this run: %d node execution(s) totalling %d tokens had no resolvable price, so their spend is unknown and absent from the %.2f recorded so far. Add the model to the price table or check that the backend reports a cost.",
-				b.unpricedNodes, b.unpricedTokens, b.costUsed,
+				"max_cost_usd is only counting part of this run: %d node execution(s) totalling %d tokens had no resolvable price, so their spend is unknown and cannot reach the ceiling.",
+				b.unpricedNodes, b.unpricedTokens,
 			),
 		})
 	}
@@ -438,8 +447,13 @@ func budgetWarningData(w budgetCheckResult) map[string]any {
 	data := map[string]any{
 		"dimension": w.dimension,
 		"advisory":  w.advisory,
-		"used":      w.used,
-		"limit":     w.limit,
+	}
+	// A real axis always has a positive limit (checkLocked returns early
+	// otherwise). Dimensions without one carry no ratio, so the pair is left
+	// out rather than published as a misleading 0/0.
+	if w.limit > 0 {
+		data["used"] = w.used
+		data["limit"] = w.limit
 	}
 	if w.detail != "" {
 		data["detail"] = w.detail
@@ -517,7 +531,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
 func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
-	tokens, costUSD, costKnown := extractUsage(output)
+	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
 	// works for workflows with no budget: block). We only record — the
@@ -534,7 +548,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 		return nil
 	}
 
-	checks := rs.budget.RecordUsage(tokens, costUSD, costKnown)
+	checks := rs.budget.RecordUsage(tokens, costUSD)
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {

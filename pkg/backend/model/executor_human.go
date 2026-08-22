@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
+	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -112,9 +113,11 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 		output = make(map[string]any)
 	}
 
-	// Attach usage metadata.
-	output["_tokens"] = result.TotalUsage.InputTokens + result.TotalUsage.OutputTokens
-	output["_model"] = modelSpec
+	// Attach usage metadata. Going through cost.Annotate rather than
+	// stamping the keys by hand is what puts `_cost_usd` on this path: an
+	// `interaction: llm` human node is a real LLM call, and hand-stamping
+	// left it invisible to max_cost_usd on every model, priced or not.
+	cost.Annotate(output, modelSpec, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return output, nil
 }

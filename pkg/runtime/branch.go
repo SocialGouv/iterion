@@ -304,7 +304,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // accumulate independently; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
 func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) bool {
-	tokens, costUSD, costKnown := extractUsage(output)
+	tokens, costUSD := extractUsage(output)
 
 	if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
@@ -316,7 +316,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	if rs.budget == nil {
 		return false
 	}
-	checks := rs.budget.RecordUsage(tokens, costUSD, costKnown)
+	checks := rs.budget.RecordUsage(tokens, costUSD)
 
 	for _, w := range findWarnings(checks) {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, budgetWarningData(w)); err != nil {

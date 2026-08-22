@@ -544,11 +544,12 @@ one advisory `budget_warning` on dimension `cost_usd_unpriced`, whose
 cannot see. The run continues — an operator may legitimately want it to —
 but the ceiling never again reads as enforced when it is only partial.
 
-Two situations reach it in practice: a backend that reports no cost of its
-own (`codex` parses its token counts but publishes no dollar figure), and a
-model absent from both pricing sources — typically one newer than the
-static table. If the warning fires, either add the model to the table or
-expect `max_cost_usd` to bind on the priced nodes only.
+What reaches it is a model absent from both pricing sources — typically one
+newer than the static table. A backend that publishes no dollar figure of
+its own, like `codex`, is not a separate cause: it falls back to that same
+table, so it only goes unpriced when its model does. If the warning fires,
+either add the model to the table or expect `max_cost_usd` to bind on the
+priced nodes only.
 
 ### The target repo's toolchain — `repo_devbox:`
 
