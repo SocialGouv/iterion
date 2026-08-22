@@ -479,16 +479,19 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 		BoardRegister: s.boardRegister,
 		LocalSecrets:  s.localSecrets,
 		LocalSealer:   s.localSealer,
-	}
-	if r != nil {
-		spec.RunID = r.ID
-		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
 		// Resolved, not read raw: only a cloud launch persists BotID, so a
 		// studio-launched bundle would otherwise fall back to the workflow
 		// name here and aim the resumed run at a different space than its own
 		// earlier nodes wrote to — an empty memory, and notes landing where
-		// nothing will read them again.
-		spec.BotID = BotIDForRun(r)
+		// nothing will read them again. It stays IN the literal (nil-safe)
+		// rather than being assigned below: the bot-identity guard reads the
+		// composite literal, and a field-by-field BotID reads to it as a site
+		// that decided nothing.
+		BotID: BotIDForRun(r),
+	}
+	if r != nil {
+		spec.RunID = r.ID
+		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
 	}
 	return spec
 }
