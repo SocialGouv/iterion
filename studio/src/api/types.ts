@@ -310,6 +310,19 @@ export type InteractionMode = "none" | "human" | "llm" | "llm_or_human";
 // runtime remaps it to xhigh before the provider. See docs/ultracode.md.
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
+// FallbackDecl is one named route of an agent/judge `fallbacks:` block
+// (ADR-087). Entries are tried in declaration order when the primary
+// (or the preceding route) fails. Missing backend/model inherit the
+// node's. The name is the stable id the fall-through event cites.
+export interface FallbackDecl {
+  name: string;
+  backend?: string;
+  model?: string;
+  provider?: string;
+  on?: string[];
+  metered?: boolean;
+}
+
 export interface AgentDecl {
   name: string;
   model: string;
@@ -339,6 +352,10 @@ export interface AgentDecl {
   cursors?: CursorBlock;
   // Resource names this node acquires before running (workflow.resources).
   needs?: string[];
+  // Ordered `fallbacks:` routes (ADR-087). Must round-trip through
+  // parse → unparse: omitting it here would delete the block from the
+  // .bot on the next unrelated inspector edit.
+  fallbacks?: FallbackDecl[];
 }
 
 export interface JudgeDecl {
@@ -366,6 +383,7 @@ export interface JudgeDecl {
   cursors?: CursorBlock;
   // Resource names this node acquires before running (workflow.resources).
   needs?: string[];
+  fallbacks?: FallbackDecl[];
 }
 
 // ---------------------------------------------------------------------------

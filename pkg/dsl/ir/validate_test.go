@@ -2,6 +2,7 @@ package ir
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -1609,6 +1610,217 @@ func TestResolveEffortLiteral(t *testing.T) {
 				t.Errorf("ResolveEffortLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLooksLikeModelSpec(t *testing.T) {
+	yes := []string{
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"openai-codex/gpt-5.6-sol",
+		"anthropic/claude-opus-5",
+		"claude-opus-5",
+		"openai/gpt-5.5",
+		"xai/grok-4",
+		"opus",
+		"sonnet",
+		"o1",
+		"o3-mini",
+		"a:b",
+		"bedrock/us.amazon.nova-pro-v1:0",
+		"anthropic.claude-sonnet-4-20250514-v1:0",
+		"ollama/llama3:8b",
+	}
+	for _, s := range yes {
+		if !LooksLikeModelSpec(s) {
+			t.Errorf("LooksLikeModelSpec(%q) = false, want true", s)
+		}
+	}
+	no := []string{
+		"",
+		"victor",
+		"root",
+		"/home/victor",
+		"../secret",
+		"$HOME",
+		"${VAR}",
+		":leading",
+		"hello world",
+		strings.Repeat("a-", 70),
+	}
+	for _, s := range no {
+		if LooksLikeModelSpec(s) {
+			t.Errorf("LooksLikeModelSpec(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestResolveModelLiteral(t *testing.T) {
+	const antKey = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345"
+	const ghpKey = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	tests := []struct {
+		name     string
+		literal  string
+		envKey   string
+		envValue string
+		want     string
+		// shapeOK asserts LooksLikeModelSpec(envValue) so the name
+		// gate (not the shape check) is what refused the expansion.
+		shapeOK bool
+	}{
+		{name: "plain spec passes through", literal: "openai-codex/gpt-5.6-sol", want: "openai-codex/gpt-5.6-sol"},
+		{name: "empty stays empty", literal: "", want: ""},
+		{name: "env-subst with valid default",
+			literal:  "${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     "openai-codex/gpt-5.6-sol"},
+		{name: "env wins over default when the var contains MODEL",
+			literal:  "${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "openai-codex/gpt-5.6-terra",
+			want:     "openai-codex/gpt-5.6-terra"},
+		{name: "non-model expansion clamps to empty",
+			literal:  "${ITERION_TEST_MODEL:-/not/a/model}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     ""},
+		{name: "username-shaped expansion is not a model",
+			literal:  "${ITERION_TEST_MODEL}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "victor",
+			want:     ""},
+		{name: "bare env var unset returns empty",
+			literal:  "${ITERION_TEST_MODEL}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     ""},
+		{name: "ANTHROPIC_API_KEY is refused even when the value looks like a model",
+			literal:  "${ANTHROPIC_API_KEY}",
+			envKey:   "ANTHROPIC_API_KEY",
+			envValue: antKey,
+			want:     "",
+			shapeOK:  true},
+		{name: "GITHUB_TOKEN is refused even when the value looks like a model",
+			literal:  "${GITHUB_TOKEN}",
+			envKey:   "GITHUB_TOKEN",
+			envValue: ghpKey,
+			want:     "",
+			shapeOK:  true},
+		{name: "hyphenated secret value is refused",
+			literal:  "${GITHUB_TOKEN}",
+			envKey:   "GITHUB_TOKEN",
+			envValue: "xoxb-1234-abcd-efghijkl",
+			want:     "",
+			shapeOK:  true},
+		{name: "name gate refuses a model-shaped value from a non-MODEL var",
+			literal:  "${SOME_OTHER_VAR}",
+			envKey:   "SOME_OTHER_VAR",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "LITELLM_MODEL_API_KEY is a credential even though it contains MODEL",
+			literal:  "${LITELLM_MODEL_API_KEY}",
+			envKey:   "LITELLM_MODEL_API_KEY",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "OPENROUTER_MODEL_KEY is a credential even though it contains MODEL",
+			literal:  "${OPENROUTER_MODEL_KEY}",
+			envKey:   "OPENROUTER_MODEL_KEY",
+			envValue: "gpt-5.6-sol",
+			want:     "",
+			shapeOK:  true},
+		{name: "ITERION_VIBE_MODEL_CLAUDE still expands",
+			literal:  "${ITERION_VIBE_MODEL_CLAUDE:-openai-codex/gpt-5.6-sol}",
+			envKey:   "ITERION_VIBE_MODEL_CLAUDE",
+			envValue: "anthropic/claude-opus-5",
+			want:     "anthropic/claude-opus-5"},
+		{name: "colonated default still expands",
+			literal:  "${ITERION_TEST_MODEL:-ollama/llama3:8b}",
+			envKey:   "ITERION_TEST_MODEL",
+			envValue: "",
+			want:     "ollama/llama3:8b"},
+		{name: "nested ${${X_MODEL}} is refused",
+			literal:  "${${X_MODEL}}",
+			envKey:   "X_MODEL",
+			envValue: "ANTHROPIC_API_KEY",
+			want:     ""},
+		{name: "nested ${$X_MODEL} is refused",
+			literal:  "${$X_MODEL}",
+			envKey:   "X_MODEL",
+			envValue: "ANTHROPIC_API_KEY",
+			want:     ""},
+		{name: "nested ${A:-${B_MODEL:-c}} is refused (more than one $)",
+			literal: "${A:-${B_MODEL:-openai-codex/gpt-5.6-sol}}",
+			want:    ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envKey != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+			if tt.shapeOK && !LooksLikeModelSpec(tt.envValue) {
+				t.Fatalf("precondition: LooksLikeModelSpec(%q) should be true so the name gate is the thing under test", tt.envValue)
+			}
+			if got := ResolveModelLiteral(tt.literal); got != tt.want {
+				t.Errorf("ResolveModelLiteral(%q) = %q, want %q", tt.literal, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelEnvNameOK(t *testing.T) {
+	yes := []string{
+		"CODEX_MODEL",
+		"ANTHROPIC_MODEL",
+		"ITERION_VIBE_MODEL_CLAUDE",
+		"ITERION_TEST_MODEL",
+	}
+	for _, name := range yes {
+		if !modelEnvNameOK(name) {
+			t.Errorf("modelEnvNameOK(%q) = false, want true", name)
+		}
+	}
+	no := []string{
+		"ANTHROPIC_API_KEY",
+		"GITHUB_TOKEN",
+		"LITELLM_MODEL_API_KEY",
+		"OPENROUTER_MODEL_KEY",
+		"MODEL_REGISTRY_TOKEN",
+		"SOME_OTHER_VAR",
+	}
+	for _, name := range no {
+		if modelEnvNameOK(name) {
+			t.Errorf("modelEnvNameOK(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestModelEnvRefNames(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"${ANTHROPIC_API_KEY}", []string{"ANTHROPIC_API_KEY"}},
+		{"${ITERION_TEST_MODEL:-openai-codex/gpt-5.6-sol}", []string{"ITERION_TEST_MODEL"}},
+		{"$CODEX_MODEL", []string{"CODEX_MODEL"}},
+		{"${A:-${B_MODEL:-c}}", []string{"A", "B_MODEL"}},
+		{"plain spec", nil},
+	}
+	for _, tt := range tests {
+		got := modelEnvRefNames(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("modelEnvRefNames(%q) = %v, want %v", tt.in, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("modelEnvRefNames(%q) = %v, want %v", tt.in, got, tt.want)
+				break
+			}
+		}
 	}
 }
 

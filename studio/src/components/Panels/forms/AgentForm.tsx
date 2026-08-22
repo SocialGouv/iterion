@@ -5,6 +5,8 @@ import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import { effortBackendKey, useEffortCapabilities } from "@/hooks/useEffortCapabilities";
 import { usePromptEditorMount } from "@/hooks/usePromptEditorMount";
 import type { AgentDecl, JudgeDecl, AwaitMode, InteractionMode, ReasoningEffort } from "@/api/types";
+import { useResolvedModel } from "@/hooks/useResolvedModel";
+import { envDefault } from "@/lib/modelLabel";
 import { getAllNodeNames } from "@/lib/defaults";
 import {
   AWAIT_HELP,
@@ -24,6 +26,7 @@ import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
 import CompactionFields from "./CompactionFields";
 import CursorsFields from "./CursorsFields";
+import FallbacksFields from "./FallbacksFields";
 import MCPConfigFields from "./MCPConfigFields";
 
 interface Props {
@@ -106,6 +109,14 @@ export default function AgentForm({ decl, kind }: Props) {
     return `${REASONING_EFFORT_HELP} Levels available for ${decl.model}: ${(effortCaps.supported ?? []).join(", ")}.`;
   }, [effortLoading, effortCaps, effortNotSupported, decl.model, envSubstEffort]);
 
+  const resolvedModel = useResolvedModel(decl.model);
+  const modelHint = (() => {
+    const live = resolvedModel?.trim();
+    const def = envDefault(decl.model);
+    if (live && decl.model && live !== decl.model.trim()) return live;
+    if (def && def !== decl.model) return def;
+    return undefined;
+  })();
   const headerColor = NODE_COLORS[kind];
   const headerIcon = kind === "agent" ? "\u{1F916}" : "\u{2696}\u{FE0F}";
   const headerLabel = kind === "agent" ? "Agent" : "Judge";
@@ -127,10 +138,10 @@ export default function AgentForm({ decl, kind }: Props) {
           return null;
         }}
       />
-      {detectProvider(decl.model, decl.backend) && (
+      {detectProvider(resolvedModel || envDefault(decl.model) || decl.model, decl.backend) && (
         <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-surface-1/50 rounded text-caption text-fg-subtle">
-          <ProviderIcon model={decl.model} delegate={decl.backend} size={14} />
-          <span><ProviderLabel model={decl.model} delegate={decl.backend} /></span>
+          <ProviderIcon model={resolvedModel || envDefault(decl.model) || decl.model} delegate={decl.backend} size={14} />
+          <span><ProviderLabel model={resolvedModel || envDefault(decl.model) || decl.model} delegate={decl.backend} /></span>
         </div>
       )}
       <TextField
@@ -140,6 +151,11 @@ export default function AgentForm({ decl, kind }: Props) {
         placeholder="e.g. ${ANTHROPIC_MODEL}"
         help="LLM model identifier. Use ${ENV_VAR} for environment variable substitution. Required unless backend is set."
       />
+      {modelHint && (
+        <p className="text-caption text-fg-muted -mt-1 mb-2 px-2" data-testid="resolved-model-hint">
+          resolves to <span className="font-mono">{modelHint}</span>
+        </p>
+      )}
       <SelectField
         label="Backend"
         value={decl.backend ?? ""}
@@ -282,6 +298,10 @@ export default function AgentForm({ decl, kind }: Props) {
           />
         </>
       ) : null}
+      <FallbacksFields
+        value={decl.fallbacks}
+        onChange={(fallbacks) => update({ fallbacks })}
+      />
       <CompactionFields
         value={decl.compaction}
         onChange={(c) => update({ compaction: c })}

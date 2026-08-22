@@ -4883,6 +4883,20 @@
         ]
       }
     },
+    "/api/resolve-model": {
+      "get": {
+        "operationId": "getResolveModel",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/resolve-model",
+        "tags": [
+          "resolve-model"
+        ]
+      }
+    },
     "/api/routes": {
       "get": {
         "operationId": "getRoutes",

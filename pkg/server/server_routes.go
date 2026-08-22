@@ -35,6 +35,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/examples/{name...}", s.handleLoadExample)
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
+	s.mux.HandleFunc("GET /api/resolve-model", s.handleResolveModel)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
 
 	// Bot registry — exposes the bots discoverable on the host (single

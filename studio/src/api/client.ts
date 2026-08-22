@@ -424,3 +424,20 @@ export async function fetchResolvedEffort(
   );
   return r.resolved;
 }
+
+// fetchResolvedModel asks the server to env-substitute a model literal
+// (e.g. "${CODEX_MODEL:-openai-codex/gpt-5.6-sol}"). Returns the
+// resolved spec, or "" when the literal is empty / expansion produced
+// something that does not look like a model (so the canvas can fall
+// back to the authored default instead of leaking process env).
+export async function fetchResolvedModel(
+  literal: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const params = new URLSearchParams({ literal });
+  const r = await request<{ resolved: string }>(
+    `/resolve-model?${params.toString()}`,
+    { signal },
+  );
+  return r.resolved;
+}

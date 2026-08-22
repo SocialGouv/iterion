@@ -807,6 +807,158 @@ func ResolveEffortLiteral(s string) string {
 	return ""
 }
 
+// LooksLikeModelSpec reports whether s is shaped like an LLM model
+// identifier (provider/model, a hyphenated/dotted/coloned id, or a
+// short registry alias). Colon is interior punctuation — Bedrock
+// (`…-v1:0`) and Ollama (`llama3:8b`) use it — not a leading character.
+// GET /api/resolve-model uses this as the counterpart of
+// ValidReasoningEfforts: expansions that don't look like a model
+// (filesystem paths, $PATH, usernames) come back empty. Shape alone
+// is not an env-oracle defence — API keys (sk-ant-…, ghp_…, xoxb-…)
+// match this grammar — so ResolveModelLiteral also refuses to expand
+// any env var whose name does not contain "MODEL" or that looks like
+// a credential.
+func LooksLikeModelSpec(s string) bool {
+	s = strings.TrimSpace(s)
+	n := len(s)
+	if n == 0 || n > 128 {
+		return false
+	}
+	if strings.ContainsRune(s, '$') || strings.ContainsAny(s, " \t\n\\") {
+		return false
+	}
+	if s[0] == '/' || s[0] == '.' || s[0] == '-' || s[0] == ':' {
+		return false
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) > 3 {
+		return false
+	}
+	hasSep := len(parts) > 1
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for i := 0; i < len(p); i++ {
+			c := p[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			case c == '.' || c == '_' || c == '-' || c == '+' || c == ':':
+				hasSep = true
+			default:
+				return false
+			}
+		}
+	}
+	if hasSep {
+		return true
+	}
+	// Bare aliases with no hyphen/slash/dot: the few registries accept
+	// as a model id on their own.
+	switch strings.ToLower(s) {
+	case "opus", "sonnet", "haiku":
+		return true
+	}
+	if n >= 2 && (s[0] == 'o' || s[0] == 'O') && s[1] >= '0' && s[1] <= '9' {
+		return true
+	}
+	return false
+}
+
+// ResolveModelLiteral expands env-substituted forms ("${VAR}",
+// "${VAR:-openai-codex/gpt-5.6-sol}") against the process env and
+// returns the result only when it LooksLikeModelSpec. Non-env-substituted
+// values are returned unchanged (the author wrote them). Invalid
+// expansions return "" so the studio can fall back to the authored
+// default / the compact env-ref.
+//
+// Env-oracle defence: every referenced var name must contain "MODEL"
+// (case-insensitive) and must not look like a credential (KEY / TOKEN
+// / SECRET / PASSWORD / PRIVATE). ${ANTHROPIC_API_KEY} /
+// ${LITELLM_MODEL_API_KEY} resolve to "" even when the value would
+// pass LooksLikeModelSpec. Nested env forms (${${X}}, ${A:-${B:-c}})
+// are unsupported by this endpoint — more than one `$` returns ""
+// (the canvas still shows a single-level authored default client-side).
+func ResolveModelLiteral(s string) string {
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsRune(s, '$') {
+		return s
+	}
+	if strings.Count(s, "$") > 1 {
+		return ""
+	}
+	for _, name := range modelEnvRefNames(s) {
+		if !modelEnvNameOK(name) {
+			return ""
+		}
+	}
+	expanded := strings.TrimSpace(ExpandEnvWithDefault(s))
+	if LooksLikeModelSpec(expanded) {
+		return expanded
+	}
+	return ""
+}
+
+// modelEnvNameOK reports whether an env var is in the model-spec
+// namespace GET /api/resolve-model is allowed to expand. The name
+// must contain "MODEL" and must not contain KEY / TOKEN / SECRET /
+// PASSWORD / PRIVATE (all case-insensitive), so credential vars —
+// including LITELLM_MODEL_API_KEY — cannot be turned into an
+// env-oracle.
+func modelEnvNameOK(name string) bool {
+	u := strings.ToUpper(name)
+	if !strings.Contains(u, "MODEL") {
+		return false
+	}
+	for _, bad := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PRIVATE"} {
+		if strings.Contains(u, bad) {
+			return false
+		}
+	}
+	return true
+}
+
+// modelEnvRefNames extracts env var names referenced by s in the
+// forms ${NAME}, ${NAME:-default}, and $NAME. Nested ${A:-${B:-c}}
+// yields both A and B. Names are returned in first-seen order.
+func modelEnvRefNames(s string) []string {
+	var names []string
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for i := 0; i < len(s); {
+		if s[i] != '$' {
+			i++
+			continue
+		}
+		j := i + 1
+		if j < len(s) && s[j] == '{' {
+			j++
+		}
+		end := j
+		for end < len(s) && (isAlnum(s[end]) || s[end] == '_') {
+			end++
+		}
+		if end > j {
+			add(s[j:end])
+			i = end
+			continue
+		}
+		i++
+	}
+	return names
+}
+
 // ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
 // Mirrors the shell parameter-expansion default-value syntax that
 // stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,

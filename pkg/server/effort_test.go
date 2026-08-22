@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -249,6 +250,139 @@ func TestResolveEffort_EmptyLiteral(t *testing.T) {
 	}
 }
 
+// TestResolveModel_EnvSubstitutionExpands proves ${VAR:-default}
+// forms are expanded server-side when VAR is unset, using the fallback.
+func TestResolveModel_EnvSubstitutionExpands(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_UNSET", "")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_UNSET:-openai-codex/gpt-5.6-sol}")
+	if got.Resolved != "openai-codex/gpt-5.6-sol" {
+		t.Errorf("Resolved=%q, want %q (env fallback should expand)", got.Resolved, "openai-codex/gpt-5.6-sol")
+	}
+}
+
+// TestResolveModel_EnvSubstitutionUsesSetValue proves the endpoint
+// reads the process env, not just the fallback — the case that lets
+// the studio canvas tell sol from terra from luna.
+func TestResolveModel_EnvSubstitutionUsesSetValue(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_SET", "openai-codex/gpt-5.6-terra")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_SET:-openai-codex/gpt-5.6-sol}")
+	if got.Resolved != "openai-codex/gpt-5.6-terra" {
+		t.Errorf("Resolved=%q, want %q (env value should win over fallback)", got.Resolved, "openai-codex/gpt-5.6-terra")
+	}
+}
+
+// TestResolveModel_InvalidExpansionYieldsEmpty proves a literal whose
+// expansion is not a model spec comes back as "". The studio then
+// falls back to displaying the authored default / compact env-ref
+// rather than leaking process env.
+func TestResolveModel_InvalidExpansionYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("_ITERION_MODEL_TEST_HOME", "/home/nobody")
+
+	got := getResolveModel(t, hs.URL, "${_ITERION_MODEL_TEST_HOME}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (path is not a model spec)", got.Resolved)
+	}
+}
+
+func TestResolveModel_EmptyLiteral(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveModel(t, hs.URL, "")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for empty literal", got.Resolved)
+	}
+}
+
+func TestResolveModel_APIKeyEnvIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345")
+	got := getResolveModel(t, hs.URL, "${ANTHROPIC_API_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (API key env must not leak)", got.Resolved)
+	}
+
+	t.Setenv("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuvwxyz0123456789")
+	got = getResolveModel(t, hs.URL, "${GITHUB_TOKEN}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (GITHUB_TOKEN must not leak)", got.Resolved)
+	}
+
+	t.Setenv("SOME_OTHER_VAR", "gpt-5.6-sol")
+	got = getResolveModel(t, hs.URL, "${SOME_OTHER_VAR}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (name gate, not shape)", got.Resolved)
+	}
+}
+
+func TestResolveModel_CredentialNamedModelVarIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("LITELLM_MODEL_API_KEY", "gpt-5.6-sol")
+	got := getResolveModel(t, hs.URL, "${LITELLM_MODEL_API_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (MODEL+KEY is a credential)", got.Resolved)
+	}
+
+	t.Setenv("OPENROUTER_MODEL_KEY", "gpt-5.6-sol")
+	got = getResolveModel(t, hs.URL, "${OPENROUTER_MODEL_KEY}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (MODEL+KEY is a credential)", got.Resolved)
+	}
+}
+
+func TestResolveModel_NestedEnvIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("X_MODEL", "ANTHROPIC_API_KEY")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345")
+	got := getResolveModel(t, hs.URL, "${${X_MODEL}}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (nested env form)", got.Resolved)
+	}
+
+	got = getResolveModel(t, hs.URL, "${$X_MODEL}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (nested $X form)", got.Resolved)
+	}
+}
+
+func TestResolveModel_HyphenatedSecretIsNotAnOracle(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	t.Setenv("GITHUB_TOKEN", "xoxb-1234-abcd-efghijkl")
+	got := getResolveModel(t, hs.URL, "${GITHUB_TOKEN}")
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty (hyphenated secret must not leak)", got.Resolved)
+	}
+}
+
+func TestResolveModel_LiteralTooLongYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveModel(t, hs.URL, strings.Repeat("a", maxResolveLiteralBytes+1))
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for literal over %d bytes", got.Resolved, maxResolveLiteralBytes)
+	}
+}
+
+func TestResolveEffort_LiteralTooLongYieldsEmpty(t *testing.T) {
+	_, hs := newTestServer(t)
+
+	got := getResolveEffort(t, hs.URL, strings.Repeat("a", maxResolveLiteralBytes+1))
+	if got.Resolved != "" {
+		t.Errorf("Resolved=%q, want empty for literal over %d bytes", got.Resolved, maxResolveLiteralBytes)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -288,6 +422,27 @@ func getResolveEffort(t *testing.T, base, literal string) resolveEffortResponse 
 		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, mustReadBody(t, resp))
 	}
 	var out resolveEffortResponse
+	decodeJSONResp(t, resp, &out)
+	return out
+}
+
+func getResolveModel(t *testing.T, base, literal string) resolveModelResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+"/api/resolve-model", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	q := req.URL.Query()
+	q.Set("literal", literal)
+	req.URL.RawQuery = q.Encode()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET resolve-model: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, mustReadBody(t, resp))
+	}
+	var out resolveModelResponse
 	decodeJSONResp(t, resp, &out)
 	return out
 }

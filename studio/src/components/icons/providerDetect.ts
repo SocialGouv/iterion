@@ -33,6 +33,7 @@ const DELEGATE_MAP: Record<string, ProviderInfo> = {
 const PREFIX_MAP: Record<string, ProviderInfo> = {
   anthropic: { iconId: "Claude", label: "Anthropic", hasColor: true },
   openai: { iconId: "OpenAI", label: "OpenAI", hasColor: false },
+  "openai-codex": { iconId: "Codex", label: "Codex", hasColor: true },
   google: { iconId: "Gemini", label: "Google", hasColor: true },
   gemini: { iconId: "Gemini", label: "Gemini", hasColor: true },
   mistral: { iconId: "Mistral", label: "Mistral", hasColor: true },
