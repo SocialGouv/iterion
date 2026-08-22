@@ -194,6 +194,15 @@ the hours this one spent.
   the `terminationGracePeriodSeconds` arithmetic. Read it on 502s during a
   deploy, a CrashLoop at boot, or a runner that reads `Ready` while the
   queue sits still.
+- [docs/worktree-pool.md](docs/worktree-pool.md) — where a long-lived
+  store's disk goes: `worktree: auto` parks a FULL checkout per run under
+  `<store>/worktrees/`, a failed run keeps its own for inspection, and
+  nothing but `iterion clean` ever came back for it (measured: 355 MB each
+  on this repo, 32 of them = 12 GB in forty minutes, on a `/tmp` tmpfs =
+  RAM, which killed the machine). Covers the runtime bound
+  (`ITERION_WORKTREE_POOL_MAX`, default 8), why it spares dirty and
+  resumable checkouts, and the `iterion clean` invocation for the rest.
+  Read it on "the disk is full", or before pointing `--store-dir` anywhere.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),

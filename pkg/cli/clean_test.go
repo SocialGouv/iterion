@@ -14,7 +14,31 @@ import (
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/worktreepool"
 )
+
+// sameRealPath and looksLikeBareRepo let a test assert its own fixture is
+// in the shape it means to test, without borrowing the classifier's
+// private helpers — a sanity check that shares the implementation it is
+// checking proves nothing.
+func sameRealPath(a, b string) bool {
+	real := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	return a != "" && b != "" && real(a) == real(b)
+}
+
+func looksLikeBareRepo(dir string) bool {
+	for _, want := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Stat(filepath.Join(dir, want)); err != nil {
+			return false
+		}
+	}
+	return true
+}
 
 // cleanFixture builds a real git repository plus an iterion store whose
 // worktrees are genuine linked worktrees of it, in the shape production
@@ -26,6 +50,12 @@ type cleanFixture struct {
 	root  string
 	repo  string
 	store string
+	// Seams a test substitutes to stand inside the window between the
+	// pre-deletion re-derivation and the removal. Nil unless a test sets
+	// one, and scoped to the fixture so they cannot bleed between tests.
+	remove func(string) error
+	during func(string)
+	after  func(string)
 }
 
 func newCleanFixture(t *testing.T) *cleanFixture {
@@ -182,6 +212,7 @@ func (f *cleanFixture) run(opts CleanOptions) CleanResult {
 
 func (f *cleanFixture) runErr(opts CleanOptions) (CleanResult, error) {
 	f.t.Helper()
+	opts.Remove, opts.DuringEligibility, opts.AfterEligibility = f.remove, f.during, f.after
 	var buf bytes.Buffer
 	p := &Printer{W: &buf, Format: OutputJSON}
 	err := RunClean(opts, p)
@@ -413,7 +444,7 @@ func TestClean_RefusesGitAnswersThatBelongToAnEnclosingRepo(t *testing.T) {
 	f.git(f.repo, "commit", "-m", "ignore the store")
 
 	// Sanity: git really does answer for the parent from in there.
-	if top := f.git(filepath.Join(nestedStore, "worktrees", "data"), "rev-parse", "--show-toplevel"); !samePath(top, f.repo) {
+	if top := f.git(filepath.Join(nestedStore, "worktrees", "data"), "rev-parse", "--show-toplevel"); !sameRealPath(top, f.repo) {
 		t.Fatalf("fixture is not reproducing the nesting: toplevel=%s", top)
 	}
 
@@ -767,7 +798,7 @@ func TestClean_RefusesWorktreeHoldingABareRepo(t *testing.T) {
 	bare := filepath.Join(path, "vendor", "mirror.git")
 	mustMkdir(t, bare)
 	f.git(filepath.Dir(bare), "init", "--bare", "mirror.git")
-	if !looksLikeGitDir(bare) {
+	if !looksLikeBareRepo(bare) {
 		t.Fatalf("fixture did not produce a bare repo at %s", bare)
 	}
 
@@ -804,14 +835,13 @@ func TestClean_RechecksTheTreeImmediatelyBeforeDeleting(t *testing.T) {
 	// The whole scan runs before the first deletion, so writing while
 	// `first` is being removed lands squarely in the window between
 	// `racy`'s classification and its deletion.
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if filepath.Base(p) == "first" {
 			mustWrite(t, filepath.Join(racy, "URGENT.md"), "written while the sweep was walking\n")
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
 	if deletedPaths(r)["racy"] {
@@ -899,14 +929,13 @@ func TestClean_DoesNotClaimAWorktreeAnotherSweepAlreadyTook(t *testing.T) {
 	}
 	contended := filepath.Join(f.store, "worktrees", "contended")
 
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if filepath.Base(p) == "first" {
 			_ = os.RemoveAll(contended) // the other sweep got there first
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	// aggressive, so the pre-delete dirty re-check (which a vanished path
 	// also trips) is not what spares it: this is about the guard on the
@@ -1185,8 +1214,8 @@ func TestClean_SparesAWorktreeThatCommittedDuringTheSweep(t *testing.T) {
 	target := filepath.Join(f.store, "worktrees", "committer")
 
 	var newHead string
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if filepath.Base(p) == "first" {
 			mustWrite(t, filepath.Join(target, "day-of-work.md"), "an operator's commit\n")
 			f.git(target, "add", ".")
@@ -1199,7 +1228,6 @@ func TestClean_SparesAWorktreeThatCommittedDuringTheSweep(t *testing.T) {
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
 	if deletedPaths(r)["committer"] {
@@ -1229,8 +1257,8 @@ func TestClean_SparesAWorktreeThatGainedANestedRepoDuringTheSweep(t *testing.T) 
 	}
 	target := filepath.Join(f.store, "worktrees", "gainer")
 
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if filepath.Base(p) == "first" {
 			embedded := filepath.Join(target, ".repos", "tool")
 			mustMkdir(t, embedded)
@@ -1238,7 +1266,6 @@ func TestClean_SparesAWorktreeThatGainedANestedRepoDuringTheSweep(t *testing.T) 
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	r := f.run(CleanOptions{Level: CleanAggressive, OlderThan: 0, Apply: true})
 	if deletedPaths(r)["gainer"] {
@@ -1437,8 +1464,8 @@ func TestClean_HoldsTheRunLockAcrossTheRemoval(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	heldDuringRemoval := false
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if lock, err := s.LockRun(context.Background(), "locked"); err != nil {
 			heldDuringRemoval = true
 		} else {
@@ -1446,7 +1473,6 @@ func TestClean_HoldsTheRunLockAcrossTheRemoval(t *testing.T) {
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
 	if !heldDuringRemoval {
@@ -1463,9 +1489,7 @@ func TestClean_DoesNotDropTheRegistrationOfAFailedDeletion(t *testing.T) {
 	f.mergeIntoMain("doomed")
 	f.seedRun("doomed", store.RunStatusFinished)
 
-	real := removeTree
-	removeTree = func(string) error { return errors.New("simulated: another owner's file") }
-	t.Cleanup(func() { removeTree = real })
+	f.remove = func(string) error { return errors.New("simulated: another owner's file") }
 
 	r, err := f.runErr(CleanOptions{
 		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
@@ -1532,9 +1556,7 @@ func TestClean_DoesNotClaimAWorktreeTakenDuringTheReDerivation(t *testing.T) {
 	f.mergeIntoMain("racy")
 	f.seedRun("racy", store.RunStatusFinished)
 
-	afterEligibility = func(p string) { _ = os.RemoveAll(p) }
-	t.Cleanup(func() { afterEligibility = func(string) {} })
-	_ = duringEligibility
+	f.after = func(p string) { _ = os.RemoveAll(p) }
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
 	if r.DeletedCount != 0 || r.BytesReclaimed != 0 {
@@ -1560,8 +1582,7 @@ func TestClean_AVanishedWorktreeIsNotReportedUnlanded(t *testing.T) {
 	f.mergeIntoMain("racy")
 	f.seedRun("racy", store.RunStatusFinished)
 
-	duringEligibility = func(p string) { _ = os.RemoveAll(p) }
-	t.Cleanup(func() { duringEligibility = func(string) {} })
+	f.during = func(p string) { _ = os.RemoveAll(p) }
 
 	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0, Apply: true})
 	if got := sparedReason(r, "racy"); got != skipVanished {
@@ -2119,8 +2140,8 @@ func TestClean_RemovesTreesHoldingReadOnlyDirectories(t *testing.T) {
 	if err := os.RemoveAll(tree); err == nil {
 		t.Skip("this platform lets RemoveAll through a read-only directory")
 	}
-	if err := removeAllForce(tree); err != nil {
-		t.Fatalf("removeAllForce: %v", err)
+	if err := worktreepool.RemoveAllForce(tree); err != nil {
+		t.Fatalf("RemoveAllForce: %v", err)
 	}
 	mustNotExist(t, tree, "tree with a read-only subtree")
 }
@@ -2138,14 +2159,13 @@ func TestClean_ContinuesAndReportsAfterAFailedDeletion(t *testing.T) {
 	// bbb sits in the MIDDLE of the sweep order, so "the sweep carried on"
 	// is what the assertions below actually observe.
 	failing := filepath.Join(f.store, "worktrees", "bbb")
-	real := removeTree
-	removeTree = func(p string) error {
+	real := worktreepool.RemoveAllForce
+	f.remove = func(p string) error {
 		if p == failing {
 			return errors.New("simulated: another owner's file")
 		}
 		return real(p)
 	}
-	t.Cleanup(func() { removeTree = real })
 
 	r, err := f.runErr(CleanOptions{
 		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
@@ -2487,13 +2507,10 @@ func TestClean_HumanOutputWarnsAboutAPartialDeletion(t *testing.T) {
 	f.mergeIntoMain("doomed")
 	f.seedRun("doomed", store.RunStatusFinished)
 
-	real := removeTree
-	removeTree = func(p string) error { return errors.New("simulated: another owner's file") }
-	t.Cleanup(func() { removeTree = real })
-
 	var buf bytes.Buffer
 	err := RunClean(CleanOptions{
 		StoreDir: f.store, Level: CleanConservative, OlderThan: 0, Apply: true,
+		Remove: func(string) error { return errors.New("simulated: another owner's file") },
 	}, &Printer{W: &buf, Format: OutputHuman})
 	if err == nil {
 		t.Fatal("a failed deletion did not surface an error")
