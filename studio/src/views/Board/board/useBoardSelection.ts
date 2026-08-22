@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { addReferenceToDrag } from "@/lib/chatDock/dragReference";
 
 import type { NativeIssue } from "@/api/native";
 
@@ -108,6 +109,14 @@ export function useBoardSelection({
       // the originating issue id rather than a JSON blob.
       e.dataTransfer.setData("text/plain", iss.id);
       e.dataTransfer.effectAllowed = "move";
+      // The same gesture also serves the assistant's composer: a typed
+      // reference rides alongside the move payload under its own MIME type,
+      // so dragging a card onto the dock asks about it. Only the single-card
+      // case — an assistant handed four cards is being given a project, and
+      // the operator would not see which four.
+      if (ids.length === 1) {
+        addReferenceToDrag(e.dataTransfer, "card", iss.id, iss.title);
+      }
     },
     [selectedIds, setSingleSelection],
   );

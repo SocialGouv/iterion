@@ -75,6 +75,37 @@ export function referenceDragProps(
   };
 }
 
+/** Add a reference to a drag a source is ALREADY writing.
+ *
+ *  The board and the pipeline board drag cards between columns and own their
+ *  own payload; a reference rides alongside it under a different MIME type,
+ *  so one gesture serves both targets and neither source needs to know about
+ *  the other's.
+ *
+ *  It widens `effectAllowed` to include copy when the source asked for
+ *  `move` only — otherwise the browser refuses the composer's copy drop and
+ *  shows the "no" cursor, which reads as "this feature does not work".
+ */
+export function addReferenceToDrag(
+  dt: DataTransfer,
+  kind: ReferenceKind,
+  id: string,
+  label?: string,
+): void {
+  const payload: ReferencePayload = { kind, id, label: label ?? id };
+  dt.setData(REFERENCE_MIME, JSON.stringify(payload));
+  if (dt.effectAllowed === "move") dt.effectAllowed = "copyMove";
+}
+
+/** The drop effect a target should announce for this drag — "copy" when the
+ *  source permits it, "move" otherwise. Announcing an effect the source
+ *  disallowed makes the browser reject the drop. */
+export function referenceDropEffect(dt: DataTransfer): "copy" | "move" {
+  const allowed = dt.effectAllowed;
+  if (allowed === "move" || allowed === "linkMove") return "move";
+  return "copy";
+}
+
 /** True when a drag carries a typed iterion reference. Used by a drop target
  *  to decide whether to show its affordance at all — dragging a file over the
  *  composer must not look like it will attach a reference. */

@@ -29,6 +29,7 @@ import {
   detachReference,
   hasReferenceDrag,
   readReferenceDrop,
+  referenceDropEffect,
 } from "@/lib/chatDock/dragReference";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
@@ -175,7 +176,7 @@ function AssistantDock({
           // preventDefault is what makes an element a valid drop target;
           // without it the browser refuses the drop and shows a "no" cursor.
           e.preventDefault();
-          e.dataTransfer.dropEffect = "copy";
+          e.dataTransfer.dropEffect = referenceDropEffect(e.dataTransfer);
           setDragOver(true);
         }}
         onDragLeave={(e) => {

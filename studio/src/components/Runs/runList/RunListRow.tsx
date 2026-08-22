@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
 
 import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
@@ -43,6 +44,12 @@ export const RunListRow = memo(function RunListRow({
     <tr
       className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
       onClick={() => onOpen(run.id)}
+      // Drag a run onto the assistant to ask about it — the headline
+      // scenario of the epic this belongs to: "why did this fail?" without
+      // retyping an id. The row is not otherwise draggable, so the shared
+      // helper owns the whole gesture here.
+      {...referenceDragProps("run", run.id, friendlyLabel(run))}
+      title="Drag onto the assistant to ask about this run"
     >
       {/* Selection cell swallows its clicks so toggling never navigates. */}
       <td className="pl-4 pr-1 py-2 w-8" onClick={(e) => e.stopPropagation()}>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
@@ -296,7 +297,15 @@ function BotCard({
   const kinds = [...new Set((bot.invocations ?? []).map((i) => i.kind))];
   const presetCount = bot.presets?.entries?.length ?? 0;
   return (
-    <li className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong">
+    <li
+      className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
+      // The reference is the bot's workspace-relative PATH, not its id: that
+      // is what an assistant can actually open and read. `bot/<id>` resolves
+      // through the catalog, `bot/<path>` through the filesystem, and the
+      // shipped bots' contract accepts both.
+      {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
+      title="Drag onto the assistant to ask about this bot"
+    >
       <button
         type="button"
         onClick={onOpen}
