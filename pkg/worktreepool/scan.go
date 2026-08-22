@@ -8,6 +8,7 @@ import "sort"
 // of the list is what an operator is least likely to want back, and it is
 // what the pool bound evicts first.
 func Scan(storeDir string, opts ScanOptions) ([]Entry, error) {
+	storeDir = AbsPath(storeDir)
 	found, err := scanStore(storeDir, opts, opts.now())
 	if err != nil {
 		return nil, err

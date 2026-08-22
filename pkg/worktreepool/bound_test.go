@@ -273,6 +273,27 @@ func TestBound_ReclaimsFromARelativeStoreDir(t *testing.T) {
 	}
 }
 
+func TestScanNormalizesRelativeStoreDir(t *testing.T) {
+	f := newPoolFixture(t)
+	f.idle("parked")
+	f.seedRun("parked", store.RunStatusFinished)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relStore, err := filepath.Rel(cwd, f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := Scan(relStore, ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Landing == LandingOrphan {
+		t.Fatalf("relative Scan result = %+v, want the linked worktree accounted for", found)
+	}
+}
+
 // The ceiling is a ceiling, not a sweep. An operator who sets 2 is saying
 // "keep at most 2", not "empty the pool whenever it goes over".
 func TestBound_TakesOnlyTheExcess(t *testing.T) {
@@ -777,6 +798,43 @@ func TestRefusalMemoHasAHardSizeCap(t *testing.T) {
 	refusalMemo.Unlock()
 	if got != 256 {
 		t.Fatalf("memo size = %d, want hard cap 256", got)
+	}
+}
+
+func TestBoundClassificationBatchAdvancesAcrossProcesses(t *testing.T) {
+	refusalMemo.Lock()
+	original := refusalMemo.entries
+	refusalMemo.entries = map[string]memoizedRefusal{}
+	refusalMemo.Unlock()
+	defer func() {
+		refusalMemo.Lock()
+		refusalMemo.entries = original
+		refusalMemo.Unlock()
+	}()
+
+	f := newPoolFixture(t)
+	for i, id := range []string{"a", "b", "c", "d", "e"} {
+		path := f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		if id != "e" {
+			mustWrite(t, filepath.Join(path, "unfinished.txt"), "keep\n")
+		}
+		f.age(id, 5-i)
+	}
+
+	first := f.enforce(4)
+	if !first.Limited || len(first.Reclaimed) != 0 || !f.exists("e") {
+		t.Fatalf("first bounded batch = %+v, want four refusals and no deletion", first)
+	}
+
+	// Simulate a fresh one-shot process: the disk cursor, not the in-memory
+	// refusal memo, must advance the next launch past the refused prefix.
+	refusalMemo.Lock()
+	refusalMemo.entries = map[string]memoizedRefusal{}
+	refusalMemo.Unlock()
+	second := f.enforce(4)
+	if second.Limited || len(second.Reclaimed) != 1 || f.exists("e") || second.OverBudget() {
+		t.Fatalf("second bounded batch = %+v, want the later safe candidate reclaimed", second)
 	}
 }
 

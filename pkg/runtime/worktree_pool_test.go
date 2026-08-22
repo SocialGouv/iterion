@@ -170,6 +170,20 @@ func TestFormatWorktreePoolWarningWithoutSummaryHasCleanPunctuation(t *testing.T
 	}
 }
 
+func TestFormatWorktreePoolWarningNamesClassificationBatchLimit(t *testing.T) {
+	report := worktreepool.BudgetReport{
+		Budget:  1,
+		Before:  5,
+		After:   5,
+		Limited: true,
+		Spared:  map[string]int{},
+	}
+	got := formatWorktreePoolWarning(report, "/store")
+	if !strings.Contains(got, "per-launch batch limit") {
+		t.Fatalf("warning does not name bounded classification: %q", got)
+	}
+}
+
 func TestFormatWorktreePoolWarningSeparatesParkedAndLiveCounts(t *testing.T) {
 	report := worktreepool.BudgetReport{
 		Budget: 8,

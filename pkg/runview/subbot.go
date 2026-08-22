@@ -177,7 +177,16 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts, pauseOpts...)
 		childEng := runtime.New(childWf, s.store, childExec, opts...)
 		childCtx := context.WithValue(managedCtx, subbotDepthKey{}, depth+1)
+		childLock, err := s.store.LockRun(childCtx, childRunID)
+		if err != nil {
+			releaseChild()
+			if c, ok := any(childExec).(io.Closer); ok {
+				_ = c.Close()
+			}
+			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
+		}
 		runErr := childEng.Run(childCtx, childRunID, req.Vars)
+		_ = childLock.Unlock()
 		// Release the manager handle now the active pass is done: a paused
 		// child is resumed EXTERNALLY (which re-registers the id in its own
 		// manager), so keeping it here would both block that Register and

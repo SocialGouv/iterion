@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // DefaultBudget is how many worktrees a store may park before the bound
@@ -33,6 +35,11 @@ const DefaultEnforcementTimeout = 10 * time.Second
 
 // BudgetEnv is the operator's dial. A count, or `off`.
 const BudgetEnv = "ITERION_WORKTREE_POOL_MAX"
+
+// maxClassificationsPerPass bounds subprocess-heavy git inspection on the
+// synchronous launch path. A persisted cursor advances later processes
+// through the pool, so bounding one launch does not starve later candidates.
+const maxClassificationsPerPass = 4
 
 // BudgetReport is what one pass of the bound did and what it could not do.
 // Every field is reported rather than logged inside, so the caller decides
@@ -63,6 +70,9 @@ type BudgetReport struct {
 	// every over-budget candidate could be considered. No unchecked entry
 	// is deleted or reported under a guessed refusal reason.
 	Incomplete bool
+	// Limited means this pass reached its bounded classification batch.
+	// A cursor records where the next process should continue.
+	Limited bool
 	// needsIncludeResumable is independent of Spared: one dirty resumable
 	// entry has SkipLevel as its primary reason, but the remedy still needs
 	// both --level moderate and --include-resumable.
@@ -223,6 +233,43 @@ func forgetPoolRefusal(path string) {
 	refusalMemo.Unlock()
 }
 
+const poolCursorName = ".pool-cursor"
+
+func loadPoolCursor(storeDir string) string {
+	raw, err := os.ReadFile(filepath.Join(PoolDir(storeDir), poolCursorName)) // #nosec G304 -- store-owned fixed name
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func savePoolCursor(storeDir, runID string) {
+	if runID == "" {
+		return
+	}
+	_ = store.WriteFileAtomic(filepath.Join(PoolDir(storeDir), poolCursorName), []byte(runID+"\n"), 0o600)
+}
+
+func clearPoolCursor(storeDir string) {
+	_ = os.Remove(filepath.Join(PoolDir(storeDir), poolCursorName))
+}
+
+func rotateCandidatesAfter(all []Entry, cursor string) []Entry {
+	if cursor == "" || len(all) < 2 {
+		return all
+	}
+	for i := range all {
+		if all[i].RunID != cursor || i == len(all)-1 {
+			continue
+		}
+		rotated := make([]Entry, 0, len(all))
+		rotated = append(rotated, all[i+1:]...)
+		rotated = append(rotated, all[:i+1]...)
+		return rotated
+	}
+	return all
+}
+
 // ResolveBudget reads the operator's ceiling.
 //
 // Precedence is the one the repo uses everywhere: env → default. There is
@@ -341,6 +388,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		return report, nil
 	}
 	SortOldestFirst(candidates)
+	candidates = rotateCandidatesAfter(candidates, loadPoolCursor(storeDir))
 	markIncomplete := func(err error) {
 		if report.Incomplete {
 			return
@@ -354,9 +402,11 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	// healthy pool pays for the few entries it actually reclaims; a degraded
 	// pool pays once per long-lived process to name what is holding it up,
 	// then reuses those safe refusals on launches during the TTL. Eligibility
-	// is never cached and one-shot CLI processes deliberately share no state.
+	// is never cached; one-shot CLI processes share only the scheduling
+	// cursor, which cannot turn a refusal into a deletion.
 	excess := report.Before - budget
-	taken, vanished := 0, 0
+	taken, vanished, classified := 0, 0, 0
+	lastExamined := ""
 	for i := range candidates {
 		if err := ctx.Err(); err != nil {
 			markIncomplete(err)
@@ -366,11 +416,18 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 			break
 		}
 		if memo, ok := memoizedPoolRefusal(candidates[i].Path, now()); ok {
+			lastExamined = candidates[i].RunID
 			e := candidates[i]
 			e.SkipReason, e.resumable, e.Landing = memo.reason, memo.resumable, memo.landing
 			report.recordSpared(e)
 			continue
 		}
+		if classified >= maxClassificationsPerPass {
+			report.Limited = true
+			break
+		}
+		classified++
+		lastExamined = candidates[i].RunID
 		if opts.beforeClassification != nil {
 			opts.beforeClassification(candidates[i].Path)
 		}
@@ -429,6 +486,11 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		}
 	}
 	report.After = report.Before - taken - vanished
+	if report.After <= budget {
+		clearPoolCursor(storeDir)
+	} else {
+		savePoolCursor(storeDir, lastExamined)
+	}
 	return report, nil
 }
 

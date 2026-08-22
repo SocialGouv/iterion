@@ -39,10 +39,11 @@ Every time a run is about to create a worktree, before `git worktree add`:
    command that would work on that pool.
 
 Above the budget, classification invokes git for candidates and can add
-launch latency. It is bounded to 10 seconds. Refusals are cached for five
-minutes inside a long-lived process (such as Studio); separate one-shot
-`iterion run` processes do not share that cache and may repay the bounded
-classification cost until the pool is cleaned or the budget is raised.
+launch latency. It is bounded both to 10 seconds and to four newly
+classified candidates per launch. A small cursor in the pool advances the
+next process through later candidates, so repeated one-shot `iterion run`
+commands do not rescan the same refused prefix forever. Refusals are also
+cached for five minutes inside a long-lived process such as Studio.
 
 The moment of creation is the only one where acting is both cheap and
 timely. Startup is too early — the pool that filled the disk did not exist
@@ -105,8 +106,8 @@ per launch:
 
 ```
 runtime: worktree pool: 12 parked worktrees in /path/.iterion/worktrees
-exceed the budget of 8 (3 live worktrees excluded); 9 belong to runs
-`iterion resume` would restart, 3 carry uncommitted work. Review them
+exceed the budget of 8 (3 live worktrees excluded); 3 carry uncommitted
+work, 9 belong to runs `iterion resume` would restart. Review them
 with `iterion clean --store-dir /path/.iterion --older-than 0 --level moderate
 --include-resumable` (add --apply to delete). Raise or lift the budget
 with ITERION_WORKTREE_POOL_MAX=<n> (`off` disables it).

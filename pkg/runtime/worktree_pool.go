@@ -97,6 +97,9 @@ func formatWorktreePoolWarning(report worktreepool.BudgetReport, storeRoot strin
 	if report.Incomplete {
 		msg += "; automatic classification stopped at its launch-time deadline"
 	}
+	if report.Limited {
+		msg += "; automatic classification paused at its per-launch batch limit"
+	}
 	if summary := report.Summary(); summary != "" {
 		msg += "; " + summary
 	}
