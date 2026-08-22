@@ -37,6 +37,18 @@ func overlayExport(t *testing.T, pod, host string) {
 	trun(t, host, "tar", "-xf", archive)
 }
 
+// muteGitBackground disables git's detached background maintenance in a
+// repo: auto-gc forked by `git commit` can still be rewriting
+// .git/objects when the test's tar starts, and GNU tar then exits 1
+// ("file changed as we read it") — a fixture race, not the behavior
+// under test.
+func muteGitBackground(t *testing.T, repo string) {
+	t.Helper()
+	trun(t, repo, "git", "config", "gc.auto", "0")
+	trun(t, repo, "git", "config", "gc.autoDetach", "false")
+	trun(t, repo, "git", "config", "maintenance.auto", "false")
+}
+
 // gcShadowFixture builds: a host clone at BASE with a loose ref, and a
 // pod copy that committed work then packed its refs (loose deleted).
 // Returns (host, pod, base, podHead).
@@ -47,10 +59,12 @@ func gcShadowFixture(t *testing.T) (string, string, string, string) {
 	trun(t, tmp, "git", "init", "-q", origin)
 	trun(t, origin, "git", "config", "user.email", "t@test.invalid")
 	trun(t, origin, "git", "config", "user.name", "t")
+	muteGitBackground(t, origin)
 	trun(t, origin, "git", "commit", "-q", "--allow-empty", "-m", "base")
 
 	host := filepath.Join(tmp, "host")
 	trun(t, tmp, "git", "clone", "-q", origin, host)
+	muteGitBackground(t, host)
 	base := trun(t, host, "git", "rev-parse", "HEAD")
 	// git clone may deliver packed refs; the runner's checkout -B (and any
 	// branch update) writes a LOOSE ref — pin the loose state explicitly.
