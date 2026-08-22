@@ -78,6 +78,14 @@ export default function AgentChatboxInline({
 
   useEffect(() => {
     let cancelled = false;
+    // No run yet (the assistant dock's composer is live before its first
+    // session exists — the first message launches one). There is no
+    // inbox to fetch, and asking for /runs//messages only produces a
+    // spurious error banner.
+    if (!runId) {
+      setQueuedMessages([]);
+      return;
+    }
     listQueuedMessages(runId)
       .then((msgs) => {
         if (cancelled) return;
@@ -102,6 +110,7 @@ export default function AgentChatboxInline({
 
   useEffect(() => {
     let cancelled = false;
+    if (!runId) return;
     const cached = skillCatalogCache.get(runId);
     if (cached) {
       setSkillCatalog(cached);
@@ -207,10 +216,16 @@ export default function AgentChatboxInline({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          // An explicit placeholder wins even when disabled: the caller
+          // that disables the composer is usually the one with something
+          // to say about WHY. The assistant dock disables during startup
+          // discovery and wants "Starting a session…", which the old
+          // order made unreachable — the operator saw "Run is not
+          // active" while a run was being looked for, i.e. the opposite
+          // of what was happening, on the surface added to explain it.
           placeholder={
-            disabled
-              ? "Run is not active"
-              : (placeholder ?? "Queue a message to the running agent…")
+            placeholder ??
+            (disabled ? "Run is not active" : "Queue a message to the running agent…")
           }
           rows={Math.max(2, Math.min(maxRows, Math.ceil(draft.length / 60) + 1))}
           disabled={disabled || busy}

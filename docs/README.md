@@ -12,6 +12,7 @@ This index describes the current repository state. Guides and references below a
 | [examples.md](examples.md) | Maintained bot catalogue and focused DSL examples. |
 | [cli-reference.md](cli-reference.md) | Complete top-level CLI map plus the commonly used commands and flags. |
 | [visual-editor.md](visual-editor.md) | Browser-based studio, graph editor, launch forms, and live diagnostics. |
+| [assistant-dock.md](assistant-dock.md) | The assistant reachable from every studio route, its page-context chip, and how it differs from run steering. |
 | [skill.md](skill.md) | Install Iterion guidance into AI coding agents. |
 
 For the architectural trade-off against prompt-only orchestration, read [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md). [asymptote-bench.md](asymptote-bench.md) and [thinking-metrics.md](thinking-metrics.md) cover workflow-quality measurement, and [improvement-ratchet.md](improvement-ratchet.md) names what carries a gain from one run to the next.

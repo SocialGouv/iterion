@@ -5,6 +5,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useRunStoreInstance } from "@/store/run";
+
 // Aliased: the orchestrating hook binds a local `errorMessage` field.
 import { errorMessage as toMessage } from "@/lib/errorHints";
 
@@ -39,6 +41,10 @@ export function useSessionDiscovery(opts: {
 }): SessionDiscovery {
   const { bot, scopeKey, repoScopeEnabled, overview, activeRepo } = opts;
   const { onAttached, setStatus } = opts;
+  // The store this session lives in — the assistant's isolated one when
+  // mounted under AssistantProvider, the module default otherwise. Stable
+  // for the hook's lifetime, so it stays out of the effect deps.
+  const store = useRunStoreInstance();
 
   // Auto-attach: on mount, if we remembered a runId for this bot+scope,
   // try to fetch its snapshot and (if it's still live) attach. Otherwise
@@ -67,6 +73,7 @@ export function useSessionDiscovery(opts: {
 
     const attachTo = async (runIdToAttach: string) => {
       const attached = await attachSessionRun({
+        store,
         runId: runIdToAttach,
         botId: bot.id,
         scopeKey,

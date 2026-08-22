@@ -3,11 +3,13 @@
 // `createRun`, subscribes to the run's WS to fold events into messages,
 // and exposes a `submitHumanAnswer` callback for chat inputs.
 //
-// State is intentionally local to the hook (not a Zustand store) so
-// the WhatsNext view can be navigated away from and remounted without
-// resurrecting a stale session. Auto-attach to an already-running
-// session is wired in Étape 5 — for now, mounting the hook with
-// `null` keeps it idle.
+// State is local to the hook rather than a Zustand store, and the hook
+// is mounted ONCE above the route tree (AssistantProvider) rather than
+// by a view. Navigation therefore neither restarts the session nor
+// drops the transcript — see docs/adr/088-ubiquitous-assistant-chat-dock.md.
+// What used to bound a stale
+// session (the view unmounting) is now explicit: the scope-change
+// effect below drops a session that belongs to another project/repo.
 //
 // The hook is a composition shell over the concern modules in this
 // directory:
@@ -24,7 +26,7 @@ import { type RunStatus } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
-import { useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import { useSessionScope } from "./sessionScope";
 import { isEndedRunStatus, type WhatsNextStatus } from "./sessionStatus";
@@ -113,15 +115,58 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   }, []);
 
   // Subscribe to the WS for the active run. The hook is a no-op when
-  // runId is null. The store is shared with the rest of the SPA — a
-  // user who flips to /runs/:id mid-session will see the same data,
-  // and our reads of useRunStore here pick up the same updates.
+  // runId is null. Reads and writes go to whichever store the hook is
+  // mounted under — the assistant's isolated one below AssistantProvider,
+  // the module default otherwise.
   useRunWebSocket(runId);
+  const store = useRunStoreInstance();
 
   // Repo-first scope: (team, active repo) in cloud, project dir
   // locally. The key participates in session storage + discovery.
-  const { scopeKey, repoScopeEnabled, overview, activeRepo, projectId, launchRepo } =
-    useSessionScope();
+  const {
+    scopeKey,
+    ready: scopeReady,
+    repoScopeEnabled,
+    overview,
+    activeRepo,
+    projectId,
+    launchRepo,
+  } = useSessionScope();
+
+  // A scope change (project switch, or the cloud sidebar's active repo)
+  // means the attached session belongs to somewhere the operator no
+  // longer is. Drop it so discovery re-runs clean for the new scope.
+  //
+  // This used to be covered incidentally: the view unmounted on the
+  // navigate-to-"/" that follows a project switch, taking the session's
+  // state with it. The session is mounted above the route tree now, so
+  // nothing unmounts and a stale conversation would simply stay on
+  // screen — discovery only overwrites runId when it FINDS a run.
+  //
+  // The old scope's remembered runId is deliberately left in place, so
+  // switching back re-attaches instead of starting over.
+  // Only a settled key can be compared. `scopeKey` is not stable at mount:
+  // a cloud cold load walks `null → "team:all" → "team:<repo>"` as
+  // server-info, auth, the active team and the team-repos query land in
+  // turn. Skipping only the FIRST run classified those as two switches, so
+  // every page load dropped the session twice and re-armed discovery
+  // mid-flight — up to two wasted round-trips, a blank-then-repopulate
+  // flash in an open dock, and a remembered runId written under a scope key
+  // nothing reads again. Cheap on one route; paid on every route now.
+  //
+  // prevScopeRef is written only while ready, so it pins the last SETTLED
+  // key and a real switch is still caught the moment it happens.
+  const prevScopeRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!scopeReady) return;
+    const prev = prevScopeRef.current;
+    prevScopeRef.current = scopeKey;
+    // First settled resolution (undefined → the real key) is not a switch.
+    if (prev === undefined || prev === scopeKey) return;
+    setRunId(null);
+    setStatus("idle");
+    store.getState().reset();
+  }, [scopeReady, scopeKey, store]);
 
   // Startup auto-attach: live run first, remembered run second, idle
   // launcher last. Owns discoveryError + retry.

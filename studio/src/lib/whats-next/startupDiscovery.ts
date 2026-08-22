@@ -8,7 +8,7 @@ import {
   listRuns,
   type RunSummary,
 } from "@/api/runs";
-import { runStore } from "@/store/run";
+import { type RunStore } from "@/store/run";
 
 import { rememberSessionRunId } from "./sessionStorage";
 
@@ -54,13 +54,18 @@ export async function findLiveRunForBot(
   return pickLiveRunId(matches);
 }
 
-// attachSessionRun hydrates the (module-default) run store from the
+// attachSessionRun hydrates the CALLER'S run store from the
 // given run and remembers it for this (bot, scope). Returns false when
 // `isCancelled()` reports the caller's effect was torn down after the
 // snapshot fetch — the caller then skips its own setRunId. Fetch
 // errors propagate to the caller (they decide between discovery-error
 // and forget-the-memory).
 export async function attachSessionRun(opts: {
+  // The store to hydrate. Passed in rather than reached for: the
+  // assistant session runs in its OWN store (see AssistantProvider), so
+  // writing to the module default here would split the session's state
+  // in half — reads through the provider, writes to another store.
+  store: RunStore;
   runId: string;
   botId: string;
   scopeKey: string | null;
@@ -76,13 +81,13 @@ export async function attachSessionRun(opts: {
   // returns to /whats-next after a previous session ended, they
   // expect to see the full transcript of that exchange, not a
   // blank launcher offering them to start over.
-  runStore.getState().reset();
-  runStore.getState().applySnapshot(snap);
+  opts.store.getState().reset();
+  opts.store.getState().applySnapshot(snap);
   // setRunId on the store FIRST so loadEventHistoryIfMissing's
   // post-await guard (`state.runId !== runId` → return) passes.
-  runStore.getState().setRunId(opts.runId);
+  opts.store.getState().setRunId(opts.runId);
   try {
-    await runStore.getState().loadEventHistoryIfMissing(opts.runId);
+    await opts.store.getState().loadEventHistoryIfMissing(opts.runId);
   } catch {
     // ignore — the live WS will eventually fill any gap.
   }
