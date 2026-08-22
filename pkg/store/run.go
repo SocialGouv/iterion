@@ -759,10 +759,15 @@ type Checkpoint struct {
 	// failure) could spend an unbounded multiple of its declared budget, and
 	// the max_iterations runaway-loop guard would reset on every resume.
 	// Zero/omitted on legacy checkpoints (a fresh budget — the prior behaviour).
-	BudgetTokensUsed     int     `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
-	BudgetCostUSD        float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
-	BudgetIterationsUsed int     `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
-	BudgetElapsedNS      int64   `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
+	BudgetTokensUsed int     `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
+	BudgetCostUSD    float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
+	// BudgetUnpricedTokens / BudgetUnpricedNodes carry the volume the cost
+	// axis could not price. Absent from checkpoints written before they
+	// existed, which restores as zero — the prior behaviour.
+	BudgetUnpricedTokens int   `json:"budget_unpriced_tokens,omitempty" bson:"budget_unpriced_tokens,omitempty"`
+	BudgetUnpricedNodes  int   `json:"budget_unpriced_nodes,omitempty" bson:"budget_unpriced_nodes,omitempty"`
+	BudgetIterationsUsed int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
+	BudgetElapsedNS      int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
 	// CostUSDTotal is the run's cumulative LLM spend across ALL execution
 	// segments. Persisted so the daily-spend-cap ledger (a monotonic max of
 	// the per-run cumulative) keeps climbing after a resume instead of

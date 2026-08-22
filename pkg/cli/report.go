@@ -402,6 +402,13 @@ func (rb *reportBuilder) sumArtifactWritten(evt *store.Event, step *reportStep) 
 
 func (rb *reportBuilder) sumBudgetWarning(evt *store.Event, step *reportStep) bool {
 	if evt.Data != nil {
+		// Dimensions without an axis publish a detail instead of used/limit;
+		// printing "used: <nil> / limit: <nil>" would lose the only content
+		// the event carries.
+		if detail, ok := evt.Data["detail"].(string); ok && detail != "" {
+			step.Summary = fmt.Sprintf("Budget warning: %v — %s", evt.Data["dimension"], detail)
+			return true
+		}
 		step.Summary = fmt.Sprintf("Budget warning: %v (used: %v / limit: %v)", evt.Data["dimension"], evt.Data["used"], evt.Data["limit"])
 	}
 	return true

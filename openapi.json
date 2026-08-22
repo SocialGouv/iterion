@@ -105,6 +105,12 @@
           "budget_tokens_used": {
             "type": "integer"
           },
+          "budget_unpriced_nodes": {
+            "type": "integer"
+          },
+          "budget_unpriced_tokens": {
+            "type": "integer"
+          },
           "cost_usd_total": {
             "type": "number"
           },
