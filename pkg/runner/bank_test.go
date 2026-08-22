@@ -210,3 +210,30 @@ func TestBankRepoWorkspaceUnverifiedWorkStillBanks(t *testing.T) {
 		t.Errorf("salvage bank recorded an error anyway: %q", run.FinalBranchError)
 	}
 }
+
+func TestBankRepoWorkspaceRefShadowRecoversBySHA(t *testing.T) {
+	// The export delivered every object but a stale host loose ref
+	// shadows the pod's packed ref: HEAD reads the baseline while the
+	// pod's final commit IS present. The bank must push that exact
+	// commit by SHA instead of refusing.
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	podHead := gitOut(t, work, "rev-parse", "HEAD")
+	// Park HEAD back on the baseline while the work commit stays present
+	// (the ref-shadow read: rev-parse HEAD == base, object podHead exists).
+	gitOut(t, work, "checkout", "-q", "--detach", base)
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != podHead {
+		t.Errorf("recovered branch = %q (present=%v), want the pod-side commit %s", got, ok, podHead)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranch == "" || run.FinalCommit != podHead {
+		t.Errorf("recovery recorded FinalBranch=%q FinalCommit=%q, want branch + %s", run.FinalBranch, run.FinalCommit, podHead)
+	}
+	if run.FinalBranchError != "" {
+		t.Errorf("successful SHA recovery still recorded an error: %q", run.FinalBranchError)
+	}
+}

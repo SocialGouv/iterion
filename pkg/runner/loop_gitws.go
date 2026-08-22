@@ -591,6 +591,19 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 			// unverifiable but preserving the visible work wins.
 			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", msg.RunID, integ.CaptureErr)
 		case headErr != nil || head != integ.PodHead:
+			// The export can deliver every OBJECT yet leave the clone's
+			// ref system stale: tar cannot delete, so when a pod-side
+			// `git gc`/`pack-refs --all --prune` moved a ref into
+			// packed-refs, a leftover host loose ref shadows it (git
+			// resolves loose before packed) and HEAD reads pre-run.
+			// When the pod's final commit itself made it across, bank
+			// THAT exact commit by SHA — it is the tree the run
+			// finished on. Otherwise refuse loudly.
+			if headErr == nil && r.hostHasCommit(ctx, workDir, integ.PodHead) {
+				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", msg.RunID, head, integ.PodHead)
+				r.pushBank(ctx, msg, workDir, integ.PodHead)
+				return
+			}
 			r.recordBankFailure(msg, fmt.Sprintf(
 				"bank refused: the run finished at pod-side HEAD %s but the exported workspace reads %s — the export did not deliver the run's final tree",
 				integ.PodHead, strutil.FirstNonBlank(head, "unreadable")))
@@ -609,6 +622,21 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", msg.RunID, confirmed)
 		return
 	}
+	r.pushBank(ctx, msg, workDir, head)
+}
+
+// hostHasCommit reports whether sha resolves to a commit object present
+// in the clone at workDir.
+func (r *Runner) hostHasCommit(ctx context.Context, workDir, sha string) bool {
+	return r.runGit(ctx, workDir, "", "cat-file", "-e", sha+"^{commit}") == nil
+}
+
+// pushBank pushes the given commit as the run's per-run storage branch
+// and persists the outcome: FinalCommit + FinalBranch, or a loud
+// FinalBranchError when the forge refused the push. head is a resolved
+// SHA — the normal path banks the exported HEAD, the ref-shadowing
+// recovery banks the pod-side commit directly.
+func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head string) {
 	branch := "iterion/run-" + msg.RunID
 	tok := ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
@@ -620,7 +648,7 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 	}
 	// --force: the branch is namespaced to THIS run id; a re-banked
 	// attempt owns it entirely.
-	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", pushURL, "HEAD:refs/heads/"+branch)
+	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", pushURL, head+":refs/heads/"+branch)
 
 	// Persist on a background ctx carrying the run's tenant identity (the
 	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
