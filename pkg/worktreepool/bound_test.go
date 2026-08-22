@@ -528,3 +528,40 @@ func TestAdmission_TheBoundAndTheLevelsDisagreeOnPurpose(t *testing.T) {
 		t.Error("the bound admitted an orphan; git cannot say what is in one")
 	}
 }
+
+// The suggested command must be one that would actually change the pool.
+// `unlanded` and `nested-repo` are refused by every level of `iterion
+// clean` too, so offering it for those promises a reclamation it cannot
+// perform — the summary names them instead.
+func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
+	cases := []struct {
+		name   string
+		spared map[string]int
+		want   string
+	}{
+		{"dirty", map[string]int{SkipLevel: 2}, "iterion clean --store-dir /s --level moderate"},
+		{"resumable", map[string]int{SkipResumable: 3}, "iterion clean --store-dir /s --include-resumable"},
+		{"both", map[string]int{SkipLevel: 1, SkipResumable: 1},
+			"iterion clean --store-dir /s --level moderate --include-resumable"},
+		{"unlanded only", map[string]int{SkipUnlanded: 4}, ""},
+		{"nested only", map[string]int{SkipNested: 1}, ""},
+		{"nothing spared", map[string]int{}, ""},
+	}
+	for _, c := range cases {
+		got := BudgetReport{Spared: c.spared}.Remedy("/s")
+		if got != c.want {
+			t.Errorf("%s: Remedy = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Every reason the bound can produce must render, or an operator reads
+// "3 worktrees exceed the budget;" with nothing after the semicolon.
+func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipUnlanded, SkipNested, SkipRunActive} {
+		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
+		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
+			t.Errorf("reason %q rendered as %q", reason, got)
+		}
+	}
+}

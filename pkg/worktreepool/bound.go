@@ -80,12 +80,13 @@ var sparedLabels = []struct {
 }{
 	{SkipLevel, "carry uncommitted work or content git cannot account for"},
 	{SkipResumable, "belong to runs `iterion resume` would restart"},
-	{SkipUnlanded, "hold commits only the run's own refs keep"},
+	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
 	{SkipRunActive, "are owned by a live run"},
 }
 
-// Remedy is the command that would clear what the bound refused.
+// Remedy is the command that would clear what the bound refused, or empty
+// when no command would.
 //
 // It is a DRY RUN — `iterion clean` reports by default and deletes only
 // with --apply — because every category the bound leaves behind is one it
@@ -94,18 +95,22 @@ var sparedLabels = []struct {
 // blocking rather than fixed, so the line an operator copies is the one
 // that would work on THEIR pool.
 //
-// Empty when nothing was spared for a reason a command could clear.
+// `unlanded` and `nested-repo` deliberately produce nothing: no level of
+// `iterion clean` takes them either, so offering the command for those
+// would promise a reclamation it cannot perform. Summary still names
+// them, which is the honest answer — that pool needs git, by hand.
 func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
 	needsResumable := r.Spared[SkipResumable] > 0
-	if !needsLevel && !needsResumable && r.Spared[SkipUnlanded] == 0 && r.Spared[SkipNested] == 0 {
+	if !needsLevel && !needsResumable {
 		return ""
 	}
 	cmd := "iterion clean --store-dir " + storeDir
 	if needsLevel {
-		// `moderate` takes a merged worktree's uncommitted files;
-		// `aggressive` is what an orphan or an un-adopted branch needs.
-		// Naming the lower one keeps the suggestion the smaller step.
+		// `moderate` takes a merged worktree's uncommitted files, which is
+		// the common case; an orphan needs `aggressive`. Naming the lower
+		// one keeps the suggestion the smaller step, and the dry run shows
+		// what it still leaves behind.
 		cmd += " --level moderate"
 	}
 	if needsResumable {

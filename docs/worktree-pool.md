@@ -102,7 +102,10 @@ with ITERION_WORKTREE_POOL_MAX=<n> (`off` disables it).
 
 The suggested command is a **dry run** — `iterion clean` reports by
 default — and its flags are derived from what is actually blocking, so it
-is the line that would work on your pool rather than a generic one.
+is the line that would work on your pool rather than a generic one. When
+the only things left are `unlanded` or `nested-repo`, no command is
+offered: no level of `iterion clean` takes those either, and that pool
+needs git, by hand.
 
 ## The budget
 
