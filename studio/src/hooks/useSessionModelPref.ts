@@ -117,7 +117,12 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
         });
       })
       .catch((e) => {
-        if (!live || ac.signal.aborted) return;
+        if (
+          !live ||
+          ac.signal.aborted ||
+          generation !== mutationGenerationRef.current
+        )
+          return;
         // A server without the store is a normal configuration, not an error
         // worth shouting about — the session simply cannot remember.
         setLoaded({

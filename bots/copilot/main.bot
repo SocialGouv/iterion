@@ -57,11 +57,6 @@ vars:
   ## Seed for turn 1. Empty → Copi opens the conversation itself.
   initial_message: string = ""
 
-  ## Typed page-context references from the studio, as a JSON array of
-  ## {kind,id,label} objects. Declared so the launching surface can
-  ## fill it; harmless (and empty) from the CLI.
-  chat_context: string = ""
-
   ## Standing constraints for the session, free text.
   scope_notes: string = ""
 
@@ -86,7 +81,6 @@ schema turn_input:
   operator_message: string
   mode:             string
   context_brief:    string
-  chat_context:     string
   ## Rides every turn so the choice survives the loop; the chat pause
   ## re-supplies it from the previous turn's input rather than from
   ## vars, which a resume would not re-read.
@@ -376,10 +370,6 @@ prompt copi_user:
   the session was restarted):
   {{input.context_brief}}
 
-  What the operator is looking at in the studio, as typed references
-  (may be empty; resolve them yourself rather than assuming):
-  {{input.chat_context}}
-
 prompt review_system:
   You are a SECOND model reviewing another assistant's answer about
   iterion, before the operator reads it. You are not the assistant and
@@ -428,7 +418,6 @@ compute seed:
     operator_message: "vars.initial_message"
     mode:             "vars.mode"
     context_brief:    "''"
-    chat_context:     "vars.chat_context"
     reviewer:         "vars.reviewer"
 
 agent copi:
@@ -530,7 +519,7 @@ tool validate_draft:
   ## days-long conversation before the operator can read Copi's draft.
   command: `if ! command -v python3 >/dev/null 2>&1; then printf '%s\n' '{"validated":false,"validate_report":"python3 is not on PATH here, so the draft was NOT verified — install python3 or run: iterion validate <file>"}'; exit 0; fi
 python3 -c "
-import glob, json, os, subprocess, sys, tempfile
+import glob, json, os, shutil, subprocess, sys, tempfile
 files_dir = os.environ.get('ITERION_ARTIFACT_FILES_DIR', '')
 run_dir = os.path.dirname(files_dir.rstrip('/')) if files_dir else ''
 def out(ok, report):
@@ -552,22 +541,25 @@ draft = payload.get('draft_bot', '') if isinstance(payload, dict) else ''
 if not isinstance(draft, str) or draft.strip() == '':
     out(True, '')
 tmp = tempfile.mkdtemp(prefix='copi-draft-')
-path = os.path.join(tmp, 'draft.bot')
 try:
-    with open(path, 'w', encoding='utf-8') as fh:
-        fh.write(draft)
-except OSError as exc:
-    out(False, 'could not write the draft for validation (' + str(exc) + ')')
-try:
-    p = subprocess.run(['iterion', 'validate', path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
-except FileNotFoundError:
-    out(False, 'iterion is not on PATH here, so the draft was NOT verified — run: iterion validate <file>')
-except subprocess.TimeoutExpired:
-    out(False, 'iterion validate timed out, so the draft was NOT verified')
-report = (p.stdout or '').strip()
-if len(report) > 4000:
-    report = report[:4000] + chr(10) + '... (truncated)'
-out(p.returncode == 0, report)
+    path = os.path.join(tmp, 'draft.bot')
+    try:
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(draft)
+    except OSError as exc:
+        out(False, 'could not write the draft for validation (' + str(exc) + ')')
+    try:
+        p = subprocess.run(['iterion', 'validate', path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
+    except FileNotFoundError:
+        out(False, 'iterion is not on PATH here, so the draft was NOT verified — run: iterion validate <file>')
+    except subprocess.TimeoutExpired:
+        out(False, 'iterion validate timed out, so the draft was NOT verified')
+    report = (p.stdout or '').strip()
+    if len(report) > 4000:
+        report = report[:4000] + chr(10) + '... (truncated)'
+    out(p.returncode == 0, report)
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
 "`
 
 ## Deterministic projection for the when-clause + reply passthrough, so
@@ -753,7 +745,6 @@ workflow copilot:
     operator_message: "{{outputs.seed.operator_message}}",
     mode:             "{{outputs.seed.mode}}",
     context_brief:    "{{outputs.seed.context_brief}}",
-    chat_context:     "{{outputs.seed.chat_context}}",
     reviewer:         "{{outputs.seed.reviewer}}"
   }
 
@@ -845,7 +836,6 @@ workflow copilot:
     operator_message:     "{{outputs.chat.message}}",
     context_brief:        "{{outputs.copi.context_brief}}",
     mode:                 "{{outputs.copi.mode}}",
-    chat_context:         "{{vars.chat_context}}",
     ## From the gate's output, not from `input`: on this edge `input` is
     ## the CHAT node's schema, which carries only the operator's text.
     ## The gate is where the switch was last seen this turn.
@@ -853,3 +843,9 @@ workflow copilot:
     _session_id:          "{{outputs.copi._session_id}}",
     _session_fingerprint: "{{outputs.copi._session_fingerprint}}"
   } as conversation_loop(1000)
+
+  ## A bounded/affordability-guarded back-edge can be declined. That is a
+  ## clean session boundary, not an engine error: preserve the transcript and
+  ## finish when the loop is exhausted or the remaining budget cannot fund a
+  ## further turn.
+  chat -> done

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -200,6 +200,14 @@ describe("useAssistantReservedWidthPx", () => {
       </AssistantProvider>,
     );
     expect(screen.getByTestId("width").textContent).toBe("0");
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: DOCK_BREAKPOINT_PX + 1,
+    });
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByTestId("width").textContent).toBe(
+      String(DOCKED_WIDTH_PX),
+    );
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: previous,

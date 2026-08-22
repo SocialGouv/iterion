@@ -44,12 +44,6 @@ export const RunListRow = memo(function RunListRow({
     <tr
       className="group border-b border-border-default hover:bg-surface-2 cursor-pointer"
       onClick={() => onOpen(run.id)}
-      // Drag a run onto the assistant to ask about it — the headline
-      // scenario of the epic this belongs to: "why did this fail?" without
-      // retyping an id. The row is not otherwise draggable, so the shared
-      // helper owns the whole gesture here.
-      {...referenceDragProps("run", run.id, friendlyLabel(run))}
-      title="Drag onto the assistant to ask about this run"
     >
       {/* Selection cell swallows its clicks so toggling never navigates. */}
       <td className="pl-4 pr-1 py-2 w-8" onClick={(e) => e.stopPropagation()}>
@@ -61,6 +55,14 @@ export const RunListRow = memo(function RunListRow({
       </td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-2">
+          <span
+            className="shrink-0 cursor-grab select-none text-fg-muted"
+            aria-label={`Drag ${friendlyLabel(run)} onto the assistant`}
+            title="Drag onto the assistant to ask about this run"
+            {...referenceDragProps("run", run.id, friendlyLabel(run))}
+          >
+            ⋮⋮
+          </span>
           <BotAvatar run={run} onFilter={onFilterBot} />
           <span className="font-medium truncate">{friendlyLabel(run)}</span>
         </div>

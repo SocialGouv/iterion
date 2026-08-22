@@ -293,19 +293,28 @@ func TestCopilot_GraphContract(t *testing.T) {
 		}
 	}
 
-	// Explicit close must be the ONLY path to done: a conversation that can
-	// end on its own is a conversation the operator loses without asking.
+	// There are exactly two clean exits: explicit close, and the chat fallback
+	// used when the bounded/budget-guarded back-edge is declined. Without the
+	// latter, exhaustion becomes NO_OUTGOING_EDGE instead of a finished session.
 	var doneEdges []*ir.Edge
 	for _, e := range wf.Edges {
 		if e.To == "done" {
 			doneEdges = append(doneEdges, e)
 		}
 	}
-	if len(doneEdges) != 1 {
-		t.Fatalf("workflow has %d edges into done, want exactly 1 (the explicit close)", len(doneEdges))
+	if len(doneEdges) != 2 {
+		t.Fatalf("workflow has %d edges into done, want explicit close + chat exhaustion fallback", len(doneEdges))
 	}
-	if doneEdges[0].From != "gate" || doneEdges[0].Condition == "" {
-		t.Errorf("the done edge = %s -> done (condition %q), want gate -> done guarded by the close flag", doneEdges[0].From, doneEdges[0].Condition)
+	var explicitClose, exhaustionFallback bool
+	for _, edge := range doneEdges {
+		explicitClose = explicitClose || (edge.From == "gate" && edge.Condition != "")
+		exhaustionFallback = exhaustionFallback || (edge.From == "chat" && edge.LoopName == "" && edge.Condition == "")
+	}
+	if !explicitClose {
+		t.Error("missing gate -> done edge guarded by the close flag")
+	}
+	if !exhaustionFallback {
+		t.Error("missing plain chat -> done fallback for loop/budget exhaustion")
 	}
 
 	// VERIFY, DON'T ASSERT. Copi holds no shell, so the only thing that can
@@ -934,13 +943,15 @@ func TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact(t *testing.T
 
 	binDir := t.TempDir()
 	fakeIterion := filepath.Join(binDir, "iterion")
-	if err := os.WriteFile(fakeIterion, []byte("#!/bin/sh\ntest \"$1\" = validate && grep -q 'workflow latest' \"$2\"\n"), 0o755); err != nil {
+	seenDraftPath := filepath.Join(runDir, "seen-draft-path")
+	if err := os.WriteFile(fakeIterion, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$SEEN_DRAFT_PATH\"\ntest \"$1\" = validate && grep -q 'workflow latest' \"$2\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("sh", "-c", validate.Command)
 	cmd.Env = append(os.Environ(),
 		"ITERION_ARTIFACT_FILES_DIR="+filesDir,
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SEEN_DRAFT_PATH="+seenDraftPath,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -955,5 +966,12 @@ func TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact(t *testing.T
 	}
 	if !got.Validated || got.ValidateReport != "" {
 		t.Fatalf("validator result = %+v, want validated with empty report", got)
+	}
+	seen, err := os.ReadFile(seenDraftPath)
+	if err != nil {
+		t.Fatalf("read captured draft path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(string(seen))); !os.IsNotExist(err) {
+		t.Fatalf("validator temp dir %q still exists after the turn (stat err=%v)", filepath.Dir(string(seen)), err)
 	}
 }

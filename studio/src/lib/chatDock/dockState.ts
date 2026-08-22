@@ -25,6 +25,10 @@ export const DOCK_STATES = [
 // At 1024px a 380px reserved column plus the sidebar left too little room
 // for the page, so medium/desktop widths open the resizable floating panel.
 export const DOCK_BREAKPOINT_PX = 768;
+// The run steering panel docks inside its own resizable SideDock rather than
+// reserving a fixed app column. Its older lg threshold is still the right one:
+// below it a floating panel covers the run canvas and bottom tab bar.
+export const STEERING_DOCK_BREAKPOINT_PX = 1024;
 
 // The assistant dock's persisted state. Distinct from the run console's
 // CHAT_DOCK_KEY (`iterion.runview.chatDock`), which belongs to the
@@ -44,11 +48,14 @@ export const ASSISTANT_BOT_KEY = "iterion.chatDock.assistantBot";
 //
 // `viewportWidth` is injectable so the rule is testable without a DOM;
 // callers in the app omit it and get the live window width.
-export function openedDock(viewportWidth?: number): DockState {
+export function openedDock(
+  viewportWidth?: number,
+  breakpoint: number = DOCK_BREAKPOINT_PX,
+): DockState {
   const width =
     viewportWidth ??
-    (typeof window === "undefined" ? DOCK_BREAKPOINT_PX + 1 : window.innerWidth);
-  return width <= DOCK_BREAKPOINT_PX ? "docked-right" : "floating";
+    (typeof window === "undefined" ? breakpoint + 1 : window.innerWidth);
+  return width <= breakpoint ? "docked-right" : "floating";
 }
 
 // readDockState reads a persisted dock state, falling back when the key

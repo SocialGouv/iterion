@@ -5,6 +5,7 @@ import {
   DOCK_STATES,
   openedDock,
   readDockState,
+  STEERING_DOCK_BREAKPOINT_PX,
 } from "./dockState";
 
 describe("openedDock", () => {
@@ -16,6 +17,11 @@ describe("openedDock", () => {
   it("docks at and below the lg breakpoint", () => {
     expect(openedDock(DOCK_BREAKPOINT_PX)).toBe("docked-right");
     expect(openedDock(768)).toBe("docked-right");
+  });
+
+  it("keeps the steering panel on its wider canvas breakpoint", () => {
+    expect(openedDock(900, STEERING_DOCK_BREAKPOINT_PX)).toBe("docked-right");
+    expect(openedDock(1100, STEERING_DOCK_BREAKPOINT_PX)).toBe("floating");
   });
 });
 

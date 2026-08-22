@@ -96,6 +96,31 @@ describe("useSessionModelPref", () => {
     });
   });
 
+  it("does not let an older failed GET erase a choice saved while it loads", async () => {
+    let rejectFetch!: (error: Error) => void;
+    api.fetchModelPref.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject;
+        }),
+    );
+    api.saveModelPref.mockResolvedValue({});
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await act(async () => {
+      await result.current.save({ model: "anthropic/claude-opus-5" });
+    });
+    act(() => rejectFetch(new Error("stale load failed")));
+
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.choice).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.error).toBeNull();
+  });
+
   it("treats an empty successful response as no recorded preference", async () => {
     api.fetchModelPref.mockResolvedValueOnce(null);
     const { result } = renderHook(() => useSessionModelPref("copilot"));

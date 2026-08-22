@@ -32,6 +32,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -257,17 +258,32 @@ export function useAssistantSession(): AssistantSessionContextValue | null {
 export function useAssistantReservedWidthPx(): number {
   const ctx = useContext(AssistantDockContext);
   const [location] = useLocation();
+  const reservesLayout = useWideDockViewport();
   if (!ctx?.hasSession) return 0;
   // On compact screens docked-right is an overlaying side sheet. Reserving
   // 380px there would squeeze the route to almost nothing; the sheet is
   // full-width-safe and can be minimised to reveal the untouched page.
-  const reservesLayout =
-    typeof window === "undefined" || window.innerWidth > DOCK_BREAKPOINT_PX;
   return ctx.dock === "docked-right" &&
     reservesLayout &&
     !isAssistantOwnRoute(location)
     ? DOCKED_WIDTH_PX
     : 0;
+}
+
+// Crossing the compact breakpoint changes docked-right from an overlaying
+// side sheet to a real layout column. Keep AppShell subscribed so its padding
+// changes at the same instant as the viewport instead of on the next route
+// render.
+function useWideDockViewport(): boolean {
+  const read = () =>
+    typeof window === "undefined" || window.innerWidth > DOCK_BREAKPOINT_PX;
+  const [wide, setWide] = useState(read);
+  useEffect(() => {
+    const onResize = () => setWide(read());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return wide;
 }
 
 // How much of the right edge another FIXED bottom-right surface must clear.

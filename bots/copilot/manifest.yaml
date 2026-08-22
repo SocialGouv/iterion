@@ -47,7 +47,7 @@ dispatch_vars:
 ## the form (still settable via --var / bot_args).
 launch:
   primary: [initial_message, mode]
-  hidden: [chat_context, scope_notes]
+  hidden: [scope_notes]
 
 ## Copi is a CONVERSATIONAL bot — the studio hosts him in the assistant
 ## dock. This block is the whole cost of that: bundle.Manifest carries

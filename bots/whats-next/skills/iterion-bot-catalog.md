@@ -570,7 +570,7 @@ read it — off by default, since it costs a full extra call per turn.
   it never edits or commits, so pair it with the bot that does the
   work.
 - **Triggers**: copi, copilot
-- **Vars**: `chat_context` (string), `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty

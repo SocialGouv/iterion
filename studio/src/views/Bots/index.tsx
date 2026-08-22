@@ -299,12 +299,6 @@ function BotCard({
   return (
     <li
       className="flex h-full flex-col rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
-      // The reference is the bot's workspace-relative PATH, not its id: that
-      // is what an assistant can actually open and read. `bot/<id>` resolves
-      // through the catalog, `bot/<path>` through the filesystem, and the
-      // shipped bots' contract accepts both.
-      {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
-      title="Drag onto the assistant to ask about this bot"
     >
       <button
         type="button"
@@ -313,6 +307,17 @@ function BotCard({
         title={`Open ${label}'s bot page`}
       >
         <div className="flex w-full items-center gap-2">
+          {/* Scope dragging to a grip so paths and labels remain natively
+              selectable/copyable. The reference uses the workspace-relative
+              path because that is what an assistant can actually read. */}
+          <span
+            className="shrink-0 cursor-grab select-none text-fg-muted"
+            aria-label={`Drag ${label} onto the assistant`}
+            title="Drag onto the assistant to ask about this bot"
+            {...referenceDragProps("bot", bot.rel_path || bot.name, label)}
+          >
+            ⋮⋮
+          </span>
           <span className="shrink-0 text-lg leading-none" aria-hidden="true">
             {identity.emoji}
           </span>

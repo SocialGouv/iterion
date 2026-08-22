@@ -211,13 +211,13 @@ export default function SessionModelControl({
             </p>
           )}
 
-          {!pref.available && (
+          {!pref.available && !pref.error && (
             <p className="text-caption text-fg-subtle">
               This server cannot remember the choice — it applies to sessions
               you launch from this tab only.
             </p>
           )}
-          {pref.error && pref.available && (
+          {pref.error && (
             <p className="text-caption text-danger">{pref.error}</p>
           )}
 

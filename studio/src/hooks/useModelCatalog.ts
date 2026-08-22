@@ -57,11 +57,11 @@ export function useModelCatalog(
   // purpose: a forced refresh must replace the cached answer, not sit
   // beside it.
   const forceRef = useRef(false);
+  const refreshGenerationRef = useRef(0);
   const query = useQuery({
     queryKey: ["models", extraSpecs],
     queryFn: ({ signal }) => {
       const refresh = forceRef.current;
-      forceRef.current = false;
       return fetchModels({ extraSpecs, refresh, signal });
     },
     enabled,
@@ -69,8 +69,14 @@ export function useModelCatalog(
   });
   const refetch = query.refetch;
   const refresh = useCallback(() => {
+    const generation = ++refreshGenerationRef.current;
     forceRef.current = true;
-    void refetch();
+    // Keep refresh=true for the whole react-query retry cycle. Clearing it
+    // inside queryFn made a failed forced request retry as an ordinary cached
+    // read while the UI reported that refresh had succeeded.
+    void refetch().finally(() => {
+      if (refreshGenerationRef.current === generation) forceRef.current = false;
+    });
   }, [refetch]);
 
   const catalog = query.data ?? null;

@@ -148,6 +148,34 @@ description: Orchestrator bot.
 	}
 }
 
+func TestList_BundleCarriesChatSurface(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "copilot")
+	writeFile(t, filepath.Join(bundleDir, "manifest.yaml"), `name: copilot
+display_name: Copi
+chat:
+  seed_var: initial_message
+  nodes:
+    chat:
+      kind: human
+      text_field: message
+`)
+	writeFile(t, filepath.Join(bundleDir, "main.bot"), `agent x:
+  model: "test"
+`)
+	entries, err := List(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Chat == nil {
+		t.Fatalf("discovered chat surface = %#v, want one", entries)
+	}
+	chat := entries[0].Chat
+	if chat.SeedVar != "initial_message" || chat.Nodes["chat"].TextField != "message" {
+		t.Fatalf("discovered chat surface = %#v", chat)
+	}
+}
+
 func TestResolveBotPath_LooseFile(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "feature_dev.bot")

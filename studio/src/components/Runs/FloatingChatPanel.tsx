@@ -19,7 +19,11 @@ import {
   ChatDockPanel,
 } from "@/components/ChatDock/ChatDockShell";
 import RunConversationView from "./conversation/RunConversationView";
-import { openedDock, type DockState } from "@/lib/chatDock/dockState";
+import {
+  openedDock,
+  STEERING_DOCK_BREAKPOINT_PX,
+  type DockState,
+} from "@/lib/chatDock/dockState";
 import {
   STEERING_HINT,
   STEERING_LANE,
@@ -89,7 +93,9 @@ export default function FloatingChatPanel({
         runId={runId}
         status={status}
         rightInset={rightInset}
-        onOpen={() => changeDock(openedDock())}
+        onOpen={() =>
+          changeDock(openedDock(undefined, STEERING_DOCK_BREAKPOINT_PX))
+        }
       />
     );
   }

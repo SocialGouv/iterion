@@ -18,8 +18,9 @@ import {
 import { chatRegistryFrom } from "@/lib/whats-next/chatRegistry";
 
 // The catalog is filesystem state that changes when someone edits a manifest,
-// not live data. Five minutes matches useModelCatalog; the Catalog manager
-// invalidates on save through the same query key.
+// not live data. The provider lives above the route tree and never remounts,
+// so poll at the same five-minute cadence: a manifest edit/disable must not
+// leave a stale bot in the dock until the whole SPA is reloaded.
 const STALE_MS = 5 * 60 * 1000;
 
 export const CHAT_REGISTRY_QUERY_KEY = ["chat-registry"] as const;
@@ -60,6 +61,7 @@ export function useChatRegistry(): UseChatRegistryResult {
     // below covers it, and retrying forever on a server that does not expose
     // the endpoint just burns requests.
     retry: 1,
+    refetchInterval: STALE_MS,
   });
 
   const byId = useMemo(() => {
