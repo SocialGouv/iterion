@@ -72,9 +72,9 @@ Matching semantics (`pkg/backend/permission`):
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 
-**Cross-backend parity.** The same rule gates the matching tool on all three
-supported backends: a single `Bash(...)` rule covers claude_code's `Bash`,
-claw's `bash`/`shell`, and pi's `bash`; `Edit(...)` covers
+**Cross-backend parity.** The same rule gates the matching tool on every
+supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
+claw's `bash`/`shell`, pi's `bash`, and Grok's `run_terminal_command`; `Edit(...)` covers
 `Edit`/`edit_file`/`file_edit`; `Read(...)` covers `Read`/`read_file`; etc.
 (see `canonicalToolName`).
 
@@ -132,9 +132,20 @@ and evaluated by each gated backend before every tool runs:
   unwinds the turn as the same `delegate.ErrAskUser` pause. Pi print mode has
   no control channel and refuses a permission-gated node rather than running
   it unguarded.
+- **kimi (`deny` only)** — iterion creates a private shadow
+  `KIMI_CODE_HOME` for each invocation, links the operator's credentials and
+  config into it, and appends a `PreToolUse` hook. The hook subprocess rebuilds
+  the serialised policy and evaluates it with the same Go implementation. A
+  deny is returned in kimi's native `hookSpecificOutput` shape. The real
+  `~/.kimi-code` is never modified.
+- **grok (implemented, pending live admission)** — the same shadow-home design
+  uses `GROK_HOME` plus a global `hooks/iterion-permission.json`. Hook discovery
+  and authentication are verified, but Grok is not yet admitted by C176 because
+  a live tool denial could not be run while the test account's usage balance was
+  exhausted.
 
-All three honour the **same** `permission.Policy`, so a bot gets the same
-allow/ask/deny decision whichever gated backend executes it.
+Every hook honours the **same** `permission.Policy`; protocol adapters only
+decode the native event and spell the native verdict.
 
 ## Status / limitations
 
@@ -154,9 +165,14 @@ allow/ask/deny decision whichever gated backend executes it.
   flags on `resume` remain available for scripted/headless approval.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
-- **Backend scope:** enforcement is implemented for `claw`, `claude_code`, and
-  pi RPC mode. Kimi, Grok, and Codex do not consume the policy; do not
-  use them when `permission:` is the safety boundary.
+- **Backend scope:** `claw`, `claude_code`, and pi RPC support `ask` and
+  `deny`. Kimi supports `deny` only; `ask`, a `deny` policy containing explicit
+  `ask:` rules, and sandboxed guarded Kimi runs are refused before the CLI is
+  launched. Grok's hook is implemented but remains refused by C176 until the
+  live denial proof is complete. Codex has no permission seam.
+- **Primary routes are screened too.** C176 applies to the node's effective
+  primary backend as well as authored and run-level fallbacks, so an unsupported
+  backend can no longer run a declared gate silently.
 - **Node scope:** the gate evaluates the **tool calls an agent/judge LLM
   makes**. A `tool` node (a direct, deterministic shell command, no LLM)
   is the action itself and is governed by the **Verified Action** quad

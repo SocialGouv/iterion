@@ -31,21 +31,22 @@ var KnownFallbackTriggers = map[string]bool{
 	"any":                 true,
 }
 
-// gateEnforcingBackends are the backends that can enforce iterion's
-// tool-permission gate. A `fallbacks:` route on any other backend would
+// gateEnforcingModes are the permission modes each backend can enforce. A
+// `fallbacks:` route on any other backend/mode pair would
 // run the node UNGATED — the anti-prompt-injection boundary silently
-// disappearing at the moment the run is under stress. pi already refuses
-// rather than degrades in this situation; C176 adopts that precedent at
-// compile time.
-var gateEnforcingBackends = map[string]bool{
-	"claude_code": true,
-	"claw":        true,
-	"pi":          true,
+// disappearing at the moment the run is under stress. Kimi's external hook
+// can hard-deny but cannot pause the parent iterion run, hence deny-only.
+// Grok is intentionally absent until a live tool denial is proven.
+var gateEnforcingModes = map[string]map[string]bool{
+	"claude_code": {"ask": true, "deny": true},
+	"claw":        {"ask": true, "deny": true},
+	"pi":          {"ask": true, "deny": true},
+	"kimi":        {"deny": true},
 }
 
 // reasoningEffortBackends are the backends that carry a
 // reasoning-effort dial. Deliberately its OWN set rather than a reuse
-// of gateEnforcingBackends: that set answers "can this backend enforce
+// of gateEnforcingModes: that set answers "can this backend enforce
 // the permission gate", and the two memberships differ — grok passes
 // `--reasoning-effort` and codex has `model_reasoning_effort`, so
 // reusing the gate set made C177 assert a fact the engine contradicts.
@@ -87,18 +88,29 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			continue
 		}
 		fbs := nn.GetFallbacks()
-		if len(fbs) == 0 {
-			continue
-		}
 		f := nn.GetLLMFields()
 		kind, id := nn.NodeKind().String(), nn.NodeID()
 		nodeBackend := effectiveNodeBackend(f.Backend, w.DefaultBackend)
+		effectivePermission := EffectivePermission(nn.GetPermission(), w.Permission)
+
+		// The primary route is a capability crossing too. Screening only
+		// fallbacks let `backend: grok` + `permission: deny` compile and run
+		// silently ungated — worse than a loud C176 refusal.
+		if nodeBackend != "" {
+			if reason := ungatedCrossingReason(nodeBackend, effectivePermission, len(w.PermissionAsk) > 0); reason != "" {
+				c.errorfAt(DiagFallbackUnsafeCross, id, "",
+					"%s %q: primary route %s", kind, id, reason)
+			}
+		}
+		if len(fbs) == 0 {
+			continue
+		}
 
 		seen := map[string]bool{}
 		for _, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
 		}
 	}
 }
@@ -147,7 +159,7 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // node's capabilities, using the same predicates the launch-time
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string) {
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, hasAskRules bool) {
 	// An env-ref backend is not knowable here; defer to the runtime.
 	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
@@ -159,7 +171,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
+	if reason := ungatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), hasAskRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -200,12 +212,21 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 // ungatedCrossingReason returns why a route may not serve a gated node,
 // or "" when it may. Shared by C176 and the launch-time screen so the
 // two can never disagree.
-func ungatedCrossingReason(routeBackend, permission string) string {
-	if permission == "" || permission == "off" || gateEnforcingBackends[routeBackend] {
+func ungatedCrossingReason(routeBackend, permission string, hasAskRules bool) string {
+	mode := strings.ToLower(strings.TrimSpace(permission))
+	if mode == "" || mode == "off" {
 		return ""
 	}
+	if gateEnforcingModes[routeBackend][mode] {
+		if !hasAskRules || gateEnforcingModes[routeBackend]["ask"] {
+			return ""
+		}
+		return fmt.Sprintf(
+			"runs on backend %q, which can enforce permission: %s but cannot pause for the workflow's explicit ask: rules — the run would not preserve the declared gate",
+			routeBackend, mode)
+	}
 	return fmt.Sprintf(
-		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would fall back UNGATED",
+		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would be UNGATED",
 		routeBackend, permission)
 }
 

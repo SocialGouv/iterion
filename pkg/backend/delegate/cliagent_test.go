@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -256,5 +258,91 @@ func TestCLIAgentExecuteNoBinary(t *testing.T) {
 	_, err := b.Execute(context.Background(), Task{UserPrompt: "hi"})
 	if err == nil {
 		t.Fatal("expected error when no binary configured")
+	}
+}
+
+func TestCLIAgentPermissionShadowHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", iterionBin)
+
+	realHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("model = \"k2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(realHome, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	policy, err := permission.NewPolicy(permission.ModeDeny, []string{"Read(**)"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", StoreDir: t.TempDir(), Permission: policy, ExtraEnv: []string{"KIMI_CODE_HOME=" + realHome}}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), task, kimiProtocol, BackendKimi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 1 || !strings.HasPrefix(env[0], "KIMI_CODE_HOME=") {
+		t.Fatalf("hook env = %v", env)
+	}
+	shadow := strings.TrimPrefix(env[0], "KIMI_CODE_HOME=")
+	config, err := os.ReadFile(filepath.Join(shadow, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", filepath.Join(shadow, ".iterion-permission-policy.json")} {
+		if !strings.Contains(string(config), want) {
+			t.Errorf("shadow config missing %q:\n%s", want, config)
+		}
+	}
+	if info, err := os.Lstat(filepath.Join(shadow, "credentials")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("credentials were not linked into the shadow home: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(shadow, ".iterion-permission-policy.json")); err != nil {
+		t.Errorf("serialised policy missing: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(shadow); !os.IsNotExist(err) {
+		t.Errorf("shadow home survived cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(realHome, "config.toml")); err != nil {
+		t.Errorf("operator config was mutated or removed: %v", err)
+	}
+}
+
+func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
+	askPolicy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: askPolicy}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "cannot pause") {
+		t.Fatalf("permission: ask error = %v, want an explicit refusal", err)
+	}
+
+	denyWithAskRule, err := permission.NewPolicy(permission.ModeDeny, nil, []string{"Bash(git push:*)"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyWithAskRule}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "ask rules") {
+		t.Fatalf("deny + ask rule error = %v, want an explicit refusal", err)
+	}
+
+	denyPolicy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &recordingRun{}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: run}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+		t.Fatalf("sandboxed gated run error = %v, want an explicit refusal", err)
 	}
 }

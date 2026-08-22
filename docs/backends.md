@@ -351,9 +351,11 @@ send one provider's signed turns to another.
 Two crossings are compile-time **errors** (`C176`), because the degraded
 run would be silently wrong rather than merely worse:
 
-- a route on a backend that cannot enforce the node's `permission:` gate
-  (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
-  disappear at the moment the run is under stress;
+- a route on a backend/mode pair that cannot enforce the node's
+  `permission:` gate (`kimi` accepts `deny` but not `ask`; `grok` and `codex`
+  are not admitted) — the anti-prompt-injection boundary must not disappear at
+  the moment the run is under stress. The same check now covers the primary
+  backend, not only fallbacks;
 - a route crossing the claw⇄CLI boundary, because the `tools:` list
   does not mean the same thing on both sides. The two directions are not
   symmetric:
@@ -905,6 +907,7 @@ agent implement:
   backend: "kimi"
   model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
   system: "…the task…"
+  permission: deny                   # supported on host runs
 ```
 
 ### `grok` (xAI Grok Build CLI)
@@ -944,10 +947,16 @@ backend. That is **distinct** from calling the xAI HTTP API via
   (e.g. `$MOONSHOT_API_KEY` for kimi, Grok Build OAuth for grok) — iterion
   inherits the host environment and does not fight the CLI's native
   resolution.
-- **Tools are not host-gated.** Like `codex`, these CLIs run with their
-  *own* built-in toolset; a node's `tools:` list is advisory. For a hard
-  tool-permission boundary use `claude_code`, `claw`, or pi in RPC mode; all
-  three enforce the shared permission gate.
+- **Permission gate.** These CLIs still run their *own* built-in toolset and a
+  node's `tools:` list remains advisory. For `permission: deny`, iterion points
+  the CLI at a per-invocation shadow home (`KIMI_CODE_HOME` / `GROK_HOME`) that
+  links the real credentials but adds an iterion `PreToolUse` hook; the
+  operator's home is untouched. Kimi's denial path is live-proven and admitted
+  by C176. Grok's hook is implemented but remains refused until its live denial
+  proof can be completed. External hooks cannot pause the parent run, so `ask`
+  (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
+  runs are also refused because neither CLI currently carries its home and hook
+  binary into the container.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
 - **Sessions** are captured for observability (`sessionId`) but resume/fork

@@ -133,7 +133,7 @@ func TestFallbackUnknownTriggerWarns(t *testing.T) {
 // not exist — pi already fails rather than degrades in this exact
 // situation, and C176 adopts that precedent at compile time.
 func TestFallbackUngatedRouteIsRefused(t *testing.T) {
-	src := fallbackWorkflow("  permission: deny\n  tools: [read_file]\n",
+	src := fallbackWorkflow("  permission: ask\n  tools: [read_file]\n",
 		"    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -141,6 +141,42 @@ func TestFallbackUngatedRouteIsRefused(t *testing.T) {
 	}
 	if !cr.HasErrors() {
 		t.Error("C176 must be an error: falling back UNGATED is the failure this check exists for")
+	}
+}
+
+func TestFallbackKimiDenyRouteIsAllowed(t *testing.T) {
+	src := fallbackWorkflow("  permission: deny\n  tools: [read_file]\n",
+		"    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n")
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("kimi's proven PreToolUse deny hook must admit permission: deny routes: %+v", cr.Diagnostics)
+	}
+}
+
+func TestGatedPrimaryBackendIsScreened(t *testing.T) {
+	src := "agent x:\n  backend: \"grok\"\n  model: \"grok-4.5\"\n  system: p\n  permission: deny\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("a gated primary backend without live enforcement proof must C176: %+v", cr.Diagnostics)
+	}
+}
+
+func TestKimiDenyPrimaryBackendIsAllowed(t *testing.T) {
+	src := "agent x:\n  backend: \"kimi\"\n  model: \"kimi-code/kimi-for-coding\"\n  system: p\n  permission: deny\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("kimi permission: deny primary should compile: %+v", cr.Diagnostics)
+	}
+}
+
+func TestKimiDenyWithAskRulesIsRefused(t *testing.T) {
+	src := "agent x:\n  backend: \"kimi\"\n  model: \"kimi-code/kimi-for-coding\"\n  system: p\n  permission: deny\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  ask: [\"Bash(git push:*)\"]\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("kimi cannot preserve an explicit ask rule from an external hook process: %+v", cr.Diagnostics)
 	}
 }
 
@@ -239,7 +275,7 @@ func TestNodeWithoutFallbacksIsUntouched(t *testing.T) {
 // let the common shape compile clean.
 func TestFallbackUngatedRouteRefusedFromWorkflowGate(t *testing.T) {
 	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  tools: [read_file]\n" +
-		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"grok\"\n      model: \"grok-4.5\"\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  permission: deny\n  x -> done\n"
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -253,7 +289,7 @@ func TestFallbackUngatedRouteRefusedFromWorkflowGate(t *testing.T) {
 // run time — which is the shipped default shape.
 func TestFallbackUngatedRouteRefusedOnAutoBackend(t *testing.T) {
 	src := "agent x:\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
-		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"grok\"\n      model: \"grok-4.5\"\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {

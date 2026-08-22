@@ -8,10 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -130,6 +133,23 @@ type CLIAgentProtocol struct {
 	// environment unchanged" — the CLI resolves its own credentials, which is
 	// the correct default for a CLI that reads e.g. $MOONSHOT_API_KEY itself.
 	ResolveEnv func(ctx context.Context) map[string]string
+
+	// PermissionHook describes a native PreToolUse hook discovered from the
+	// target CLI's home. When set, Execute creates a private shadow home for
+	// this invocation, links the operator's existing CLI state into it, and
+	// adds only iterion's permission hook registration. nil means this CLI
+	// cannot enforce an enabled permission policy.
+	PermissionHook *CLIAgentPermissionHook
+}
+
+// CLIAgentPermissionHook describes how one CLI discovers a PreToolUse hook.
+// WriteRegistration owns only the backend-specific registration syntax; the
+// shadow-home lifecycle and policy serialisation remain shared.
+type CLIAgentPermissionHook struct {
+	HomeEnv           string
+	DefaultHome       string
+	ExcludedEntries   []string
+	WriteRegistration func(realHome, shadowHome, command string) error
 }
 
 // resolveBinary picks argv[0] for this task: the explicit Command wins, then
@@ -231,6 +251,12 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		backendName = "cli_agent"
 	}
 
+	permissionEnv, permissionCleanup, err := b.preparePermissionHook(ctx, task, proto, backendName)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+	defer permissionCleanup()
+
 	binary := b.resolveBinary(task)
 	if binary == "" {
 		binary = proto.DefaultBinary
@@ -277,6 +303,10 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	// Run-level provisioning (devbox profile PATH) — appended last so on
 	// a duplicate key the run-level value wins.
 	env = append(env, task.ExtraEnv...)
+	// The per-invocation shadow home must win over both ambient and run-level
+	// values; otherwise a duplicate GROK_HOME/KIMI_CODE_HOME silently bypasses
+	// the hook registration.
+	env = append(env, permissionEnv...)
 
 	timeout := b.Timeout
 	if timeout <= 0 {
@@ -334,6 +364,129 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 			task.NodeID, task.Iteration, backendName, task.Model, parsed.EffectiveModel)
 	}
 	return result, nil
+}
+
+// preparePermissionHook materialises the common half of the grok/kimi hook
+// seam and returns the environment override plus its cleanup closure.
+func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, proto CLIAgentProtocol, backendName string) ([]string, func(), error) {
+	policy := task.Permission
+	if !policy.Enabled() {
+		return nil, func() {}, nil
+	}
+	if proto.PermissionHook == nil {
+		return nil, nil, fmt.Errorf("delegate: %s: permission: %s is enabled but this CLI cannot enforce it", backendName, policy.Mode)
+	}
+	if policy.CanAsk() {
+		return nil, nil, fmt.Errorf("delegate: %s: permission policy can ask for operator approval, but an external CLI hook cannot pause the iterion run; use permission: deny without ask rules", backendName)
+	}
+	if !task.Hostless() {
+		return nil, nil, fmt.Errorf("delegate: %s: permission-gated sandboxed runs are unsupported because the CLI home and hook binary are host-side; refusing to run ungated", backendName)
+	}
+
+	hook := proto.PermissionHook
+	if hook.HomeEnv == "" || hook.DefaultHome == "" || hook.WriteRegistration == nil {
+		return nil, nil, fmt.Errorf("delegate: %s: incomplete permission-hook protocol", backendName)
+	}
+	iterionBin := proc.LocateIterionBinary()
+	if iterionBin == "" {
+		return nil, nil, fmt.Errorf("delegate: %s: cannot locate a stable iterion binary for the permission hook; set ITERION_BIN", backendName)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe").CombinedOutput(); err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: iterion hook binary %q is stale or unusable: %w (%s)", backendName, iterionBin, err, strings.TrimSpace(string(output)))
+	}
+
+	root, loc := task.StateDir(backendName)
+	if err := PrepareStateRoot(task, root, loc, backendName+" backend", "the permission shadow home and linked CLI credentials", b.Logger); err != nil {
+		return nil, nil, err
+	}
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: create permission state dir: %w", backendName, err)
+	}
+	shadowHome, err := os.MkdirTemp(root, "permission-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: create permission shadow home: %w", backendName, err)
+	}
+	cleanup := func() { _ = os.RemoveAll(shadowHome) }
+
+	// A run-level environment override is part of the CLI invocation and must
+	// therefore also be the source we shadow. Reading only os.Getenv would
+	// replace an explicitly selected credential home with the ambient default.
+	realHome := ""
+	for _, kv := range task.ExtraEnv {
+		if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
+			realHome = strings.TrimSpace(value)
+		}
+	}
+	if realHome == "" {
+		realHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
+	}
+	if realHome == "" {
+		operatorHome, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("delegate: %s: resolve operator home: %w", backendName, homeErr)
+		}
+		realHome = filepath.Join(operatorHome, hook.DefaultHome)
+	}
+	if abs, absErr := filepath.Abs(realHome); absErr == nil {
+		realHome = abs
+	}
+	if err := linkShadowHome(realHome, shadowHome, hook.ExcludedEntries); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: build permission shadow home: %w", backendName, err)
+	}
+
+	policyPath := filepath.Join(shadowHome, ".iterion-permission-policy.json")
+	rawPolicy, err := json.Marshal(policy.Config())
+	if err == nil {
+		err = os.WriteFile(policyPath, rawPolicy, 0o600)
+	}
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: write permission policy: %w", backendName, err)
+	}
+	command := shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy " + shellQuote(policyPath)
+	if err := hook.WriteRegistration(realHome, shadowHome, command); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
+	}
+	return []string{hook.HomeEnv + "=" + shadowHome}, cleanup, nil
+}
+
+func linkShadowHome(realHome, shadowHome string, excluded []string) error {
+	entries, err := os.ReadDir(realHome)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	skip := make(map[string]bool, len(excluded))
+	skip[".iterion-permission-policy.json"] = true
+	for _, name := range excluded {
+		skip[name] = true
+	}
+	// ReadDir is sorted by filename, but keep this explicit: deterministic
+	// shadow homes make failures and tests reproducible on every filesystem.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if skip[entry.Name()] {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(realHome, entry.Name()), filepath.Join(shadowHome, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// shellQuote quotes one fixed argv fragment for the shell command string both
+// hook implementations accept. Single quotes are the only portable quoting
+// form needed here; embedded quotes use the standard close/escape/reopen form.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // parseStdout applies the protocol's parser, preferring the rich contract.
