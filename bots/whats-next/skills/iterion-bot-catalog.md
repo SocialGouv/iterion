@@ -540,7 +540,7 @@ with blocked lots requalified against the final tree.
 ### `copilot` — Copi
 
 Conversational iterion assistant. ONE adaptive agent (claw, bundled
-skills, a four-provider model ladder) in a standing chat loop, whose subject is
+skills, a cross-provider model ladder) in a standing chat loop, whose subject is
 iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
 semantics, backends, bundles and convergence doctrine. Three
 postures the operator can switch mid-conversation — info (explain

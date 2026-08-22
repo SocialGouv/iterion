@@ -467,22 +467,25 @@ agent copi:
   ## A design turn (read the workspace, draft a .bot, validate, revise)
   ## is the heaviest shape; ordinary info turns use a fraction.
   tool_max_steps: 40
-  ## The operator's model ladder. Ordered by intent, not by price: the
-  ## primary is the one asked for, and each rung is a different provider
-  ## so a single provider's outage or shut window cannot end the
-  ## conversation. `on:` is omitted, so every route takes the default
+  ## The operator's model ladder: a different PROVIDER on each rung, so
+  ## one provider's outage or shut window cannot end the conversation.
+  ## `on:` is omitted, so every route takes the default
   ## [usage_window, unavailable] — never `auth`, which would paper over
   ## a misconfigured credential instead of reporting it.
+  ##
+  ## grok and kimi are deliberately ABSENT, and that is a decision on
+  ## record rather than an oversight. Their CLI backends carry the
+  ## forfait credentials an operator would actually want here, but
+  ## neither can enforce this workflow's `permission: deny` gate, so
+  ## C176 refuses them. Reaching the same models through claw works and
+  ## compiles — it just bills the metered API instead of the forfait,
+  ## which answers a different question than the one asked. They come
+  ## back as `backend: "grok"` / `"kimi"` once #476 gives those CLIs the
+  ## permission seam pi already has.
   ##
   ## A fall-through is loud by design: a `model_fallback` event fires and
   ## `_backend`/`_model` name what actually served the turn.
   fallbacks:
-    grok:
-      backend: "claw"
-      model: "xai/grok-5"
-    kimi:
-      backend: "claw"
-      model: "moonshot/kimi-k3"
     opus:
       backend: "claw"
       model: "anthropic/claude-opus-5"
@@ -590,13 +593,10 @@ judge review:
   session: fresh
   ## A critique is a bounded reading task, not an investigation.
   tool_max_steps: 12
+  ## Same reasoning as the main ladder: the reverse family order is what
+  ## matters (the reviewer must not share the answering model's blind
+  ## spots), and the grok/kimi rungs wait on #476.
   fallbacks:
-    kimi:
-      backend: "claw"
-      model: "moonshot/kimi-k3"
-    grok:
-      backend: "claw"
-      model: "xai/grok-5"
     gpt:
       backend: "claw"
       model: "openai/gpt-5.6-sol"
