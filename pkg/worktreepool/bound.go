@@ -26,6 +26,11 @@ import (
 // a 16 GB tmpfs and started killing processes.
 const DefaultBudget = 8
 
+// DefaultEnforcementTimeout bounds the maintenance paid synchronously by
+// a run launch. The explicit clean command has no aggregate deadline; its
+// operator asked to wait for the complete inventory.
+const DefaultEnforcementTimeout = 10 * time.Second
+
 // BudgetEnv is the operator's dial. A count, or `off`.
 const BudgetEnv = "ITERION_WORKTREE_POOL_MAX"
 
@@ -55,6 +60,10 @@ type BudgetReport struct {
 	Spared map[string]int
 	// Errors are per-entry failures. The pass never aborts on one.
 	Errors []error
+	// Incomplete means the caller's context stopped classification before
+	// every over-budget candidate could be considered. No unchecked entry
+	// is deleted or reported under a guessed refusal reason.
+	Incomplete bool
 	// needsIncludeResumable is independent of Spared: one dirty resumable
 	// entry has SkipLevel as its primary reason, but the remedy still needs
 	// both --level moderate and --include-resumable.
@@ -87,6 +96,7 @@ var sparedLabels = []struct {
 	{SkipLevel, "carry uncommitted work or content git cannot account for"},
 	{SkipResumable, "belong to runs `iterion resume` would restart"},
 	{SkipOrphan, "are directories git cannot account for"},
+	{SkipIterionHeldOnly, "are held only by run-scoped checkpoint refs"},
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
 	{SkipRunActive, "are owned by a live run"},
@@ -108,7 +118,7 @@ var sparedLabels = []struct {
 // them, which is the honest answer — that pool needs git, by hand.
 func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
-	needsAggressive := r.Spared[SkipOrphan] > 0
+	needsAggressive := r.Spared[SkipOrphan] > 0 || r.Spared[SkipIterionHeldOnly] > 0
 	needsResumable := r.needsIncludeResumable || r.Spared[SkipResumable] > 0
 	if !needsLevel && !needsAggressive && !needsResumable {
 		return ""
@@ -250,6 +260,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		report.Before, report.After = len(names), len(names)
 		return report, nil
 	}
+	ctx := opts.ctx()
 
 	opts.Apply = true
 	opts.WithRuns = false // a run's record is history; only its checkout is the cost
@@ -290,6 +301,14 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		return report, nil
 	}
 	SortOldestFirst(candidates)
+	markIncomplete := func(err error) {
+		if report.Incomplete {
+			return
+		}
+		report.Incomplete = true
+		report.Errors = append(report.Errors,
+			fmt.Errorf("worktree pool classification stopped before completion: %w", err))
+	}
 
 	// Classification is lazy, and refusals alone are memoized briefly. A
 	// healthy pool pays for the few entries it actually reclaims; a degraded
@@ -298,6 +317,10 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	excess := report.Before - budget
 	taken, vanished := 0, 0
 	for i := range candidates {
+		if err := ctx.Err(); err != nil {
+			markIncomplete(err)
+			break
+		}
 		if taken+vanished >= excess {
 			break
 		}
@@ -308,6 +331,10 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 			continue
 		}
 		e := classify(candidates[i].Path, candidates[i].RunID, storeDir, statuses, opts.ScanOptions, now)
+		if err := ctx.Err(); err != nil {
+			markIncomplete(err)
+			break
+		}
 		if e.SkipReason != "" {
 			rememberPoolRefusal(e, now())
 			report.recordSpared(e)
@@ -315,6 +342,14 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		}
 		swept := Sweep([]Entry{e}, opts)
 		report.Errors = append(report.Errors, swept.Errors...)
+		// Cancellation inside the last-moment re-check is a stopped pass,
+		// not evidence that the entry is unlanded or nested. A completed
+		// deletion is still reported accurately; otherwise leave the entry
+		// unclassified and stop here.
+		if err := ctx.Err(); err != nil && len(swept.Deleted) == 0 {
+			markIncomplete(err)
+			break
+		}
 		for _, sp := range swept.Spared {
 			if sp.SkipReason == SkipVanished {
 				vanished++
@@ -331,6 +366,10 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		report.BytesReclaimed += swept.BytesReclaimed
 		forgetPoolRefusal(e.Path)
 		taken++
+		if err := ctx.Err(); err != nil {
+			markIncomplete(err)
+			break
+		}
 	}
 	report.After = report.Before - taken - vanished
 	return report, nil

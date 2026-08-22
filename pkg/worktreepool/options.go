@@ -1,10 +1,17 @@
 package worktreepool
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ScanOptions decides which entries a scan admits and how it dates them.
 // It carries no I/O of its own: a scan classifies, it never deletes.
 type ScanOptions struct {
+	// Context cancels the expensive half of a scan. Nil means background,
+	// which preserves the explicit `iterion clean` command's behaviour;
+	// the runtime bound supplies a short launch-path deadline.
+	Context context.Context
 	// Level is how much the caller is willing to lose. It gates nothing
 	// during classification — every entry is classified in full — it only
 	// decides which verdicts are reported as candidates.
@@ -42,6 +49,13 @@ func (o ScanOptions) now() func() time.Time {
 		return o.Now
 	}
 	return time.Now
+}
+
+func (o ScanOptions) ctx() context.Context {
+	if o.Context != nil {
+		return o.Context
+	}
+	return context.Background()
 }
 
 // SweepOptions is a scan's admission rules plus what a deletion may take.

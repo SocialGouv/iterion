@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/worktreepool"
@@ -40,7 +41,7 @@ import (
 // up is the state this replaced.
 //
 // Best-effort throughout: a run must never fail because a cleanup did.
-func (e *Engine) boundWorktreePool(storeRoot string) {
+func (e *Engine) boundWorktreePool(ctx context.Context, storeRoot string) {
 	// Git reports absolute paths. Keep the same canonical root across the
 	// classifier, operator messages and suggested cleanup command when the
 	// documented `--store-dir .iterion` form is used.
@@ -59,7 +60,11 @@ func (e *Engine) boundWorktreePool(storeRoot string) {
 		return // explicitly disabled
 	}
 
-	report, err := worktreepool.EnforceBudget(storeRoot, budget, worktreepool.SweepOptions{})
+	boundCtx, cancel := context.WithTimeout(ctx, worktreepool.DefaultEnforcementTimeout)
+	defer cancel()
+	report, err := worktreepool.EnforceBudget(storeRoot, budget, worktreepool.SweepOptions{
+		ScanOptions: worktreepool.ScanOptions{Context: boundCtx},
+	})
 	if err != nil && e.logger != nil {
 		e.logger.Warn("runtime: worktree pool: %v", err)
 	}
@@ -88,6 +93,9 @@ func formatWorktreePoolWarning(report worktreepool.BudgetReport, storeRoot strin
 		report.After, worktreepool.PoolDir(storeRoot), report.Budget)
 	if report.Held > 0 {
 		msg += fmt.Sprintf(" (%d live worktrees excluded)", report.Held)
+	}
+	if report.Incomplete {
+		msg += "; automatic classification stopped at its launch-time deadline"
 	}
 	if summary := report.Summary(); summary != "" {
 		msg += "; " + summary

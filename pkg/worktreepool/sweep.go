@@ -84,7 +84,7 @@ func Sweep(all []Entry, opts SweepOptions) SweepResult {
 			continue
 		}
 
-		if reason, ok := stillEligible(wt, opts.admission(), opts.during); !ok {
+		if reason, ok := stillEligible(opts.ctx(), wt, opts.admission(), opts.during); !ok {
 			// git cannot answer for a path that is no longer there, and
 			// its silence reads as `unlanded` — the alarm verdict, which
 			// would send an operator hunting for work that was never

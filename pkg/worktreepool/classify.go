@@ -82,12 +82,16 @@ const (
 	// SkipOrphan means the directory is not a worktree git can account
 	// for. The automatic bound refuses it, while `clean --level
 	// aggressive` is the explicit operator choice that can take it.
-	SkipOrphan    = "orphan"
-	SkipUnlanded  = "unlanded"
-	SkipNested    = "nested-repo"
-	SkipTooRecent = "too-recent"
-	SkipKeepLast  = "keep-last"
-	SkipLevel     = "needs-higher-level"
+	SkipOrphan = "orphan"
+	// SkipIterionHeldOnly means the worktree's commits are reachable, but
+	// only through iterion's per-run checkpoint refs. The automatic bound
+	// refuses it; clean --level aggressive is the explicit release.
+	SkipIterionHeldOnly = "iterion-ref-only"
+	SkipUnlanded        = "unlanded"
+	SkipNested          = "nested-repo"
+	SkipTooRecent       = "too-recent"
+	SkipKeepLast        = "keep-last"
+	SkipLevel           = "needs-higher-level"
 	// SkipResumable: the run is terminal to a poller but `iterion resume`
 	// restarts it in this very worktree. Sparing it is the default and
 	// --include-resumable is the way to say the resume is not wanted —
@@ -241,7 +245,7 @@ func classify(
 		wt.resumable = resumable
 	}
 
-	insp := inspectGitForScan(path, !opts.SkipIgnoredEntries)
+	insp := inspectGitForScan(opts.ctx(), path, !opts.SkipIgnoredEntries)
 	wt.Landing, wt.Dirty, wt.ContainedBy = insp.landing, insp.dirty, insp.containedBy
 	wt.DurablyHeld = insp.durablyHeld
 	wt.gitCommonDir = insp.commonDir
@@ -284,7 +288,7 @@ func classify(
 		(wt.SkipReason != SkipLevel && wt.SkipReason != SkipResumable)) {
 		return wt
 	}
-	bytes, nested, complete := scanTree(path)
+	bytes, nested, complete := scanTree(opts.ctx(), path)
 	wt.Bytes = bytes
 	if len(nested) > 0 {
 		wt.Landing, wt.SkipReason, wt.Bytes = LandingNested, SkipNested, 0
@@ -339,10 +343,14 @@ func requiredLevel(landing string, dirty bool) int {
 // than sinking the sweep — the size is a report. The nested-repo answer
 // is different: it gates a deletion, so a walk that could not complete
 // must not read as "none found".
-func scanTree(root string) (bytes int64, nested []string, complete bool) {
+func scanTree(ctx context.Context, root string) (bytes int64, nested []string, complete bool) {
 	complete = true
 	ownGit := filepath.Join(root, ".git")
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			complete = false
+			return fs.SkipAll
+		}
 		if err != nil {
 			complete = false
 			return nil //nolint:nilerr // partial walk beats no sweep; `complete` carries the caveat
@@ -399,11 +407,11 @@ func looksLikeGitDir(dir string) bool {
 // reports whether it still admits one. It is the whole classification
 // again, not a subset: any question left unasked is a change the sweep
 // waves through.
-func stillEligible(wt *Entry, admit admission, during func(string)) (string, bool) {
+func stillEligible(ctx context.Context, wt *Entry, admit admission, during func(string)) (string, bool) {
 	during(wt.Path)
 	// IgnoredEntries is report-only and cannot change eligibility. Avoid a
 	// second full status scan in this last-moment safety check.
-	insp := inspectGitForScan(wt.Path, false)
+	insp := inspectGitForScan(ctx, wt.Path, false)
 	if insp.head != wt.head {
 		// Something committed, reset, or checked out under us. Whatever
 		// the new HEAD is, it is not what was judged.
@@ -419,7 +427,7 @@ func stillEligible(wt *Entry, admit admission, during func(string)) (string, boo
 		wt.Dirty = insp.dirty
 		return reason, false
 	}
-	if _, nested, complete := scanTree(wt.Path); len(nested) > 0 || !complete {
+	if _, nested, complete := scanTree(ctx, wt.Path); len(nested) > 0 || !complete {
 		wt.NestedRepos = nested
 		return SkipNested, false
 	}
@@ -456,7 +464,7 @@ type inspection struct {
 // enclosing repository instead. Its HEAD, its clean status and its refs
 // then describe a tree this directory has nothing to do with, which reads
 // as a landed, clean worktree and deletes whatever the directory held.
-func inspectGitForScan(path string, countIgnored bool) inspection {
+func inspectGitForScan(ctx context.Context, path string, countIgnored bool) inspection {
 	// "git could not answer" and "git says this is not a worktree" are
 	// different facts and must not collapse into the same verdict.
 	// `orphan` is deletable at aggressive, so inferring it from a broken
@@ -468,7 +476,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 	notARepo := inspection{landing: LandingOrphan, dirty: true}
 	cannotTell := inspection{landing: LandingNowhere, dirty: true}
 
-	top, err := gitOut(path, "rev-parse", "--show-toplevel")
+	top, err := gitOutContext(ctx, path, "rev-parse", "--show-toplevel")
 	switch {
 	case errors.Is(err, errNotARepo):
 		return notARepo
@@ -481,7 +489,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 		return notARepo
 	}
 
-	head, err := gitOut(path, "rev-parse", "HEAD")
+	head, err := gitOutContext(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
 		if errors.Is(err, errNotARepo) {
 			return notARepo
@@ -496,7 +504,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 		return cannotTell
 	}
 
-	insp := inspection{head: head, dirty: worktreeDirty(path)}
+	insp := inspection{head: head, dirty: worktreeDirty(ctx, path)}
 
 	// A repository that lives INSIDE the directory answers containment with
 	// refs and objects that are destroyed along with it. `merged` means
@@ -508,7 +516,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 	// through: this is the only thing standing between such a clone and
 	// its own destruction, and burying it in an `err == nil` made the
 	// guard vanish silently on any git that could not answer.
-	common, err := gitCommonDir(path)
+	common, err := gitCommonDir(ctx, path)
 	if err != nil {
 		insp.landing = LandingNowhere
 		insp.err = err
@@ -520,7 +528,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 		return insp
 	}
 	if countIgnored {
-		if n, err := countIgnoredEntries(path); err != nil {
+		if n, err := countIgnoredEntries(ctx, path); err != nil {
 			insp.err = err
 		} else {
 			insp.ignoredEntries = n
@@ -538,7 +546,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 	// that merely DECLARES a submodule permanently unreclaimable —
 	// `git worktree add` never populates submodules, so that is their
 	// normal state.
-	subs, err := gitOut(path, "submodule", "status")
+	subs, err := gitOutContext(ctx, path, "submodule", "status")
 	if err != nil {
 		insp.landing = LandingNowhere
 		insp.err = err
@@ -571,7 +579,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 	// unequal — the tag OBJECT's id is never the commit's — and reads as
 	// work built on top, which silently drops an aggressive-only worktree
 	// to conservative-deletable.
-	refs, err := gitOut(path, "for-each-ref", "--format=%(objectname) %(*objectname) %(refname)",
+	refs, err := gitOutContext(ctx, path, "for-each-ref", "--format=%(objectname) %(*objectname) %(refname)",
 		"--contains", head, "refs/heads", "refs/remotes", "refs/tags", iterionRefPrefix)
 	if err != nil {
 		// Without the containment answer we cannot prove the commits are
@@ -593,7 +601,7 @@ func inspectGitForScan(path string, countIgnored bool) inspection {
 			// a tag peels to another tag object and compares unequal
 			// again. Resolve it properly; the case is rare enough to
 			// afford a process.
-			if commit, err := gitOut(path, "rev-parse", full+"^{commit}"); err == nil {
+			if commit, err := gitOutContext(ctx, path, "rev-parse", full+"^{commit}"); err == nil {
 				tip = commit
 			}
 		}
@@ -749,11 +757,11 @@ func isScaffold(status, p string) bool {
 // rejected, and the bare form answers RELATIVELY (plain `.git` from a
 // checkout's root). Falling back and absolutising keeps the guard that
 // depends on this answer working there instead of quietly evaporating.
-func gitCommonDir(path string) (string, error) {
-	if out, err := gitOut(path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
+func gitCommonDir(ctx context.Context, path string) (string, error) {
+	if out, err := gitOutContext(ctx, path, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil {
 		return out, nil
 	}
-	out, err := gitOut(path, "rev-parse", "--git-common-dir")
+	out, err := gitOutContext(ctx, path, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
@@ -772,11 +780,11 @@ func isInside(parent, child string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func worktreeDirty(path string) bool {
+func worktreeDirty(ctx context.Context, path string) bool {
 	// --untracked-files=all, because git otherwise folds an untracked
 	// directory into a single `.claude/` line and the exclusion could not
 	// tell the mirror from anything else the run put beside it.
-	out, err := gitOut(path, "status", "--porcelain", "--untracked-files=all")
+	out, err := gitOutContext(ctx, path, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		// Unreadable status is treated as dirty: the conservative reading
 		// of "we could not tell" is "there may be something here".
@@ -808,8 +816,8 @@ func worktreeDirty(path string) bool {
 // are reported, not gated on: in a run worktree they are the build output
 // the command exists to reclaim, and gating on them would spare every
 // worktree that ever compiled anything.
-func countIgnoredEntries(path string) (int, error) {
-	out, err := gitOut(path, "status", "--porcelain", "--ignored=matching")
+func countIgnoredEntries(ctx context.Context, path string) (int, error) {
+	out, err := gitOutContext(ctx, path, "status", "--porcelain", "--ignored=matching")
 	if err != nil {
 		// A count of zero would read as "nothing ignored here", which is a
 		// verdict we did not reach.
@@ -958,7 +966,11 @@ func PreflightGit() error {
 
 // gitOut runs git in dir and returns trimmed stdout.
 func gitOut(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	return gitOutContext(context.Background(), dir, args...)
+}
+
+func gitOutContext(parent context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, gitTimeout)
 	defer cancel()
 	// --no-optional-locks keeps read-only inspection read-only: `git
 	// status` otherwise refreshes and rewrites the worktree's index and
@@ -974,6 +986,9 @@ func gitOut(dir string, args ...string) (string, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if parent.Err() != nil {
+			return "", fmt.Errorf("git %s in %s: %w", strings.Join(args, " "), dir, parent.Err())
+		}
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("git %s in %s: timed out after %s",
 				strings.Join(args, " "), dir, gitTimeout)

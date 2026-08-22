@@ -144,7 +144,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		} else {
 			// The pool this run is about to grow is bounded here, before
 			// it grows. Best-effort and never fatal — see boundWorktreePool.
-			e.boundWorktreePool(e.store.Root())
+			e.boundWorktreePool(ctx, e.store.Root())
 
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {

@@ -59,6 +59,12 @@ func levelAdmission(level Level) admission {
 // too: those are reaped with the run, so they are not a durable holder.
 func evictionAdmission() admission {
 	return func(landing string, dirty, durablyHeld bool) (string, bool) {
+		// inspectGit reports an orphan as dirty because git cannot account
+		// for any of its contents. Name the stronger fact first: moderate
+		// does not take orphans, while aggressive does.
+		if landing == LandingOrphan {
+			return SkipOrphan, false
+		}
 		if dirty {
 			// Reported as `needs-higher-level` rather than a reason of its
 			// own: what the operator does next IS to pick a level, and
@@ -72,9 +78,7 @@ func evictionAdmission() admission {
 			if durablyHeld {
 				return "", true
 			}
-			return SkipUnlanded, false
-		case LandingOrphan:
-			return SkipOrphan, false
+			return SkipIterionHeldOnly, false
 		}
 		return SkipLevel, false
 	}

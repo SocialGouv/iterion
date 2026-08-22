@@ -368,8 +368,29 @@ func TestBound_RefusesCommitsOnlyIterionsOwnRefsHold(t *testing.T) {
 	if !r.OverBudget() {
 		t.Error("it did not report the pool as still over budget")
 	}
-	if r.Spared[SkipUnlanded] == 0 {
-		t.Errorf("spared reasons = %v, want one under %q", r.Spared, SkipUnlanded)
+	if r.Spared[SkipIterionHeldOnly] == 0 {
+		t.Errorf("spared reasons = %v, want one under %q", r.Spared, SkipIterionHeldOnly)
+	}
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level aggressive") {
+		t.Errorf("Remedy = %q, want aggressive clean for run-scoped refs", got)
+	}
+}
+
+// Orphans carry dirty=true because git cannot account for their content.
+// The bound must still name the orphan fact: moderate cannot reclaim one,
+// while the aggressive dry-run it suggests can.
+func TestBound_OrphanRemedyIsAggressive(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"orphan-a", "orphan-b"} {
+		mustWrite(t, filepath.Join(f.store, "worktrees", id, "output.txt"), "unknown\n")
+	}
+
+	r := f.enforce(1)
+	if r.Spared[SkipOrphan] != 2 {
+		t.Fatalf("spared reasons = %v, want both under %q", r.Spared, SkipOrphan)
+	}
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level aggressive") {
+		t.Fatalf("Remedy = %q, want an aggressive dry run", got)
 	}
 }
 
@@ -589,6 +610,51 @@ func TestBound_DoesNotCountAConcurrentlyVanishedEntryAfterThePass(t *testing.T) 
 	}
 }
 
+func TestBound_CancelledContextStopsBeforeClassification(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r, err := EnforceBudget(f.store, 1, SweepOptions{
+		ScanOptions: ScanOptions{Context: ctx},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Incomplete || len(r.Errors) == 0 {
+		t.Fatalf("cancelled pass = %+v, want an explicit incomplete report", r)
+	}
+	if len(r.Reclaimed) != 0 || !f.exists("old") || !f.exists("new") {
+		t.Fatalf("cancelled pass reclaimed a worktree: %+v", r.Reclaimed)
+	}
+}
+
+func TestBound_ContextCancellationInterruptsTheEligibilityRecheck(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := EnforceBudget(f.store, 1, SweepOptions{
+		ScanOptions:       ScanOptions{Context: ctx},
+		DuringEligibility: func(string) { cancel() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Incomplete || len(r.Reclaimed) != 0 {
+		t.Fatalf("interrupted pass = %+v, want incomplete with no reclamation", r)
+	}
+	if r.Spared[SkipUnlanded] != 0 || r.Spared[SkipNested] != 0 {
+		t.Fatalf("context cancellation was misreported as a git verdict: %v", r.Spared)
+	}
+}
+
 // Off means off: no classification, no deletion, whatever the pool holds.
 func TestBound_DisabledDoesNothing(t *testing.T) {
 	f := newPoolFixture(t)
@@ -709,6 +775,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 		{"both", map[string]int{SkipLevel: 1, SkipResumable: 1},
 			"iterion clean --store-dir /s --level moderate --include-resumable"},
 		{"orphan", map[string]int{SkipOrphan: 1}, "iterion clean --store-dir /s --level aggressive"},
+		{"run-scoped ref only", map[string]int{SkipIterionHeldOnly: 1}, "iterion clean --store-dir /s --level aggressive"},
 		{"unlanded only", map[string]int{SkipUnlanded: 4}, ""},
 		{"nested only", map[string]int{SkipNested: 1}, ""},
 		{"nothing spared", map[string]int{}, ""},
@@ -724,7 +791,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 // Every reason the bound can produce must render, or an operator reads
 // "3 worktrees exceed the budget;" with nothing after the semicolon.
 func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
-	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipUnlanded, SkipNested, SkipRunActive} {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive} {
 		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
 		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
 			t.Errorf("reason %q rendered as %q", reason, got)
