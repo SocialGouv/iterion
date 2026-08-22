@@ -70,3 +70,46 @@ func TestExportSandboxWorkspaceOnCleanup(t *testing.T) {
 		t.Fatalf("non-exporter must be a no-op, got events %v", events)
 	}
 }
+
+// capturingRun fakes an export-based driver's Run that also reports the
+// sandbox-side workspace HEAD (the kubernetes pair).
+type capturingRun struct {
+	exportingRun
+	head string
+	err  error
+}
+
+func (f *capturingRun) CaptureWorkspaceHead(context.Context) (string, error) {
+	return f.head, f.err
+}
+
+// TestCaptureSandboxWorkspaceIntegrity pins the capture contract the
+// banking invariant rests on: a captured HEAD is exposed as Applicable;
+// a capture FAILURE is recorded as unverifiable (CaptureErr), never
+// silently dropped; a workspace-less run and a non-capturing driver
+// leave the zero value (nothing to verify).
+func TestCaptureSandboxWorkspaceIntegrity(t *testing.T) {
+	e := &Engine{}
+	e.captureSandboxWorkspaceIntegrity(&capturingRun{head: "abc123"})
+	if got := e.SandboxWorkspaceIntegrity(); !got.Applicable || got.PodHead != "abc123" || got.CaptureErr != "" {
+		t.Fatalf("captured integrity = %+v, want Applicable with PodHead abc123", got)
+	}
+
+	e = &Engine{}
+	e.captureSandboxWorkspaceIntegrity(&capturingRun{err: errors.New("pod gone")})
+	if got := e.SandboxWorkspaceIntegrity(); !got.Applicable || got.PodHead != "" || got.CaptureErr != "pod gone" {
+		t.Fatalf("failed capture integrity = %+v, want Applicable with CaptureErr", got)
+	}
+
+	e = &Engine{}
+	e.captureSandboxWorkspaceIntegrity(&capturingRun{}) // ("", nil) = workspace-less
+	if got := e.SandboxWorkspaceIntegrity(); got.Applicable {
+		t.Fatalf("workspace-less run must stay non-applicable, got %+v", got)
+	}
+
+	e = &Engine{}
+	e.captureSandboxWorkspaceIntegrity(plainRun{})
+	if got := e.SandboxWorkspaceIntegrity(); got.Applicable {
+		t.Fatalf("non-capturing driver must stay non-applicable, got %+v", got)
+	}
+}

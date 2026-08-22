@@ -708,6 +708,37 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 	return nil
 }
 
+// The pod workspace is a COPY of the host clone: it must travel back
+// (exporter) and its final state must be verifiable (head capturer) —
+// the pair is what lets the runner tell "no commits" from "the export
+// lost them".
+var (
+	_ sandbox.WorkspaceExporter     = (*Run)(nil)
+	_ sandbox.WorkspaceHeadCapturer = (*Run)(nil)
+)
+
+// CaptureWorkspaceHead implements [sandbox.WorkspaceHeadCapturer]: it
+// reads the git HEAD of the pod-side workspace — the exact tree
+// ExportWorkspace archives — so the engine can verify the export
+// delivered the run's final state before the pod is destroyed.
+func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
+	if r.info.WorkspacePath == "" {
+		return "", nil // workspace-less run — nothing was populated
+	}
+	res, err := r.Exec(ctx, []string{"git", "-C", r.prepared.workspace, "rev-parse", "HEAD"}, sandbox.ExecOpts{})
+	if err != nil {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD: exit %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	head := strings.TrimSpace(string(res.Stdout))
+	if head == "" {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD printed nothing")
+	}
+	return head, nil
+}
+
 // exportExcludes are the tar --exclude patterns for [Run.ExportWorkspace]
 // (member names start with "./" because the in-pod tar archives "."):
 //   - .git/config was re-pointed at POD paths by fixupWorkspaceGit — the

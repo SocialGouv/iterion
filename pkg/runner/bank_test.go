@@ -9,6 +9,7 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -67,7 +68,7 @@ func TestBankRepoWorkspacePushesAndRecords(t *testing.T) {
 	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
 	head := gitOut(t, work, "rev-parse", "HEAD")
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base)
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
 
 	branchHead := gitOut(t, origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID)
 	if branchHead != head {
@@ -85,7 +86,7 @@ func TestBankRepoWorkspacePushesAndRecords(t *testing.T) {
 func TestBankRepoWorkspaceNoWorkIsNoop(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base)
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
 
 	if out, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID).CombinedOutput(); err == nil {
 		t.Errorf("a workless run banked a branch anyway: %s", out)
@@ -100,7 +101,7 @@ func TestBankRepoWorkspacePushFailureIsNamed(t *testing.T) {
 	gitOut(t, work, "commit", "--allow-empty", "-m", "work")
 	msg.RepoURL = filepath.Join(t.TempDir(), "no-such-remote.git")
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base)
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
 
 	run := loadRun(t, r, msg.RunID)
 	if run.FinalBranch != "" {
@@ -108,5 +109,104 @@ func TestBankRepoWorkspacePushFailureIsNamed(t *testing.T) {
 	}
 	if !strings.Contains(run.FinalBranchError, "bank push") {
 		t.Errorf("FinalBranchError = %q, want it to name the failed bank push", run.FinalBranchError)
+	}
+}
+
+// The four integrity cases of an export-based sandbox (kubernetes): the
+// host clone is a COPY of the pod workspace, so "HEAD == baseline" only
+// means "no commits" when the pod-side capture agrees. Falsified both
+// ways: the two loss shapes refuse loudly, the two verified shapes stay
+// exactly as clean as before.
+
+func bankedBranch(t *testing.T, origin, runID string) (string, bool) {
+	t.Helper()
+	out, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/iterion/run-"+runID).CombinedOutput()
+	return strings.TrimSpace(string(out)), err == nil
+}
+
+func TestBankRepoWorkspaceExportMismatchRefusesStaleTree(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	// The pod finished on a commit the export never delivered — the host
+	// clone still reads the baseline.
+	podHead := "feedfacefeedfacefeedfacefeedfacefeedface"
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
+		t.Errorf("a stale exported tree was banked anyway at %s", got)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if !strings.Contains(run.FinalBranchError, podHead) || !strings.Contains(run.FinalBranchError, "export") {
+		t.Errorf("FinalBranchError = %q, want it to name the pod-side HEAD the export failed to deliver", run.FinalBranchError)
+	}
+}
+
+func TestBankRepoWorkspaceNoopRefusedWhenPodHeadUnknown(t *testing.T) {
+	// Workspace at the baseline AND no pod-side truth: indistinguishable
+	// from a lost export — never a silent clean no-op.
+	r, msg, work, origin, base := bankFixture(t)
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod-side git rev-parse HEAD: pod gone"})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
+		t.Errorf("an unverifiable baseline tree was banked anyway at %s", got)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if !strings.Contains(run.FinalBranchError, "cannot tell") {
+		t.Errorf("FinalBranchError = %q, want the refusal to say the no-op is unverifiable", run.FinalBranchError)
+	}
+}
+
+func TestBankRepoWorkspaceVerifiedNoopStaysClean(t *testing.T) {
+	// The pod confirms HEAD == baseline: a genuine no-commit run must
+	// stay a clean no-op — no branch, no error, no false alarm.
+	r, msg, work, origin, base := bankFixture(t)
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
+		t.Errorf("a pod-confirmed no-op banked a branch at %s", got)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranchError != "" || run.FinalBranch != "" || run.FinalCommit != "" {
+		t.Errorf("pod-confirmed no-op still recorded %q/%q/%q", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
+	}
+}
+
+func TestBankRepoWorkspaceVerifiedWorkBanksNormally(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: head})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Errorf("banked branch = %q (present=%v), want %s", got, ok, head)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranch == "" || run.FinalBranchError != "" {
+		t.Errorf("verified work bank recorded %q with error %q", run.FinalBranch, run.FinalBranchError)
+	}
+}
+
+func TestBankRepoWorkspaceUnverifiedWorkStillBanks(t *testing.T) {
+	// Capture failed but the exported tree HAS new commits: preserving
+	// the visible work wins (the warn log carries the caveat).
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "salvaged work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod gone"})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Errorf("banked branch = %q (present=%v), want %s", got, ok, head)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranchError != "" {
+		t.Errorf("salvage bank recorded an error anyway: %q", run.FinalBranchError)
 	}
 }

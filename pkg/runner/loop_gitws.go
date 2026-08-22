@@ -15,6 +15,7 @@ import (
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -29,7 +30,7 @@ import (
 // Best-effort throughout: a non-git workDir, an empty range (no commits),
 // or a store without the RunGitMetaStore seam all no-op cleanly. Never
 // returns an error — the caller has already decided the run's outcome.
-func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, workDir, base string) {
+func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
 	gs := store.AsRunGitMetaStore(r.cfg.Store)
 	if gs == nil {
 		return
@@ -40,6 +41,19 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 		// run that may well have committed — worse than the panel reporting
 		// the metadata unavailable. Skip.
 		return
+	}
+	// Same rationale when the workspace is an export-based sandbox COPY
+	// whose pod-side truth doesn't confirm "no commits": an empty snapshot
+	// here may just mean the export lost them (run 01a02a4b recorded a
+	// confident zero for a run whose gate cited its commit hashes). Skip —
+	// bankRepoWorkspace raises the loud error; this path only refuses to
+	// serve the lie.
+	if integ.Applicable && (integ.CaptureErr != "" || integ.PodHead != base) {
+		if head, herr := gitlib.RevParseHead(workDir); herr == nil && head == base {
+			r.cfg.Logger.Warn("runner: run %s: NOT recording a git snapshot — workspace still at the baseline while the sandbox-side HEAD is %s (capture error: %s)",
+				msg.RunID, strutil.FirstNonBlank(integ.PodHead, "unknown"), strutil.FirstNonBlank(integ.CaptureErr, "none"))
+			return
+		}
 	}
 	meta, err := store.BuildRunGitMeta(workDir, base)
 	if err != nil {
@@ -555,14 +569,44 @@ func injectGitToken(rawURL, token string) string {
 // of it — but it is never silent either: the cause lands in
 // FinalBranchError and FinalBranch stays empty, so merge keeps refusing
 // with the truth instead of a bare "nothing to merge".
-func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string) {
-	head, err := gitlib.RevParseHead(workDir)
-	if err != nil {
-		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", msg.RunID, err)
+func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
+	head, headErr := gitlib.RevParseHead(workDir)
+	if integ.Applicable {
+		// The workspace is a pod-side COPY streamed back at sandbox
+		// teardown, and the engine captured the pod's final HEAD just
+		// before that export. Verify the copy carries it before drawing
+		// any conclusion from the host tree: run 01a02a4b finished
+		// converged, its export was even logged ok, yet this function
+		// read head==base and concluded "nothing to bank" — a silent
+		// total loss of the run's work.
+		switch {
+		case integ.CaptureErr != "":
+			if headErr != nil || (base != "" && head == base) {
+				r.recordBankFailure(msg, fmt.Sprintf(
+					"bank refused: pod-side HEAD unknown (%s) and the exported workspace shows no new work (HEAD %s, baseline %s) — cannot tell 'no commits' from 'the export lost the work'",
+					integ.CaptureErr, strutil.FirstNonBlank(head, "unreadable"), strutil.FirstNonBlank(base, "unknown")))
+				return
+			}
+			// The host tree does carry new commits; completeness is
+			// unverifiable but preserving the visible work wins.
+			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", msg.RunID, integ.CaptureErr)
+		case headErr != nil || head != integ.PodHead:
+			r.recordBankFailure(msg, fmt.Sprintf(
+				"bank refused: the run finished at pod-side HEAD %s but the exported workspace reads %s — the export did not deliver the run's final tree",
+				integ.PodHead, strutil.FirstNonBlank(head, "unreadable")))
+			return
+		}
+	}
+	if headErr != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", msg.RunID, headErr)
 		return
 	}
 	if base != "" && head == base {
-		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline", msg.RunID)
+		confirmed := ""
+		if integ.Applicable {
+			confirmed = " (pod-side HEAD confirms it)"
+		}
+		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", msg.RunID, confirmed)
 		return
 	}
 	branch := "iterion/run-" + msg.RunID
@@ -596,5 +640,24 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 	}
 	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+	}
+}
+
+// recordBankFailure persists why a finished run's work could NOT be
+// banked into FinalBranchError — the field `runs merge` surfaces — so an
+// integrity refusal is exactly as loud as a failed push, never a silent
+// no-op. FinalBranch stays empty: there is no branch to merge, and the
+// recorded cause is the truth the operator acts on.
+func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
+	r.cfg.Logger.Error("runner: run %s: %s", msg.RunID, cause)
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	if lerr != nil || run == nil {
+		r.cfg.Logger.Error("runner: run %s: bank: load run to record refusal: %v", msg.RunID, lerr)
+		return
+	}
+	run.FinalBranchError = cause
+	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, serr)
 	}
 }

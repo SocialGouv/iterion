@@ -1465,13 +1465,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the Commits/Files panels have for a finished cloud run. Best-effort:
 	// a recording failure must never change the run's outcome.
 	if workDir != r.cfg.WorkDir {
-		r.recordRunGitMeta(ctx, msg, workDir, gitBase)
+		// On an export-based sandbox (kubernetes) the clone at workDir is a
+		// COPY streamed back from the pod — hold it against the pod-side
+		// HEAD the engine captured, so a lost export can never read as a
+		// clean "no commits" (run 01a02a4b).
+		integ := engine.SandboxWorkspaceIntegrity()
+		r.recordRunGitMeta(ctx, msg, workDir, gitBase, integ)
 		// Bank a SUCCESSFUL repo-targeted run to the forge before the
 		// clone is wiped: the worktree-finalization path never fires
 		// here, so without this push a finished run's commits exist
 		// nowhere the server can reach (runs merge: "nothing to merge").
 		if runErr == nil {
-			r.bankRepoWorkspace(ctx, msg, workDir, gitBase)
+			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
 		}
 	}
 
