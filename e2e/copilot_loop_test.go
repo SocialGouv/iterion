@@ -644,3 +644,92 @@ func family(spec string) string {
 	}
 	return spec
 }
+
+// TestCopilot_CrossReview_ComposesBothHalves drives the reviewer branch with a
+// NON-EMPTY critique.
+//
+// It exists because of a bug a real conversation found and no other test could:
+// `compose` joined its two strings with `concat()`, which in iterion's expr is
+// the ARRAY primitive and rejects a string outright. `iterion validate`
+// compiled it, and the FIRST live turn passed — `if()` short-circuits, and that
+// turn's critique happened to be empty, so the faulty branch never evaluated.
+// The failure surfaced only on the turn where the reviewer actually had
+// something to say, i.e. the first turn where the feature did its job.
+//
+// The lesson generalises past this one operator: an expr branch guarded by a
+// value is only covered by a test that supplies that value.
+func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "copilot/main.bot")
+	exec := newScenarioExecutor()
+
+	const answer = "C176 refuse une route qui change les capacites du noeud."
+	const critique = "**1.** La reponse inverse la semantique de `permission: deny`."
+
+	exec.on("copi", func(map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"reply":         answer,
+			"close":         false,
+			"mode":          "info",
+			"context_brief": "brief",
+			"quick_replies": []any{},
+			"has_draft":     false,
+			"draft_bot":     "",
+		}, nil
+	})
+	exec.on("review", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"critique": critique}, nil
+	})
+
+	// The switch is a workflow VAR — the seed compute reads `vars.reviewer`,
+	// so flipping it means overriding the compiled default, which is what a
+	// `--var reviewer=on` launch does. Passing it as a run INPUT would leave
+	// the default "off" in place and the reviewer branch would never fire.
+	wf.Vars["reviewer"].Default = "on"
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	err := eng.Run(context.Background(), "e2e-copi-review", nil)
+	if !errors.Is(err, runtime.ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
+	}
+
+	// Read compose's output off the event stream, not an artifact: a compute
+	// node only persists an artifact when it declares `publish:`, and this one
+	// deliberately does not — its output is a rendering detail, not a
+	// deliverable.
+	evs, eerr := s.LoadEvents(context.Background(), "e2e-copi-review")
+	if eerr != nil {
+		t.Fatalf("load events: %v", eerr)
+	}
+	var composed string
+	var sawReview bool
+	for _, ev := range evs {
+		if ev.NodeID == "review" && ev.Type == "node_finished" {
+			sawReview = true
+		}
+		if ev.NodeID != "compose" || ev.Type != "node_finished" {
+			continue
+		}
+		if out, ok := ev.Data["output"].(map[string]any); ok {
+			composed, _ = out["reply"].(string)
+		}
+	}
+	if !sawReview {
+		t.Fatal("the reviewer never ran — `wants_review` did not route, so the switch is decorative")
+	}
+	if composed == "" {
+		t.Fatal("compose produced no reply — the reviewer ran and reached nobody")
+	}
+	if !strings.Contains(composed, answer) {
+		t.Errorf("the composed reply lost Copi's answer — the operator would read only the critique:\n%s", composed)
+	}
+	if !strings.Contains(composed, critique) {
+		t.Errorf("the composed reply lost the critique — the reviewer ran, was paid for, and reached nobody:\n%s", composed)
+	}
+	// The answer must come FIRST and survive byte-for-byte: the whole reason
+	// the merge is deterministic is that the operator can tell which half is
+	// the assistant's and which is the review's.
+	if strings.Index(composed, answer) > strings.Index(composed, critique) {
+		t.Error("the critique precedes the answer — the operator reads the verdict before the thing it judges")
+	}
+}

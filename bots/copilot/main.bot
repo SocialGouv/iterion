@@ -455,7 +455,13 @@ agent copi:
   ## `run_command` and `write_file` are absent by construction — the
   ## permission gate denies them too, but here they simply are not
   ## registered.
-  tools: [read_file, glob, grep, list_files, skill, web_search]
+  ## The registered claw builtins minus everything that writes or shells:
+  ## RegisterClawBuiltins registers read_file, write_file, glob, grep,
+  ## file_edit, web_fetch and bash; `skill` comes with the skills: block.
+  ## Only names the registry knows may appear — an unknown one is a RUN
+  ## failure, not a compile error (`iterion validate` does not check tool
+  ## names against the registry).
+  tools: [read_file, glob, grep, skill]
   ## interaction: human arms the ask_user MCP tool — mid-turn
   ## questions pause the run and resume the SAME session.
   interaction: human
@@ -562,7 +568,7 @@ compute gate:
     is_close:      "input.close"
     wants_review:  "input.reviewer == 'on' and not input.close"
     reviewer:      "input.reviewer"
-    reply:         "if(input.validate_report == '', input.reply, if(input.validated, concat(input.reply, '\n\n---\n\n✅ `iterion validate` passed on this draft.'), concat(input.reply, '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n', input.validate_report, '\n```')))"
+    reply:         "if(input.validate_report == '', input.reply, if(input.validated, input.reply + '\n\n---\n\n✅ `iterion validate` passed on this draft.', input.reply + '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n' + input.validate_report + '\n```'))"
     quick_replies: "input.quick_replies"
 
 ## The optional cross-review. A JUDGE, not an agent: it produces a
@@ -598,7 +604,7 @@ judge review:
   user: review_user
   ## Read-only, and narrower than Copi's: a reviewer checks claims, it
   ## does not need the skill library or the web to do that.
-  tools: [read_file, glob, grep, list_files]
+  tools: [read_file, glob, grep]
   ## fresh, never inherit: the reviewer must read the answer as the
   ## operator will, not as its author remembers writing it. Sharing the
   ## session would hand it Copi's reasoning and its conclusions.
@@ -620,7 +626,12 @@ compute compose:
   input: compose_in
   output: chat_input
   expr:
-    reply:         "if(input.critique == '', input.reply, concat(input.reply, '\n\n---\n\n### 🔍 Revue croisée\n\n', input.critique))"
+    ## `+`, not concat(): concat() is the ARRAY primitive and rejects a
+    ## string outright ("argument 1 is string, want array"). String
+    ## joining is the `+` operator. The mistake compiled and survived one
+    ## turn, because if() short-circuits and the first turn's critique was
+    ## empty — only a real reply exercised the branch.
+    reply:         "if(input.critique == '', input.reply, input.reply + '\n\n---\n\n### 🔍 Revue croisée\n\n' + input.critique)"
     quick_replies: "input.quick_replies"
 
 ## The standby home base. ONE free-text field: the operator's next
@@ -740,7 +751,13 @@ workflow copilot:
     quick_replies:   "{{outputs.copi.quick_replies}}",
     validated:       "{{outputs.validate_draft.validated}}",
     validate_report: "{{outputs.validate_draft.validate_report}}",
-    reviewer:        "{{input.reviewer}}"
+    ## `{{vars.reviewer}}`, not `{{input.reviewer}}`. On an EDGE, `input`
+    ## resolves against the RUN's inputs at execution time, while the
+    ## compile-time check (C034) validates it against the SOURCE node's
+    ## schema — the two disagree, so `{{input.x}}` here happens to work
+    ## only because a `--var` launch also populates the run inputs. The
+    ## var is the thing actually meant: the switch is frozen at launch.
+    reviewer:        "{{vars.reviewer}}"
   }
 
   copi -> gate else with {
@@ -749,7 +766,7 @@ workflow copilot:
     quick_replies:   "{{outputs.copi.quick_replies}}",
     validated:       "true",
     validate_report: "",
-    reviewer:        "{{input.reviewer}}"
+    reviewer:        "{{vars.reviewer}}"
   }
 
   ## Explicit close — the ONLY path to Done. Everything else loops back
