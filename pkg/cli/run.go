@@ -194,6 +194,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
 		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
+	// Validate launch overrides independently of executor construction. The
+	// normal CLI path parses them again while building the real executor, but
+	// an injected executor deliberately skips that build (tests and embedders).
+	// buildEngine still stamps the same flags on the run document, so accepting
+	// malformed values only on the injected path would make that seam lie about
+	// production behaviour and silently omit the invalid rows.
+	if _, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err != nil {
+		return err
+	}
 
 	if opts.BranchName != "" {
 		if err := git.ValidateBranchName(opts.BranchName); err != nil {
