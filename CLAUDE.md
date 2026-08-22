@@ -202,6 +202,12 @@ the hours this one spent.
   is set, one transaction per API request and per in-process LLM call), the
   scrubbing, and the smoke tests. Read it when a deployment needs to answer
   "what crashed, how often, since which release" or "where did the time go".
+- [docs/assistant-dock.md](docs/assistant-dock.md) — the studio assistant:
+  which bot answers it (the manifest `chat:` block IS the registry — a
+  second conversational bot is a bundle, not a studio release), the
+  page-context chip, dragging a run/card/bot onto the composer, and
+  assistant-vs-steering on a run page. Read it before adding a chat
+  surface or wondering why the dock shows Nexie and not Copi.
 - [docs/models.md](docs/models.md) — the model registry (`iterion models`,
   `GET /api/models`: known × usable × capabilities × pricing), the launch-time
   model/backend/effort overrides, and how to change the studio assistant's

@@ -49,6 +49,50 @@ The two states look different on purpose: a live session may exist that
 the dock cannot see, and here the next keystroke is what would launch a
 second one over it.
 
+## Which bot answers
+
+The dock's correspondent is **discovered**, not hard-coded. A bot becomes
+a conversational bot by declaring a `chat:` block in its
+`manifest.yaml` — which node speaks, which one takes the reply, what the
+session launcher asks first:
+
+```yaml
+chat:
+  seed_var: initial_message
+  nodes:
+    seed: {kind: silent}
+    copi: {kind: banner, label: "Copi is thinking"}
+    chat: {kind: human, text_field: message}
+  launcher:
+    prompt: "What do you want to ask about iterion?"
+    presets:
+      - value: "Explique-moi ce diagnostic et comment le corriger."
+        label: "Decode a diagnostic (Cxxx)"
+```
+
+`GET /api/v1/bots` carries the block, the studio builds its registry from
+that listing, and a picker appears in the dock header the moment a second
+bot declares one. Adding a chat bot needs **no studio code** — the same
+rule that keeps the engine free of bot ids
+([CLAUDE.md](../CLAUDE.md), "The ENGINE stays bot-agnostic").
+
+Two ship today:
+
+| Bot          | Persona | What it knows                                                        |
+| ------------ | ------- | -------------------------------------------------------------------- |
+| `whats-next` | Nexie   | Your **repo**: board, roadmap, tickets, dispatch                      |
+| `copilot`    | Copi    | **iterion itself**: the DSL, the Cxxx diagnostics, run/resume, backends |
+
+The choice is remembered per browser. An unknown or removed id falls back
+to the default rather than leaving the dock empty, and a server that
+serves no listing at all keeps the built-in entry — you lose the picker,
+never the assistant.
+
+The kinds a `chat:` block may name are closed (`banner`, `human`,
+`silent`) and a block with no `human` node is rejected at manifest load:
+the failure it prevents is a chat window that looks alive and swallows
+every message.
+
 ## The context chip
 
 The dock reports the page you are on as a **typed reference**:
@@ -126,6 +170,61 @@ there is no per-view wiring to forget.
 `node/<run>/<node>` is part of the same vocabulary but is not derivable
 from the URL today (node selection is component state, not a route
 param), so it only arrives when something is dropped in explicitly.
+
+## Dropping something in
+
+The page chip says where you are standing. Dragging says what you are
+asking **about** — and the two travel as separate lines, because they
+mean different things to the bot:
+
+```
+[page context: view/pipelines]
+[attached: run/019fbd46ed82, card/native:3a81df64]
+
+why did this one fail and the other stall?
+```
+
+An attached reference is in scope by default; the page one is background
+that disambiguates your words.
+
+What you can drag onto the composer today:
+
+| From                     | Drops as             |
+| ------------------------ | -------------------- |
+| A row in `/runs`         | `run/<id>`           |
+| A card on `/board`       | `card/<id>`          |
+| A pipeline card being launched | `run/<id>`, or `card/<id>` before it has a run |
+| A bot card in `/bots`    | `bot/<path>`         |
+
+Each attaches as a chip you can remove before sending, capped at 8 —
+past a handful you can no longer see what you attached. The chips clear
+when the message actually goes out, so a send that fails keeps both your
+draft and its pointers.
+
+**The pipeline board is deliberately partial.** Its rule is that card
+position is server-derived and launch-now is its only drag gesture, so
+only the cards that already drag carry a reference. A running or failed
+card is reached through the route's own context chip instead — opening
+its drawer puts `card/<id>` on the chip.
+
+Adding a source is one helper, never a bespoke handler:
+
+```tsx
+// An element that does not otherwise drag:
+<tr {...referenceDragProps("run", run.id, label)}>
+
+// One that already does — the reference rides alongside its own payload:
+addReferenceToDrag(e.dataTransfer, "card", issue.id, issue.title);
+```
+
+Both mint through the same `mintReference` as the route-derived half, so
+a dropped payload inherits the same guarantee: an id whose shape the
+vocabulary does not accept is **refused**, not repaired — a repaired
+pointer would resolve to something you did not point at.
+
+`node/<run>/<node>` is in the vocabulary but has no drag source yet: node
+selection is component state, not a route param, so nothing can currently
+publish one.
 
 ## Assistant vs steering on `/runs/:id`
 
