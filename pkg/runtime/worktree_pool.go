@@ -41,6 +41,11 @@ import (
 //
 // Best-effort throughout: a run must never fail because a cleanup did.
 func (e *Engine) boundWorktreePool(storeRoot string) {
+	// Git reports absolute paths. Keep the same canonical root across the
+	// classifier, operator messages and suggested cleanup command when the
+	// documented `--store-dir .iterion` form is used.
+	storeRoot = worktreepool.AbsPath(storeRoot)
+
 	budget, err := worktreepool.ResolveBudget()
 	if err != nil {
 		// A malformed ceiling is the operator's, and it disables the
@@ -74,14 +79,20 @@ func (e *Engine) boundWorktreePool(storeRoot string) {
 		// not be taken, and a command that would work on this pool —
 		// because "you are over budget" on its own is the state this
 		// replaced, only louder.
-		msg := fmt.Sprintf("runtime: worktree pool: %d of %d worktrees in %s exceed the budget of %d; %s",
-			report.After, report.Total, worktreepool.PoolDir(storeRoot), report.Budget, report.Summary())
-		if remedy := report.Remedy(storeRoot); remedy != "" {
-			msg += fmt.Sprintf(". Review them with `%s` (add --apply to delete)", remedy)
-		}
-		msg += fmt.Sprintf(". Raise or lift the budget with %s=<n> (`off` disables it).", worktreepool.BudgetEnv)
-		e.logger.Warn("%s", msg)
+		e.logger.Warn("%s", formatWorktreePoolWarning(report, storeRoot))
 	}
+}
+
+func formatWorktreePoolWarning(report worktreepool.BudgetReport, storeRoot string) string {
+	msg := fmt.Sprintf("runtime: worktree pool: %d of %d worktrees in %s exceed the budget of %d",
+		report.After, report.Total, worktreepool.PoolDir(storeRoot), report.Budget)
+	if summary := report.Summary(); summary != "" {
+		msg += "; " + summary
+	}
+	if remedy := report.Remedy(storeRoot); remedy != "" {
+		msg += fmt.Sprintf(". Review them with `%s` (add --apply to delete)", remedy)
+	}
+	return msg + fmt.Sprintf(". Raise or lift the budget with %s=<n> (`off` disables it).", worktreepool.BudgetEnv)
 }
 
 // humanBytes renders a size the way an operator reads one.

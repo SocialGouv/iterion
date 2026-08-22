@@ -152,3 +152,20 @@ func TestEngineRun_WorktreePoolWarnsWithTheReasonAndTheCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatWorktreePoolWarningWithoutSummaryHasCleanPunctuation(t *testing.T) {
+	report := worktreepool.BudgetReport{
+		Budget: 8,
+		Total:  15,
+		Before: 12,
+		After:  12,
+		Spared: map[string]int{},
+	}
+	got := formatWorktreePoolWarning(report, "/store")
+	if strings.Contains(got, "; .") {
+		t.Fatalf("warning has an empty summary clause: %q", got)
+	}
+	if !strings.Contains(got, "exceed the budget of 8. Raise or lift") {
+		t.Fatalf("warning lost its actionable tail: %q", got)
+	}
+}

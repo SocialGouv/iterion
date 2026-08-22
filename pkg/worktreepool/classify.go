@@ -152,6 +152,10 @@ type Entry struct {
 	gitCommonDir string
 	resolvedPath string
 	head         string
+	// resumable is independent of SkipReason: a dirty worktree can require
+	// both a higher clean level and --include-resumable. The automatic
+	// remedy needs both facts even though the table has one reason column.
+	resumable bool
 }
 
 // gitTimeout bounds every git invocation the sweep makes. A wedged
@@ -169,7 +173,13 @@ func scanStore(storeDir string, opts ScanOptions, now func() time.Time) ([]Entry
 		return nil, fmt.Errorf("read worktrees dir %s: %w", wtRoot, err)
 	}
 
-	statuses := loadRunStatuses(storeDir)
+	runIDs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			runIDs = append(runIDs, e.Name())
+		}
+	}
+	statuses := loadRunStatuses(storeDir, runIDs)
 
 	out := make([]Entry, 0, len(entries))
 	for _, e := range entries {
@@ -224,9 +234,10 @@ func classify(
 			return wt
 		}
 		resumable = isResumable(st) && !opts.IncludeResumable
+		wt.resumable = resumable
 	}
 
-	insp := inspectGit(path)
+	insp := inspectGitForScan(path, !opts.SkipIgnoredEntries)
 	wt.Landing, wt.Dirty, wt.ContainedBy = insp.landing, insp.dirty, insp.containedBy
 	wt.DurablyHeld = insp.durablyHeld
 	wt.gitCommonDir = insp.commonDir
@@ -324,7 +335,6 @@ func requiredLevel(landing string, dirty bool) int {
 // than sinking the sweep — the size is a report. The nested-repo answer
 // is different: it gates a deletion, so a walk that could not complete
 // must not read as "none found".
-
 func scanTree(root string) (bytes int64, nested []string, complete bool) {
 	complete = true
 	ownGit := filepath.Join(root, ".git")
@@ -381,23 +391,15 @@ func looksLikeGitDir(dir string) bool {
 	return true
 }
 
-// removeAllForce removes a tree, restoring write permission on the
-// directories that refuse it.
-//
-// A plain os.RemoveAll walks into the tree and only fails when it meets
-// the read-only directory — by which point everything before it is
-// already gone. The Go module cache is laid down at 0555 by the go tool
-// itself, so a run worktree that ever fetched a module contains hundreds
-// of them: the sweep would half-destroy a multi-gigabyte tree, report a
-// partial deletion, and retry the same wreck on every subsequent run.
-// The re-derivation and the removal are separated by several git calls
-// and a full tree walk — ample for a concurrent sweep to take the
-// directory. Two different checks cover the two halves of that gap, and
-// each needs a place a test can stand to prove it is load-bearing. Both
-
+// stillEligible re-derives the verdict immediately before a deletion and
+// reports whether it still admits one. It is the whole classification
+// again, not a subset: any question left unasked is a change the sweep
+// waves through.
 func stillEligible(wt *Entry, admit admission, during func(string)) (string, bool) {
 	during(wt.Path)
-	insp := inspectGit(wt.Path)
+	// IgnoredEntries is report-only and cannot change eligibility. Avoid a
+	// second full status scan in this last-moment safety check.
+	insp := inspectGitForScan(wt.Path, false)
 	if insp.head != wt.head {
 		// Something committed, reset, or checked out under us. Whatever
 		// the new HEAD is, it is not what was judged.
@@ -421,7 +423,6 @@ func stillEligible(wt *Entry, admit admission, during func(string)) (string, boo
 }
 
 // inspection is what git could be made to say about a directory.
-
 type inspection struct {
 	landing        string
 	head           string
@@ -450,6 +451,12 @@ type inspection struct {
 // then describe a tree this directory has nothing to do with, which reads
 // as a landed, clean worktree and deletes whatever the directory held.
 func inspectGit(path string) inspection {
+	return inspectGitForScan(path, true)
+}
+
+// inspectGitForScan optionally counts ignored entries. That count is a
+// diagnostic for `iterion clean`; it never changes a deletion verdict.
+func inspectGitForScan(path string, countIgnored bool) inspection {
 	// "git could not answer" and "git says this is not a worktree" are
 	// different facts and must not collapse into the same verdict.
 	// `orphan` is deletable at aggressive, so inferring it from a broken
@@ -512,10 +519,12 @@ func inspectGit(path string) inspection {
 		insp.landing = LandingNested
 		return insp
 	}
-	if n, err := countIgnoredEntries(path); err != nil {
-		insp.err = err
-	} else {
-		insp.ignoredEntries = n
+	if countIgnored {
+		if n, err := countIgnoredEntries(path); err != nil {
+			insp.err = err
+		} else {
+			insp.ignoredEntries = n
+		}
 	}
 
 	// An INITIALISED submodule's commits live in the worktree's own
@@ -636,14 +645,7 @@ func samePath(a, b string) bool {
 	return resolvePath(a) == resolvePath(b)
 }
 
-// cleanScaffoldPrefix is where iterion mirrors a bundle's skills inside
-// the run worktree at run start (pkg/runtime, mirrorBundleSkills). What
-// lives there is written BY iterion, not produced by the run, so counting
-// it as uncommitted work is counting our own litter — pkg/runtime already
-// excludes it for the same reason when deciding whether a run left work
-// behind. Measured here: 10 of 25 otherwise-clean merged worktrees were
-// held back a whole level by nothing but this directory.
-// cleanScaffoldPaths are the destinations iterion writes into a run
+// scaffoldDirs are the destinations iterion writes into a run
 // worktree at run start, and only those. `.claude/` wholesale would hide
 // anything a run chose to put beside them; a single `.claude/skills/`
 // misses the rest of what the mirror lays down — plugin.MirrorKinds
@@ -652,7 +654,6 @@ func samePath(a, b string) bool {
 // pkg/runtime answers the same question for a different purpose
 // (deciding whether a run left work behind) and is the reason this list
 // has to stay in step with what the mirror actually writes.
-
 var scaffoldDirs = []string{
 	".claude/skills/",
 	".claude/commands/",
@@ -879,7 +880,6 @@ func pruneWorktreeRegistration(commonDir, resolvedPath string) (bool, error) {
 // worktree, and sweeping it destroys the resume while every other guard
 // nods along, because the commits are merged and nothing is lost except
 // the ability to continue.
-
 func ownsWorktree(st store.RunStatus) bool {
 	return !st.IsTerminal()
 }
@@ -988,9 +988,11 @@ func gitOut(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// loadRunStatuses reads the status of every run in the store, keyed by
-// run id.
-func loadRunStatuses(storeDir string) map[string]store.RunStatus {
+// loadRunStatuses reads only the runs that have worktrees in this pass.
+// A store may retain thousands of cheap run records while parking only a
+// handful of expensive checkouts; scanning every run.json on each launch
+// would make the bound's cost depend on unrelated history.
+func loadRunStatuses(storeDir string, runIDs []string) map[string]store.RunStatus {
 	statuses := map[string]store.RunStatus{}
 	// store.New provisions the store — it creates runs/ and drops a
 	// .gitignore. Inspecting must not do that: a dry run would mutate its
@@ -1004,13 +1006,12 @@ func loadRunStatuses(storeDir string) map[string]store.RunStatus {
 		return statuses
 	}
 	ctx := context.Background()
-	ids, err := s.ListRuns(ctx)
-	if err != nil {
-		return statuses
-	}
-	for _, id := range ids {
+	for _, id := range runIDs {
 		r, err := s.LoadRun(ctx, id)
 		if err != nil {
+			if errors.Is(err, store.ErrRunNotFound) {
+				continue
+			}
 			// An unreadable run.json must not be read as "no run here":
 			// treat it as running so its worktree is spared.
 			statuses[id] = store.RunStatusRunning

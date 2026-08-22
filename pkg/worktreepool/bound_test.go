@@ -243,6 +243,36 @@ func TestBound_ReclaimsIdleCheckoutsHeldByADurableRef(t *testing.T) {
 	}
 }
 
+// Explicit --store-dir values are allowed to be relative. Git reports
+// absolute worktree roots, so the bound must normalise before comparing
+// them or every real linked worktree is misclassified as an orphan.
+func TestBound_ReclaimsFromARelativeStoreDir(t *testing.T) {
+	f := newPoolFixture(t)
+	for i, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relStore, err := filepath.Rel(cwd, f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := EnforceBudget(relStore, 1, SweepOptions{})
+	if err != nil {
+		t.Fatalf("EnforceBudget(relative store): %v", err)
+	}
+	if f.exists("old") || !f.exists("new") {
+		t.Fatalf("relative store reclaimed the wrong entry: old=%v new=%v", f.exists("old"), f.exists("new"))
+	}
+	if len(r.Reclaimed) != 1 || r.Reclaimed[0].RunID != "old" {
+		t.Fatalf("reclaimed = %+v, want old", r.Reclaimed)
+	}
+}
+
 // The ceiling is a ceiling, not a sweep. An operator who sets 2 is saying
 // "keep at most 2", not "empty the pool whenever it goes over".
 func TestBound_TakesOnlyTheExcess(t *testing.T) {
@@ -421,6 +451,60 @@ func TestBound_SparesWorktreesOfResumableRuns(t *testing.T) {
 	}
 	if !strings.Contains(r.Summary(), "resume") {
 		t.Errorf("the summary does not name the resume: %q", r.Summary())
+	}
+}
+
+// A failed run normally has both facts at once: it is resumable and its
+// tree is dirty. The table keeps one primary reason, but the suggested
+// command must carry both flags or it reclaims nothing on the first try.
+func TestBound_RemedyIncludesBothFlagsForDirtyResumableEntries(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"r1", "r2"} {
+		path := f.idle(id)
+		f.seedRun(id, store.RunStatusFailedResumable)
+		mustWrite(t, filepath.Join(path, "unfinished.txt"), "keep me\n")
+	}
+
+	r := f.enforce(1)
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level moderate") ||
+		!strings.Contains(got, "--include-resumable") {
+		t.Fatalf("Remedy = %q, want both dirty and resumable flags", got)
+	}
+}
+
+// IgnoredEntries is a clean-command diagnostic, not an eviction input.
+// The bound deliberately skips that second full git status pass while
+// preserving the existing rule that ignored build output is reclaimable.
+func TestBound_SkipsIgnoredEntryDiagnostics(t *testing.T) {
+	f := newPoolFixture(t)
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "cache/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore build cache")
+	for i, id := range []string{"old", "new"} {
+		path := f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+		mustWrite(t, filepath.Join(path, "cache", "artifact"), "generated\n")
+	}
+
+	r := f.enforce(1)
+	if len(r.Reclaimed) != 1 || r.Reclaimed[0].IgnoredEntries != 0 {
+		t.Fatalf("Reclaimed = %+v, want one entry without ignored diagnostics", r.Reclaimed)
+	}
+}
+
+func TestLoadRunStatusesReadsOnlyRunsWithWorktrees(t *testing.T) {
+	f := newPoolFixture(t)
+	f.idle("parked")
+	f.seedRun("parked", store.RunStatusFinished)
+	f.seedRun("history-only", store.RunStatusRunning)
+
+	got := loadRunStatuses(f.store, []string{"parked"})
+	if got["parked"] != store.RunStatusFinished {
+		t.Fatalf("parked status = %q, want finished", got["parked"])
+	}
+	if _, ok := got["history-only"]; ok {
+		t.Fatal("loaded an unrelated historical run with no worktree")
 	}
 }
 

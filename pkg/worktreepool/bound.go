@@ -53,6 +53,10 @@ type BudgetReport struct {
 	Spared map[string]int
 	// Errors are per-entry failures. The pass never aborts on one.
 	Errors []error
+	// needsIncludeResumable is independent of Spared: one dirty resumable
+	// entry has SkipLevel as its primary reason, but the remedy still needs
+	// both --level moderate and --include-resumable.
+	needsIncludeResumable bool
 }
 
 // OverBudget reports whether the pool is still above its ceiling after the
@@ -101,7 +105,7 @@ var sparedLabels = []struct {
 // them, which is the honest answer — that pool needs git, by hand.
 func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
-	needsResumable := r.Spared[SkipResumable] > 0
+	needsResumable := r.needsIncludeResumable || r.Spared[SkipResumable] > 0
 	if !needsLevel && !needsResumable {
 		return ""
 	}
@@ -164,6 +168,10 @@ func ResolveBudget() (int, error) {
 // pool is small. Classification costs several git calls and a full tree
 // walk per entry, so it is only spent once the pool is already over.
 func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport, error) {
+	// Git reports absolute paths. Normalise at the package boundary so a
+	// documented relative --store-dir cannot make every linked worktree
+	// look like an unrelated orphan.
+	storeDir = AbsPath(storeDir)
 	report := BudgetReport{Budget: budget, Spared: map[string]int{}}
 	if budget <= 0 {
 		return report, nil
@@ -195,6 +203,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	// degraded state — a pool over budget that nothing can reclaim — that
 	// walk would be paid on every launch to produce a number no one reads.
 	opts.MeasureSpared = false
+	opts.SkipIgnoredEntries = true
 
 	// A live run's worktree is not a leftover, so it neither counts
 	// against the budget nor gets offered to the sweep. Without this a
@@ -202,7 +211,7 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	// budget and warn on every single launch. The question is answered
 	// from run status alone — no git — because it decides whether the
 	// expensive half runs at all.
-	statuses := loadRunStatuses(storeDir)
+	statuses := loadRunStatuses(storeDir, names)
 	now := opts.now()
 	candidates := make([]Entry, 0, len(names))
 	for _, name := range names {
@@ -238,13 +247,13 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		}
 		e := classify(candidates[i].Path, candidates[i].RunID, storeDir, statuses, opts.ScanOptions, now)
 		if e.SkipReason != "" {
-			report.Spared[e.SkipReason]++
+			report.recordSpared(e)
 			continue
 		}
 		swept := Sweep([]Entry{e}, opts)
 		report.Errors = append(report.Errors, swept.Errors...)
 		for _, sp := range swept.Spared {
-			report.Spared[sp.SkipReason]++
+			report.recordSpared(sp)
 		}
 		if len(swept.Deleted) == 0 {
 			continue
@@ -255,6 +264,13 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	}
 	report.After = report.Before - taken
 	return report, nil
+}
+
+func (r *BudgetReport) recordSpared(e Entry) {
+	r.Spared[e.SkipReason]++
+	if e.resumable {
+		r.needsIncludeResumable = true
+	}
 }
 
 // poolEntries lists the per-run directories a store parks, skipping what

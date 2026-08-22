@@ -24,6 +24,11 @@ type ScanOptions struct {
 	// `iterion clean` is for and pure cost for the pool bound, which
 	// deletes or warns and never offers a next step by size.
 	MeasureSpared bool
+	// SkipIgnoredEntries avoids the additional git status pass used only
+	// to populate Entry.IgnoredEntries. The runtime bound never renders
+	// that diagnostic, so paying for it on every candidate in an already
+	// degraded pool is pure overhead. `iterion clean` leaves this false.
+	SkipIgnoredEntries bool
 	// Admit overrides what a verdict has to be for a deletion to be
 	// allowed. Nil means the Level ladder — see admission.go for why the
 	// pool bound needs a different rule over the same facts.

@@ -212,13 +212,15 @@ func (o CleanOptions) sweepOptions() worktreepool.SweepOptions {
 	}
 }
 
+// absStore keeps the legacy CLI helper while the shared implementation
+// lives beside the classifier that requires absolute paths.
+func absStore(dir string) string { return worktreepool.AbsPath(dir) }
+
 // resolveCleanStores lists the store directories to sweep. Without
 // --all-projects that is the single store the working directory maps to;
 // with it, every per-project store under the iterion data dir, plus the
 // data dir itself when it holds worktrees of its own (the layout left by
 // running iterion from $HOME, and by the e2e suite).
-func absStore(dir string) string { return worktreepool.AbsPath(dir) }
-
 func resolveCleanStores(opts CleanOptions) ([]string, error) {
 	if !opts.AllProjects {
 		cwd, _ := os.Getwd()
@@ -262,18 +264,11 @@ func resolveCleanStores(opts CleanOptions) ([]string, error) {
 	return stores, nil
 }
 
-// absStore makes a store path absolute.
-//
-// Every answer git gives comes back absolute, and a store dir does not
-// have to: `ResolveStoreDir` returns an explicit --store-dir verbatim, and
-// `--store-dir .iterion` is the documented incantation for the
-// project-local layout. Comparing git's absolute answer against a relative
-// path then fails for every worktree at once — `samePath` never matches,
-// so every directory reads `orphan`, which aggressive deletes; `isInside`
-// cannot even form a relative path, so the nested-repo guard never fires;
-// and the registration lookup never matches its recorded gitdir. One
-// normalisation at the boundary is what keeps all three honest.
-
+// isSweepableStore reports whether a directory holds anything this
+// command reclaims. Worktrees are not the only answer: a workspace can
+// accumulate gigabytes of ${PROJECT_SCRATCH_DIR} while never running a
+// `worktree: auto` bot, and keying discovery on worktrees alone made
+// those stores invisible to --all-projects — a sweep that silently covers
 // part of the machine is worse than one that admits it found nothing.
 func isSweepableStore(storeDir string) bool {
 	return worktreepool.HasWorktreeDir(storeDir) || isDir(filepath.Join(storeDir, "scratch"))
@@ -284,8 +279,8 @@ func isDir(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// scanStoreWorktrees classifies every run worktree in one store.
-// are nothing in production.
+// renderCleanResult renders one sweep's verdicts for the operator, as a
+// table or as --json.
 func renderCleanResult(p *Printer, r CleanResult) error {
 	if p.Format == OutputJSON {
 		p.JSON(r)

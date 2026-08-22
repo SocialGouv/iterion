@@ -61,6 +61,7 @@ func Sweep(all []Entry, opts SweepOptions) SweepResult {
 		if st, ok := reloadRunStatus(wt.StoreDir, wt.RunID); ok &&
 			(ownsWorktree(st) || (isResumable(st) && !opts.IncludeResumable)) {
 			wt.RunStatus = string(st)
+			wt.resumable = isResumable(st) && !opts.IncludeResumable
 			wt.SkipReason = SkipRunActive
 			if !ownsWorktree(st) {
 				wt.SkipReason = SkipResumable
