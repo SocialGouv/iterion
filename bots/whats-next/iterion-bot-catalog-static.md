@@ -72,6 +72,7 @@ Walk top-to-bottom; first match wins.
 | If the work sounds like… | → `assignee` |
 |---|---|
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
+| "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole-improve-loop` |
@@ -171,6 +172,20 @@ before you walk the table on a new roadmap item.
 - Tie-break: "is there an open PR / unmerged branch they want
   reviewed?" → `branch-improve-loop`. "is the work
   workspace-wide / no specific branch?" → `whole-improve-loop`.
+
+### `copilot` (Copi) vs `whats-next` (Nexie) vs `feature-dev` (Featurly)
+
+- `copilot` / Copi is the **engine assistant**. Its subject is iterion
+  itself — the DSL, the Cxxx diagnostics, run/resume/sandbox/backends,
+  how to read a run store. It is read-only: it drafts a `.bot` and
+  hands the operator `iterion validate`, it never edits or commits.
+- `whats-next` / Nexie is the **tactical orchestrator** for the *target
+  repo*: what to work on this week, which bot to stamp, the board.
+- `feature-dev` / Featurly is the **worker** that authors and lands a
+  missing bot in the repo.
+- Tie-break: "what is C083 / why did run 019f… fail / draft this
+  workflow for me to check" → Copi. "what should we do this week?" →
+  Nexie (usually not a card). "build the bot and commit it" → Featurly.
 
 ### `evolve` (Evoly) vs `whats-next` (Nexie) — altitude
 
