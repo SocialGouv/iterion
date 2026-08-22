@@ -366,6 +366,29 @@ func TestBound_DirtyOwnBranchRemedyIsAggressive(t *testing.T) {
 	}
 }
 
+func TestBound_RefusesIgnoredContent(t *testing.T) {
+	f := newPoolFixture(t)
+	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "dist/\n")
+	f.git(f.repo, "add", ".gitignore")
+	f.git(f.repo, "commit", "-m", "ignore generated output")
+	for _, id := range []string{"a", "b"} {
+		path := f.idle(id)
+		mustWrite(t, filepath.Join(path, "dist", "output.txt"), "could be generated or operator-owned\n")
+		f.seedRun(id, store.RunStatusFinished)
+	}
+
+	r := f.enforce(1)
+	if len(r.Reclaimed) != 0 || !f.exists("a") || !f.exists("b") {
+		t.Fatalf("the bound deleted ignored content: %+v", r.Reclaimed)
+	}
+	if r.Spared[SkipIgnored] != 2 {
+		t.Fatalf("spared reasons = %v, want ignored content named", r.Spared)
+	}
+	if got := r.Remedy(f.store); !strings.Contains(got, "--level aggressive") {
+		t.Fatalf("Remedy = %q, want the level required by own-branch entries", got)
+	}
+}
+
 // A worktree whose commits only iterion's own per-run refs hold would lose
 // them when the run is reaped, so the bound refuses it even though a ref
 // technically contains its HEAD.
@@ -511,24 +534,19 @@ func TestBound_RemedyIncludesBothFlagsForDirtyResumableEntries(t *testing.T) {
 	}
 }
 
-// IgnoredEntries is a clean-command diagnostic, not an eviction input.
-// The bound deliberately skips that second full git status pass while
-// preserving the existing rule that ignored build output is reclaimable.
-func TestBound_SkipsIgnoredEntryDiagnostics(t *testing.T) {
+func TestBound_DoesNotOfferResumableFlagForUnreclaimableEntries(t *testing.T) {
 	f := newPoolFixture(t)
-	mustWrite(t, filepath.Join(f.repo, ".gitignore"), "cache/\n")
-	f.git(f.repo, "add", ".gitignore")
-	f.git(f.repo, "commit", "-m", "ignore build cache")
-	for i, id := range []string{"old", "new"} {
-		path := f.idle(id)
-		f.seedRun(id, store.RunStatusFinished)
-		f.age(id, 2-i)
-		mustWrite(t, filepath.Join(path, "cache", "artifact"), "generated\n")
+	for _, id := range []string{"a", "b"} {
+		f.committed(id)
+		f.seedRun(id, store.RunStatusCancelled)
 	}
 
 	r := f.enforce(1)
-	if len(r.Reclaimed) != 1 || r.Reclaimed[0].IgnoredEntries != 0 {
-		t.Fatalf("Reclaimed = %+v, want one entry without ignored diagnostics", r.Reclaimed)
+	if r.Spared[SkipUnlanded] != 2 {
+		t.Fatalf("spared reasons = %v, want unlanded entries", r.Spared)
+	}
+	if got := r.Remedy(f.store); got != "" {
+		t.Fatalf("Remedy = %q, want none because no clean flag can reclaim these entries", got)
 	}
 }
 
@@ -793,6 +811,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 		{"both", map[string]int{SkipLevel: 1, SkipResumable: 1},
 			"iterion clean --store-dir /s --level moderate --include-resumable"},
 		{"orphan", map[string]int{SkipOrphan: 1}, "iterion clean --store-dir /s --level aggressive"},
+		{"ignored", map[string]int{SkipIgnored: 1}, "iterion clean --store-dir /s"},
 		{"run-scoped ref only", map[string]int{SkipIterionHeldOnly: 1}, "iterion clean --store-dir /s --level aggressive"},
 		{"unlanded only", map[string]int{SkipUnlanded: 4}, ""},
 		{"nested only", map[string]int{SkipNested: 1}, ""},
@@ -809,7 +828,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 // Every reason the bound can produce must render, or an operator reads
 // "3 worktrees exceed the budget;" with nothing after the semicolon.
 func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
-	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive} {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIgnored, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive} {
 		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
 		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
 			t.Errorf("reason %q rendered as %q", reason, got)

@@ -100,6 +100,7 @@ var sparedLabels = []struct {
 	{SkipLevel, "carry uncommitted work or content git cannot account for"},
 	{SkipResumable, "belong to runs `iterion resume` would restart"},
 	{SkipOrphan, "are directories git cannot account for"},
+	{SkipIgnored, "contain gitignored files requiring operator review"},
 	{SkipIterionHeldOnly, "are held only by run-scoped checkpoint refs"},
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
@@ -124,7 +125,8 @@ func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
 	needsAggressive := r.needsAggressive || r.Spared[SkipOrphan] > 0 || r.Spared[SkipIterionHeldOnly] > 0
 	needsResumable := r.needsIncludeResumable || r.Spared[SkipResumable] > 0
-	if !needsLevel && !needsAggressive && !needsResumable {
+	needsIgnoredReview := r.Spared[SkipIgnored] > 0
+	if !needsLevel && !needsAggressive && !needsResumable && !needsIgnoredReview {
 		return ""
 	}
 	cmd := "iterion clean --store-dir " + storeDir
@@ -277,7 +279,11 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	// degraded state — a pool over budget that nothing can reclaim — that
 	// walk would be paid on every launch to produce a number no one reads.
 	opts.MeasureSpared = false
-	opts.SkipIgnoredEntries = true
+	// Ignored files can be generated output or an operator's .env. Read
+	// them in the same status pass as dirtiness and leave that judgment to
+	// an explicit clean invocation rather than deleting them unattended.
+	opts.SkipIgnoredEntries = false
+	opts.RefuseIgnoredEntries = true
 
 	// A live run's worktree is not a leftover, so it neither counts
 	// against the budget nor gets offered to the sweep. Without this a
@@ -385,7 +391,7 @@ func (r *BudgetReport) recordSpared(e Entry) {
 	if e.Landing == LandingOwnBranch || e.Landing == LandingOrphan {
 		r.needsAggressive = true
 	}
-	if e.resumable {
+	if e.resumable && e.SkipReason != SkipUnlanded && e.SkipReason != SkipNested {
 		r.needsIncludeResumable = true
 	}
 }

@@ -83,6 +83,10 @@ const (
 	// for. The automatic bound refuses it, while `clean --level
 	// aggressive` is the explicit operator choice that can take it.
 	SkipOrphan = "orphan"
+	// SkipIgnored means only gitignored content prevented the unattended
+	// bound from deleting the checkout. Explicit clean still reports and
+	// may reclaim it at the level selected by the operator.
+	SkipIgnored = "ignored-content"
 	// SkipIterionHeldOnly means the worktree's commits are reachable, but
 	// only through iterion's per-run checkpoint refs. The automatic bound
 	// refuses it; clean --level aggressive is the explicit release.
@@ -265,6 +269,8 @@ func classify(
 		// Guard 3 — a repository inside the tree, whose objects the outer
 		// repository cannot vouch for.
 		wt.SkipReason = SkipNested
+	} else if opts.RefuseIgnoredEntries && wt.IgnoredEntries > 0 {
+		wt.SkipReason = SkipIgnored
 	} else if opts.OlderThan > 0 && time.Duration(wt.AgeSeconds)*time.Second < opts.OlderThan {
 		wt.SkipReason = SkipTooRecent
 	} else if reason, ok := opts.admission()(wt.Landing, wt.Dirty, wt.DurablyHeld); !ok {
@@ -407,11 +413,17 @@ func looksLikeGitDir(dir string) bool {
 // reports whether it still admits one. It is the whole classification
 // again, not a subset: any question left unasked is a change the sweep
 // waves through.
-func stillEligible(ctx context.Context, wt *Entry, admit admission, during func(string)) (string, bool) {
+func stillEligible(
+	ctx context.Context,
+	wt *Entry,
+	admit admission,
+	refuseIgnored bool,
+	during func(string),
+) (string, bool) {
 	during(wt.Path)
 	// IgnoredEntries is report-only and cannot change eligibility. Avoid a
 	// second full status scan in this last-moment safety check.
-	insp := inspectGitForScan(ctx, wt.Path, false)
+	insp := inspectGitForScan(ctx, wt.Path, refuseIgnored)
 	if insp.head != wt.head {
 		// Something committed, reset, or checked out under us. Whatever
 		// the new HEAD is, it is not what was judged.
@@ -422,6 +434,9 @@ func stillEligible(ctx context.Context, wt *Entry, admit admission, during func(
 		return SkipUnlanded, false
 	case LandingNested:
 		return SkipNested, false
+	}
+	if refuseIgnored && insp.ignoredEntries > 0 {
+		return SkipIgnored, false
 	}
 	if reason, ok := admit(insp.landing, insp.dirty, insp.durablyHeld); !ok {
 		wt.Dirty = insp.dirty
@@ -504,7 +519,8 @@ func inspectGitForScan(ctx context.Context, path string, countIgnored bool) insp
 		return cannotTell
 	}
 
-	insp := inspection{head: head, dirty: worktreeDirty(ctx, path)}
+	dirty, ignored, statusErr := worktreeStatus(ctx, path, countIgnored)
+	insp := inspection{head: head, dirty: dirty, ignoredEntries: ignored, err: statusErr}
 
 	// A repository that lives INSIDE the directory answers containment with
 	// refs and objects that are destroyed along with it. `merged` means
@@ -527,14 +543,6 @@ func inspectGitForScan(ctx context.Context, path string, countIgnored bool) insp
 		insp.landing = LandingNested
 		return insp
 	}
-	if countIgnored {
-		if n, err := countIgnoredEntries(ctx, path); err != nil {
-			insp.err = err
-		} else {
-			insp.ignoredEntries = n
-		}
-	}
-
 	// An INITIALISED submodule's commits live in the worktree's own
 	// administrative directory, which goes when the registration does,
 	// and containment in the superproject proves nothing about them.
@@ -780,17 +788,27 @@ func isInside(parent, child string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func worktreeDirty(ctx context.Context, path string) bool {
+func worktreeStatus(ctx context.Context, path string, countIgnored bool) (dirty bool, ignored int, err error) {
 	// --untracked-files=all, because git otherwise folds an untracked
 	// directory into a single `.claude/` line and the exclusion could not
 	// tell the mirror from anything else the run put beside it.
-	out, err := gitOutContext(ctx, path, "status", "--porcelain", "--untracked-files=all")
+	args := []string{"status", "--porcelain", "--untracked-files=all"}
+	if countIgnored {
+		// Ask for ignored entries in the SAME full-tree pass. The runtime
+		// bound needs them for safety; a second status doubled launch cost.
+		args = append(args, "--ignored=matching")
+	}
+	out, err := gitOutContext(ctx, path, args...)
 	if err != nil {
 		// Unreadable status is treated as dirty: the conservative reading
 		// of "we could not tell" is "there may be something here".
-		return true
+		return true, 0, err
 	}
 	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "!!") {
+			ignored++
+			continue
+		}
 		if len(line) < 4 {
 			continue
 		}
@@ -806,30 +824,10 @@ func worktreeDirty(ctx context.Context, path string) bool {
 			rest = renameDestination(rest)
 		}
 		if p := dequotePath(rest); p != "" && !isScaffold(status, p) {
-			return true
+			dirty = true
 		}
 	}
-	return false
-}
-
-// countIgnoredEntries counts gitignored paths present in the tree. They
-// are reported, not gated on: in a run worktree they are the build output
-// the command exists to reclaim, and gating on them would spare every
-// worktree that ever compiled anything.
-func countIgnoredEntries(ctx context.Context, path string) (int, error) {
-	out, err := gitOutContext(ctx, path, "status", "--porcelain", "--ignored=matching")
-	if err != nil {
-		// A count of zero would read as "nothing ignored here", which is a
-		// verdict we did not reach.
-		return 0, err
-	}
-	n := 0
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "!!") {
-			n++
-		}
-	}
-	return n, nil
+	return dirty, ignored, nil
 }
 
 // pruneWorktreeRegistration drops the administrative entry of the one

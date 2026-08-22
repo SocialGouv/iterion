@@ -59,6 +59,7 @@ because the two are asking different questions of the same facts:
 | `own-branch` held by a branch/tag/remote, clean | aggressive | **taken** |
 | `own-branch` held only by `refs/iterion/…` | aggressive | refused |
 | anything dirty | moderate (merged) / aggressive | refused |
+| gitignored content | selected level | refused |
 | `orphan` | aggressive | refused |
 | `unlanded`, `nested-repo` | never | refused |
 | a live run's worktree | never | refused, and not counted |
@@ -78,8 +79,11 @@ carries its own predicate rather than a fourth level.
 asked for; failing it over some other run's leftovers would be a
 limitation nobody chose.
 
-**It never deletes uncommitted work.** "Preserved for inspection" is a
-feature, and an eviction nobody asked for must not be what destroys it.
+**It never deletes uncommitted or gitignored content.** "Preserved for
+inspection" is a feature, and an eviction nobody asked for must not be
+what destroys it. Ignored paths may be generated output, but they may also
+be an operator-owned `.env`; the automatic bound leaves that distinction
+to an explicit `iterion clean` dry run.
 
 **It never breaks a resume.** `iterion resume` restarts a
 `failed_resumable`, `cancelled` or `paused_operator` run *in that very
@@ -92,9 +96,9 @@ When those refusals leave the pool over budget, the bound says so, once
 per launch:
 
 ```
-runtime: worktree pool: 12 of 15 worktrees in /path/.iterion/worktrees
-exceed the budget of 8; 9 belong to runs `iterion resume` would restart,
-3 carry uncommitted work or content git cannot account for. Review them
+runtime: worktree pool: 12 parked worktrees in /path/.iterion/worktrees
+exceed the budget of 8 (3 live worktrees excluded); 9 belong to runs
+`iterion resume` would restart, 3 carry uncommitted work. Review them
 with `iterion clean --store-dir /path/.iterion --level moderate
 --include-resumable` (add --apply to delete). Raise or lift the budget
 with ITERION_WORKTREE_POOL_MAX=<n> (`off` disables it).
