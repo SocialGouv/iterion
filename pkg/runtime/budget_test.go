@@ -539,8 +539,8 @@ func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
 	if b == nil {
 		t.Fatal("expected a budget")
 	}
-	b.RecordUsage(300, 4.0) // 1 iteration
-	b.RecordUsage(200, 1.5) // 2 iterations
+	b.RecordUsage(300, 4.0, true) // 1 iteration
+	b.RecordUsage(200, 1.5, true) // 2 iterations
 
 	tokens, cost, iters, elapsed := b.Snapshot()
 	if tokens != 500 || cost != 5.5 || iters != 2 {
@@ -563,9 +563,9 @@ func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
 	}
 	// One more iteration on the resumed budget must exhaust max_iterations (5)
 	// counting from the restored 2, not from 0 — the runaway-loop guard.
-	resumed.RecordUsage(0, 0)           // 3
-	resumed.RecordUsage(0, 0)           // 4
-	checks := resumed.RecordUsage(0, 0) // 5 → exceeded
+	resumed.RecordUsage(0, 0, false)           // 3
+	resumed.RecordUsage(0, 0, false)           // 4
+	checks := resumed.RecordUsage(0, 0, false) // 5 → exceeded
 	if findExceeded(checks) == nil {
 		t.Fatal("expected iterations budget exceeded after restore+3 (2+3=5), got none")
 	}
@@ -581,7 +581,7 @@ func TestCheckpointCarriesBudgetAccounting(t *testing.T) {
 		budget:       newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10}, nil),
 		costUSDTotal: 7.25,
 	}
-	rs.budget.RecordUsage(400, 3.0)
+	rs.budget.RecordUsage(400, 3.0, true)
 
 	cp := buildCheckpoint(rs, "n1")
 	if cp.BudgetTokensUsed != 400 || cp.BudgetCostUSD != 3.0 || cp.BudgetIterationsUsed != 1 {
@@ -1071,28 +1071,28 @@ func TestSharedBudgetWarningOnce(t *testing.T) {
 
 	// Record 8 iterations (80% threshold).
 	for i := 0; i < 7; i++ {
-		results := b.RecordUsage(0, 0)
+		results := b.RecordUsage(0, 0, false)
 		if len(findWarnings(results)) > 0 {
 			t.Errorf("unexpected warning at iteration %d", i+1)
 		}
 	}
 
 	// 8th iteration should trigger warning.
-	results := b.RecordUsage(0, 0)
+	results := b.RecordUsage(0, 0, false)
 	warnings := findWarnings(results)
 	if len(warnings) != 1 || warnings[0].dimension != "iterations" {
 		t.Errorf("expected iterations warning at 8/10, got %d warnings", len(warnings))
 	}
 
 	// 9th iteration should NOT trigger another warning.
-	results = b.RecordUsage(0, 0)
+	results = b.RecordUsage(0, 0, false)
 	warnings = findWarnings(results)
 	if len(warnings) != 0 {
 		t.Error("warning should only be emitted once per dimension")
 	}
 
 	// 10th iteration should trigger exceeded.
-	results = b.RecordUsage(0, 0)
+	results = b.RecordUsage(0, 0, false)
 	exc := findExceeded(results)
 	if exc == nil || exc.dimension != "iterations" {
 		t.Error("expected exceeded at 10/10")
@@ -1227,25 +1227,25 @@ func TestHardBudgetWarningStillFires(t *testing.T) {
 
 	// Record 7 iterations (70%) — no warning yet.
 	for i := 0; i < 7; i++ {
-		b.RecordUsage(0, 0)
+		b.RecordUsage(0, 0, false)
 	}
 
 	// 8th iteration (80%) — warning should fire.
-	results := b.RecordUsage(0, 0)
+	results := b.RecordUsage(0, 0, false)
 	warnings := findWarnings(results)
 	if len(warnings) != 1 || warnings[0].dimension != "iterations" {
 		t.Errorf("expected warning at 80%%, got %d warnings", len(warnings))
 	}
 
 	// 9th iteration (90%) — hard limit should fire.
-	results = b.RecordUsage(0, 0)
+	results = b.RecordUsage(0, 0, false)
 	hl := findHardLimited(results)
 	if hl == nil || hl.dimension != "iterations" {
 		t.Error("expected hard limit at 90%")
 	}
 
 	// 10th iteration (100%) — exceeded should fire.
-	results = b.RecordUsage(0, 0)
+	results = b.RecordUsage(0, 0, false)
 	exc := findExceeded(results)
 	if exc == nil || exc.dimension != "iterations" {
 		t.Error("expected exceeded at 100%")
@@ -1257,7 +1257,7 @@ func TestHardBudgetUnit(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxIterations: 10}, nil)
 		// Push to 9 iterations.
 		for i := 0; i < 9; i++ {
-			b.RecordUsage(0, 0)
+			b.RecordUsage(0, 0, false)
 		}
 		checks := b.Check()
 		hl := findHardLimited(checks)
@@ -1271,7 +1271,7 @@ func TestHardBudgetUnit(t *testing.T) {
 
 	t.Run("tokens_hard_limit", func(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxTokens: 1000}, nil)
-		b.RecordUsage(910, 0) // 91%
+		b.RecordUsage(910, 0, false) // 91%
 		checks := b.Check()
 		hl := findHardLimited(checks)
 		if hl == nil {
@@ -1284,7 +1284,7 @@ func TestHardBudgetUnit(t *testing.T) {
 
 	t.Run("cost_hard_limit", func(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxCostUSD: 10.0}, nil)
-		b.RecordUsage(0, 9.5) // 95%
+		b.RecordUsage(0, 9.5, true) // 95%
 		checks := b.Check()
 		hl := findHardLimited(checks)
 		if hl == nil {
@@ -1298,12 +1298,85 @@ func TestHardBudgetUnit(t *testing.T) {
 	t.Run("below_hard_threshold", func(t *testing.T) {
 		b := newSharedBudget(&ir.Budget{MaxIterations: 10}, nil)
 		for i := 0; i < 8; i++ {
-			b.RecordUsage(0, 0)
+			b.RecordUsage(0, 0, false)
 		}
 		checks := b.Check()
 		hl := findHardLimited(checks)
 		if hl != nil {
 			t.Error("should not trigger hard limit at 8/10 (80%)")
+		}
+	})
+}
+
+// An unknown cost is not a free call. When a node burns tokens whose model
+// carries no resolvable price, `cost.Annotate` omits `_cost_usd` on purpose —
+// and a budget that folded that absence into a 0.00 sample would let a run
+// sail past max_cost_usd reporting nothing at all. These cover the seam.
+func TestSharedBudget_UnpricedSpend(t *testing.T) {
+	unpriced := func(checks []budgetCheckResult) *budgetCheckResult {
+		return findBudgetCheck(checks, func(r *budgetCheckResult) bool {
+			return r.dimension == "cost_usd_unpriced"
+		})
+	}
+
+	t.Run("warns_once_under_a_declared_cost_ceiling", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+
+		w := unpriced(b.RecordUsage(50_000, 0, false))
+		if w == nil {
+			t.Fatal("expected a cost_usd_unpriced warning: the ceiling cannot see this node's spend")
+		}
+		if !w.warning || !w.advisory {
+			t.Errorf("unpriced spend must warn advisorily, got warning=%v advisory=%v", w.warning, w.advisory)
+		}
+		if w.detail == "" {
+			t.Error("the warning must say what is unmeasured; used/limit alone mixes tokens and dollars")
+		}
+
+		// Same run, second unpriced node: still accounted, but one warning is
+		// the contract — the operator is told, not spammed.
+		if again := unpriced(b.RecordUsage(50_000, 0, false)); again != nil {
+			t.Error("cost_usd_unpriced must warn at most once per run")
+		}
+
+		if b.costUsed != 0 {
+			t.Errorf("unknown cost must never reach the enforced axis, costUsed=%v", b.costUsed)
+		}
+		if b.unpricedTokens != 100_000 || b.unpricedNodes != 2 {
+			t.Errorf("expected 100000 unpriced tokens over 2 nodes, got %d over %d",
+				b.unpricedTokens, b.unpricedNodes)
+		}
+	})
+
+	t.Run("silent_without_a_cost_ceiling", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxTokens: 1_000_000}, nil)
+		if w := unpriced(b.RecordUsage(50_000, 0, false)); w != nil {
+			t.Error("no max_cost_usd declared: nothing is being under-enforced, so nothing to report")
+		}
+		if b.unpricedTokens != 50_000 {
+			t.Errorf("unpriced tokens are tracked regardless, got %d", b.unpricedTokens)
+		}
+	})
+
+	t.Run("a_node_that_spent_nothing_is_not_unpriced_spend", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+		// Tool and compute nodes report no tokens and no cost. That is an
+		// absence of spend, not spend of unknown price.
+		if w := unpriced(b.RecordUsage(0, 0, false)); w != nil {
+			t.Error("a zero-token node must not raise the unpriced warning")
+		}
+		if b.unpricedNodes != 0 {
+			t.Errorf("expected no unpriced node, got %d", b.unpricedNodes)
+		}
+	})
+
+	t.Run("priced_spend_never_raises_it", func(t *testing.T) {
+		b := newSharedBudget(&ir.Budget{MaxCostUSD: 160}, nil)
+		if w := unpriced(b.RecordUsage(50_000, 2.5, true)); w != nil {
+			t.Error("a measured cost is exactly what the ceiling is for")
+		}
+		if b.costUsed != 2.5 {
+			t.Errorf("expected costUsed 2.5, got %v", b.costUsed)
 		}
 	})
 }

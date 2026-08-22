@@ -47,6 +47,13 @@ type SharedBudget struct {
 	// everRaised records that at least one live raise_budget landed —
 	// the trigger for persisting the (absolute) caps on the run record.
 	everRaised bool
+
+	// Unpriced spend — nodes that burned tokens while no price could be
+	// resolved for their model. Their cost is unknown, NOT zero, so it can
+	// never reach costUsed; tracked here so a declared max_cost_usd can say
+	// out loud that it is only seeing part of the run.
+	unpricedTokens int
+	unpricedNodes  int
 }
 
 const (
@@ -203,22 +210,39 @@ type budgetCheckResult struct {
 	dimension   string // "tokens", "cost_usd", "iterations", "duration"
 	used        float64
 	limit       float64
+	// detail carries a human-readable explanation for dimensions whose
+	// used/limit pair does not speak for itself (cost_usd_unpriced counts
+	// tokens against a dollar ceiling). Empty on the numeric axes.
+	detail string
 }
 
 // RecordUsage records resource consumption from a node execution and returns
 // check results. tokens and costUSD may be zero if the executor does not
 // report them.
 //
+// costKnown says whether costUSD is a measurement. When a node burned tokens
+// but no price could be resolved for its model, its spend is unknown — adding
+// the zero would let a run drift past max_cost_usd with the ceiling reporting
+// nothing. Those tokens are counted apart and surfaced once (see checkLocked).
+//
 // Because budget enforcement is soft (pre-check and post-record are not
 // atomic), concurrent branches may push usage past the limit. When overage
 // exceeds 20% of the limit, a warning is logged to aid debugging.
-func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
+func (b *SharedBudget) RecordUsage(tokens int, costUSD float64, costKnown bool) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.iterationsUsed++
 	b.tokensUsed += tokens
-	b.costUsed += costUSD
+	if costKnown {
+		b.costUsed += costUSD
+	} else if tokens > 0 {
+		// Tokens with no resolvable price: real spend the cost axis cannot
+		// see. A node that consumed nothing (tool, compute) is not unpriced
+		// spend — it is no spend — so the token count is what separates them.
+		b.unpricedTokens += tokens
+		b.unpricedNodes++
+	}
 
 	checks := b.checkLocked()
 
@@ -367,6 +391,24 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 		})
 	}
 
+	// A declared cost ceiling that cannot see part of the spend is not
+	// enforcing anything on that part. Silence there is the worst outcome:
+	// the run finishes with no budget event and looks exactly like a run
+	// that stayed under its limit. Report it once, advisory — the operator
+	// may legitimately want to keep going (warn over reject), but they get
+	// to know the ceiling is partial before the invoice tells them.
+	if b.maxCostUSD > 0 && b.unpricedNodes > 0 && !b.warningsEmitted["cost_usd_unpriced"] {
+		b.warningsEmitted["cost_usd_unpriced"] = true
+		results = append(results, budgetCheckResult{
+			warning: true, advisory: true, dimension: "cost_usd_unpriced",
+			used: b.costUsed, limit: b.maxCostUSD,
+			detail: fmt.Sprintf(
+				"max_cost_usd is only counting part of this run: %d node execution(s) totalling %d tokens had no resolvable price, so their spend is unknown and absent from the %.2f recorded so far. Add the model to the price table or check that the backend reports a cost.",
+				b.unpricedNodes, b.unpricedTokens, b.costUsed,
+			),
+		})
+	}
+
 	return results
 }
 
@@ -388,6 +430,21 @@ func findExceeded(results []budgetCheckResult) *budgetCheckResult {
 // findHardLimited returns the first hard-limited result, or nil.
 func findHardLimited(results []budgetCheckResult) *budgetCheckResult {
 	return findBudgetCheck(results, func(r *budgetCheckResult) bool { return r.hardLimited })
+}
+
+// budgetWarningData renders a warning as a budget_warning event payload.
+// Shared by the trunk and branch emitters so a new field lands on both.
+func budgetWarningData(w budgetCheckResult) map[string]any {
+	data := map[string]any{
+		"dimension": w.dimension,
+		"advisory":  w.advisory,
+		"used":      w.used,
+		"limit":     w.limit,
+	}
+	if w.detail != "" {
+		data["detail"] = w.detail
+	}
+	return data
 }
 
 // findWarnings returns all warning results.
@@ -460,7 +517,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
 func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
-	tokens, costUSD := extractUsage(output)
+	tokens, costUSD, costKnown := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
 	// works for workflows with no budget: block). We only record — the
@@ -477,16 +534,11 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 		return nil
 	}
 
-	checks := rs.budget.RecordUsage(tokens, costUSD)
+	checks := rs.budget.RecordUsage(tokens, costUSD, costKnown)
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]any{
-			"dimension": w.dimension,
-			"advisory":  w.advisory,
-			"used":      w.used,
-			"limit":     w.limit,
-		})
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 
 	// Fail on exceeded.

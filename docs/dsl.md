@@ -528,6 +528,28 @@ workflow campaign:
   loop_budget_guard: off    # this loop must burn its cap, not stop short
 ```
 
+#### `max_cost_usd` only counts spend it can price
+
+A node's cost is known when the backend meters it (the `claude_code` and
+`pi` CLIs report their own figure) or when the model resolves in the price
+table — the live registry first, then `pkg/backend/cost`'s static table.
+When neither answers, `cost.Annotate` deliberately omits `_cost_usd`: an
+absent value means *no cost data*, never *this call was free*.
+
+The budget honours that difference rather than folding the absence into a
+`0.00` sample. Tokens burned at an unresolvable price are counted apart,
+and the first time it happens under a declared `max_cost_usd` the run emits
+one advisory `budget_warning` on dimension `cost_usd_unpriced`, whose
+`detail` names how many node executions and how many tokens the ceiling
+cannot see. The run continues — an operator may legitimately want it to —
+but the ceiling never again reads as enforced when it is only partial.
+
+Two situations reach it in practice: a backend that reports no cost of its
+own (`codex` parses its token counts but publishes no dollar figure), and a
+model absent from both pricing sources — typically one newer than the
+static table. If the warning fires, either add the model to the table or
+expect `max_cost_usd` to bind on the priced nodes only.
+
 ### The target repo's toolchain — `repo_devbox:`
 
 Two `devbox.json` files can supply a run's binaries, and both are

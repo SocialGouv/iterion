@@ -242,11 +242,11 @@ func TestLoopBudgetGuard_ReEnteredLoopReBasesItsPrice(t *testing.T) {
 
 	// An outer iteration runs and the inner loop is entered: the entry
 	// re-bases its price on what has been consumed by then.
-	rs.budget.RecordUsage(9_000, 0)
+	rs.budget.RecordUsage(9_000, 0, false)
 	markLoopBudget(rs, "phase2")
 
 	// One cheap inner iteration, then its first crossing of this instance.
-	rs.budget.RecordUsage(1_000, 0)
+	rs.budget.RecordUsage(1_000, 0, false)
 	if v := eng.loopBudgetShortfall("phase2", rs); v != nil {
 		t.Fatalf("re-entered loop declined its first crossing: %s priced at %.0f with %.0f left — the mark was not re-based at entry",
 			v.dimension, v.spent, v.remaining)
@@ -317,9 +317,9 @@ func TestLoopBudgetGuard_MarksSurviveResume(t *testing.T) {
 	// (so one iteration costs 3k).
 	origin := eng.newRunState("r", nil)
 	origin.budget = newSharedBudget(wf.Budget, eng.logger)
-	origin.budget.RecordUsage(5_000, 0)
+	origin.budget.RecordUsage(5_000, 0, false)
 	markLoopBudget(origin, "continuation")
-	origin.budget.RecordUsage(3_000, 0)
+	origin.budget.RecordUsage(3_000, 0, false)
 
 	cp := buildCheckpoint(origin, "gate")
 	if len(cp.LoopBudgetMarks) == 0 {
@@ -350,7 +350,7 @@ func TestLoopBudgetGuard_UnpricedLoopIsNotDeclined(t *testing.T) {
 	rs := eng.newRunState("r", nil)
 	rs.budget = newSharedBudget(wf.Budget, eng.logger)
 
-	rs.budget.RecordUsage(9_500, 0)
+	rs.budget.RecordUsage(9_500, 0, false)
 	if v := eng.loopBudgetShortfall("continuation", rs); v != nil {
 		t.Fatalf("declined an unmeasured loop on a %s guess", v.dimension)
 	}
@@ -367,7 +367,7 @@ func TestLoopBudgetGuard_IgnoresUnenforcedAxes(t *testing.T) {
 	eng.baselineUnpricedLoops(rs)
 
 	// A pass burning real dollars against an unlimited cost axis.
-	rs.budget.RecordUsage(1_000, 500.0)
+	rs.budget.RecordUsage(1_000, 500.0, true)
 	if v := eng.loopBudgetShortfall("continuation", rs); v != nil {
 		t.Fatalf("reported a %q shortfall on an axis the workflow does not cap", v.dimension)
 	}

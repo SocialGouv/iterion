@@ -47,7 +47,7 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 
 // extractUsage reads conventional _tokens and _cost_usd keys from a node
 // output. Returns zeros if absent.
-func extractUsage(output map[string]any) (tokens int, costUSD float64) {
+func extractUsage(output map[string]any) (tokens int, costUSD float64, costKnown bool) {
 	if v, ok := output["_tokens"]; ok {
 		switch t := v.(type) {
 		case int:
@@ -66,6 +66,12 @@ func extractUsage(output map[string]any) (tokens int, costUSD float64) {
 			costUSD = float64(t)
 		}
 	}
+	// `cost.Annotate` writes `_cost_usd` only when a price was resolved, so
+	// an absent (or zero) key means "no cost data", never "this call was
+	// free" — the cost package says so in as many words and tells callers
+	// not to record a $0 sample. costKnown is what lets the budget keep the
+	// two apart instead of adding a silent zero.
+	costKnown = costUSD > 0
 	return
 }
 
