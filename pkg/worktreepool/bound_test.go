@@ -600,6 +600,49 @@ func TestBound_SparesWorktreesOfResumableRuns(t *testing.T) {
 	}
 }
 
+func TestBound_SparesDormantPausedRunsWithoutIneffectiveRemedy(t *testing.T) {
+	for _, status := range []store.RunStatus{
+		store.RunStatusPausedOperator,
+		store.RunStatusPausedWaitingHuman,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newPoolFixture(t)
+			for _, id := range []string{"paused-a", "paused-b"} {
+				f.idle(id)
+				f.seedRun(id, status)
+			}
+
+			r := f.enforce(1)
+			if !f.exists("paused-a") || !f.exists("paused-b") {
+				t.Fatalf("the bound destroyed a %s resume", status)
+			}
+			if r.Spared[SkipPausedRun] != 2 {
+				t.Fatalf("spared reasons = %v, want both paused runs named", r.Spared)
+			}
+			if got := r.Remedy(f.store); got != "" {
+				t.Fatalf("Remedy = %q, want none because clean keeps non-terminal pauses", got)
+			}
+		})
+	}
+}
+
+func TestBound_SparesUnreadableRunRecords(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"broken-a", "broken-b"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusRunning)
+		mustWrite(t, filepath.Join(f.store, "runs", id, "run.json"), "{not json")
+	}
+
+	r := f.enforce(1)
+	if !f.exists("broken-a") || !f.exists("broken-b") {
+		t.Fatal("the bound deleted a checkout whose run record was unreadable")
+	}
+	if r.Held != 2 || len(r.Reclaimed) != 0 {
+		t.Fatalf("report = %+v, want both ambiguous runs held", r)
+	}
+}
+
 // A failed run normally has both facts at once: it is resumable and its
 // tree is dirty and its HEAD is still its own branch. The table keeps one
 // primary reason, but the suggested command must carry both the aggressive
@@ -1019,7 +1062,7 @@ func TestRemedy_QuotesStoreDirectoryForCopyPaste(t *testing.T) {
 // Every reason the bound can produce must render, or an operator reads
 // "3 worktrees exceed the budget;" with nothing after the semicolon.
 func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
-	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIgnored, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive, SkipRemovalFailed} {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipIgnored, SkipIterionHeldOnly, SkipUnlanded, SkipNested, SkipRunActive, SkipPausedRun, SkipRemovalFailed} {
 		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
 		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
 			t.Errorf("reason %q rendered as %q", reason, got)

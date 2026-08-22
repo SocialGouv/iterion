@@ -96,6 +96,10 @@ const (
 	SkipTooRecent       = "too-recent"
 	SkipKeepLast        = "keep-last"
 	SkipLevel           = "needs-higher-level"
+	// SkipPausedRun protects dormant runs waiting for operator/human input.
+	// They are resumable, but explicit clean treats their non-terminal
+	// status as absolute, so no suggested clean flag can release them.
+	SkipPausedRun = "paused-run"
 	// SkipRemovalFailed means classification admitted the entry but its
 	// filesystem removal failed. The concrete error is reported separately.
 	SkipRemovalFailed = "remove-failed"
@@ -228,6 +232,7 @@ func classify(
 ) Entry {
 	wt := Entry{RunID: runID, Path: path, StoreDir: storeDir, resolvedPath: resolvePath(path)}
 	resumable := false
+	pausedResumable := false
 
 	if info, err := os.Stat(path); err == nil {
 		wt.ModTime = info.ModTime()
@@ -248,6 +253,7 @@ func classify(
 			return wt
 		}
 		resumable = isResumable(st) && !opts.IncludeResumable
+		pausedResumable = isPausedResumable(st) && !opts.IncludeResumable
 		wt.resumable = resumable
 	}
 
@@ -286,6 +292,9 @@ func classify(
 		// back would promise a gain --include-resumable cannot deliver
 		// on its own.
 		wt.SkipReason = SkipResumable
+		if pausedResumable {
+			wt.SkipReason = SkipPausedRun
+		}
 	}
 
 	// Measuring costs a walk of every file, so it is spent only where the
@@ -940,10 +949,15 @@ func runLockHeld(storeDir, runID string) bool {
 // the same opt-in `runs prune` requires before it touches them.
 func isResumable(st store.RunStatus) bool {
 	switch st {
-	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+	case store.RunStatusFailedResumable, store.RunStatusCancelled,
+		store.RunStatusPausedOperator, store.RunStatusPausedWaitingHuman:
 		return true
 	}
 	return false
+}
+
+func isPausedResumable(st store.RunStatus) bool {
+	return st == store.RunStatusPausedOperator || st == store.RunStatusPausedWaitingHuman
 }
 
 // lockRun takes the same per-run advisory lock `iterion run` and
@@ -961,10 +975,13 @@ func lockRun(storeDir, runID string) (store.RunLock, error) {
 	}
 	s, err := store.New(storeDir)
 	if err != nil {
-		return nil, nil //nolint:nilerr // no store, no lock to take; the git guards still stand
+		return nil, fmt.Errorf("open store for run %s lock: %w", runID, err)
 	}
 	if _, err := s.LoadRun(context.Background(), runID); err != nil {
-		return nil, nil //nolint:nilerr // no run record: nothing owns this worktree
+		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+			return nil, nil //nolint:nilerr // no run record: nothing owns this worktree
+		}
+		return nil, fmt.Errorf("run %s record is unreadable: %w", runID, err)
 	}
 	lock, err := s.LockRun(context.Background(), runID)
 	if err != nil {

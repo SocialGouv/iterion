@@ -93,11 +93,12 @@ be an operator-owned `.env`; the automatic bound leaves that distinction
 to an explicit `iterion clean` dry run.
 
 **It never breaks a resume.** `iterion resume` restarts a
-`failed_resumable`, `cancelled` or `paused_operator` run *in that very
-checkout*. Those are terminal to a poller, so every other guard would wave
-them through — and on a long-lived store they are usually most of what
-accumulates. Giving up a resume is the operator's call, made with
-`iterion clean --include-resumable`.
+`failed_resumable`, `cancelled`, `paused_operator` or
+`paused_waiting_human` run *in that very checkout*. On a long-lived store
+these are usually most of what accumulates. Giving up a terminal resume is
+the operator's call, made with `iterion clean --include-resumable`;
+non-terminal pauses remain protected and are named separately in the
+warning.
 
 When those refusals leave the pool over budget, the bound says so, once
 per launch:

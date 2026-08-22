@@ -104,6 +104,7 @@ var sparedLabels = []struct {
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
 	{SkipRunActive, "are owned by a live run"},
+	{SkipPausedRun, "are paused for operator or human input"},
 	{SkipRemovalFailed, "could not be removed (see the preceding error)"},
 }
 
@@ -433,10 +434,10 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 
 func (r *BudgetReport) recordSpared(e Entry) {
 	r.Spared[e.SkipReason]++
-	if e.Landing == LandingOwnBranch || e.Landing == LandingOrphan {
+	if e.SkipReason != SkipPausedRun && (e.Landing == LandingOwnBranch || e.Landing == LandingOrphan) {
 		r.needsAggressive = true
 	}
-	if e.resumable && e.SkipReason != SkipUnlanded && e.SkipReason != SkipNested {
+	if e.resumable && e.SkipReason != SkipUnlanded && e.SkipReason != SkipNested && e.SkipReason != SkipPausedRun {
 		r.needsIncludeResumable = true
 	}
 }
