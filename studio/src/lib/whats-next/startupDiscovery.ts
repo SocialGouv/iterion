@@ -91,6 +91,9 @@ export async function attachSessionRun(opts: {
   } catch {
     // ignore — the live WS will eventually fill any gap.
   }
+  // The bot/scope may have changed while the history request was in flight.
+  // Its cleanup resets this store; never re-arm the old identity afterward.
+  if (opts.isCancelled()) return false;
   // Remember now so subsequent mounts (within the same origin)
   // skip the discovery query and re-attach via localStorage.
   rememberSessionRunId(opts.botId, opts.scopeKey, opts.runId);

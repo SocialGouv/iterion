@@ -138,6 +138,10 @@ export function useSessionLifecycle(opts: {
       } catch (e) {
         setErrorMessage(toMessage(e));
         setStatus("idle");
+        // Every composer destination rejects on failure so its caller keeps
+        // the operator's draft and attached references. Swallowing only the
+        // first-launch failure made the most expensive send path erase both.
+        throw e;
       }
     },
     // Setters and the lifetime ref are stable (useState setters / a

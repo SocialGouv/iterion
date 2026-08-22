@@ -37,6 +37,20 @@ export interface UseChatRegistryResult {
   error: string | null;
 }
 
+export function resolveChatBot(
+  byId: Record<string, FirstClassBot>,
+  bots: FirstClassBot[],
+  id: string | null | undefined,
+  loading: boolean,
+): FirstClassBot | null {
+  if (id && byId[id]) return byId[id];
+  // A persisted non-default id is not "unknown" until discovery settles.
+  // Park the session on its empty fallback so startup discovery never probes,
+  // attaches or accepts input for the default bot during a cold load.
+  if (id && loading) return null;
+  return byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? bots[0] ?? null;
+}
+
 export function useChatRegistry(): UseChatRegistryResult {
   const query = useQuery({
     queryKey: CHAT_REGISTRY_QUERY_KEY,
@@ -68,11 +82,9 @@ export function useChatRegistry(): UseChatRegistryResult {
   }, [byId]);
 
   const resolve = useCallback(
-    (id: string | null | undefined): FirstClassBot | null => {
-      if (id && byId[id]) return byId[id];
-      return byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? bots[0] ?? null;
-    },
-    [byId, bots],
+    (id: string | null | undefined): FirstClassBot | null =>
+      resolveChatBot(byId, bots, id, query.isLoading),
+    [byId, bots, query.isLoading],
   );
 
   return {

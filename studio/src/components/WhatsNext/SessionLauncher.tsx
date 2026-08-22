@@ -17,7 +17,7 @@ interface Props {
   // with the launch var map. When the bot declares a `seedVar`, the
   // launcher form's answer text is already folded into the vars under
   // that name (the bot reads it as the first operator message).
-  onLaunch?: (params: { vars: Record<string, string> }) => void;
+  onLaunch?: (params: { vars: Record<string, string> }) => void | Promise<void>;
   busy?: boolean;
   errorMessage?: string | null;
   // Startup discovery failed — a live session may exist that we can't
@@ -85,7 +85,11 @@ export default function SessionLauncher({
       const text = Array.isArray(first) ? first.join(", ") : first ?? "";
       if (text.trim() !== "") next[bot.seedVar] = text.trim();
     }
-    onLaunch({ vars: next });
+    // This surface has no draft to preserve; the dock composer does. Consume
+    // the lifecycle rejection here so a failed button/form launch does not
+    // become an unhandled promise while the shared lifecycle keeps its
+    // reject-to-preserve contract for composer callers.
+    void Promise.resolve(onLaunch({ vars: next })).catch(() => {});
   };
 
   return (

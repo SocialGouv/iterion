@@ -80,7 +80,7 @@ export function useSessionDiscovery(opts: {
         signal: controller.signal,
         isCancelled: () => cancelled,
       });
-      if (attached) onAttached(runIdToAttach);
+      if (attached && !cancelled) onAttached(runIdToAttach);
     };
 
     const remembered = recallSessionRunId(bot.id, scopeKey);

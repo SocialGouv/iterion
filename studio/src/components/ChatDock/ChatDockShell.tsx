@@ -11,7 +11,7 @@
 // unread count, attention state) is injected by the caller.
 
 import { useCallback, useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import {
   ChatBubbleIcon,
   MinusIcon,
@@ -20,6 +20,7 @@ import {
 
 import { IconButton } from "@/components/ui";
 import { openedDock, type DockState } from "@/lib/chatDock/dockState";
+import { hasReferenceDrag } from "@/lib/chatDock/dragReference";
 
 // Two docks can be on the page at once (the assistant everywhere, the
 // run console's steering panel on /runs/:id). A lane is the bottom-right
@@ -87,6 +88,10 @@ export interface ChatDockShellProps {
   // bubble and swaps its tooltip.
   attention?: boolean;
   attentionTitle?: string;
+  // A reference source can be dragged from the page while the dock is
+  // minimised. Spring the assistant open on entry so its full-body drop
+  // target is available before the pointer is released.
+  openOnReferenceDrag?: boolean;
   // "self": the shell renders the docked-right column itself (the
   // shell-level assistant, which owns a real layout slot).
   // "host": the shell renders nothing and the host lays the panel out
@@ -111,6 +116,7 @@ export function ChatDockShell({
   unread = 0,
   attention = false,
   attentionTitle,
+  openOnReferenceDrag = false,
   dockedRightMode = "host",
   children,
 }: ChatDockShellProps) {
@@ -143,6 +149,11 @@ export function ChatDockShell({
         lane={lane}
         rightInset={rightInset}
         onOpen={() => changeDock(openedDock())}
+        onDragEnter={(e) => {
+          if (!openOnReferenceDrag || !hasReferenceDrag(e.dataTransfer)) return;
+          e.preventDefault();
+          changeDock(openedDock());
+        }}
       />
     );
   }
@@ -156,7 +167,7 @@ export function ChatDockShell({
     return (
       <div
         className="fixed top-0 right-0 bottom-0 z-[var(--z-dock)]"
-        style={{ width: DOCKED_WIDTH_PX }}
+        style={{ width: `min(${DOCKED_WIDTH_PX}px, 100vw)` }}
       >
         <ChatDockPanel
           title={title}
@@ -267,6 +278,7 @@ export function ChatDockBubble({
   lane = 0,
   rightInset = 0,
   onOpen,
+  onDragEnter,
 }: {
   label: string;
   title: string;
@@ -277,11 +289,13 @@ export function ChatDockBubble({
   lane?: DockLane;
   rightInset?: number;
   onOpen: () => void;
+  onDragEnter?: (e: ReactDragEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
       type="button"
       onClick={onOpen}
+      onDragEnter={onDragEnter}
       style={{ right: laneRightPx(BUBBLE_LANE_PX[lane], rightInset) }}
       className={`fixed bottom-4 z-[var(--z-dock)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${attention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
       aria-label={`${label}${unread > 0 ? ` (${unread} new)` : ""}`}

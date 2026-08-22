@@ -56,9 +56,9 @@ export default function SessionHeader({
   const onNewSession = useCallback(async () => {
     if (isLive) {
       const ok = await confirm({
-        title: "Cancel running Nexie session?",
+        title: `Cancel running ${bot.label} session?`,
         message:
-          "Cancelling ends the conversation — Nexie forgets everything you discussed. The transcript stays readable in the run console, but the next session starts with no memory of it.",
+          `Cancelling ends the conversation — ${bot.label} forgets everything you discussed. The transcript stays readable in the run console, but the next session starts with no memory of it.`,
         confirmLabel: "Cancel and start new",
         confirmVariant: "danger",
       });
@@ -78,7 +78,7 @@ export default function SessionHeader({
       }
     }
     session.newSession();
-  }, [isLive, session, confirm]);
+  }, [isLive, session, confirm, bot.label]);
 
   // The button is hidden when there's nothing to reset (no runId yet,
   // pre-launch). Otherwise it stays available across every run state
@@ -143,7 +143,7 @@ export default function SessionHeader({
             className="text-micro text-accent-text hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
             title={
               isLive
-                ? "Cancel the current run and start a fresh Nexie session."
+                ? `Cancel the current run and start a fresh ${bot.label} session.`
                 : "Start fresh — the current run stays in the run list."
             }
           >
@@ -165,4 +165,3 @@ export default function SessionHeader({
     </div>
   );
 }
-

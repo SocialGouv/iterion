@@ -21,9 +21,10 @@ export const DOCK_STATES = [
   "docked-right",
 ] as const satisfies readonly DockState[];
 
-// Tailwind's lg breakpoint — below it the floating panel covers most of
-// the viewport, so opening from closed docks instead of floating.
-export const DOCK_BREAKPOINT_PX = 1024;
+// Below tablet width the assistant behaves as an overlaying side sheet.
+// At 1024px a 380px reserved column plus the sidebar left too little room
+// for the page, so medium/desktop widths open the resizable floating panel.
+export const DOCK_BREAKPOINT_PX = 768;
 
 // The assistant dock's persisted state. Distinct from the run console's
 // CHAT_DOCK_KEY (`iterion.runview.chatDock`), which belongs to the

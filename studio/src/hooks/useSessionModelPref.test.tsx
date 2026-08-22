@@ -62,4 +62,47 @@ describe("useSessionModelPref", () => {
     });
     expect(result.current.current()).toEqual({});
   });
+
+  it("does not let an older GET overwrite a choice saved while it loads", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    api.fetchModelPref.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    api.saveModelPref.mockResolvedValue({});
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await act(async () => {
+      await result.current.save({ model: "anthropic/claude-opus-5" });
+    });
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+
+    await act(async () => {
+      resolveFetch({
+        key: "copilot",
+        model: "openai/gpt-5.6-sol",
+        set: true,
+      });
+    });
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.choice).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+  });
+
+  it("treats an empty successful response as no recorded preference", async () => {
+    api.fetchModelPref.mockResolvedValueOnce(null);
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.available).toBe(true);
+    expect(result.current.set).toBe(false);
+    expect(result.current.choice).toEqual({});
+  });
 });

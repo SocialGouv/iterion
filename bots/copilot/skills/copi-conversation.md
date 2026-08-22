@@ -70,20 +70,21 @@ and hand the operator the command (`iterion <cmd> --help`,
 
 ### design — draft a workflow
 
-The honesty bar: **you cannot validate what you wrote, so you call it a
-draft.**
+The honesty bar: **you do not claim validation yourself; the deterministic
+validator attached to this conversation reports it.**
 
 1. Ask what the workflow must accomplish and what "done" means for it.
-2. Write the source, in a fenced block in your reply.
-3. Tell the operator where to save it and hand them the check:
-   `iterion validate <file>`.
-4. If they paste the output back, read it and fix — that loop is where
-   the draft becomes real.
+2. Write the FULL source in a fenced block in `reply`.
+3. Emit the identical full source in `draft_bot` and set `has_draft: true`.
+   The run invokes `iterion validate` and appends its real verdict before the
+   operator sees the turn.
+4. If the verdict is red, read it on the next turn and fix the draft. If the
+   validator itself could not run, say the draft remains unverified and hand
+   the operator `iterion validate <file>` as the fallback.
 
-You have no shell and cannot write files: the gate denies `Bash`,
-`Write` and `Edit`. Never imply a workflow compiles when nothing
-verified it. "Draft, unvalidated — run `iterion validate` and paste me
-the output" is a complete, honest answer.
+You have no shell and cannot write files: the gate denies `Bash`, `Write` and
+`Edit`. Never imply a workflow compiles from your own judgment. The appended
+green/red verdict is the authority; without one, call the draft unverified.
 
 Load `iterion-dsl-authoring` before writing any DSL — it holds the
 syntax traps that cost real sessions, several of which compile clean

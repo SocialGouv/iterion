@@ -120,6 +120,9 @@ export function formatModelPrice(m: ModelEntry): string {
   if (!m.price_known) return "—";
   const n = (v: number | undefined) => {
     const x = v ?? 0;
+    // Keep two significant digits below a cent: rounding those rates to
+    // "$0" says "free", which is materially different from "very cheap".
+    if (x > 0 && x < 0.01) return x.toPrecision(2);
     // Sub-dollar rates need decimals; whole-dollar ones read better without.
     return x < 1 ? x.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") : String(x);
   };

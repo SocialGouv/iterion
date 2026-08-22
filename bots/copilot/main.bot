@@ -131,6 +131,7 @@ schema gate_in:
   reply:           string
   close:           bool
   quick_replies:   json
+  has_draft:       bool
   validated:       bool
   validate_report: string
   reviewer:        string
@@ -283,7 +284,7 @@ prompt copi_system:
   You READ and you ADVISE. You have NO shell and you cannot write
   files: the permission gate denies Bash, Write, Edit and WebFetch
   outright, so attempting any of them only wastes a turn. Your reach
-  is Read, Glob, Grep, WebSearch and your skills — which is enough,
+  is Read, Glob, Grep and your skills — which is enough,
   because everything iterion persists is a file you can read.
 
   When real work is needed — implementing a feature, reviewing a PR,
@@ -454,6 +455,9 @@ agent copi:
   reasoning_effort: "${ITERION_COPILOT_EFFORT:-medium}"
   input: turn_input
   output: copi_turn
+  ## The validator reads this versioned output from the run store. Publish
+  ## every turn; has_draft decides whether the validation branch is entered.
+  publish: copi_draft
   system: copi_system
   user: copi_user
   ## The read-only toolset, and on claw this list BINDS. `bash`,
@@ -534,15 +538,16 @@ def out(ok, report):
     raise SystemExit(0)
 if not run_dir:
     out(False, 'could not locate the run directory, so the draft was NOT verified')
-cands = sorted(glob.glob(os.path.join(run_dir, 'artifacts', 'copi', '*.json')))
+cands = glob.glob(os.path.join(run_dir, 'artifacts', 'copi', '*.json'))
 if not cands:
     out(False, 'no draft artifact found, so the draft was NOT verified')
 try:
-    with open(cands[-1], encoding='utf-8') as fh:
+    latest = max(cands, key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+    with open(latest, encoding='utf-8') as fh:
         art = json.load(fh)
 except (OSError, ValueError) as exc:
     out(False, 'could not read the draft artifact (' + str(exc) + '), so it was NOT verified')
-payload = art.get('output', art) if isinstance(art, dict) else {}
+payload = art.get('data', {}) if isinstance(art, dict) else {}
 draft = payload.get('draft_bot', '') if isinstance(payload, dict) else ''
 if not isinstance(draft, str) or draft.strip() == '':
     out(True, '')
@@ -578,7 +583,10 @@ compute gate:
     wants_review:  "input.reviewer == 'on' and not input.close"
     reviewer:      "input.reviewer"
     operator_message: "if(input.operator_message, input.operator_message, input.initial_message)"
-    reply:         "if(input.validate_report == '', input.reply, if(input.validated, input.reply + '\n\n---\n\n✅ `iterion validate` passed on this draft.', input.reply + '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n' + input.validate_report + '\n```'))"
+    ## has_draft is CURRENT-turn state. validate_draft output persists across
+    ## loop/resume, so its report alone cannot distinguish a fresh verdict
+    ## from a prior design turn (#484).
+    reply:         "if(not input.has_draft or input.validate_report == '', input.reply, if(input.validated, input.reply + '\n\n---\n\n✅ `iterion validate` passed on this draft.', input.reply + '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n' + input.validate_report + '\n```'))"
     quick_replies: "input.quick_replies"
 
 ## The optional cross-review. A JUDGE, not an agent: it produces a
@@ -709,10 +717,10 @@ workflow copilot:
   ## better than shelling out for it.
   ##
   ## Pattern semantics, verified: globToRegexp anchors ^...$ and turns
-  ## both * and ** into .* with NO path-segment meaning, and Read/Write
-  ## patterns match the ABSOLUTE path claude_code emits. So
-  ## `Read(.env*)` is INERT (it can never match /home/u/repo/.env) and a
-  ## path rule must wrap its token in stars. But a BARE substring is the
+  ## both * and ** into .* with NO path-segment meaning. Claw evaluates the
+  ## RAW model path, which may be relative; claude_code commonly emits an
+  ## absolute one. Credential rules must therefore match BOTH `.env` and
+  ## `/home/u/repo/.env`. But a BARE substring is the
   ## opposite mistake: `Read(*token*)` denied `pkg/dsl/parser/token.go`,
   ## `Read(*secrets*)` denied `pkg/secrets/store.go`, `Read(*.iterion/*)`
   ## denied the run store the debug posture reads, and `Read(*.claude/*)`
@@ -725,8 +733,8 @@ workflow copilot:
   ## depth, not a secret vault. The behavioural table in
   ## e2e/copilot_loop_test.go is what keeps it honest.
   permission: deny
-  allow: ["Read(**)", "Glob", "Grep", "WebSearch", "TodoWrite", "Skill"]
-  deny: ["Bash", "Task", "Write", "Edit", "NotebookEdit", "WebFetch", "Read(*/.env)", "Read(*/.env.*)", "Read(*/.ssh/*)", "Read(*/.aws/*)", "Read(*/.gnupg/*)", "Read(*/.docker/config.json)", "Read(*/.claude/.credentials.json)", "Read(*/.codex/auth.json)", "Read(*/.iterion/secrets.json)", "Read(*/.iterion/secrets.key)", "Read(*/cli-auth.json)", "Read(*/.netrc)", "Read(*/.git-credentials)", "Read(*id_rsa*)", "Read(*id_ed25519*)", "Read(*.pem)", "Read(*.key)", "Read(*.p12)"]
+  allow: ["Read(**)", "Glob", "Grep", "TodoWrite", "Skill"]
+  deny: ["Bash", "Task", "Write", "Edit", "NotebookEdit", "WebFetch", "Read(**.env)", "Read(**.env.*)", "Read(**.ssh/*)", "Read(**.aws/*)", "Read(**.gnupg/*)", "Read(**.docker/config.json)", "Read(**.claude/.credentials.json)", "Read(**.codex/auth.json)", "Read(**.iterion/secrets.json)", "Read(**.iterion/secrets.key)", "Read(**cli-auth.json)", "Read(**.netrc)", "Read(**.git-credentials)", "Read(*id_rsa*)", "Read(*id_ed25519*)", "Read(*.pem)", "Read(*.key)", "Read(*.p12)"]
 
   budget:
     max_parallel_branches: 1
@@ -765,6 +773,7 @@ workflow copilot:
     reply:           "{{outputs.copi.reply}}",
     close:           "{{outputs.copi.close}}",
     quick_replies:   "{{outputs.copi.quick_replies}}",
+    has_draft:       "{{outputs.copi.has_draft}}",
     validated:       "true",
     validate_report: "",
     initial_message:  "{{outputs.seed.operator_message}}",
@@ -776,6 +785,7 @@ workflow copilot:
     reply:           "{{outputs.copi.reply}}",
     close:           "{{outputs.copi.close}}",
     quick_replies:   "{{outputs.copi.quick_replies}}",
+    has_draft:       "{{outputs.copi.has_draft}}",
     validated:       "{{outputs.validate_draft.validated}}",
     validate_report: "{{outputs.validate_draft.validate_report}}",
     initial_message:  "{{outputs.seed.operator_message}}",
@@ -809,14 +819,17 @@ workflow copilot:
     critique:      "{{outputs.review.critique}}"
   }
 
-  compose -> chat with {
-    reply:         "{{outputs.compose.reply}}",
-    quick_replies: "{{outputs.compose.quick_replies}}"
-  }
-
+  ## Order matters for the same #484 reason as gate above. On a reviewed turn
+  ## both gate and compose have output; compose must map LAST or the unselected
+  ## direct edge erases the critique before the operator reads it.
   gate -> chat else with {
     reply:         "{{outputs.gate.reply}}",
     quick_replies: "{{outputs.gate.quick_replies}}"
+  }
+
+  compose -> chat with {
+    reply:         "{{outputs.compose.reply}}",
+    quick_replies: "{{outputs.compose.quick_replies}}"
   }
 
   ## The conversation loop. Four things travel here, and each one is

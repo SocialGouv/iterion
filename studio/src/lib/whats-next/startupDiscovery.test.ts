@@ -1,8 +1,22 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 
 import type { RunSummary } from "@/api/runs";
+import type { RunStore } from "@/store/run";
 
-import { candidateWorkflows, pickLiveRunId } from "./startupDiscovery";
+import {
+  attachSessionRun,
+  candidateWorkflows,
+  pickLiveRunId,
+} from "./startupDiscovery";
+
+const api = vi.hoisted(() => ({
+  getRunWithRetry: vi.fn(),
+  listRuns: vi.fn(),
+}));
+
+vi.mock("@/api/runs", () => api);
+
+beforeEach(() => vi.resetAllMocks());
 
 function run(id: string, status: RunSummary["status"]): RunSummary {
   return { id, workflow_name: "whats_next", status } as RunSummary;
@@ -55,5 +69,39 @@ describe("pickLiveRunId", () => {
         run("e", "paused_operator"),
       ]),
     ).toBeNull();
+  });
+});
+
+describe("attachSessionRun", () => {
+  it("returns false when identity changes during history hydration", async () => {
+    let finishHistory!: () => void;
+    const history = new Promise<void>((resolve) => {
+      finishHistory = resolve;
+    });
+    const state = {
+      reset: vi.fn(),
+      applySnapshot: vi.fn(),
+      setRunId: vi.fn(),
+      loadEventHistoryIfMissing: vi.fn(() => history),
+    };
+    const store = { getState: () => state } as unknown as RunStore;
+    api.getRunWithRetry.mockResolvedValueOnce({ run: { id: "run-a" } });
+    let cancelled = false;
+
+    const attaching = attachSessionRun({
+      store,
+      runId: "run-a",
+      botId: "whats-next",
+      scopeKey: "project-a",
+      signal: new AbortController().signal,
+      isCancelled: () => cancelled,
+    });
+    await vi.waitFor(() =>
+      expect(state.loadEventHistoryIfMissing).toHaveBeenCalledWith("run-a"),
+    );
+    cancelled = true;
+    finishHistory();
+
+    await expect(attaching).resolves.toBe(false);
   });
 });

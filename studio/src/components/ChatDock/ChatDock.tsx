@@ -160,6 +160,7 @@ function AssistantDock({
       attentionTitle="The assistant is waiting on you"
       unread={unread}
       attention={needsAttention}
+      openOnReferenceDrag
       dockedRightMode="self"
     >
       {/* The whole dock body is the drop target, not just the textarea: an

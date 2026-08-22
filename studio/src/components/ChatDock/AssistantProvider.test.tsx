@@ -2,7 +2,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ASSISTANT_DOCK_KEY } from "@/lib/chatDock/dockState";
+import {
+  ASSISTANT_DOCK_KEY,
+  DOCK_BREAKPOINT_PX,
+} from "@/lib/chatDock/dockState";
 import { getDefaultRunStore, useRunStoreInstance } from "@/store/run";
 
 import {
@@ -182,6 +185,25 @@ describe("useAssistantReservedWidthPx", () => {
       </AssistantProvider>,
     );
     expect(screen.getByTestId("width").textContent).toBe("0");
+  });
+
+  it("uses the dock as an overlay instead of squeezing compact screens", () => {
+    const previous = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: DOCK_BREAKPOINT_PX,
+    });
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "docked-right");
+    render(
+      <AssistantProvider>
+        <WidthProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("width").textContent).toBe("0");
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: previous,
+    });
   });
 });
 

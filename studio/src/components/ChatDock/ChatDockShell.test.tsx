@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatDockShell, type ChatDockShellProps } from "./ChatDockShell";
+import { REFERENCE_MIME } from "@/lib/chatDock/dragReference";
 
 afterEach(cleanup);
 
@@ -32,6 +33,17 @@ describe("ChatDockShell dock states", () => {
   it("counts unread on the bubble's accessible name", () => {
     renderShell({ dock: "closed", unread: 3 });
     expect(screen.getByRole("button", { name: /open assistant \(3 new\)/i })).toBeTruthy();
+  });
+
+  it("springs open for a reference drag while closed", () => {
+    const { onDockChange } = renderShell({
+      dock: "closed",
+      openOnReferenceDrag: true,
+    });
+    fireEvent.dragEnter(screen.getByRole("button", { name: /open assistant/i }), {
+      dataTransfer: { types: [REFERENCE_MIME] },
+    });
+    expect(onDockChange).toHaveBeenCalledWith("floating");
   });
 
   it("renders a non-modal labelled dialog when floating", () => {

@@ -57,6 +57,11 @@ describe("formatModelPrice", () => {
     const cheap = entry({ input_cost_per_m: 0.25, output_cost_per_m: 2 });
     expect(formatModelPrice(cheap)).toBe("$0.25 / $2 per Mtok");
   });
+
+  it("does not round sub-cent rates down to free", () => {
+    const cheap = entry({ input_cost_per_m: 0.004, output_cost_per_m: 0.0095 });
+    expect(formatModelPrice(cheap)).toBe("$0.0040 / $0.0095 per Mtok");
+  });
 });
 
 describe("modelCapabilityWarning", () => {

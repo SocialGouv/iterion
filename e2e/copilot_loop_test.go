@@ -42,8 +42,12 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,6 +127,11 @@ func TestCopilot_PermissionPolicy_Behaviour(t *testing.T) {
 		{"cred/codex-oauth", "Read", "/home/op/.codex/auth.json", permission.Deny, ""},
 		{"cred/cli-token", "Read", "/home/op/.iterion/cli-auth.json", permission.Deny, ""},
 		{"cred/pem", "Read", repo + "/certs/server.pem", permission.Deny, ""},
+		{"cred/relative-dotenv", "Read", ".env", permission.Deny, "claw gates the raw model path, so repo-relative credential paths must be covered"},
+		{"cred/relative-aws", "Read", ".aws/credentials", permission.Deny, ""},
+		{"cred/relative-iterion", "Read", ".iterion/secrets.json", permission.Deny, ""},
+		{"cred/relative-netrc", "Read", ".netrc", permission.Deny, ""},
+		{"cred/relative-git", "Read", ".git-credentials", permission.Deny, ""},
 
 		// --- and the product must still work ---
 		{"src/token-go", "Read", repo + "/pkg/dsl/parser/token.go", permission.Allow,
@@ -315,6 +324,9 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	if !strings.Contains(validate.Command, "command -v python3") {
 		t.Error("validate_draft assumes python3 exists — a bare-host design turn would fail the whole standing conversation instead of reporting an unverified draft")
+	}
+	if copi.Publish == "" {
+		t.Error("copi does not publish its structured output — validate_draft would have no draft artifact to read")
 	}
 	// The draft is LLM-authored text with quotes, backticks and newlines in
 	// it. A tool command is a shell string with {{...}} substitution, so
@@ -709,15 +721,20 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 		t.Fatalf("load events: %v", eerr)
 	}
 	var composed string
+	var delivered string
 	var sawReview bool
 	for _, ev := range evs {
 		if ev.NodeID == "review" && ev.Type == "node_finished" {
 			sawReview = true
 		}
-		if ev.NodeID != "compose" || ev.Type != "node_finished" {
-			continue
+		if ev.NodeID == "chat" && ev.Type == "human_input_requested" {
+			delivered, _ = ev.Data["instructions"].(string)
 		}
-		if out, ok := ev.Data["output"].(map[string]any); ok {
+		if ev.NodeID == "compose" && ev.Type == "node_finished" {
+			out, ok := ev.Data["output"].(map[string]any)
+			if !ok {
+				continue
+			}
 			composed, _ = out["reply"].(string)
 		}
 	}
@@ -735,6 +752,9 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	}
 	if !strings.Contains(composed, critique) {
 		t.Errorf("the composed reply lost the critique — the reviewer ran, was paid for, and reached nobody:\n%s", composed)
+	}
+	if !strings.Contains(delivered, answer) || !strings.Contains(delivered, critique) {
+		t.Errorf("the chat pause did not deliver both answer and critique to the operator (compose=%q):\n%s", composed, delivered)
 	}
 	// The answer must come FIRST and survive byte-for-byte: the whole reason
 	// the merge is deterministic is that the operator can tell which half is
@@ -772,7 +792,19 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 			wf := compileFixtureStubSafe(t, "copilot/main.bot")
 			exec := newScenarioExecutor()
 			const answer = "Voici le workflow proposé."
+			const plainAnswer = "Voici la réponse suivante, sans draft."
 			exec.on("copi", func(map[string]any) (map[string]any, error) {
+				if exec.callCount("copi") > 1 {
+					return map[string]any{
+						"reply":         plainAnswer,
+						"close":         false,
+						"mode":          "info",
+						"context_brief": "brief",
+						"quick_replies": []any{},
+						"has_draft":     false,
+						"draft_bot":     "",
+					}, nil
+				}
 				return map[string]any{
 					"reply":         answer,
 					"close":         false,
@@ -833,6 +865,95 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 			if !tc.validated && !strings.Contains(instructions, tc.report) {
 				t.Errorf("chat instructions lost validator report %q:\n%s", tc.report, instructions)
 			}
+
+			// A later ordinary turn must not inherit the prior draft verdict. Node
+			// outputs survive loops and resume, so this catches a stale merge that
+			// no single-turn scenario can see.
+			err = eng.Resume(context.Background(), runID, map[string]any{"message": "Question suivante"})
+			if !errors.Is(err, runtime.ErrRunPaused) {
+				t.Fatalf("expected second ErrRunPaused at chat, got: %v", err)
+			}
+			if got := exec.callCount("validate_draft"); got != 1 {
+				t.Fatalf("validate_draft called %d times, want once — the plain turn entered the draft branch", got)
+			}
+			events, err = s.LoadEvents(context.Background(), runID)
+			if err != nil {
+				t.Fatalf("reload events: %v", err)
+			}
+			var latestInstructions string
+			for _, event := range events {
+				if event.NodeID == "chat" && event.Type == "human_input_requested" {
+					latestInstructions, _ = event.Data["instructions"].(string)
+				}
+			}
+			if !strings.Contains(latestInstructions, plainAnswer) {
+				t.Errorf("second chat pause lost the plain answer:\n%s", latestInstructions)
+			}
+			if strings.Contains(latestInstructions, "iterion validate") || strings.Contains(latestInstructions, tc.report) {
+				t.Errorf("second non-draft turn inherited the prior validation verdict:\n%s", latestInstructions)
+			}
 		})
+	}
+}
+
+// TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact executes the
+// authored shell/Python command rather than replacing validate_draft with the
+// scenario executor. It pins the on-disk Artifact shape and numeric version
+// selection — both are invisible to graph-only tests.
+func TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is not installed on this test host")
+	}
+	wf := compileFixture(t, "copilot/main.bot")
+	validate := wf.Nodes["validate_draft"].(*ir.ToolNode)
+
+	runDir := t.TempDir()
+	filesDir := filepath.Join(runDir, "artifact_files")
+	artifactDir := filepath.Join(runDir, "artifacts", "copi")
+	if err := os.MkdirAll(filesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for version, draft := range map[int]string{
+		9:  "old draft that must not be selected",
+		10: "workflow latest { entry: done }",
+	} {
+		body, err := json.Marshal(map[string]any{
+			"version": version,
+			"data":    map[string]any{"draft_bot": draft},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(artifactDir, fmt.Sprintf("%d.json", version)), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	binDir := t.TempDir()
+	fakeIterion := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(fakeIterion, []byte("#!/bin/sh\ntest \"$1\" = validate && grep -q 'workflow latest' \"$2\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", validate.Command)
+	cmd.Env = append(os.Environ(),
+		"ITERION_ARTIFACT_FILES_DIR="+filesDir,
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("validate_draft command: %v\n%s", err, out)
+	}
+	var got struct {
+		Validated      bool   `json:"validated"`
+		ValidateReport string `json:"validate_report"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode validator output %q: %v", out, err)
+	}
+	if !got.Validated || got.ValidateReport != "" {
+		t.Fatalf("validator result = %+v, want validated with empty report", got)
 	}
 }

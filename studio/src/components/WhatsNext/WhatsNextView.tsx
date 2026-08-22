@@ -81,9 +81,7 @@ function WhatsNextConversation({
         {!inSession ? (
           <SessionLauncher
             bot={bot}
-            onLaunch={({ vars }) => {
-              void session.launch(vars);
-            }}
+            onLaunch={({ vars }) => session.launch(vars)}
             busy={session.status === "launching"}
             errorMessage={session.errorMessage}
             discoveryError={session.discoveryError}

@@ -47,6 +47,7 @@ import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
   ASSISTANT_BOT_KEY,
   ASSISTANT_DOCK_KEY,
+  DOCK_BREAKPOINT_PX,
   readDockState,
   writeDockState,
   type DockState,
@@ -124,6 +125,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // (getOrCreateRunStore) — that is keyed by runId, and the assistant's
   // runId is only known after discovery.
   const store = useMemo(() => createRunStore(), []);
+  const [location] = useLocation();
   return (
     <RunStoreProvider store={store}>
       {/* The assistant must not be able to take the app down with it.
@@ -141,6 +143,10 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           the run console and merely loses the dock. */}
       <ErrorBoundary
         area="Assistant session"
+        // A bad transcript/session fold degrades to the app without the
+        // assistant, but navigation gets one fresh mount instead of making
+        // that degradation permanent for the whole browser session.
+        resetKey={location}
         fallback={
           <RunStoreProvider store={getDefaultRunStore()}>
             {children}
@@ -252,7 +258,14 @@ export function useAssistantReservedWidthPx(): number {
   const ctx = useContext(AssistantDockContext);
   const [location] = useLocation();
   if (!ctx?.hasSession) return 0;
-  return ctx.dock === "docked-right" && !isAssistantOwnRoute(location)
+  // On compact screens docked-right is an overlaying side sheet. Reserving
+  // 380px there would squeeze the route to almost nothing; the sheet is
+  // full-width-safe and can be minimised to reveal the untouched page.
+  const reservesLayout =
+    typeof window === "undefined" || window.innerWidth > DOCK_BREAKPOINT_PX;
+  return ctx.dock === "docked-right" &&
+    reservesLayout &&
+    !isAssistantOwnRoute(location)
     ? DOCKED_WIDTH_PX
     : 0;
 }

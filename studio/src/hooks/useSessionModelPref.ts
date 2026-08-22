@@ -74,6 +74,9 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
     key,
     choice: EMPTY,
   });
+  // Invalidates a GET that began before an explicit save/reset. Key cleanup
+  // already handles bot switches; this generation handles same-key races.
+  const mutationGenerationRef = useRef(0);
 
   // Key the rendered state too: a rerender for bot B must not show bot A's
   // choice during the gap before B's passive fetch effect starts.
@@ -98,15 +101,16 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
     if (!key) return;
     const ac = new AbortController();
     let live = true;
+    const generation = mutationGenerationRef.current;
     fetchModelPref(key, { signal: ac.signal })
       .then((p) => {
-        if (!live) return;
+        if (!live || generation !== mutationGenerationRef.current) return;
         const c = toChoice(p);
         choiceRef.current = { key, choice: c };
         setLoaded({
           key,
           choice: c,
-          set: p.set,
+          set: p?.set ?? false,
           loading: false,
           error: null,
           available: true,
@@ -135,6 +139,7 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
     async (next: SessionModelChoice) => {
       // Apply locally first: a server that cannot persist must still let the
       // operator retarget the session they are about to launch.
+      mutationGenerationRef.current += 1;
       choiceRef.current = { key, choice: next };
       setLoaded((prev) => ({
         key,
@@ -165,6 +170,7 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
   );
 
   const reset = useCallback(async () => {
+    mutationGenerationRef.current += 1;
     choiceRef.current = { key, choice: EMPTY };
     setLoaded({
       key,
