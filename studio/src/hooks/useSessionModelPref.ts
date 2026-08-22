@@ -46,46 +46,84 @@ export interface UseSessionModelPrefResult {
 
 const EMPTY: SessionModelChoice = {};
 
+interface PreferenceLoadState {
+  key: string | null;
+  choice: SessionModelChoice;
+  set: boolean;
+  loading: boolean;
+  error: string | null;
+  available: boolean;
+}
+
 function toChoice(p: ModelPref | null): SessionModelChoice {
   if (!p) return EMPTY;
   return { model: p.model, backend: p.backend, effort: p.effort };
 }
 
 export function useSessionModelPref(key: string | null): UseSessionModelPrefResult {
-  const [choice, setChoice] = useState<SessionModelChoice>(EMPTY);
-  const [set, setSet] = useState(false);
-  const [loading, setLoading] = useState(!!key);
+  const [loaded, setLoaded] = useState<PreferenceLoadState>({
+    key,
+    choice: EMPTY,
+    set: false,
+    loading: !!key,
+    error: null,
+    available: true,
+  });
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [available, setAvailable] = useState(true);
-  const choiceRef = useRef<SessionModelChoice>(EMPTY);
+  const choiceRef = useRef<{ key: string | null; choice: SessionModelChoice }>({
+    key,
+    choice: EMPTY,
+  });
+
+  // Key the rendered state too: a rerender for bot B must not show bot A's
+  // choice during the gap before B's passive fetch effect starts.
+  const active: PreferenceLoadState =
+    loaded.key === key
+      ? loaded
+      : {
+          key,
+          choice: EMPTY,
+          set: false,
+          loading: !!key,
+          error: null,
+          available: true,
+        };
 
   useEffect(() => {
-    if (!key) {
-      setLoading(false);
-      return;
-    }
+    // A preference belongs to exactly one key. Clear the synchronous launch
+    // value before loading the next key so a bot switch can never launch with
+    // the previous bot's model while this request is in flight (or forever
+    // when the new key is unavailable).
+    choiceRef.current = { key, choice: EMPTY };
+    if (!key) return;
     const ac = new AbortController();
     let live = true;
-    setLoading(true);
     fetchModelPref(key, { signal: ac.signal })
       .then((p) => {
         if (!live) return;
         const c = toChoice(p);
-        choiceRef.current = c;
-        setChoice(c);
-        setSet(p.set);
-        setAvailable(true);
+        choiceRef.current = { key, choice: c };
+        setLoaded({
+          key,
+          choice: c,
+          set: p.set,
+          loading: false,
+          error: null,
+          available: true,
+        });
       })
       .catch((e) => {
         if (!live || ac.signal.aborted) return;
         // A server without the store is a normal configuration, not an error
         // worth shouting about — the session simply cannot remember.
-        setAvailable(false);
-        setError(errorMessage(e));
-      })
-      .finally(() => {
-        if (live) setLoading(false);
+        setLoaded({
+          key,
+          choice: EMPTY,
+          set: false,
+          loading: false,
+          error: errorMessage(e),
+          available: false,
+        });
       });
     return () => {
       live = false;
@@ -97,18 +135,28 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
     async (next: SessionModelChoice) => {
       // Apply locally first: a server that cannot persist must still let the
       // operator retarget the session they are about to launch.
-      choiceRef.current = next;
-      setChoice(next);
-      setSet(true);
+      choiceRef.current = { key, choice: next };
+      setLoaded((prev) => ({
+        key,
+        choice: next,
+        set: true,
+        loading: false,
+        error: null,
+        available: prev.key === key ? prev.available : true,
+      }));
       if (!key) return;
       setSaving(true);
-      setError(null);
       try {
         await saveModelPref({ key, ...next });
-        setAvailable(true);
+        setLoaded((prev) =>
+          prev.key === key ? { ...prev, available: true } : prev,
+        );
       } catch (e) {
-        setAvailable(false);
-        setError(errorMessage(e));
+        setLoaded((prev) =>
+          prev.key === key
+            ? { ...prev, available: false, error: errorMessage(e) }
+            : prev,
+        );
       } finally {
         setSaving(false);
       }
@@ -117,22 +165,42 @@ export function useSessionModelPref(key: string | null): UseSessionModelPrefResu
   );
 
   const reset = useCallback(async () => {
-    choiceRef.current = EMPTY;
-    setChoice(EMPTY);
-    setSet(false);
+    choiceRef.current = { key, choice: EMPTY };
+    setLoaded({
+      key,
+      choice: EMPTY,
+      set: false,
+      loading: false,
+      error: null,
+      available: true,
+    });
     if (!key) return;
     setSaving(true);
-    setError(null);
     try {
       await clearModelPref(key);
     } catch (e) {
-      setError(errorMessage(e));
+      setLoaded((prev) =>
+        prev.key === key ? { ...prev, error: errorMessage(e) } : prev,
+      );
     } finally {
       setSaving(false);
     }
   }, [key]);
 
-  const current = useCallback(() => choiceRef.current, []);
+  const current = useCallback(
+    () => (choiceRef.current.key === key ? choiceRef.current.choice : EMPTY),
+    [key],
+  );
 
-  return { choice, set, loading, saving, error, available, save, reset, current };
+  return {
+    choice: active.choice,
+    set: active.set,
+    loading: active.loading,
+    saving,
+    error: active.error,
+    available: active.available,
+    save,
+    reset,
+    current,
+  };
 }

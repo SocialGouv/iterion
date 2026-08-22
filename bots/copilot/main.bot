@@ -521,7 +521,11 @@ agent copi:
 tool validate_draft:
   description: "Deterministic check: compile the .bot Copi just drafted"
   output: validate_out
-  command: `python3 -c "
+  ## Bare-host installs are not guaranteed to carry Python. Missing the
+  ## helper must degrade to an explicit NOT-verified verdict, not fail the
+  ## days-long conversation before the operator can read Copi's draft.
+  command: `if ! command -v python3 >/dev/null 2>&1; then printf '%s\n' '{"validated":false,"validate_report":"python3 is not on PATH here, so the draft was NOT verified — install python3 or run: iterion validate <file>"}'; exit 0; fi
+python3 -c "
 import glob, json, os, subprocess, sys, tempfile
 files_dir = os.environ.get('ITERION_ARTIFACT_FILES_DIR', '')
 run_dir = os.path.dirname(files_dir.rstrip('/')) if files_dir else ''
@@ -751,6 +755,23 @@ workflow copilot:
   ## need, over-claiming costs one no-op validation.
   copi -> validate_draft when has_draft
 
+  ## Keep the no-draft edge BEFORE validate_draft -> gate. The runtime merges
+  ## mappings from every incoming source that has produced output, not only
+  ## the edge selected this turn; later mappings win. Once validate_draft has
+  ## run, its verdict must therefore be the last mapping into gate or these
+  ## empty defaults erase it. TestCopilot_DraftValidation_ReachesChat pins the
+  ## observable contract while the engine-level selection gap is tracked.
+  copi -> gate else with {
+    reply:           "{{outputs.copi.reply}}",
+    close:           "{{outputs.copi.close}}",
+    quick_replies:   "{{outputs.copi.quick_replies}}",
+    validated:       "true",
+    validate_report: "",
+    initial_message:  "{{outputs.seed.operator_message}}",
+    operator_message: "{{outputs.chat.message}}",
+    reviewer:        "{{vars.reviewer}}"
+  }
+
   validate_draft -> gate with {
     reply:           "{{outputs.copi.reply}}",
     close:           "{{outputs.copi.close}}",
@@ -765,17 +786,6 @@ workflow copilot:
     ## schema — the two disagree, so `{{input.x}}` here happens to work
     ## only because a `--var` launch also populates the run inputs. The
     ## var is the thing actually meant: the switch is frozen at launch.
-    reviewer:        "{{vars.reviewer}}"
-  }
-
-  copi -> gate else with {
-    reply:           "{{outputs.copi.reply}}",
-    close:           "{{outputs.copi.close}}",
-    quick_replies:   "{{outputs.copi.quick_replies}}",
-    validated:       "true",
-    validate_report: "",
-    initial_message:  "{{outputs.seed.operator_message}}",
-    operator_message: "{{outputs.chat.message}}",
     reviewer:        "{{vars.reviewer}}"
   }
 

@@ -232,7 +232,7 @@ func validateChatSurface(c *ChatSurface) error {
 	if len(c.Nodes) > 0 && humans == 0 {
 		return fmt.Errorf("chat: no node is the operator's turn (kind: human) — the session could never be answered")
 	}
-	if c.Launcher != nil && len(c.Launcher.Presets) == 0 && c.SeedVar == "" {
+	if c.Launcher != nil && c.SeedVar == "" {
 		return fmt.Errorf("chat: a launcher form was declared but seed_var is empty — the operator's first message would be discarded")
 	}
 	return nil

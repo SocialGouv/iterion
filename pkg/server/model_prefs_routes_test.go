@@ -103,6 +103,19 @@ func TestModelPref_RejectsAnUnknownEffort(t *testing.T) {
 	}
 }
 
+func TestModelPref_RejectsAnUnknownBackend(t *testing.T) {
+	srv := newPrefsServer(t, modelprefs.NewMemStore())
+
+	rec, _ := prefRequest(t, srv, http.MethodPut, "/api/v1/preferences/model",
+		`{"key":"whats-next","backend":"clua"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "claude_code") {
+		t.Errorf("the error should list the valid backends: %s", rec.Body.String())
+	}
+}
+
 func TestModelPref_RejectsABlankKey(t *testing.T) {
 	srv := newPrefsServer(t, modelprefs.NewMemStore())
 

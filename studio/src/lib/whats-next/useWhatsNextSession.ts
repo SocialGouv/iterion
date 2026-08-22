@@ -8,7 +8,7 @@
 // by a view. Navigation therefore neither restarts the session nor
 // drops the transcript — see docs/adr/091-ubiquitous-assistant-chat-dock.md.
 // What used to bound a stale session (the view unmounting) is now explicit:
-// the identity-change effect below drops a session that belongs to another
+// the identity-change effects below drop a session that belongs to another
 // bot, project or repo.
 //
 // The hook is a composition shell over the concern modules in this
@@ -141,10 +141,10 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     launchRepo,
   } = useSessionScope();
 
-  // A session belongs to BOTH a bot and a scope. A bot switch (including a
-  // persisted id resolving to a manifest bot after registry discovery), a
-  // project switch, or a cloud sidebar repo switch must drop the attached
-  // run so discovery starts clean for that identity.
+  // A session belongs to BOTH a bot and a scope. Bot and scope are tracked
+  // separately because scope readiness may never settle (for example, a
+  // signed-in cloud user with no active team). A bot switch must still drop
+  // the attached run in that state.
   //
   // This used to be covered incidentally: the view unmounted on the
   // navigate-to-"/" that follows a project switch, taking the session's
@@ -163,30 +163,32 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // flash in an open dock, and a remembered runId written under a scope key
   // nothing reads again. Cheap on one route; paid on every route now.
   //
-  // prevIdentityRef is written only while the scope is ready, so it pins the
-  // last SETTLED identity and a real switch is still caught immediately.
-  // Keep bot and scope as separate fields rather than concatenating them:
-  // scope keys are opaque, so no delimiter can be assumed collision-free.
-  const prevIdentityRef = useRef<
-    { botId: string; scopeKey: string | null } | undefined
-  >(undefined);
+  const prevBotIdRef = useRef(bot.id);
   useEffect(() => {
-    if (!scopeReady) return;
-    const prev = prevIdentityRef.current;
-    prevIdentityRef.current = { botId: bot.id, scopeKey };
-    // First settled resolution is not a switch. Every later change in either
-    // component is: retaining runId would route the new bot's composer into
-    // the previous bot's run and fold that transcript through the wrong map.
-    if (
-      prev === undefined ||
-      (prev.botId === bot.id && prev.scopeKey === scopeKey)
-    ) {
-      return;
-    }
+    if (prevBotIdRef.current === bot.id) return;
+    prevBotIdRef.current = bot.id;
+    // Retaining runId would route the new bot's composer into the previous
+    // bot's run and fold that transcript through the wrong manifest map.
     setRunId(null);
     setStatus("idle");
     store.getState().reset();
-  }, [scopeReady, scopeKey, bot.id, store]);
+  }, [bot.id, store]);
+
+  // Only a settled scope key can be compared. `scopeKey` is not stable at
+  // mount: a cloud cold load walks `null -> "team:all" -> "team:<repo>"` as
+  // server-info, auth, active-team and team-repos queries land. Pin the last
+  // settled value so those loading transitions are not mistaken for project
+  // switches, while a later real scope change still starts clean discovery.
+  const prevScopeRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!scopeReady) return;
+    const prev = prevScopeRef.current;
+    prevScopeRef.current = scopeKey;
+    if (prev === undefined || prev === scopeKey) return;
+    setRunId(null);
+    setStatus("idle");
+    store.getState().reset();
+  }, [scopeReady, scopeKey, store]);
 
   // Startup auto-attach: live run first, remembered run second, idle
   // launcher last. Owns discoveryError + retry.

@@ -313,6 +313,9 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !strings.Contains(validate.Command, "iterion") || !strings.Contains(validate.Command, "validate") {
 		t.Errorf("validate_draft does not run `iterion validate` — its command is %q", validate.Command)
 	}
+	if !strings.Contains(validate.Command, "command -v python3") {
+		t.Error("validate_draft assumes python3 exists — a bare-host design turn would fail the whole standing conversation instead of reporting an unverified draft")
+	}
 	// The draft is LLM-authored text with quotes, backticks and newlines in
 	// it. A tool command is a shell string with {{...}} substitution, so
 	// splicing the draft in would be both broken and a command-injection
@@ -738,5 +741,98 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	// the assistant's and which is the review's.
 	if strings.Index(composed, answer) > strings.Index(composed, critique) {
 		t.Error("the critique precedes the answer — the operator reads the verdict before the thing it judges")
+	}
+}
+
+// TestCopilot_DraftValidation_ReachesChat exercises the design-only branch
+// end to end. Static graph assertions cannot prove that the validator output
+// reaches the operator: the branch only runs when Copi actually emits a
+// non-empty draft and has_draft=true.
+func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		validated  bool
+		report     string
+		wantSuffix string
+	}{
+		{
+			name:       "valid",
+			validated:  true,
+			report:     "draft.bot: valid",
+			wantSuffix: "✅ `iterion validate` passed on this draft.",
+		},
+		{
+			name:       "invalid",
+			validated:  false,
+			report:     "C034 unknown input field",
+			wantSuffix: "⚠️ `iterion validate` did NOT pass on this draft:",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := compileFixtureStubSafe(t, "copilot/main.bot")
+			exec := newScenarioExecutor()
+			const answer = "Voici le workflow proposé."
+			exec.on("copi", func(map[string]any) (map[string]any, error) {
+				return map[string]any{
+					"reply":         answer,
+					"close":         false,
+					"mode":          "design",
+					"context_brief": "brief",
+					"quick_replies": []any{},
+					"has_draft":     true,
+					"draft_bot":     "workflow draft { entry: start }",
+				}, nil
+			})
+			exec.on("validate_draft", func(map[string]any) (map[string]any, error) {
+				return map[string]any{
+					"validated":       tc.validated,
+					"validate_report": tc.report,
+				}, nil
+			})
+			wf.Vars["reviewer"].Default = "off"
+			wf.Vars["initial_message"].Default = "Conçois un workflow"
+
+			s := tmpStore(t)
+			runID := "e2e-copi-draft-" + tc.name
+			eng := runtime.New(wf, s, exec)
+			err := eng.Run(context.Background(), runID, nil)
+			if !errors.Is(err, runtime.ErrRunPaused) {
+				t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
+			}
+			if !exec.wasCalled("validate_draft") {
+				t.Fatal("validate_draft never ran despite has_draft=true")
+			}
+
+			events, err := s.LoadEvents(context.Background(), runID)
+			if err != nil {
+				t.Fatalf("load events: %v", err)
+			}
+			var instructions string
+			var validateOutput map[string]any
+			var gateOutput map[string]any
+			for _, event := range events {
+				if event.Type == "node_finished" {
+					output, _ := event.Data["output"].(map[string]any)
+					switch event.NodeID {
+					case "validate_draft":
+						validateOutput = output
+					case "gate":
+						gateOutput = output
+					}
+				}
+				if event.NodeID == "chat" && event.Type == "human_input_requested" {
+					instructions, _ = event.Data["instructions"].(string)
+				}
+			}
+			if !strings.Contains(instructions, answer) {
+				t.Errorf("chat instructions lost Copi's answer (validate=%v gate=%v):\n%s", validateOutput, gateOutput, instructions)
+			}
+			if !strings.Contains(instructions, tc.wantSuffix) {
+				t.Errorf("chat instructions lost validator verdict %q (validate=%v gate=%v):\n%s", tc.wantSuffix, validateOutput, gateOutput, instructions)
+			}
+			if !tc.validated && !strings.Contains(instructions, tc.report) {
+				t.Errorf("chat instructions lost validator report %q:\n%s", tc.report, instructions)
+			}
+		})
 	}
 }

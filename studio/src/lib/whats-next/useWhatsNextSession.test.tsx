@@ -12,6 +12,8 @@ const discovery = vi.hoisted(() => ({
   onAttached: null as ((runId: string) => void) | null,
 }));
 
+const sessionScope = vi.hoisted(() => ({ ready: true }));
+
 vi.mock("@/hooks/useRunWebSocket", () => ({
   useRunWebSocket: () => undefined,
 }));
@@ -33,7 +35,7 @@ vi.mock("@/hooks/useSessionModelPref", () => ({
 vi.mock("./sessionScope", () => ({
   useSessionScope: () => ({
     scopeKey: "project-a",
-    ready: true,
+    ready: sessionScope.ready,
     repoScopeEnabled: false,
     overview: false,
     activeRepo: null,
@@ -80,6 +82,7 @@ const bot = (id: string): FirstClassBot => ({
 afterEach(() => {
   cleanup();
   discovery.onAttached = null;
+  sessionScope.ready = true;
 });
 
 describe("useWhatsNextSession", () => {
@@ -101,6 +104,31 @@ describe("useWhatsNextSession", () => {
       expect(result.current.runId).toBe("run-a");
       expect(store.getState().runId).toBe("run-a");
     });
+
+    rerender({ selectedBot: bot("copilot") });
+
+    await waitFor(() => {
+      expect(result.current.runId).toBeNull();
+      expect(store.getState().runId).toBeNull();
+    });
+  });
+
+  it("drops the previous bot's run even when scope resolution is not ready", async () => {
+    sessionScope.ready = false;
+    const store = createRunStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RunStoreProvider store={store}>{children}</RunStoreProvider>
+    );
+    const { result, rerender } = renderHook(
+      ({ selectedBot }) => useWhatsNextSession(selectedBot),
+      {
+        initialProps: { selectedBot: bot("whats-next") },
+        wrapper,
+      },
+    );
+
+    act(() => discovery.onAttached?.("run-a"));
+    await waitFor(() => expect(result.current.runId).toBe("run-a"));
 
     rerender({ selectedBot: bot("copilot") });
 

@@ -102,6 +102,11 @@ func (s *Server) handlePutModelPref(w http.ResponseWriter, r *http.Request) {
 			"%q is not a reasoning effort (valid: %s)", req.Effort, strings.Join(validEffortNames(), ", "))
 		return
 	}
+	if req.Backend != "" && !validModelBackendNames[req.Backend] {
+		s.httpErrorFor(w, r, http.StatusBadRequest,
+			"%q is not a backend (valid: %s)", req.Backend, strings.Join(validBackendNames(), ", "))
+		return
+	}
 	tenantID, userID := modelPrefScope(r)
 	if err := s.cfg.ModelPrefs.Set(r.Context(), &modelprefs.Pref{
 		TenantID: tenantID, UserID: userID, Key: key,

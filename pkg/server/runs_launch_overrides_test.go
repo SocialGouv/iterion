@@ -37,6 +37,16 @@ func TestValidateModelOverrides(t *testing.T) {
 		t.Errorf("error should list the valid levels, got %q", err)
 	}
 
+	err = validateModelOverrides([]runview.ModelOverrideEntry{
+		{Selector: "*", Backend: "clua"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown backend")
+	}
+	if !strings.Contains(err.Error(), "claude_code") {
+		t.Errorf("error should list the valid backends, got %q", err)
+	}
+
 	if err := validateModelOverrides([]runview.ModelOverrideEntry{
 		{Selector: "  ", Model: "anthropic/claude-opus-5"},
 	}); err == nil {
