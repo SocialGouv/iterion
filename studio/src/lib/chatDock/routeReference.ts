@@ -156,10 +156,16 @@ const MAX_DOT_TOKENS_PER_SEGMENT = 3;
 const BOT_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function looksLikePath(value: string): boolean {
+  // A reference is always workspace-relative. A crafted /editor?file= URL is
+  // attacker-controlled, and the assistant may hold a shell; accepting an
+  // absolute path or a `..` segment would turn a clicked link into a pointer
+  // outside the workspace rather than merely untrusted data inside it.
+  if (value.startsWith("/")) return false;
   const segments = value.split("/");
   if (segments.length > 12) return false;
   for (const seg of segments) {
-    if (seg === "") continue; // leading/trailing or doubled slash
+    if (seg === "") continue; // trailing or doubled slash
+    if (seg === "..") return false;
     if (seg.length > MAX_PATH_SEGMENT_LEN) return false;
     if (seg.split(".").filter(Boolean).length > MAX_DOT_TOKENS_PER_SEGMENT) {
       return false;

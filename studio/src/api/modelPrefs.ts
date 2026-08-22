@@ -54,10 +54,10 @@ export async function clearModelPref(key: string): Promise<ModelPref> {
 }
 
 // modelPrefOverrides turns a preference into the `model_overrides` a launch
-// takes. The selector is "*" — every LLM node — because a conversational
-// session is one agent from the operator's point of view, whatever the bot's
-// internal graph looks like. Returns undefined when nothing is chosen, so the
-// bot's own DSL defaults apply untouched.
+// takes. The selector is "agent": the operator is choosing the answering
+// model, not retargeting internal judges. Keeping judges on their declared
+// model preserves cross-family review. Returns undefined when nothing is
+// chosen, so the bot's own DSL defaults apply untouched.
 export function modelPrefOverrides(
   pref: Pick<ModelPref, "model" | "backend" | "effort"> | null | undefined,
 ): { selector: string; model?: string; backend?: string; effort?: string }[] | undefined {
@@ -66,5 +66,5 @@ export function modelPrefOverrides(
   const backend = pref.backend?.trim() || undefined;
   const effort = pref.effort?.trim() || undefined;
   if (!model && !backend && !effort) return undefined;
-  return [{ selector: "*", model, backend, effort }];
+  return [{ selector: "agent", model, backend, effort }];
 }

@@ -14,9 +14,9 @@ describe("modelPrefOverrides", () => {
     ).toBeUndefined();
   });
 
-  // Selector "*" — every LLM node. A conversational session is one agent from
-  // the operator's point of view, whatever the bot's graph looks like.
-  it("targets every LLM node with the chosen dimensions", () => {
+  // Selector "agent" changes the answering model without collapsing an
+  // explicitly cross-family judge onto the same choice.
+  it("targets agent nodes with the chosen dimensions", () => {
     expect(
       modelPrefOverrides({
         model: "anthropic/claude-opus-5",
@@ -25,7 +25,7 @@ describe("modelPrefOverrides", () => {
       }),
     ).toEqual([
       {
-        selector: "*",
+        selector: "agent",
         model: "anthropic/claude-opus-5",
         backend: "claude_code",
         effort: "ultracode",
@@ -35,7 +35,12 @@ describe("modelPrefOverrides", () => {
 
   it("omits the dimensions left on the bot default", () => {
     expect(modelPrefOverrides({ effort: "high" })).toEqual([
-      { selector: "*", model: undefined, backend: undefined, effort: "high" },
+      {
+        selector: "agent",
+        model: undefined,
+        backend: undefined,
+        effort: "high",
+      },
     ]);
   });
 });

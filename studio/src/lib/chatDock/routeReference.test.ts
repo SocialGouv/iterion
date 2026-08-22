@@ -129,6 +129,23 @@ describe("referenceForRoute", () => {
     expect(referenceForRoute("/editor")?.ref).toBe("view/editor");
   });
 
+  // A URL is attacker-controlled. The reference may name untrusted DATA in
+  // the workspace, but it must never aim a tool-using assistant outside it.
+  it("refuses absolute paths and parent traversal", () => {
+    expect(referenceForRoute("/editor", "?file=/etc/shadow")?.ref).toBe(
+      "view/editor",
+    );
+    expect(
+      referenceForRoute("/editor", "?file=../../../.ssh/id_rsa")?.ref,
+    ).toBe("view/editor");
+    expect(referenceForRoute("/repos/%2Fetc%2Fshadow")?.ref).toBe(
+      "view/repos",
+    );
+    expect(referenceForRoute("/repos/acme%2F..%2Fsecret")?.ref).toBe(
+      "view/repos",
+    );
+  });
+
   // The shape allowlist, kind by kind. Entity pointers have known
   // formats; a value that is not one is not a reference, and the route
   // falls back to saying which screen the operator is on.

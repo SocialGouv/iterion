@@ -134,6 +134,10 @@ schema gate_in:
   validated:       bool
   validate_report: string
   reviewer:        string
+  ## On turn 1 chat has not run yet, so carry both candidates through
+  ## the gate and let it pick the current operator message deterministically.
+  initial_message:  string
+  operator_message: string
 
 schema gate_out:
   is_close:      bool
@@ -145,6 +149,7 @@ schema gate_out:
   reply:         string
   quick_replies: json
   reviewer:      string
+  operator_message: string
 
 ## What the reviewer reads, and what it gives back. It sees the answer
 ## and the question that produced it — not the whole transcript: a
@@ -568,6 +573,7 @@ compute gate:
     is_close:      "input.close"
     wants_review:  "input.reviewer == 'on' and not input.close"
     reviewer:      "input.reviewer"
+    operator_message: "if(input.operator_message, input.operator_message, input.initial_message)"
     reply:         "if(input.validate_report == '', input.reply, if(input.validated, input.reply + '\n\n---\n\n✅ `iterion validate` passed on this draft.', input.reply + '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n' + input.validate_report + '\n```'))"
     quick_replies: "input.quick_replies"
 
@@ -751,6 +757,8 @@ workflow copilot:
     quick_replies:   "{{outputs.copi.quick_replies}}",
     validated:       "{{outputs.validate_draft.validated}}",
     validate_report: "{{outputs.validate_draft.validate_report}}",
+    initial_message:  "{{outputs.seed.operator_message}}",
+    operator_message: "{{outputs.chat.message}}",
     ## `{{vars.reviewer}}`, not `{{input.reviewer}}`. On an EDGE, `input`
     ## resolves against the RUN's inputs at execution time, while the
     ## compile-time check (C034) validates it against the SOURCE node's
@@ -766,6 +774,8 @@ workflow copilot:
     quick_replies:   "{{outputs.copi.quick_replies}}",
     validated:       "true",
     validate_report: "",
+    initial_message:  "{{outputs.seed.operator_message}}",
+    operator_message: "{{outputs.chat.message}}",
     reviewer:        "{{vars.reviewer}}"
   }
 
@@ -776,7 +786,7 @@ workflow copilot:
   ## The optional detour. `wants_review` already excludes a closing
   ## turn, so this can never fire alongside the done edge above.
   gate -> review when wants_review with {
-    operator_message: "{{outputs.chat.message}}",
+    operator_message: "{{outputs.gate.operator_message}}",
     reply:            "{{outputs.gate.reply}}",
     mode:             "{{outputs.copi.mode}}",
     quick_replies:    "{{outputs.gate.quick_replies}}",

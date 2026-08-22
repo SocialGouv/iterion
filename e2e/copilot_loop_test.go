@@ -662,8 +662,10 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "copilot/main.bot")
 	exec := newScenarioExecutor()
 
+	const question = "Pourquoi C176 refuse-t-il cette route ?"
 	const answer = "C176 refuse une route qui change les capacites du noeud."
 	const critique = "**1.** La reponse inverse la semantique de `permission: deny`."
+	var reviewInput map[string]any
 
 	exec.on("copi", func(map[string]any) (map[string]any, error) {
 		return map[string]any{
@@ -676,7 +678,8 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 			"draft_bot":     "",
 		}, nil
 	})
-	exec.on("review", func(map[string]any) (map[string]any, error) {
+	exec.on("review", func(input map[string]any) (map[string]any, error) {
+		reviewInput = input
 		return map[string]any{"critique": critique}, nil
 	})
 
@@ -685,6 +688,7 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	// `--var reviewer=on` launch does. Passing it as a run INPUT would leave
 	// the default "off" in place and the reviewer branch would never fire.
 	wf.Vars["reviewer"].Default = "on"
+	wf.Vars["initial_message"].Default = question
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
@@ -716,6 +720,9 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	}
 	if !sawReview {
 		t.Fatal("the reviewer never ran — `wants_review` did not route, so the switch is decorative")
+	}
+	if got := fmt.Sprint(reviewInput["operator_message"]); got != question {
+		t.Errorf("the first-turn reviewer received operator_message %q, want %q", got, question)
 	}
 	if composed == "" {
 		t.Fatal("compose produced no reply — the reviewer ran and reached nobody")

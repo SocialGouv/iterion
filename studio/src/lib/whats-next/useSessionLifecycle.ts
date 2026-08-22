@@ -102,9 +102,9 @@ export function useSessionLifecycle(opts: {
             : {}),
           // The chat session was the one launch surface that could not
           // retarget its model — the per-run override mechanism already
-          // existed and was generic, it just was not wired here. Selector "*"
-          // (every LLM node): a conversational session is one agent from the
-          // operator's point of view, whatever the bot's graph looks like.
+          // existed and was generic, it just was not wired here. The helper
+          // targets agent nodes only: the operator changes the answering
+          // model while explicit judges keep their independent family.
           // Undefined when nothing is chosen, so the bot's DSL defaults apply
           // untouched.
           model_overrides: modelPrefOverrides(modelChoice?.()),
