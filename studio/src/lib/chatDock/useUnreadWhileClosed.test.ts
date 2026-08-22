@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { renderHook } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
+import { createElement, startTransition, Suspense } from "react";
 import { describe, expect, it } from "vitest";
 
 import type { DockState } from "./dockState";
@@ -78,6 +79,45 @@ describe("useUnreadWhileClosed", () => {
     );
     rerender({ count: 40 });
     expect(result.current).toBe(0);
+  });
+
+  it("does not let a discarded concurrent render advance the baseline", () => {
+    const never = new Promise<never>(() => undefined);
+    function Probe({
+      dock,
+      count,
+      suspend,
+    }: {
+      dock: DockState;
+      count: number;
+      suspend: boolean;
+    }) {
+      const unread = useUnreadWhileClosed(dock, count);
+      if (suspend) throw never;
+      return createElement("output", { "data-testid": "unread" }, unread);
+    }
+    const tree = (dock: DockState, count: number, suspend: boolean) =>
+      createElement(
+        Suspense,
+        { fallback: createElement("span", null, "loading") },
+        createElement(Probe, { dock, count, suspend }),
+      );
+
+    const view = render(tree("closed", 3, false), { reactStrictMode: true });
+    expect(screen.getByTestId("unread").textContent).toBe("0");
+
+    // This render reaches the hook and would mark count=5 as read, but then
+    // suspends. React keeps the previous committed UI and later discards it.
+    act(() => {
+      startTransition(() => {
+        view.rerender(tree("floating", 5, true));
+      });
+    });
+
+    // An urgent closed render supersedes the suspended transition. Its one
+    // new message must still be measured from the committed baseline of 3.
+    view.rerender(tree("closed", 4, false));
+    expect(screen.getByTestId("unread").textContent).toBe("1");
   });
 
   // Switching project/repo scope makes useWhatsNextSession drop the run

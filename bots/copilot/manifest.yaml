@@ -58,6 +58,9 @@ chat:
     seed: {kind: silent}
     gate: {kind: silent}
     copi: {kind: banner, label: "Copi is thinking"}
+    validate_draft: {kind: banner, label: "Validating Copi's draft"}
+    review: {kind: banner, label: "Cross-reviewing Copi's answer"}
+    compose: {kind: silent}
     ## No `prompt`: Copi's reply IS the chat node's runtime-resolved
     ## `instructions:`, exactly as for Nexie.
     chat: {kind: human, text_field: message}

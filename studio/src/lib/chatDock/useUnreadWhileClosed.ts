@@ -5,7 +5,7 @@
 // the dock has already mounted — is a hook-lifecycle case, not a
 // rendering one.
 
-import { useRef } from "react";
+import { useLayoutEffect, useState } from "react";
 
 import type { DockState } from "./dockState";
 
@@ -19,17 +19,18 @@ export function useUnreadWhileClosed(
   messageCount: number,
 ): number {
   const closed = dock === "closed";
-  const baselineRef = useRef(messageCount);
-  // Has the session ever shown us a transcript? Until it has, we have no
-  // baseline worth measuring against — only a placeholder zero.
-  const hydratedRef = useRef(messageCount > 0);
+  const [committed, setCommitted] = useState(() => ({
+    baseline: messageCount,
+    hydrated: messageCount > 0,
+  }));
 
-  // Derived during render rather than in an effect, deliberately. An
-  // effect would set the baseline one commit AFTER the render that
-  // already computed the badge from the stale one, so the count would
-  // flash the wrong number and — since a ref write triggers no re-render
-  // — stay there until something else re-rendered the dock.
-  if (!hydratedRef.current) {
+  // Derive the next tracker during render so the badge is right in THIS
+  // frame, then commit it in a layout effect. Mutating refs during render
+  // looked equivalent but is not under concurrent rendering: a render that
+  // suspends and is discarded still mutates its refs, so an open-dock render
+  // that never committed could silently mark messages as read.
+  let next = committed;
+  if (!committed.hydrated) {
     // Startup. The dock state is persisted per user, so it can mount
     // already `closed` while the session is still attaching: the first
     // render sees 0 messages. Taking that as the baseline would count
@@ -43,9 +44,13 @@ export function useUnreadWhileClosed(
     // surface (the dock, or the /whats-next route where the dock stands
     // down and this hook is not mounted at all). So the baseline
     // follows the count until the count is first non-zero.
-    baselineRef.current = messageCount;
-    hydratedRef.current = messageCount > 0;
-  } else if (messageCount < baselineRef.current) {
+    if (
+      messageCount !== committed.baseline ||
+      (messageCount > 0) !== committed.hydrated
+    ) {
+      next = { baseline: messageCount, hydrated: messageCount > 0 };
+    }
+  } else if (messageCount < committed.baseline) {
     // The transcript SHRANK. A conversation only grows, so this is not
     // arrival — it is the session being replaced: useWhatsNextSession
     // drops the run and resets the store when the project or repo scope
@@ -57,14 +62,26 @@ export function useUnreadWhileClosed(
     // `hydrated`, which puts the fresh session back through the startup
     // branch above — so its own 0 → N restore is treated as a restore
     // rather than as N new messages, same as on a cold mount.
-    baselineRef.current = messageCount;
-    hydratedRef.current = messageCount > 0;
-  } else if (!closed) {
+    next = { baseline: messageCount, hydrated: messageCount > 0 };
+  } else if (!closed && messageCount !== committed.baseline) {
     // While open, everything on screen is read, so the baseline tracks
     // the count. It therefore holds the count as of the moment the dock
     // closed — exactly what the badge must measure against.
-    baselineRef.current = messageCount;
+    next = { baseline: messageCount, hydrated: true };
   }
 
-  return closed ? Math.max(0, messageCount - baselineRef.current) : 0;
+  useLayoutEffect(() => {
+    if (
+      next.baseline !== committed.baseline ||
+      next.hydrated !== committed.hydrated
+    ) {
+      // This is an intentional committed-props tracker. The value was already
+      // used to render the correct current frame; the layout update only makes
+      // that committed baseline authoritative for the next render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCommitted(next);
+    }
+  }, [committed, next]);
+
+  return closed ? Math.max(0, messageCount - next.baseline) : 0;
 }
