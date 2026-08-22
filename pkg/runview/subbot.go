@@ -185,8 +185,15 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			}
 			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
 		}
-		runErr := childEng.Run(childCtx, childRunID, req.Vars)
-		_ = childLock.Unlock()
+		runErr := func() error {
+			// Release at the end of this active pass, rather than when the
+			// subbot runner returns: AwaitSubbotTerminal below deliberately
+			// waits unlocked for an external resume. The defer also covers a
+			// panic recovered by a surrounding fan-out branch, so a long-lived
+			// studio process cannot strand the child's flock.
+			defer func() { _ = childLock.Unlock() }()
+			return childEng.Run(childCtx, childRunID, req.Vars)
+		}()
 		// Release the manager handle now the active pass is done: a paused
 		// child is resumed EXTERNALLY (which re-registers the id in its own
 		// manager), so keeping it here would both block that Register and

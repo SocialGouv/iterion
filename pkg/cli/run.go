@@ -629,8 +629,13 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		if err != nil {
 			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
 		}
-		runErr := childEng.Run(childCtx, childRunID, req.Vars)
-		_ = childLock.Unlock()
+		runErr := func() error {
+			// Keep the unlock scoped to the active pass: the human-gate park
+			// below must remain unlocked, while a panic recovered by a fan-out
+			// branch must still release the child run lock.
+			defer func() { _ = childLock.Unlock() }()
+			return childEng.Run(childCtx, childRunID, req.Vars)
+		}()
 		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is
 			// paused_waiting_human with a checkpoint + interaction); that is
