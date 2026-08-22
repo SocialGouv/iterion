@@ -5,14 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
-	"os"
 )
 
 // ForkSpec describes a fork request — a "create-an-alternative-future"
@@ -163,6 +164,10 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	// fails the whole fork (the child is meaningless without a code
 	// landing spot).
 	if parent.Worktree {
+		// A fork materialises a checkout without entering Engine.Run, so it
+		// must ask the same shared-pool bound itself before growing the pool.
+		// Cleanup remains best-effort and can never fail the requested fork.
+		runtime.EnforceWorktreePoolBound(ctx, s.store.Root(), s.logger)
 		newWtPath, wterr := forkWorktree(parent, spec, turn, s.store.Root(), child.ID)
 		if wterr != nil {
 			return nil, fmt.Errorf("fork worktree: %w", wterr)

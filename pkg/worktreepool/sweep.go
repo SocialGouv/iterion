@@ -3,6 +3,8 @@ package worktreepool
 import (
 	"fmt"
 	"os"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // SweepResult is what one pass took, spared, and could not take.
@@ -59,7 +61,7 @@ func Sweep(all []Entry, opts SweepOptions) SweepResult {
 		}
 
 		if st, ok := reloadRunStatus(wt.StoreDir, wt.RunID); ok &&
-			((ownsWorktree(st) && !opts.reclaimStaleNonTerminal) ||
+			((ownsWorktree(st) && (!opts.reclaimStaleNonTerminal || st != store.RunStatusRunning)) ||
 				(isResumable(st) && !opts.IncludeResumable)) {
 			wt.RunStatus = string(st)
 			wt.resumable = isResumable(st) && !opts.IncludeResumable

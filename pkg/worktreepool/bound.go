@@ -112,7 +112,7 @@ var sparedLabels = []struct {
 	{SkipIgnored, "contain gitignored files requiring operator review"},
 	{SkipIterionHeldOnly, "are held only by run-scoped checkpoint refs"},
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
-	{SkipNested, "hold a repository of their own"},
+	{SkipNested, "hold a nested repository or could not be fully inspected"},
 	{SkipRunActive, "are owned by a live run"},
 	{SkipPausedRun, "are paused for operator or human input"},
 	{SkipRemovalFailed, "could not be removed (see the preceding error)"},
@@ -372,7 +372,8 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	candidates := make([]Entry, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(PoolDir(storeDir), name)
-		if st, ok := statuses[name]; ok && ownsWorktree(st) && runLockHeld(storeDir, name) {
+		if st, ok := statuses[name]; ok && ownsWorktree(st) && !isPausedResumable(st) &&
+			(st != store.RunStatusRunning || runLockHeld(storeDir, name)) {
 			report.Held++
 			continue
 		}

@@ -93,13 +93,22 @@ what destroys it. Ignored paths may be generated output, but they may also
 be an operator-owned `.env`; the automatic bound leaves that distinction
 to an explicit `iterion clean` dry run.
 
-**It never breaks a resume.** `iterion resume` restarts a
+**It never breaks a resume already recorded as resumable.** `iterion resume` restarts a
 `failed_resumable`, `cancelled`, `paused_operator` or
 `paused_waiting_human` run *in that very checkout*. On a long-lived store
 these are usually most of what accumulates. Giving up a terminal resume is
 the operator's call, made with `iterion clean --include-resumable`;
 non-terminal pauses remain protected and are named separately in the
 warning.
+
+A process killed before it persists one of those states leaves `running`
+on disk but no process lock. The bound treats that specific combination as
+a crashed owner and may reclaim its checkout when the tree is clean and its
+HEAD is durably held. If an orphan reconciler would later have promoted that
+record to `failed_resumable`, in-place resume is no longer possible. This is
+the deliberate crash-reclamation tradeoff that prevents stale `running`
+records from making the bound ineffective; `queued` and paused runs remain
+protected without requiring a local process lock.
 
 When those refusals leave the pool over budget, the bound says so, once
 per launch:

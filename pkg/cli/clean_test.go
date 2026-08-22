@@ -1948,6 +1948,23 @@ func TestClean_ReportsIgnoredCountAndContainmentEvidence(t *testing.T) {
 	}
 }
 
+func TestClean_ReportsRuntimeIgnoredPathsForJSONConsumers(t *testing.T) {
+	f := newCleanFixture(t)
+	path := f.addWorktree("runtime-ignored")
+	mustWrite(t, filepath.Join(path, ".gitignore"), ".claude/\n")
+	f.git(path, "add", ".gitignore")
+	f.git(path, "commit", "-m", "ignore runtime scaffold")
+	f.mergeIntoMain("runtime-ignored")
+	f.seedRun("runtime-ignored", store.RunStatusFinished)
+	mustMkdir(t, filepath.Join(path, ".claude", "skills"))
+	mustWrite(t, filepath.Join(path, ".claude", "skills", "x.md"), "managed\n")
+
+	r := f.run(CleanOptions{Level: CleanConservative, OlderThan: 0})
+	if len(r.Deleted) != 1 || r.Deleted[0].IgnoredEntries == 0 {
+		t.Fatalf("explicit clean lost its complete ignored_entries count: %+v", r.Deleted)
+	}
+}
+
 // --- the levels ------------------------------------------------------------
 
 // Landing is decided by whether a ref was BUILT UPON the commits or

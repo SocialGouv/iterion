@@ -592,6 +592,29 @@ func TestBound_ReclaimsStaleRunningStatusAfterProcessCrash(t *testing.T) {
 	}
 }
 
+// A queued run may wait in an external dispatcher without a local process
+// lock. It is a legitimate resume from-state, not a stale `running` record,
+// so the crash-reclamation exception must neither count nor delete it.
+func TestBound_QueuedRunsAreNeitherTakenNorCountedWithoutLocks(t *testing.T) {
+	f := newPoolFixture(t)
+	for _, id := range []string{"queued-a", "queued-b"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusQueued)
+	}
+	f.idle("dead")
+	f.seedRun("dead", store.RunStatusFinished)
+
+	r := f.enforce(1)
+	for _, id := range []string{"queued-a", "queued-b"} {
+		if !f.exists(id) {
+			t.Fatalf("the bound took queued run %s without a process lock", id)
+		}
+	}
+	if r.Held != 2 || r.Before != 1 || r.OverBudget() {
+		t.Fatalf("report = %+v, want two queued runs held outside the budget", r)
+	}
+}
+
 // `iterion resume` restarts these runs in this very worktree. Sparing them
 // is the same default `iterion clean` and `runs prune` keep.
 func TestBound_SparesWorktreesOfResumableRuns(t *testing.T) {

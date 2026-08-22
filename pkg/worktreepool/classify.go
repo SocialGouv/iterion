@@ -248,7 +248,8 @@ func classify(
 	// `running` on disk, while the kernel releases the process lock.
 	if st, ok := statuses[runID]; ok {
 		wt.RunStatus = string(st)
-		if ownsWorktree(st) && (!opts.reclaimStaleNonTerminal || runLockHeld(storeDir, runID)) {
+		if ownsWorktree(st) && (!opts.reclaimStaleNonTerminal ||
+			(!isPausedResumable(st) && (st != store.RunStatusRunning || runLockHeld(storeDir, runID)))) {
 			wt.SkipReason = SkipRunActive
 			return wt
 		}
@@ -257,7 +258,7 @@ func classify(
 		wt.resumable = resumable
 	}
 
-	insp := inspectGitForScan(opts.ctx(), path, !opts.SkipIgnoredEntries)
+	insp := inspectGitForScan(opts.ctx(), path, !opts.SkipIgnoredEntries, opts.RefuseIgnoredEntries)
 	wt.Landing, wt.Dirty, wt.ContainedBy = insp.landing, insp.dirty, insp.containedBy
 	wt.DurablyHeld = insp.durablyHeld
 	wt.gitCommonDir = insp.commonDir
@@ -437,7 +438,7 @@ func stillEligible(
 	during(wt.Path)
 	// IgnoredEntries is report-only and cannot change eligibility. Avoid a
 	// second full status scan in this last-moment safety check.
-	insp := inspectGitForScan(ctx, wt.Path, refuseIgnored)
+	insp := inspectGitForScan(ctx, wt.Path, refuseIgnored, refuseIgnored)
 	// Keep the decision record aligned with the state that produced the
 	// final verdict. In particular, a moved HEAD must not leave an old
 	// own-branch landing behind and suggest an aggressive clean command
@@ -488,8 +489,9 @@ type inspection struct {
 }
 
 // inspectGitForScan reports what git can prove about a worktree and
-// optionally counts ignored entries. That count is a diagnostic for
-// `iterion clean`; it never changes a deletion verdict.
+// optionally counts ignored entries. excludeRuntimeIgnored is used by the
+// unattended bound, where Iterion's own generated scaffold must not make
+// every checkout ineligible; explicit clean reports the complete count.
 //
 // Every answer is refused unless git is talking about THIS directory.
 // Run under a directory merely nested inside some repository — and the
@@ -498,7 +500,7 @@ type inspection struct {
 // enclosing repository instead. Its HEAD, its clean status and its refs
 // then describe a tree this directory has nothing to do with, which reads
 // as a landed, clean worktree and deletes whatever the directory held.
-func inspectGitForScan(ctx context.Context, path string, countIgnored bool) inspection {
+func inspectGitForScan(ctx context.Context, path string, countIgnored, excludeRuntimeIgnored bool) inspection {
 	// "git could not answer" and "git says this is not a worktree" are
 	// different facts and must not collapse into the same verdict.
 	// `orphan` is deletable at aggressive, so inferring it from a broken
@@ -538,7 +540,7 @@ func inspectGitForScan(ctx context.Context, path string, countIgnored bool) insp
 		return cannotTell
 	}
 
-	dirty, ignored, statusErr := worktreeStatus(ctx, path, countIgnored)
+	dirty, ignored, statusErr := worktreeStatus(ctx, path, countIgnored, excludeRuntimeIgnored)
 	insp := inspection{head: head, dirty: dirty, ignoredEntries: ignored, err: statusErr}
 
 	// A repository that lives INSIDE the directory answers containment with
@@ -807,7 +809,7 @@ func isInside(parent, child string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func worktreeStatus(ctx context.Context, path string, countIgnored bool) (dirty bool, ignored int, err error) {
+func worktreeStatus(ctx context.Context, path string, countIgnored, excludeRuntimeIgnored bool) (dirty bool, ignored int, err error) {
 	// --untracked-files=all, because git otherwise folds an untracked
 	// directory into a single `.claude/` line and the exclusion could not
 	// tell the mirror from anything else the run put beside it.
@@ -825,7 +827,7 @@ func worktreeStatus(ctx context.Context, path string, countIgnored bool) (dirty 
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "!!") {
-			if !isRuntimeIgnoredPath(dequotePath(strings.TrimSpace(line[2:]))) {
+			if !excludeRuntimeIgnored || !isRuntimeIgnoredPath(dequotePath(strings.TrimSpace(line[2:]))) {
 				ignored++
 			}
 			continue
@@ -915,17 +917,15 @@ func pruneWorktreeRegistration(commonDir, resolvedPath string) (bool, error) {
 	return false, nil
 }
 
-// ownsWorktree reports whether anything still lays claim to a run's
-// checkout.
+// ownsWorktree reports whether a non-terminal status still lays claim to a
+// run's checkout. Terminal-but-resumable statuses are handled separately by
+// isResumable so the operator's --include-resumable choice remains explicit.
 //
 // This is deliberately NOT `!IsTerminal()`. That predicate answers a
 // different question — whether a poller should stop refreshing — and its
 // own documentation says `failed_resumable` is terminal "even though the
-// run can be resumed". `iterion resume` accepts failed_resumable,
-// cancelled and paused_operator; a run it will restart still owns its
-// worktree, and sweeping it destroys the resume while every other guard
-// nods along, because the commits are merged and nothing is lost except
-// the ability to continue.
+// run can be resumed". That second ownership dimension belongs to
+// isResumable rather than being hidden in this predicate.
 func ownsWorktree(st store.RunStatus) bool {
 	return !st.IsTerminal()
 }

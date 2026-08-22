@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/worktreepool"
 )
 
@@ -42,6 +43,14 @@ import (
 //
 // Best-effort throughout: a run must never fail because a cleanup did.
 func (e *Engine) boundWorktreePool(ctx context.Context, storeRoot string) {
+	EnforceWorktreePoolBound(ctx, storeRoot, e.logger)
+}
+
+// EnforceWorktreePoolBound applies the same best-effort launch-time bound
+// for worktrees created outside Engine.Run, such as operator-requested
+// recovery forks. Every local worktree creation path must pass through one
+// of these two entry points or it can grow the shared pool without a check.
+func EnforceWorktreePoolBound(ctx context.Context, storeRoot string, logger *iterlog.Logger) {
 	// Git reports absolute paths. Keep the same canonical root across the
 	// classifier, operator messages and suggested cleanup command when the
 	// documented `--store-dir .iterion` form is used.
@@ -51,8 +60,8 @@ func (e *Engine) boundWorktreePool(ctx context.Context, storeRoot string) {
 	if err != nil {
 		// A malformed ceiling is the operator's, and it disables the
 		// bound — so it is said out loud rather than defaulted over.
-		if e.logger != nil {
-			e.logger.Warn("runtime: worktree pool: %v — the pool is unbounded until this is fixed", err)
+		if logger != nil {
+			logger.Warn("runtime: worktree pool: %v — the pool is unbounded until this is fixed", err)
 		}
 		return
 	}
@@ -65,17 +74,17 @@ func (e *Engine) boundWorktreePool(ctx context.Context, storeRoot string) {
 	report, err := worktreepool.EnforceBudget(storeRoot, budget, worktreepool.SweepOptions{
 		ScanOptions: worktreepool.ScanOptions{Context: boundCtx},
 	})
-	if err != nil && e.logger != nil {
-		e.logger.Warn("runtime: worktree pool: %v", err)
+	if err != nil && logger != nil {
+		logger.Warn("runtime: worktree pool: %v", err)
 	}
-	if e.logger == nil {
+	if logger == nil {
 		return
 	}
 	for _, sweepErr := range report.Errors {
-		e.logger.Warn("runtime: worktree pool: %v", sweepErr)
+		logger.Warn("runtime: worktree pool: %v", sweepErr)
 	}
 	if n := len(report.Reclaimed); n > 0 {
-		e.logger.Info("runtime: worktree pool: reclaimed %d worktree(s), %s — %d parked and %d live left, budget %d (%s)",
+		logger.Info("runtime: worktree pool: reclaimed %d worktree(s), %s — %d parked and %d live left, budget %d (%s)",
 			n, humanBytes(report.BytesReclaimed), report.After, report.Held, report.Budget, worktreepool.BudgetEnv)
 	}
 	if report.OverBudget() {
@@ -84,7 +93,7 @@ func (e *Engine) boundWorktreePool(ctx context.Context, storeRoot string) {
 		// not be taken, and a command that would work on this pool —
 		// because "you are over budget" on its own is the state this
 		// replaced, only louder.
-		e.logger.Warn("%s", formatWorktreePoolWarning(report, storeRoot))
+		logger.Warn("%s", formatWorktreePoolWarning(report, storeRoot))
 	}
 }
 

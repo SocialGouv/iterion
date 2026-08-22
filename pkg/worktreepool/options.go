@@ -43,8 +43,9 @@ type ScanOptions struct {
 	// pool bound needs a different rule over the same facts.
 	Admit admission
 	// reclaimStaleNonTerminal lets the automatic bound use the run lock to
-	// distinguish a crashed process from a live one. Explicit clean keeps
-	// its stricter status-only contract.
+	// distinguish a crashed process from a live `running` run. Other
+	// non-terminal states remain owned without a process lock. Explicit
+	// clean keeps its stricter status-only contract.
 	reclaimStaleNonTerminal bool
 }
 
