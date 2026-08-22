@@ -85,12 +85,38 @@ schema turn_input:
 ##                    one unless the operator asked to switch).
 ##   context_brief  — the rolling memory. See the prompt contract.
 ##   quick_replies  — 0-4 short suggested next messages.
+##   draft_bot      — when the turn produced a .bot workflow, its FULL
+##                    source. Empty otherwise. Never a fragment: the
+##                    validator compiles exactly this text, so a
+##                    partial draft would report errors the operator
+##                    would not see in what you showed them.
+##   has_draft      — true iff draft_bot carries a workflow to check.
+##                    A separate flag rather than a string test because
+##                    an edge condition needs a boolean field.
 schema copi_turn:
   reply:         string
   close:         bool
   mode:          string
   context_brief: string
   quick_replies: json
+  draft_bot:     string
+  has_draft:     bool
+
+## What the deterministic validator reports back. `validated` is the
+## REAL exit code of `iterion validate`, never a judgment.
+schema validate_out:
+  validated:       bool
+  validate_report: string
+
+## The gate composes Copi's reply with what the validator actually
+## found, so the operator reads one message and the next turn's Copi
+## reads its own verdict.
+schema gate_in:
+  reply:           string
+  close:           bool
+  quick_replies:   json
+  validated:       bool
+  validate_report: string
 
 schema gate_out:
   is_close:      bool
@@ -148,11 +174,16 @@ prompt copi_system:
               or in a file you actually read. "I don't know, here is
               how we could find out" beats a confident guess.
     design  — help design a bot, a workflow, a pipeline. Write real
-              .bot source. You have NO shell, so you cannot validate
-              what you wrote: present it as a DRAFT and hand the
-              operator the command — `iterion validate <file>` —
-              instead of claiming it works. "I could not verify this"
-              is the honest move, and it costs nothing.
+              .bot source. You have no shell, but you do NOT have to
+              assert that your draft works: put its FULL source in
+              `draft_bot` and set `has_draft: true`, and the run
+              compiles it with `iterion validate` before the operator
+              sees your message — the verdict is appended for you.
+              So: show the draft in `reply` AND emit it in
+              `draft_bot`, identical text. Never claim it validates;
+              the check says so or it does not. If the verdict comes
+              back red, fix the draft on the next turn rather than
+              explaining the error away.
     debug   — diagnose a run, a diagnostic code, a failure. Read the
               evidence before concluding, straight from the run store:
               `<store>/runs/<id>/run.json` (status + checkpoint),
@@ -265,6 +296,11 @@ prompt copi_system:
     quick_replies  — up to 4 short suggested next messages when
                      genuinely useful, [] when they would be noise.
                      A JSON ARRAY of strings, never a stringified one.
+    draft_bot      — the FULL .bot source when this turn produced a
+                     workflow; "" otherwise. It is compiled verbatim,
+                     so a fragment reports errors the operator cannot
+                     see in what you showed them.
+    has_draft      — true iff draft_bot holds a workflow to compile.
 
   Standing scope from the launch: {{vars.scope_notes}}
 
@@ -323,15 +359,77 @@ agent copi:
   ## is the heaviest shape; ordinary info turns use a fraction.
   tool_max_steps: 40
 
+## VERIFY, DON'T ASSERT — the deterministic half of design posture.
+##
+## Copi holds no shell (see the permission gate below: an allow-listed
+## Bash prefix is not a boundary), so it cannot check its own work. This
+## node can: a TOOL node is executed by the ENGINE, outside the agent's
+## permission gate, and is not a shell handed to the agent.
+##
+## The draft is read from the RUN'S OWN ARTIFACT on disk, never
+## interpolated into the command. That is the whole design constraint:
+## a tool command is a shell string with {{...}} substitution, so
+## splicing an LLM-authored .bot — quotes, backticks, newlines — into it
+## would be both broken and a command-injection surface. Every value in
+## the command below is engine-controlled.
+##
+## It writes to a fresh temp dir, never the workspace: Copi stays
+## read-only with respect to the operator's tree, which is the property
+## the whole bot is built around.
+tool validate_draft:
+  description: "Deterministic check: compile the .bot Copi just drafted"
+  output: validate_out
+  command: `python3 -c "
+import glob, json, os, subprocess, sys, tempfile
+files_dir = os.environ.get('ITERION_ARTIFACT_FILES_DIR', '')
+run_dir = os.path.dirname(files_dir.rstrip('/')) if files_dir else ''
+def out(ok, report):
+    print(json.dumps({'validated': bool(ok), 'validate_report': report}))
+    raise SystemExit(0)
+if not run_dir:
+    out(False, 'could not locate the run directory, so the draft was NOT verified')
+cands = sorted(glob.glob(os.path.join(run_dir, 'artifacts', 'copi', '*.json')))
+if not cands:
+    out(False, 'no draft artifact found, so the draft was NOT verified')
+try:
+    with open(cands[-1], encoding='utf-8') as fh:
+        art = json.load(fh)
+except (OSError, ValueError) as exc:
+    out(False, 'could not read the draft artifact (' + str(exc) + '), so it was NOT verified')
+payload = art.get('output', art) if isinstance(art, dict) else {}
+draft = payload.get('draft_bot', '') if isinstance(payload, dict) else ''
+if not isinstance(draft, str) or draft.strip() == '':
+    out(True, '')
+tmp = tempfile.mkdtemp(prefix='copi-draft-')
+path = os.path.join(tmp, 'draft.bot')
+try:
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(draft)
+except OSError as exc:
+    out(False, 'could not write the draft for validation (' + str(exc) + ')')
+try:
+    p = subprocess.run(['iterion', 'validate', path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
+except FileNotFoundError:
+    out(False, 'iterion is not on PATH here, so the draft was NOT verified — run: iterion validate <file>')
+except subprocess.TimeoutExpired:
+    out(False, 'iterion validate timed out, so the draft was NOT verified')
+report = (p.stdout or '').strip()
+if len(report) > 4000:
+    report = report[:4000] + chr(10) + '... (truncated)'
+out(p.returncode == 0, report)
+"`
+
 ## Deterministic projection for the when-clause + reply passthrough, so
 ## the chat node never has to disambiguate which upstream produced the
-## latest reply.
+## latest reply. It also APPENDS the validator's verdict to the reply:
+## a draft presented without its verdict is exactly the assert-don't-
+## verify failure the node above exists to close.
 compute gate:
-  input: copi_turn
+  input: gate_in
   output: gate_out
   expr:
     is_close:      "input.close"
-    reply:         "input.reply"
+    reply:         "if(input.validate_report == '', input.reply, if(input.validated, concat(input.reply, '\n\n---\n\n✅ `iterion validate` passed on this draft.'), concat(input.reply, '\n\n---\n\n⚠️ `iterion validate` did NOT pass on this draft:\n\n```\n', input.validate_report, '\n```')))"
     quick_replies: "input.quick_replies"
 
 ## The standby home base. ONE free-text field: the operator's next
@@ -438,10 +536,26 @@ workflow copilot:
     chat_context:     "{{outputs.seed.chat_context}}"
   }
 
-  copi -> gate with {
-    reply:         "{{outputs.copi.reply}}",
-    close:         "{{outputs.copi.close}}",
-    quick_replies: "{{outputs.copi.quick_replies}}"
+  ## A design turn routes through the validator; every other turn skips
+  ## it, so an ordinary question costs no subprocess. `has_draft` is the
+  ## agent's own flag — under-claiming only loses a check it did not
+  ## need, over-claiming costs one no-op validation.
+  copi -> validate_draft when has_draft
+
+  validate_draft -> gate with {
+    reply:           "{{outputs.copi.reply}}",
+    close:           "{{outputs.copi.close}}",
+    quick_replies:   "{{outputs.copi.quick_replies}}",
+    validated:       "{{outputs.validate_draft.validated}}",
+    validate_report: "{{outputs.validate_draft.validate_report}}"
+  }
+
+  copi -> gate else with {
+    reply:           "{{outputs.copi.reply}}",
+    close:           "{{outputs.copi.close}}",
+    quick_replies:   "{{outputs.copi.quick_replies}}",
+    validated:       "true",
+    validate_report: ""
   }
 
   ## Explicit close — the ONLY path to Done. Everything else loops back

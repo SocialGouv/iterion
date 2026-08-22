@@ -337,8 +337,9 @@ sonnet, bundled skills) in a standing chat loop, whose subject is
 iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
 semantics, backends, bundles and convergence doctrine. Three
 postures the operator can switch mid-conversation — info (explain
-and orient), design (draft a workflow and prove it with
-`iterion validate`), debug (diagnose a run from its real events).
+and orient), design (draft a workflow, which the run compiles with
+`iterion validate` before the reply is shown), debug (diagnose a
+run from its real events).
 Read-only by construction: a `permission: deny` gate denies Bash,
 Write, Edit and WebFetch outright — an allow-listed shell prefix is
 not a boundary, since the matcher grants everything after it — so
@@ -354,9 +355,11 @@ ends the session.
   diagnostic code means, why a run paused or failed, how to write or
   fix a .bot, which bot to reach for, how backends/sandbox/resume
   behave. Also the drafting partner for a new bot — it writes the
-  workflow and validates it before calling it done. It advises about
-  whatever workspace it is pointed at; it never edits or commits, so
-  pair it with the bot that does the work.
+  workflow and a deterministic node compiles it before you read the
+  answer, so a draft is never presented as working on the agent's
+  word alone. It advises about whatever workspace it is pointed at;
+  it never edits or commits, so pair it with the bot that does the
+  work.
 - **Triggers**: copi, copilot
 - **Vars**: `chat_context` (string), `initial_message` (string), `mode` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`

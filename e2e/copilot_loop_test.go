@@ -272,6 +272,56 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if doneEdges[0].From != "gate" || doneEdges[0].Condition == "" {
 		t.Errorf("the done edge = %s -> done (condition %q), want gate -> done guarded by the close flag", doneEdges[0].From, doneEdges[0].Condition)
 	}
+
+	// VERIFY, DON'T ASSERT. Copi holds no shell, so the only thing that can
+	// tell an operator whether a draft compiles is a deterministic node.
+	// Both halves are pinned here because either one alone is a façade: a
+	// validator nothing routes to, or a route to nothing.
+	validate, ok := wf.Nodes["validate_draft"].(*ir.ToolNode)
+	if !ok {
+		t.Fatal("validate_draft tool node missing — a drafted workflow would be presented as working on the agent's word alone")
+	}
+	// A TOOL node is executed by the engine, outside the agent's permission
+	// gate. That is precisely why it can do what the shell-less agent
+	// cannot, and why it must not become an agent-reachable shell.
+	if !strings.Contains(validate.Command, "iterion") || !strings.Contains(validate.Command, "validate") {
+		t.Errorf("validate_draft does not run `iterion validate` — its command is %q", validate.Command)
+	}
+	// The draft is LLM-authored text with quotes, backticks and newlines in
+	// it. A tool command is a shell string with {{...}} substitution, so
+	// splicing the draft in would be both broken and a command-injection
+	// surface; it is read off the run's own artifact on disk instead.
+	if strings.Contains(validate.Command, "{{input.draft_bot}}") ||
+		strings.Contains(validate.Command, "{{outputs.copi.draft_bot}}") {
+		t.Error("validate_draft interpolates the draft into its shell command — an LLM-authored .bot spliced into `sh -c` is a command-injection surface; read it from the run artifact instead")
+	}
+
+	draftEdge := findEdge(t, wf, "copi", "validate_draft")
+	if draftEdge.Condition == "" {
+		t.Error("copi -> validate_draft must be guarded, so an ordinary question costs no subprocess")
+	}
+	// The verdict has to REACH the operator. A validator whose result stops
+	// at the tool node is the same façade as no validator at all.
+	gateEdge := findEdge(t, wf, "validate_draft", "gate")
+	gateMappings := edgeMappings(gateEdge)
+	for _, key := range []string{"validated", "validate_report"} {
+		if _, ok := gateMappings[key]; !ok {
+			t.Errorf("validate_draft -> gate drops %q — the operator would never see the verdict", key)
+		}
+	}
+	gate, ok := wf.Nodes["gate"].(*ir.ComputeNode)
+	if !ok {
+		t.Fatal("gate compute node missing")
+	}
+	var replyExpr string
+	for _, e := range gate.Exprs {
+		if e.Key == "reply" {
+			replyExpr = e.Raw
+		}
+	}
+	if !strings.Contains(replyExpr, "validate_report") {
+		t.Errorf("the gate does not fold the verdict into the reply (expr %q) — the check would run and be discarded", replyExpr)
+	}
 }
 
 // TestCopilot_ChatLoop_SessionAndBriefSurvive drives the loop with the
