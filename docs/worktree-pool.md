@@ -99,7 +99,7 @@ per launch:
 runtime: worktree pool: 12 parked worktrees in /path/.iterion/worktrees
 exceed the budget of 8 (3 live worktrees excluded); 9 belong to runs
 `iterion resume` would restart, 3 carry uncommitted work. Review them
-with `iterion clean --store-dir /path/.iterion --level moderate
+with `iterion clean --store-dir /path/.iterion --older-than 0 --level moderate
 --include-resumable` (add --apply to delete). Raise or lift the budget
 with ITERION_WORKTREE_POOL_MAX=<n> (`off` disables it).
 ```

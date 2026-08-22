@@ -545,7 +545,12 @@ func TestBound_SparesWorktreesOfResumableRuns(t *testing.T) {
 		f.seedRun(id, store.RunStatusFailedResumable)
 	}
 
-	r := f.enforce(1)
+	// The exported boundary must enforce this invariant even if a caller
+	// accidentally asks the underlying sweep to include resumable runs.
+	r, err := EnforceBudget(f.store, 1, SweepOptions{ScanOptions: ScanOptions{IncludeResumable: true}})
+	if err != nil {
+		t.Fatalf("EnforceBudget: %v", err)
+	}
 
 	for _, id := range []string{"r1", "r2", "r3"} {
 		if !f.exists(id) {
@@ -688,6 +693,34 @@ func TestBound_DoesNotCountAConcurrentlyVanishedEntryAfterThePass(t *testing.T) 
 	}
 	if r.Before != 2 || r.After != 1 || r.OverBudget() {
 		t.Fatalf("vanished entry still counted after pass: %+v", r)
+	}
+}
+
+func TestBound_RefreshesLandingWhenHeadMovesDuringEligibility(t *testing.T) {
+	f := newPoolFixture(t)
+	for i, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+	mutated := false
+	r, err := EnforceBudget(f.store, 1, SweepOptions{
+		DuringEligibility: func(path string) {
+			if mutated {
+				return
+			}
+			mutated = true
+			f.git(path, "commit", "--allow-empty", "-m", "concurrent work")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Spared[SkipUnlanded] != 1 {
+		t.Fatalf("spared reasons = %v, want the concurrently changed entry to be unlanded", r.Spared)
+	}
+	if got := r.Remedy(f.store); got != "" {
+		t.Fatalf("Remedy = %q, want none because clean cannot reclaim an unlanded entry", got)
 	}
 }
 
@@ -851,13 +884,13 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 		spared map[string]int
 		want   string
 	}{
-		{"dirty", map[string]int{SkipLevel: 2}, "iterion clean --store-dir /s --level moderate"},
-		{"resumable", map[string]int{SkipResumable: 3}, "iterion clean --store-dir /s --include-resumable"},
+		{"dirty", map[string]int{SkipLevel: 2}, "iterion clean --store-dir /s --older-than 0 --level moderate"},
+		{"resumable", map[string]int{SkipResumable: 3}, "iterion clean --store-dir /s --older-than 0 --include-resumable"},
 		{"both", map[string]int{SkipLevel: 1, SkipResumable: 1},
-			"iterion clean --store-dir /s --level moderate --include-resumable"},
-		{"orphan", map[string]int{SkipOrphan: 1}, "iterion clean --store-dir /s --level aggressive"},
-		{"ignored", map[string]int{SkipIgnored: 1}, "iterion clean --store-dir /s"},
-		{"run-scoped ref only", map[string]int{SkipIterionHeldOnly: 1}, "iterion clean --store-dir /s --level aggressive"},
+			"iterion clean --store-dir /s --older-than 0 --level moderate --include-resumable"},
+		{"orphan", map[string]int{SkipOrphan: 1}, "iterion clean --store-dir /s --older-than 0 --level aggressive"},
+		{"ignored", map[string]int{SkipIgnored: 1}, "iterion clean --store-dir /s --older-than 0"},
+		{"run-scoped ref only", map[string]int{SkipIterionHeldOnly: 1}, "iterion clean --store-dir /s --older-than 0 --level aggressive"},
 		{"unlanded only", map[string]int{SkipUnlanded: 4}, ""},
 		{"nested only", map[string]int{SkipNested: 1}, ""},
 		{"nothing spared", map[string]int{}, ""},

@@ -427,6 +427,12 @@ func stillEligible(
 	// IgnoredEntries is report-only and cannot change eligibility. Avoid a
 	// second full status scan in this last-moment safety check.
 	insp := inspectGitForScan(ctx, wt.Path, refuseIgnored)
+	// Keep the decision record aligned with the state that produced the
+	// final verdict. In particular, a moved HEAD must not leave an old
+	// own-branch landing behind and suggest an aggressive clean command
+	// for an entry that is now unlanded.
+	wt.Landing = insp.landing
+	wt.Dirty = insp.dirty
 	if insp.head != wt.head {
 		// Something committed, reset, or checked out under us. Whatever
 		// the new HEAD is, it is not what was judged.
@@ -439,7 +445,6 @@ func stillEligible(
 		return SkipNested, false
 	}
 	if reason, ok := admit(insp.landing, insp.dirty, insp.durablyHeld); !ok {
-		wt.Dirty = insp.dirty
 		return reason, false
 	}
 	if refuseIgnored && insp.ignoredEntries > 0 {

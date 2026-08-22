@@ -129,7 +129,10 @@ func (r BudgetReport) Remedy(storeDir string) string {
 	if !needsLevel && !needsAggressive && !needsResumable && !needsIgnoredReview {
 		return ""
 	}
-	cmd := "iterion clean --store-dir " + storeDir
+	// The bound deliberately has no age floor. Mirror that policy in the
+	// suggested command: `iterion clean` otherwise defaults to 168h and
+	// would spare the recent entries that made the pool exceed its budget.
+	cmd := "iterion clean --store-dir " + storeDir + " --older-than 0"
 	if needsAggressive {
 		cmd += " --level aggressive"
 	} else if needsLevel {
@@ -271,6 +274,9 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 
 	opts.Apply = true
 	opts.WithRuns = false // a run's record is history; only its checkout is the cost
+	// Resuming restarts in this checkout. Giving that up must remain an
+	// explicit operator choice, regardless of the options a caller passed.
+	opts.IncludeResumable = false
 	opts.Admit = evictionAdmission()
 	opts.OlderThan = 0 // the pool is over NOW; an age floor would defer the whole point
 	opts.KeepLast = 0
