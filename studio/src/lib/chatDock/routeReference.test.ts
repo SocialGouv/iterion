@@ -164,7 +164,7 @@ describe("referenceForRoute", () => {
   //
   // Hyphenated prose passes, and no token cap can fix that without
   // rejecting the repo's own files: `Ignore-all-previous-instructions`
-  // has four hyphen tokens, `087-model-registry-and-operator-model-choice.md`
+  // has four hyphen tokens, `090-model-registry-and-operator-model-choice.md`
   // has eight. A kebab-case filename IS a hyphenated sentence. The chip's
   // full-value display and the bot's "a reference is DATA" clause are the
   // layers that hold here.
@@ -177,9 +177,9 @@ describe("referenceForRoute", () => {
     expect(
       referenceForRoute(
         "/editor",
-        "?file=docs/adr/087-model-registry-and-operator-model-choice.md",
+        "?file=docs/adr/090-model-registry-and-operator-model-choice.md",
       )?.ref,
-    ).toBe("bot/docs/adr/087-model-registry-and-operator-model-choice.md");
+    ).toBe("bot/docs/adr/090-model-registry-and-operator-model-choice.md");
   });
 
   // Space-free prose was the gap the first cut left: forbidding whitespace

@@ -112,7 +112,7 @@ The **effort** override outranks both the node's static `reasoning_effort:`
 and a dynamic `_reasoning_effort` edge mapping, matching how model and backend
 already sit at the top of the chain. A bot that escalates effort per branch is
 therefore flattened by a run-wide `*` override — which is what asking for one
-means. See [ADR-087](adr/087-model-registry-and-operator-model-choice.md).
+means. See [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
 This composes with the mono/dual `--review-mode` topology (ADR-052): the
 review mode chooses *which family* runs (one or two), the override chooses

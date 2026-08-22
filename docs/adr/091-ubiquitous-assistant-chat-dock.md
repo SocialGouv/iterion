@@ -1,4 +1,4 @@
-# ADR-088 — The assistant is a shell-level dock with implicit route context, not a route
+# ADR-091 — The assistant is a shell-level dock with implicit route context, not a route
 
 - Status: accepted
 - Date: 2026-08-01

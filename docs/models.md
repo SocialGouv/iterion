@@ -7,7 +7,7 @@ Two questions this answers, both of which used to have no answer at all:
 2. **Which model does the studio assistant run on, and how do I change it?**
    — the model picker on the session launcher / header, persisted per user.
 
-Design record: [ADR-087](adr/087-model-registry-and-operator-model-choice.md).
+Design record: [ADR-090](adr/090-model-registry-and-operator-model-choice.md).
 
 ---
 

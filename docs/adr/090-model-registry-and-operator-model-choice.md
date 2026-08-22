@@ -1,4 +1,4 @@
-# ADR-087: a model registry, and letting the operator choose the model
+# ADR-090: a model registry, and letting the operator choose the model
 
 - **Status**: Accepted
 - **Date**: 2026-08-01
