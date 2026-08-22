@@ -8,7 +8,7 @@
 import { useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { listBots } from "@/api/bots";
+import { listBots, type BotEntry } from "@/api/bots";
 import { errorMessage } from "@/lib/errorHints";
 import {
   FIRST_CLASS_BOTS,
@@ -38,6 +38,36 @@ export interface UseChatRegistryResult {
   error: string | null;
 }
 
+// Compose the discovered registry over the built-in floor.
+//
+// The built-in entry is a FLOOR, not an override: a discovered manifest wins
+// for the same id. Without the floor, a studio whose /api/v1/bots is
+// unreachable (or a workspace with no bots/ directory — the desktop app
+// pointed at a bare repo) would show no assistant at all, which reads as
+// "the product lost a feature" rather than "discovery is empty".
+//
+// But a listing that REPORTS a bot as disabled is discovery ANSWERING "no",
+// not failing to answer. /api/v1/bots deliberately includes disabled entries
+// (pkg/server/bots_routes.go: "included (Enabled=false) so the studio can
+// show them to flip back on"), and chatRegistryFrom drops them — "one
+// visibility decision, not two". Flooring such an entry back would make the
+// Catalog manager's toggle silently inert for the one surface that reads the
+// registry as authoritative, and for the default id it would keep that bot
+// selected ahead of the bots the operator did enable. So the floor covers
+// "discovery could not answer", never "discovery answered no".
+export function chatRegistryWithFloor(
+  entries: readonly BotEntry[],
+): Record<string, FirstClassBot> {
+  const discovered = chatRegistryFrom(entries);
+  const disabled = new Set(
+    entries.filter((e) => e.enabled === false).map((e) => e.name),
+  );
+  const floor = Object.fromEntries(
+    Object.entries(FIRST_CLASS_BOTS).filter(([id]) => !disabled.has(id)),
+  );
+  return { ...floor, ...discovered };
+}
+
 export function resolveChatBot(
   byId: Record<string, FirstClassBot>,
   bots: FirstClassBot[],
@@ -64,15 +94,7 @@ export function useChatRegistry(): UseChatRegistryResult {
     refetchInterval: STALE_MS,
   });
 
-  const byId = useMemo(() => {
-    const discovered = chatRegistryFrom(query.data ?? []);
-    // The built-in entry is a FLOOR, not an override: a discovered manifest
-    // wins for the same id. Without the floor, a studio whose /api/v1/bots is
-    // unreachable (or a workspace with no bots/ directory — the desktop app
-    // pointed at a bare repo) would show no assistant at all, which reads as
-    // "the product lost a feature" rather than "discovery is empty".
-    return { ...FIRST_CLASS_BOTS, ...discovered };
-  }, [query.data]);
+  const byId = useMemo(() => chatRegistryWithFloor(query.data ?? []), [query.data]);
 
   const bots = useMemo(() => {
     const all = Object.values(byId);

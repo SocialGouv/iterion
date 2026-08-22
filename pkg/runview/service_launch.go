@@ -105,8 +105,25 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Fail before persisting/publishing a queued run. The runner repeats
 		// this check in BuildExecutor, but discovering an unsafe backend only
 		// after queue admission would leave a paid launch to fail remotely.
-		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
-			return nil, err
+		//
+		// Screened against BOTH resolutions, because on this path they can
+		// disagree: the run-level mode is not on the queue wire (#493), so the
+		// pod resolves node -> workflow -> ITERION_PERMISSION while the
+		// operator's `permission:` only exists here. Each direction is a real
+		// launch:
+		//   - run-level "off" over a `deny` workflow admits here and is
+		//     refused by the pod — the remote post-admission failure this
+		//     check exists to prevent;
+		//   - run-level "deny" over an ungated workflow is the operator asking
+		//     for a gate the pod will not apply, so admitting it would run the
+		//     override UNGATED behind a gate the operator believes is on.
+		// Refusing on either keeps the check fail-closed both ways. Screening
+		// with the pod's resolution alone would fix the first and open the
+		// second.
+		for _, mode := range []string{spec.Permission, ""} {
+			if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), mode); err != nil {
+				return nil, err
+			}
 		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
 		if err != nil {

@@ -111,3 +111,81 @@ workflow gated:
 		t.Fatal("unsafe launch reached the publisher")
 	}
 }
+
+// The cloud screen resolves a mode the runner never receives (#493), so it is
+// deliberately fail-closed in BOTH directions. These two launches are the
+// divergent pair: each is admitted by exactly one of the resolutions, and
+// neither may reach the publisher.
+func TestLaunchCloudScreensBothPermissionResolutions(t *testing.T) {
+	cases := []struct {
+		name       string
+		source     string
+		permission string
+	}{
+		{
+			// Workflow gates, operator's run-level "off" does not reach the
+			// pod: the pod would refuse after the queue slot is spent.
+			name: "run level off cannot unlock a gated workflow",
+			source: `
+agent work:
+  backend: "claude_code"
+  model: "claude-opus-5"
+  system: p
+  tools: [read_file]
+
+prompt p:
+  Do the work.
+
+workflow gated:
+  entry: work
+  permission: deny
+  work -> done
+`,
+			permission: "off",
+		},
+		{
+			// Workflow is ungated, the operator selected a gate: the pod
+			// resolves "off" and would run the override with no gate at all.
+			name: "run level deny cannot be honoured by the pod",
+			source: `
+agent work:
+  backend: "claude_code"
+  model: "claude-opus-5"
+  system: p
+  tools: [read_file]
+
+prompt p:
+  Do the work.
+
+workflow ungated:
+  entry: work
+  work -> done
+`,
+			permission: "deny",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := &stubLaunchPublisher{}
+			svc, err := NewService(t.TempDir(), WithLogger(iterlog.Nop()), WithLaunchPublisher(pub))
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			_, err = svc.Launch(context.Background(), LaunchSpec{
+				FilePath:   "wf.bot",
+				Source:     tc.source,
+				Permission: tc.permission,
+				ModelOverrides: []ModelOverrideEntry{
+					{Selector: "agent", Backend: "codex"},
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), "UNGATED") {
+				t.Fatalf("cloud launch error = %v, want synchronous UNGATED refusal", err)
+			}
+			if pub.lastSpec != nil {
+				t.Fatal("unsafe launch reached the publisher")
+			}
+		})
+	}
+}
