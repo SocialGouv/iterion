@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // DefaultBudget is how many worktrees a store may park before the bound
@@ -84,6 +86,7 @@ var sparedLabels = []struct {
 }{
 	{SkipLevel, "carry uncommitted work or content git cannot account for"},
 	{SkipResumable, "belong to runs `iterion resume` would restart"},
+	{SkipOrphan, "are directories git cannot account for"},
 	{SkipUnlanded, "hold commits no ref outside the run's own keeps"},
 	{SkipNested, "hold a repository of their own"},
 	{SkipRunActive, "are owned by a live run"},
@@ -105,12 +108,15 @@ var sparedLabels = []struct {
 // them, which is the honest answer — that pool needs git, by hand.
 func (r BudgetReport) Remedy(storeDir string) string {
 	needsLevel := r.Spared[SkipLevel] > 0
+	needsAggressive := r.Spared[SkipOrphan] > 0
 	needsResumable := r.needsIncludeResumable || r.Spared[SkipResumable] > 0
-	if !needsLevel && !needsResumable {
+	if !needsLevel && !needsAggressive && !needsResumable {
 		return ""
 	}
 	cmd := "iterion clean --store-dir " + storeDir
-	if needsLevel {
+	if needsAggressive {
+		cmd += " --level aggressive"
+	} else if needsLevel {
 		// `moderate` takes a merged worktree's uncommitted files, which is
 		// the common case; an orphan needs `aggressive`. Naming the lower
 		// one keeps the suggestion the smaller step, and the dry run shows
@@ -121,6 +127,58 @@ func (r BudgetReport) Remedy(storeDir string) string {
 		cmd += " --include-resumable"
 	}
 	return cmd
+}
+
+const refusalMemoTTL = 5 * time.Minute
+
+type memoizedRefusal struct {
+	reason    string
+	resumable bool
+	expires   time.Time
+}
+
+// refusalMemo remembers only decisions NOT to delete. Reusing a stale
+// refusal can delay reclamation until the short TTL expires, but it can
+// never turn a changed worktree into a deletion. That one-way safety is
+// what makes memoization acceptable on the run-start path.
+var refusalMemo = struct {
+	sync.Mutex
+	entries map[string]memoizedRefusal
+}{entries: map[string]memoizedRefusal{}}
+
+func memoizedPoolRefusal(path string, now time.Time) (memoizedRefusal, bool) {
+	refusalMemo.Lock()
+	defer refusalMemo.Unlock()
+	v, ok := refusalMemo.entries[path]
+	if ok && !now.Before(v.expires) {
+		delete(refusalMemo.entries, path)
+		return memoizedRefusal{}, false
+	}
+	return v, ok
+}
+
+func rememberPoolRefusal(e Entry, now time.Time) {
+	if e.SkipReason == "" || e.SkipReason == SkipVanished || e.SkipReason == SkipRunActive {
+		return
+	}
+	refusalMemo.Lock()
+	if len(refusalMemo.entries) >= 256 {
+		for path, cached := range refusalMemo.entries {
+			if !now.Before(cached.expires) {
+				delete(refusalMemo.entries, path)
+			}
+		}
+	}
+	refusalMemo.entries[e.Path] = memoizedRefusal{
+		reason: e.SkipReason, resumable: e.resumable, expires: now.Add(refusalMemoTTL),
+	}
+	refusalMemo.Unlock()
+}
+
+func forgetPoolRefusal(path string) {
+	refusalMemo.Lock()
+	delete(refusalMemo.entries, path)
+	refusalMemo.Unlock()
 }
 
 // ResolveBudget reads the operator's ceiling.
@@ -233,26 +291,37 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 	}
 	SortOldestFirst(candidates)
 
-	// Classification is lazy, and that is the difference between a bound
-	// that is affordable and one that taxes every launch: it costs several
-	// git calls per entry, so a healthy pool pays for the few it actually
-	// reclaims rather than for all of them. Only a pool that cannot be
-	// brought back down walks its whole length — the price of a warning
-	// that can name what is holding it up.
+	// Classification is lazy, and refusals alone are memoized briefly. A
+	// healthy pool pays for the few entries it actually reclaims; a degraded
+	// pool pays once to name what is holding it up, then reuses those safe
+	// refusals on launches during the TTL. Eligibility is never cached.
 	excess := report.Before - budget
-	taken := 0
+	taken, vanished := 0, 0
 	for i := range candidates {
-		if taken >= excess {
+		if taken+vanished >= excess {
 			break
+		}
+		if memo, ok := memoizedPoolRefusal(candidates[i].Path, now()); ok {
+			e := candidates[i]
+			e.SkipReason, e.resumable = memo.reason, memo.resumable
+			report.recordSpared(e)
+			continue
 		}
 		e := classify(candidates[i].Path, candidates[i].RunID, storeDir, statuses, opts.ScanOptions, now)
 		if e.SkipReason != "" {
+			rememberPoolRefusal(e, now())
 			report.recordSpared(e)
 			continue
 		}
 		swept := Sweep([]Entry{e}, opts)
 		report.Errors = append(report.Errors, swept.Errors...)
 		for _, sp := range swept.Spared {
+			if sp.SkipReason == SkipVanished {
+				vanished++
+				forgetPoolRefusal(sp.Path)
+				continue
+			}
+			rememberPoolRefusal(sp, now())
 			report.recordSpared(sp)
 		}
 		if len(swept.Deleted) == 0 {
@@ -260,9 +329,10 @@ func EnforceBudget(storeDir string, budget int, opts SweepOptions) (BudgetReport
 		}
 		report.Reclaimed = append(report.Reclaimed, swept.Deleted...)
 		report.BytesReclaimed += swept.BytesReclaimed
+		forgetPoolRefusal(e.Path)
 		taken++
 	}
-	report.After = report.Before - taken
+	report.After = report.Before - taken - vanished
 	return report, nil
 }
 

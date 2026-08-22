@@ -79,6 +79,10 @@ const (
 // Skip reasons — why an otherwise-eligible worktree was spared.
 const (
 	SkipRunActive = "run-active"
+	// SkipOrphan means the directory is not a worktree git can account
+	// for. The automatic bound refuses it, while `clean --level
+	// aggressive` is the explicit operator choice that can take it.
+	SkipOrphan    = "orphan"
 	SkipUnlanded  = "unlanded"
 	SkipNested    = "nested-repo"
 	SkipTooRecent = "too-recent"
@@ -1005,7 +1009,11 @@ func loadRunStatuses(storeDir string, runIDs []string) map[string]store.RunStatu
 	for _, id := range runIDs {
 		r, err := s.LoadRun(ctx, id)
 		if err != nil {
-			if errors.Is(err, store.ErrRunNotFound) {
+			// A deliberate deletion leaves a tombstone rather than a
+			// run.json. Both absences mean no run owns this worktree. Reading
+			// the tombstone as an unreadable live run would spare the orphaned
+			// checkout at every level and hide it from the pool budget.
+			if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
 				continue
 			}
 			// An unreadable run.json must not be read as "no run here":

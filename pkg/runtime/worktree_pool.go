@@ -70,8 +70,8 @@ func (e *Engine) boundWorktreePool(storeRoot string) {
 		e.logger.Warn("runtime: worktree pool: %v", sweepErr)
 	}
 	if n := len(report.Reclaimed); n > 0 {
-		e.logger.Info("runtime: worktree pool: reclaimed %d worktree(s), %s — %d of %d left, budget %d (%s)",
-			n, humanBytes(report.BytesReclaimed), report.After, report.Total, report.Budget, worktreepool.BudgetEnv)
+		e.logger.Info("runtime: worktree pool: reclaimed %d worktree(s), %s — %d parked and %d live left, budget %d (%s)",
+			n, humanBytes(report.BytesReclaimed), report.After, report.Held, report.Budget, worktreepool.BudgetEnv)
 	}
 	if report.OverBudget() {
 		// The one line that turns an invisible leak into something an
@@ -84,8 +84,11 @@ func (e *Engine) boundWorktreePool(storeRoot string) {
 }
 
 func formatWorktreePoolWarning(report worktreepool.BudgetReport, storeRoot string) string {
-	msg := fmt.Sprintf("runtime: worktree pool: %d of %d worktrees in %s exceed the budget of %d",
-		report.After, report.Total, worktreepool.PoolDir(storeRoot), report.Budget)
+	msg := fmt.Sprintf("runtime: worktree pool: %d parked worktrees in %s exceed the budget of %d",
+		report.After, worktreepool.PoolDir(storeRoot), report.Budget)
+	if report.Held > 0 {
+		msg += fmt.Sprintf(" (%d live worktrees excluded)", report.Held)
+	}
 	if summary := report.Summary(); summary != "" {
 		msg += "; " + summary
 	}

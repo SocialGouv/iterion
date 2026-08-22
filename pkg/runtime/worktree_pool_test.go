@@ -169,3 +169,20 @@ func TestFormatWorktreePoolWarningWithoutSummaryHasCleanPunctuation(t *testing.T
 		t.Fatalf("warning lost its actionable tail: %q", got)
 	}
 }
+
+func TestFormatWorktreePoolWarningSeparatesParkedAndLiveCounts(t *testing.T) {
+	report := worktreepool.BudgetReport{
+		Budget: 8,
+		Total:  16,
+		Held:   4,
+		Before: 12,
+		After:  12,
+		Spared: map[string]int{worktreepool.SkipLevel: 12},
+	}
+	got := formatWorktreePoolWarning(report, "/store")
+	for _, want := range []string{"12 parked worktrees", "4 live worktrees excluded", "budget of 8"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning does not contain %q: %s", want, got)
+		}
+	}
+}

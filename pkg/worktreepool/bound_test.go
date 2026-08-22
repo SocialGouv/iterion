@@ -508,6 +508,87 @@ func TestLoadRunStatusesReadsOnlyRunsWithWorktrees(t *testing.T) {
 	}
 }
 
+// DeleteRun leaves a tombstone. It is an intentional absence, not an
+// unreadable live run: treating it as running would hide the orphaned
+// checkout from both clean and the bound for the tombstone's lifetime.
+func TestBound_ReclaimsAWorktreeWhoseRunWasTombstoned(t *testing.T) {
+	f := newPoolFixture(t)
+	for i, id := range []string{"deleted", "survivor"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+	s, err := store.New(f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(context.Background(), "deleted"); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+
+	r := f.enforce(1)
+	if f.exists("deleted") || !f.exists("survivor") {
+		t.Fatalf("tombstoned run ownership was misread: deleted=%v survivor=%v", f.exists("deleted"), f.exists("survivor"))
+	}
+	if r.Held != 0 || len(r.Reclaimed) != 1 {
+		t.Fatalf("report = %+v, want one reclaimed and none live-held", r)
+	}
+}
+
+// A refusal may be stale safely: it can only delay a deletion, never
+// admit one. Remembering it for a short interval keeps a degraded pool
+// from paying several git subprocesses per leftover on every launch.
+func TestBound_MemoizesOnlyRefusalsForAShortInterval(t *testing.T) {
+	f := newPoolFixture(t)
+	paths := map[string]string{}
+	for _, id := range []string{"old", "new"} {
+		paths[id] = f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		mustWrite(t, filepath.Join(paths[id], "unfinished.txt"), "keep me\n")
+	}
+	at := time.Now()
+	opts := SweepOptions{ScanOptions: ScanOptions{Now: func() time.Time { return at }}}
+
+	first, err := EnforceBudget(f.store, 1, opts)
+	if err != nil || !first.OverBudget() {
+		t.Fatalf("first pass = %+v, err=%v, want refused dirty entries", first, err)
+	}
+	for _, path := range paths {
+		if err := os.Remove(filepath.Join(path, "unfinished.txt")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	at = at.Add(time.Second)
+	second, err := EnforceBudget(f.store, 1, opts)
+	if err != nil || len(second.Reclaimed) != 0 {
+		t.Fatalf("memoized refusal was not reused safely: %+v, err=%v", second, err)
+	}
+
+	at = at.Add(refusalMemoTTL + time.Second)
+	third, err := EnforceBudget(f.store, 1, opts)
+	if err != nil || len(third.Reclaimed) != 1 {
+		t.Fatalf("expired refusal was not re-derived: %+v, err=%v", third, err)
+	}
+}
+
+func TestBound_DoesNotCountAConcurrentlyVanishedEntryAfterThePass(t *testing.T) {
+	f := newPoolFixture(t)
+	for i, id := range []string{"old", "new"} {
+		f.idle(id)
+		f.seedRun(id, store.RunStatusFinished)
+		f.age(id, 2-i)
+	}
+	opts := SweepOptions{AfterEligibility: func(path string) { _ = os.RemoveAll(path) }}
+	r, err := EnforceBudget(f.store, 1, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Before != 2 || r.After != 1 || r.OverBudget() {
+		t.Fatalf("vanished entry still counted after pass: %+v", r)
+	}
+}
+
 // Off means off: no classification, no deletion, whatever the pool holds.
 func TestBound_DisabledDoesNothing(t *testing.T) {
 	f := newPoolFixture(t)
@@ -627,6 +708,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 		{"resumable", map[string]int{SkipResumable: 3}, "iterion clean --store-dir /s --include-resumable"},
 		{"both", map[string]int{SkipLevel: 1, SkipResumable: 1},
 			"iterion clean --store-dir /s --level moderate --include-resumable"},
+		{"orphan", map[string]int{SkipOrphan: 1}, "iterion clean --store-dir /s --level aggressive"},
 		{"unlanded only", map[string]int{SkipUnlanded: 4}, ""},
 		{"nested only", map[string]int{SkipNested: 1}, ""},
 		{"nothing spared", map[string]int{}, ""},
@@ -642,7 +724,7 @@ func TestRemedy_OnlyOfferedWhenAFlagWouldChangeTheOutcome(t *testing.T) {
 // Every reason the bound can produce must render, or an operator reads
 // "3 worktrees exceed the budget;" with nothing after the semicolon.
 func TestSummary_NamesEveryReasonTheBoundCanProduce(t *testing.T) {
-	for _, reason := range []string{SkipLevel, SkipResumable, SkipUnlanded, SkipNested, SkipRunActive} {
+	for _, reason := range []string{SkipLevel, SkipResumable, SkipOrphan, SkipUnlanded, SkipNested, SkipRunActive} {
 		got := BudgetReport{Spared: map[string]int{reason: 1}}.Summary()
 		if !strings.HasPrefix(got, "1 ") || len(got) < 5 {
 			t.Errorf("reason %q rendered as %q", reason, got)

@@ -73,6 +73,8 @@ func evictionAdmission() admission {
 				return "", true
 			}
 			return SkipUnlanded, false
+		case LandingOrphan:
+			return SkipOrphan, false
 		}
 		return SkipLevel, false
 	}
