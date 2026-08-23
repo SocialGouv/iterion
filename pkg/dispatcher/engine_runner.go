@@ -327,6 +327,17 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		// gracefully through two http2 timeouts, then feature_dev's
 		// reviewer_gpt hit the same error and died on the first try.
 		runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
+		// Subbot nodes need a host-supplied runner (the bare engine can't
+		// compile a child .bot — import cycle with runview). The CLI and the
+		// studio each wired one; this path never did, so every `subbot` node
+		// of a dispatched bot died with "no SubbotRunner is wired" — including
+		// on the dispatcher's own retries, which re-enter this same engine.
+		// The workspace path goes with it: the daemon's cwd is the host repo,
+		// so without it a child resolves its relative paths against the wrong
+		// tree. See subbotRunnerForDispatch.
+		runtime.WithSubbotRunner(subbotRunnerForDispatch(
+			r.workflowPath, spec.StoreDir, spec.WorkspacePath, s, r.sealer, spec.DailyCap, runLogger,
+		)),
 	}
 	// Stamp the issue back-reference so the studio's RunHeader can
 	// link to the originating kanban ticket. Only set when the
