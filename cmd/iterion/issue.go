@@ -126,14 +126,15 @@ var issueMoveCmd = &cobra.Command{
 // ---------------------------------------------------------------------------
 
 var (
-	issueUpdateTitle      string
-	issueUpdateBody       string
-	issueUpdateLabels     []string
-	issueUpdatePriority   int
-	issueUpdateAssignee   string
-	issueUpdateBlockers   []string
-	issueUpdateFields     []string
-	issueUpdateClearField []string
+	issueUpdateTitle        string
+	issueUpdateBody         string
+	issueUpdateLabels       []string
+	issueUpdatePriority     int
+	issueUpdateAssignee     string
+	issueUpdateBlockers     []string
+	issueUpdateFields       []string
+	issueUpdateClearField   []string
+	issueUpdateClearLastRun bool
 )
 
 var issueUpdateCmd = &cobra.Command{
@@ -146,6 +147,7 @@ var issueUpdateCmd = &cobra.Command{
 			IDOrPrefix:         args[0],
 			Fields:             issueUpdateFields,
 			ClearField:         issueUpdateClearField,
+			ClearLastRun:       issueUpdateClearLastRun,
 		}
 		if cmd.Flags().Changed("title") {
 			opts.Title = &issueUpdateTitle
@@ -255,6 +257,8 @@ func init() {
 	issueUpdateCmd.Flags().StringSliceVar(&issueUpdateBlockers, "blockers", nil, "Replace blockers (comma-separated)")
 	issueUpdateCmd.Flags().StringSliceVar(&issueUpdateFields, "field", nil, "Set custom field as key=value (repeatable)")
 	issueUpdateCmd.Flags().StringSliceVar(&issueUpdateClearField, "clear-field", nil, "Clear a custom field (repeatable)")
+	issueUpdateCmd.Flags().BoolVar(&issueUpdateClearLastRun, "clear-last-run", false,
+		"Forget the last run: the next dispatch starts fresh instead of resuming it (run history is kept)")
 
 	// board
 	issueBoardInitCmd.Flags().StringVar(&issueBoardInitFrom, "from", "", "Load board.json from this file (default: built-in starter board)")

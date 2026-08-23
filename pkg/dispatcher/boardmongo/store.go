@@ -438,6 +438,53 @@ func (s *Store) SetAwaitingInput(id string, v bool) error {
 	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
 }
 
+// SetGaveUp stamps (nil clears) the dispatcher's give-up on an issue — the
+// record that its current state was written by an exhausted retry budget and
+// not by a human (see native.Issue.GaveUp). Idempotent on the fields that
+// decide behaviour; mirrors SetAwaitingInput: read → set → replace → bump
+// UpdatedAt → emit, here EvtIssueGaveUp.
+func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if sameGiveUp(iss.GaveUp, g) {
+		return nil
+	}
+	if g == nil {
+		iss.GaveUp = nil
+	} else {
+		stamp := *g
+		if stamp.At.IsZero() {
+			stamp.At = time.Now().UTC()
+		}
+		iss.GaveUp = &stamp
+	}
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss); err != nil {
+		return err
+	}
+	payload := map[string]any{"gave_up": g != nil}
+	if g != nil {
+		payload["run_id"] = g.RunID
+		payload["state"] = g.State
+		payload["attempts"] = g.Attempts
+	}
+	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
+}
+
+// sameGiveUp compares two stamps on the fields that decide behaviour (the
+// timestamp is provenance, not identity), so a re-stamp of the same give-up
+// writes nothing. Mirrors the filesystem store's predicate.
+func sameGiveUp(a, b *native.GiveUp) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
+}
+
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment.
 func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comment, error) {

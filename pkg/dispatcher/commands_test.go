@@ -374,6 +374,21 @@ func TestFinishRun_GiveUpMovesToFailedState(t *testing.T) {
 	if _, ok := c.state.retries[issueID]; ok {
 		t.Fatal("retry guard not dropped after a successful give-up move")
 	}
+	// The move alone is ambiguous: an operator filing the ticket by hand
+	// writes the very same state. The give-up must also STAMP the ticket, or
+	// the pipeline board files an unattended failure as acknowledged history
+	// and it never reaches the needs-attention lane (issue #494).
+	stamps := ft.giveUpStamps()
+	if len(stamps) != 1 || stamps[0] == nil {
+		t.Fatalf("give-up stamps = %+v, want exactly one", stamps)
+	}
+	got := stamps[0]
+	if got.RunID != "run-gv" || got.State != "blocked" || got.Attempts != 1 {
+		t.Errorf("give-up stamp = %+v, want run-gv/blocked/1 attempt", got)
+	}
+	if got.At.IsZero() {
+		t.Error("give-up stamp carries no timestamp")
+	}
 }
 
 // TestFinishRun_GiveUpFallsBackToRetryWhenMoveRejected proves the deliberate
@@ -411,6 +426,12 @@ func TestFinishRun_GiveUpFallsBackToRetryWhenMoveRejected(t *testing.T) {
 	}
 	if _, ok := c.state.retries[issueID]; !ok {
 		t.Fatal("retry must be preserved when the give-up move is rejected (board can't represent failed)")
+	}
+	// A give-up that fell back to retrying has not given up. Stamping here
+	// would put a still-retrying ticket in the needs-attention lane and tell
+	// the operator a decision was made that was not.
+	if stamps := ft.giveUpStamps(); len(stamps) != 0 {
+		t.Errorf("give-up stamps = %+v, want none — the terminal move was rejected", stamps)
 	}
 }
 

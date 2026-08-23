@@ -105,6 +105,64 @@ func (s *Store) SetAwaitingInput(id string, v bool) (err error) {
 	})
 }
 
+// SetGaveUp stamps (or, with a nil g, clears) the dispatcher's give-up on an
+// issue — the record that the ticket's current state was written by the
+// dispatcher exhausting its retry budget rather than by a human filing it
+// (see Issue.GaveUp). Idempotent: re-stamping the same run/state/attempts is
+// a no-op, as is clearing an issue that carries no stamp.
+//
+// Follows the SetAwaitingInput shape (read → set → write → bump UpdatedAt),
+// but emits its own EvtIssueGaveUp: a give-up is the one ticket transition
+// nobody asked for, and events.jsonl is where an operator reconstructs why a
+// ticket ended where it did.
+func (s *Store) SetGaveUp(id string, g *GiveUp) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetGaveUp", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	if sameGiveUp(iss.GaveUp, g) {
+		return nil
+	}
+	if g == nil {
+		iss.GaveUp = nil
+	} else {
+		stamp := *g
+		if stamp.At.IsZero() {
+			stamp.At = time.Now().UTC()
+		}
+		iss.GaveUp = &stamp
+	}
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	payload := map[string]any{"gave_up": g != nil}
+	if g != nil {
+		payload["run_id"] = g.RunID
+		payload["state"] = g.State
+		payload["attempts"] = g.Attempts
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueGaveUp,
+		IssueID: id,
+		Payload: payload,
+	})
+}
+
+// sameGiveUp compares two stamps on the fields that decide behaviour — the
+// timestamp is provenance, not identity, so a re-stamp of the same give-up
+// stays a no-op instead of churning the card's UpdatedAt on every poll.
+func sameGiveUp(a, b *GiveUp) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
+}
+
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment. Author is a free-form
 // display name; body must be non-empty. The append is persisted to

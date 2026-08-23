@@ -155,6 +155,7 @@ iterion issue move     <id-or-prefix>  --to <state>
 iterion issue update   <id-or-prefix>  [--title T] [--body B] [--labels L1,L2]
                                        [--priority N] [--assignee A] [--blockers B1,B2]
                                        [--field k=v]+ [--clear-field K]+
+                                       [--clear-last-run]
 iterion issue close    <id-or-prefix>          # → first terminal state
 
 iterion issue board show
@@ -168,6 +169,11 @@ shown in `list`).
 `--field key=value` infers the type from the value: `true`/`false` →
 bool, integers / floats → number, everything else → string. Use
 `--clear-field key` to unset a value.
+
+`--clear-last-run` drops the card's `last_run` pointer. While that pointer
+names a resumable run the dispatcher **resumes** it on the next dispatch
+instead of starting one; clearing it is how an operator gets back to a fresh
+run after a failure resuming cannot fix. The run history (`runs`) is kept.
 
 `iterion issue list` accepts `--json` (the global flag) to emit
 machine-readable output:
@@ -291,13 +297,45 @@ Lane semantics — the board is **task-centric**:
   without reserving — otherwise Stop would punish the operator who pressed
   it, and Close would retain the very slot it exists to release. Failures
   iterion caused *itself* (a drain at shutdown, the boot orphan sweep) show
-  here but do not reserve, or every restart would hold every slot;
+  here but do not reserve, or every restart would hold every slot. A
+  **dispatcher give-up** also lands here even though its ticket reads
+  terminal — see below;
 - `Closed` = every pipeline that reached an end: finished, or stopped by the
   operator. A per-card **Success** / **Stopped** badge distinguishes the
   outcome; a successful card's output shows in the details sidebar, a stopped
   one shows the **reason** and (ticket-backed) offers **Retry** (restages to
   Ready) + Edit. A header control filters the lane by **All / Success /
   Stopped**.
+
+**A dispatcher give-up is not a filing.** When `iterion dispatch` exhausts
+`agent.max_attempts` on a ticket it files it into `agent.failed_state`
+(default `blocked`) by itself — the *same* terminal state the board's Close
+writes. A terminal ticket otherwise means "a human already filed this", so
+before the give-up stamp the projection could not tell the two apart and put
+the card in **Closed**: the one class of failure the Needs-attention lane
+exists for — a pipeline that died and wants a human — was the one it never
+showed, because a deterministic failure (a fail-closed bot demanding a rewind)
+burns the whole retry budget on every run.
+
+The dispatcher therefore **stamps** the give-up on the ticket
+(`Issue.gave_up`: the run, the state it wrote, the attempt count, an
+`issue_gave_up` event), and the projection routes a terminal ticket carrying a
+*current* stamp to `needs_attention`, badged **Gave up**. The stamp expires by
+itself — it names the run and the state, so a newer run or any move of the
+ticket makes it stale — so nothing has to remember to clear it. The one
+exception is filing a ticket into the state it is already in: **Close** clears
+the stamp explicitly, which is what makes it the acknowledgement the give-up
+never got. A given-up card renders in the lane but **reserves no slot**: it is
+terminal, nothing will relaunch it until the operator acts, and holding
+capacity for it would leak a slot with no bound.
+
+**Getting back to a fresh run.** A ticket's `last_run_id` pointer is what the
+dispatcher resumes on the next dispatch (`resolveRunID` → `resumableRunID`),
+so a run that died in a way resuming cannot fix keeps being resumed. Drop the
+pointer with `iterion issue update <id> --clear-last-run` — the next dispatch
+mints a new run from the workflow entry instead. The run *history*
+(`Issue.runs`) is kept: those runs happened, and their consoles are the
+evidence.
 
 **Closing a pipeline.** `Close` (⋯ menu, every non-terminal lane) cancels
 everything still alive under the card and files the ticket as **abandoned**
@@ -398,6 +436,7 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
 | `/api/v1/pipeline-board/tasks/{id}` | DELETE | Delete a ticket (issue only, never a run); 409 while any run in its tree is active |
 | `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready |
+| `/api/v1/pipeline-board/tasks/{id}/close` | POST | Cancel the ticket's tree and file it terminal (`blocked`, never `done`); also clears a dispatcher give-up stamp — Close is the acknowledgement |
 | `/api/v1/pipeline-board/tasks/{id}/dependency-graph` | GET | Limited-depth hard-dep graph (also `GET /api/v1/native/issues/{id}/dependency-graph`) |
 | `/api/v1/pipeline-board/bulk/ready` | POST | `{ids?\|family_id?\|pipeline_kind?}` stage many tickets Ready (skip open blockers by default) |
 | `/api/v1/pipeline-board/bulk/recompute-deps` | POST | Re-promote `waiting_deps` tickets whose blockers are now satisfied |

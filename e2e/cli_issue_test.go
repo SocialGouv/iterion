@@ -387,3 +387,57 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 		t.Errorf("a refused close moved the card to %q; it must stay put", got.State)
 	}
 }
+
+// `--clear-last-run` is the operator's way back to a FRESH launch. While the
+// pointer names a resumable run the dispatcher resumes THAT run rather than
+// minting a new one, so a ticket whose run died in a way resuming cannot fix
+// had no exit but editing the issue JSON by hand (issue #494). The pointer
+// clears; the run HISTORY does not — those runs still happened, and the
+// operator still needs their consoles.
+//
+// Mutation check: keep the pointer and the "cleared" assertion fails; wipe
+// Runs along with it and the history assertion fails.
+func TestIssueCLIUpdateClearsLastRunPointerKeepingHistory(t *testing.T) {
+	storeDir := t.TempDir()
+	common := cli.IssueCommonOptions{StoreDir: storeDir}
+
+	card := createIssueViaCLI(t, cli.IssueCreateOptions{
+		IssueCommonOptions: common,
+		Title:              "resumed forever",
+		State:              native.StateBlocked,
+	})
+
+	s := reopenBoard(t, storeDir)
+	if err := s.SetLastRun(card.ID, "run-dead", "/tmp/ws"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	var buf bytes.Buffer
+	p := &cli.Printer{W: &buf, Format: cli.OutputJSON}
+	if err := cli.RunIssueUpdate(p, cli.IssueUpdateOptions{
+		IssueCommonOptions: common,
+		IDOrPrefix:         card.ID,
+		ClearLastRun:       true,
+	}); err != nil {
+		t.Fatalf("issue update --clear-last-run: %v", err)
+	}
+
+	got, err := reopenBoard(t, storeDir).Get(card.ID)
+	if err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if got.LastRunID != "" || got.LastWorkdir != "" {
+		t.Errorf("last-run pointer survived: run=%q workdir=%q", got.LastRunID, got.LastWorkdir)
+	}
+	if len(got.Runs) != 1 || got.Runs[0].RunID != "run-dead" {
+		t.Errorf("run history = %+v, want the dead run kept (its console is still the evidence)", got.Runs)
+	}
+	// The command reports the cleared card, not the pre-clear snapshot.
+	var reported native.Issue
+	if err := json.Unmarshal(buf.Bytes(), &reported); err != nil {
+		t.Fatalf("decode reported issue from %q: %v", buf.String(), err)
+	}
+	if reported.LastRunID != "" {
+		t.Errorf("reported last_run_id = %q, want empty — the output contradicted the write", reported.LastRunID)
+	}
+}

@@ -189,6 +189,10 @@ func cloneIssue(in *Issue) *Issue {
 		ext := *in.External
 		c.External = &ext
 	}
+	if in.GaveUp != nil {
+		g := *in.GaveUp
+		c.GaveUp = &g
+	}
 	if in.Labels != nil {
 		c.Labels = append([]string(nil), in.Labels...)
 	}

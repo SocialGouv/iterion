@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -25,6 +26,10 @@ type stateAwareTracker struct {
 	updateCallsMu     atomic.Value // []stateUpdate, swapped under updateMu
 	updateMu          chanMu       // serialises append; matches fakeTracker.mu style
 	updateRejectState string       // when non-empty, UpdateState rejects moves into this state
+
+	// giveUps records the give-up stamps the dispatcher writes through the
+	// optional SetGaveUp seam (native.BoardStore), newest-last.
+	giveUps atomic.Value // []*native.GiveUp, swapped under updateMu
 }
 
 // chanMu is a single-slot channel used as a mutex. The dispatcher tests
@@ -69,6 +74,21 @@ func (t *stateAwareTracker) UpdateState(ctx context.Context, id, newState string
 		return tracker.ErrTransitionRejected
 	}
 	return t.fakeTracker.UpdateState(ctx, id, newState)
+}
+
+// SetGaveUp implements the optional seam the dispatcher type-asserts to when
+// it files a ticket after exhausting its retry budget (stampGiveUp).
+func (t *stateAwareTracker) SetGaveUp(id string, g *native.GiveUp) error {
+	t.updateMu.Lock()
+	defer t.updateMu.Unlock()
+	cur, _ := t.giveUps.Load().([]*native.GiveUp)
+	t.giveUps.Store(append(append([]*native.GiveUp(nil), cur...), g))
+	return nil
+}
+
+func (t *stateAwareTracker) giveUpStamps() []*native.GiveUp {
+	cur, _ := t.giveUps.Load().([]*native.GiveUp)
+	return append([]*native.GiveUp(nil), cur...)
 }
 
 func (t *stateAwareTracker) calls() []stateUpdate {

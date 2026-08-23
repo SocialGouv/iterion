@@ -670,6 +670,12 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		card.Priority = issue.Priority
 		card.External = issue.External
 		card.Attempts = b.attemptsForIssue(issue, root)
+		// Only a stamp that still describes THIS card travels — a stale one
+		// (older run, ticket moved since) is history, and shipping it would
+		// invite the UI to explain a lane the card is no longer in.
+		if pipelineTicketGaveUp(issue, root) {
+			card.GaveUp = issue.GaveUp
+		}
 		if card.EntryInput == nil {
 			card.EntryInput = stringMapToAny(issue.BotArgs)
 		}

@@ -659,6 +659,11 @@ func (c *Dispatcher) runFinishWorker(plan finishPlan) {
 			// Terminal move succeeded — the give-up is final, so drop the
 			// optimistic retry guard the actor scheduled.
 			c.logger.Warn("dispatcher: %s gave up after %d attempts (run=%s): %s — moved to %q; clear the blocker or re-open the issue to retry", plan.identifier, plan.attemptCount, plan.runID, plan.runErrText, plan.failedState)
+			// Stamp the ticket so downstream readers can tell this move
+			// apart from an operator filing the same state by hand — the
+			// pipeline board needs it to surface the failure instead of
+			// filing it as acknowledged history.
+			c.stampGiveUp(plan)
 			c.postCmd(cmdDropRetry{issueID: plan.issueID})
 		}
 	}
@@ -731,6 +736,38 @@ func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
 	}
 	if err := setter.SetAwaitingInput(issueID, v); err != nil {
 		c.logger.Warn("dispatcher: set awaiting-input=%v on %s: %v", v, issueID, err)
+	}
+}
+
+// stampGiveUp records on the tracker issue that THIS dispatcher filed it
+// after exhausting its retry budget — the fact a bare terminal state cannot
+// carry. Without it the pipeline board reads the give-up's own FailedState
+// move as "a human already filed this ticket" and buries the failure in
+// Closed, which is exactly the failure its Needs-attention lane exists for
+// (issue #494).
+//
+// Same optional-interface seam as setAwaitingInput/stampLastRun: only board
+// trackers implement it, external ones skip silently. Best-effort — a write
+// failure is logged at warn and never derails the give-up, whose authority is
+// the FailedState move that already landed.
+//
+// Called ONLY once that move succeeded: a give-up that fell back to retrying
+// (the board cannot represent the failed state) has not given up.
+func (c *Dispatcher) stampGiveUp(plan finishPlan) {
+	setter, ok := c.tracker.(interface {
+		SetGaveUp(id string, g *native.GiveUp) error
+	})
+	if !ok {
+		return
+	}
+	stamp := &native.GiveUp{
+		RunID:    plan.runID,
+		State:    plan.failedState,
+		Attempts: plan.attemptCount,
+		At:       time.Now().UTC(),
+	}
+	if err := setter.SetGaveUp(plan.issueID, stamp); err != nil {
+		c.logger.Warn("dispatcher: stamp give-up on %s: %v", plan.identifier, err)
 	}
 }
 

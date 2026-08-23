@@ -141,6 +141,32 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("SetAwaitingInput(false) not cleared: %+v", got)
 	}
 
+	// SetGaveUp records / clears the dispatcher's give-up stamp — the record
+	// that distinguishes an automatic give-up from an operator filing the
+	// same terminal state by hand. Both stores must round-trip the nested
+	// value, or the pipeline board's needs-attention lane is cloud-blind.
+	current, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get before SetGaveUp: %v", err)
+	}
+	if err := store.SetGaveUp(created.ID, &native.GiveUp{RunID: "run-1", State: current.State, Attempts: 3}); err != nil {
+		t.Errorf("SetGaveUp: %v", err)
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Errorf("Get after SetGaveUp: %v", err)
+	} else if got.GaveUp == nil || got.GaveUp.RunID != "run-1" || got.GaveUp.Attempts != 3 || got.GaveUp.At.IsZero() {
+		t.Errorf("give-up stamp not persisted: %+v", got.GaveUp)
+	} else if !got.GaveUp.Current(got.State, "run-1") {
+		t.Errorf("stamp does not describe the issue it was written on: state=%q stamp=%+v", got.State, got.GaveUp)
+	}
+	if err := store.SetGaveUp(created.ID, nil); err != nil {
+		t.Errorf("SetGaveUp(nil): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("SetGaveUp(nil) did not clear: %+v", got.GaveUp)
+	}
+
 	// List: filter by state + assignee; sort by priority.
 	_, _ = store.Create(native.Issue{Title: "second", State: native.StateReady, Priority: 9})
 	ready, err := store.List(native.ListFilter{States: []string{native.StateReady}})

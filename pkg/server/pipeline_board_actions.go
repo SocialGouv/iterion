@@ -350,6 +350,16 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board close: file ticket: %v", err)
 		return
 	}
+	// Close IS the acknowledgement a dispatcher give-up was missing, so drop
+	// the stamp that put the card in Needs attention. Every other exit
+	// invalidates it for free — a retry moves the ticket, a relaunch changes
+	// the run — but Close files a ticket into the state the give-up already
+	// wrote, so SetState above is a no-op there and only an explicit clear
+	// ends it. Best-effort: the ticket is filed either way, and a surviving
+	// stamp costs a card in the wrong lane, not correctness.
+	if err := boardStore.SetGaveUp(id, nil); err != nil && s.logger != nil {
+		s.logger.Warn("pipeline board: close ticket %s: clear give-up stamp: %v", id, err)
+	}
 	// Re-sweep once against a FRESH view. launchTicketNow flips the ticket to
 	// in_progress seconds before the run it started becomes discoverable, so
 	// the admission loop can have started a run for this very ticket during

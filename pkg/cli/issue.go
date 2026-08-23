@@ -246,6 +246,14 @@ type IssueUpdateOptions struct {
 	Blockers   *[]string
 	Fields     []string // key=value (set or replace)
 	ClearField []string
+	// ClearLastRun drops the issue's last_run pointer (Store.SetLastRun with
+	// empty strings — the clear its own contract documents). It is the
+	// operator's way back to a FRESH launch: while the pointer names a
+	// resumable run, the dispatcher resumes that run instead of minting a new
+	// one (resolveRunID → resumableRunID), so a ticket whose run died in a way
+	// resuming cannot fix had no exit but hand-editing the issue JSON.
+	// The run history (Issue.Runs) is kept — the runs still happened.
+	ClearLastRun bool
 }
 
 // RunIssueUpdate applies the patch.
@@ -281,11 +289,22 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 	if err != nil {
 		return err
 	}
+	if opts.ClearLastRun {
+		if err := s.SetLastRun(id, "", ""); err != nil {
+			return err
+		}
+		if iss, err = s.Get(id); err != nil {
+			return err
+		}
+	}
 	if p.Format == OutputJSON {
 		p.JSON(iss)
 		return nil
 	}
 	p.Line("Updated %s", shortID(iss.ID))
+	if opts.ClearLastRun {
+		p.Line("Cleared the last-run pointer — the next dispatch starts a fresh run instead of resuming.")
+	}
 	return nil
 }
 
