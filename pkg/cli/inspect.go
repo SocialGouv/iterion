@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -153,7 +154,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 			if model != "" {
 				label += " " + model
 			}
-			if s.DeclaredModel != "" && s.Model != "" && s.DeclaredModel != s.Model {
+			if s.DeclaredModel != "" && s.Model != "" && !delegate.SameModelID(s.DeclaredModel, s.Model) {
 				label += " (declared " + s.DeclaredModel + ")"
 			}
 			p.KV(id, label)

@@ -226,6 +226,11 @@ type storeHooks struct {
 	// parameter tags inside a JSON string value.
 	inputsMu     sync.Mutex
 	recentInputs map[string]string
+
+	// driftSeen dedupes model_drift events per (node, declared, effective)
+	// so a 92-pass loop does not emit 92 identical warnings.
+	driftMu   sync.Mutex
+	driftSeen map[string]struct{}
 }
 
 // toolInputPreviewMax bounds what the error line carries: enough to see the
@@ -789,6 +794,17 @@ func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
 	if delegate.SameModelID(info.DeclaredModel, info.EffectiveModel) {
 		return
 	}
+	key := nodeID + "\x00" + info.DeclaredModel + "\x00" + info.EffectiveModel
+	h.driftMu.Lock()
+	if h.driftSeen == nil {
+		h.driftSeen = make(map[string]struct{})
+	}
+	if _, seen := h.driftSeen[key]; seen {
+		h.driftMu.Unlock()
+		return
+	}
+	h.driftSeen[key] = struct{}{}
+	h.driftMu.Unlock()
 	h.emit(nodeID, store.EventModelDrift, map[string]any{
 		"backend":         info.BackendName,
 		"declared_model":  info.DeclaredModel,

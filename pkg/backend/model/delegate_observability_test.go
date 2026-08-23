@@ -102,29 +102,86 @@ func TestDelegateModelReachesStore(t *testing.T) {
 }
 
 func TestDelegateModelNoDriftWhenSameModel(t *testing.T) {
+	cases := []struct {
+		name, runID, declared, effective string
+	}{
+		{"provider prefix", "run-same-prefix", "anthropic/claude-opus-5", "claude-opus-5"},
+		{"snapshot suffix", "run-same-snapshot", "openai/gpt-5.5", "gpt-5.5-2026"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			runID := tc.runID
+			if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+			hooks.OnDelegateFinished("n", DelegateInfo{
+				BackendName:    "pi",
+				DeclaredModel:  tc.declared,
+				EffectiveModel: tc.effective,
+			})
+			evts, err := st.LoadEvents(ctx, runID)
+			if err != nil {
+				t.Fatalf("LoadEvents: %v", err)
+			}
+			for _, e := range evts {
+				if e.Type == store.EventModelDrift {
+					t.Fatalf("%s must not emit model_drift: %+v", tc.name, e.Data)
+				}
+			}
+		})
+	}
+}
+
+func TestDelegateModelDriftDeduped(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	const runID = "run-same"
+	const runID = "run-dedupe"
 	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
-	hooks.OnDelegateFinished("n", DelegateInfo{
+	info := DelegateInfo{
 		BackendName:    "claude_code",
 		DeclaredModel:  "anthropic/claude-opus-5",
-		EffectiveModel: "claude-opus-5", // same id, provider prefix only
+		EffectiveModel: "glm-4.6",
+	}
+	for i := 0; i < 3; i++ {
+		hooks.OnDelegateFinished("campaign", info)
+	}
+	// A different rewrite on the same node is a new signal.
+	hooks.OnDelegateFinished("campaign", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "anthropic/claude-opus-5",
+		EffectiveModel: "kimi-k2",
 	})
+
 	evts, err := st.LoadEvents(ctx, runID)
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
+	var drifts []*store.Event
 	for _, e := range evts {
 		if e.Type == store.EventModelDrift {
-			t.Fatalf("provider-prefix-only difference must not emit model_drift: %+v", e.Data)
+			drifts = append(drifts, e)
 		}
+	}
+	if len(drifts) != 2 {
+		t.Fatalf("got %d model_drift events, want 2 (first rewrite once + distinct rewrite)", len(drifts))
+	}
+	if drifts[0].Data["effective_model"] != "glm-4.6" {
+		t.Errorf("first drift effective = %v", drifts[0].Data["effective_model"])
+	}
+	if drifts[1].Data["effective_model"] != "kimi-k2" {
+		t.Errorf("second drift effective = %v", drifts[1].Data["effective_model"])
 	}
 }
 

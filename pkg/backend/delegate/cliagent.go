@@ -585,12 +585,20 @@ func (b *CLIAgentBackend) parseStdout(proto CLIAgentProtocol, stdout string) CLI
 	return CLIAgentParse{Text: stdout}
 }
 
-// SameModelID reports whether two model specs name the same model, ignoring
-// any `provider/` routing prefix on either side (`anthropic/claude-opus-5`
-// vs `claude-opus-5`). Used by the store-hook layer to decide whether a
-// `model_drift` event is warranted.
+// SameModelID reports whether two model specs name the same model. It
+// ignores a `provider/` routing prefix on either side
+// (`anthropic/claude-opus-5` vs `claude-opus-5`) and a snapshot/date
+// suffix the provider reports (`openai/gpt-5.5` vs `gpt-5.5-2026`,
+// `kimi-k2` vs `kimi-k2-0905`). Symmetric so argument order does not
+// matter. Version bumps such as `claude-sonnet-4` vs `claude-sonnet-4-6`
+// stay distinct: the extra token must be all-digits of length ≥ 4 or a
+// `20YY[-MM[-DD]]` date.
 func SameModelID(a, b string) bool {
-	return bareModelID(a) == bareModelID(b)
+	ba, bb := bareModelID(a), bareModelID(b)
+	if ba == bb {
+		return true
+	}
+	return isSnapshotExtension(ba, bb) || isSnapshotExtension(bb, ba)
 }
 
 // sameModelID is the historical unexported name; kept as an alias so
@@ -603,6 +611,58 @@ func bareModelID(spec string) string {
 		return spec[i+1:]
 	}
 	return spec
+}
+
+// isSnapshotExtension reports whether candidate is base plus a '-'
+// snapshot/date suffix.
+func isSnapshotExtension(base, candidate string) bool {
+	if base == "" {
+		return false
+	}
+	prefix := base + "-"
+	if !strings.HasPrefix(candidate, prefix) {
+		return false
+	}
+	return isSnapshotSuffix(candidate[len(prefix):])
+}
+
+func isSnapshotSuffix(s string) bool {
+	if s == "" {
+		return false
+	}
+	parts := strings.Split(s, "-")
+	for _, p := range parts {
+		if !allDigits(p) {
+			return false
+		}
+	}
+	if len(parts) == 1 {
+		// 2026, 0905, 20250514 — not a one-digit version bump ("6").
+		return len(parts[0]) >= 4
+	}
+	// 20YY-MM or 20YY-MM-DD.
+	year := parts[0]
+	if len(year) != 4 || !strings.HasPrefix(year, "20") || len(parts) > 3 {
+		return false
+	}
+	for _, p := range parts[1:] {
+		if len(p) != 2 {
+			return false
+		}
+	}
+	return true
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // writeSystemPromptFile materialises the composed system prompt under
