@@ -748,11 +748,30 @@ tool dedup_queue:
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
-            if subprocess.run(['git', 'push', 'origin', 'HEAD']).returncode == 0:
+            pushed = subprocess.run(['git', 'push', 'origin', 'HEAD'],
+                                    capture_output=True, text=True)
+            if pushed.returncode == 0:
                 return True
-            if subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br]).returncode != 0:
+            # Name the cause, don't guess it. A push that fails for want of
+            # credentials is not a rebase conflict, and reporting it as one
+            # sends the reader looking for a merge problem that does not
+            # exist — measured on the 2026-08-19 ux-metier digest, which
+            # died on "git rebase failed (conflict)" while the real message
+            # underneath was "could not read Username for github.com".
+            err = (pushed.stderr or '')[-400:]
+            if 'could not read Username' in err or 'Authentication failed' in err \
+                    or 'terminal prompts disabled' in err or 'Permission denied' in err:
+                raise SystemExit('feed-watch: git push was refused for lack of credentials -- '
+                                 'the state was committed locally and is NOT pushed, so this '
+                                 "category's queue will replay next run. Bind the forge_token "
+                                 'secret (or run with state_commit=false). git said: ' + err.strip())
+            rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br],
+                                     capture_output=True, text=True)
+            if rebased.returncode != 0:
                 subprocess.run(['git', 'rebase', '--abort'])
-                raise SystemExit('feed-watch: git rebase failed pushing state (conflict) -- aborting')
+                raise SystemExit('feed-watch: could not rebase onto origin/' + br +
+                                 ' to retry the push -- aborting. git said: ' +
+                                 (rebased.stderr or '')[-400:].strip())
         raise SystemExit('feed-watch: git push failed after 5 retries (non-fast-forward or network)')
 
     entries = []
@@ -1383,11 +1402,30 @@ tool commit_state:
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
-            if subprocess.run(['git', 'push', 'origin', 'HEAD']).returncode == 0:
+            pushed = subprocess.run(['git', 'push', 'origin', 'HEAD'],
+                                    capture_output=True, text=True)
+            if pushed.returncode == 0:
                 return True
-            if subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br]).returncode != 0:
+            # Name the cause, don't guess it. A push that fails for want of
+            # credentials is not a rebase conflict, and reporting it as one
+            # sends the reader looking for a merge problem that does not
+            # exist — measured on the 2026-08-19 ux-metier digest, which
+            # died on "git rebase failed (conflict)" while the real message
+            # underneath was "could not read Username for github.com".
+            err = (pushed.stderr or '')[-400:]
+            if 'could not read Username' in err or 'Authentication failed' in err \
+                    or 'terminal prompts disabled' in err or 'Permission denied' in err:
+                raise SystemExit('feed-watch: git push was refused for lack of credentials -- '
+                                 'the state was committed locally and is NOT pushed, so this '
+                                 "category's queue will replay next run. Bind the forge_token "
+                                 'secret (or run with state_commit=false). git said: ' + err.strip())
+            rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br],
+                                     capture_output=True, text=True)
+            if rebased.returncode != 0:
                 subprocess.run(['git', 'rebase', '--abort'])
-                raise SystemExit('feed-watch: git rebase failed pushing state (conflict) -- aborting')
+                raise SystemExit('feed-watch: could not rebase onto origin/' + br +
+                                 ' to retry the push -- aborting. git said: ' +
+                                 (rebased.stderr or '')[-400:].strip())
         raise SystemExit('feed-watch: git push failed after 5 retries (non-fast-forward or network)')
 
     cdir = os.path.join(state_dir, category)
