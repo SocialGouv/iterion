@@ -1291,7 +1291,13 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
 
 // giveUpTitle spells out what the badge stands for: the dispatcher stopped
 // retrying by itself, so this card is waiting on a human even though its
-// ticket is filed. Retrying is what starts it over.
+// ticket is filed.
+//
+// It does NOT promise that Retry starts the pipeline over. Retry restages the
+// ticket, and whoever picks it up decides: the studio's admission loop mints a
+// fresh run, a live dispatcher resumes this one from its checkpoint. Saying
+// "starts it over" would send the operator to re-burn the budget on the same
+// checkpoint; the details panel names the tool that forces a fresh run.
 function giveUpTitle(
   giveUp: NonNullable<PipelineBoardCardDTO["gave_up"]>,
 ): string {
@@ -1300,7 +1306,7 @@ function giveUpTitle(
       ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
       : "after exhausting its attempts";
   const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
-  return `The dispatcher gave up ${attempts}${filed}. Nobody decided this — retry, or close the card to acknowledge it.`;
+  return `The dispatcher gave up ${attempts}${filed}. Nobody decided this — retry it, or close the card to acknowledge it.`;
 }
 
 function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {

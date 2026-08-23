@@ -337,8 +337,12 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	// its own, but closing one the dispatcher already filed into this very
 	// state changes nothing — and would leave the card sitting in the
 	// pipeline board's needs-attention lane after the operator closed it.
+	// Best-effort, like the pipeline board's Close: SetState has already
+	// committed, so failing here would report a close that DID happen as a
+	// failure. A surviving stamp costs a card in the wrong lane, not
+	// correctness — say so and carry on.
 	if err := s.SetGaveUp(id, nil); err != nil {
-		return err
+		p.Line("warning: could not clear the dispatcher give-up stamp on %s: %v", shortID(id), err)
 	}
 	iss, err := s.Get(id)
 	if err != nil {

@@ -1063,3 +1063,32 @@ func TestSetGaveUpRecordsTheStateTheTicketIsIn(t *testing.T) {
 		t.Error("a freshly written stamp must describe the ticket it was written on")
 	}
 }
+
+// The audit record must name the state that was STAMPED. SetGaveUp overrides
+// a caller's state with the ticket's real one (so the stamp is not born
+// stale), and events.jsonl exists precisely so an operator can reconstruct why
+// a ticket ended where it did — reporting the discarded value would make the
+// one durable record of a give-up disagree with the issue it describes.
+func TestSetGaveUpEventReportsTheStateItStamped(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-9", State: StateBlocked, Attempts: 2}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	var payload map[string]any
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+			payload = e.Payload
+		}
+		return true
+	})
+	if payload == nil {
+		t.Fatal("no issue_gave_up event recorded")
+	}
+	if got := payload["state"]; got != StateInProgress {
+		t.Errorf("event state = %v, want the stamped %q", got, StateInProgress)
+	}
+	if got := payload["run_id"]; got != "run-9" {
+		t.Errorf("event run_id = %v, want run-9", got)
+	}
+}

@@ -533,9 +533,11 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	// dispatcher already filed into this same state does not move it, and
 	// would leave the card in the pipeline board's needs-attention lane after
 	// it was closed.
-	if err := store.SetGaveUp(resolved, nil); err != nil {
-		return nil, err
-	}
+	// Best-effort: SetState has already committed, so raising here would tell
+	// the agent a close that DID happen failed. A surviving stamp costs a
+	// card in the wrong lane, not correctness — the same call the pipeline
+	// board's Close makes.
+	_ = store.SetGaveUp(resolved, nil)
 	iss, err := store.Get(resolved)
 	if err != nil {
 		return nil, err

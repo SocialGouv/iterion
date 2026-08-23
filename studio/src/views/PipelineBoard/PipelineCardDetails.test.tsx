@@ -215,6 +215,10 @@ describe("PipelineCardDetailsBody", () => {
     );
     expect(html).toContain("The dispatcher gave up after 3 attempts");
     expect(html).toContain("kaboom"); // the underlying reason stays
+    // Retry must not be sold as "starts it over": a live dispatcher resumes
+    // the same dead run unless the last-run pointer is cleared first.
+    expect(html).toContain("--clear-last-run");
+    expect(html).not.toContain("Retry starts it over");
   });
 
   it("successful Closed card shows inputs + result + produced elements", () => {

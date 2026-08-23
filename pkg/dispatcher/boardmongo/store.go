@@ -454,6 +454,10 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if sameGiveUp(iss.GaveUp, g) && (g == nil || g.State == iss.State) {
 		return nil
 	}
+	// stamped is what actually landed on the issue (nil for a clear); the
+	// event reports IT, never the caller's g, which may name a state the
+	// store overrode.
+	var stamped *native.GiveUp
 	if g == nil {
 		iss.GaveUp = nil
 	} else {
@@ -466,16 +470,20 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		// its issue would be dropped by the write that persists it.
 		stamp.State = iss.State
 		iss.GaveUp = &stamp
+		stamped = &stamp
 	}
 	iss.UpdatedAt = time.Now().UTC()
 	if err := s.replace(ctx, iss); err != nil {
 		return err
 	}
-	payload := map[string]any{"gave_up": g != nil}
-	if g != nil {
-		payload["run_id"] = g.RunID
-		payload["state"] = g.State
-		payload["attempts"] = g.Attempts
+	payload := map[string]any{"gave_up": stamped != nil}
+	if stamped != nil {
+		payload["run_id"] = stamped.RunID
+		// The state that was STAMPED, not the one the caller believed — the
+		// two differ when a give-up raced an operator move, and the audit
+		// record exists to reconstruct what actually happened.
+		payload["state"] = stamped.State
+		payload["attempts"] = stamped.Attempts
 	}
 	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
 }
