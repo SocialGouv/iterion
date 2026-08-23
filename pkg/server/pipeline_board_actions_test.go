@@ -628,3 +628,208 @@ func TestPipelineBoardRestagedTicketKeepsItsSlot(t *testing.T) {
 		t.Error("a ticket parked on deps held a slot it cannot use")
 	}
 }
+
+// A dispatcher GIVE-UP is not an operator's filing. The dispatcher's own
+// failed_state (default "blocked") and the board's Close target are the same
+// terminal state, so before the give-up stamp the projection could not tell
+// them apart and filed an unattended failure as acknowledged history — the
+// one class of failure the lane exists for was the one it never showed
+// (issue #494). Each sub-case pins one half of the discrimination.
+func TestPipelineBoardDispatcherGiveUpEntersLane(t *testing.T) {
+	cases := []struct {
+		name       string
+		stamp      func(runID string) *native.GiveUp
+		state      string
+		wantColumn string
+		wantStamp  bool
+	}{
+		{
+			name: "give-up on this run in this state surfaces",
+			stamp: func(runID string) *native.GiveUp {
+				return &native.GiveUp{RunID: runID, State: native.StateBlocked, Attempts: 3}
+			},
+			state:      native.StateBlocked,
+			wantColumn: pipelineColumnNeedsAttention,
+			wantStamp:  true,
+		},
+		{
+			name:       "no stamp: the operator filed it, so it stays history",
+			stamp:      func(string) *native.GiveUp { return nil },
+			state:      native.StateBlocked,
+			wantColumn: pipelineColumnClosed,
+		},
+		{
+			// An older attempt was given up on; the card shows a NEWER run.
+			// Attributing the old give-up to it would explain the wrong run.
+			name: "stamp for another run does not travel to this card",
+			stamp: func(string) *native.GiveUp {
+				return &native.GiveUp{RunID: "some-older-run", State: native.StateBlocked, Attempts: 3}
+			},
+			state:      native.StateBlocked,
+			wantColumn: pipelineColumnClosed,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := newPipelineBoardTestEnv(t)
+			issue, err := env.board.Create(native.Issue{Title: "Deterministic failure", State: native.StateInProgress, Bot: "review"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			env.seedRun(t, "gaveup-run", "review", store.RunStatusFailedResumable, func(run *store.Run) {
+				run.FilePath = env.botPath
+				run.Error = `[EXECUTION_FAILED] node "record_contracts_incomplete"`
+			})
+			if err := env.board.SetLastRun(issue.ID, "gaveup-run", ""); err != nil {
+				t.Fatalf("SetLastRun: %v", err)
+			}
+			// File the ticket FIRST, then stamp — the dispatcher's own order,
+			// and the only one that survives: moving a ticket expires any
+			// stamp on it.
+			if _, err := env.board.SetState(issue.ID, c.state); err != nil {
+				t.Fatalf("SetState(%s): %v", c.state, err)
+			}
+			if stamp := c.stamp("gaveup-run"); stamp != nil {
+				if err := env.board.SetGaveUp(issue.ID, stamp); err != nil {
+					t.Fatalf("SetGaveUp: %v", err)
+				}
+			}
+
+			card := findPipelineCard(t, env.projection(t).Cards, "run:gaveup-run")
+			if card.ColumnID != c.wantColumn {
+				t.Errorf("column = %q, want %q (ticket %s)", card.ColumnID, c.wantColumn, c.state)
+			}
+			// Whatever the lane, a TERMINAL ticket reserves nothing: nothing
+			// will relaunch it until the operator acts, so holding capacity
+			// for it would leak a slot with no bound.
+			if card.ReservesSlot {
+				t.Error("a terminal ticket reserved a concurrency slot — an unreleasable hold")
+			}
+			if (card.GaveUp != nil) != c.wantStamp {
+				t.Fatalf("card.GaveUp = %+v, want present=%v", card.GaveUp, c.wantStamp)
+			}
+			if c.wantStamp && card.GaveUp.Attempts != 3 {
+				t.Errorf("card.GaveUp.Attempts = %d, want the 3 attempts that were burned", card.GaveUp.Attempts)
+			}
+		})
+	}
+}
+
+// Close is the acknowledgement a give-up never got. It files the ticket into
+// the state the give-up ALREADY wrote, so the state change is a no-op there
+// and only an explicit clear of the stamp can move the card out of the lane.
+func TestPipelineBoardCloseAcknowledgesAGiveUp(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Given up on", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// `failed` (NOT failed_resumable): the close sweep leaves an already-hard-
+	// failed run alone, so nothing but the cleared stamp can change the lane.
+	env.seedRun(t, "ack-run", "review", store.RunStatusFailed, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Error = "kaboom"
+	})
+	if err := env.board.SetLastRun(issue.ID, "ack-run", ""); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	if _, err := env.board.SetState(issue.ID, native.StateBlocked); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if err := env.board.SetGaveUp(issue.ID, &native.GiveUp{RunID: "ack-run", State: native.StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	if card := findPipelineCard(t, env.projection(t).Cards, "run:ack-run"); card.ColumnID != pipelineColumnNeedsAttention {
+		t.Fatalf("column before close = %q, want needs_attention", card.ColumnID)
+	}
+
+	resp := closeTask(t, env, issue.ID)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("close status = %d, want 200", resp.StatusCode)
+	}
+
+	filed, err := env.board.Get(issue.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if filed.GaveUp != nil {
+		t.Errorf("give-up stamp survived Close: %+v — the card would never leave the lane", filed.GaveUp)
+	}
+	// The response must not contradict the write it just made: an API client
+	// reading `task` would otherwise still see the stamp this call dropped.
+	var body struct {
+		Task *native.Issue `json:"task"`
+	}
+	decodeJSONResp(t, resp, &body)
+	if body.Task == nil || body.Task.GaveUp != nil {
+		t.Errorf("close response task = %+v, want the cleared ticket", body.Task)
+	}
+	if card := findPipelineCard(t, env.projection(t).Cards, "run:ack-run"); card.ColumnID != pipelineColumnClosed {
+		t.Errorf("column after close = %q, want closed", card.ColumnID)
+	}
+}
+
+// The projection's own staleness guard, exercised directly.
+//
+// It cannot be reached through the store — SetGaveUp records the state the
+// ticket is actually in, and any move expires the stamp — which is exactly
+// why it is worth pinning here: the lane must not depend on the store having
+// remembered. A stamp naming a state the ticket is not in describes nothing,
+// and a card it pinned to the lane would be unexplainable.
+func TestPipelineLaneStaleGiveUpStampDoesNotPinTheLane(t *testing.T) {
+	terminal := map[string]struct{}{
+		native.StateBlocked: {},
+		native.StateDone:    {},
+	}
+	root := &store.Run{ID: "run-a", Status: store.RunStatusFailedResumable}
+	cases := []struct {
+		name  string
+		issue *native.Issue
+		want  string
+	}{
+		{
+			name: "stamp describes this ticket and this run",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{RunID: "run-a", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnNeedsAttention,
+		},
+		{
+			name: "stamp names a state the ticket is not in",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateDone,
+				GaveUp: &native.GiveUp{RunID: "run-a", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+		{
+			name: "stamp names another run",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{RunID: "run-older", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+		{
+			name: "stamp names no run at all",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			column, reserves := pipelineLaneForRoot(root, c.issue, terminal, nil)
+			if column != c.want {
+				t.Errorf("column = %q, want %q", column, c.want)
+			}
+			if reserves {
+				t.Error("a terminal ticket reserved a slot nothing can release")
+			}
+		})
+	}
+}

@@ -178,6 +178,10 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
 
+	// A route's ability to RESOLVE the node's declared tools is checked in
+	// validate_tools.go (C135): it is a property of the list rather than of
+	// the crossing, and it applies to the node's own backend too.
+
 	// Reasoning effort degrades rather than misleads, so it warns.
 	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
 		c.warnfAt(DiagFallbackDrift, id, "",

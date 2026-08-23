@@ -5044,6 +5044,13 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        GiveUp: {
+            /** Format: date-time */
+            at: string;
+            attempts?: number;
+            run_id?: string;
+            state?: string;
+        };
         InvalidSpec: {
             reason: string;
             spec: string;
@@ -5065,6 +5072,7 @@ export interface components {
             fields?: {
                 [key: string]: unknown;
             };
+            gave_up?: components["schemas"]["GiveUp"];
             id: string;
             labels?: string[];
             last_run_id?: string;
@@ -5109,6 +5117,7 @@ export interface components {
             executed_nodes: number;
             external?: components["schemas"]["ExternalRef"];
             failed?: boolean;
+            gave_up?: components["schemas"]["GiveUp"];
             id: string;
             issue_id?: string;
             issue_state?: string;

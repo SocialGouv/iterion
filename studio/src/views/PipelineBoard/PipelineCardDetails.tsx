@@ -381,6 +381,22 @@ function SpawnTreeSection({ card }: { card: PipelineBoardCard }) {
   );
 }
 
+// giveUpSentence states who filed a terminal ticket that is nonetheless
+// waiting on a human: the dispatcher, out of attempts. Built as ONE string so
+// the punctuation cannot drift on JSX's whitespace joining.
+function giveUpSentence(
+  giveUp: NonNullable<PipelineBoardCard["gave_up"]>,
+): string {
+  const attempts =
+    giveUp.attempts && giveUp.attempts > 0
+      ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
+      : "after exhausting its attempts";
+  const filed = giveUp.state
+    ? ` and filed this ticket as "${giveUp.state}"`
+    : "";
+  return `The dispatcher gave up ${attempts}${filed}.`;
+}
+
 // DependenciesSection surfaces hard deps (blockers) and reverse deps
 // (blocking). Distinct from human-review "Blocked" — these are ticket-to-
 // ticket gates the launch loop honours.
@@ -551,12 +567,25 @@ export function PipelineCardDetailsBody({
         </section>
       )}
 
-      {closedFailed && card.error && (
+      {closedFailed && (card.error || card.gave_up) && (
         <section aria-label="Failure" className="space-y-2">
           <SectionHeading>Failure</SectionHeading>
-          <InlineBanner tone="danger" layout="inline">
-            {card.error}
-          </InlineBanner>
+          {card.gave_up && (
+            // The ticket reads as filed while the card needs a human. Say who
+            // filed it — the dispatcher, out of attempts — so the operator
+            // does not read a terminal ticket as somebody's decision.
+            <InlineBanner tone="warning" layout="inline">
+              {giveUpSentence(card.gave_up)} Retry restages the ticket — a
+              running dispatcher resumes this run from its checkpoint, so use{" "}
+              <code>iterion issue update {card.issue_id} --clear-last-run</code>{" "}
+              first to force a fresh one. Close acknowledges the give-up.
+            </InlineBanner>
+          )}
+          {card.error && (
+            <InlineBanner tone="danger" layout="inline">
+              {card.error}
+            </InlineBanner>
+          )}
         </section>
       )}
 

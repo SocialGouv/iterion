@@ -49,6 +49,20 @@ type Issue struct {
 	// (e.g. after a console-only resume the dispatcher never observed) is
 	// corrected at the next card touch.
 	AwaitingInput bool `json:"awaiting_input,omitempty"`
+	// GaveUp records that the ticket's CURRENT state was written by the
+	// dispatcher GIVING UP — its retry budget ran out and it filed the ticket
+	// in Agent.FailedState (default "blocked") on its own. That state is
+	// usually terminal, and a terminal ticket otherwise reads as "a human
+	// already filed this"; without this stamp the two are indistinguishable
+	// and the pipeline board buries an automatic give-up in Closed instead of
+	// surfacing it in Needs attention (issue #494).
+	//
+	// The stamp is SELF-INVALIDATING rather than something every writer must
+	// remember to clear: it records the run it happened on and the state it
+	// wrote, so a later run or any move of the ticket makes it stale by
+	// construction (see GiveUp.Current). The one case that needs an explicit
+	// clear is an operator filing the ticket into the state it is already in.
+	GaveUp *GiveUp `json:"gave_up,omitempty"`
 	// LastWorkdir is the absolute filesystem path the last run
 	// executed in — either the per-issue dispatcher workspace or,
 	// when `worktree: auto` was used, the run's git worktree path.
@@ -91,6 +105,12 @@ type RunRef struct {
 // boardmongo SetLastRun implementations so the append semantics stay
 // identical across stores. Growth is uncapped by design.
 func AppendRunRef(runs []RunRef, runID, workdir string, at time.Time) []RunRef {
+	// SetLastRun(id, "", "") is the documented way to CLEAR the pointer, and
+	// a cleared pointer is not a run that happened — appending it would put a
+	// blank entry in the card's run history.
+	if runID == "" {
+		return runs
+	}
 	for i := range runs {
 		if runs[i].RunID == runID {
 			runs[i].Workdir = workdir
@@ -99,6 +119,37 @@ func AppendRunRef(runs []RunRef, runID, workdir string, at time.Time) []RunRef {
 		}
 	}
 	return append(runs, RunRef{RunID: runID, Workdir: workdir, At: at})
+}
+
+// GiveUp is the give-up stamp on an Issue: the dispatcher exhausted
+// Agent.MaxAttempts on RunID and moved the ticket to State by itself. It is
+// the "who filed this ticket" answer a bare terminal state cannot give.
+type GiveUp struct {
+	// RunID is the run whose failure exhausted the budget.
+	RunID string `json:"run_id,omitempty"`
+	// State is the state the give-up wrote. Kept so the stamp expires on its
+	// own: once the ticket sits anywhere else, someone decided something
+	// after the give-up and the stamp no longer describes the card.
+	State string `json:"state,omitempty"`
+	// Attempts is how many attempts were made before giving up.
+	Attempts int `json:"attempts,omitempty"`
+	// At is when the give-up was stamped (UTC).
+	At time.Time `json:"at"`
+}
+
+// Current reports whether the stamp still describes the issue as it stands:
+// the ticket has not moved since the give-up, and the run being examined is
+// the one that was given up on. Anything else — a retry, an operator move, a
+// newer run — makes the stamp history rather than a live signal, with no
+// writer having to remember to clear it.
+//
+// A stamp with no run id never matches: it cannot be attributed to the card
+// being rendered, and guessing is how the lane got confusing in the first place.
+func (g *GiveUp) Current(issueState, runID string) bool {
+	if g == nil || g.RunID == "" {
+		return false
+	}
+	return g.State == issueState && g.RunID == runID
 }
 
 // ExternalRef links a board card to an issue on an external forge. Set by

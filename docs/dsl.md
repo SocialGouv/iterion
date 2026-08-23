@@ -151,7 +151,7 @@ agent reviewer:
   system: review_system
   user: review_user
   session: fresh
-  tools: [git_diff, read_file, search_codebase]
+  tools: [bash, read_file, grep]
   tool_policy: [git.*, read_file]
   capabilities: [board.read]
   skills: ["review-playbook"]

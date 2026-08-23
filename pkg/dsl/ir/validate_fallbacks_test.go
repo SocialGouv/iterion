@@ -44,7 +44,7 @@ func compileFallbackSrc(t *testing.T, src string) *CompileResult {
 // inert (bypassPermissions keeps the full native toolset); it exists so
 // the claw route is not a tool-less agent.
 func TestFallbacksCompileToOrderedRoutes(t *testing.T) {
-	src := fallbackWorkflow("  tools: [read_file, run_command]\n", `    api:
+	src := fallbackWorkflow("  tools: [read_file, bash]\n", `    api:
       backend: "claw"
       model: "anthropic/claude-opus-5"
       on: [usage_window]
@@ -181,7 +181,7 @@ func TestFallbackClawToCLIRefusedEvenWithToolsList(t *testing.T) {
 // tools its claw route will actually get. The list is inert on the CLI
 // primary and load-bearing on the route, so this must compile clean.
 func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
-	src := fallbackWorkflow("  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -190,7 +190,7 @@ func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
 }
 
 func TestFallbackPersistCrossBackendRefused(t *testing.T) {
-	src := fallbackWorkflow("  session: persist\n  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  session: persist\n  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -199,7 +199,7 @@ func TestFallbackPersistCrossBackendRefused(t *testing.T) {
 }
 
 func TestFallbackInheritIfAvailableCrossBackendRefused(t *testing.T) {
-	src := fallbackWorkflow("  session: inherit_if_available\n  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  session: inherit_if_available\n  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {

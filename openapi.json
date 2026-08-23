@@ -769,6 +769,27 @@
         ],
         "type": "object"
       },
+      "GiveUp": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "type": "object"
+      },
       "InvalidSpec": {
         "properties": {
           "reason": {
@@ -829,6 +850,9 @@
           "fields": {
             "additionalProperties": {},
             "type": "object"
+          },
+          "gave_up": {
+            "$ref": "#/components/schemas/GiveUp"
           },
           "id": {
             "type": "string"
@@ -978,6 +1002,9 @@
           },
           "failed": {
             "type": "boolean"
+          },
+          "gave_up": {
+            "$ref": "#/components/schemas/GiveUp"
           },
           "id": {
             "type": "string"

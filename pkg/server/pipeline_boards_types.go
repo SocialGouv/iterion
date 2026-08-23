@@ -142,6 +142,12 @@ type PipelineBoardCard struct {
 	// mid-flight) and closed (cancelled by the operator). The UI shows the
 	// Error as the reason and offers a Retry on ticket-backed cards.
 	Failed bool `json:"failed,omitempty"`
+	// GaveUp is set when the ticket's terminal state was written by the
+	// dispatcher exhausting its retry budget rather than by an operator
+	// filing it — the reason such a card is in Needs attention despite a
+	// terminal ticket state. Carries the run, the state written and the
+	// attempt count so the UI can say so instead of looking inconsistent.
+	GaveUp *native.GiveUp `json:"gave_up,omitempty"`
 	// ReservesSlot is true when this card is holding one of the local
 	// pipeline concurrency slots open for its own restart — no process is
 	// running, but nothing else may take its place until the operator

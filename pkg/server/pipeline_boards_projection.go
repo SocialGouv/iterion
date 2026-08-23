@@ -670,6 +670,15 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		card.Priority = issue.Priority
 		card.External = issue.External
 		card.Attempts = b.attemptsForIssue(issue, root)
+		// The stamp travels only on the lane it explains. Gating on the
+		// column the lane function already decided — rather than re-deriving
+		// the predicate — is what keeps that true: a give-up whose run the
+		// operator later RESUMED to a clean finish leaves the ticket filed
+		// and the stamp current, but that card is Closed and successful, and
+		// a "gave up" claim on it would be a lie waiting for a UI change.
+		if column == pipelineColumnNeedsAttention && pipelineTicketGaveUp(issue, root) {
+			card.GaveUp = issue.GaveUp
+		}
 		if card.EntryInput == nil {
 			card.EntryInput = stringMapToAny(issue.BotArgs)
 		}

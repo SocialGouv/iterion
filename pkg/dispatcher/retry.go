@@ -128,11 +128,17 @@ func isResumeSourceChanged(err error) bool {
 // dispatcher must re-park, resume, or hold — never mint a sibling
 // planner from the workflow entry. finished is deliberately NOT in the
 // set: the work completed, and dragging the card back to an eligible
-// column is the operator's deliberate re-queue gesture — with last_run
-// never cleared by any surface, forbidding finished would make a fresh
-// run for that card unobtainable forever. The other legitimate fresh
-// starts are no last_run, or a hard-failed / vanished last_run plus an
-// explicitly eligible ticket.
+// column is the operator's deliberate re-queue gesture, and forbidding
+// finished would make a fresh run for that card unobtainable for as
+// long as the pointer stands. The other legitimate fresh starts are no
+// last_run, or a hard-failed / vanished last_run plus an explicitly
+// eligible ticket.
+//
+// ONE surface clears the pointer deliberately — `iterion issue update
+// --clear-last-run`, the operator's way out of a run that resuming cannot
+// fix. It refuses while that run is still alive (running / queued /
+// paused_*), precisely so it cannot hand this guard an empty pointer for a
+// ticket somebody is still working on.
 func lastRunForbidsFresh(status store.RunStatus) bool {
 	switch status {
 	case store.RunStatusPausedWaitingHuman,

@@ -525,9 +525,27 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			return nil, fmt.Errorf("state %q is not terminal", target)
 		}
 	}
-	iss, err := store.SetState(resolved, target)
+	filed, err := store.SetState(resolved, target)
 	if err != nil {
 		return nil, err
+	}
+	// Closing acknowledges the ticket, so any dispatcher give-up stamp on it
+	// goes. A move expires the stamp by itself; closing a ticket the
+	// dispatcher already filed into this same state does not move it, and
+	// would leave the card in the pipeline board's needs-attention lane after
+	// it was closed.
+	// Best-effort: SetState has already committed, so raising here would tell
+	// the agent a close that DID happen failed. A surviving stamp costs a
+	// card in the wrong lane, not correctness — the same call the pipeline
+	// board's Close makes.
+	_ = store.SetGaveUp(resolved, nil)
+	// Same reasoning for the re-read. On a cloud board this Get is a network
+	// round-trip that can fail transiently, and the close has already landed:
+	// degrade to the pre-clear snapshot rather than tell the agent a close
+	// that DID happen failed (it would retry, or report the ticket open).
+	iss := filed
+	if refreshed, getErr := store.Get(resolved); getErr == nil {
+		iss = refreshed
 	}
 	return json.Marshal(iss)
 }

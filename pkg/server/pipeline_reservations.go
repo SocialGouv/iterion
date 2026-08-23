@@ -52,7 +52,12 @@ func (m *pipelineReservedMemo) invalidate() {
 //
 //   - it names a bot (otherwise it is a plain backlog item, not a pipeline);
 //   - its ticket state is NOT terminal (Close files the ticket, which is how
-//     the reservation is released);
+//     the reservation is released) — including a ticket the dispatcher filed
+//     itself by giving up: that card DOES render in the lane (it is an
+//     unattended failure, not a decision) but reserves nothing, because
+//     nothing will relaunch a terminal ticket and the hold would have no
+//     bound. Rendering without reserving is the safe direction; the reverse
+//     is the invisible held slot;
 //   - its current run's status is failed or failed_resumable, OR its
 //     current run is a NON-TERMINAL recovery fork: a fork starts via
 //     Resume, which never enters pipelineQueue, so nothing else accounts

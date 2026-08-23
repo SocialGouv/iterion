@@ -291,6 +291,22 @@ func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates ma
 			return pipelineColumnClosed, false
 		}
 		if _, terminal := terminalStates[issue.State]; terminal {
+			if pipelineTicketGaveUp(issue, root) {
+				// NOT the operator's filing: the dispatcher wrote this
+				// terminal state itself when its retry budget ran out, and
+				// an exhausted budget is an anomaly, not a decision. A
+				// deterministic failure — a fail-closed pipeline demanding a
+				// human — burns every attempt on every run, so treating a
+				// give-up as acknowledged history hid exactly the class of
+				// failure this lane exists for (issue #494).
+				//
+				// It renders WITHOUT reserving. A terminal ticket will not
+				// relaunch on its own, so holding capacity for it would be a
+				// leak with no bound — the same reason a waiting_deps ticket
+				// releases (see pipelineTicketHoldsSlot). Retry restages the
+				// ticket, and the reservation starts there.
+				return pipelineColumnNeedsAttention, false
+			}
 			// The operator already filed this ticket (typically via Close).
 			// The failure is acknowledged history, not open work.
 			return pipelineColumnClosed, false
@@ -299,6 +315,25 @@ func pipelineLaneForRoot(root *store.Run, issue *native.Issue, terminalStates ma
 	default:
 		return pipelineColumnInProgress, false
 	}
+}
+
+// pipelineTicketGaveUp reports that the ticket in front of us is terminal
+// because the DISPATCHER gave up on this very run, with nobody having acted
+// on it since — the one case where a terminal ticket state is an unattended
+// failure rather than an operator's decision.
+//
+// The question cannot be answered from the state alone: the dispatcher's
+// give-up target (Agent.FailedState, default "blocked") and the board's Close
+// target are the same state by construction, so the projection reads the
+// stamp the dispatcher leaves instead of guessing. The stamp expires on its
+// own — a newer run or any move of the ticket makes it stale (native.GiveUp.
+// Current) — so no writer has to remember to clear it, and a stale stamp can
+// never pin a card to the lane.
+func pipelineTicketGaveUp(issue *native.Issue, root *store.Run) bool {
+	if issue == nil || root == nil {
+		return false
+	}
+	return issue.GaveUp.Current(issue.State, root.ID)
 }
 
 // pipelineTicketHoldsSlot is the ONE definition of "this ticket is holding a

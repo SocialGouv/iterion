@@ -317,10 +317,22 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	if nsErr == nil {
 		ns.SetLogger(logger)
 		cfg.NativeTrackerStore = ns
-		// A Manager sits idle alongside the native store. The SPA can
-		// configure + start + pause + stop the dispatcher entirely
-		// from the Board / Dispatcher views; no separate `iterion
-		// dispatch` process required.
+		// A Manager is wired alongside the native store so the SPA can
+		// configure + start + pause + stop the dispatcher entirely from
+		// the Board / Dispatcher views; no separate `iterion dispatch`
+		// process required.
+		//
+		// It does NOT necessarily sit idle, whatever this comment used to
+		// claim. NewManager replays the store's last-known intent, and on
+		// a store that has a persisted dispatcher.json but no recorded
+		// intent it defaults to RUNNING (resolveBootIntent +
+		// autoStartEnabled, which is on unless ITERION_DISPATCHER_AUTOSTART
+		// is falsey). So launching the studio on a store whose dispatcher
+		// was ever configured resumes polling — and launching runs — with
+		// no operator action, which is by design and worth knowing when
+		// runs appear that nobody asked for. Note also that nothing elects
+		// an owner for a LOCAL store: the flock in pkg/store is per-RUN, so
+		// two studios on one --store-dir each poll and each launch.
 		mgr, mgrErr := dispatcher.NewManager(dispatcher.ManagerOptions{
 			StoreDir:         resolvedStoreDir,
 			NativeStore:      ns,

@@ -246,6 +246,14 @@ type IssueUpdateOptions struct {
 	Blockers   *[]string
 	Fields     []string // key=value (set or replace)
 	ClearField []string
+	// ClearLastRun drops the issue's last_run pointer (Store.SetLastRun with
+	// empty strings — the clear its own contract documents). It is the
+	// operator's way back to a FRESH launch: while the pointer names a
+	// resumable run, the dispatcher resumes that run instead of minting a new
+	// one (resolveRunID → resumableRunID), so a ticket whose run died in a way
+	// resuming cannot fix had no exit but hand-editing the issue JSON.
+	// The run history (Issue.Runs) is kept — the runs still happened.
+	ClearLastRun bool
 }
 
 // RunIssueUpdate applies the patch.
@@ -268,6 +276,17 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 		}
 		fields[k] = nil
 	}
+	// Before the patch: refusing after it would apply --title and then error,
+	// leaving the operator with a half-done command they did not ask for.
+	if opts.ClearLastRun {
+		current, err := s.Get(id)
+		if err != nil {
+			return err
+		}
+		if err := refuseClearWhileRunAlive(opts.IssueCommonOptions, current.LastRunID); err != nil {
+			return err
+		}
+	}
 	patch := native.Patch{
 		Title:    opts.Title,
 		Body:     opts.Body,
@@ -281,11 +300,62 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 	if err != nil {
 		return err
 	}
+	if opts.ClearLastRun {
+		if err := s.SetLastRun(id, "", ""); err != nil {
+			return err
+		}
+		if iss, err = s.Get(id); err != nil {
+			return err
+		}
+	}
 	if p.Format == OutputJSON {
 		p.JSON(iss)
 		return nil
 	}
 	p.Line("Updated %s", shortID(iss.ID))
+	if opts.ClearLastRun {
+		p.Line("Cleared the last-run pointer — the next dispatch starts a fresh run instead of resuming.")
+	}
+	return nil
+}
+
+// refuseClearWhileRunAlive stops `--clear-last-run` from forgetting a run that
+// is still ALIVE. The pointer is the sole persisted input to the dispatcher's
+// sibling guard (lastRunForbidsFresh, pkg/dispatcher/retry.go): with it gone,
+// the next dispatch mints a fresh run from the workflow entry — and if the
+// original is still running or parked on a question, that is two agents on one
+// ticket, two branches and two PRs for one issue.
+//
+// The flag's whole purpose is to defeat that guard for a run that is dead but
+// RESUMABLE (`failed_resumable` / `cancelled` — the documented case, and both
+// forbidden statuses), so the discrimination that matters is dead-vs-live, not
+// terminal-vs-not. A run that cannot be read is not protected: it is already
+// gone as far as the dispatcher is concerned.
+func refuseClearWhileRunAlive(opts IssueCommonOptions, runID string) error {
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	rs, err := store.New(store.ResolveStoreDir(cwd, opts.StoreDir))
+	if err != nil {
+		// No readable store — nothing to protect, and refusing here would
+		// block the escape hatch over a condition we cannot establish.
+		return nil
+	}
+	run, err := rs.LoadRun(context.Background(), runID)
+	if err != nil || run == nil {
+		return nil
+	}
+	switch run.Status {
+	case store.RunStatusRunning, store.RunStatusQueued,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return fmt.Errorf(
+			"issue update: run %s is still %s — clearing the pointer now would let the next dispatch start a SECOND run on this ticket; stop or answer it first (`iterion inspect --run-id %s`)",
+			shortID(runID), run.Status, runID)
+	}
 	return nil
 }
 
@@ -310,9 +380,30 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if terminal == "" {
 		return errors.New("issue close: board has no terminal state — declare one or use `issue move`")
 	}
-	iss, err := s.SetState(id, terminal)
+	filed, err := s.SetState(id, terminal)
 	if err != nil {
 		return err
+	}
+	// Closing is the operator ACKNOWLEDGING the ticket, so drop any
+	// dispatcher give-up stamp on it. Moving a ticket expires the stamp on
+	// its own, but closing one the dispatcher already filed into this very
+	// state changes nothing — and would leave the card sitting in the
+	// pipeline board's needs-attention lane after the operator closed it.
+	// Best-effort, like the pipeline board's Close: SetState has already
+	// committed, so failing here would report a close that DID happen as a
+	// failure. A surviving stamp costs a card in the wrong lane, not
+	// correctness — say so and carry on.
+	if err := s.SetGaveUp(id, nil); err != nil {
+		// stderr, not the Printer: `--json` writes a single document to
+		// stdout, and a warning spliced in front of it turns a scripted
+		// close into a parse error on a path that otherwise succeeded.
+		fmt.Fprintf(os.Stderr, "warning: could not clear the dispatcher give-up stamp on %s: %v\n", shortID(id), err)
+	}
+	// Same for the re-read: the close has landed, so fall back to SetState's
+	// snapshot rather than report a committed close as a failure.
+	iss := filed
+	if refreshed, getErr := s.Get(id); getErr == nil {
+		iss = refreshed
 	}
 	if p.Format == OutputJSON {
 		p.JSON(iss)

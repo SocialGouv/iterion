@@ -246,6 +246,12 @@ checkout behind for inspection and never comes back for it. On a
 long-lived store that leftover pool is where the disk goes, and
 `runs prune` cannot reach it.
 
+The runtime also keeps that pool bounded on its own, reclaiming the oldest
+entries **nothing is lost by deleting** each time a run creates a worktree,
+and warning when it cannot — see [worktree-pool.md](worktree-pool.md). It
+is a floor, not a replacement: everything dirty, resumable or unlanded is
+left for this command, which is where the reclaimable space usually is.
+
 What decides safety is not age and not run status alone, but what git can
 **prove** about the commits:
 
