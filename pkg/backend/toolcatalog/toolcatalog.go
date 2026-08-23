@@ -189,6 +189,32 @@ func Suggest(name string) string {
 	return best
 }
 
+// IsIdentifiableMistake reports whether an unresolvable name is one the
+// compiler can positively identify as wrong, rather than merely fail to
+// recognise. It is the confidence tier C135 keys its severity on.
+//
+// The distinction matters because NO bare name is provably unresolvable at
+// compile time. Registry.Resolve matches a dot-free name as a unique suffix
+// over every connected MCP server, and the ambient half of that catalog —
+// project `.mcp.json` entries and enabled plugins' `mcp_servers` — is merged
+// AFTER ir.Compile (pkg/backend/mcp.PrepareWorkflow), so the compiler cannot
+// enumerate it. `firecrawl_search` on a host with that plugin enabled resolves
+// and runs; refusing it would block a working workflow to guard a guess.
+//
+// What the compiler CAN be confident about is a name it can name the fix for:
+//
+//   - a legacy name from iterion's own older docs and examples, which no
+//     backend has ever registered (`list_files`, `run_command`, …);
+//   - a near-miss of a real built-in — a typo, since an MCP server exposing a
+//     tool one edit away from `read_file` is not a thing that happens;
+//   - a `${VAR}` / `{{ref}}` entry, which no server can be named.
+//
+// Everything else is reported as a warning: the author still sees it before
+// launch, and the qualified `mcp.<server>.<tool>` form settles it either way.
+func IsIdentifiableMistake(name string) bool {
+	return IsUnexpandedRef(name) || Suggest(name) != ""
+}
+
 // legacyNames maps tool names that appear in workflows but have never been
 // registered onto the built-in that does the job. Keeping the mapping here
 // rather than in the diagnostic keeps the advice in one place for every

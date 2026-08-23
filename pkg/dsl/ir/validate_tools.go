@@ -39,7 +39,6 @@ const (
 // detection, so the compiler genuinely cannot know which backend will serve —
 // and on the likeliest one (claude_code) the list is inert.
 func (c *compiler) validateNodeTools(w *Workflow) {
-	report := c.toolDiagReporter(w)
 	for _, n := range w.Nodes {
 		if tn, ok := n.(*ToolNode); ok {
 			c.validateRecoveryAgentTools(w, tn)
@@ -60,9 +59,10 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if toolcatalog.ConstrainsTools(backend) {
 			for _, name := range unresolvable {
-				report(DiagUnknownTool, id, "",
-					"%s %q: tools: names %q, which backend %q cannot resolve — the node fails the moment it dispatches%s",
-					kind, id, name, backend, toolHint(name))
+				d := c.toolDiagReporter(w, n, name)
+				d.report(DiagUnknownTool, id, "",
+					"%s %q: tools: names %q, which backend %q %s%s",
+					kind, id, name, backend, d.consequence(), d.hint(name))
 			}
 			continue
 		}
@@ -78,9 +78,10 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 				continue
 			}
 			for _, name := range unresolvable {
-				report(DiagUnknownTool, id, "",
-					"%s %q: tools: names %q, which fallback %s cannot resolve on backend %q — the route would fail at the moment the run is already falling back%s",
-					kind, id, name, fallbackLabel(fb), fb.Backend, toolHint(name))
+				d := c.toolDiagReporter(w, n, name)
+				d.report(DiagUnknownTool, id, "",
+					"%s %q: tools: names %q, which fallback %s %s on backend %q — the route would fail at the moment the run is already falling back%s",
+					kind, id, name, fallbackLabel(fb), d.routeConsequence(), fb.Backend, d.hint(name))
 			}
 			break
 		}
@@ -105,32 +106,100 @@ func (c *compiler) validateRecoveryAgentTools(w *Workflow, tn *ToolNode) {
 	if !toolcatalog.ConstrainsTools(backend) {
 		return
 	}
-	report := c.toolDiagReporter(w)
 	for _, name := range unresolvableToolNames(tn.Recovery.AgentTools) {
-		report(DiagUnknownTool, tn.ID, "",
-			"tool %q: recovery agent_tools: names %q, which backend %q cannot resolve — the rung-4 recovery agent fails after the deterministic rungs already have%s",
-			tn.ID, name, backend, toolHint(name))
+		d := c.toolDiagReporter(w, tn, name)
+		d.report(DiagUnknownTool, tn.ID, "",
+			"tool %q: recovery agent_tools: names %q, which backend %q %s on the rung-4 recovery agent — it would fail after the deterministic rungs already have%s",
+			tn.ID, name, backend, d.routeConsequence(), d.hint(name))
 	}
 }
 
-// toolDiagReporter picks C135's severity for this workflow.
+// toolDiagReporter picks C135's severity for ONE unresolvable name.
 //
-// The finding is an ERROR by default: the name cannot resolve, so the node
-// cannot run. It degrades to a WARNING when the workflow wires MCP servers of
-// its own, because Registry.Resolve matches a dot-free name as a unique suffix
-// over the connected servers — and those servers' tool lists exist only once
-// they connect. Blocking there would reject a workflow that runs, which is the
-// expensive direction: the author keeps a real signal, and the qualified
-// `mcp.<server>.<tool>` form settles it either way.
+// It BLOCKS only what the compiler can positively identify as wrong
+// (toolcatalog.IsIdentifiableMistake: a legacy phantom name, a near-miss typo,
+// an unexpandable `${VAR}`) — and only where no MCP wiring is in sight.
+// Everything else warns.
 //
-// iterion's own board/watch tools do NOT go through this softening: their
-// names are fixed and known, so unresolvableToolNames accepts them outright
-// and the check keeps its teeth on every other name.
-func (c *compiler) toolDiagReporter(w *Workflow) func(DiagCode, string, string, string, ...any) {
-	if w != nil && len(w.MCPServers) > 0 {
-		return c.warnfAt
+// The reason no bare name can be blocked on principle is that Registry.Resolve
+// matches a dot-free name as a unique suffix over every connected MCP server,
+// and half that catalog is invisible here: project `.mcp.json` entries and
+// enabled plugins' `mcp_servers` are merged by pkg/backend/mcp.PrepareWorkflow,
+// which runs AFTER ir.Compile. A claw node also gets those servers spliced in
+// as `mcp.<srv>.*` (executor_build_task.go), so `tools: [firecrawl_search]`
+// resolves and runs on a host with that plugin enabled. Refusing it would be
+// the expensive direction of drift — a run-blocking error on a workflow that
+// works — to guard a guess.
+//
+// Visible MCP wiring (an `mcp_server:` declaration, or an `mcp:` activation
+// block on the workflow or the node) softens even the identifiable names: a
+// server the author is deliberately wiring can carry any name at all,
+// `list_files` included.
+//
+// iterion's own board/watch tools never reach this function: their names are
+// fixed and known, so unresolvableToolNames accepts them outright and the
+// check keeps its teeth on every other name.
+func (c *compiler) toolDiagReporter(w *Workflow, n Node, name string) toolDiag {
+	if toolcatalog.IsIdentifiableMistake(name) && !mcpWiringVisible(w, n) {
+		return toolDiag{report: c.errorfAt, blocking: true}
 	}
-	return c.errorfAt
+	return toolDiag{report: c.warnfAt}
+}
+
+// toolDiag carries C135's severity for one name together with the wording it
+// licenses. A warning that reads "the node fails the moment it dispatches"
+// asserts the certainty the severity just declined — so the consequence clause
+// travels with the reporter rather than being written once and hedged later.
+type toolDiag struct {
+	report   func(DiagCode, string, string, string, ...any)
+	blocking bool
+}
+
+// consequence renders what happens on the node's own backend.
+func (d toolDiag) consequence() string {
+	if d.blocking {
+		return "cannot resolve — the node fails the moment it dispatches"
+	}
+	return "does not have — unless a connected MCP server supplies it, the node fails the moment it dispatches"
+}
+
+// routeConsequence is the same for a `fallbacks:` route, where the failure
+// lands at the worst possible moment.
+func (d toolDiag) routeConsequence() string {
+	if d.blocking {
+		return "cannot resolve"
+	}
+	return "may not resolve"
+}
+
+// hint appends the trailing advice, saying out loud when the finding stopped
+// short of blocking — a reader who sees a warning deserves to know why.
+func (d toolDiag) hint(name string) string {
+	h := toolHint(name)
+	if d.blocking {
+		return h
+	}
+	return h + ". Reported as a warning, not an error: a bare name also resolves onto an MCP tool when it is unique across the connected servers, and the ambient catalog (a project .mcp.json, an enabled plugin) is merged after compilation — name it `mcp.<server>.<tool>` to be explicit"
+}
+
+// mcpWiringVisible reports whether the source shows the author wiring MCP at
+// all — the signal that a bare name may legitimately be a server's tool.
+//
+// It reads the two DSL surfaces the compiler has: top-level `mcp_server:`
+// declarations (w.MCPServers) and the `mcp:` activation blocks on the workflow
+// and the node (w.MCP / AgentNode.MCP / JudgeNode.MCP). It cannot see the
+// ambient catalog — that is why an unidentifiable name warns even here.
+func mcpWiringVisible(w *Workflow, n Node) bool {
+	if w != nil && (len(w.MCPServers) > 0 || w.MCP != nil) {
+		return true
+	}
+	switch nn := n.(type) {
+	case *AgentNode:
+		return nn.MCP != nil
+	case *JudgeNode:
+		return nn.MCP != nil
+	}
+	return false
 }
 
 // unresolvableToolNames returns the entries of a `tools:` list that name a
@@ -173,11 +242,20 @@ func toolHint(name string) string {
 // list, or "" when it may. Shared with ApplyRunFallback so an operator cannot
 // reach through `--fallback` the route the compiler refuses in the .bot — the
 // same pairing as ungatedCrossingReason / toolsInversionReason.
-func unresolvableToolsReason(routeBackend string, tools []string) string {
-	if !toolcatalog.ConstrainsTools(routeBackend) {
+//
+// mcpVisible carries the caller's view of the node's MCP wiring; together with
+// IsIdentifiableMistake it reproduces exactly what C135 BLOCKS, so the flag
+// and the .bot are refused on the same terms and never on a guess.
+func unresolvableToolsReason(routeBackend string, tools []string, mcpVisible bool) string {
+	if !toolcatalog.ConstrainsTools(routeBackend) || mcpVisible {
 		return ""
 	}
-	unresolvable := unresolvableToolNames(tools)
+	var unresolvable []string
+	for _, name := range unresolvableToolNames(tools) {
+		if toolcatalog.IsIdentifiableMistake(name) {
+			unresolvable = append(unresolvable, name)
+		}
+	}
 	if len(unresolvable) == 0 {
 		return ""
 	}

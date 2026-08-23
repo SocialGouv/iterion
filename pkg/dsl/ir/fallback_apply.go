@@ -72,16 +72,15 @@ func ApplyRunFallback(w *Workflow, route Fallback) []string {
 			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
 			continue
 		}
-		// Skipped when the workflow wires MCP servers of its own: a bare
-		// name may then resolve through Registry.Resolve's shorthand path
-		// over tool lists that exist only once the servers connect, and
-		// refusing the operator's route on a guess is worse than taking it.
-		// Same softening as C135's severity — see toolDiagReporter.
-		if len(w.MCPServers) == 0 {
-			if reason := unresolvableToolsReason(route.Backend, nn.GetTools()); reason != "" {
-				refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
-				continue
-			}
+		// Refused only on what C135 would BLOCK — a name the compiler can
+		// positively identify as wrong, with no MCP wiring in sight. A bare
+		// name it merely does not recognise may still resolve onto an MCP
+		// tool whose catalog is merged after compilation, and dropping an
+		// operator's explicit route on that guess is worse than taking it.
+		// Same tiering as the diagnostic — see toolDiagReporter.
+		if reason := unresolvableToolsReason(route.Backend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
+			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
+			continue
 		}
 		// A route that changes backend with no model of its own cannot
 		// work — model specs are not portable — and a route naming the

@@ -317,3 +317,64 @@ func TestUnexpandedToolRefIsReported(t *testing.T) {
 		t.Errorf("the hint must explain why the ref cannot work: %s", hint)
 	}
 }
+
+// TestUnrecognisedNameWarnsWithoutMCPBlock (R931e3a): the ambient MCP catalog
+// — a project .mcp.json, an enabled plugin's mcp_servers — is merged AFTER
+// ir.Compile, and a claw node gets those servers spliced in as `mcp.<srv>.*`.
+// So a name the compiler merely does not recognise may resolve and run, and
+// blocking it would refuse a working workflow to guard a guess.
+func TestUnrecognisedNameWarnsWithoutMCPBlock(t *testing.T) {
+	cr := compileToolsSrc(t, toolsWorkflow(
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, firecrawl_search]\n"))
+	got := diagsFor(cr, DiagUnknownTool)
+	if len(got) != 1 {
+		t.Fatalf("want one C135 for the unrecognised name, got %+v", cr.Diagnostics)
+	}
+	if cr.HasErrors() {
+		t.Errorf("a name the compiler cannot identify must NOT block: %+v", cr.Diagnostics)
+	}
+	if !strings.Contains(got[0], "warning") && !strings.Contains(got[0], "mcp.<server>.<tool>") {
+		t.Errorf("the message should tell the reader why it stopped short of an error: %s", got[0])
+	}
+}
+
+// TestIdentifiableMistakeStillBlocks: the ticket's case is exactly the one the
+// compiler CAN name the fix for, so softening the unknown names must not cost
+// the check its teeth.
+func TestIdentifiableMistakeStillBlocks(t *testing.T) {
+	cr := compileToolsSrc(t, toolsWorkflow(
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, list_files, read_fil]\n"))
+	if got := diagsFor(cr, DiagUnknownTool); len(got) != 2 {
+		t.Fatalf("want C135 for both the legacy name and the typo, got %+v", cr.Diagnostics)
+	}
+	if !cr.HasErrors() {
+		t.Error("a phantom name and a near-miss typo are identifiable mistakes — they must block")
+	}
+}
+
+// TestMCPActivationBlockSoftensEvenLegacyNames: an `mcp:` block is the author
+// wiring servers on purpose (it sets w.MCP, NOT w.MCPServers — the shape the
+// first fix missed), and a server they wire can expose any name at all.
+func TestMCPActivationBlockSoftensEvenLegacyNames(t *testing.T) {
+	src := strings.Replace(
+		toolsWorkflow("  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, list_files]\n"),
+		"workflow w:\n", "workflow w:\n  mcp:\n    servers: [firecrawl]\n", 1)
+	cr := compileToolsSrc(t, src)
+	if got := diagsFor(cr, DiagUnknownTool); len(got) != 1 {
+		t.Fatalf("want one C135, got %+v", cr.Diagnostics)
+	}
+	if cr.HasErrors() {
+		t.Errorf("with MCP deliberately wired the finding must not block: %+v", cr.Diagnostics)
+	}
+}
+
+// TestRunFallbackNotRefusedOnUnrecognisedName: the launch flag is screened on
+// exactly what C135 blocks, so an operator's explicit route is never dropped
+// on a name the compiler merely does not recognise.
+func TestRunFallbackNotRefusedOnUnrecognisedName(t *testing.T) {
+	cr := compileToolsSrc(t, toolsWorkflow(
+		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, firecrawl_search]\n"))
+	if refusals := ApplyRunFallback(cr.Workflow, Fallback{Backend: "claw", Model: "anthropic/claude-opus-5"}); len(refusals) != 0 {
+		t.Fatalf("an unrecognised name must not drop the operator's route, got %v", refusals)
+	}
+}

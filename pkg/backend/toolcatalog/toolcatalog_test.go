@@ -115,3 +115,26 @@ func TestBuiltinsIsSortedAndCopied(t *testing.T) {
 		t.Error("Builtins() must hand back a copy")
 	}
 }
+
+// TestIsIdentifiableMistake pins C135's confidence tier: what the compiler may
+// BLOCK versus what it may only warn about. No bare name is provably
+// unresolvable (Registry.Resolve reaches ambient MCP tools by shorthand), so
+// only a name whose fix can be named is allowed to fail a build.
+func TestIsIdentifiableMistake(t *testing.T) {
+	for _, name := range []string{
+		"list_files", "run_command", "git_diff", "search_codebase", // legacy phantoms
+		"read_fil", "write_files", // near-miss typos
+		"${EXTRA_TOOL}", "{{vars.extra}}", // never expandable
+	} {
+		if !IsIdentifiableMistake(name) {
+			t.Errorf("%q is a mistake the compiler can name the fix for — it should block", name)
+		}
+	}
+	for _, name := range []string{
+		"firecrawl_search", "browser_click", "kg_query", // plausible ambient MCP tools
+	} {
+		if IsIdentifiableMistake(name) {
+			t.Errorf("%q may be an MCP tool the compiler cannot enumerate — blocking it would refuse a workflow that runs", name)
+		}
+	}
+}

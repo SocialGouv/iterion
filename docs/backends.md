@@ -610,14 +610,22 @@ unknown name there is dead config, not a failure — and it never touches
 qualified MCP references (`mcp.<server>.<tool>`, the `mcp__server__tool`
 alias form, wildcards), which are resolved when the server connects.
 
-Two more things it deliberately lets through. iterion's own board and
-watch tools are accepted by their **bare** name (`create_issue`,
-`subscribe`, …): the registry resolves a dot-free name as a unique
-suffix over the connected MCP tools, and the runtime registers those
-families for every run. And where the workflow declares `mcp_server:`
-blocks of its own, the same shorthand may reach a server tool the
-compiler cannot enumerate, so the finding degrades from an error to a
-warning.
+What it lets through, and why. iterion's own board and watch tools are
+accepted by their **bare** name (`create_issue`, `subscribe`, …): the
+registry resolves a dot-free name as a unique suffix over the connected
+MCP tools, and the runtime registers those families for every run.
+
+That same shorthand is why C135 **blocks only what it can positively
+identify** — a legacy phantom name, a near-miss typo, an unexpandable
+`${VAR}` — and merely **warns** on any other unrecognised name. Half the
+MCP catalog is invisible at compile time: project `.mcp.json` entries and
+enabled plugins' servers are merged after compilation, and a claw node
+gets them spliced in as `mcp.<srv>.*`, so `tools: [firecrawl_search]`
+runs on a host with that plugin enabled. Blocking it would refuse a
+working workflow to guard a guess. Wiring MCP explicitly (an
+`mcp_server:` declaration or an `mcp:` block, on the workflow or the
+node) softens even the identifiable names — a server you wire on purpose
+can expose any name at all.
 
 One thing it does **not** let through: `tools:` is the single node field
 iterion never expands — `model:`, `backend:`, `command:` and `timeout:`
