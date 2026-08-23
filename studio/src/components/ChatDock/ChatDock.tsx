@@ -61,6 +61,12 @@ import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
+  SIDEBAR_COLLAPSED_PX,
+  SIDEBAR_EXPANDED_PX,
+} from "@/components/shared/Sidebar";
+import { useUIStore } from "@/store/ui";
+
+import {
   DraftBotOffer,
   useEditorConsent,
 } from "@/components/ChatDock/draftBotOffer";
@@ -130,6 +136,17 @@ function AssistantDock({
   onWidthChange: (px: number) => void;
 }) {
   const { reference, active, dismissed, dismiss, restore } = useRouteReference();
+
+  // The floating panel grows leftward from its top-left handle, so its width
+  // budget must stop at the sidebar — not at the viewport edge. Focus mode
+  // drops the chrome entirely, so there is nothing to clear.
+  const focusMode = useUIStore((s) => s.expanded);
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
+  const leftInset = focusMode
+    ? 0
+    : sidebarCollapsed
+      ? SIDEBAR_COLLAPSED_PX
+      : SIDEBAR_EXPANDED_PX;
 
   // What the operator DROPPED in, cleared once it has gone out with a
   // message. Held here rather than in the session because it belongs to the
@@ -246,6 +263,7 @@ function AssistantDock({
         </>
       }
       lane={ASSISTANT_LANE}
+      leftInset={leftInset}
       bubbleLabel="Open assistant"
       bubbleTitle="Ask the assistant about this page"
       attentionTitle="The assistant is waiting on you"

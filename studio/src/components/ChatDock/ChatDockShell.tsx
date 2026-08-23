@@ -95,6 +95,11 @@ export interface ChatDockShellProps {
   lane?: DockLane;
   // Right-edge width another surface has reserved (see laneRightPx).
   rightInset?: number;
+  // Left-edge width the layout chrome owns (the sidebar). The floating
+  // panel grows LEFTWARD from its top-left resize handle, so without this
+  // its clamp is the raw viewport and an enlarged panel slides over the
+  // nav. Mirrored from rightInset; 0 when the chrome is gone (focus mode).
+  leftInset?: number;
   // Closed-bubble presentation.
   bubbleIcon?: ReactNode;
   bubbleLabel?: string;
@@ -137,6 +142,7 @@ export function ChatDockShell({
   headerSlot,
   lane = 0,
   rightInset = 0,
+  leftInset = 0,
   bubbleIcon,
   bubbleLabel,
   bubbleTitle,
@@ -219,6 +225,7 @@ export function ChatDockShell({
       label={title}
       lane={lane}
       rightInset={rightInset}
+      leftInset={leftInset}
       focusOnMount={openedByOperator.current}
       sizeKey={floatingSizeKey}
       onClose={() => changeDock("closed")}
@@ -245,6 +252,7 @@ export function ChatDockFloating({
   label,
   lane = 0,
   rightInset = 0,
+  leftInset = 0,
   focusOnMount = false,
   sizeKey,
   onClose,
@@ -254,6 +262,9 @@ export function ChatDockFloating({
   label: string;
   lane?: DockLane;
   rightInset?: number;
+  // Width the left chrome (sidebar) owns. The panel grows leftward, so its
+  // width budget stops at the sidebar's right edge, not at the viewport's.
+  leftInset?: number;
   // Move focus into the panel on mount. Only true when the operator
   // just opened it — a restore-from-localStorage mount must leave the
   // page's own focus alone.
@@ -280,15 +291,18 @@ export function ChatDockFloating({
       : { width: FLOATING_WIDTH_PX, height: FLOATING_HEIGHT_PX },
   );
   // The panel is pinned bottom-right, so the space it may grow into is the
-  // viewport MINUS its own offsets — not the whole viewport. Clamping against
-  // the raw viewport let a full-width panel start at a negative x and run off
-  // the left edge, which is the one direction it can escape.
+  // viewport MINUS its own offsets and the left chrome — not the whole
+  // viewport. Clamping against the raw viewport let a full-width panel start
+  // at a negative x and run off the left edge, which is the one direction it
+  // can escape; clamping short of `leftInset` only kept it on-screen but ON
+  // the sidebar, which is the surface a leftward drag meets first.
   const right = laneRightPx(FLOATING_LANE_PX[lane], rightInset);
   const available = useCallback(
     (): { width: number; height: number } => ({
       width: Math.max(
         FLOATING_MIN_WIDTH_PX,
         (typeof window === "undefined" ? 1280 : window.innerWidth) -
+          leftInset -
           right -
           FLOATING_EDGE_MARGIN_PX,
       ),
@@ -299,7 +313,7 @@ export function ChatDockFloating({
           FLOATING_EDGE_MARGIN_PX,
       ),
     }),
-    [right],
+    [leftInset, right],
   );
 
   const resizeTo = useCallback(
