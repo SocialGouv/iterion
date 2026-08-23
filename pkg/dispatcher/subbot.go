@@ -78,6 +78,26 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
+		// Hold the CHILD's run flock for its active pass. runview's orphan reaper
+		// uses LockRun as its liveness probe, and a dispatcher-spawned child is
+		// neither in runview's Manager (the studio's runner registers one; there
+		// is nothing here to register with) nor a detached-.pid runner — so
+		// without this a reconcile tick reads an unlocked `running` child as dead
+		// and flips it to failed_resumable WHILE its engine and delegate
+		// subprocesses are still working. Observed on the first dispatched run
+		// that reached a subbot: the child was reaped 2.5 minutes in and only
+		// survived because its human-gate write landed 16 seconds later and won.
+		// A long child — a Blender render, a video generation — has no such luck.
+		// Released as soon as the active pass returns (see below), never held
+		// across the park.
+		var releaseLock func()
+		if lock, lerr := s.LockRun(ctx, childRunID); lerr == nil {
+			releaseLock = func() { _ = lock.Unlock() }
+		} else {
+			releaseLock = func() {}
+			logger.Warn("subbot child %s: run lock unavailable (%v) — the orphan reaper may misjudge it as dead mid-flight", childRunID, lerr)
+		}
+
 		execSpec := runview.ExecutorSpec{
 			Ctx:      ctx,
 			Workflow: childWf,
@@ -98,6 +118,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if len(childWf.Secrets) > 0 {
 			lstore, lerr := secrets.LocalStoreForProject(storeDir)
 			if lerr != nil {
+				releaseLock()
 				return nil, fmt.Errorf("engine runner: local secrets store for child %q: %w", req.Source, lerr)
 			}
 			execSpec.LocalSecrets = lstore
@@ -105,6 +126,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		}
 		childExec, err := runview.BuildExecutor(execSpec)
 		if err != nil {
+			releaseLock()
 			return nil, err
 		}
 		if c, ok := any(childExec).(io.Closer); ok {
@@ -141,7 +163,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		}
 		childEng := runtime.New(childWf, s, childExec, opts...)
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+		runErr := childEng.Run(childCtx, childRunID, req.Vars)
+		// Release the flock the moment the ACTIVE pass returns — before the park
+		// below, which can last hours. A parked child is paused, so the reaper
+		// leaves it alone, and an external `iterion resume` of it must be able to
+		// take the lock itself. Holding it across the park would block that
+		// resume — the very thing the park is waiting for.
+		releaseLock()
+		if err := runErr; err != nil {
 			// A human gate inside the child pauses the CHILD run; that is not a
 			// parent failure. Park this subbot node until the operator answers
 			// the child's review and it reaches a terminal state, then pick up
