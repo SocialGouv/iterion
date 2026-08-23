@@ -132,9 +132,12 @@ through the symlinked home.
 ### 1.4 End-to-end proof
 
 Same shadow home, but the hook command is the real shipping one
-(`iterion __permission-hook --backend grok --policy <path>`), the policy is
-`{"mode":"deny","deny":["Bash"]}`, and the invocation carries the exact flags
-grok.go always passes:
+(`iterion __permission-hook --backend grok --policy-b64 <policy>`), the policy
+is `{"mode":"deny","deny":["Bash"]}`, and the invocation carries the exact
+flags grok.go always passes. The proof below was first run with the policy on
+disk; it was re-run unchanged after the policy moved into the argv (see
+[permissions.md](permissions.md) — a file the hook re-reads per call is
+rewritable by the very agent it gates):
 
 ```sh
 GROK_HOME=/tmp/grok-proof/home grok \

@@ -388,6 +388,14 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	if hook.HomeEnv == "" || hook.DefaultHome == "" || hook.WriteRegistration == nil {
 		return nil, nil, fmt.Errorf("delegate: %s: incomplete permission-hook protocol", backendName)
 	}
+	// The backend name is the handshake between this registration and the hook
+	// subprocess, and a mismatch's only failure mode is fail-OPEN: the hook
+	// would exit non-zero with empty stdout, which both CLIs read as allow, and
+	// the node would run completely ungated. Refuse here, where refusing is
+	// still possible.
+	if !permissionhook.Supports(backendName) {
+		return nil, nil, fmt.Errorf("delegate: %s: no permission-hook dialect for this backend; refusing to run a gated node whose hook could not deny anything", backendName)
+	}
 	iterionBin := proc.LocateIterionBinary()
 	if iterionBin == "" {
 		return nil, nil, fmt.Errorf("delegate: %s: cannot locate a stable iterion binary for the permission hook; set ITERION_BIN", backendName)

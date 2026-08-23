@@ -17,6 +17,18 @@ const (
 	BackendKimi = "kimi"
 )
 
+// Supports reports whether this hook can spell a blocking verdict in the
+// named backend's dialect.
+//
+// Callers registering a hook MUST consult it. Run cannot fail closed on an
+// unknown backend — a deny has to be written in SOME dialect, and it has none
+// — so it returns an error, which both CLIs read as a non-zero exit with empty
+// stdout, which both CLIs treat as ALLOW. The only place that mismatch can be
+// caught safely is before the CLI is launched (PR #498 review, Rd8d86a).
+func Supports(backend string) bool {
+	return backend == BackendGrok || backend == BackendKimi
+}
+
 type event struct {
 	ToolName      string         `json:"tool_name"`
 	ToolInput     map[string]any `json:"tool_input"`

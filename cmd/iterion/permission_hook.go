@@ -18,9 +18,13 @@ var permissionHookCmd = &cobra.Command{
 			return nil
 		}
 		backend, _ := cmd.Flags().GetString("backend")
+		// Only --backend is required. An absent or empty --policy-b64 is
+		// deliberately handed to Run, which fails CLOSED by emitting a deny;
+		// erroring out here would exit non-zero with empty stdout, and both
+		// CLIs read that as allow (PR #498 review, R7af386).
 		policyB64, _ := cmd.Flags().GetString("policy-b64")
-		if backend == "" || policyB64 == "" {
-			return fmt.Errorf("__permission-hook: --backend and --policy-b64 are required")
+		if backend == "" {
+			return fmt.Errorf("__permission-hook: --backend is required")
 		}
 		return permissionhook.Run(backend, policyB64, os.Stdin, os.Stdout)
 	},

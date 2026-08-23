@@ -331,8 +331,13 @@ func TestCLIAgentPermissionShadowHome(t *testing.T) {
 	if _, err := os.Stat(shadow); !os.IsNotExist(err) {
 		t.Errorf("shadow home survived cleanup: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(realHome, "config.toml")); err != nil {
-		t.Errorf("operator config was mutated or removed: %v", err)
+	// Assert on `credentials`, not `config.toml`: config.toml is in
+	// ExcludedEntries, so it is never symlinked and RemoveAll could not reach
+	// it under any implementation — a vacuous assertion (#498 review R946e69).
+	// `credentials` IS symlinked, so it is what proves cleanup unlinks rather
+	// than follows.
+	if info, err := os.Stat(filepath.Join(realHome, "credentials")); err != nil || !info.IsDir() {
+		t.Errorf("cleanup followed the symlink into the operator home: info=%v err=%v", info, err)
 	}
 }
 
@@ -363,5 +368,25 @@ func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
 	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: run}, kimiProtocol, BackendKimi)
 	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
 		t.Fatalf("sandboxed gated run error = %v, want an explicit refusal", err)
+	}
+}
+
+// TestCLIAgentPermissionUnknownDialectRefuses pins the fail-CLOSED direction of
+// the backendName → hook-dialect handshake (#498 review, Rd8d86a). A protocol
+// that declares a PermissionHook under a name the hook subprocess cannot spell
+// must be refused before the CLI is launched: the hook would exit non-zero with
+// empty stdout, which grok and kimi both read as ALLOW, so the node would run
+// completely ungated — the one outcome the gate exists to prevent.
+func TestCLIAgentPermissionUnknownDialectRefuses(t *testing.T) {
+	proto := kimiProtocol
+	proto.Name = "some-future-cli"
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: proto}).preparePermissionHook(
+		context.Background(), Task{Permission: policy}, proto, proto.Name)
+	if err == nil || !strings.Contains(err.Error(), "dialect") {
+		t.Fatalf("unknown hook dialect error = %v, want an explicit refusal", err)
 	}
 }
