@@ -70,9 +70,9 @@ func TestMetricsEmitter_forwardsPlanWriter(t *testing.T) {
 	}
 }
 
-// TestMetricsEmitter_planWriterNoOpWhenInnerLacks locks in the benign
-// no-op: an inner store that is NOT a PlanWriter yields (snap, false,
-// nil) — identical to today's nil-planSink path, not a loud error.
+// TestMetricsEmitter_forwardsNodeServedRecorder locks in that the
+// metricsEmitter wrapper satisfies model.NodeServedRecorder and
+// delegates to the inner store; otherwise cloud runs drop NodesServed.
 func TestMetricsEmitter_forwardsNodeServedRecorder(t *testing.T) {
 	inner := &servedRecordingStore{}
 	m := newMetricsEmitter(inner, metrics.New())
@@ -89,6 +89,9 @@ func TestMetricsEmitter_forwardsNodeServedRecorder(t *testing.T) {
 	}
 }
 
+// TestMetricsEmitter_nodeServedNoOpWhenInnerLacks locks in the benign
+// no-op: an inner store that is NOT a NodeServedRecorder yields nil,
+// matching today's nil-servedSink path, not a loud error.
 func TestMetricsEmitter_nodeServedNoOpWhenInnerLacks(t *testing.T) {
 	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
 	if err := m.RecordNodeServed(context.Background(), "run-1", "n", store.NodeServed{Backend: "x"}); err != nil {
@@ -96,6 +99,9 @@ func TestMetricsEmitter_nodeServedNoOpWhenInnerLacks(t *testing.T) {
 	}
 }
 
+// servedRecordingStore also satisfies model.NodeServedRecorder, standing
+// in for the Mongo cloud store whose NodesServed capability the
+// metricsEmitter wrapper must forward rather than hide.
 type servedRecordingStore struct {
 	recordingEmitter
 	nodeID string
@@ -108,6 +114,9 @@ func (s *servedRecordingStore) RecordNodeServed(_ context.Context, _, nodeID str
 	return nil
 }
 
+// TestMetricsEmitter_planWriterNoOpWhenInnerLacks locks in the benign
+// no-op: an inner store that is NOT a PlanWriter yields (snap, false,
+// nil) — identical to today's nil-planSink path, not a loud error.
 func TestMetricsEmitter_planWriterNoOpWhenInnerLacks(t *testing.T) {
 	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
 	snap := store.PlanSnapshot{NodeID: "n"}
