@@ -64,6 +64,23 @@ func (rs *runState) scope() resolveScope {
 func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any {
 	result := make(map[string]any)
 
+	// Entry floor: launch payload + var defaults. Incoming with-mappings
+	// overlay this, and bounded-iteration back-edges still win on a
+	// shared key (applied last below). Gating the floor on
+	// len(result)==0 dropped the run payload on re-entry the moment a
+	// back-edge carried a with-mapping, so {{input.x}} on an entry
+	// router's outgoing edges went nil from iteration 2 (R7dd005).
+	if nodeID == e.workflow.Entry {
+		for name, v := range e.workflow.Vars {
+			if v.HasDefault {
+				result[name] = v.Default
+			}
+		}
+		for k, v := range sc.runInputs {
+			result[k] = v
+		}
+	}
+
 	// applyEdge merges one edge's with-mappings into result. Only edges whose
 	// source has already produced output contribute (so a not-yet-run source
 	// leaves the mapping to a later-firing edge / the entry fallback).
@@ -139,23 +156,6 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	for _, edge := range e.workflow.Edges {
 		if edge.IsBoundedIteration() {
 			applyEdge(edge)
-		}
-	}
-
-	// Fallback: for the entry node merge workflow var defaults with run-level
-	// inputs so that {{input.X}} references resolve to the var default when
-	// --var X=... was not provided on the CLI. Without this, vars declared
-	// with a default like `scope_notes: string = ""` are missing from the
-	// entry node's input map and the placeholder is left literal in prompts.
-	// CLI inputs override defaults.
-	if len(result) == 0 && nodeID == e.workflow.Entry {
-		for name, v := range e.workflow.Vars {
-			if v.HasDefault {
-				result[name] = v.Default
-			}
-		}
-		for k, v := range sc.runInputs {
-			result[k] = v
 		}
 	}
 

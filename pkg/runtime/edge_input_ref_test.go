@@ -580,3 +580,77 @@ func TestEdgeInputRef_MidGraphRouterPassThrough(t *testing.T) {
 		t.Errorf("show topic = %#v, want from-seed", got)
 	}
 }
+
+const entryRouterLoopBot = `
+schema work_out:
+  n: int
+  done: bool
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+router pick:
+  mode: condition
+
+agent work:
+  model: "m"
+  output: work_out
+  system: sys
+  user: usr
+
+vars:
+  data: string
+
+workflow test:
+  entry: pick
+  worktree: none
+  sandbox: none
+  pick -> work with { data: "{{input.data}}" }
+  work -> pick when not done as retry(5) with { n: "{{outputs.work.n}}" }
+  work -> done when done
+`
+
+// TestEdgeInputRef_EntryRouterKeepsRunPayloadOnLoop is R7dd005: a
+// back-edge with a with-mapping used to make the entry floor skip
+// (len(result)!=0), so {{input.data}} on the entry router's outgoing
+// edge was nil from iteration 2. The floor is now applied first;
+// back-edge keys still overlay it.
+func TestEdgeInputRef_EntryRouterKeepsRunPayloadOnLoop(t *testing.T) {
+	cr := compileBot(t, entryRouterLoopBot)
+	if cr.Workflow == nil {
+		t.Fatalf("compile returned nil workflow: %v", cr.Diagnostics)
+	}
+	for _, d := range cr.Diagnostics {
+		if d.Code == ir.DiagRefNodeNoSchema || d.Code == ir.DiagInputFieldNotInSchema {
+			t.Fatalf("entry-router {{input.data}} must stay exempt: %v", cr.Diagnostics)
+		}
+	}
+
+	var seen []any
+	exec := newStubExecutor()
+	exec.on("pick", func(in map[string]any) (map[string]any, error) {
+		return in, nil
+	})
+	exec.on("work", func(in map[string]any) (map[string]any, error) {
+		seen = append(seen, in["data"])
+		n := int64(len(seen))
+		return map[string]any{"n": n, "done": n >= 3}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(cr.Workflow, s, exec)
+	if err := eng.Run(context.Background(), "run-entry-loop", map[string]any{"data": "RUNVAL"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("work visits = %d %v, want 3", len(seen), seen)
+	}
+	for i, v := range seen {
+		if v != "RUNVAL" {
+			t.Errorf("work visit %d data = %#v, want RUNVAL (entry router must keep the run payload on loop re-entry)", i, v)
+		}
+	}
+}

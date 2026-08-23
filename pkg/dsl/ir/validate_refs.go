@@ -576,8 +576,9 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 
 // validateRouterEdgeInput is C032 for a mid-graph router whose outgoing
 // {{input.x}} is not in the pass-through namespace (incoming with-keys
-// plus mode-specific bindings). An entry router copies the run payload,
-// whose extra keys are not known at compile time, so it stays silent.
+// plus mode-specific bindings). An entry router always has the run
+// payload as its input floor (even on loop re-entry), whose extra keys
+// are not known at compile time, so it stays silent.
 func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *RouterNode, fieldName string) {
 	if rc.NodeID == w.Entry {
 		return
