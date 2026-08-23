@@ -621,6 +621,10 @@ func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
 			bind = "item"
 		}
 		keys[bind] = true
+		// Runtime binds the element under BOTH the declared `as:` name
+		// and the literal "item" (fan_out_each.go), so {{input.item}}
+		// resolves even with a custom binding.
+		keys["item"] = true
 		keys["index"] = true
 		keys["count"] = true
 	}

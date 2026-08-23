@@ -9,7 +9,7 @@ export type RefContextKind =
 
 export interface RefContext {
   kind: RefContextKind;
-  /** Source node of an edge — used by edge-with to resolve target input schema. */
+  /** Source node of an edge — used by edge-with to resolve {{input.*}} from the source output schema. */
   edgeFrom?: string;
   /** Target node of an edge. */
   edgeTo?: string;
@@ -40,6 +40,15 @@ function findNodeInputSchema(doc: IterDocument, nodeName: string): string {
   for (const h of doc.humans) if (h.name === nodeName) return h.input ?? "";
   for (const t of doc.tools) if (t.name === nodeName) return t.input ?? "";
   for (const c of doc.computes ?? []) if (c.name === nodeName) return c.input ?? "";
+  return "";
+}
+
+function findNodeOutputSchema(doc: IterDocument, nodeName: string): string {
+  for (const a of doc.agents) if (a.name === nodeName) return a.output ?? "";
+  for (const j of doc.judges) if (j.name === nodeName) return j.output ?? "";
+  for (const h of doc.humans) if (h.name === nodeName) return h.output ?? "";
+  for (const t of doc.tools) if (t.name === nodeName) return t.output ?? "";
+  for (const c of doc.computes ?? []) if (c.name === nodeName) return c.output ?? "";
   return "";
 }
 
@@ -93,10 +102,13 @@ export function computeRefs(
   if (!doc) return [];
   const refs: RefSuggestion[] = [];
 
-  // {{input.*}} from the input schema in scope.
+  // {{input.*}}: in a prompt, the consuming node's input schema; in an
+  // edge with-mapping, the SOURCE node's output schema (the payload
+  // available when the edge fires). Destination input fields belong in
+  // the mapping KEYS, not in {{input.*}} values — C034 rejects those.
   let inputSchemaName = "";
-  if (ctx.kind === "edge-with" && ctx.edgeTo) {
-    inputSchemaName = findNodeInputSchema(doc, ctx.edgeTo);
+  if (ctx.kind === "edge-with" && ctx.edgeFrom) {
+    inputSchemaName = findNodeOutputSchema(doc, ctx.edgeFrom);
   } else if (ctx.kind === "node-prompt" && ctx.nodeId) {
     inputSchemaName = findNodeInputSchema(doc, ctx.nodeId);
   }

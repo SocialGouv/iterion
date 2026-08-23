@@ -2498,6 +2498,50 @@ workflow test:
 	expectNoDiag(t, r, DiagRefNodeNoSchema)
 }
 
+func TestValidateRefInputOnEdge_FanOutEachItemAlias_OK(t *testing.T) {
+	src := `
+schema items_out:
+  items: json
+
+schema payload:
+  a: json
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: items_out
+  system: sys
+  user: usr
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.seed.items}}"
+  as: ep
+
+agent worker:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+  readonly: true
+
+workflow test:
+  entry: seed
+  seed -> dispatch
+  dispatch -> worker with { a: "{{input.item}}" }
+  worker -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
 func TestValidateRefInputOnEdge_SchemalessSource_C032Warn(t *testing.T) {
 	src := `
 schema dst_in:

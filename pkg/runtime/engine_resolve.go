@@ -96,6 +96,7 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		edgeScope.runInputs = effectiveInputs
 
 		for _, dm := range edge.With {
+			e.warnMissingEdgeInput(edge, dm, effectiveInputs)
 			val := e.resolveMapping(dm, edgeScope)
 			// Include nil values too: a ref that resolves to nil
 			// (e.g. `{{outputs.fixer.pushback}}` before the fixer
@@ -177,6 +178,28 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	}
 
 	return result
+}
+
+// warnMissingEdgeInput logs when a with-mapping {{input.x}} names a
+// field the source output does not have. C032 is only a compile
+// warning, and `iterion run` does not print those, so without this the
+// nil would splice the literal `{{input.x}}` into a tool command and
+// the run would still finish green (#479 / Rd285bb).
+func (e *Engine) warnMissingEdgeInput(edge *ir.Edge, dm *ir.DataMapping, sourceOut map[string]any) {
+	if e.logger == nil {
+		return
+	}
+	for _, ref := range dm.Refs {
+		if ref == nil || ref.Kind != ir.RefInput || len(ref.Path) == 0 {
+			continue
+		}
+		field := ref.Path[0]
+		if _, ok := sourceOut[field]; ok {
+			continue
+		}
+		e.logger.Warn("runtime: edge %s -> %s with %q: {{input.%s}} is not on the source node's output (no run-input fallback; use {{vars.%s}} for a launch-time value)",
+			edge.From, edge.To, dm.Key, field, field)
+	}
 }
 
 // resolveMapping resolves a DataMapping's references to concrete values.

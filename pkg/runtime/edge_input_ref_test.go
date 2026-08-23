@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -411,9 +413,13 @@ func TestEdgeInputRef_SchemalessSourceWarnsAndDoesNotFallBack(t *testing.T) {
 	})
 
 	s := tmpStore(t)
-	eng := New(cr.Workflow, s, exec)
+	var logBuf bytes.Buffer
+	eng := New(cr.Workflow, s, exec, WithLogger(log.New(log.LevelWarn, &logBuf)))
 	if err := eng.Run(context.Background(), "run-schemaless", map[string]any{"reviewer": "on"}); err != nil {
 		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(logBuf.String(), "{{input.reviewer}} is not on the source node's output") {
+		t.Errorf("expected a runtime warning for missing {{input.reviewer}}, log:\n%s", logBuf.String())
 	}
 	if got == nil {
 		t.Fatal("dst was not executed")
