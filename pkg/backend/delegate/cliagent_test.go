@@ -427,3 +427,122 @@ func TestCLIAgentPermissionRefusesBinaryInsideWorkspace(t *testing.T) {
 		t.Fatalf("hook binary inside the gated workspace error = %v, want an explicit refusal", err)
 	}
 }
+
+// TestCLIAgentPermissionRefusesRelativeBinInsideWorkspace pins R05d9fd: a
+// relative ITERION_BIN (the shape CLAUDE.md documents as ITERION_BIN=./iterion)
+// used to skip pathInsideCheckout — filepath.Rel cannot relate an absolute
+// workspace to "./iterion", so the guard answered "outside" — and then freeze
+// that relative path into the hook argv, which the CLI resolves against the
+// gated workspace. Absolutising first makes the containment check see the
+// real path and makes the spawn cwd-independent.
+func TestCLIAgentPermissionRefusesRelativeBinInsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit fixture")
+	}
+	workspace := t.TempDir()
+	inside := filepath.Join(workspace, "iterion")
+	if err := os.WriteFile(inside, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+	t.Setenv("ITERION_BIN", "./iterion")
+
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", WorkDir: workspace, StoreDir: t.TempDir(), Permission: policy}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+		t.Fatalf("relative ITERION_BIN inside the gated workspace error = %v, want an explicit refusal", err)
+	}
+}
+
+// TestCLIAgentPermissionAbsolutisesRelativeBinOutsideWorkspace is the other
+// half of R05d9fd: a relative ITERION_BIN that really is outside the workspace
+// must still be frozen as an absolute path. Otherwise the CLI spawns it with
+// cwd = the gated workspace and either hits a different file or fails open.
+func TestCLIAgentPermissionAbsolutisesRelativeBinOutsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	workspace := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Chdir(binDir)
+	t.Setenv("ITERION_BIN", "./iterion")
+
+	realHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("model = \"k2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := permission.NewPolicy(permission.ModeDeny, []string{"Read(**)"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{
+		NodeID:     "n",
+		WorkDir:    workspace,
+		StoreDir:   t.TempDir(),
+		Permission: policy,
+		ExtraEnv:   []string{"KIMI_CODE_HOME=" + realHome},
+	}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	if len(env) != 1 || !strings.HasPrefix(env[0], "KIMI_CODE_HOME=") {
+		t.Fatalf("hook env = %v", env)
+	}
+	shadow := strings.TrimPrefix(env[0], "KIMI_CODE_HOME=")
+	config, err := os.ReadFile(filepath.Join(shadow, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs("./iterion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), abs) {
+		t.Errorf("registration must carry the absolute hook binary %q:\n%s", abs, config)
+	}
+	if strings.Contains(string(config), "'./iterion'") {
+		t.Errorf("registration still has a cwd-relative binary:\n%s", config)
+	}
+}
+
+// TestShellQuoteIsPOSIXNotCmdExe pins the quoting dialect that makes Windows
+// ungatable: cmd.exe does not treat `'` as a quoting character, so this
+// string would split on spaces and fail to spawn (#498 review, R1f6137).
+func TestShellQuoteIsPOSIXNotCmdExe(t *testing.T) {
+	got := shellQuote(`C:\Program Files\iterion\iterion.exe`)
+	want := `'C:\Program Files\iterion\iterion.exe'`
+	if got != want {
+		t.Fatalf("shellQuote = %q, want POSIX single-quoting %q", got, want)
+	}
+}
+
+// TestCLIAgentPermissionRefusesWindows pins R1f6137: the seam must not invite
+// the operator past the symlink half (Developer Mode) into a POSIX-quoted
+// hook command that cmd.exe cannot spawn — both CLIs read a spawn failure as
+// ALLOW.
+func TestCLIAgentPermissionRefusesWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only seam refusal")
+	}
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), Task{Permission: policy}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "unsupported on Windows") {
+		t.Fatalf("windows gated run error = %v, want an explicit refusal", err)
+	}
+}

@@ -406,9 +406,30 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	if !permissionhook.Supports(backendName) {
 		return nil, nil, fmt.Errorf("delegate: %s: no permission-hook dialect for this backend; refusing to run a gated node whose hook could not deny anything", backendName)
 	}
-	iterionBin := proc.LocateIterionBinary()
-	if iterionBin == "" {
+	// shellQuote is POSIX `sh -c` quoting. Node-based CLIs on Windows run a
+	// hook `command` through cmd.exe, which does not treat `'` as quoting: a
+	// path with spaces splits, the spawn fails, and both CLIs fail OPEN. The
+	// symlink half of the seam has the same shape (stock Windows denies
+	// unprivileged CreateSymbolicLink). Recommending Developer Mode would
+	// only get the operator past the first half and into the silent one
+	// (#498 review, R1f6137).
+	if runtime.GOOS == "windows" {
+		return nil, nil, fmt.Errorf("delegate: %s: permission: deny on this backend is unsupported on Windows — the hook command is quoted for a POSIX shell and both CLIs fail OPEN on a spawn failure, so the node would run ungated; use permission: off or a backend with an in-process gate (claude_code, claw)", backendName)
+	}
+	innerBin := proc.LocateIterionBinary()
+	if innerBin == "" {
 		return nil, nil, fmt.Errorf("delegate: %s: cannot locate a stable iterion binary for the permission hook; set ITERION_BIN", backendName)
+	}
+	// Absolutise before ANY of the reasoning below. A relative ITERION_BIN
+	// defeats pathInsideCheckout — filepath.Rel cannot relate an absolute
+	// workspace to a relative path, so it errors and the guard answers
+	// "outside" for a binary that is literally in the checkout — AND the
+	// registration argv would resolve against the HOOK's cwd (the CLI's, i.e.
+	// the gated workspace) instead of iterion's. Both CLIs fail OPEN on a
+	// spawn failure (#498 review, R05d9fd).
+	iterionBin, absErr := filepath.Abs(innerBin)
+	if absErr != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: cannot resolve the permission hook binary %q: %w", backendName, innerBin, absErr)
 	}
 	// Third leg of the same containment argument as the shadow home and the
 	// by-value policy — and the sharpest one, because unlike the frozen argv
@@ -519,7 +540,11 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 			// entries instead is deliberately NOT the fallback — this tree is
 			// the operator's credential store (#498 review, R8f7762).
 			if runtime.GOOS == "windows" {
-				return fmt.Errorf("%w — the permission seam links the CLI home with symlinks, which stock Windows denies to unprivileged processes; enable Developer Mode (or run elevated) to use permission: deny on this backend", err)
+				// preparePermissionHook already refuses Windows before we get
+				// here; keep the message honest if a caller reorders. Do NOT
+				// recommend Developer Mode: the POSIX-quoted hook command
+				// would still fail open (#498 review, R1f6137).
+				return fmt.Errorf("%w — the permission seam links the CLI home with symlinks, which stock Windows denies to unprivileged processes; permission: deny on this backend is unsupported on Windows", err)
 			}
 			return err
 		}
@@ -527,9 +552,14 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 	return nil
 }
 
-// shellQuote quotes one fixed argv fragment for the shell command string both
-// hook implementations accept. Single quotes are the only portable quoting
-// form needed here; embedded quotes use the standard close/escape/reopen form.
+// shellQuote quotes one fixed argv fragment for a POSIX `sh -c` command
+// string. Both grok and kimi currently receive the hook `command` as a
+// single string; on Unix that string is a shell command. Single quotes
+// are the portable POSIX form; embedded quotes use the standard
+// close/escape/reopen. This is deliberately NOT used on Windows
+// (preparePermissionHook refuses): cmd.exe does not treat `'` as quoting,
+// so a path with spaces would split, the spawn would fail, and both CLIs
+// fail OPEN (#498 review, R1f6137).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

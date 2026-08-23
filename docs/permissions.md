@@ -173,15 +173,6 @@ instead of rejecting. Lifting the restriction means carrying the shadow home
 and the hook binary into the container; until then the refusal is the honest
 answer.
 
-**The hook binary must live outside the workspace too.** It is the third thing
-the agent must not reach, and the weakest of the three: unlike the frozen argv,
-it is re-executed on every tool call, and both CLIs fail **open** when a hook
-fails to spawn — so corrupting the file is enough, no working replacement
-needed. `proc.LocateIterionBinary` resolves `os.Executable()`'s directory
-first, which in the repo-root shape (`./iterion run …` after `task build`) is
-inside the gated workspace, so iterion refuses that configuration and points at
-`ITERION_BIN` on a stable install path.
-
 **The hook binary must live outside the workspace.** It is the third thing the
 gated agent must not be able to reach, and the sharpest: unlike the frozen argv
 it is re-executed on *every* tool call, and both CLIs fail open on a spawn
@@ -189,13 +180,18 @@ failure — so corrupting the file, not replacing it with a working one, is
 enough. `proc.LocateIterionBinary` resolves next to `os.Executable()` first,
 which in the repo-root shape (`./iterion run …`, or `task studio:dev` pinning
 `ITERION_BIN` to a freshly built `./iterion`) is inside the very workspace
-being gated. iterion refuses that configuration and points at `ITERION_BIN` on
-a stable install path.
+being gated. The path is absolutised before that check and before it is frozen
+into the hook argv: a relative `ITERION_BIN` used to defeat
+`pathInsideCheckout` (which cannot relate an absolute workspace to a relative
+path) and would then resolve against the CLI's cwd — the gated workspace — at
+spawn time. iterion refuses an in-workspace binary and points at `ITERION_BIN`
+on a stable install path outside the repo.
 
-**Windows** needs Developer Mode (or an elevated process): the shadow home
-links the operator's CLI home with symlinks, which stock Windows denies to
-unprivileged processes. The failure names the limitation. Copying the entries
-is deliberately not the fallback — that tree is a credential store.
+**Windows is refused.** The hook `command` is quoted for a POSIX shell; Node-based
+CLIs on Windows run that string through `cmd.exe`, which does not treat `'` as
+quoting. A spawn failure is an ALLOW on both CLIs, so enabling Developer Mode
+for the symlink half of the seam would still leave the node ungated. Use
+`permission: off`, or a backend with an in-process gate (`claude_code`, `claw`).
 
 Neither external hook is admitted on a declaration: each earned its entry in
 `gateEnforcingModes` with a live denial where a filesystem sentinel — not model

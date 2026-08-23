@@ -1014,8 +1014,8 @@ backend. That is **distinct** from calling the xAI HTTP API via
   runs are also refused because neither CLI currently carries its home and hook
   binary into the container — so a gated node needs `sandbox: none` (the
   shipped default is `auto`, and **C136** warns at compile time rather than
-  letting the run die at the agent node). Windows needs Developer Mode: the
-  shadow home is built from symlinks.
+  letting the run die at the agent node). Windows is refused: the hook command
+  is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
 - **Sessions** are captured for observability (`sessionId`) but resume/fork
