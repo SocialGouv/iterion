@@ -174,11 +174,45 @@ Two things about it matter:
   crafted 200-character value was only recoverable from the tooltip.
   (Trade-off taken knowingly: a filename containing a space loses its
   chip and degrades to the plain view reference.)
-- **It is always visible.** The chip above the composer names what the
-  assistant is assumed to be looking at. Dismiss it with the ✕ and that
-  reference stops being sent — including if you navigate away and back —
-  while other pages still contribute their own. "Use this page as
-  context" puts it back.
+- **It is answerable on demand, and it speaks up when it is news.** The
+  reference used to be pinned open in a strip above the composer. That
+  was retired: you can already see what page you are on, so a permanent
+  line repeating it bought nothing — the same reasoning that already made
+  `/whats-next` contribute no reference at all ("you are looking at the
+  conversation" is noise), applied consistently.
+
+  What replaces it is an **eye in the composer row**
+  ([`ContextEye`](../studio/src/components/ChatDock/ContextEye.tsx)),
+  sitting beside the box you type in and costing no vertical space. Its
+  tooltip and accessible name carry the **wire form** — `Sending this
+  page as context: view/board` — so "what exactly is going out with this
+  message?" stays answerable, and clicking it stops that reference being
+  sent, including if you navigate away and back, while other pages still
+  contribute their own.
+
+  The strip
+  ([`ContextChip`](../studio/src/components/ChatDock/ContextChip.tsx))
+  still renders in the two cases the screen cannot tell you about on its
+  own, and `stripSpeaks` is the single predicate deciding which — the eye
+  is its exact complement, so only one control is ever on screen:
+
+  - **dismissed** — the absence of context is invisible by nature, so the
+    way back ("Use this page as context") has to be shown.
+  - **degraded** — the route addressed an entity and the pointer fell
+    back to the surrounding view. The page still shows you the run;
+    only the assistant lost it. The strip says so: *Couldn't identify
+    this page — the assistant only has `VIEW Runs`.*
+
+  Note where those two land relative to the paragraph above: a crafted
+  `/runs/<prose>` is exactly a *degraded* reference, so the surface that
+  used to truncate a hostile value inside a 380px column now **names the
+  refusal outright**. Visibility on the attacker path went up, not down;
+  what moved into a tooltip is the benign case, where the operator is
+  looking at the page anyway.
+
+  The mark itself is set in one place — `orView()` in `routeReference.ts`,
+  the fallback every entity route takes — rather than at each `??`, where
+  it is both easy to forget and impossible to notice.
 
 A route nobody mapped contributes **no** context rather than a guess.
 Home and `/whats-next` deliberately contribute none.
@@ -193,7 +227,7 @@ param), so it only arrives when something is dropped in explicitly.
 
 ## Dropping something in
 
-The page chip says where you are standing. Dragging says what you are
+The page reference says where you are standing. Dragging says what you are
 asking **about** — and the two travel as separate lines, because they
 mean different things to the bot:
 
@@ -224,8 +258,8 @@ draft and its pointers.
 **The pipeline board is deliberately partial.** Its rule is that card
 position is server-derived and launch-now is its only drag gesture, so
 only the cards that already drag carry a reference. A running or failed
-card is reached through the route's own context chip instead — opening
-its drawer puts `card/<id>` on the chip.
+card is reached through the route's own page reference instead — opening
+its drawer makes the page `card/<id>`.
 
 Adding a source is one helper, never a bespoke handler:
 

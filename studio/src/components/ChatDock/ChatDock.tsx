@@ -18,7 +18,7 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
 } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 
 import {
   AssistantStoreScope,
@@ -26,6 +26,7 @@ import {
   useAssistantSession,
 } from "@/components/ChatDock/AssistantProvider";
 import ContextChip from "@/components/ChatDock/ContextChip";
+import ContextEye from "@/components/ChatDock/ContextEye";
 import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AttachedReferences from "@/components/ChatDock/AttachedReferences";
 import BotSwitcher from "@/components/ChatDock/BotSwitcher";
@@ -65,9 +66,9 @@ import {
 } from "@/components/ChatDock/draftBotOffer";
 import {
   ConversationStrip,
-  OriginLink,
+  WorkplaceLink,
 } from "@/components/ChatDock/ConversationStrip";
-import { editorDraftKey } from "@/hooks/useDraftBot";
+import { editorDraftKey, useDraftState } from "@/hooks/useDraftBot";
 import {
   botDeclaresReviewer,
   readAskBeforeStart,
@@ -85,8 +86,7 @@ export default function ChatDock() {
   const [location] = useLocation();
   if (!dockCtx || !sessionCtx?.bot) return null;
   // /whats-next renders this same session full-width — the dock would be a
-  // second composer over one conversation — and the pipelines control center
-  // is read across its full width.
+  // second composer over one conversation.
   if (dockStandsDown(location)) return null;
   return (
     // The transcript and composer read the run store; re-enter the
@@ -158,6 +158,9 @@ function AssistantDock({
 
   const editorConsent = useEditorConsent(composer.submitPending);
   const [route] = useLocation();
+  const search = useSearch();
+  // Same query key as the draft offer, so this costs nothing extra.
+  const workplaceDraft = useDraftState(session.runId, session.messages.length);
 
   // The strip and the origin link both read the dock context, which is where
   // the conversations live (the session context changes on every event and
@@ -344,7 +347,13 @@ function AssistantDock({
         </div>
       ) : (
         <div className="shrink-0 border-t border-border-default bg-surface-0">
-          <OriginLink conversation={activeConversation} currentPath={route} />
+          <WorkplaceLink
+            conversation={activeConversation}
+            runId={session.runId}
+            hasDraft={!!workplaceDraft.source}
+            currentPath={route}
+            currentSearch={search}
+          />
           <AttachedReferences references={attached} onDetach={detach} />
           {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
@@ -380,7 +389,17 @@ function AssistantDock({
           {(!composer.pendingIsAskUser ||
             composer.allowFreeText ||
             composer.options.length === 0) && (
-            <div className="px-3 py-2">
+            <div className="px-3 py-2 flex items-end gap-1">
+              {/* In the row, not above it: the page context rides the
+                  message being typed, so its control belongs beside the
+                  composer — and the row already exists, so unlike the
+                  strip it replaced this costs no vertical space. */}
+              <ContextEye
+                reference={reference}
+                dismissed={dismissed}
+                onDismiss={dismiss}
+              />
+              <div className="min-w-0 flex-1">
               <AgentChatboxInline
                 runId={session.runId ?? ""}
                 compact={dock === "floating"}
@@ -403,6 +422,7 @@ function AssistantDock({
                 }
                 onSend={onComposerSend}
               />
+              </div>
             </div>
           )}
         </div>

@@ -46,9 +46,17 @@ export function useSessionDiscovery(opts: {
   // must therefore start empty and launch its own; only a session that IS the
   // continuation of an earlier one should attach.
   discover?: boolean;
+  // Attach to THIS run, skipping the bot-scoped lookup entirely.
+  //
+  // The lookup answers "the latest live run for this bot", which is the wrong
+  // question once several conversations share a bot: whichever one remounted
+  // last would take another's run. A conversation that has launched knows its
+  // own run id and must use it.
+  attachRunId?: string | null;
 }): SessionDiscovery {
   const { bot, scopeKey, repoScopeEnabled, overview, activeRepo } = opts;
   const discover = opts.discover ?? true;
+  const attachRunId = opts.attachRunId ?? null;
   const { onAttached, setStatus } = opts;
   // The store this session lives in — the assistant's isolated one when
   // mounted under AssistantProvider, the module default otherwise. Stable
@@ -73,12 +81,6 @@ export function useSessionDiscovery(opts: {
   const attachAttemptedRef = useRef(false);
   useEffect(() => {
     if (attachAttemptedRef.current) return;
-    if (!discover) {
-      // Not an error state: this conversation is meant to be empty until the
-      // operator says something.
-      attachAttemptedRef.current = true;
-      return;
-    }
     if (!bot.id) return;
     // In cloud, wait for the repo scope to resolve before discovering —
     // the scope key participates in both storage and filtering.
@@ -97,6 +99,25 @@ export function useSessionDiscovery(opts: {
       });
       if (attached && !cancelled) onAttached(runIdToAttach);
     };
+
+    if (attachRunId) {
+      attachAttemptedRef.current = true;
+      void (async () => {
+        try {
+          await attachTo(attachRunId);
+        } catch {
+          // A run that is gone (pruned, cancelled elsewhere) leaves the
+          // conversation on its empty state rather than borrowing another's.
+        }
+      })();
+      return;
+    }
+    if (!discover) {
+      // Not an error state: this conversation is meant to be empty until the
+      // operator says something.
+      attachAttemptedRef.current = true;
+      return;
+    }
 
     const remembered = recallSessionRunId(bot.id, scopeKey);
     setStatus("launching");
@@ -172,7 +193,7 @@ export function useSessionDiscovery(opts: {
     // scopeKey folds in (team, active repo) — a repo switch re-runs the
     // discovery for the new scope; discoveryNonce is the manual retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bot.id, scopeKey, discoveryNonce, discover]);
+  }, [bot.id, scopeKey, discoveryNonce, discover, attachRunId]);
 
   const retryDiscovery = useCallback(() => {
     setDiscoveryError(null);

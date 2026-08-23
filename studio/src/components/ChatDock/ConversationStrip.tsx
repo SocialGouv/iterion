@@ -2,9 +2,11 @@
 //
 // Two things the operator loses without this, and both were the reason for
 // asking: a second thread costs them the first, and a conversation they come
-// back to gives no clue which page it was about. The origin chip answers the
-// second — it is the page context the dock already sends the bot, shown back
-// to the operator as somewhere they can go.
+// back to gives no clue what it concerns.
+//
+// "What it concerns" is its WORKPLACE, not its birthplace — the workflow a
+// conversation drafted, not the board you happened to be on when you opened
+// the tab. See WorkplaceLink; the origin is only the fallback.
 
 import { Cross2Icon, PlusIcon } from "@radix-ui/react-icons";
 import { Link } from "wouter";
@@ -102,29 +104,58 @@ export function ConversationStrip({
 }
 
 /**
- * OriginLink offers the page a conversation was opened from.
+ * WorkplaceLink offers the page a conversation is ABOUT.
+ *
+ * Two candidates, and the order matters. A conversation that drafted a
+ * workflow is about that workflow — coming back to it means the editor with
+ * the draft loaded, not the board you happened to be on when you opened the
+ * tab. Where it was born is only the fallback, for a conversation that has
+ * produced nothing to return to.
  *
  * A link, never a jump: the same rule as every other move the assistant
- * proposes. Absent when the conversation has no origin, or when the operator
- * is already there — a link to where you stand is noise.
+ * proposes. Absent when there is nowhere to go, or when the operator is
+ * already there — a link to where you stand is noise.
  */
-export function OriginLink({
+export function WorkplaceLink({
   conversation,
+  runId,
+  hasDraft,
   currentPath,
+  currentSearch,
 }: {
   conversation: Conversation | null;
+  runId: string | null;
+  hasDraft: boolean;
   currentPath: string;
+  currentSearch: string;
 }) {
+  if (hasDraft && runId) {
+    const href = `/editor?draft=${encodeURIComponent(runId)}`;
+    // Already looking at this draft: the canvas IS the answer.
+    if (
+      currentPath === "/editor" &&
+      new URLSearchParams(currentSearch).get("draft") === runId
+    ) {
+      return null;
+    }
+    return (
+      <LinkRow href={href} label="the workflow it drafted" />
+    );
+  }
   const href = conversation?.origin ? hrefForReference(conversation.origin) : null;
   if (!href || !conversation?.originLabel) return null;
   if (href === currentPath) return null;
+  return <LinkRow href={href} label={conversation.originLabel} />;
+}
+
+function LinkRow({ href, label }: { href: string; label: string }) {
   return (
     <div className="px-3 pt-2">
       <Link
         href={href}
         className="text-caption text-accent-text hover:underline"
       >
-        ← Back to {conversation.originLabel}
+        ← Back to {label}
       </Link>
     </div>
   );

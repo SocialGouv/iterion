@@ -72,7 +72,10 @@ export function useSessionMessages(opts: {
         kind: "user-message",
         id: "seed",
         text: seed,
-        status: "delivered",
+        // `consumed`, not `delivered`: the run READ this one — it is the launch
+        // var the first node ran on. Claiming an in-flight state it never went
+        // through is what made the opening message render unlike the rest.
+        status: "consumed",
       });
     }
     return withSeed;

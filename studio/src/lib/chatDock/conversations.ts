@@ -5,10 +5,10 @@
 // to keep a thread going — asking about a run while a workflow you are
 // drafting waits meant losing one of them.
 //
-// A conversation is deliberately thin: an id, which bot answers, and WHERE it
-// started. It does NOT hold the run id — the session hook discovers that from
-// the store, and duplicating it here would create a second source of truth
-// that goes stale the moment a session is cancelled or re-seeded elsewhere.
+// A conversation is thin: an id, which bot answers, WHERE it started, and the
+// run it owns. That last one was left out at first — the session hook can
+// discover a run — and it had to come back: discovery is keyed on the BOT, so
+// conversations sharing one were handed each other's run.
 //
 // `origin` is the typed reference of the page the conversation was opened
 // from ("view/board", "run/019f…"). It is what lets the operator get back to
@@ -42,6 +42,19 @@ export interface Conversation {
    * still gets it back.
    */
   fresh?: boolean;
+  /**
+   * The run this conversation owns, once it has launched one.
+   *
+   * The model started without it on purpose — "the session hook discovers that
+   * from the store" — and that was wrong. Discovery answers "the latest live
+   * run for this BOT", so the moment two conversations share a bot they take
+   * each other's run: switching tabs remounted a session, it re-discovered,
+   * and both ended up showing the same thread while the other was lost.
+   *
+   * Owning the id is what makes a conversation a conversation rather than a
+   * view onto whatever ran last.
+   */
+  runId?: string;
 }
 
 export function newConversationId(): string {
@@ -69,10 +82,59 @@ export function readConversations(): Conversation[] {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isConversation).slice(0, MAX_CONVERSATIONS);
+    return dedupeRunIds(parsed.filter(isConversation).slice(0, MAX_CONVERSATIONS));
   } catch {
     return [];
   }
+}
+
+/**
+ * dedupeRunIds enforces the invariant a run has exactly ONE conversation.
+ *
+ * Two conversations claiming the same run is not a hypothetical: before a
+ * conversation owned its run, a remount re-ran the bot-scoped lookup and was
+ * handed a neighbour's — and that stolen id then got RECORDED on both. Storage
+ * therefore already holds the broken shape, and repairing it on read is what
+ * makes the fix reach the operator instead of asking them to clear tabs by
+ * hand.
+ *
+ * The first claimant keeps it. A later one is cleared rather than dropped: the
+ * conversation is still the operator's, it simply has no run yet and will
+ * launch its own at the next message.
+ */
+export function dedupeRunIds(list: readonly Conversation[]): Conversation[] {
+  const claimed = new Set<string>();
+  return list.map((c) => {
+    if (!c.runId) return { ...c };
+    if (claimed.has(c.runId)) {
+      const { runId: _stolen, ...rest } = c;
+      // `fresh` too: with no run of its own it must START EMPTY, not fall back
+      // to the bot-scoped lookup — which is the very thing that would hand it
+      // the neighbour's run again on the next mount.
+      return { ...rest, fresh: true };
+    }
+    claimed.add(c.runId);
+    return { ...c };
+  });
+}
+
+/**
+ * claimRun records the run a conversation launched, refusing a run another
+ * conversation already owns. The write-side half of the same invariant: the
+ * session hook can still be handed a neighbour's run (a legacy conversation
+ * with no id of its own falls back to the lookup), and recording that is what
+ * turned a transient mix-up into a persisted one.
+ */
+export function claimRun(
+  list: readonly Conversation[],
+  id: string,
+  runId: string,
+): Conversation[] | null {
+  const ownedElsewhere = list.some((c) => c.id !== id && c.runId === runId);
+  if (ownedElsewhere) return null; // refused — the caller must not persist
+  return list.map((c) =>
+    c.id === id ? { ...c, fresh: false, runId } : { ...c },
+  );
 }
 
 export function writeConversations(list: readonly Conversation[]): void {

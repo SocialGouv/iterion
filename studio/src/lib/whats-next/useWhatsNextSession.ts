@@ -103,6 +103,10 @@ export interface WhatsNextSessionOptions {
   // opened passes false: discovery is keyed on (bot, scope), so it would hand
   // this tab the run another tab is already showing.
   discover?: boolean;
+  // The run THIS conversation owns, when it has one. Attaching to it directly
+  // is what stops several conversations on the same bot from converging on
+  // whichever run the bot-scoped lookup happens to return.
+  attachRunId?: string | null;
 }
 
 export function useWhatsNextSession(
@@ -211,6 +215,7 @@ export function useWhatsNextSession(
     onAttached: setRunId,
     setStatus,
     discover: options?.discover ?? true,
+    attachRunId: options?.attachRunId ?? null,
   });
 
   // Reset to "idle" state when runId becomes null (Étape 5 lets the

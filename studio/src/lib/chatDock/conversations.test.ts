@@ -17,6 +17,7 @@ import {
   writeActiveConversation,
   writeConversations,
   type Conversation,
+  claimRun,
 } from "./conversations";
 
 const c = (id: string, botId = "copilot"): Conversation => ({ id, botId });
@@ -165,5 +166,93 @@ describe("a conversation the operator just opened", () => {
   it("keeps the flag across a round-trip while it is still unlaunched", () => {
     writeConversations([{ id: "a", botId: "copilot", fresh: true }]);
     expect(readConversations()[0]?.fresh).toBe(true);
+  });
+});
+
+// The bug this closes: after navigating, two tabs showed the SAME conversation
+// and the bot-building one was gone. Switching a conversation between active
+// and background remounts its session hook, which re-ran the bot-scoped
+// lookup — "the latest live run for this bot" — and handed it another
+// conversation's run.
+//
+// Owning the run id is what makes a conversation a conversation rather than a
+// view onto whatever ran last.
+describe("a conversation owns its run", () => {
+  it("survives a round-trip so a remount attaches to the same one", () => {
+    writeConversations([{ id: "a", botId: "copilot", runId: "run-a" }]);
+    expect(readConversations()[0]?.runId).toBe("run-a");
+  });
+
+  it("keeps two conversations on the same bot apart", () => {
+    writeConversations([
+      { id: "a", botId: "copilot", runId: "run-a" },
+      { id: "b", botId: "copilot", runId: "run-b" },
+    ]);
+    const [a, b] = readConversations();
+    expect(a?.runId).toBe("run-a");
+    expect(b?.runId).toBe("run-b");
+  });
+
+  // Not yet launched: nothing to attach to, and nothing to borrow either.
+  it("has none before it launches", () => {
+    writeConversations([{ id: "a", botId: "copilot", fresh: true }]);
+    expect(readConversations()[0]?.runId).toBeUndefined();
+  });
+});
+
+// A run has exactly ONE conversation.
+//
+// Found in a real browser: both tabs carried the SAME runId. Before a
+// conversation owned its run, a remount re-ran the bot-scoped lookup, was
+// handed a neighbour's run — and that stolen id was then RECORDED on both.
+// Storage already holds the broken shape, so the invariant has to be enforced
+// on READ (repair) as well as on WRITE (prevent). Repairing on read is what
+// makes the fix reach the operator instead of asking them to clear tabs.
+describe("one run, one conversation", () => {
+  it("repairs storage where two tabs claimed the same run", () => {
+    writeConversations([
+      { id: "a", botId: "copilot", fresh: false, runId: "shared" },
+      { id: "b", botId: "copilot", fresh: false, runId: "shared" },
+    ]);
+    const [a, b] = readConversations();
+    expect(a?.runId).toBe("shared");
+    expect(b?.runId).toBeUndefined();
+  });
+
+  // Cleared means "has no run", so it must start EMPTY rather than fall back
+  // to the lookup — which would hand it the neighbour's run right back.
+  it("makes the dispossessed one start fresh", () => {
+    writeConversations([
+      { id: "a", botId: "copilot", fresh: false, runId: "shared" },
+      { id: "b", botId: "copilot", fresh: false, runId: "shared" },
+    ]);
+    expect(readConversations()[1]?.fresh).toBe(true);
+  });
+
+  it("leaves distinct runs alone", () => {
+    writeConversations([
+      { id: "a", botId: "copilot", runId: "run-a" },
+      { id: "b", botId: "copilot", runId: "run-b" },
+    ]);
+    expect(readConversations().map((x) => x.runId)).toEqual(["run-a", "run-b"]);
+  });
+
+  it("refuses to record a run another conversation owns", () => {
+    const list = [
+      { id: "a", botId: "copilot", runId: "run-a" },
+      { id: "b", botId: "copilot" },
+    ];
+    expect(claimRun(list, "b", "run-a")).toBeNull();
+  });
+
+  it("records a run nobody owns", () => {
+    const list = [{ id: "a", botId: "copilot", fresh: true }];
+    const got = claimRun(list, "a", "run-a");
+    expect(got?.[0]).toMatchObject({ runId: "run-a", fresh: false });
+  });
+
+  it("lets a conversation re-record its own run", () => {
+    const list = [{ id: "a", botId: "copilot", runId: "run-a" }];
+    expect(claimRun(list, "a", "run-a")?.[0]?.runId).toBe("run-a");
   });
 });

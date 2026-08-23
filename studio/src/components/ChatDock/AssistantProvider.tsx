@@ -53,6 +53,7 @@ import { cancelRun, type RunStatus } from "@/api/runs";
 import {
   MAX_CONVERSATIONS,
   addConversation,
+  claimRun,
   closeConversation,
   newConversationId,
   readActiveConversation,
@@ -265,15 +266,23 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     [ensured, persist],
   );
 
-  // Once a conversation has a run of its own it is no longer fresh: on the
-  // next mount it SHOULD attach to it rather than start empty again.
-  const markActiveLaunched = useCallback(() => {
-    if (!active?.fresh) return;
-    persist(
-      ensured.map((c) => (c.id === active.id ? { ...c, fresh: false } : c)),
-      active.id,
-    );
-  }, [active, ensured, persist]);
+  // Record the run a conversation launched, so every later mount attaches to
+  // THAT one. Without it a remount falls back to the bot-scoped lookup, which
+  // returns the latest run for the bot — another conversation's.
+  const markActiveLaunched = useCallback(
+    (runId: string) => {
+      if (!active) return;
+      if (!active.fresh && active.runId === runId) return;
+      // claimRun refuses a run another conversation already owns. The session
+      // hook can still be handed a neighbour's run — a conversation with no id
+      // of its own falls back to the bot-scoped lookup — and recording that is
+      // what turned a transient mix-up into a persisted one.
+      const next = claimRun(ensured, active.id, runId);
+      if (!next) return; // already another conversation's run
+      persist(next, active.id);
+    },
+    [active, ensured, persist],
+  );
 
   const closeConversationById = useCallback(
     (id: string) => {
@@ -389,7 +398,8 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
           key={c.id}
           bot={registry.resolveDock(c.botId)}
           store={storeFor(c.id)}
-          discover={!c.fresh}
+          discover={!c.fresh && !c.runId}
+          attachRunId={c.runId ?? null}
         />
       ))}
       <ActiveConversation
@@ -400,7 +410,8 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
         bots={registry.dockBots}
         selectBot={selectBot}
         store={activeStore}
-        discover={onNexieRoute ? true : !active?.fresh}
+        discover={onNexieRoute ? true : !active?.fresh && !active?.runId}
+        attachRunId={onNexieRoute ? null : active?.runId ?? null}
         onLaunched={markActiveLaunched}
       >
         {children}
@@ -433,14 +444,20 @@ function BackgroundConversation({
   bot,
   store,
   discover,
+  attachRunId,
 }: {
   bot: FirstClassBot | null;
   store: RunStore;
   discover: boolean;
+  attachRunId: string | null;
 }) {
   return (
     <RunStoreProvider store={store}>
-      <RunSessionPump bot={bot ?? FALLBACK_BOT} discover={discover} />
+      <RunSessionPump
+        bot={bot ?? FALLBACK_BOT}
+        discover={discover}
+        attachRunId={attachRunId}
+      />
     </RunStoreProvider>
   );
 }
@@ -448,11 +465,13 @@ function BackgroundConversation({
 function RunSessionPump({
   bot,
   discover,
+  attachRunId,
 }: {
   bot: FirstClassBot;
   discover: boolean;
+  attachRunId: string | null;
 }) {
-  useWhatsNextSession(bot, { discover });
+  useWhatsNextSession(bot, { discover, attachRunId });
   return null;
 }
 
@@ -464,6 +483,7 @@ function ActiveConversation({
   selectBot,
   store,
   discover,
+  attachRunId,
   onLaunched,
   children,
 }: {
@@ -472,7 +492,8 @@ function ActiveConversation({
   selectBot: (id: string) => void;
   store: RunStore;
   discover: boolean;
-  onLaunched: () => void;
+  attachRunId: string | null;
+  onLaunched: (runId: string) => void;
   children: ReactNode;
 }) {
   return (
@@ -482,6 +503,7 @@ function ActiveConversation({
         bots={bots}
         selectBot={selectBot}
         discover={discover}
+        attachRunId={attachRunId}
         onLaunched={onLaunched}
       >
         {children}
@@ -497,6 +519,7 @@ function ActiveConversationInner({
   bots,
   selectBot,
   discover,
+  attachRunId,
   onLaunched,
   children,
 }: {
@@ -504,15 +527,19 @@ function ActiveConversationInner({
   bots: FirstClassBot[];
   selectBot: (id: string) => void;
   discover: boolean;
-  onLaunched: () => void;
+  attachRunId: string | null;
+  onLaunched: (runId: string) => void;
   children: ReactNode;
 }) {
-  const session = useWhatsNextSession(bot ?? FALLBACK_BOT, { discover });
-  const launchedRef = useRef(false);
+  const session = useWhatsNextSession(bot ?? FALLBACK_BOT, {
+    discover,
+    attachRunId,
+  });
+  const recordedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!session.runId || launchedRef.current) return;
-    launchedRef.current = true;
-    onLaunched();
+    if (!session.runId || recordedRef.current === session.runId) return;
+    recordedRef.current = session.runId;
+    onLaunched(session.runId);
   }, [session.runId, onLaunched]);
   const sessionValue = useMemo<AssistantSessionContextValue>(
     () => ({ bot, session, bots, selectBot }),
