@@ -394,8 +394,8 @@ type Task struct {
 	// (today's bypassPermissions behaviour). When enabled, every tool
 	// call is evaluated by permission.Policy.Evaluate: allow → execute,
 	// deny → refuse, ask → pause the run and surface the call to the
-	// human. Both backends honour the SAME policy so claude_code and
-	// claw reach identical decisions. See pkg/backend/permission.
+	// human. Every enforcing backend honours the SAME policy so native tool
+	// spellings reach identical decisions. See pkg/backend/permission.
 	Permission *permission.Policy
 
 	// Capabilities are the host-side capability names granted to this node

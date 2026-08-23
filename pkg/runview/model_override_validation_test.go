@@ -29,7 +29,7 @@ func backendOverride(selector, backend string) model.ModelOverrides {
 
 func TestValidateModelOverridePermissionsRejectsUngatedBackends(t *testing.T) {
 	wf := gatedOverrideWorkflow("deny", "")
-	for _, backend := range []string{"codex", "grok", "kimi"} {
+	for _, backend := range []string{"codex"} {
 		t.Run(backend, func(t *testing.T) {
 			err := ValidateModelOverridePermissions(wf, backendOverride("agent", backend), "")
 			if err == nil {
@@ -42,9 +42,24 @@ func TestValidateModelOverridePermissionsRejectsUngatedBackends(t *testing.T) {
 	}
 }
 
+// grok and kimi enforce deny: (#498) but cannot PAUSE for ask: rules — an
+// ask-gated workflow retargeted to them would drop its declared gate.
+func TestValidateModelOverridePermissionsRejectsAskOnDenyOnlyBackends(t *testing.T) {
+	wf := gatedOverrideWorkflow("ask", "")
+	wf.PermissionAsk = []string{"Bash(rm:*)"}
+	for _, backend := range []string{"grok", "kimi"} {
+		t.Run(backend, func(t *testing.T) {
+			err := ValidateModelOverridePermissions(wf, backendOverride("agent", backend), "")
+			if err == nil || !strings.Contains(err.Error(), backend) {
+				t.Fatalf("permission: ask override to %s: got %v, want a refusal naming the backend", backend, err)
+			}
+		})
+	}
+}
+
 func TestValidateModelOverridePermissionsKeepsGateEnforcingBackends(t *testing.T) {
 	wf := gatedOverrideWorkflow("deny", "")
-	for _, backend := range []string{"claw", "claude_code", "pi"} {
+	for _, backend := range []string{"claw", "claude_code", "pi", "grok", "kimi"} {
 		t.Run(backend, func(t *testing.T) {
 			if err := ValidateModelOverridePermissions(wf, backendOverride("*", backend), ""); err != nil {
 				t.Fatalf("gate-enforcing backend %s rejected: %v", backend, err)

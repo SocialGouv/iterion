@@ -219,6 +219,33 @@ func TestMarkExempt(t *testing.T) {
 	}
 }
 
+func TestPolicyConfigRoundTrip(t *testing.T) {
+	p := mustPolicy(t, ModeDeny, []string{"Bash(go test:*)"}, []string{"WebFetch(domain:example.com)"}, []string{"Read(.env*)"})
+	p.MarkExempt("my_internal_tool")
+	rebuilt, err := NewPolicyFromConfig(p.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		tool  string
+		input map[string]any
+	}{
+		{"Bash", map[string]any{"command": "go test ./..."}},
+		{"FetchURL", map[string]any{"url": "https://example.com/x"}},
+		{"Read", map[string]any{"file_path": ".env.local"}},
+		{"my_internal_tool", nil},
+	} {
+		got, gotRule := rebuilt.Evaluate(tc.tool, tc.input)
+		want, wantRule := p.Evaluate(tc.tool, tc.input)
+		if got != want || gotRule != wantRule {
+			t.Errorf("%s round-trip = (%s, %q), want (%s, %q)", tc.tool, got, gotRule, want, wantRule)
+		}
+	}
+	if !rebuilt.CanAsk() {
+		t.Error("explicit ask rules must survive serialisation and make CanAsk true")
+	}
+}
+
 func TestAddAllowRule_AllowAlways(t *testing.T) {
 	p := mustPolicy(t, ModeAsk, nil, nil, nil)
 	if got, _ := p.Evaluate("Bash", map[string]any{"command": "go build"}); got != Ask {

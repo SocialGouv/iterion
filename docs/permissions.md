@@ -72,10 +72,11 @@ Matching semantics (`pkg/backend/permission`):
 - **WebFetch** patterns match `domain:<host>`, `<host>`, or the full URL.
 - **Tool-name globs**: `*` (any tool) and `mcp__<server>__*`.
 
-**Cross-backend parity.** The same rule gates the matching tool on all three
-supported backends: a single `Bash(...)` rule covers claude_code's `Bash`,
-claw's `bash`/`shell`, and pi's `bash`; `Edit(...)` covers
-`Edit`/`edit_file`/`file_edit`; `Read(...)` covers `Read`/`read_file`; etc.
+**Cross-backend parity.** The same rule gates the matching tool on every
+supported route: a single `Bash(...)` rule covers claude_code's `Bash`,
+claw's `bash`/`shell`, pi's `bash`, Grok's `run_terminal_command`, and Kimi's
+`Bash`; `Edit(...)` covers `Edit`/`edit_file`/`file_edit`/Grok's
+`search_replace`; `Read(...)` covers `Read`/`read_file`; etc.
 (see `canonicalToolName`).
 
 **Infrastructure exemption.** iterion's own interaction/capability
@@ -132,9 +133,81 @@ and evaluated by each gated backend before every tool runs:
   unwinds the turn as the same `delegate.ErrAskUser` pause. Pi print mode has
   no control channel and refuses a permission-gated node rather than running
   it unguarded.
+- **kimi (`deny` only)** — iterion creates a private shadow
+  `KIMI_CODE_HOME` for each invocation, links the operator's credentials and
+  config into it, and appends a `PreToolUse` hook. The hook subprocess rebuilds
+  the policy and evaluates it with the same Go implementation. A
+  deny is returned in kimi's native `hookSpecificOutput` shape. The real
+  `~/.kimi-code` is never modified.
+- **grok (`deny` only)** — the same shadow-home design uses `GROK_HOME` plus a
+  global `hooks/iterion-permission.json`, and the deny is spelled in grok's
+  native `{"decision":"deny","reason":…}` shape. It holds under the
+  `--permission-mode bypassPermissions --always-approve` flags iterion always
+  passes, because grok's authorization pipeline runs `PreToolUse` hooks *first*
+  and always-approve only short-circuits the checks *after* them.
 
-All three honour the **same** `permission.Policy`, so a bot gets the same
-allow/ask/deny decision whichever gated backend executes it.
+**The policy travels by value, and the shadow home lives outside the
+workspace.** Both matter for the same reason: the hook subprocess is the gate's
+entire authority on these backends, and the agent it gates runs as the same OS
+user. So the serialised `PolicyConfig` is passed base64-encoded in the hook's
+own argv — which both CLIs freeze when the session starts — instead of as a
+file the hook would re-read on every tool call; and the shadow home is created
+under the OS temp dir rather than `<workspace>/.iterion/<backend>`, which is
+where a repo-scoped `Edit(**)` / `Write(**)` allow rule would reach. Without
+those two properties, one allowed write of `{"mode":"off"}` would disarm the
+gate for the rest of the node — an escalation the in-process claude_code and
+claw gates cannot have, since their policy never leaves iterion's memory. A
+policy the hook cannot decode fails **closed**, and so does a panic: the hook
+recovers and still emits a deny, because a process that dies with empty stdout
+is read as *allow* by both CLIs — which would turn any future bug in the
+evaluator into a silent gate bypass.
+
+**`sandbox: none` is required today, and C136 says so at compile time.** The
+hook binary and the CLI home are host-side, so a sandboxed run cannot reach
+them and the node is refused before the CLI starts. Since the shipped default
+is `sandbox: auto`, a gated grok/kimi node with no `sandbox:` block would
+otherwise compile clean and die mid-run — so the compiler warns (C136) rather
+than letting the operator discover the coupling after launch. `--sandbox none`
+and `ITERION_SANDBOX_DEFAULT=none` satisfy it too, which is why C136 warns
+instead of rejecting. Lifting the restriction means carrying the shadow home
+and the hook binary into the container; until then the refusal is the honest
+answer.
+
+**The hook binary must live outside the workspace.** It is the third thing the
+gated agent must not be able to reach, and the sharpest: unlike the frozen argv
+it is re-executed on *every* tool call, and both CLIs fail open on a spawn
+failure — so corrupting the file, not replacing it with a working one, is
+enough. `proc.LocateIterionBinary` resolves next to `os.Executable()` first,
+which in the repo-root shape (`./iterion run …`, or `task studio:dev` pinning
+`ITERION_BIN` to a freshly built `./iterion`) is inside the very workspace
+being gated. The path is absolutised before that check and before it is frozen
+into the hook argv: a relative `ITERION_BIN` used to defeat
+`pathInsideCheckout` (which cannot relate an absolute workspace to a relative
+path) and would then resolve against the CLI's cwd — the gated workspace — at
+spawn time. iterion refuses an in-workspace binary and points at `ITERION_BIN`
+on a stable install path outside the repo.
+
+**The hook process must not read the workspace either.** Both CLIs spawn it
+with cwd = the project and re-execute it on every tool call; a timeout is an
+ALLOW. So `__permission-hook` skips `loadDotEnvFromCwd` and `errtrack.Init`
+(an unbounded `.env` the agent can write would be enough to blow grok's hook
+timeout, and a `SENTRY_DSN` line in the same file would point the gate at an
+endpoint the operator did not choose), and the registered command `cd`s into
+the shadow home before `iterion` starts.
+
+**Windows is refused.** The hook `command` is quoted for a POSIX shell; Node-based
+CLIs on Windows run that string through `cmd.exe`, which does not treat `'` as
+quoting. A spawn failure is an ALLOW on both CLIs, so enabling Developer Mode
+for the symlink half of the seam would still leave the node ungated. Use
+`permission: off`, or a backend with an in-process gate (`claude_code`, `claw`).
+
+Neither external hook is admitted on a declaration: each earned its entry in
+`gateEnforcingModes` with a live denial where a filesystem sentinel — not model
+prose — is the oracle (`e2e/live_feat_permission_{kimi,grok}_test.go`). Delete
+those tests and the entry becomes the lie C176 exists to prevent.
+
+Every hook honours the **same** `permission.Policy`; protocol adapters only
+decode the native event and spell the native verdict.
 
 ## Status / limitations
 
@@ -154,9 +227,14 @@ allow/ask/deny decision whichever gated backend executes it.
   flags on `resume` remain available for scripted/headless approval.
 - The marker also lets a `permission: ask` node pause **without** needing
   `interaction:` set — the gate is its own reason to pause.
-- **Backend scope:** enforcement is implemented for `claw`, `claude_code`, and
-  pi RPC mode. Kimi, Grok, and Codex do not consume the policy; do not
-  use them when `permission:` is the safety boundary.
+- **Backend scope:** `claw`, `claude_code`, and pi RPC support `ask` and
+  `deny`. Kimi and Grok support `deny` only; `ask`, a `deny` policy containing
+  explicit `ask:` rules, and sandboxed guarded runs on either are refused before
+  the CLI is launched. Codex has no permission seam and refuses any enabled
+  gate.
+- **Primary routes are screened too.** C176 applies to the node's effective
+  primary backend as well as authored and run-level fallbacks, so an unsupported
+  backend can no longer run a declared gate silently.
 - **Node scope:** the gate evaluates the **tool calls an agent/judge LLM
   makes**. A `tool` node (a direct, deterministic shell command, no LLM)
   is the action itself and is governed by the **Verified Action** quad

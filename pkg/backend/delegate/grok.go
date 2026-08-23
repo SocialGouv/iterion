@@ -2,6 +2,8 @@ package delegate
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -50,7 +52,41 @@ var grokProtocol = CLIAgentProtocol{
 		"--permission-mode", "bypassPermissions",
 		"--always-approve",
 	},
+	PermissionHook: &CLIAgentPermissionHook{
+		HomeEnv:           "GROK_HOME",
+		DefaultHome:       ".grok",
+		ExcludedEntries:   []string{"hooks"},
+		WriteRegistration: writeGrokPermissionHook,
+	},
 	// ResolveEnv nil: grok reads its own credentials from ~/.grok / OAuth.
+}
+
+func writeGrokPermissionHook(realHome, shadowHome, command string) error {
+	shadowHooks := filepath.Join(shadowHome, "hooks")
+	if err := os.MkdirAll(shadowHooks, 0o750); err != nil {
+		return err
+	}
+	// Preserve every operator-installed global hook without linking the hooks
+	// directory itself (which would make our write mutate the real home).
+	if err := linkShadowHome(filepath.Join(realHome, "hooks"), shadowHooks, []string{"iterion-permission.json"}); err != nil {
+		return err
+	}
+	registration := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{map[string]any{
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": command,
+					"timeout": 30,
+				}},
+			}},
+		},
+	}
+	raw, err := json.Marshal(registration)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(shadowHooks, "iterion-permission.json"), raw, 0o600)
 }
 
 // NewGrokBackend constructs the xAI Grok Build CLI backend. command overrides

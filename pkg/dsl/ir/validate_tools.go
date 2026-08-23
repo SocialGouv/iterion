@@ -248,7 +248,7 @@ func toolHint(name string) string {
 // unresolvableToolsReason returns why a route may not serve this node's tools
 // list, or "" when it may. Shared with ApplyRunFallback so an operator cannot
 // reach through `--fallback` the route the compiler refuses in the .bot — the
-// same pairing as ungatedCrossingReason / toolsInversionReason.
+// same pairing as UngatedCrossingReason / toolsInversionReason.
 //
 // mcpVisible carries the caller's view of the node's MCP wiring; together with
 // IsIdentifiableMistake it reproduces exactly what C135 BLOCKS, so the flag

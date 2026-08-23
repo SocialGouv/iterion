@@ -8,10 +8,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
+	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -130,6 +135,23 @@ type CLIAgentProtocol struct {
 	// environment unchanged" — the CLI resolves its own credentials, which is
 	// the correct default for a CLI that reads e.g. $MOONSHOT_API_KEY itself.
 	ResolveEnv func(ctx context.Context) map[string]string
+
+	// PermissionHook describes a native PreToolUse hook discovered from the
+	// target CLI's home. When set, Execute creates a private shadow home for
+	// this invocation, links the operator's existing CLI state into it, and
+	// adds only iterion's permission hook registration. nil means this CLI
+	// cannot enforce an enabled permission policy.
+	PermissionHook *CLIAgentPermissionHook
+}
+
+// CLIAgentPermissionHook describes how one CLI discovers a PreToolUse hook.
+// WriteRegistration owns only the backend-specific registration syntax; the
+// shadow-home lifecycle and policy serialisation remain shared.
+type CLIAgentPermissionHook struct {
+	HomeEnv           string
+	DefaultHome       string
+	ExcludedEntries   []string
+	WriteRegistration func(realHome, shadowHome, command string) error
 }
 
 // resolveBinary picks argv[0] for this task: the explicit Command wins, then
@@ -231,6 +253,12 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		backendName = "cli_agent"
 	}
 
+	permissionEnv, permissionCleanup, err := b.preparePermissionHook(ctx, task, proto, backendName)
+	if err != nil {
+		return Result{BackendName: backendName, ExitCode: -1}, err
+	}
+	defer permissionCleanup()
+
 	binary := b.resolveBinary(task)
 	if binary == "" {
 		binary = proto.DefaultBinary
@@ -277,6 +305,10 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 	// Run-level provisioning (devbox profile PATH) — appended last so on
 	// a duplicate key the run-level value wins.
 	env = append(env, task.ExtraEnv...)
+	// The per-invocation shadow home must win over both ambient and run-level
+	// values; otherwise a duplicate GROK_HOME/KIMI_CODE_HOME silently bypasses
+	// the hook registration.
+	env = append(env, permissionEnv...)
 
 	timeout := b.Timeout
 	if timeout <= 0 {
@@ -334,6 +366,208 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 			task.NodeID, task.Iteration, backendName, task.Model, parsed.EffectiveModel)
 	}
 	return result, nil
+}
+
+// preparePermissionHook materialises the common half of the grok/kimi hook
+// seam and returns the environment override plus its cleanup closure.
+func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, proto CLIAgentProtocol, backendName string) ([]string, func(), error) {
+	policy := task.Permission
+	if !policy.Enabled() {
+		return nil, func() {}, nil
+	}
+	if proto.PermissionHook == nil {
+		return nil, nil, fmt.Errorf("delegate: %s: permission: %s is enabled but this CLI cannot enforce it", backendName, policy.Mode)
+	}
+	if policy.CanAsk() {
+		return nil, nil, fmt.Errorf("delegate: %s: permission policy can ask for operator approval, but an external CLI hook cannot pause the iterion run; use permission: deny without ask rules", backendName)
+	}
+	// Deliberately `Sandbox != nil` and not `!Hostless()`: a noop-driver Run is
+	// host-side for CREDENTIAL purposes, which is all Hostless() answers, but
+	// runOnce still routes any non-nil Sandbox through Sandbox.Command, whose
+	// ExecOpts.Env comes from sandboxEnv and never carries permissionEnv. The
+	// shadow home would then never reach the CLI: it would read the operator's
+	// real home, find no iterion hook, and run ungated while iterion believed
+	// the gate held. Refusing on the wider predicate is a strict superset of
+	// the narrower one, and it is the fail-closed direction (#498 review,
+	// Re8c9e8).
+	if task.Sandbox != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: permission-gated sandboxed runs are unsupported because the CLI home and hook binary are host-side; refusing to run ungated", backendName)
+	}
+
+	hook := proto.PermissionHook
+	if hook.HomeEnv == "" || hook.DefaultHome == "" || hook.WriteRegistration == nil {
+		return nil, nil, fmt.Errorf("delegate: %s: incomplete permission-hook protocol", backendName)
+	}
+	// The backend name is the handshake between this registration and the hook
+	// subprocess, and a mismatch's only failure mode is fail-OPEN: the hook
+	// would exit non-zero with empty stdout, which both CLIs read as allow, and
+	// the node would run completely ungated. Refuse here, where refusing is
+	// still possible.
+	if !permissionhook.Supports(backendName) {
+		return nil, nil, fmt.Errorf("delegate: %s: no permission-hook dialect for this backend; refusing to run a gated node whose hook could not deny anything", backendName)
+	}
+	// shellQuote is POSIX `sh -c` quoting. Node-based CLIs on Windows run a
+	// hook `command` through cmd.exe, which does not treat `'` as quoting: a
+	// path with spaces splits, the spawn fails, and both CLIs fail OPEN. The
+	// symlink half of the seam has the same shape (stock Windows denies
+	// unprivileged CreateSymbolicLink). Recommending Developer Mode would
+	// only get the operator past the first half and into the silent one
+	// (#498 review, R1f6137).
+	if runtime.GOOS == "windows" {
+		return nil, nil, fmt.Errorf("delegate: %s: permission: deny on this backend is unsupported on Windows — the hook command is quoted for a POSIX shell and both CLIs fail OPEN on a spawn failure, so the node would run ungated; use permission: off or a backend with an in-process gate (claude_code, claw)", backendName)
+	}
+	innerBin := proc.LocateIterionBinary()
+	if innerBin == "" {
+		return nil, nil, fmt.Errorf("delegate: %s: cannot locate a stable iterion binary for the permission hook; set ITERION_BIN", backendName)
+	}
+	// Absolutise before ANY of the reasoning below. A relative ITERION_BIN
+	// defeats pathInsideCheckout — filepath.Rel cannot relate an absolute
+	// workspace to a relative path, so it errors and the guard answers
+	// "outside" for a binary that is literally in the checkout — AND the
+	// registration argv would resolve against the HOOK's cwd (the CLI's, i.e.
+	// the gated workspace) instead of iterion's. Both CLIs fail OPEN on a
+	// spawn failure (#498 review, R05d9fd).
+	iterionBin, absErr := filepath.Abs(innerBin)
+	if absErr != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: cannot resolve the permission hook binary %q: %w", backendName, innerBin, absErr)
+	}
+	// Third leg of the same containment argument as the shadow home and the
+	// by-value policy — and the sharpest one, because unlike the frozen argv
+	// this file is RE-EXECUTED on every tool call. LocateIterionBinary's first
+	// branch resolves next to os.Executable(), which in the repo-root shape the
+	// project documents (`./iterion run …`, and studio:dev pinning ITERION_BIN
+	// to a freshly built `./iterion`) is inside the very workspace being gated.
+	// Both CLIs fail OPEN on a hook spawn failure, so an agent holding any
+	// write rule that reaches that path only has to CORRUPT the file — not
+	// craft a working one — for every later call to run ungated
+	// (#498 review, R8d24f4).
+	if pathInsideCheckout(task.WorkDir, iterionBin) {
+		return nil, nil, fmt.Errorf(
+			"delegate: %s: the permission hook would run %q, which is inside the workspace this gate protects — a write rule reaching it disarms the gate, and a corrupted binary fails OPEN on both CLIs; point ITERION_BIN at an iterion outside the workspace (e.g. an installed one)",
+			backendName, iterionBin)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if output, err := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe").CombinedOutput(); err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: iterion hook binary %q is stale or unusable: %w (%s)", backendName, iterionBin, err, strings.TrimSpace(string(output)))
+	}
+
+	// The shadow home deliberately does NOT go under task.StateDir: that root
+	// resolves to <workspace>/.iterion/<backend> in the shipped local shape,
+	// which is exactly where a repo-scoped `Edit(**)` / `Write(**)` allow rule
+	// reaches — and hideWorkspaceStateDir gitignores it, so a mutation there
+	// would not even show in `git status`. The hook registration is the CLI's
+	// own authority; keeping it off the workspace means a gated agent needs a
+	// rule granting writes outside the repo before it can touch the gate at
+	// all. os.TempDir() is safe here precisely because a permission-gated
+	// sandboxed run is refused above: this path is always host-side.
+	shadowHome, err := os.MkdirTemp("", "iterion-permission-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("delegate: %s: create permission shadow home: %w", backendName, err)
+	}
+	cleanup := func() { _ = os.RemoveAll(shadowHome) }
+
+	// A run-level environment override is part of the CLI invocation and must
+	// therefore also be the source we shadow. Reading only os.Getenv would
+	// replace an explicitly selected credential home with the ambient default.
+	realHome := ""
+	for _, kv := range task.ExtraEnv {
+		if key, value, ok := strings.Cut(kv, "="); ok && key == hook.HomeEnv {
+			realHome = strings.TrimSpace(value)
+		}
+	}
+	if realHome == "" {
+		realHome = strings.TrimSpace(os.Getenv(hook.HomeEnv))
+	}
+	if realHome == "" {
+		operatorHome, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("delegate: %s: resolve operator home: %w", backendName, homeErr)
+		}
+		realHome = filepath.Join(operatorHome, hook.DefaultHome)
+	}
+	if abs, absErr := filepath.Abs(realHome); absErr == nil {
+		realHome = abs
+	}
+	if err := linkShadowHome(realHome, shadowHome, hook.ExcludedEntries); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: build permission shadow home: %w", backendName, err)
+	}
+
+	// The policy travels BY VALUE in the registration argv, never as a path.
+	// Both CLIs freeze their hook configuration when the session starts, so
+	// this string is beyond the agent's reach for the rest of the node; a file
+	// would instead be re-read on every tool call, and a single allowed write
+	// of `{"mode":"off"}` would silently disarm the gate from that point on.
+	policyB64, err := permissionhook.EncodePolicy(policy.Config())
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: encode permission policy: %w", backendName, err)
+	}
+	// The CLIs spawn this command with cwd = the gated workspace. Prefix a
+	// cd to the shadow home (already outside the checkout) so even a future
+	// main() preamble that reads from cwd cannot see an agent-written `.env`.
+	// loadDotEnvFromCwd is also skipped for this command in cmd/iterion;
+	// both halves are required because either can be undone independently
+	// (#498 review, R6fa6d2).
+	command := "cd " + shellQuote(shadowHome) + " && " + shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy-b64 " + shellQuote(policyB64)
+	if err := hook.WriteRegistration(realHome, shadowHome, command); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
+	}
+	return []string{hook.HomeEnv + "=" + shadowHome}, cleanup, nil
+}
+
+func linkShadowHome(realHome, shadowHome string, excluded []string) error {
+	entries, err := os.ReadDir(realHome)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	skip := make(map[string]bool, len(excluded))
+	for _, name := range excluded {
+		skip[name] = true
+	}
+	// ReadDir is sorted by filename, but keep this explicit: deterministic
+	// shadow homes make failures and tests reproducible on every filesystem.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if skip[entry.Name()] {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(realHome, entry.Name()), filepath.Join(shadowHome, entry.Name())); err != nil {
+			// On stock Windows an unprivileged process cannot create symlinks
+			// at all, so this is the whole seam failing, not one entry. Say so:
+			// the bare "A required privilege is not held by the client" names
+			// neither the platform limitation nor a way forward. Copying the
+			// entries instead is deliberately NOT the fallback — this tree is
+			// the operator's credential store (#498 review, R8f7762).
+			if runtime.GOOS == "windows" {
+				// preparePermissionHook already refuses Windows before we get
+				// here; keep the message honest if a caller reorders. Do NOT
+				// recommend Developer Mode: the POSIX-quoted hook command
+				// would still fail open (#498 review, R1f6137).
+				return fmt.Errorf("%w — the permission seam links the CLI home with symlinks, which stock Windows denies to unprivileged processes; permission: deny on this backend is unsupported on Windows", err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// shellQuote quotes one fixed argv fragment for a POSIX `sh -c` command
+// string. Both grok and kimi currently receive the hook `command` as a
+// single string; on Unix that string is a shell command. Single quotes
+// are the portable POSIX form; embedded quotes use the standard
+// close/escape/reopen. This is deliberately NOT used on Windows
+// (preparePermissionHook refuses): cmd.exe does not treat `'` as quoting,
+// so a path with spaces would split, the spawn would fail, and both CLIs
+// fail OPEN (#498 review, R1f6137).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // parseStdout applies the protocol's parser, preferring the rich contract.
