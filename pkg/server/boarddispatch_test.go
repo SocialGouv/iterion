@@ -516,3 +516,211 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 		t.Error("no pr_url: no repo policy to apply")
 	}
 }
+
+// TestBoardDispatcher_SweepAdoptsFinishedFork: a cloud card stranded on a
+// DEAD pointer — in_progress because its dispatcher replica died mid-run and
+// nothing ever moved it on, or blocked because the run failed — is never
+// touched again: tick only claims Ready cards, and a recovery fork never
+// becomes LastRunID on its own. The projection already lets the finished
+// fork replace its parent on the card (#377); the sweep must converge the
+// TICKET with that view: adopt the issue's newest fork that ACTUALLY
+// finished (FinishedAt != nil — a parked shell delivered nothing), then file
+// the card done. A card whose own pointer finished cleanly is filed
+// outright. Live pointers, pointer-less cards and forkless failures stay
+// put. Cloud parity with the local reconcileFinishedTickets (#379).
+func TestBoardDispatcher_SweepAdoptsFinishedFork(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(50 * time.Minute)
+	card := func(id, state, runID string) boardmongo.Candidate {
+		return boardmongo.Candidate{Tenant: "t1", Issue: native.Issue{ID: id, State: state, LastRunID: runID}}
+	}
+	src := func(issueID string) *store.RunSource { return &store.RunSource{IssueID: issueID} }
+	f := newFakeBoardCoord(
+		card("native:stuck", native.StateInProgress, "run-dead"),
+		card("native:blocked", native.StateBlocked, "run-dead2"),
+		card("native:live", native.StateInProgress, "run-live"),
+		card("native:forkless", native.StateInProgress, "run-dead3"),
+		card("native:finished", native.StateInProgress, "run-fin"),
+		card("native:noptr", native.StateInProgress, ""),
+	)
+	statuses := map[string]store.RunStatus{
+		"run-dead":  store.RunStatusFailed,
+		"run-dead2": store.RunStatusFailed,
+		"run-dead3": store.RunStatusFailed,
+		"run-live":  store.RunStatusRunning,
+		"run-fin":   store.RunStatusFinished,
+	}
+	pointers := map[string]*store.Run{
+		"run-dead":  {ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older},
+		"run-dead2": {ID: "run-dead2", Status: store.RunStatusFailed, CreatedAt: older},
+		"run-dead3": {ID: "run-dead3", Status: store.RunStatusFailed, CreatedAt: older},
+	}
+	byIssue := map[string][]*store.Run{
+		"native:stuck": {
+			{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:stuck")},
+			{ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(30 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead", WorkDir: "/wt/fork", Source: src("native:stuck")},
+			// Newer but parked: cancelled via Fork()'s initial SaveRun, no
+			// FinishedAt — must not win over the fork that really finished.
+			{ID: "run-fork-parked", Status: store.RunStatusCancelled, CreatedAt: older.Add(40 * time.Minute),
+				ForkedFrom: "run-fork", Source: src("native:stuck")},
+		},
+		"native:blocked": {
+			{ID: "run-dead2", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:blocked")},
+			{ID: "run-fork2", Status: store.RunStatusFinished, CreatedAt: older.Add(20 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead2", Source: src("native:blocked")},
+		},
+		"native:forkless": {
+			{ID: "run-dead3", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:forkless")},
+		},
+	}
+
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(_ context.Context, _, runID string) (store.RunStatus, error) {
+		return statuses[runID], nil
+	}
+	d.runFor = func(_ context.Context, _, runID string) (*store.Run, error) {
+		r, ok := pointers[runID]
+		if !ok {
+			return nil, fmt.Errorf("run %s not found", runID)
+		}
+		return r, nil
+	}
+	var searches int
+	d.issueRuns = func(_ context.Context, _, issueID string) ([]*store.Run, error) {
+		searches++
+		return byIssue[issueID], nil
+	}
+	var amu sync.Mutex
+	adopted := map[string][2]string{}
+	d.adoptRun = func(_, cardID, runID, workdir string) {
+		amu.Lock()
+		adopted[cardID] = [2]string{runID, workdir}
+		amu.Unlock()
+	}
+
+	d.sweepForkAdoptions(context.Background())
+
+	for _, id := range []string{"native:stuck", "native:blocked", "native:finished"} {
+		if got := f.states[id]; got != native.StateDone {
+			t.Errorf("card %s state = %q, want %q", id, got, native.StateDone)
+		}
+	}
+	if got := adopted["native:stuck"]; got != [2]string{"run-fork", "/wt/fork"} {
+		t.Errorf("native:stuck adoption = %v, want the finished fork with its workdir", got)
+	}
+	if got := adopted["native:blocked"]; got != [2]string{"run-fork2", ""} {
+		t.Errorf("native:blocked adoption = %v, want run-fork2", got)
+	}
+	// A card whose own pointer finished is filed without an adoption.
+	if _, ok := adopted["native:finished"]; ok {
+		t.Errorf("native:finished must be filed outright, not adopted: %v", adopted["native:finished"])
+	}
+	// Live pointer, missing pointer and forkless failure stay put.
+	for _, id := range []string{"native:live", "native:noptr", "native:forkless"} {
+		if got, moved := f.states[id]; moved {
+			t.Errorf("card %s must stay put, was moved to %q", id, got)
+		}
+	}
+	if searches != 3 {
+		t.Errorf("fork searches = %d, want 3 (stuck, blocked, forkless — one per stuck card)", searches)
+	}
+
+	// A second sweep within the TTL must not re-search an issue that turned
+	// up nothing to adopt — an abandoned failure is the RESTING state of a
+	// board, not a reason to pay an indexed query per card per tick.
+	d.sweepForkAdoptions(context.Background())
+	if searches != 3 {
+		t.Errorf("fork searches after a 2nd sweep = %d, want 3 (negative results memoized for the TTL)", searches)
+	}
+
+	// Nil wiring (sweep disabled) must be a hard no-op, not a panic.
+	d2 := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d2.sweepForkAdoptions(context.Background())
+}
+
+// TestBoardIssueRuns: the fork-adoption sweep reads an issue's runs through
+// the indexed card←run reverse edge (ListRunsBySourceIssue), tenant-scoped
+// like every other cloud board read — never a full run-store scan.
+func TestBoardIssueRuns(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.runs = svc
+
+	ctx := context.Background()
+	ended := time.Now()
+	for _, r := range []*store.Run{
+		{ID: "run-a", WorkflowName: "wf", Status: store.RunStatusFailed, Source: &store.RunSource{IssueID: "native:1"}},
+		{ID: "run-b", WorkflowName: "wf", Status: store.RunStatusFinished, FinishedAt: &ended,
+			ForkedFrom: "run-a", Source: &store.RunSource{IssueID: "native:1"}},
+		{ID: "run-c", WorkflowName: "wf", Status: store.RunStatusFinished, FinishedAt: &ended,
+			Source: &store.RunSource{IssueID: "native:2"}},
+	} {
+		if err := rs.SaveRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runs, err := s.boardIssueRuns(ctx, "t1", "native:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range runs {
+		got[r.ID] = true
+	}
+	if !got["run-a"] || !got["run-b"] || got["run-c"] || len(runs) != 2 {
+		t.Errorf("boardIssueRuns(native:1) = %v, want exactly run-a and run-b", got)
+	}
+
+	// boardRun serves the full record (CreatedAt orders fork candidates).
+	full, err := s.boardRun(ctx, "t1", "run-b")
+	if err != nil || full == nil || full.ForkedFrom != "run-a" {
+		t.Errorf("boardRun(run-b) = %+v, %v", full, err)
+	}
+
+	// Unwired server: an error, not a panic.
+	if _, err := (&Server{}).boardIssueRuns(ctx, "t1", "native:1"); err == nil {
+		t.Error("boardIssueRuns without a run service should error")
+	}
+	if _, err := (&Server{}).boardRun(ctx, "t1", "run-b"); err == nil {
+		t.Error("boardRun without a run service should error")
+	}
+}
+
+// TestAdoptCardRun: the fork-adoption stamp goes through the same
+// CloudBoardFor seam as stampCardLastRun but keeps the fork's workdir (the
+// run has already executed; LastWorkdir feeds the studio's inspect-the-diff
+// link — cf. R26faf1 on the local twin).
+func TestAdoptCardRun(t *testing.T) {
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := boardStore.Create(native.Issue{Title: "x", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+
+	s.adoptCardRun("t1", iss.ID, "run-fork", "/wt/fork")
+	got, err := boardStore.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastRunID != "run-fork" || got.LastWorkdir != "/wt/fork" {
+		t.Fatalf("card pointer = (%q, %q), want (run-fork, /wt/fork)", got.LastRunID, got.LastWorkdir)
+	}
+	(&Server{}).adoptCardRun("t1", iss.ID, "run-x", "") // CloudBoardFor nil → no-op
+}

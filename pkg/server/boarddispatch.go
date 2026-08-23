@@ -54,6 +54,24 @@ type boardDispatcher struct {
 	statusFor  func(ctx context.Context, tenant, runID string) (store.RunStatus, error)
 	clearBadge func(tenant, id string)
 
+	// runFor + issueRuns + adoptRun power the fork-adoption sweep
+	// (sweepForkAdoptions). runFor loads a full run record tenant-scoped
+	// (the sweep needs CreatedAt to order fork candidates, which statusFor
+	// alone can't provide); issueRuns lists the runs sourced from an issue
+	// via the indexed reverse edge; adoptRun stamps the adopted fork onto
+	// the card via the CloudBoardFor seam. All optional — a nil runFor
+	// disables the sweep.
+	runFor    func(ctx context.Context, tenant, runID string) (*store.Run, error)
+	issueRuns func(ctx context.Context, tenant, issueID string) ([]*store.Run, error)
+	adoptRun  func(tenant, cardID, runID, workdir string)
+
+	// forkScanMemo bounds the fork-adoption sweep's search cost: a stuck
+	// card whose issue turned up no finished fork is not re-searched until
+	// forkAdoptionScanTTL has elapsed, so an abandoned failure does not
+	// turn into a per-tick query forever (keyed tenant|issueID).
+	forkScanMemoMu sync.Mutex
+	forkScanMemo   map[string]time.Time
+
 	interval time.Duration
 	sem      chan struct{}
 	logger   *iterlog.Logger
@@ -182,6 +200,145 @@ func (d *boardDispatcher) sweepParked(ctx context.Context) {
 	}
 }
 
+// forkAdoptionScanTTL bounds how often the fork-adoption sweep re-searches
+// the runs of an issue that turned up no finished fork: one indexed query
+// per stuck card per TTL instead of one per tick, forever, for a failure
+// the operator never addresses.
+const forkAdoptionScanTTL = 30 * time.Second
+
+// sweepForkAdoptions reconciles cards stranded on a DEAD pointer: the card
+// sits in in_progress or blocked (the run's terminal resting states once its
+// poll loop is gone), the pointer run is terminal, and nothing will ever
+// touch the card again — a recovery fork never becomes LastRunID on its
+// own. When the operator forked the dead run and that fork ACTUALLY
+// finished (FinishedAt != nil — a parked shell has delivered nothing), the
+// projection already lets the fork replace its parent on the card; this
+// sweep converges the TICKET with what the card shows: it adopts the newest
+// finished fork as the card's pointer, then files the card done (the tenant
+// store's SetState cascades the waiting_deps promotion of satisfied
+// dependents). Mirrors the local reconcileFinishedTickets
+// (pkg/server/pipeline_admission.go), which is gated to local mode while
+// the projection also runs in cloud (#379).
+//
+// The sweep rides ListEligible, so it only sees UNCLAIMED cards: a card
+// being processed right now is claimed (invisible — its live pointer fails
+// the terminal check anyway), and a card still claimed by a hard-killed
+// replica stays out of reach until its claim is released.
+//
+// A card whose pointer finished cleanly is filed done outright — the
+// orphan window between a run's finish and processCard's state move is
+// small but real (a hard-killed replica never makes the move).
+//
+// Cost: the per-card pointer status read mirrors sweepParked's; the fork
+// search runs ONLY for stuck cards and rides the indexed
+// ListRunsBySourceIssue edge (never a full store scan), negative results
+// memoized per (tenant, issue) for forkAdoptionScanTTL. Multi-replica safe
+// without claims: the fork choice is deterministic, SetLastRun/SetState are
+// idempotent for the same values, and neither in_progress nor blocked is in
+// `eligible`, so no replica re-dispatches a filed card.
+func (d *boardDispatcher) sweepForkAdoptions(ctx context.Context) {
+	if d.statusFor == nil || d.runFor == nil || d.issueRuns == nil || d.adoptRun == nil {
+		return
+	}
+	cands, err := d.coord.ListEligible(ctx, []string{d.inProgressState, d.blockedState}, 200)
+	if err != nil {
+		d.warn("fork-adoption sweep list: %v", err)
+		return
+	}
+	for _, c := range cands {
+		d.reconcileDeadPointer(ctx, c)
+	}
+}
+
+// reconcileDeadPointer files one stranded card: directly when its pointer
+// run finished cleanly, or by adopting the issue's newest finished fork
+// when the pointer died. Best-effort per card — an unreadable record leaves
+// the card for the next tick.
+func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo.Candidate) {
+	runID := c.Issue.LastRunID
+	if runID == "" {
+		return
+	}
+	st, err := d.statusFor(ctx, c.Tenant, runID)
+	if err != nil {
+		return // best-effort: unreadable run → leave the card alone
+	}
+	if st == store.RunStatusFinished {
+		d.log("card %s/%s pointer run %s finished but the card was never filed — moving to %s", c.Tenant, c.Issue.ID, runID, d.doneState)
+		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
+			d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
+		}
+		return
+	}
+	if !st.IsTerminal() {
+		return // live pointer — processCard (or a resume) still owns the card
+	}
+	if !d.forkScanDue(c.Tenant, c.Issue.ID) {
+		return
+	}
+	d.noteForkScan(c.Tenant, c.Issue.ID)
+	pointer, err := d.runFor(ctx, c.Tenant, runID)
+	if err != nil || pointer == nil {
+		return
+	}
+	runs, err := d.issueRuns(ctx, c.Tenant, c.Issue.ID)
+	if err != nil {
+		d.warn("fork-adoption sweep: list runs of card %s/%s: %v", c.Tenant, c.Issue.ID, err)
+		return
+	}
+	forks := make([]*store.Run, 0, len(runs))
+	for _, r := range runs {
+		if r == nil || r.ForkedFrom == "" || r.Source == nil || r.Source.IssueID == "" {
+			continue
+		}
+		if r.Status != store.RunStatusFinished || r.FinishedAt == nil {
+			continue
+		}
+		forks = append(forks, r)
+	}
+	fork := newestFinishedIssueFork(forks, pointer)
+	if fork == nil {
+		return
+	}
+	// Adopt the fork as the current attempt so the pointer converges with
+	// what the card already shows — workdir included, unlike launch-time
+	// stamps: the fork has already executed, and LastWorkdir feeds the
+	// studio's inspect-the-diff link.
+	d.adoptRun(c.Tenant, c.Issue.ID, fork.ID, fork.WorkDir)
+	d.log("card %s/%s adopted finished fork %s over dead run %s — moving to %s", c.Tenant, c.Issue.ID, fork.ID, runID, d.doneState)
+	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
+		d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
+	}
+}
+
+// forkScanDue reports whether the fork search for a (tenant, issue) pair is
+// due again — false while a previous empty search is younger than
+// forkAdoptionScanTTL.
+func (d *boardDispatcher) forkScanDue(tenant, issueID string) bool {
+	d.forkScanMemoMu.Lock()
+	defer d.forkScanMemoMu.Unlock()
+	last, ok := d.forkScanMemo[tenant+"|"+issueID]
+	return !ok || time.Since(last) >= forkAdoptionScanTTL
+}
+
+// noteForkScan records that a (tenant, issue) fork search ran and found
+// nothing to adopt, and prunes expired entries so the memo can't grow past
+// the set of recently-stuck cards.
+func (d *boardDispatcher) noteForkScan(tenant, issueID string) {
+	d.forkScanMemoMu.Lock()
+	defer d.forkScanMemoMu.Unlock()
+	if d.forkScanMemo == nil {
+		d.forkScanMemo = map[string]time.Time{}
+	}
+	now := time.Now()
+	for k, at := range d.forkScanMemo {
+		if now.Sub(at) >= forkAdoptionScanTTL {
+			delete(d.forkScanMemo, k)
+		}
+	}
+	d.forkScanMemo[tenant+"|"+issueID] = now
+}
+
 // run loops tick every interval until ctx is cancelled, then drains in-flight
 // cards. Start one per replica.
 func (d *boardDispatcher) run(ctx context.Context) {
@@ -190,6 +347,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	for {
 		d.tick(ctx)
 		d.sweepParked(ctx)
+		d.sweepForkAdoptions(ctx)
 		select {
 		case <-ctx.Done():
 			d.wg.Wait() // let in-flight cards finish their state transition
@@ -276,6 +434,14 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 // (the Mongo-backed store in cloud, a native store in tests). Best-effort: a
 // stamp failure never fails the run — the card simply lacks its live-run link.
 func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
+	s.adoptCardRun(tenant, cardID, runID, "")
+}
+
+// adoptCardRun stamps a run onto the tenant's board card (SetLastRun, workdir
+// included) via the CloudBoardFor seam. The fork-adoption sweep uses it to
+// converge a stranded card's pointer with the finished fork the projection
+// already shows. Best-effort: a stamp failure never fails the sweep.
+func (s *Server) adoptCardRun(tenant, cardID, runID, workdir string) {
 	if s.cfg.CloudBoardFor == nil || runID == "" {
 		return
 	}
@@ -283,7 +449,7 @@ func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
 	if store == nil {
 		return
 	}
-	if err := store.SetLastRun(cardID, runID, ""); err != nil && s.logger != nil {
+	if err := store.SetLastRun(cardID, runID, workdir); err != nil && s.logger != nil {
 		s.logger.Warn("board dispatcher: stamp run %s on card %s/%s: %v", runID, tenant, cardID, err)
 	}
 }
@@ -318,6 +484,44 @@ func (s *Server) boardRunStatus(ctx context.Context, tenant, runID string) (stor
 		return "", err
 	}
 	return run.Status, nil
+}
+
+// boardRun reads a run's full record for the fork-adoption sweep (the sweep
+// needs CreatedAt to order fork candidates, which boardRunStatus alone can't
+// provide), tenant-scoped exactly like boardRunStatus.
+func (s *Server) boardRun(ctx context.Context, tenant, runID string) (*store.Run, error) {
+	if s.runs == nil {
+		return nil, errors.New("run service unavailable")
+	}
+	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	return s.runs.LoadRunCtx(ctx, runID)
+}
+
+// boardIssueRuns lists the runs sourced from an issue for the fork-adoption
+// sweep, tenant-scoped, via the indexed card←run reverse edge
+// (ListRunsBySourceIssue) — never a full run-store scan.
+func (s *Server) boardIssueRuns(ctx context.Context, tenant, issueID string) ([]*store.Run, error) {
+	if s.runs == nil {
+		return nil, errors.New("run service unavailable")
+	}
+	rs := s.runs.RunStore()
+	if rs == nil {
+		return nil, errors.New("run store unavailable")
+	}
+	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	ids, err := rs.ListRunsBySourceIssue(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]*store.Run, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.runs.LoadRunCtx(ctx, id)
+		if err != nil || r == nil {
+			continue // best-effort: an unreadable run simply can't be adopted
+		}
+		runs = append(runs, r)
+	}
+	return runs, nil
 }
 
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
