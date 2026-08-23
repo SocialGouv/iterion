@@ -110,3 +110,30 @@ func TestMalformedPayloadFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// panickingReader makes Run blow up mid-flight, standing in for the class this
+// guards: a pathological rule or an unanticipated input shape panicking inside
+// the evaluator.
+type panickingReader struct{}
+
+func (panickingReader) Read([]byte) (int, error) { panic("boom") }
+
+// TestPanicFailsClosed: a panic kills the process with empty stdout, and BOTH
+// CLIs read that as ALLOW — so without recovering, any future bug in the
+// evaluator becomes a silent gate bypass instead of a loud failure. The last
+// thing this process does before dying must still be to deny.
+func TestPanicFailsClosed(t *testing.T) {
+	policyB64 := writePolicy(t, permission.ModeDeny, nil, nil, nil)
+	for _, backend := range []string{BackendGrok, BackendKimi} {
+		t.Run(backend, func(t *testing.T) {
+			var out bytes.Buffer
+			err := Run(backend, policyB64, panickingReader{}, &out)
+			if err != nil {
+				t.Fatalf("Run returned %v; a returned error is itself fail-open on both CLIs", err)
+			}
+			if !bytes.Contains(out.Bytes(), []byte("deny")) {
+				t.Fatalf("panic did not fail closed: %q", out.String())
+			}
+		})
+	}
+}

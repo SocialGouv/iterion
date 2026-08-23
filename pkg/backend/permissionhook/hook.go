@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -48,10 +49,24 @@ type event struct {
 // A file would be re-read on every call from a directory the agent runs as
 // the same uid against, and one allowed write of `{"mode":"off"}` would
 // disarm every later tool call (PR #498 review, finding R3e6bb0).
-func Run(backend, policyB64 string, in io.Reader, out io.Writer) error {
+func Run(backend, policyB64 string, in io.Reader, out io.Writer) (err error) {
 	if backend != BackendGrok && backend != BackendKimi {
 		return fmt.Errorf("permission hook: unsupported backend %q", backend)
 	}
+
+	// A panic anywhere below — a pathological rule, an input shape Evaluate
+	// did not anticipate — would kill this process with empty stdout, which
+	// BOTH CLIs read as allow. That turns any future bug in the evaluator into
+	// a silent gate bypass rather than a loud failure, so the last thing this
+	// process does before dying is still to deny. Recovering here is a
+	// security decision, not error hygiene: the panic is re-surfaced on stderr,
+	// which is the hook's own feedback channel on both CLIs.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "permission hook: panic while evaluating the policy: %v\n", r)
+			err = writeDeny(backend, out, "iterion's permission gate failed while evaluating this call; the tool call was blocked")
+		}
+	}()
 
 	policy, err := decodePolicy(policyB64)
 	if err != nil {

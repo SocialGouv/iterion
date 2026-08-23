@@ -157,7 +157,10 @@ where a repo-scoped `Edit(**)` / `Write(**)` allow rule would reach. Without
 those two properties, one allowed write of `{"mode":"off"}` would disarm the
 gate for the rest of the node — an escalation the in-process claude_code and
 claw gates cannot have, since their policy never leaves iterion's memory. A
-policy the hook cannot decode fails **closed**.
+policy the hook cannot decode fails **closed**, and so does a panic: the hook
+recovers and still emits a deny, because a process that dies with empty stdout
+is read as *allow* by both CLIs — which would turn any future bug in the
+evaluator into a silent gate bypass.
 
 **`sandbox: none` is required today, and C136 says so at compile time.** The
 hook binary and the CLI home are host-side, so a sandboxed run cannot reach
