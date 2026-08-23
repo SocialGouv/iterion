@@ -24,6 +24,10 @@ export const EVENT_BADGE: Record<string, string> = {
   // A route change, not a failure — the run continues on another
   // model/backend. Warning-coloured because the primary route is gone.
   model_fallback: "bg-warning-soft text-warning-fg",
+  // Declared model ≠ what the backend actually ran (proxy, env
+  // override, fallback route). Same colour as fallback: the record
+  // is honest, the run is degraded.
+  model_drift: "bg-warning-soft text-warning-fg",
   llm_request: "bg-surface-2 text-fg-muted",
   llm_step_finished: "bg-surface-2 text-fg-muted",
   tool_called: "bg-surface-2 text-fg-muted",
@@ -78,6 +82,8 @@ export function previewData(data: Record<string, unknown> | undefined): string {
   const interesting = [
     "kind",
     "model",
+    "declared_model",
+    "effective_model",
     "tool",
     "tool_name",
     "version",

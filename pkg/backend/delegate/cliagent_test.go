@@ -549,3 +549,30 @@ func TestCLIAgentPermissionRefusesWindows(t *testing.T) {
 		t.Fatalf("windows gated run error = %v, want an explicit refusal", err)
 	}
 }
+
+func TestSameModelID(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"anthropic/claude-opus-5", "claude-opus-5", true},
+		{"claude-opus-5", "anthropic/claude-opus-5", true},
+		{"glm-4.6", "anthropic/claude-opus-5", false},
+		{"", "", true},
+		{"openai/gpt-5.5", "gpt-5.5", true},
+		{"openai/gpt-5.5", "gpt-5.5-2026", true},
+		{"gpt-5.5", "gpt-5.5-2026", true},
+		{"gpt-5", "gpt-5.5", false},
+		{"claude-sonnet-4", "claude-sonnet-4-6", false},
+		{"kimi-k2", "kimi-k2-0905", true},
+		{"gpt-4o", "gpt-4o-2024-08-06", true},
+	}
+	for _, tc := range cases {
+		if got := SameModelID(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameModelID(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+		if got := SameModelID(tc.b, tc.a); got != tc.want {
+			t.Errorf("SameModelID(%q, %q) = %v, want %v (symmetry)", tc.b, tc.a, got, tc.want)
+		}
+	}
+}

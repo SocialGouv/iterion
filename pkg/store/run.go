@@ -105,6 +105,24 @@ type RunModelOverride struct {
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
 }
 
+// NodeServed is the (backend, model) that actually served one LLM node.
+// Last write wins per node_id — a loop's last pass is what a finished
+// run.json reports; the event stream is the full history.
+//
+// Model is the provider-reported effective model, distinct from
+// DeclaredModel (the workflow `model:` / launch override the node
+// asked for). They diverge on a fallback chain, an env override
+// (ANTHROPIC_MODEL), or a third-party proxy. Empty Model means the
+// backend did not report one — DeclaredModel is then the only hint,
+// not a substitute for what ran.
+type NodeServed struct {
+	Backend         string `json:"backend" bson:"backend"`
+	Model           string `json:"model,omitempty" bson:"model,omitempty"`
+	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
+}
+
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the
 // workflow's `budget:` block after recipe/preset/CLI overrides AND (in
 // cloud) the platform ceiling clamp, snapshotted onto the run so the
@@ -244,6 +262,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// NodesServed maps IR node id → last (backend, model) that served
+	// it. Display-only / post-hoc: makes a finished run self-describing
+	// without replaying events.jsonl. Empty for legacy runs and for
+	// nodes that never delegated (tool/compute/human). Written by
+	// RecordNodeServed from the delegate_finished / delegate_error
+	// hooks; last write wins per node.
+	NodesServed map[string]NodeServed `json:"nodes_served,omitempty" bson:"nodes_served,omitempty"`
 	// Budget is the effective budget cap set captured at launch (after
 	// overrides + cloud ceiling clamp), so the studio Overview draws
 	// budget meters with a denominator. Nil when the workflow declares

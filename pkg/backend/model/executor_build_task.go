@@ -232,20 +232,27 @@ func (e *ClawExecutor) dispatchWithObservability(
 	build elementBuilder,
 ) (chainOutcome, error) {
 	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(nodeID, backendName)
+		e.hooks.OnDelegateStarted(nodeID, DelegateInfo{
+			BackendName:   backendName,
+			DeclaredModel: baseModel,
+		})
 	}
 	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build)
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
 			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 			di := delegateInfoFromResult(bn, out.Result)
+			di.DeclaredModel = baseModel
 			di.Error = err
 			e.hooks.OnDelegateError(nodeID, di)
 		}
 		return out, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
 	}
 	if e.hooks.OnDelegateFinished != nil {
-		e.hooks.OnDelegateFinished(nodeID, delegateInfoFromResult(out.Result.BackendName, out.Result))
+		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
+		di := delegateInfoFromResult(bn, out.Result)
+		di.DeclaredModel = baseModel
+		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil
 }
@@ -558,6 +565,7 @@ func (e *ClawExecutor) validateAndRetry(
 	// transient errors, not schema-shape failures.
 	if e.hooks.OnDelegateRetry != nil {
 		di := delegateInfoFromResult(backendName, result)
+		di.DeclaredModel = task.Model
 		di.Error = err
 		di.Attempt = 1
 		e.hooks.OnDelegateRetry(f.id, di)

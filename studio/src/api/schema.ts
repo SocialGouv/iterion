@@ -5009,6 +5009,13 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        NodeServed: {
+            backend: string;
+            context_window?: number;
+            declared_model?: string;
+            max_output_tokens?: number;
+            model?: string;
+        };
         NodeSessionSlot: {
             backend: string;
             conversation_ref?: string;
@@ -5173,6 +5180,9 @@ export interface components {
             merged_into?: string;
             model_overrides?: components["schemas"]["RunModelOverride"][];
             name?: string;
+            nodes_served?: {
+                [key: string]: components["schemas"]["NodeServed"];
+            };
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;

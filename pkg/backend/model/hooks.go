@@ -141,6 +141,18 @@ type PlanWriter interface {
 	AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error)
 }
 
+// NodeServedRecorder is the optional capability stores satisfy for
+// persisting the last (backend, model) that served a node onto the
+// run record. When present, delegate_finished / delegate_error stamp
+// run.json so a finished run is self-describing without replaying
+// events.jsonl. Missing on test emitters; the runner's metricsEmitter
+// must forward it the same way it forwards PlanWriter (otherwise the
+// `emitter.(NodeServedRecorder)` assertion would hide the inner store
+// on every cloud run).
+type NodeServedRecorder interface {
+	RecordNodeServed(ctx context.Context, runID, nodeID string, served store.NodeServed) error
+}
+
 // persistToolPayload writes the given content into the event `data` map
 // under the given key (`input` or `output`):
 //   - if content fits inline (≤ toolInlineThreshold), `data[key]` carries
@@ -203,6 +215,7 @@ type storeHooks struct {
 	toolBlobSink   ToolBlobWriter
 	turnSink       TurnWriter
 	planSink       PlanWriter
+	servedSink     NodeServedRecorder
 
 	// recentInputs holds a redacted preview of each in-flight tool call's
 	// input, keyed by ToolUseID, so the error path can show WHAT was rejected.
@@ -213,6 +226,11 @@ type storeHooks struct {
 	// parameter tags inside a JSON string value.
 	inputsMu     sync.Mutex
 	recentInputs map[string]string
+
+	// driftSeen dedupes model_drift events per (node, declared, effective)
+	// so a 92-pass loop does not emit 92 identical warnings.
+	driftMu   sync.Mutex
+	driftSeen map[string]struct{}
 }
 
 // toolInputPreviewMax bounds what the error line carries: enough to see the
@@ -748,10 +766,85 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 	}
 }
 
+// putDelegateModelFields copies the model/window fields onto an event
+// payload, omitting empties and zeros so observers can tell "unknown"
+// from a measured empty by the key's absence — the CostUSD precedent.
+func putDelegateModelFields(data map[string]any, info DelegateInfo) {
+	if info.DeclaredModel != "" {
+		data["declared_model"] = info.DeclaredModel
+	}
+	if info.EffectiveModel != "" {
+		data["effective_model"] = info.EffectiveModel
+	}
+	if info.ContextWindow > 0 {
+		data["context_window"] = info.ContextWindow
+	}
+	if info.MaxOutputTokens > 0 {
+		data["max_output_tokens"] = info.MaxOutputTokens
+	}
+	if info.PeakInputTokens > 0 {
+		data["context_used"] = info.PeakInputTokens
+	}
+}
+
+func (h *storeHooks) emitModelDrift(nodeID string, info DelegateInfo) {
+	if info.DeclaredModel == "" || info.EffectiveModel == "" {
+		return
+	}
+	if delegate.SameModelID(info.DeclaredModel, info.EffectiveModel) {
+		return
+	}
+	key := nodeID + "\x00" + info.DeclaredModel + "\x00" + info.EffectiveModel
+	h.driftMu.Lock()
+	if h.driftSeen == nil {
+		h.driftSeen = make(map[string]struct{})
+	}
+	if _, seen := h.driftSeen[key]; seen {
+		h.driftMu.Unlock()
+		return
+	}
+	h.driftSeen[key] = struct{}{}
+	h.driftMu.Unlock()
+	h.emit(nodeID, store.EventModelDrift, map[string]any{
+		"backend":         info.BackendName,
+		"declared_model":  info.DeclaredModel,
+		"effective_model": info.EffectiveModel,
+	})
+}
+
+func (h *storeHooks) recordServed(nodeID string, info DelegateInfo) {
+	if h.servedSink == nil || nodeID == "" || info.BackendName == "" {
+		return
+	}
+	served := store.NodeServed{
+		Backend:         info.BackendName,
+		Model:           info.EffectiveModel,
+		DeclaredModel:   info.DeclaredModel,
+		ContextWindow:   info.ContextWindow,
+		MaxOutputTokens: info.MaxOutputTokens,
+	}
+	if err := h.servedSink.RecordNodeServed(h.ctx, h.runID, nodeID, served); err != nil {
+		h.logger.Warn("Could not persist served model [%s]: %v", nodeID, err)
+	}
+}
+
+func delegateRouteLabel(info DelegateInfo) string {
+	label := info.BackendName
+	if info.EffectiveModel != "" {
+		return label + " " + info.EffectiveModel
+	}
+	if info.DeclaredModel != "" {
+		return label + " " + info.DeclaredModel
+	}
+	return label
+}
+
 // onDelegateStarted implements the OnDelegateStarted hook.
-func (h *storeHooks) onDelegateStarted(nodeID string, backendName string) {
-	h.emit(nodeID, store.EventDelegateStarted, map[string]any{"backend": backendName})
-	h.logger.Logf(iterlog.LevelInfo, "🚀", "Delegation started [%s]: backend=%s", nodeID, backendName)
+func (h *storeHooks) onDelegateStarted(nodeID string, info DelegateInfo) {
+	data := map[string]any{"backend": info.BackendName}
+	putDelegateModelFields(data, info)
+	h.emit(nodeID, store.EventDelegateStarted, data)
+	h.logger.Logf(iterlog.LevelInfo, "🚀", "Delegation started [%s]: %s", nodeID, delegateRouteLabel(info))
 }
 
 // onDelegateFinished implements the OnDelegateFinished hook.
@@ -765,6 +858,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
 	}
+	putDelegateModelFields(data, info)
 	// Omitted when the price table did not know the model, so an observer
 	// can tell "no cost data" from a measured $0 by the key's absence.
 	if info.CostUSD > 0 {
@@ -774,9 +868,11 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
 	h.emit(nodeID, store.EventDelegateFinished, data)
+	h.emitModelDrift(nodeID, info)
+	h.recordServed(nodeID, info)
 
 	h.logger.Logf(iterlog.LevelInfo, "✅", "Delegation finished [%s]: %s (%dms, %d tokens)",
-		nodeID, info.BackendName, info.Duration.Milliseconds(), info.Tokens)
+		nodeID, delegateRouteLabel(info), info.Duration.Milliseconds(), info.Tokens)
 	if info.FormattingPassUsed {
 		h.logger.Logf(iterlog.LevelDebug, "📐", "Delegation [%s]: two-pass execution used for structured output", nodeID)
 	} else if info.ParseFallback {
@@ -796,6 +892,7 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		"tokens":      info.Tokens,
 		"exit_code":   info.ExitCode,
 	}
+	putDelegateModelFields(data, info)
 	if info.Error != nil {
 		data["error"] = info.Error.Error()
 	}
@@ -803,12 +900,20 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
+	h.emitModelDrift(nodeID, info)
+	// A failed attempt typically has no EffectiveModel. Last-write-wins
+	// would blank a model recorded by an earlier success — the fact a
+	// failed run.json must still keep (#474). Only persist when the
+	// backend actually reported one.
+	if info.EffectiveModel != "" {
+		h.recordServed(nodeID, info)
+	}
 
 	errMsg := ""
 	if info.Error != nil {
 		errMsg = info.Error.Error()
 	}
-	h.logger.Error("Delegation failed [%s]: %s — %s", nodeID, info.BackendName, errMsg)
+	h.logger.Error("Delegation failed [%s]: %s — %s", nodeID, delegateRouteLabel(info), errMsg)
 }
 
 // onDelegateRetry implements the OnDelegateRetry hook.
@@ -818,6 +923,7 @@ func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
 		"attempt":  info.Attempt,
 		"delay_ms": info.Delay.Milliseconds(),
 	}
+	putDelegateModelFields(data, info)
 	if info.Error != nil {
 		data["error"] = info.Error.Error()
 	}
@@ -961,6 +1067,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 	toolBlobSink, _ := emitter.(ToolBlobWriter)
 	turnSink, _ := emitter.(TurnWriter)
 	planSink, _ := emitter.(PlanWriter)
+	servedSink, _ := emitter.(NodeServedRecorder)
 	// All event payloads go through the redacting wrapper (Layer 0).
 	emitter = redactingEmitter{inner: emitter, guard: guard, observers: observers}
 	h := &storeHooks{
@@ -976,6 +1083,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		toolBlobSink:   toolBlobSink,
 		turnSink:       turnSink,
 		planSink:       planSink,
+		servedSink:     servedSink,
 	}
 	return EventHooks{
 		OnLLMPrompt:  h.onLLMPrompt,

@@ -188,6 +188,17 @@ export interface RunModelOverride {
   provider?: string;
 }
 
+// Last (backend, model) that served one LLM node. Mirror of
+// pkg/store.NodeServed. `model` is what the provider reported;
+// `declared_model` is what the node asked for.
+export interface NodeServed {
+  backend: string;
+  model?: string;
+  declared_model?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+}
+
 // Effective budget cap set captured at launch — the workflow's `budget:`
 // block after recipe/preset/CLI overrides and, in cloud, the platform
 // ceiling clamp. Mirrors pkg/store.RunBudget. A zero/absent field means
@@ -248,6 +259,10 @@ export interface RunHeader {
   // Display-only, surfaced in the Overview's "Launched with". Empty when
   // none were set.
   model_overrides?: RunModelOverride[];
+  // Last (backend, model) that served each LLM node, copied from
+  // run.json so a snapshot is self-describing without replaying
+  // events. Distinct from backends_used (event-derived unique pairs).
+  nodes_served?: Record<string, NodeServed>;
   // Effective budget caps captured at launch, surfaced so the Overview
   // draws budget meters with a denominator. Absent when the workflow
   // declared no budget: block; meters then degrade to bare stats.

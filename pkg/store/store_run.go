@@ -309,6 +309,27 @@ func (s *FilesystemRunStore) PatchRunPermissionGrants(_ context.Context, id stri
 	return s.writeRun(r)
 }
 
+// RecordNodeServed persists the last (backend, model) that served
+// nodeID. Last write wins per key; empty nodeID is a no-op.
+func (s *FilesystemRunStore) RecordNodeServed(_ context.Context, id, nodeID string, served NodeServed) error {
+	if nodeID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	if r.NodesServed == nil {
+		r.NodesServed = make(map[string]NodeServed, 1)
+	}
+	r.NodesServed[nodeID] = served
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // UpdateRunStatusIf is a compare-and-set on the status field: the
 // write only lands when the current status is in expectedFrom. Used
 // by callers that need to avoid racing with a concurrent transition

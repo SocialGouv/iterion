@@ -329,6 +329,11 @@ Nothing about it is silent:
 - a `model_fallback` event in `events.jsonl` (from/to backend, model and
   provider, the classified reason, attempts spent) plus a `run.log`
   warning;
+- a `model_drift` event when the provider-reported model is not the
+  one the node declared (proxy / `ANTHROPIC_MODEL` / a fallback that
+  also changed the model). `delegate_started` carries `declared_model`;
+  `delegate_finished` / `delegate_error` add `effective_model`;
+  `run.json` `nodes_served` is the last pair per node;
 - `_backend` / `_model` on the node output name the route that
   **served**, not the one requested;
 - `_fallback_used` and `_served_by` are stamped so a bot's deterministic

@@ -155,6 +155,19 @@ func (m *metricsEmitter) WriteToolBlob(ctx context.Context, runID, toolUseID, ki
 	return bw.WriteToolBlob(ctx, runID, toolUseID, kind, body)
 }
 
+// RecordNodeServed forwards the last (backend, model) that served a
+// node onto the wrapped store. Same rationale as WriteTurn: the capture
+// hook's `emitter.(NodeServedRecorder)` assertion runs against THIS
+// wrapper, so without the forward every cloud run would silently skip
+// writing NodesServed onto run.json.
+func (m *metricsEmitter) RecordNodeServed(ctx context.Context, runID, nodeID string, served store.NodeServed) error {
+	r, ok := m.inner.(model.NodeServedRecorder)
+	if !ok {
+		return nil
+	}
+	return r.RecordNodeServed(ctx, runID, nodeID, served)
+}
+
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
 	case store.EventLLMRequest:

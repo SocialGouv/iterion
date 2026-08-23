@@ -599,6 +599,32 @@ func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants 
 	return nil
 }
 
+// RecordNodeServed persists the last (backend, model) that served
+// nodeID with a per-key $set, so concurrent nodes writing distinct
+// keys do not clobber each other. Empty nodeID is a no-op.
+// Display-only last-write-wins patch; no $inc on version so a later
+// checkpoint CAS cannot be invalidated by this stamp (same as
+// PatchRunSteering / PatchRunPermissionGrants).
+func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served store.NodeServed) error {
+	if nodeID == "" {
+		return nil
+	}
+	set := bson.M{
+		"updated_at":             time.Now().UTC(),
+		"nodes_served." + nodeID: served,
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{
+		"$set": set,
+	})
+	if err != nil {
+		return fmt.Errorf("store/mongo: record node served: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{

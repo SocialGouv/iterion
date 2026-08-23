@@ -87,6 +87,12 @@ type RunHeader struct {
 	// pins captured on the run, surfaced so the studio Overview can show
 	// what the run was launched with. Empty when none were set.
 	ModelOverrides []store.RunModelOverride `json:"model_overrides,omitempty"`
+	// NodesServed is the last (backend, model) that served each LLM
+	// node, copied from run.json so a snapshot is self-describing
+	// without replaying events. Distinct from BackendsUsed, which
+	// aggregates unique pairs from node_finished events. Empty for
+	// legacy runs and tool/compute-only workflows.
+	NodesServed map[string]store.NodeServed `json:"nodes_served,omitempty"`
 	// Budget is the effective budget cap set captured at launch (after
 	// overrides + cloud ceiling clamp), surfaced so the studio Overview
 	// draws budget meters with a denominator. Nil when the workflow
@@ -1375,6 +1381,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Inputs:            r.Inputs,
 		PermissionMode:    r.PermissionMode,
 		ModelOverrides:    r.ModelOverrides,
+		NodesServed:       r.NodesServed,
 		Budget:            r.Budget,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,

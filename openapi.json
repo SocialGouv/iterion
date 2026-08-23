@@ -740,6 +740,29 @@
         ],
         "type": "object"
       },
+      "NodeServed": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "declared_model": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend"
+        ],
+        "type": "object"
+      },
       "NodeSessionSlot": {
         "properties": {
           "backend": {
@@ -1276,6 +1299,12 @@
           },
           "name": {
             "type": "string"
+          },
+          "nodes_served": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeServed"
+            },
+            "type": "object"
           },
           "parent_node_id": {
             "type": "string"
