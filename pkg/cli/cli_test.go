@@ -503,6 +503,12 @@ func TestInspect_ServedHidesAliasDeclared(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.RecordNodeServed(ctx, "run-served", "claw", store.NodeServed{
+		Backend:       "claw",
+		DeclaredModel: "anthropic/claude-opus-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	if err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-served"}, p); err != nil {
@@ -515,7 +521,7 @@ func TestInspect_ServedHidesAliasDeclared(t *testing.T) {
 	if !strings.Contains(out, "claude_code claude-opus-5") {
 		t.Errorf("campaign missing effective model, got:\n%s", out)
 	}
-	if strings.Contains(out, "claude-opus-5 (declared") {
+	if strings.Contains(out, "claude_code claude-opus-5 (declared") {
 		t.Errorf("provider-prefix alias must not print as declared, got:\n%s", out)
 	}
 	if !strings.Contains(out, "pi gpt-5.5-2026") {
@@ -526,6 +532,12 @@ func TestInspect_ServedHidesAliasDeclared(t *testing.T) {
 	}
 	if !strings.Contains(out, "glm-4.6 (declared anthropic/claude-opus-5)") {
 		t.Errorf("real rewrite must print declared, got:\n%s", out)
+	}
+	if !strings.Contains(out, "claw anthropic/claude-opus-5 (declared; backend reported none)") {
+		t.Errorf("empty Model must mark declared-only, got:\n%s", out)
+	}
+	if strings.Contains(out, "claw anthropic/claude-opus-5\n") {
+		t.Errorf("empty Model must not print as if it served, got:\n%s", out)
 	}
 }
 

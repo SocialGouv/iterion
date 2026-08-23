@@ -148,14 +148,17 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 			s := r.NodesServed[id]
 			label := s.Backend
 			model := s.Model
-			if model == "" {
+			declaredOnly := model == ""
+			if declaredOnly {
 				model = s.DeclaredModel
 			}
 			if model != "" {
 				label += " " + model
-			}
-			if s.DeclaredModel != "" && s.Model != "" && !delegate.SameModelID(s.DeclaredModel, s.Model) {
-				label += " (declared " + s.DeclaredModel + ")"
+				if declaredOnly {
+					label += " (declared; backend reported none)"
+				} else if s.DeclaredModel != "" && !delegate.SameModelID(s.DeclaredModel, s.Model) {
+					label += " (declared " + s.DeclaredModel + ")"
+				}
 			}
 			p.KV(id, label)
 		}

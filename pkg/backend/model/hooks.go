@@ -901,7 +901,13 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 	}
 	h.emit(nodeID, store.EventDelegateError, data)
 	h.emitModelDrift(nodeID, info)
-	h.recordServed(nodeID, info)
+	// A failed attempt typically has no EffectiveModel. Last-write-wins
+	// would blank a model recorded by an earlier success — the fact a
+	// failed run.json must still keep (#474). Only persist when the
+	// backend actually reported one.
+	if info.EffectiveModel != "" {
+		h.recordServed(nodeID, info)
+	}
 
 	errMsg := ""
 	if info.Error != nil {

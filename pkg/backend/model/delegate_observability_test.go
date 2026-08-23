@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -98,6 +99,64 @@ func TestDelegateModelReachesStore(t *testing.T) {
 	}
 	if served.ContextWindow != 200_000 || served.MaxOutputTokens != 8192 {
 		t.Errorf("window/tokens dropped: %+v", served)
+	}
+}
+
+// TestDelegateErrorDoesNotBlankRecordedModel is the follow-on to #474:
+// onDelegateError used to call recordServed unconditionally, so a
+// failed attempt with empty EffectiveModel last-write-wins-blanked the
+// model an earlier success had stored — the fact a failed run.json must
+// still keep. An error that DOES report a model still overwrites.
+func TestDelegateErrorDoesNotBlankRecordedModel(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const runID = "run-error-blank"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	hooks := NewStoreEventHooks(ctx, st, runID, iterlog.New(iterlog.LevelError, nil), nil)
+	hooks.OnDelegateFinished("campaign", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "anthropic/claude-opus-5",
+		EffectiveModel: "glm-4.6",
+	})
+
+	hooks.OnDelegateError("campaign", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "anthropic/claude-opus-5",
+		EffectiveModel: "",
+		Error:          errors.New("delegate failed"),
+	})
+
+	run, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after empty-model error: %v", err)
+	}
+	served, ok := run.NodesServed["campaign"]
+	if !ok {
+		t.Fatal("NodesServed missing campaign after model-less error")
+	}
+	if served.Model != "glm-4.6" {
+		t.Errorf("model-less error blanked NodesServed.Model: %+v", served)
+	}
+
+	hooks.OnDelegateError("campaign", DelegateInfo{
+		BackendName:    "claude_code",
+		DeclaredModel:  "anthropic/claude-opus-5",
+		EffectiveModel: "other",
+		Error:          errors.New("delegate failed with a reported model"),
+	})
+
+	run, err = st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun after reported-model error: %v", err)
+	}
+	served = run.NodesServed["campaign"]
+	if served.Model != "other" {
+		t.Errorf("error with EffectiveModel should last-write-win, got %+v", served)
 	}
 }
 
