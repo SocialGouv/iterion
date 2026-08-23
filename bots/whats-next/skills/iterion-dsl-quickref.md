@@ -116,6 +116,10 @@ agent w:
   user:    w_user
   session: fresh                # fresh | inherit | inherit_if_available | fork | artifacts_only | persist
   tools:   [bash, read_file, glob, grep, write_file, file_edit]
+                                # on claw these are RESOLVED: a name claw does not have fails the
+                                # node (C135 catches it at validate). CLI backends ignore the list.
+                                # `list_files` / `run_command` / `git_diff` / `search_codebase` are
+                                # NOT tools — use glob / bash / grep.
   tool_max_steps: 30
   max_tokens: 4096              # output cap (per LLM call)
   compress: on                  # opt-in command-output compression (on|ultra|off, off by default);
@@ -174,7 +178,7 @@ Backend rules:
   agent implement:
     backend: "claude_code"
     model: "claude-opus-5"
-    tools: [read_file, run_command]
+    tools: [read_file, bash]
     fallbacks:
       api:
         backend: "claw"
@@ -190,7 +194,10 @@ Backend rules:
   can fail closed on a degraded input. Errors: a route changing
   `backend:` must pin its own `model:` (C173); a route that cannot
   enforce the node's `permission:` gate, or that crosses the claw⇄CLI
-  boundary with an empty `tools:` list, is refused (C176). See ADR-087.
+  boundary with an empty `tools:` list, is refused (C176); and a claw
+  route whose declared tools claw cannot resolve is refused too (C135 —
+  the list is inert on a CLI primary but load-bearing on the route).
+  See ADR-087.
 
 Session-mode notes:
 - `fresh` (default) — new context every call.

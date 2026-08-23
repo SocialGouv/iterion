@@ -520,7 +520,15 @@ Code:
 - **claw** — claw-code-go is a bare API client with **no** native system
   prompt, so iterion prepends an authored `agenticOperatingPosture` base
   (the parity substrate) before the node's `system:` text. A node's
-  `tools:` list **does** restrict claw (lowercase names are claw-native).
+  `tools:` list **does** restrict claw (lowercase names are claw-native)
+  — and is RESOLVED against the registry, so a name claw does not have
+  fails the node at dispatch. `iterion validate` refuses it first (C135,
+  claw only — on a CLI backend the list is inert, so an unknown name
+  there is dead config, not a failure); the catalog of accepted names is
+  [pkg/backend/toolcatalog](pkg/backend/toolcatalog/toolcatalog.go), kept
+  honest by a conformance test against the real registry. `list_files` /
+  `run_command` / `git_diff` / `search_codebase` circulate in older
+  examples and have never been registered — use `glob` / `bash` / `grep`.
 
 The `bypassPermissions` note above describes the default (`permission:
 off`). The opt-in **permission gate** (`permission: ask|deny`, see the

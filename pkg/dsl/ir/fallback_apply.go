@@ -34,9 +34,11 @@ const RunFallbackName = "run-fallback"
 //     judge takes a route from its own block or not at all;
 //   - only a node that declares NO routes of its own. An author who
 //     wrote a chain vetted where it may go;
-//   - only a crossing that passes the same safety predicates as C176.
-//     A refused node keeps its primary and the caller warns; the route
-//     is never silently taken.
+//   - only a crossing that passes the same safety predicates as C176 —
+//     plus C135's, since a claw route that cannot resolve the node's
+//     declared tools would fail exactly when it is needed. A refused
+//     node keeps its primary and the caller warns; the route is never
+//     silently taken.
 func ApplyRunFallback(w *Workflow, route Fallback) []string {
 	if w == nil || (route.Backend == "" && route.Model == "" && route.Provider == "") {
 		return nil
@@ -67,6 +69,16 @@ func ApplyRunFallback(w *Workflow, route Fallback) []string {
 			continue
 		}
 		if reason := sessionContinuityCrossingReason(nn.GetSession(), nodeBackend, route.Backend); reason != "" {
+			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
+			continue
+		}
+		// Refused only on what C135 would BLOCK — a name the compiler can
+		// positively identify as wrong, with no MCP wiring in sight. A bare
+		// name it merely does not recognise may still resolve onto an MCP
+		// tool whose catalog is merged after compilation, and dropping an
+		// operator's explicit route on that guess is worse than taking it.
+		// Same tiering as the diagnostic — see toolDiagReporter.
+		if reason := unresolvableToolsReason(route.Backend, nn.GetTools(), mcpWiringVisible(w, n)); reason != "" {
 			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
 			continue
 		}

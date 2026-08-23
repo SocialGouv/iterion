@@ -13,7 +13,7 @@ agent implementer:
   input: plan_schema
   output: result_schema
   system: implementation_prompt
-  tools: [read_file, write_file, run_command, git_diff]
+  tools: [read_file, write_file, bash, glob]
 ```
 
 | Backend | Status | What it does |
@@ -40,7 +40,7 @@ agent reviewer:
 
 agent implementer:
   backend: "claude_code"               # Full coding agent — can edit files
-  tools: [read_file, write_file, patch, run_command]
+  tools: [read_file, write_file, file_edit, bash]
 ```
 
 Leaving `backend:` out instead opts into automatic credential detection, which
