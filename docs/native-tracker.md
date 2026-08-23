@@ -175,6 +175,11 @@ names a resumable run the dispatcher **resumes** it on the next dispatch
 instead of starting one; clearing it is how an operator gets back to a fresh
 run after a failure resuming cannot fix. The run history (`runs`) is kept.
 
+It clears the pointer, not the ticket: a card the dispatcher gave up on is
+still in a terminal state, so the fresh run materialises once the ticket is
+**restaged** too (Retry on the board, or `iterion issue move … --to ready`).
+Clear first, then restage — the other order re-pins the pointer.
+
 Two limits are deliberate. It **refuses** while the run is still alive
 (`running` / `queued` / `paused_*`): that pointer is also the dispatcher's
 sibling guard, and clearing it there would let the next dispatch start a

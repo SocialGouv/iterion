@@ -527,7 +527,7 @@ export function PipelineColumns({
               <CardSection
                 id="needs-attention"
                 title="Needs attention"
-                subtitle="Failed mid-flight — each holds a slot until you retry, resume or close it"
+                subtitle="Failed mid-flight — most hold a slot until you retry, resume or close it"
                 accent="bg-danger"
                 count={needsAttention.length}
                 empty="Nothing to fix."

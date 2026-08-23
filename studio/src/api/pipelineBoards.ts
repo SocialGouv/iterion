@@ -263,10 +263,6 @@ function normalizeAttempts(value: unknown): PipelineBoardAttempt[] | undefined {
   });
 }
 
-// normalizeExternal tolerates the two shapes the server emits: a task-backed
-// card's full `{provider, connection_id, repo, ...}` link, and a run-only
-// fallback that carries only `repo` (project_path; provider/connection_id
-// empty strings on the wire). Anything missing `repo` is treated as absent.
 function normalizeGiveUp(value: unknown): PipelineBoardGiveUp | undefined {
   const source = record(value);
   if (!source) return undefined;
@@ -285,6 +281,10 @@ function normalizeGiveUp(value: unknown): PipelineBoardGiveUp | undefined {
   return out;
 }
 
+// normalizeExternal tolerates the two shapes the server emits: a task-backed
+// card's full `{provider, connection_id, repo, ...}` link, and a run-only
+// fallback that carries only `repo` (project_path; provider/connection_id
+// empty strings on the wire). Anything missing `repo` is treated as absent.
 function normalizeExternal(value: unknown): ExternalLinkInput | undefined {
   const source = record(value);
   if (!source) return undefined;

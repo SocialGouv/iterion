@@ -451,21 +451,23 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if err != nil {
 		return err
 	}
-	// Compare against what would ACTUALLY be written — the store overrides a
-	// caller's state with the ticket's own (below), so comparing the caller's
-	// value would re-write and re-emit on every repeat call whenever the two
-	// disagree.
-	if sameGiveUp(iss.GaveUp, giveUpFor(iss, g)) {
+	want, ok := giveUpToRecord(iss, g)
+	if !ok {
+		return nil
+	}
+	// Compared against what would ACTUALLY be written, so a repeat call is a
+	// real no-op rather than a re-write that churns UpdatedAt.
+	if sameGiveUp(iss.GaveUp, want) {
 		return nil
 	}
 	// stamped is what actually landed on the issue (nil for a clear); the
 	// event reports IT, never the caller's g, which may name a state the
 	// store overrode.
 	var stamped *native.GiveUp
-	if g == nil {
+	if want == nil {
 		iss.GaveUp = nil
 	} else {
-		stamp := *giveUpFor(iss, g)
+		stamp := *want
 		if stamp.At.IsZero() {
 			stamp.At = time.Now().UTC()
 		}
@@ -498,21 +500,30 @@ func expireGiveUp(iss *native.Issue) {
 	}
 }
 
-// giveUpFor returns the stamp that would land on iss for a caller's g: the
-// same values, but described against the state the ticket is ACTUALLY in.
+// giveUpToRecord resolves a caller's stamp against the issue as it stands,
+// returning the value to write and whether to write at all.
 //
-// The store overrides the caller's state on purpose. A stamp born disagreeing
-// with its issue would be expired by the very write that persists it
-// (expireGiveUp) and vanish silently; recording what is true keeps the
-// caller's intent ("filed as X") and the record in agreement, and lets the
-// idempotence check compare like with like.
-func giveUpFor(iss *native.Issue, g *native.GiveUp) *native.GiveUp {
+// A give-up describes a ticket that is still where the give-up PUT it. When
+// the ticket has already moved — an operator got there between the terminal
+// move and the stamp — the give-up is superseded, and recording it would put
+// the operator's own choice under a "the dispatcher gave up and filed this
+// ticket as …" banner. Nothing is written; the state change already stands in
+// the audit log.
+//
+// A stamp arriving without a state is filled in from the issue, so the value
+// compared for idempotence and the value written are always the same thing.
+func giveUpToRecord(iss *native.Issue, g *native.GiveUp) (*native.GiveUp, bool) {
 	if g == nil {
-		return nil
+		return nil, true
 	}
 	out := *g
-	out.State = iss.State
-	return &out
+	if out.State == "" {
+		out.State = iss.State
+	}
+	if out.State != iss.State {
+		return nil, false
+	}
+	return &out, true
 }
 
 // sameGiveUp compares two stamps on the fields that decide behaviour (the

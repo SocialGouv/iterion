@@ -276,6 +276,17 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 		}
 		fields[k] = nil
 	}
+	// Before the patch: refusing after it would apply --title and then error,
+	// leaving the operator with a half-done command they did not ask for.
+	if opts.ClearLastRun {
+		current, err := s.Get(id)
+		if err != nil {
+			return err
+		}
+		if err := refuseClearWhileRunAlive(opts.IssueCommonOptions, current.LastRunID); err != nil {
+			return err
+		}
+	}
 	patch := native.Patch{
 		Title:    opts.Title,
 		Body:     opts.Body,
@@ -290,9 +301,6 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 		return err
 	}
 	if opts.ClearLastRun {
-		if err := refuseClearWhileRunAlive(opts.IssueCommonOptions, iss.LastRunID); err != nil {
-			return err
-		}
 		if err := s.SetLastRun(id, "", ""); err != nil {
 			return err
 		}
@@ -386,7 +394,10 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	// failure. A surviving stamp costs a card in the wrong lane, not
 	// correctness — say so and carry on.
 	if err := s.SetGaveUp(id, nil); err != nil {
-		p.Line("warning: could not clear the dispatcher give-up stamp on %s: %v", shortID(id), err)
+		// stderr, not the Printer: `--json` writes a single document to
+		// stdout, and a warning spliced in front of it turns a scripted
+		// close into a parse error on a path that otherwise succeeded.
+		fmt.Fprintf(os.Stderr, "warning: could not clear the dispatcher give-up stamp on %s: %v\n", shortID(id), err)
 	}
 	// Same for the re-read: the close has landed, so fall back to SetState's
 	// snapshot rather than report a committed close as a failure.
