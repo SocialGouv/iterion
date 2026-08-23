@@ -172,14 +172,21 @@ func (d toolDiag) routeConsequence() string {
 	return "may not resolve"
 }
 
-// hint appends the trailing advice, saying out loud when the finding stopped
-// short of blocking — a reader who sees a warning deserves to know why.
+// hint appends the trailing advice: the way out on the fatal branch, and on
+// the other one why the finding stopped short of blocking.
+//
+// The blocking branch needs the escape hatch MOST, not least. Its predicate
+// includes "within an edit or two of a real built-in", which is overwhelmingly
+// a typo but can also be an ambient MCP tool that happens to sit that close to
+// one (a server exposing `grepp`, `task_lists`); there the diagnostic is fatal
+// AND wrong, and an author told only `Did you mean "grep"?` has no visible
+// remedy for a run the compiler just refused.
 func (d toolDiag) hint(name string) string {
 	h := toolHint(name)
 	if d.blocking {
-		return h
+		return h + " If the name really is an MCP server's tool, spell it `mcp.<server>.<tool>` — or declare the server (a top-level `mcp_server:`, or an `mcp:` block on the workflow or the node), which softens this to a warning"
 	}
-	return h + ". Reported as a warning, not an error: a bare name also resolves onto an MCP tool when it is unique across the connected servers, and the ambient catalog (a project .mcp.json, an enabled plugin) is merged after compilation — name it `mcp.<server>.<tool>` to be explicit"
+	return h + " Reported as a warning, not an error: a bare name also resolves onto an MCP tool when it is unique across the connected servers, and the ambient catalog (a project .mcp.json, an enabled plugin) is merged after compilation — name it `mcp.<server>.<tool>` to be explicit"
 }
 
 // mcpWiringVisible reports whether the source shows the author wiring MCP at
@@ -230,12 +237,12 @@ func unresolvableToolNames(tools []string) []string {
 // reads as one sentence either way.
 func toolHint(name string) string {
 	if toolcatalog.IsUnexpandedRef(name) {
-		return ". Tool names are the one field iterion does not expand — unlike model:, backend: and command:, a `${VAR}` or `{{ref}}` entry reaches the registry verbatim; name the tool literally"
+		return ". Tool names are the one field iterion does not expand — unlike model:, backend: and command:, a `${VAR}` or `{{ref}}` entry reaches the registry verbatim; name the tool literally."
 	}
 	if suggestion := toolcatalog.Suggest(name); suggestion != "" {
 		return fmt.Sprintf(". Did you mean %q?", suggestion)
 	}
-	return ". claw resolves bare names against its own built-ins (read_file, write_file, file_edit, glob, grep, bash, web_fetch, …); an MCP tool is named `mcp.<server>.<tool>`"
+	return ". claw resolves bare names against its own built-ins (read_file, write_file, file_edit, glob, grep, bash, web_fetch, …); an MCP tool is named `mcp.<server>.<tool>`."
 }
 
 // unresolvableToolsReason returns why a route may not serve this node's tools

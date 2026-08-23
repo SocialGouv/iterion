@@ -57,6 +57,12 @@ func TestUnknownToolOnClawIsAnError(t *testing.T) {
 	if !cr.HasErrors() {
 		t.Error("C135 must be an error — the run cannot succeed")
 	}
+	// The fatal branch is where the way out matters most: its predicate
+	// includes near-miss typos, which can occasionally be an ambient MCP
+	// tool sitting that close to a built-in.
+	if !strings.Contains(got[0], "mcp.<server>.<tool>") {
+		t.Errorf("a blocking finding must carry its escape hatch: %s", got[0])
+	}
 }
 
 // TestValidClawBuiltinsCompile guards the other direction: the catalog covers
