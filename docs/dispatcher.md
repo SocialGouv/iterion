@@ -296,9 +296,13 @@ buries the failure in Closed instead of raising it in **Needs attention**
 the terminal move was refused — a give-up that fell back to retrying has not
 given up.
 
-The stamp expires on its own (it names a run and a state, so a newer run or any
-move of the ticket makes it stale); the board's **Close** clears it explicitly,
-since that files the ticket into the state the give-up already wrote.
+The stamp expires on its own and for good: it names a run and a state, and each
+store drops it on any write in a different state. Since a retry resumes the
+*same* run id, a merely-stale stamp would otherwise revive when a human filed
+the ticket back into that state. Closing a ticket that is already sitting in
+the give-up's state changes nothing, so the three close surfaces — the pipeline
+board's Close, `iterion issue close`, and the board tool `close_issue` — clear
+the stamp explicitly.
 
 ## Workspace lifecycle
 

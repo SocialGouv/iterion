@@ -123,7 +123,7 @@ func (s *Store) SetGaveUp(id string, g *GiveUp) (err error) {
 	if err != nil {
 		return err
 	}
-	if sameGiveUp(iss.GaveUp, g) {
+	if sameGiveUp(iss.GaveUp, g) && (g == nil || g.State == iss.State) {
 		return nil
 	}
 	if g == nil {
@@ -133,6 +133,13 @@ func (s *Store) SetGaveUp(id string, g *GiveUp) (err error) {
 		if stamp.At.IsZero() {
 			stamp.At = time.Now().UTC()
 		}
+		// The stamp describes the ticket AS IT STANDS, so its state is the
+		// one the issue is actually in — not the one the caller believed it
+		// had moved to. A stamp born disagreeing with the ticket would be
+		// expired by the very write that persists it (expireGiveUp), which
+		// would drop it silently; recording what is true instead keeps the
+		// caller's intent (`filed as X`) and the record in agreement.
+		stamp.State = iss.State
 		iss.GaveUp = &stamp
 	}
 	iss.UpdatedAt = time.Now().UTC()

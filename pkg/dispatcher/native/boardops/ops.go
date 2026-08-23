@@ -529,6 +529,17 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if err != nil {
 		return nil, err
 	}
+	// Closing acknowledges the ticket, so any dispatcher give-up stamp on it
+	// goes. A move expires the stamp by itself; closing a ticket the
+	// dispatcher already filed into this same state does not move it, and
+	// would leave the card in the pipeline board's needs-attention lane after
+	// it was closed.
+	if err := store.SetGaveUp(resolved, nil); err != nil {
+		return nil, err
+	}
+	if iss, err = store.Get(resolved); err != nil {
+		return nil, err
+	}
 	return json.Marshal(iss)
 }
 

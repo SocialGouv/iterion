@@ -333,6 +333,17 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if err != nil {
 		return err
 	}
+	// Closing is the operator ACKNOWLEDGING the ticket, so drop any
+	// dispatcher give-up stamp on it. Moving a ticket expires the stamp on
+	// its own, but closing one the dispatcher already filed into this very
+	// state changes nothing — and would leave the card sitting in the
+	// pipeline board's needs-attention lane after the operator closed it.
+	if err := s.SetGaveUp(id, nil); err != nil {
+		return err
+	}
+	if iss, err = s.Get(id); err != nil {
+		return err
+	}
 	if p.Format == OutputJSON {
 		p.JSON(iss)
 		return nil

@@ -917,12 +917,13 @@ func TestSetGaveUpStampsExpiresAndIsIdempotent(t *testing.T) {
 		return n
 	}
 
+	// The dispatcher's order: file the ticket, THEN stamp what filed it.
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
 	stamp := &GiveUp{RunID: "run-7", State: StateBlocked, Attempts: 3}
 	if err := s.SetGaveUp(iss.ID, stamp); err != nil {
 		t.Fatalf("SetGaveUp: %v", err)
-	}
-	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
-		t.Fatalf("SetState: %v", err)
 	}
 	got, err := s.Get(iss.ID)
 	if err != nil {
@@ -999,5 +1000,66 @@ func TestSetLastRunClearDoesNotAppendABlankRun(t *testing.T) {
 	}
 	if len(got.Runs) != 1 || got.Runs[0].RunID != "run-1" {
 		t.Fatalf("run history = %+v, want the one real run and no blank row", got.Runs)
+	}
+}
+
+// Once the ticket moves, the give-up stamp is gone for GOOD. Read-time state
+// comparison alone would be reversible: a dispatcher retry resumes the SAME
+// run id, so a ticket that leaves the stamped state and later returns to it
+// would make the stamp live again — and the board would re-file an
+// operator's own decision as an unattended give-up, the mirror image of the
+// bug the stamp exists to fix.
+func TestGiveUpStampDoesNotComeBackWhenTheTicketReturns(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "doomed", State: StateInProgress})
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState(blocked): %v", err)
+	}
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-7", State: StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+
+	// The operator retries: the ticket is restaged, which supersedes the
+	// give-up. Any write in the new state expires the stamp.
+	if _, err := s.SetState(iss.ID, StateReady); err != nil {
+		t.Fatalf("SetState(ready): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); got.GaveUp != nil {
+		t.Fatalf("stamp survived the ticket leaving its state: %+v", got.GaveUp)
+	}
+	// …and the operator files it by hand later, same run still current.
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState(blocked) again: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Fatalf("stamp came back to life on a filing a human made: %+v", got.GaveUp)
+	}
+}
+
+// A stamp records the state the ticket is ACTUALLY in. A caller that believes
+// it moved the ticket elsewhere would otherwise write a stamp the very same
+// write expires, losing it silently.
+func TestSetGaveUpRecordsTheStateTheTicketIsIn(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-9", State: StateBlocked, Attempts: 2}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp == nil {
+		t.Fatal("stamp dropped instead of being recorded against the real state")
+	}
+	if got.GaveUp.State != StateInProgress {
+		t.Errorf("stamp state = %q, want the ticket's own %q", got.GaveUp.State, StateInProgress)
+	}
+	if !got.GaveUp.Current(got.State, "run-9") {
+		t.Error("a freshly written stamp must describe the ticket it was written on")
 	}
 }

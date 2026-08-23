@@ -357,8 +357,15 @@ func (s *Server) handlePipelineBoardTaskClose(w http.ResponseWriter, r *http.Req
 	// wrote, so SetState above is a no-op there and only an explicit clear
 	// ends it. Best-effort: the ticket is filed either way, and a surviving
 	// stamp costs a card in the wrong lane, not correctness.
-	if err := boardStore.SetGaveUp(id, nil); err != nil && s.logger != nil {
-		s.logger.Warn("pipeline board: close ticket %s: clear give-up stamp: %v", id, err)
+	if err := boardStore.SetGaveUp(id, nil); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("pipeline board: close ticket %s: clear give-up stamp: %v", id, err)
+		}
+	} else if refreshed, getErr := boardStore.Get(id); getErr == nil {
+		// `updated` is SetState's pre-clear snapshot; encoding it would hand
+		// an API consumer a ticket that still carries the stamp this call
+		// just dropped — a response contradicting its own write.
+		updated = refreshed
 	}
 	// Re-sweep once against a FRESH view. launchTicketNow flips the ticket to
 	// in_progress seconds before the run it started becomes discoverable, so

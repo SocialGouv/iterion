@@ -258,6 +258,7 @@ func (s *Store) List(filter native.ListFilter) ([]*native.Issue, error) {
 
 // replace persists the issue and stamps UpdatedAt.
 func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
+	expireGiveUp(iss)
 	_, err := s.issues.ReplaceOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, issueDoc{ID: iss.ID, Tenant: s.tenant, Issue: *iss})
 	if err != nil {
 		return fmt.Errorf("boardmongo: replace issue: %w", err)
@@ -450,7 +451,7 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if err != nil {
 		return err
 	}
-	if sameGiveUp(iss.GaveUp, g) {
+	if sameGiveUp(iss.GaveUp, g) && (g == nil || g.State == iss.State) {
 		return nil
 	}
 	if g == nil {
@@ -460,6 +461,10 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		if stamp.At.IsZero() {
 			stamp.At = time.Now().UTC()
 		}
+		// Recorded against the state the ticket is actually in — see the
+		// filesystem store's SetGaveUp for why a stamp that disagrees with
+		// its issue would be dropped by the write that persists it.
+		stamp.State = iss.State
 		iss.GaveUp = &stamp
 	}
 	iss.UpdatedAt = time.Now().UTC()
@@ -473,6 +478,16 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 		payload["attempts"] = g.Attempts
 	}
 	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
+}
+
+// expireGiveUp drops a stamp that no longer describes the state the issue is
+// being written in, on the ONE write path — the Mongo twin of the filesystem
+// store's rule, which is what makes give-up staleness permanent instead of
+// reversible. See native.Store.expireGiveUp for the full argument.
+func expireGiveUp(iss *native.Issue) {
+	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
+		iss.GaveUp = nil
+	}
 }
 
 // sameGiveUp compares two stamps on the fields that decide behaviour (the

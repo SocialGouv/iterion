@@ -320,14 +320,26 @@ burns the whole retry budget on every run.
 The dispatcher therefore **stamps** the give-up on the ticket
 (`Issue.gave_up`: the run, the state it wrote, the attempt count, an
 `issue_gave_up` event), and the projection routes a terminal ticket carrying a
-*current* stamp to `needs_attention`, badged **Gave up**. The stamp expires by
-itself — it names the run and the state, so a newer run or any move of the
-ticket makes it stale — so nothing has to remember to clear it. The one
-exception is filing a ticket into the state it is already in: **Close** clears
-the stamp explicitly, which is what makes it the acknowledgement the give-up
-never got. A given-up card renders in the lane but **reserves no slot**: it is
-terminal, nothing will relaunch it until the operator acts, and holding
-capacity for it would leak a slot with no bound.
+*current* stamp to `needs_attention`, badged **Gave up**.
+
+The stamp expires by itself, and permanently: it names the run and the state,
+the store **drops it on any write in a different state** (one hook on each
+store's write path, so no future state writer has to remember), and a stamp
+naming another run never describes the card. That permanence is load-bearing —
+a dispatcher retry resumes the *same* run id, so a stamp that merely looked
+stale would come back to life the moment a human filed the ticket back into
+that state, and the board would re-file an operator's own decision as an
+unattended give-up.
+
+The one case no write hook can catch is filing a ticket into the state it is
+**already** in — the give-up's target and every close target are the same
+state. So the three closes clear the stamp explicitly: the pipeline board's
+**Close**, `iterion issue close`, and the board tool `close_issue`. That is
+what makes closing the acknowledgement the give-up never got.
+
+A given-up card renders in the lane but **reserves no slot**: it is terminal,
+nothing will relaunch it until the operator acts, and holding capacity for it
+would leak a slot with no bound.
 
 **Getting back to a fresh run.** A ticket's `last_run_id` pointer is what the
 dispatcher resumes on the next dispatch (`resolveRunID` → `resumableRunID`),

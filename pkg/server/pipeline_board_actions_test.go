@@ -659,17 +659,6 @@ func TestPipelineBoardDispatcherGiveUpEntersLane(t *testing.T) {
 			wantColumn: pipelineColumnClosed,
 		},
 		{
-			// The ticket was given up on, then MOVED to another terminal
-			// state by a human. Someone decided something after the give-up;
-			// the stamp is history and must not pin the card to the lane.
-			name: "stamp for a state the ticket has since left is stale",
-			stamp: func(runID string) *native.GiveUp {
-				return &native.GiveUp{RunID: runID, State: native.StateBlocked, Attempts: 3}
-			},
-			state:      native.StateDone,
-			wantColumn: pipelineColumnClosed,
-		},
-		{
 			// An older attempt was given up on; the card shows a NEWER run.
 			// Attributing the old give-up to it would explain the wrong run.
 			name: "stamp for another run does not travel to this card",
@@ -694,14 +683,16 @@ func TestPipelineBoardDispatcherGiveUpEntersLane(t *testing.T) {
 			if err := env.board.SetLastRun(issue.ID, "gaveup-run", ""); err != nil {
 				t.Fatalf("SetLastRun: %v", err)
 			}
+			// File the ticket FIRST, then stamp — the dispatcher's own order,
+			// and the only one that survives: moving a ticket expires any
+			// stamp on it.
+			if _, err := env.board.SetState(issue.ID, c.state); err != nil {
+				t.Fatalf("SetState(%s): %v", c.state, err)
+			}
 			if stamp := c.stamp("gaveup-run"); stamp != nil {
 				if err := env.board.SetGaveUp(issue.ID, stamp); err != nil {
 					t.Fatalf("SetGaveUp: %v", err)
 				}
-			}
-			// Filed terminal LAST, exactly as the give-up does it.
-			if _, err := env.board.SetState(issue.ID, c.state); err != nil {
-				t.Fatalf("SetState(%s): %v", c.state, err)
 			}
 
 			card := findPipelineCard(t, env.projection(t).Cards, "run:gaveup-run")
@@ -742,11 +733,11 @@ func TestPipelineBoardCloseAcknowledgesAGiveUp(t *testing.T) {
 	if err := env.board.SetLastRun(issue.ID, "ack-run", ""); err != nil {
 		t.Fatalf("SetLastRun: %v", err)
 	}
-	if err := env.board.SetGaveUp(issue.ID, &native.GiveUp{RunID: "ack-run", State: native.StateBlocked, Attempts: 3}); err != nil {
-		t.Fatalf("SetGaveUp: %v", err)
-	}
 	if _, err := env.board.SetState(issue.ID, native.StateBlocked); err != nil {
 		t.Fatalf("SetState: %v", err)
+	}
+	if err := env.board.SetGaveUp(issue.ID, &native.GiveUp{RunID: "ack-run", State: native.StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
 	}
 	if card := findPipelineCard(t, env.projection(t).Cards, "run:ack-run"); card.ColumnID != pipelineColumnNeedsAttention {
 		t.Fatalf("column before close = %q, want needs_attention", card.ColumnID)
@@ -765,7 +756,80 @@ func TestPipelineBoardCloseAcknowledgesAGiveUp(t *testing.T) {
 	if filed.GaveUp != nil {
 		t.Errorf("give-up stamp survived Close: %+v — the card would never leave the lane", filed.GaveUp)
 	}
+	// The response must not contradict the write it just made: an API client
+	// reading `task` would otherwise still see the stamp this call dropped.
+	var body struct {
+		Task *native.Issue `json:"task"`
+	}
+	decodeJSONResp(t, resp, &body)
+	if body.Task == nil || body.Task.GaveUp != nil {
+		t.Errorf("close response task = %+v, want the cleared ticket", body.Task)
+	}
 	if card := findPipelineCard(t, env.projection(t).Cards, "run:ack-run"); card.ColumnID != pipelineColumnClosed {
 		t.Errorf("column after close = %q, want closed", card.ColumnID)
+	}
+}
+
+// The projection's own staleness guard, exercised directly.
+//
+// It cannot be reached through the store — SetGaveUp records the state the
+// ticket is actually in, and any move expires the stamp — which is exactly
+// why it is worth pinning here: the lane must not depend on the store having
+// remembered. A stamp naming a state the ticket is not in describes nothing,
+// and a card it pinned to the lane would be unexplainable.
+func TestPipelineLaneStaleGiveUpStampDoesNotPinTheLane(t *testing.T) {
+	terminal := map[string]struct{}{
+		native.StateBlocked: {},
+		native.StateDone:    {},
+	}
+	root := &store.Run{ID: "run-a", Status: store.RunStatusFailedResumable}
+	cases := []struct {
+		name  string
+		issue *native.Issue
+		want  string
+	}{
+		{
+			name: "stamp describes this ticket and this run",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{RunID: "run-a", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnNeedsAttention,
+		},
+		{
+			name: "stamp names a state the ticket is not in",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateDone,
+				GaveUp: &native.GiveUp{RunID: "run-a", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+		{
+			name: "stamp names another run",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{RunID: "run-older", State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+		{
+			name: "stamp names no run at all",
+			issue: &native.Issue{
+				ID: "i", Bot: "review", State: native.StateBlocked,
+				GaveUp: &native.GiveUp{State: native.StateBlocked, Attempts: 3},
+			},
+			want: pipelineColumnClosed,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			column, reserves := pipelineLaneForRoot(root, c.issue, terminal, nil)
+			if column != c.want {
+				t.Errorf("column = %q, want %q", column, c.want)
+			}
+			if reserves {
+				t.Error("a terminal ticket reserved a slot nothing can release")
+			}
+		})
 	}
 }

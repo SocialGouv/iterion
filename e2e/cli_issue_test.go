@@ -388,6 +388,53 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 	}
 }
 
+// `iterion issue close` is an acknowledgement, so it must also drop a
+// dispatcher give-up stamp — and it is the surface where that matters most:
+// the board's first terminal state is usually the very state the give-up
+// filed the ticket into, so the SetState is a no-op and nothing else expires
+// the stamp. Without this the card stays in the pipeline board's
+// needs-attention lane after the operator closed it.
+//
+// Mutation check: drop the clear and the stamp survives the close.
+func TestIssueCLICloseAcknowledgesADispatcherGiveUp(t *testing.T) {
+	storeDir := t.TempDir()
+	common := cli.IssueCommonOptions{StoreDir: storeDir}
+
+	card := createIssueViaCLI(t, cli.IssueCreateOptions{
+		IssueCommonOptions: common,
+		Title:              "given up on",
+		State:              native.StateBlocked,
+	})
+	s := reopenBoard(t, storeDir)
+	if err := s.SetGaveUp(card.ID, &native.GiveUp{RunID: "run-dead", State: native.StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+
+	var buf bytes.Buffer
+	p := &cli.Printer{W: &buf, Format: cli.OutputJSON}
+	if err := cli.RunIssueClose(p, cli.IssueRefOptions{
+		IssueCommonOptions: common,
+		IDOrPrefix:         card.ID,
+	}); err != nil {
+		t.Fatalf("issue close: %v", err)
+	}
+
+	got, err := reopenBoard(t, storeDir).Get(card.ID)
+	if err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Errorf("give-up stamp survived close: %+v — the card never leaves the lane", got.GaveUp)
+	}
+	var reported native.Issue
+	if err := json.Unmarshal(buf.Bytes(), &reported); err != nil {
+		t.Fatalf("decode reported issue from %q: %v", buf.String(), err)
+	}
+	if reported.GaveUp != nil {
+		t.Errorf("close reported a stamp it just cleared: %+v", reported.GaveUp)
+	}
+}
+
 // `--clear-last-run` is the operator's way back to a FRESH launch. While the
 // pointer names a resumable run the dispatcher resumes THAT run rather than
 // minting a new one, so a ticket whose run died in a way resuming cannot fix

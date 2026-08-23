@@ -595,6 +595,7 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 	if err := validateIssueID(iss.ID); err != nil {
 		return err
 	}
+	expireGiveUp(iss)
 	if err := os.MkdirAll(filepath.Join(s.root, issuesDir), dirPerm); err != nil {
 		return err
 	}
@@ -607,6 +608,29 @@ func (s *Store) writeIssueLocked(iss *Issue) error {
 		return fmt.Errorf("native store: write issue: %w", err)
 	}
 	return nil
+}
+
+// expireGiveUp drops a give-up stamp that no longer describes the state the
+// issue is being written in. It runs on the ONE write path rather than at each
+// of the several state writers (SetState, ClaimForLaunch, the unblock promote,
+// a schema migration) so no future state writer has to remember it — the
+// property the stamp's contract claims (Issue.GaveUp) is enforced here rather
+// than trusted.
+//
+// It is what makes staleness PERMANENT. Comparing state at read time alone is
+// reversible: a ticket that leaves the stamped state and comes back — with the
+// same run, which is the norm since a dispatcher retry resumes the same run id
+// — would make the stamp live again and re-file an operator's own decision as
+// an unattended give-up, the exact mirror of the bug the stamp exists to fix.
+// Once the ticket moves, the stamp is gone for good.
+//
+// The one thing it cannot catch is a filing that does NOT change the state
+// (Close on a ticket already sitting in the give-up's state); those surfaces
+// clear the stamp explicitly.
+func expireGiveUp(iss *Issue) {
+	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
+		iss.GaveUp = nil
+	}
 }
 
 // readIssueLocked returns a defensive copy of the indexed issue.

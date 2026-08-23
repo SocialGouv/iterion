@@ -160,6 +160,21 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 	} else if !got.GaveUp.Current(got.State, "run-1") {
 		t.Errorf("stamp does not describe the issue it was written on: state=%q stamp=%+v", got.State, got.GaveUp)
 	}
+	// Moving the ticket expires the stamp for good — both stores enforce it
+	// on their write path, or a returning ticket would resurrect a give-up.
+	if _, err := store.SetState(created.ID, native.StateBlocked); err != nil {
+		t.Errorf("SetState(blocked): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("stamp survived the ticket moving: %+v", got.GaveUp)
+	}
+	if _, err := store.SetState(created.ID, current.State); err != nil {
+		t.Errorf("SetState(back): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("stamp came back when the ticket returned to its state: %+v", got.GaveUp)
+	}
+	// And an explicit clear is a no-op on an unstamped issue.
 	if err := store.SetGaveUp(created.ID, nil); err != nil {
 		t.Errorf("SetGaveUp(nil): %v", err)
 	}
