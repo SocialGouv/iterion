@@ -21,6 +21,9 @@ import {
 import { IconButton } from "@/components/ui";
 import {
   DOCKED_WIDTH_DEFAULT_PX,
+  FLOATING_MIN_HEIGHT_PX,
+  FLOATING_MIN_WIDTH_PX,
+  clampDockSize,
   openedDock,
   readDockSize,
   writeDockSize,
@@ -45,6 +48,11 @@ const FLOATING_LANE_PX: Record<DockLane, number> = { 0: 16, 1: 448 };
 // Breathing room between a fixed corner surface and whatever it is
 // clearing.
 const EDGE_GUTTER_PX = 16;
+
+// `bottom-4` in the panel's class, and the breathing room kept on the two
+// edges it can grow toward. Named so the clamp and the CSS cannot drift.
+const FLOATING_BOTTOM_PX = 16;
+const FLOATING_EDGE_MARGIN_PX = 16;
 
 const FLOATING_WIDTH_PX = 420;
 const FLOATING_HEIGHT_PX = 520;
@@ -255,11 +263,15 @@ export function ChatDockFloating({
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // The panel is resized by the browser's own handle (CSS `resize`), which
-  // mutates the element and tells React nothing — so the size is READ back
-  // from the element rather than driven by state. Persisted per surface so a
-  // reopen restores the shape the operator chose.
-  const [size] = useState<DockSize>(() =>
+  // The panel is anchored BOTTOM-RIGHT, which is what made the browser's own
+  // `resize` handle useless here: it sits at the bottom-right corner, so
+  // dragging it grows the panel off the screen and the operator can only ever
+  // make it smaller. The handle below is at the TOP-LEFT instead, where
+  // dragging outward grows it into the viewport.
+  //
+  // Driven by state rather than read back off the element, so the persisted
+  // size and what is on screen cannot drift.
+  const [size, setSize] = useState<DockSize>(() =>
     sizeKey
       ? readDockSize(sizeKey, {
           width: FLOATING_WIDTH_PX,
@@ -267,27 +279,46 @@ export function ChatDockFloating({
         })
       : { width: FLOATING_WIDTH_PX, height: FLOATING_HEIGHT_PX },
   );
+  // The panel is pinned bottom-right, so the space it may grow into is the
+  // viewport MINUS its own offsets — not the whole viewport. Clamping against
+  // the raw viewport let a full-width panel start at a negative x and run off
+  // the left edge, which is the one direction it can escape.
+  const right = laneRightPx(FLOATING_LANE_PX[lane], rightInset);
+  const available = useCallback(
+    (): { width: number; height: number } => ({
+      width: Math.max(
+        FLOATING_MIN_WIDTH_PX,
+        (typeof window === "undefined" ? 1280 : window.innerWidth) -
+          right -
+          FLOATING_EDGE_MARGIN_PX,
+      ),
+      height: Math.max(
+        FLOATING_MIN_HEIGHT_PX,
+        (typeof window === "undefined" ? 800 : window.innerHeight) -
+          FLOATING_BOTTOM_PX -
+          FLOATING_EDGE_MARGIN_PX,
+      ),
+    }),
+    [right],
+  );
+
+  const resizeTo = useCallback(
+    (next: DockSize) => {
+      const clamped = clampDockSize(next, available());
+      setSize(clamped);
+      if (sizeKey) writeDockSize(sizeKey, clamped);
+    },
+    [sizeKey, available],
+  );
+
+  // A window that SHRANK must not leave the panel hanging off the edge. Same
+  // clamp, so what is restored and what is on screen agree.
   useEffect(() => {
-    const el = ref.current;
-    if (!sizeKey || !el || typeof ResizeObserver === "undefined") return;
-    // Trailing-edge write: a drag fires continuously and localStorage is
-    // synchronous, so debounce to the end of the gesture.
-    let t = 0;
-    const obs = new ResizeObserver(() => {
-      window.clearTimeout(t);
-      t = window.setTimeout(() => {
-        writeDockSize(sizeKey, {
-          width: el.offsetWidth,
-          height: el.offsetHeight,
-        });
-      }, 200);
-    });
-    obs.observe(el);
-    return () => {
-      window.clearTimeout(t);
-      obs.disconnect();
-    };
-  }, [sizeKey]);
+    const onResize = () => setSize((current) => clampDockSize(current, available()));
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [available]);
 
   useEffect(() => {
     if (!focusOnMount) return;
@@ -307,7 +338,7 @@ export function ChatDockFloating({
     <div
       ref={ref}
       tabIndex={-1}
-      className="fixed bottom-4 z-[var(--z-dock)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
+      className="fixed bottom-4 z-[var(--z-dock)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] overflow-hidden focus:outline-none"
       style={{
         right: laneRightPx(FLOATING_LANE_PX[lane], rightInset),
         width: size.width,
@@ -324,7 +355,91 @@ export function ChatDockFloating({
         }
       }}
     >
+      <FloatingResizeHandle size={size} onResize={resizeTo} />
       {children}
+    </div>
+  );
+}
+
+// Grow the floating panel from its TOP-LEFT corner.
+//
+// That corner and not the browser's default: the panel is pinned bottom-right,
+// so the native handle could only push it off-screen. Dragging up and to the
+// left grows it into the page, which is the direction the operator means.
+//
+// Same pointer-capture approach as the docked column's handle, and keyboard
+// reachable for the same reason: a control that only answers to a drag is
+// unusable to anyone who cannot make one.
+function FloatingResizeHandle({
+  size,
+  onResize,
+}: {
+  size: DockSize;
+  onResize: (next: DockSize) => void;
+}) {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const start = size;
+    // Listen on the WINDOW, not on the handle.
+    //
+    // setPointerCapture on a 16px corner looked equivalent and was not: a real
+    // drag leaves that square within a frame, and any move the capture failed
+    // to redirect went to whatever was underneath — so the panel never
+    // resized. Window listeners cannot miss, whatever the pointer does or how
+    // fast it leaves.
+    const onMove = (ev: PointerEvent) => {
+      onResize({
+        width: start.width + (startX - ev.clientX),
+        height: start.height + (startY - ev.clientY),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+  return (
+    <div
+      role="separator"
+      aria-label="Resize the assistant panel"
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 64 : 16;
+        const delta: Partial<DockSize> = {};
+        if (e.key === "ArrowLeft") delta.width = size.width + step;
+        else if (e.key === "ArrowRight") delta.width = size.width - step;
+        else if (e.key === "ArrowUp") delta.height = size.height + step;
+        else if (e.key === "ArrowDown") delta.height = size.height - step;
+        else return;
+        e.preventDefault();
+        onResize({ ...size, ...delta });
+      }}
+      title="Drag to resize"
+      className="absolute left-0 top-0 z-10 h-5 w-5 cursor-nwse-resize focus:outline-none group"
+    >
+      {/* A visible grip. The previous corner was a 16px hitbox that only
+          appeared on hover, in the same corner as the title — findable only by
+          someone who already knew it was there. */}
+      <svg
+        viewBox="0 0 10 10"
+        aria-hidden="true"
+        className="h-full w-full text-fg-subtle group-hover:text-accent-text"
+      >
+        <path
+          d="M9 1 H1 V9"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
     </div>
   );
 }
@@ -496,24 +611,22 @@ function DockResizeHandle({
 }) {
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const startWidth = width;
+    // Window listeners rather than pointer capture — see FloatingResizeHandle.
     const onMove = (ev: PointerEvent) => {
       // The panel is pinned to the RIGHT edge, so dragging left (a smaller
       // clientX) makes it wider.
       onWidthChange(startWidth + (startX - ev.clientX));
     };
-    const onUp = (ev: PointerEvent) => {
-      el.releasePointerCapture(ev.pointerId);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
-      el.removeEventListener("pointercancel", onUp);
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
-    el.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
   return (
     <div
