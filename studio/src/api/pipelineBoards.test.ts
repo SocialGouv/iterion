@@ -223,6 +223,40 @@ describe("normalizePipelineBoard", () => {
     expect(child?.role).toBe("producer");
   });
 
+  it("keeps a give-up stamp, and drops one that names no run", () => {
+    const board = normalizePipelineBoard({
+      cards: [
+        {
+          id: "run:a",
+          column_id: "needs_attention",
+          title: "Given up on",
+          gave_up: {
+            run_id: "run-dead",
+            state: "blocked",
+            attempts: 3,
+            at: "2026-08-23T09:00:00Z",
+          },
+        },
+        {
+          // A stamp with no run cannot be attributed to the card showing it,
+          // so rendering a claim about an unknown run would be worse than
+          // rendering nothing.
+          id: "run:b",
+          column_id: "needs_attention",
+          title: "Unattributable",
+          gave_up: { state: "blocked", attempts: 2 },
+        },
+      ],
+    });
+    expect(board.cards[0]?.gave_up).toEqual({
+      run_id: "run-dead",
+      state: "blocked",
+      attempts: 3,
+      at: "2026-08-23T09:00:00Z",
+    });
+    expect(board.cards[1]?.gave_up).toBeUndefined();
+  });
+
   it("omits planner provenance when the server sends none", () => {
     const board = normalizePipelineBoard({
       cards: [{ id: "task:x", column_id: "opened", title: "Loose" }],

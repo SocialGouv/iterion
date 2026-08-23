@@ -3,6 +3,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // `iterion issue` is the operator's hands-on surface onto the native
@@ -385,5 +387,189 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 	}
 	if got.State != native.StateReady {
 		t.Errorf("a refused close moved the card to %q; it must stay put", got.State)
+	}
+}
+
+// `--clear-last-run` must NOT forget a run that is still alive. The pointer is
+// the dispatcher's sibling guard (lastRunForbidsFresh): clearing it while the
+// run is running or parked on a question lets the next dispatch mint a second
+// run on the same ticket — two agents, and on a `worktree: auto` bot two
+// branches and two PRs for one issue.
+//
+// Mutation check: drop the guard and the live case clears the pointer.
+func TestIssueCLIClearLastRunRefusesWhileTheRunIsAlive(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     store.RunStatus
+		wantRefuse bool
+	}{
+		{"running", store.RunStatusRunning, true},
+		{"parked on a question", store.RunStatusPausedWaitingHuman, true},
+		{"queued for a slot", store.RunStatusQueued, true},
+		// The documented case: dead, but resumable — which is exactly why the
+		// flag exists, since a resumable pointer is what keeps being resumed.
+		{"failed_resumable", store.RunStatusFailedResumable, false},
+		{"cancelled", store.RunStatusCancelled, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			common := cli.IssueCommonOptions{StoreDir: storeDir}
+			card := createIssueViaCLI(t, cli.IssueCreateOptions{
+				IssueCommonOptions: common,
+				Title:              "owns a run",
+				State:              native.StateInProgress,
+			})
+			rs, err := store.New(storeDir)
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			ctx := context.Background()
+			if _, err := rs.CreateRun(ctx, "run-live", "bot", nil); err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			run, err := rs.LoadRun(ctx, "run-live")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			run.Status = c.status
+			if err := rs.SaveRun(ctx, run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			if err := reopenBoard(t, storeDir).SetLastRun(card.ID, "run-live", ""); err != nil {
+				t.Fatalf("SetLastRun: %v", err)
+			}
+
+			var buf bytes.Buffer
+			p := &cli.Printer{W: &buf, Format: cli.OutputHuman}
+			err = cli.RunIssueUpdate(p, cli.IssueUpdateOptions{
+				IssueCommonOptions: common,
+				IDOrPrefix:         card.ID,
+				ClearLastRun:       true,
+			})
+			got, getErr := reopenBoard(t, storeDir).Get(card.ID)
+			if getErr != nil {
+				t.Fatalf("reload issue: %v", getErr)
+			}
+			if c.wantRefuse {
+				if err == nil {
+					t.Fatalf("clearing a %s run was allowed — the next dispatch could start a sibling", c.status)
+				}
+				if !strings.Contains(err.Error(), "SECOND run") {
+					t.Errorf("error = %v, want it to name the consequence", err)
+				}
+				if got.LastRunID != "run-live" {
+					t.Errorf("a refused clear still dropped the pointer: %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("clearing a %s run was refused: %v", c.status, err)
+			}
+			if got.LastRunID != "" {
+				t.Errorf("pointer survived on a %s run: %+v", c.status, got)
+			}
+		})
+	}
+}
+
+// `iterion issue close` is an acknowledgement, so it must also drop a
+// dispatcher give-up stamp — and it is the surface where that matters most:
+// the board's first terminal state is usually the very state the give-up
+// filed the ticket into, so the SetState is a no-op and nothing else expires
+// the stamp. Without this the card stays in the pipeline board's
+// needs-attention lane after the operator closed it.
+//
+// Mutation check: drop the clear and the stamp survives the close.
+func TestIssueCLICloseAcknowledgesADispatcherGiveUp(t *testing.T) {
+	storeDir := t.TempDir()
+	common := cli.IssueCommonOptions{StoreDir: storeDir}
+
+	card := createIssueViaCLI(t, cli.IssueCreateOptions{
+		IssueCommonOptions: common,
+		Title:              "given up on",
+		State:              native.StateBlocked,
+	})
+	s := reopenBoard(t, storeDir)
+	if err := s.SetGaveUp(card.ID, &native.GiveUp{RunID: "run-dead", State: native.StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+
+	var buf bytes.Buffer
+	p := &cli.Printer{W: &buf, Format: cli.OutputJSON}
+	if err := cli.RunIssueClose(p, cli.IssueRefOptions{
+		IssueCommonOptions: common,
+		IDOrPrefix:         card.ID,
+	}); err != nil {
+		t.Fatalf("issue close: %v", err)
+	}
+
+	got, err := reopenBoard(t, storeDir).Get(card.ID)
+	if err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Errorf("give-up stamp survived close: %+v — the card never leaves the lane", got.GaveUp)
+	}
+	var reported native.Issue
+	if err := json.Unmarshal(buf.Bytes(), &reported); err != nil {
+		t.Fatalf("decode reported issue from %q: %v", buf.String(), err)
+	}
+	if reported.GaveUp != nil {
+		t.Errorf("close reported a stamp it just cleared: %+v", reported.GaveUp)
+	}
+}
+
+// `--clear-last-run` is the operator's way back to a FRESH launch. While the
+// pointer names a resumable run the dispatcher resumes THAT run rather than
+// minting a new one, so a ticket whose run died in a way resuming cannot fix
+// had no exit but editing the issue JSON by hand (issue #494). The pointer
+// clears; the run HISTORY does not — those runs still happened, and the
+// operator still needs their consoles.
+//
+// Mutation check: keep the pointer and the "cleared" assertion fails; wipe
+// Runs along with it and the history assertion fails.
+func TestIssueCLIUpdateClearsLastRunPointerKeepingHistory(t *testing.T) {
+	storeDir := t.TempDir()
+	common := cli.IssueCommonOptions{StoreDir: storeDir}
+
+	card := createIssueViaCLI(t, cli.IssueCreateOptions{
+		IssueCommonOptions: common,
+		Title:              "resumed forever",
+		State:              native.StateBlocked,
+	})
+
+	s := reopenBoard(t, storeDir)
+	if err := s.SetLastRun(card.ID, "run-dead", "/tmp/ws"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+
+	var buf bytes.Buffer
+	p := &cli.Printer{W: &buf, Format: cli.OutputJSON}
+	if err := cli.RunIssueUpdate(p, cli.IssueUpdateOptions{
+		IssueCommonOptions: common,
+		IDOrPrefix:         card.ID,
+		ClearLastRun:       true,
+	}); err != nil {
+		t.Fatalf("issue update --clear-last-run: %v", err)
+	}
+
+	got, err := reopenBoard(t, storeDir).Get(card.ID)
+	if err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if got.LastRunID != "" || got.LastWorkdir != "" {
+		t.Errorf("last-run pointer survived: run=%q workdir=%q", got.LastRunID, got.LastWorkdir)
+	}
+	if len(got.Runs) != 1 || got.Runs[0].RunID != "run-dead" {
+		t.Errorf("run history = %+v, want the dead run kept (its console is still the evidence)", got.Runs)
+	}
+	// The command reports the cleared card, not the pre-clear snapshot.
+	var reported native.Issue
+	if err := json.Unmarshal(buf.Bytes(), &reported); err != nil {
+		t.Fatalf("decode reported issue from %q: %v", buf.String(), err)
+	}
+	if reported.LastRunID != "" {
+		t.Errorf("reported last_run_id = %q, want empty — the output contradicted the write", reported.LastRunID)
 	}
 }

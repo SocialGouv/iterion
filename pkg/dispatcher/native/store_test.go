@@ -896,3 +896,266 @@ func TestAggregateLabels(t *testing.T) {
 		}
 	}
 }
+
+// The give-up stamp is what lets a reader tell the dispatcher filing a ticket
+// (retry budget exhausted) from an operator filing the same terminal state by
+// hand. It must persist, expire on its own, and not churn the card on
+// re-stamps — a stamp rewritten on every poll would bump UpdatedAt and defeat
+// the board's `?since=` pruning.
+func TestSetGaveUpStampsExpiresAndIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "doomed", State: StateInProgress})
+
+	countEvents := func() int {
+		n := 0
+		_ = s.ScanEvents(func(e *Event) bool {
+			if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+				n++
+			}
+			return true
+		})
+		return n
+	}
+
+	// The dispatcher's order: file the ticket, THEN stamp what filed it.
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	stamp := &GiveUp{RunID: "run-7", State: StateBlocked, Attempts: 3}
+	if err := s.SetGaveUp(iss.ID, stamp); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp == nil || got.GaveUp.RunID != "run-7" || got.GaveUp.Attempts != 3 {
+		t.Fatalf("stamp not persisted: %+v", got.GaveUp)
+	}
+	if got.GaveUp.At.IsZero() {
+		t.Error("SetGaveUp must timestamp a stamp that arrives without one")
+	}
+	if !got.GaveUp.Current(got.State, "run-7") {
+		t.Error("the stamp must describe the ticket it was just written on")
+	}
+	// Expiry, with nobody having to clear anything: another run's card is not
+	// this give-up, and a ticket someone has moved since is no longer it.
+	if got.GaveUp.Current(got.State, "run-8") {
+		t.Error("a stamp claimed a run it was not written for")
+	}
+	if got.GaveUp.Current(StateDone, "run-7") {
+		t.Error("a stamp survived the ticket being moved elsewhere")
+	}
+
+	if got := countEvents(); got != 1 {
+		t.Fatalf("first SetGaveUp emitted %d events, want 1", got)
+	}
+	// Idempotent on the fields that decide behaviour — the timestamp is
+	// provenance, not identity.
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-7", State: StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("re-stamping the same give-up emitted %d events, want 1", got)
+	}
+
+	// Clearing is the explicit acknowledgement path (board Close).
+	if err := s.SetGaveUp(iss.ID, nil); err != nil {
+		t.Fatalf("SetGaveUp(nil): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); got.GaveUp != nil {
+		t.Fatalf("stamp survived the clear: %+v", got.GaveUp)
+	}
+	if got := countEvents(); got != 2 {
+		t.Fatalf("clearing emitted no event (%d total), want 2", got)
+	}
+	// Clearing an unstamped issue is a no-op, not a third event.
+	if err := s.SetGaveUp(iss.ID, nil); err != nil {
+		t.Fatalf("SetGaveUp(nil) twice: %v", err)
+	}
+	if got := countEvents(); got != 2 {
+		t.Fatalf("clearing twice emitted %d events, want 2", got)
+	}
+}
+
+// SetLastRun's own contract says empty strings clear the pointer — the
+// operator's escape hatch from a dead run that keeps being resumed. A cleared
+// pointer is not a run that happened, so it must not land in the card's run
+// history as a blank row.
+func TestSetLastRunClearDoesNotAppendABlankRun(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: StateReady})
+	if err := s.SetLastRun(iss.ID, "run-1", "/tmp/wd"); err != nil {
+		t.Fatalf("SetLastRun: %v", err)
+	}
+	if err := s.SetLastRun(iss.ID, "", ""); err != nil {
+		t.Fatalf("SetLastRun clear: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastRunID != "" || got.LastWorkdir != "" {
+		t.Fatalf("pointer not cleared: %+v", got)
+	}
+	if len(got.Runs) != 1 || got.Runs[0].RunID != "run-1" {
+		t.Fatalf("run history = %+v, want the one real run and no blank row", got.Runs)
+	}
+}
+
+// Once the ticket moves, the give-up stamp is gone for GOOD. Read-time state
+// comparison alone would be reversible: a dispatcher retry resumes the SAME
+// run id, so a ticket that leaves the stamped state and later returns to it
+// would make the stamp live again — and the board would re-file an
+// operator's own decision as an unattended give-up, the mirror image of the
+// bug the stamp exists to fix.
+func TestGiveUpStampDoesNotComeBackWhenTheTicketReturns(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "doomed", State: StateInProgress})
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState(blocked): %v", err)
+	}
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-7", State: StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+
+	// The operator retries: the ticket is restaged, which supersedes the
+	// give-up. Any write in the new state expires the stamp.
+	if _, err := s.SetState(iss.ID, StateReady); err != nil {
+		t.Fatalf("SetState(ready): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); got.GaveUp != nil {
+		t.Fatalf("stamp survived the ticket leaving its state: %+v", got.GaveUp)
+	}
+	// …and the operator files it by hand later, same run still current.
+	if _, err := s.SetState(iss.ID, StateBlocked); err != nil {
+		t.Fatalf("SetState(blocked) again: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Fatalf("stamp came back to life on a filing a human made: %+v", got.GaveUp)
+	}
+}
+
+// A give-up whose ticket has already MOVED is superseded: an operator got
+// there between the terminal move and the stamp, so recording it would put
+// their own choice under a "the dispatcher gave up and filed this ticket
+// as …" banner — and, on a non-terminal target, badge a live card with it.
+func TestSetGaveUpSkipsAGiveUpTheTicketHasMovedPast(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	// The dispatcher believes it filed the ticket as blocked; the operator
+	// dragged it back to ready first.
+	if _, err := s.SetState(iss.ID, StateReady); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-9", State: StateBlocked, Attempts: 2}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Errorf("a superseded give-up was recorded: %+v", got.GaveUp)
+	}
+	n := 0
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+			n++
+		}
+		return true
+	})
+	if n != 0 {
+		t.Errorf("give-up events = %d, want 0 — nothing was recorded", n)
+	}
+}
+
+// A stamp that arrives without a state is filled in from the issue, so the
+// value compared for idempotence and the value written are the same thing.
+func TestSetGaveUpFillsAMissingStateFromTheTicket(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "doomed", State: StateBlocked})
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-9", Attempts: 2}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp == nil || got.GaveUp.State != StateBlocked {
+		t.Fatalf("stamp = %+v, want it filled in with %q", got.GaveUp, StateBlocked)
+	}
+	if !got.GaveUp.Current(got.State, "run-9") {
+		t.Error("a freshly written stamp must describe the ticket it was written on")
+	}
+}
+
+// The audit record must name the state that was STAMPED. SetGaveUp overrides
+// a caller's state with the ticket's real one (so the stamp is not born
+// stale), and events.jsonl exists precisely so an operator can reconstruct why
+// a ticket ended where it did — reporting the discarded value would make the
+// one durable record of a give-up disagree with the issue it describes.
+func TestSetGaveUpEventReportsTheStateItStamped(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	// No state from the caller: the store fills it in, and the event must
+	// report what it filled rather than the empty value it was handed.
+	if err := s.SetGaveUp(iss.ID, &GiveUp{RunID: "run-9", Attempts: 2}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	var payload map[string]any
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+			payload = e.Payload
+		}
+		return true
+	})
+	if payload == nil {
+		t.Fatal("no issue_gave_up event recorded")
+	}
+	if got := payload["state"]; got != StateInProgress {
+		t.Errorf("event state = %v, want the stamped %q", got, StateInProgress)
+	}
+	if got := payload["run_id"]; got != "run-9" {
+		t.Errorf("event run_id = %v, want run-9", got)
+	}
+}
+
+// Re-stamping the same give-up must stay a no-op even when the caller left the
+// state out — the store fills it in, so comparing the caller's value would
+// re-write and re-emit on every call, churning the card's UpdatedAt (and with
+// it the board's `?since=` pruning) on every dispatcher tick.
+func TestSetGaveUpIsIdempotentAgainstWhatItWouldWrite(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	// No state from the caller — the case where comparing the caller's value
+	// instead of the written one would re-write on every call.
+	stamp := func() *GiveUp {
+		return &GiveUp{RunID: "run-9", Attempts: 2}
+	}
+	if err := s.SetGaveUp(iss.ID, stamp()); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	first, _ := s.Get(iss.ID)
+	if err := s.SetGaveUp(iss.ID, stamp()); err != nil {
+		t.Fatalf("SetGaveUp again: %v", err)
+	}
+	again, _ := s.Get(iss.ID)
+	if !again.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Errorf("a repeat stamp rewrote the issue: %s → %s", first.UpdatedAt, again.UpdatedAt)
+	}
+	n := 0
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+			n++
+		}
+		return true
+	})
+	if n != 1 {
+		t.Errorf("give-up events = %d, want 1 — the repeat call re-emitted", n)
+	}
+}

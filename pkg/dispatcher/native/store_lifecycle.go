@@ -105,6 +105,104 @@ func (s *Store) SetAwaitingInput(id string, v bool) (err error) {
 	})
 }
 
+// SetGaveUp stamps (or, with a nil g, clears) the dispatcher's give-up on an
+// issue — the record that the ticket's current state was written by the
+// dispatcher exhausting its retry budget rather than by a human filing it
+// (see Issue.GaveUp). Idempotent: re-stamping the same run/state/attempts is
+// a no-op, as is clearing an issue that carries no stamp.
+//
+// Follows the SetAwaitingInput shape (read → set → write → bump UpdatedAt),
+// but emits its own EvtIssueGaveUp: a give-up is the one ticket transition
+// nobody asked for, and events.jsonl is where an operator reconstructs why a
+// ticket ended where it did.
+func (s *Store) SetGaveUp(id string, g *GiveUp) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetGaveUp", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	want, ok := giveUpToRecord(iss, g)
+	if !ok {
+		return nil
+	}
+	// Compared against what would ACTUALLY be written, so a repeat call is a
+	// real no-op rather than a re-write that churns UpdatedAt.
+	if sameGiveUp(iss.GaveUp, want) {
+		return nil
+	}
+	// stamped is what actually landed on the issue (nil for a clear); the
+	// event reports IT, never the caller's g, which may name a state the
+	// store overrode.
+	var stamped *GiveUp
+	if want == nil {
+		iss.GaveUp = nil
+	} else {
+		stamp := *want
+		if stamp.At.IsZero() {
+			stamp.At = time.Now().UTC()
+		}
+		iss.GaveUp = &stamp
+		stamped = &stamp
+	}
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	payload := map[string]any{"gave_up": stamped != nil}
+	if stamped != nil {
+		payload["run_id"] = stamped.RunID
+		// The state that was STAMPED, not the one the caller believed — the
+		// two differ when a give-up raced an operator move, and the audit
+		// record exists to reconstruct what actually happened.
+		payload["state"] = stamped.State
+		payload["attempts"] = stamped.Attempts
+	}
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueGaveUp,
+		IssueID: id,
+		Payload: payload,
+	})
+}
+
+// giveUpToRecord resolves a caller's stamp against the issue as it stands,
+// returning the value to write and whether to write at all.
+//
+// A give-up describes a ticket that is still where the give-up PUT it. When
+// the ticket has already moved — an operator got there between the terminal
+// move and the stamp — the give-up is superseded, and recording it would put
+// the operator's own choice under a "the dispatcher gave up and filed this
+// ticket as …" banner. Nothing is written; the state change already stands in
+// the audit log.
+//
+// A stamp arriving without a state is filled in from the issue, so the value
+// compared for idempotence and the value written are always the same thing.
+func giveUpToRecord(iss *Issue, g *GiveUp) (*GiveUp, bool) {
+	if g == nil {
+		return nil, true
+	}
+	out := *g
+	if out.State == "" {
+		out.State = iss.State
+	}
+	if out.State != iss.State {
+		return nil, false
+	}
+	return &out, true
+}
+
+// sameGiveUp compares two stamps on the fields that decide behaviour — the
+// timestamp is provenance, not identity, so a re-stamp of the same give-up
+// stays a no-op instead of churning the card's UpdatedAt on every poll.
+func sameGiveUp(a, b *GiveUp) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
+}
+
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment. Author is a free-form
 // display name; body must be non-empty. The append is persisted to

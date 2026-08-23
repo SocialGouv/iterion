@@ -201,6 +201,13 @@ func (a *Adapter) SetAwaitingInput(id string, v bool) error {
 	return a.store.SetAwaitingInput(id, v)
 }
 
+// SetGaveUp passes through to the underlying store so the dispatcher's
+// optional-interface type assertion (setGaveUp in commands.go) resolves —
+// same seam, and same silent-fall-through trap, as SetAwaitingInput above.
+func (a *Adapter) SetGaveUp(id string, g *GiveUp) error {
+	return a.store.SetGaveUp(id, g)
+}
+
 // LastRunForIssue returns the runID of the most recent dispatch on
 // this issue. Empty when the issue has never been dispatched (or the
 // issue does not exist). Used by the dispatcher's resume path as a

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -374,6 +375,21 @@ func TestFinishRun_GiveUpMovesToFailedState(t *testing.T) {
 	if _, ok := c.state.retries[issueID]; ok {
 		t.Fatal("retry guard not dropped after a successful give-up move")
 	}
+	// The move alone is ambiguous: an operator filing the ticket by hand
+	// writes the very same state. The give-up must also STAMP the ticket, or
+	// the pipeline board files an unattended failure as acknowledged history
+	// and it never reaches the needs-attention lane (issue #494).
+	stamps := ft.giveUpStamps()
+	if len(stamps) != 1 || stamps[0] == nil {
+		t.Fatalf("give-up stamps = %+v, want exactly one", stamps)
+	}
+	got := stamps[0]
+	if got.RunID != "run-gv" || got.State != "blocked" || got.Attempts != 1 {
+		t.Errorf("give-up stamp = %+v, want run-gv/blocked/1 attempt", got)
+	}
+	if got.At.IsZero() {
+		t.Error("give-up stamp carries no timestamp")
+	}
 }
 
 // TestFinishRun_GiveUpFallsBackToRetryWhenMoveRejected proves the deliberate
@@ -411,6 +427,12 @@ func TestFinishRun_GiveUpFallsBackToRetryWhenMoveRejected(t *testing.T) {
 	}
 	if _, ok := c.state.retries[issueID]; !ok {
 		t.Fatal("retry must be preserved when the give-up move is rejected (board can't represent failed)")
+	}
+	// A give-up that fell back to retrying has not given up. Stamping here
+	// would put a still-retrying ticket in the needs-attention lane and tell
+	// the operator a decision was made that was not.
+	if stamps := ft.giveUpStamps(); len(stamps) != 0 {
+		t.Errorf("give-up stamps = %+v, want none — the terminal move was rejected", stamps)
 	}
 }
 
@@ -828,4 +850,92 @@ func TestFinishRun_WarnsOnZeroCommit(t *testing.T) {
 			t.Fatalf("issue state = %q, want %q", state, "review")
 		}
 	})
+}
+
+// The whole give-up chain against a REAL board: the dispatcher's optional
+// interface assertion, the native Adapter's pass-through, the store write.
+// Each half is covered on its own, and each half is exactly where a silent
+// break lives — an anonymous type assertion that stops matching returns no
+// error, it just stops stamping, and the pipeline board quietly goes back to
+// filing unattended failures as acknowledged history (issue #494).
+func TestGiveUpStampsThroughTheNativeAdapter(t *testing.T) {
+	dir := t.TempDir()
+	ns, err := native.NewStore(filepath.Join(dir, "board"))
+	if err != nil {
+		t.Fatalf("native.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+
+	// The adapter must satisfy the seam the dispatcher asserts on, or every
+	// stamp is dropped without a word.
+	var _ giveUpStamper = native.NewAdapter(ns)
+
+	iss, err := ns.Create(native.Issue{Title: "doomed", State: native.StateInProgress, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := ns.Claim(iss.ID, "test-host-1"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	cfg := &Config{
+		Name:     "test",
+		Workflow: filepath.Join(t.TempDir(), "fake.bot"),
+		Tracker:  TrackerConfig{Kind: "native"},
+		Polling:  PollingConfig{IntervalMS: 50},
+		Agent: AgentConfig{
+			MaxConcurrent: 4,
+			MaxAttempts:   1, // Attempt+1 reaches the cap → exhausted
+			RunningState:  "in_progress",
+			FailedState:   native.StateBlocked,
+		},
+		Workspace: WorkspaceConfig{Root: filepath.Join(dir, "ws")},
+	}
+	cfg.applyDefaults()
+	ws, err := NewWorkspaces(cfg.Workspace.Root)
+	if err != nil {
+		t.Fatalf("NewWorkspaces: %v", err)
+	}
+	c, err := New(Options{
+		Config:     cfg,
+		Tracker:    native.NewAdapter(ns),
+		Runner:     &StubRunner{},
+		Workspaces: ws,
+		Logger:     iterlog.New(iterlog.LevelError, &bytes.Buffer{}),
+		HostMarker: "test-host-1",
+		StoreDir:   dir,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.state.running[iss.ID] = &runningEntry{
+		IssueID:               iss.ID,
+		Identifier:            iss.ID,
+		RunID:                 "run-doomed",
+		WorkflowState:         "in_progress",
+		WorkspacePath:         filepath.Join(dir, "ws", "doomed"),
+		StartedAt:             time.Now(),
+		TransitionedFromState: native.StateReady,
+	}
+
+	c.finishRun(context.Background(), iss.ID, errPermanentFailure{})
+	c.workersWG.Wait()
+
+	got, err := ns.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != native.StateBlocked {
+		t.Fatalf("ticket state = %q, want blocked", got.State)
+	}
+	if got.GaveUp == nil {
+		t.Fatal("the give-up left no stamp — the board cannot tell it from an operator filing the ticket")
+	}
+	if got.GaveUp.RunID != "run-doomed" || got.GaveUp.Attempts != 1 {
+		t.Errorf("stamp = %+v, want run-doomed / 1 attempt", got.GaveUp)
+	}
+	// And it describes the ticket as filed, which is what the projection reads.
+	if !got.GaveUp.Current(got.State, "run-doomed") {
+		t.Errorf("stamp does not describe the filed ticket: state=%q stamp=%+v", got.State, got.GaveUp)
+	}
 }

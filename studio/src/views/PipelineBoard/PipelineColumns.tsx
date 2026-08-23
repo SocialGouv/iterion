@@ -527,7 +527,7 @@ export function PipelineColumns({
               <CardSection
                 id="needs-attention"
                 title="Needs attention"
-                subtitle="Failed mid-flight — each holds a slot until you retry, resume or close it"
+                subtitle="Failed mid-flight — most hold a slot until you retry, resume or close it"
                 accent="bg-danger"
                 count={needsAttention.length}
                 empty="Nothing to fix."
@@ -1289,6 +1289,26 @@ function ClosedStatus({ card }: { card: PipelineBoardCardDTO }) {
   );
 }
 
+// giveUpTitle spells out what the badge stands for: the dispatcher stopped
+// retrying by itself, so this card is waiting on a human even though its
+// ticket is filed.
+//
+// It does NOT promise that Retry starts the pipeline over. Retry restages the
+// ticket, and whoever picks it up decides: the studio's admission loop mints a
+// fresh run, a live dispatcher resumes this one from its checkpoint. Saying
+// "starts it over" would send the operator to re-burn the budget on the same
+// checkpoint; the details panel names the tool that forces a fresh run.
+function giveUpTitle(
+  giveUp: NonNullable<PipelineBoardCardDTO["gave_up"]>,
+): string {
+  const attempts =
+    giveUp.attempts && giveUp.attempts > 0
+      ? `after ${giveUp.attempts} attempt${giveUp.attempts === 1 ? "" : "s"}`
+      : "after exhausting its attempts";
+  const filed = giveUp.state ? ` and filed the ticket as "${giveUp.state}"` : "";
+  return `The dispatcher gave up ${attempts}${filed}. Nobody decided this — retry it, or close the card to acknowledge it.`;
+}
+
 function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="min-w-0 space-y-1.5">
@@ -1305,6 +1325,15 @@ function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {
             title="A concurrency slot is held open so this pipeline can restart into it. Nothing is running against it. Retry, resume or close the card to release it."
           >
             Holds a slot
+          </Badge>
+        )}
+        {card.gave_up && (
+          // Without this the card looks inconsistent: its ticket reads
+          // "blocked" (a filed, terminal state) while the card sits in Needs
+          // attention. Naming the give-up is what makes the lane make sense —
+          // nobody filed it, the dispatcher ran out of attempts.
+          <Badge variant="warning" title={giveUpTitle(card.gave_up)}>
+            Gave up
           </Badge>
         )}
       </div>

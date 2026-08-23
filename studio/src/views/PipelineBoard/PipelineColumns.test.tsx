@@ -310,6 +310,34 @@ describe("PipelineColumns", () => {
     expect(html).toContain("Retry"); // ticket-backed → retryable to Todo
   });
 
+  it("says the dispatcher gave up on a card whose ticket reads terminal", () => {
+    // Such a card is in Needs attention while its ticket is filed `blocked`,
+    // which reads as a contradiction until the badge names WHO filed it.
+    // It holds no slot: nothing will relaunch a terminal ticket on its own.
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "gave-up",
+          column_id: "needs_attention",
+          kind: "run",
+          title: "Deterministic failure",
+          issue_id: "iss-3",
+          issue_state: "blocked",
+          run_id: "run-dead",
+          status: "failed_resumable",
+          failed: true,
+          error: "kaboom",
+          gave_up: { run_id: "run-dead", state: "blocked", attempts: 3 },
+        }),
+      ]),
+    );
+
+    expect(html).toContain("Gave up");
+    expect(html).toContain("3 attempts"); // the tooltip says how many were burned
+    expect(html).not.toContain("Holds a slot");
+    expect(html).toContain("Retry"); // still the way out
+  });
+
   it("hides the Needs attention lane entirely when nothing is broken", () => {
     // An always-visible empty lane reads as a permanent accusation.
     const html = render(

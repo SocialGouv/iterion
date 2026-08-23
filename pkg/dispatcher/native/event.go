@@ -14,6 +14,12 @@ const (
 	EvtIssueReleased EventType = "issue_released"
 	EvtIssueLastRun  EventType = "issue_last_run_updated"
 	EvtIssueComment  EventType = "issue_comment_added"
+	// EvtIssueGaveUp is emitted when the dispatcher's give-up stamp is
+	// written or cleared on an issue (see Issue.GaveUp). Payload:
+	// {gave_up: bool, run_id, state, attempts} — a give-up is the one
+	// state change on a ticket that no human asked for, so it gets its own
+	// audit record rather than an anonymous issue_updated.
+	EvtIssueGaveUp EventType = "issue_gave_up"
 	// EvtIssueBlockersUpdated is emitted when an issue's blockers list changes
 	// (create-with-blockers, Update patch). Payload: {blockers: []string}.
 	EvtIssueBlockersUpdated EventType = "issue_blockers_updated"

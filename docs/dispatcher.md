@@ -278,6 +278,32 @@ and the next tick reconsiders the candidate (which may by then have
 moved out of the eligible set — fine, the dispatcher releases without
 re-dispatching).
 
+### Giving up (`agent.max_attempts`)
+
+Once `agent.max_attempts` is reached the dispatcher **gives up**: it moves the
+issue to `agent.failed_state` (default `blocked`) and drops the retry, so a
+doomed ticket stops burning model spend. If the board cannot represent that
+state the move is refused and the unbounded retry is kept instead — a ticket is
+never frozen in place.
+
+A successful give-up also **stamps** the issue (`Issue.gave_up` — the run, the
+state written, the attempt count — plus an `issue_gave_up` event). The stamp
+exists because the give-up's target and the board's own Close target are the
+same terminal state: without it, readers cannot tell a dispatcher that ran out
+of attempts from an operator who filed the ticket, and the /pipelines board
+buries the failure in Closed instead of raising it in **Needs attention**
+([native tracker](native-tracker.md#pipeline-board)). It is not stamped when
+the terminal move was refused — a give-up that fell back to retrying has not
+given up.
+
+The stamp expires on its own and for good: it names a run and a state, and each
+store drops it on any write in a different state. Since a retry resumes the
+*same* run id, a merely-stale stamp would otherwise revive when a human filed
+the ticket back into that state. Closing a ticket that is already sitting in
+the give-up's state changes nothing, so the three close surfaces — the pipeline
+board's Close, `iterion issue close`, and the board tool `close_issue` — clear
+the stamp explicitly.
+
 ## Workspace lifecycle
 
 Workspaces live below
