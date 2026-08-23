@@ -2399,6 +2399,105 @@ workflow test:
 	expectNoDiag(t, r, DiagRefNodeNoSchema)
 }
 
+func TestValidateRefInputOnEdge_MidGraphRouter_NoIncomingWith_C032(t *testing.T) {
+	src := `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+vars:
+  topic: string
+
+workflow test:
+  entry: seed
+  seed -> pick
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectDiag(t, r, DiagRefNodeNoSchema)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagRefNodeNoSchema && strings.Contains(d.Message, `field "topic"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C032 for mid-graph router {{input.topic}}, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"does not pass it through",
+		"incoming with-mapping",
+		"not run inputs",
+		"{{vars.topic}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C032 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_MidGraphRouter_IncomingWith_OK(t *testing.T) {
+	src := `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+workflow test:
+  entry: seed
+  seed -> pick with { topic: "{{outputs.seed.topic}}" }
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
 func TestValidateRefInputOnEdge_SchemalessSource_C032Warn(t *testing.T) {
 	src := `
 schema dst_in:

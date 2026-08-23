@@ -425,3 +425,152 @@ func TestEdgeInputRef_SchemalessSourceWarnsAndDoesNotFallBack(t *testing.T) {
 		t.Errorf("reviewer (run input only) = %#v, want nil — C032 warned and runtime must not fall back; use {{vars.reviewer}}", got["reviewer"])
 	}
 }
+
+const midGraphRouterNoWithBot = `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+vars:
+  topic: string
+
+workflow test:
+  entry: seed
+  worktree: none
+  sandbox: none
+  seed -> pick
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+
+// TestEdgeInputRef_MidGraphRouterDoesNotFallBack is R3888d0: a router
+// that is not the entry and has no incoming with-mapping used to leak
+// --var topic=HELLO into {{input.topic}}. C032 now warns, and the
+// resolver does not fall back.
+func TestEdgeInputRef_MidGraphRouterDoesNotFallBack(t *testing.T) {
+	cr := compileBot(t, midGraphRouterNoWithBot)
+	if cr.Workflow == nil {
+		t.Fatalf("compile returned nil workflow: %v", cr.Diagnostics)
+	}
+	var warned bool
+	for _, d := range cr.Diagnostics {
+		if d.Code == ir.DiagRefNodeNoSchema && strings.Contains(d.Message, `field "topic"`) {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("missing C032 for mid-graph router {{input.topic}}: %v", cr.Diagnostics)
+	}
+
+	var got any
+	exec := newStubExecutor()
+	exec.on("seed", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"topic": "from-seed"}, nil
+	})
+	exec.on("pick", func(in map[string]any) (map[string]any, error) {
+		return in, nil // condition router is a pass-through
+	})
+	exec.on("show", func(in map[string]any) (map[string]any, error) {
+		got = in["topic"]
+		return map[string]any{"topic": in["topic"]}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(cr.Workflow, s, exec)
+	if err := eng.Run(context.Background(), "run-mid-router", map[string]any{"topic": "HELLO"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got != nil {
+		t.Errorf("show topic = %#v, want nil — mid-graph router with no incoming with must not fall back to run inputs", got)
+	}
+}
+
+const midGraphRouterWithBot = `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+workflow test:
+  entry: seed
+  worktree: none
+  sandbox: none
+  seed -> pick with { topic: "{{outputs.seed.topic}}" }
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+
+func TestEdgeInputRef_MidGraphRouterPassThrough(t *testing.T) {
+	cr := compileBot(t, midGraphRouterWithBot)
+	if cr.Workflow == nil {
+		t.Fatalf("compile returned nil workflow: %v", cr.Diagnostics)
+	}
+	for _, d := range cr.Diagnostics {
+		if d.Code == ir.DiagRefNodeNoSchema || d.Code == ir.DiagInputFieldNotInSchema {
+			t.Fatalf("incoming with-mapping should make {{input.topic}} verifiable: %v", cr.Diagnostics)
+		}
+	}
+
+	var got any
+	exec := newStubExecutor()
+	exec.on("seed", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"topic": "from-seed"}, nil
+	})
+	exec.on("pick", func(in map[string]any) (map[string]any, error) {
+		return in, nil // condition router is a pass-through
+	})
+	exec.on("show", func(in map[string]any) (map[string]any, error) {
+		got = in["topic"]
+		return map[string]any{"topic": in["topic"]}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(cr.Workflow, s, exec)
+	if err := eng.Run(context.Background(), "run-mid-pass", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got != "from-seed" {
+		t.Errorf("show topic = %#v, want from-seed", got)
+	}
+}

@@ -57,9 +57,10 @@ func collectAllRefs(w *Workflow) []refContext {
 	// copies its input onto its output, which is how pass-through
 	// works) — not the source input schema, and not a silent fallback
 	// to run-level inputs. C034 checks the source output schema; a
-	// schemaless non-router source warns C032. Use {{vars.x}} for a
-	// launch-time value. IncludeSelf so {{outputs.<source>}} is
-	// reachable too.
+	// schemaless non-router source, or a mid-graph router whose
+	// incoming with-keys do not include the field, warns C032. Use
+	// {{vars.x}} for a launch-time value. IncludeSelf so
+	// {{outputs.<source>}} is reachable too.
 	for _, e := range w.Edges {
 		for _, dm := range e.With {
 			for _, ref := range dm.Refs {
@@ -518,11 +519,12 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 // validateEdgeInputRef is C034 for edge with-mappings: {{input.x}} is a
 // field of the source node's output (the payload available when the
 // edge fires). Routers copy their input onto their output (an llm
-// router also records the selection), so they have no output schema
-// and the check is skipped — runtime still resolves from that
-// pass-through map. Any other schemaless source cannot be verified:
-// C032 warns, because dropping the run-input fallback would otherwise
-// turn a coincidental {{input.var}} into a silent nil. Run-level
+// router also records the selection). An entry router's input is the
+// run payload (keys unknown at compile time); a mid-graph router's
+// input is only its incoming with-keys plus mode-specific bindings, so
+// a field in neither is C032 — otherwise dropping the run-input
+// fallback would silently nil {{input.var}} on a router that never
+// received it. Any other schemaless source also warns C032. Run-level
 // inputs / vars are a different namespace ({{vars.x}}).
 func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
 	if isRuntimeInjectedField(fieldName) {
@@ -539,7 +541,8 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 
 	outSchema := NodeOutputSchema(node)
 	if outSchema == "" {
-		if _, isRouter := node.(*RouterNode); isRouter {
+		if r, isRouter := node.(*RouterNode); isRouter {
+			c.validateRouterEdgeInput(w, rc, r, fieldName)
 			return
 		}
 		msg := fmt.Sprintf("%s: reference %s accesses field %q on node %q which has no output schema; cannot verify (edge with-mappings resolve {{input.*}} against the source node's output, not run inputs)",
@@ -569,6 +572,59 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 		}
 	}
 	c.errorf(DiagInputFieldNotInSchema, "%s", msg)
+}
+
+// validateRouterEdgeInput is C032 for a mid-graph router whose outgoing
+// {{input.x}} is not in the pass-through namespace (incoming with-keys
+// plus mode-specific bindings). An entry router copies the run payload,
+// whose extra keys are not known at compile time, so it stays silent.
+func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *RouterNode, fieldName string) {
+	if rc.NodeID == w.Entry {
+		return
+	}
+	if routerPassThroughKeys(w, r)[fieldName] {
+		return
+	}
+	msg := fmt.Sprintf("%s: reference %s accesses field %q on router %q which does not pass it through (not supplied by an incoming with-mapping); edge with-mappings resolve {{input.*}} against the source node's output, not run inputs",
+		rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+	if _, isVar := w.Vars[fieldName]; isVar {
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+	}
+	c.warnf(DiagRefNodeNoSchema, "%s", msg)
+}
+
+// routerPassThroughKeys is the set of keys a mid-graph router will have
+// on its output — incoming with-keys, plus the fields each mode adds
+// itself (llm selection, fan_out_each item binding).
+func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
+	keys := map[string]bool{}
+	id := r.NodeID()
+	for _, e := range w.Edges {
+		if e.To != id {
+			continue
+		}
+		for _, dm := range e.With {
+			keys[dm.Key] = true
+		}
+	}
+	switch r.RouterMode {
+	case RouterLLM:
+		keys["reasoning"] = true
+		if r.RouterMulti {
+			keys["selected_routes"] = true
+		} else {
+			keys["selected_route"] = true
+		}
+	case RouterFanOutEach:
+		bind := r.ItemBinding
+		if bind == "" {
+			bind = "item"
+		}
+		keys[bind] = true
+		keys["index"] = true
+		keys["count"] = true
+	}
+	return keys
 }
 
 func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {

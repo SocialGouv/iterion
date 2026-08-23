@@ -123,7 +123,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | Reference | Meaning |
 |---|---|
 | `{{vars.name}}` | Resolved workflow variable. |
-| `{{input.field}}` | Current node input (prompts, tool commands, compute exprs). On an edge `with` mapping: the **source node's output** — the payload available when the edge fires. A router copies its input to its output (an `llm` router also records `selected_route`/`selected_routes` and `reasoning` on that same map), so this is how router pass-through works. Launch-time values use `{{vars.name}}`, not a silent fallback to run inputs. A schemaless non-router source cannot be verified (C032). |
+| `{{input.field}}` | Current node input (prompts, tool commands, compute exprs). On an edge `with` mapping: the **source node's output** — the payload available when the edge fires. A router copies its input to its output (an `llm` router also records `selected_route`/`selected_routes` and `reasoning` on that same map). An **entry** router’s input is the run payload; a **mid-graph** router only has what its incoming `with` mappings supplied (C032 if `{{input.x}}` names something else). Launch-time values use `{{vars.name}}`. |
 | `{{outputs.node}}` / `.field` | Prior node output or a field within it. |
 | `{{outputs.node.history}}` | Outputs accumulated across loop iterations. |
 | `{{artifacts.name}}` | Published artifact. |
