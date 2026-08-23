@@ -15,12 +15,11 @@
 import {
   useCallback,
   useEffect,
-  useRef,
   useState,
   type DragEvent as ReactDragEvent,
 } from "react";
-import { ArrowRightIcon, Pencil2Icon, PlusIcon } from "@radix-ui/react-icons";
-import { Link, useLocation } from "wouter";
+import { PlusIcon } from "@radix-ui/react-icons";
+import { useLocation } from "wouter";
 
 import {
   AssistantStoreScope,
@@ -59,7 +58,12 @@ import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
 import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
-import { useDraftState } from "@/hooks/useDraftBot";
+import {
+  DraftBotOffer,
+  useEditorConsent,
+} from "@/components/ChatDock/draftBotOffer";
+
+
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 export default function ChatDock() {
@@ -138,6 +142,8 @@ function AssistantDock({
   // because a bot that answers ONLY here (Copi) would otherwise have no way
   // to end a conversation — /whats-next's header is Nexie's, not his.
   const newSession = useNewSessionAction({ bot, session });
+
+  const editorConsent = useEditorConsent(composer.submitPending);
 
   // Consume the attachments when a message leaves. Wrapping the composer's
   // send rather than clearing optimistically: a send that throws keeps the
@@ -260,6 +266,7 @@ function AssistantDock({
               <DraftBotOffer
                 runId={session.runId}
                 revision={session.messages.length}
+                onOpenEditor={editorConsent.accept}
               />
             }
             onHumanSubmit={(messageId, outcome) => {
@@ -424,76 +431,3 @@ export function AssistantDockCrashed() {
   return null;
 }
 
-// The assistant's one write-shaped affordance, and it writes nothing.
-//
-// TWO offers, in the order the operator asked for — settle WHERE the work
-// happens, then do it there:
-//
-//   designing, nothing to show yet → "Open the editor". The venue first, so
-//     that when the build lands it lands somewhere the operator is looking.
-//   a draft in hand → "Open this draft in the editor".
-//
-// A link rather than an automatic redirect, deliberately. The assistant may
-// propose a change of page; it may not perform one — a view that swaps itself
-// under the operator steals the control the dock exists to keep (it is
-// non-modal for the same reason).
-//
-// The one thing that happens without a click is the LOAD, and only once the
-// operator is already on /editor: they consented to the venue by going there,
-// and the alternative is asking a second time for a page they are on. The
-// draft has been compiled by the run's own deterministic validator before it
-// is offered at all.
-//
-// The INVITATION is deliberately not rendered here. It is the bot's last
-// sentence (see the `design` posture in bots/copilot/main.bot), so it lands in
-// the operator's own language and in the assistant's voice — a static caption
-// underneath read as a disclaimer bolted to the message rather than part of it.
-// This component contributes the button; the bot contributes the offer.
-function DraftBotOffer({
-  runId,
-  revision,
-}: {
-  runId: string | null;
-  revision: number;
-}) {
-  const { source, designing } = useDraftState(runId, revision);
-  const [location, setLocation] = useLocation();
-  const onEditor = location.startsWith("/editor");
-  const hasDraft = !!source;
-
-  // Auto-load, once per draft. The ref is what keeps this from fighting the
-  // operator: if they close the tab or navigate within the editor, we do not
-  // re-open it behind them.
-  const loadedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!runId || !hasDraft || !onEditor) return;
-    if (loadedRef.current === runId) return;
-    loadedRef.current = runId;
-    // `replace` — this is not a place the operator navigated to, so it must
-    // not cost them a Back press to leave.
-    setLocation(`/editor?draft=${encodeURIComponent(runId)}`, { replace: true });
-  }, [runId, hasDraft, onEditor, setLocation]);
-
-  if (!runId || (!hasDraft && !designing)) return null;
-  // Already on the editor with the draft loaded: the canvas IS the answer, so
-  // a button pointing at what is on screen would be noise.
-  if (hasDraft && onEditor) return null;
-
-  const href = hasDraft
-    ? `/editor?draft=${encodeURIComponent(runId)}`
-    : "/editor";
-  const label = hasDraft ? "Open this draft in the editor" : "Open the editor";
-
-  return (
-    <div className="mt-3 border-t border-border-subtle pt-2.5">
-      <Link
-        href={href}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-label font-medium text-accent-contrast hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-accent-emphasis"
-      >
-        <Pencil2Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-        {label}
-        <ArrowRightIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-      </Link>
-    </div>
-  );
-}
