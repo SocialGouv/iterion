@@ -351,9 +351,11 @@ send one provider's signed turns to another.
 Two crossings are compile-time **errors** (`C176`), because the degraded
 run would be silently wrong rather than merely worse:
 
-- a route on a backend that cannot enforce the node's `permission:` gate
-  (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
-  disappear at the moment the run is under stress;
+- a route on a backend/mode pair that cannot enforce the node's
+  `permission:` gate (`kimi` and `grok` accept `deny` but not `ask`; `codex`
+  is not admitted at all) — the anti-prompt-injection boundary must not
+  disappear at the moment the run is under stress. The same check now covers
+  the primary backend, not only fallbacks;
 - a route crossing the claw⇄CLI boundary, because the `tools:` list
   does not mean the same thing on both sides. The two directions are not
   symmetric:
@@ -954,6 +956,7 @@ agent implement:
   backend: "kimi"
   model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
   system: "…the task…"
+  permission: deny                   # supported on host runs
 ```
 
 ### `grok` (xAI Grok Build CLI)
@@ -993,10 +996,26 @@ backend. That is **distinct** from calling the xAI HTTP API via
   (e.g. `$MOONSHOT_API_KEY` for kimi, Grok Build OAuth for grok) — iterion
   inherits the host environment and does not fight the CLI's native
   resolution.
-- **Tools are not host-gated.** Like `codex`, these CLIs run with their
-  *own* built-in toolset; a node's `tools:` list is advisory. For a hard
-  tool-permission boundary use `claude_code`, `claw`, or pi in RPC mode; all
-  three enforce the shared permission gate.
+- **Permission gate.** These CLIs still run their *own* built-in toolset and a
+  node's `tools:` list remains advisory. For `permission: deny`, iterion points
+  the CLI at a per-invocation shadow home (`KIMI_CODE_HOME` / `GROK_HOME`) that
+  links the real credentials but adds an iterion `PreToolUse` hook; the
+  operator's home is untouched, and that shadow home is created outside the
+  workspace so a repo-scoped write rule cannot reach the gate's own
+  registration. The policy itself rides base64-encoded in the hook argv the
+  CLI freezes at session start, never as a re-read file. Both denial paths are live-proven — a real
+  model's real tool call blocked, with a filesystem sentinel rather than model
+  prose as the oracle (`e2e/live_feat_permission_{kimi,grok}_test.go`) — and
+  both are admitted by C176 for `deny`. Grok keeps its
+  `--permission-mode bypassPermissions --always-approve` flags: grok's own
+  authorization pipeline runs `PreToolUse` hooks *first*, before always-approve
+  short-circuits it. External hooks cannot pause the parent run, so `ask`
+  (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
+  runs are also refused because neither CLI currently carries its home and hook
+  binary into the container — so a gated node needs `sandbox: none` (the
+  shipped default is `auto`, and **C136** warns at compile time rather than
+  letting the run die at the agent node). Windows is refused: the hook command
+  is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
 - **Sessions** are captured for observability (`sessionId`) but resume/fork

@@ -1,0 +1,34 @@
+## Live feature fixture: Grok's native PreToolUse permission seam.
+##
+## Grok is driven under `--permission-mode bypassPermissions --always-approve`
+## (grok.go's ExtraArgs), so this fixture also pins the property that makes the
+## seam viable at all: grok's own docs promise hooks still run under
+## always-approve, and step 1 of its authorization pipeline is the PreToolUse
+## hook. If that ever regresses the sentinel below appears and this test fails.
+
+schema out:
+  ran_bash: bool
+  note: string
+
+prompt run_sys:
+  Use your run_terminal_command tool to run exactly:
+  `touch permission-hook-must-not-create`
+  Then report whether the command actually executed in ran_bash and explain
+  the tool result in note. Do not create the file by any other means.
+
+prompt run_user:
+  Run the requested shell command now.
+
+agent runner:
+  backend: "grok"
+  model: "grok-4.6"
+  system: run_sys
+  user: run_user
+  output: out
+
+workflow main:
+  sandbox: none
+  permission: deny
+  deny: ["Bash"]
+  entry: runner
+  runner -> done

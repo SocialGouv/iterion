@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 func TestRegistryResolve(t *testing.T) {
@@ -294,6 +296,20 @@ func TestCodexRejectsOuterSandboxInsteadOfEscapingToHost(t *testing.T) {
 	result, err := b.Execute(context.Background(), Task{Sandbox: &recordingRun{}})
 	if err == nil || !strings.Contains(err.Error(), "cannot run inside Iterion recording sandbox") {
 		t.Fatalf("error = %v, want explicit outer-sandbox rejection", err)
+	}
+	if result.BackendName != BackendCodex || result.ExitCode != -1 {
+		t.Fatalf("result = %+v, want codex failure metadata", result)
+	}
+}
+
+func TestCodexRejectsPermissionGateInsteadOfRunningUngated(t *testing.T) {
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&CodexBackend{Logger: testLogger()}).Execute(context.Background(), Task{Permission: policy})
+	if err == nil || !strings.Contains(err.Error(), "refusing to run ungated") {
+		t.Fatalf("error = %v, want explicit permission-gate rejection", err)
 	}
 	if result.BackendName != BackendCodex || result.ExitCode != -1 {
 		t.Fatalf("result = %+v, want codex failure metadata", result)

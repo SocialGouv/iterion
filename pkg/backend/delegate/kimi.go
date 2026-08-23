@@ -1,6 +1,10 @@
 package delegate
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -32,8 +36,27 @@ var kimiProtocol = CLIAgentProtocol{
 	ModelFlag:        "-m",
 	MapModel:         kimiMapModel,
 	ParseOutput:      parseStreamJSONText,
+	PermissionHook: &CLIAgentPermissionHook{
+		HomeEnv:           "KIMI_CODE_HOME",
+		DefaultHome:       ".kimi-code",
+		ExcludedEntries:   []string{"config.toml"},
+		WriteRegistration: writeKimiPermissionHook,
+	},
 	// MapEffort nil: kimi-code has no reasoning-effort dial.
 	// ResolveEnv nil: kimi reads its own credentials from the host env/config.
+}
+
+func writeKimiPermissionHook(realHome, shadowHome, command string) error {
+	configPath := filepath.Join(realHome, "config.toml")
+	raw, err := os.ReadFile(configPath) // #nosec G304 -- resolved operator CLI home.
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
+		raw = append(raw, '\n')
+	}
+	raw = append(raw, []byte("\n[[hooks]]\nevent = \"PreToolUse\"\ncommand = "+strconv.Quote(command)+"\n")...)
+	return os.WriteFile(filepath.Join(shadowHome, "config.toml"), raw, 0o600)
 }
 
 // NewKimiBackend constructs the Moonshot kimi-code backend. command overrides

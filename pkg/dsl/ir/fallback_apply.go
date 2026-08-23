@@ -60,7 +60,7 @@ func ApplyRunFallback(w *Workflow, route Fallback) []string {
 		}
 		nodeBackend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		perm := EffectivePermission(nn.GetPermission(), w.Permission)
-		if reason := ungatedCrossingReason(route.Backend, perm); reason != "" {
+		if reason := ungatedCrossingReason(route.Backend, perm, len(w.PermissionAsk) > 0); reason != "" {
 			refusals = append(refusals, fmt.Sprintf("agent %q: run-level fallback %s", nn.NodeID(), reason))
 			continue
 		}

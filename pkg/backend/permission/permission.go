@@ -1,7 +1,6 @@
 // Package permission implements iterion's tool-permission gate — the
-// anti-hypnosis / anti-prompt-injection boundary that mirrors Claude
-// Code's default "ask" posture for BOTH execution backends
-// (claude_code and claw).
+// anti-hypnosis / anti-prompt-injection boundary shared by every backend
+// with an enforcement seam.
 //
 // The operator declares a Policy (a mode plus allow/ask/deny rule
 // lists) in the .bot DSL or via CLI/env. Every tool call an agent
@@ -15,8 +14,8 @@
 // (`Bash`, matches any use) or a scoped pattern (`Bash(go test:*)`,
 // `Read(./.env)`, `Edit(pkg/**)`, `WebFetch(domain:example.com)`,
 // `mcp__github__get_*`). Because the same Policy drives both backends,
-// claude_code (TitleCase tool names) and claw (snake_case) reach
-// identical decisions — see [canonicalToolName].
+// backend-native tool names reach identical decisions — see
+// [canonicalToolName].
 package permission
 
 import (
@@ -141,6 +140,65 @@ type Policy struct {
 	// MCP namespace IsInfrastructureTool recognises). Keyed by canonical
 	// name. See MarkExempt.
 	exempt map[string]bool
+}
+
+// PolicyConfig is the serialisable form of a Policy. It deliberately carries
+// the original rule strings rather than the compiled regular expressions so a
+// permission hook running in a child process reconstructs the policy through
+// NewPolicy and therefore uses the exact same parser and evaluator.
+type PolicyConfig struct {
+	Mode   string   `json:"mode"`
+	Allow  []string `json:"allow,omitempty"`
+	Ask    []string `json:"ask,omitempty"`
+	Deny   []string `json:"deny,omitempty"`
+	Exempt []string `json:"exempt,omitempty"`
+}
+
+// Config returns a detached, serialisable snapshot of the policy.
+func (p *Policy) Config() PolicyConfig {
+	if p == nil {
+		return PolicyConfig{Mode: ModeOff.String()}
+	}
+	raw := func(rules []rule) []string {
+		out := make([]string, 0, len(rules))
+		for _, r := range rules {
+			out = append(out, r.raw)
+		}
+		return out
+	}
+	exempt := make([]string, 0, len(p.exempt))
+	for name := range p.exempt {
+		exempt = append(exempt, name)
+	}
+	sort.Strings(exempt)
+	return PolicyConfig{
+		Mode:   p.Mode.String(),
+		Allow:  raw(p.allow),
+		Ask:    raw(p.ask),
+		Deny:   raw(p.deny),
+		Exempt: exempt,
+	}
+}
+
+// NewPolicyFromConfig reconstructs a serialised policy through NewPolicy.
+func NewPolicyFromConfig(cfg PolicyConfig) (*Policy, error) {
+	mode, err := ParseMode(cfg.Mode)
+	if err != nil {
+		return nil, err
+	}
+	p, err := NewPolicy(mode, cfg.Allow, cfg.Ask, cfg.Deny)
+	if err != nil {
+		return nil, err
+	}
+	p.MarkExempt(cfg.Exempt...)
+	return p, nil
+}
+
+// CanAsk reports whether evaluating this policy can produce an Ask decision.
+// ModeDeny is not sufficient by itself: an explicit ask rule has precedence
+// over the mode default.
+func (p *Policy) CanAsk() bool {
+	return p != nil && (p.Mode == ModeAsk || len(p.ask) > 0)
 }
 
 // NewPolicy parses the rule strings into a Policy. A malformed rule is
@@ -398,6 +456,8 @@ func summarize(canon string, input map[string]any) string {
 		return cmp.Or(str(input, "file_path"), str(input, "path"), str(input, "notebook_path"))
 	case "glob", "grep":
 		return cmp.Or(str(input, "pattern"), str(input, "path"))
+	case "ls":
+		return str(input, "path")
 	case "webfetch":
 		u := str(input, "url")
 		host := ""
@@ -481,9 +541,9 @@ func normalizeMCPName(name string) string {
 }
 
 // canonicalToolName maps a backend-specific tool name to a stable key
-// so a single rule (e.g. `Bash(...)`) gates the matching tool on BOTH
-// backends: claude_code's TitleCase names (Bash, Read, Edit, WebFetch)
-// and claw's snake_case names (bash, read_file, write_file, web_fetch).
+// so a single rule (e.g. `Bash(...)`) gates the matching tool across
+// claude_code's TitleCase names, claw/pi's lowercase names, Grok's native
+// verbs, and Kimi's FetchURL spelling.
 // Unknown names are lower-cased and stripped of separators so a custom
 // rule still matches its own spelling.
 func canonicalToolName(name string) string {
@@ -502,14 +562,14 @@ func canonicalToolName(name string) string {
 // toolAliases collapses cross-backend synonyms onto a canonical key.
 var toolAliases = map[string]string{
 	// shell
-	"bash": "bash", "shell": "bash", "sh": "bash",
+	"bash": "bash", "shell": "bash", "sh": "bash", "run_terminal_command": "bash",
 	// read
 	"read": "read", "read_file": "read", "readfile": "read", "cat": "read",
 	// write
 	"write": "write", "write_file": "write", "writefile": "write",
 	// edit
 	"edit": "edit", "edit_file": "edit", "file_edit": "edit",
-	"multiedit": "edit", "edit_mode": "edit", "str_replace": "edit",
+	"multiedit": "edit", "edit_mode": "edit", "str_replace": "edit", "search_replace": "edit",
 	// notebook
 	"notebookedit": "notebookedit", "notebook_edit": "notebookedit",
 	// search. pi names its glob tool `find` (it takes a `pattern`, not a
@@ -518,8 +578,10 @@ var toolAliases = map[string]string{
 	// on the other backends.
 	"glob": "glob", "find": "glob", "grep": "grep",
 	// web
-	"webfetch": "webfetch", "web_fetch": "webfetch", "web": "webfetch",
+	"webfetch": "webfetch", "web_fetch": "webfetch", "fetchurl": "webfetch", "web": "webfetch",
 	"websearch": "websearch", "web_search": "websearch",
 	// misc
-	"ls": "ls", "todowrite": "todowrite", "todo_write": "todowrite",
+	"ls": "ls", "list_dir": "ls", "todowrite": "todowrite", "todo_write": "todowrite",
+	"agent": "agent", "task": "agent", "spawn_subagent": "agent",
+	"use_tool": "use_tool",
 }
