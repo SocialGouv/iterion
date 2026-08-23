@@ -12,7 +12,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { findDraftBotSource } from "@/api/runs/artifacts";
+import { lookupDraft, type DraftLookup } from "@/api/runs/artifacts";
 
 // A draft, once produced, does not change until the next turn — and the next
 // turn moves the key. Long enough to stop re-fetching on every dock re-render
@@ -24,23 +24,27 @@ export function draftBotQueryKey(runId: string, revision: number) {
 }
 
 /**
- * useDraftBotAvailable reports whether `runId` published a `.bot` draft.
+ * useDraftState reports what the conversation has to offer the editor.
  *
- * `revision` should be something that advances once per turn (the transcript's
- * message count). A failed lookup reports "no draft" rather than surfacing an
- * error: the dock's offer is an affordance, and a missing one must never take
- * the conversation down with it.
+ * TWO states, because the operator asked for the work to happen in the right
+ * place BEFORE it happens: a turn can be DESIGNING with nothing to show yet
+ * (offer the editor), or carry a finished draft (offer the draft). Collapsing
+ * them would put the invitation after the work again.
+ *
+ * `revision` should advance once per turn (the transcript's message count). A
+ * failed lookup reports "nothing" rather than surfacing an error: the offer is
+ * an affordance, and a missing one must never take the conversation down.
  */
-export function useDraftBotAvailable(
+export function useDraftState(
   runId: string | null,
   revision: number,
-): boolean {
+): DraftLookup {
   const query = useQuery({
     queryKey: draftBotQueryKey(runId ?? "", revision),
-    queryFn: ({ signal }) => findDraftBotSource(runId as string, { signal }),
+    queryFn: ({ signal }) => lookupDraft(runId as string, { signal }),
     enabled: !!runId,
     staleTime: STALE_MS,
     retry: false,
   });
-  return typeof query.data === "string" && query.data.trim() !== "";
+  return query.data ?? { source: null, designing: false };
 }

@@ -169,18 +169,33 @@ async function blobToBase64(blob: Blob): Promise<string> {
 // removed. Any node publishing a non-empty `draft_bot` string qualifies.
 export const DRAFT_BOT_FIELD = "draft_bot";
 
+// The bot's own posture for the turn. A conversational bot that designs
+// workflows announces it here BEFORE it has anything to show, which is what
+// lets the studio offer the editor first and the draft second — the order the
+// operator asked for: settle where the work happens, then do it there.
+export const MODE_FIELD = "mode";
+export const DESIGN_MODE = "design";
+
+export interface DraftLookup {
+  /** The `.bot` source, when this conversation has produced one. */
+  source: string | null;
+  /** True when the latest turn is designing, draft or not. */
+  designing: boolean;
+}
+
 // Newest artifacts first: a draft is the LATEST thing the conversation
 // produced, so the last-written node is where the search should start.
-export async function findDraftBotSource(
+export async function lookupDraft(
   runId: string,
   opts?: { signal?: AbortSignal },
-): Promise<string | null> {
+): Promise<DraftLookup> {
   const summaries = await listAllArtifacts(runId, opts);
   const ordered = [...summaries].sort((a, b) =>
     (b.written_at ?? "").localeCompare(a.written_at ?? ""),
   );
+  let designing = false;
   for (const s of ordered) {
-    if (opts?.signal?.aborted) return null;
+    if (opts?.signal?.aborted) return { source: null, designing };
     let art: Artifact;
     try {
       art = await getArtifact(runId, s.node_id, s.version);
@@ -189,8 +204,21 @@ export async function findDraftBotSource(
       // node — keep looking rather than failing the whole lookup.
       continue;
     }
+    // The NEWEST posture wins, so read it from the first artifact that
+    // declares one rather than letting an older turn's mode linger.
+    if (!designing && art.data?.[MODE_FIELD] === DESIGN_MODE) designing = true;
     const value = art.data?.[DRAFT_BOT_FIELD];
-    if (typeof value === "string" && value.trim() !== "") return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      return { source: value, designing: true };
+    }
   }
-  return null;
+  return { source: null, designing };
+}
+
+/** Back-compat shorthand for callers that only want the source. */
+export async function findDraftBotSource(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<string | null> {
+  return (await lookupDraft(runId, opts)).source;
 }

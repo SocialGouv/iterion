@@ -8,7 +8,7 @@
 //   the last one.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { findDraftBotSource } from "./runs/artifacts";
+import { findDraftBotSource, lookupDraft } from "./runs/artifacts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -96,5 +96,53 @@ describe("findDraftBotSource", () => {
       { "copi/1": { reply: "an answer with no workflow in it" } },
     );
     await expect(findDraftBotSource("run1")).resolves.toBeNull();
+  });
+});
+
+// The ORDER the operator asked for: settle where the work happens, then do it
+// there. That needs the studio to tell "designing, nothing to show yet" apart
+// from "draft in hand" — the first offers the editor, the second offers the
+// draft. Collapsing them puts the invitation after the work again.
+describe("lookupDraft — designing vs draft-ready", () => {
+  it("reports designing before anything has been drafted", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 0, written_at: "2026-08-23T10:00:00Z" }],
+      { "copi/0": { mode: "design", reply: "let's build this in the editor" } },
+    );
+    await expect(lookupDraft("run1")).resolves.toEqual({
+      source: null,
+      designing: true,
+    });
+  });
+
+  it("reports the draft once the turn produced one", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 1, written_at: "2026-08-23T11:00:00Z" }],
+      { "copi/1": { mode: "design", draft_bot: "workflow demo:\n" } },
+    );
+    const got = await lookupDraft("run1");
+    expect(got.source).toContain("workflow demo:");
+    expect(got.designing).toBe(true);
+  });
+
+  it("treats a draft as designing even when the mode field is absent", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 0, written_at: "2026-08-23T10:00:00Z" }],
+      { "copi/0": { draft_bot: "workflow demo:\n" } },
+    );
+    await expect(lookupDraft("run1")).resolves.toMatchObject({
+      designing: true,
+    });
+  });
+
+  it("offers nothing for an ordinary answer", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 0, written_at: "2026-08-23T10:00:00Z" }],
+      { "copi/0": { mode: "info", reply: "C176 means…" } },
+    );
+    await expect(lookupDraft("run1")).resolves.toEqual({
+      source: null,
+      designing: false,
+    });
   });
 });
