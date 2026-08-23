@@ -739,6 +739,15 @@ func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
 	}
 }
 
+// giveUpStamper is the optional seam a board-backed tracker implements to
+// record a give-up. Named rather than inlined at the assertion so a test can
+// hold the shipped adapters to it: an assertion on an anonymous interface
+// fails SILENTLY, which is how the SetLastRun pass-through went missing and no
+// issue got its pointer for a release.
+type giveUpStamper interface {
+	SetGaveUp(id string, g *native.GiveUp) error
+}
+
 // stampGiveUp records on the tracker issue that THIS dispatcher filed it
 // after exhausting its retry budget — the fact a bare terminal state cannot
 // carry. Without it the pipeline board reads the give-up's own FailedState
@@ -754,9 +763,7 @@ func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
 // Called ONLY once that move succeeded: a give-up that fell back to retrying
 // (the board cannot represent the failed state) has not given up.
 func (c *Dispatcher) stampGiveUp(plan finishPlan) {
-	setter, ok := c.tracker.(interface {
-		SetGaveUp(id string, g *native.GiveUp) error
-	})
+	setter, ok := c.tracker.(giveUpStamper)
 	if !ok {
 		return
 	}
