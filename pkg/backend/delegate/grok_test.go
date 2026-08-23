@@ -2,10 +2,12 @@ package delegate
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +163,48 @@ func TestGrokExecute_FakeBinary(t *testing.T) {
 	}
 	if res.Tokens != 3 {
 		t.Errorf("Tokens = %d, want 3", res.Tokens)
+	}
+}
+
+func TestWriteGrokPermissionHookPreservesOperatorHooks(t *testing.T) {
+	realHome := t.TempDir()
+	realHooks := filepath.Join(realHome, "hooks")
+	if err := os.Mkdir(realHooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realHooks, "operator.json"), []byte(`{"hooks":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shadow := t.TempDir()
+	if err := writeGrokPermissionHook(realHome, shadow, "'/opt/iterion' __permission-hook"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(filepath.Join(shadow, "hooks", "operator.json")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("operator hook was not linked into the shadow home: info=%v err=%v", info, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(shadow, "hooks", "iterion-permission.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registration struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Timeout int    `json:"timeout"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &registration); err != nil {
+		t.Fatal(err)
+	}
+	pre := registration.Hooks["PreToolUse"]
+	if len(pre) != 1 || len(pre[0].Hooks) != 1 {
+		t.Fatalf("registration = %s, want one PreToolUse command", raw)
+	}
+	hook := pre[0].Hooks[0]
+	if hook.Type != "command" || hook.Timeout != 30 || !strings.Contains(hook.Command, "__permission-hook") {
+		t.Fatalf("hook = %+v", hook)
 	}
 }
 
