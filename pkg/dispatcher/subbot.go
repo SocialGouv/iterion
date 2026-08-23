@@ -178,6 +178,17 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if childWorkDir != "" {
 			opts = append(opts, runtime.WithWorkDir(childWorkDir))
 		}
+		// Un run imbriqué ne marque plus l'espace qu'on lui prête, donc ses
+		// portes humaines s'ancrent par le versionnage d'espace de travail et
+		// non par des refs git (`markReviewGate` → `markReviewGateWorkspace`).
+		// Sans traqueur cet ancrage ne fait rien : l'opérateur qui répond à la
+		// porte de l'enfant lit « this run captured no workspace snapshots at
+		// all » au lieu du diff de ce que l'enfant vient de produire — et
+		// `iterion rewind` ne saurait pas davantage restaurer sa production.
+		// Même câblage que `iterion run` donne à son propre moteur.
+		if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
+			opts = append(opts, runtime.WithWorkspaceTracker(tracker))
+		}
 		// Le plafond de dépense quotidien : le parent l'a, l'enfant ne l'avait
 		// pas. Or le subbot est précisément là où l'on délègue le travail
 		// agentique coûteux — un bot qui pousse ses nœuds LLM dans ses enfants
