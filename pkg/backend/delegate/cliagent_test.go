@@ -399,3 +399,31 @@ func TestCLIAgentPermissionUnknownDialectRefuses(t *testing.T) {
 		t.Fatalf("unknown hook dialect error = %v, want an explicit refusal", err)
 	}
 }
+
+// TestCLIAgentPermissionRefusesBinaryInsideWorkspace pins the third leg of the
+// containment argument (#498 review, R8d24f4). The shadow home and the policy
+// are both kept out of the agent's reach; the hook BINARY is the one the agent
+// re-executes on every tool call, and a spawn failure is an ALLOW on both CLIs
+// — so a corrupted file, not a crafted one, is enough to disarm the gate.
+func TestCLIAgentPermissionRefusesBinaryInsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit fixture")
+	}
+	workspace := t.TempDir()
+	inside := filepath.Join(workspace, "iterion")
+	if err := os.WriteFile(inside, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", inside)
+
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", WorkDir: workspace, StoreDir: t.TempDir(), Permission: policy}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+		t.Fatalf("hook binary inside the gated workspace error = %v, want an explicit refusal", err)
+	}
+}

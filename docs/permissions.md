@@ -170,6 +170,25 @@ instead of rejecting. Lifting the restriction means carrying the shadow home
 and the hook binary into the container; until then the refusal is the honest
 answer.
 
+**The hook binary must live outside the workspace too.** It is the third thing
+the agent must not reach, and the weakest of the three: unlike the frozen argv,
+it is re-executed on every tool call, and both CLIs fail **open** when a hook
+fails to spawn — so corrupting the file is enough, no working replacement
+needed. `proc.LocateIterionBinary` resolves `os.Executable()`'s directory
+first, which in the repo-root shape (`./iterion run …` after `task build`) is
+inside the gated workspace, so iterion refuses that configuration and points at
+`ITERION_BIN` on a stable install path.
+
+**The hook binary must live outside the workspace.** It is the third thing the
+gated agent must not be able to reach, and the sharpest: unlike the frozen argv
+it is re-executed on *every* tool call, and both CLIs fail open on a spawn
+failure — so corrupting the file, not replacing it with a working one, is
+enough. `proc.LocateIterionBinary` resolves next to `os.Executable()` first,
+which in the repo-root shape (`./iterion run …`, or `task studio:dev` pinning
+`ITERION_BIN` to a freshly built `./iterion`) is inside the very workspace
+being gated. iterion refuses that configuration and points at `ITERION_BIN` on
+a stable install path.
+
 **Windows** needs Developer Mode (or an elevated process): the shadow home
 links the operator's CLI home with symlinks, which stock Windows denies to
 unprivileged processes. The failure names the limitation. Copying the entries
