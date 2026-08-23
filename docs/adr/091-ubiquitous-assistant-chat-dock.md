@@ -201,7 +201,12 @@ session full-width, and since both composers write the same store's
 - The assistant is reachable from every authenticated route, already
   knowing what the operator is looking at, with no per-view work.
 - One session and one transcript across navigation — by construction, not
-  by re-attachment.
+  by re-attachment. **Amended:** the session host stayed above the route
+  tree, but WHICH bot it is pointed at became route-dependent. Nexie answers
+  `/whats-next` and only there; the dock everywhere else is the general
+  assistant. One shared bot across both surfaces was wrong in both
+  directions — see "One session per correspondent" in
+  [docs/assistant-dock.md](../assistant-dock.md).
 - One dock implementation. A third chat surface (a copilot) supplies a
   session + a transcript renderer and inherits every state, the Escape
   handling, the breakpoint rule and the a11y wiring.

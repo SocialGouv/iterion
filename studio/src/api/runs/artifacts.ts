@@ -157,3 +157,40 @@ async function blobToBase64(blob: Blob): Promise<string> {
   }
   return btoa(parts.join(""));
 }
+
+// A conversational bot can produce a `.bot` DRAFT as part of a turn — Copi's
+// `design` posture does, and a deterministic node compiles it before the
+// operator reads the reply. The draft is NOT a file: the bot is read-only with
+// respect to the workspace, so it lives only in that node's artifact.
+//
+// Found by SHAPE, never by node name. The studio's chat registry is
+// manifest-driven (issue #333), so hardcoding "copi" here would put a specific
+// bot's node id back into studio code — the same coupling the registry
+// removed. Any node publishing a non-empty `draft_bot` string qualifies.
+export const DRAFT_BOT_FIELD = "draft_bot";
+
+// Newest artifacts first: a draft is the LATEST thing the conversation
+// produced, so the last-written node is where the search should start.
+export async function findDraftBotSource(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<string | null> {
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const s of ordered) {
+    if (opts?.signal?.aborted) return null;
+    let art: Artifact;
+    try {
+      art = await getArtifact(runId, s.node_id, s.version);
+    } catch {
+      // One unreadable artifact must not hide a draft published by another
+      // node — keep looking rather than failing the whole lookup.
+      continue;
+    }
+    const value = art.data?.[DRAFT_BOT_FIELD];
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return null;
+}

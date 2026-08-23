@@ -25,15 +25,27 @@ const STALE_MS = 5 * 60 * 1000;
 
 export const CHAT_REGISTRY_QUERY_KEY = ["chat-registry"] as const;
 
+// The dock's preferred correspondent. Nexie owns /whats-next and ONLY that
+// route (see resolveDockBot); the ubiquitous dock is the general iterion
+// assistant. Preferred, not required: a workspace without this bundle falls
+// back to whatever other chat bot it discovered, so the dock still works.
+export const PREFERRED_DOCK_BOT_ID = "copilot";
+
 export interface UseChatRegistryResult {
   /** Every conversational bot the server offers, id → entry. */
   byId: Record<string, FirstClassBot>;
   /** Stable display order: the built-in default first (it is the one an
    *  operator has muscle memory for), then alphabetical by label. */
   bots: FirstClassBot[];
+  /** The bots the DOCK may host — every conversational bot except the one
+   *  that owns /whats-next. */
+  dockBots: FirstClassBot[];
   /** Resolve one bot, falling back to the built-in entry so the dock keeps
    *  working while the listing is in flight or the endpoint is unavailable. */
   resolve: (id: string | null | undefined) => FirstClassBot | null;
+  /** Resolve the DOCK's correspondent: never the /whats-next bot, and
+   *  defaulting to the iterion assistant rather than to Nexie. */
+  resolveDock: (id: string | null | undefined) => FirstClassBot | null;
   loading: boolean;
   error: string | null;
 }
@@ -82,6 +94,23 @@ export function resolveChatBot(
   return byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? bots[0] ?? null;
 }
 
+// The dock's own resolution. It differs from resolveChatBot in what it
+// REFUSES: the /whats-next bot never answers in the dock, so a persisted
+// selection naming it (or a stale one from before the split) resolves to the
+// dock's default instead of resurrecting Nexie on /board.
+export function resolveDockBot(
+  byId: Record<string, FirstClassBot>,
+  dockBots: FirstClassBot[],
+  id: string | null | undefined,
+  loading: boolean,
+): FirstClassBot | null {
+  if (id && id !== DEFAULT_WHATS_NEXT_BOT_ID && byId[id]) return byId[id];
+  // Same cold-load rule as resolveChatBot: a persisted id is not "unknown"
+  // until discovery settles, so park rather than probe the default.
+  if (id && id !== DEFAULT_WHATS_NEXT_BOT_ID && loading) return null;
+  return byId[PREFERRED_DOCK_BOT_ID] ?? dockBots[0] ?? null;
+}
+
 export function useChatRegistry(): UseChatRegistryResult {
   const query = useQuery({
     queryKey: CHAT_REGISTRY_QUERY_KEY,
@@ -105,16 +134,29 @@ export function useChatRegistry(): UseChatRegistryResult {
     });
   }, [byId]);
 
+  const dockBots = useMemo(
+    () => bots.filter((b) => b.id !== DEFAULT_WHATS_NEXT_BOT_ID),
+    [bots],
+  );
+
   const resolve = useCallback(
     (id: string | null | undefined): FirstClassBot | null =>
       resolveChatBot(byId, bots, id, query.isLoading),
     [byId, bots, query.isLoading],
   );
 
+  const resolveDock = useCallback(
+    (id: string | null | undefined): FirstClassBot | null =>
+      resolveDockBot(byId, dockBots, id, query.isLoading),
+    [byId, dockBots, query.isLoading],
+  );
+
   return {
     byId,
     bots,
+    dockBots,
     resolve,
+    resolveDock,
     loading: query.isLoading,
     error: query.error ? errorMessage(query.error) : null,
   };

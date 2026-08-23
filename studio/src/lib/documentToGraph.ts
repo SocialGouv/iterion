@@ -527,3 +527,21 @@ export function generateLayerNodes(
 
   return { nodes, edges };
 }
+
+// Does this document contain any node the canvas can draw?
+//
+// The canvas overlays a "No workflow loaded" empty state when it does not, so
+// this list must track the kinds documentToGraph actually renders. It drifted
+// once already: `computes` was missing, which put the empty state OVER a
+// perfectly good deterministic (LLM-free) workflow. Keep them in step.
+export function documentHasEditableNodes(doc: IterDocument): boolean {
+  return (
+    doc.agents.length > 0 ||
+    doc.judges.length > 0 ||
+    doc.routers.length > 0 ||
+    doc.humans.length > 0 ||
+    doc.tools.length > 0 ||
+    (doc.computes ?? []).length > 0 ||
+    (doc.subbots ?? []).length > 0
+  );
+}

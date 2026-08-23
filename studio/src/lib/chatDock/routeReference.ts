@@ -345,6 +345,23 @@ export function isAssistantOwnRoute(path: string): boolean {
   return path === ASSISTANT_ROUTE;
 }
 
+// Routes the dock keeps clear of, beyond its own. The pipelines board is a
+// control center the operator reads across its full width; an assistant panel
+// parked over it is in the way rather than at hand. Segment-wise so
+// "/pipelinesX" is not swallowed by the prefix.
+export const DOCK_SILENT_ROUTE_PREFIX = "/pipelines";
+
+// The single answer to "does the dock render here". Every surface that
+// reserves or insets layout for the dock MUST ask this and not
+// isAssistantOwnRoute, or the shell reserves a column nothing fills.
+export function dockStandsDown(path: string): boolean {
+  if (isAssistantOwnRoute(path)) return true;
+  return (
+    path === DOCK_SILENT_ROUTE_PREFIX ||
+    path.startsWith(`${DOCK_SILENT_ROUTE_PREFIX}/`)
+  );
+}
+
 // matchPath returns the captured params, or null when the pattern
 // doesn't apply. Segment-wise so "/board" never matches "/board/labels".
 export function matchPath(

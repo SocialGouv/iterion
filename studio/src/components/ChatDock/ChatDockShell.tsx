@@ -10,7 +10,7 @@
 // steering panel. Everything session-specific (transcript, composer,
 // unread count, attention state) is injected by the caller.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import {
   ChatBubbleIcon,
@@ -19,7 +19,14 @@ import {
 } from "@radix-ui/react-icons";
 
 import { IconButton } from "@/components/ui";
-import { openedDock, type DockState } from "@/lib/chatDock/dockState";
+import {
+  DOCKED_WIDTH_DEFAULT_PX,
+  openedDock,
+  readDockSize,
+  writeDockSize,
+  type DockSize,
+  type DockState,
+} from "@/lib/chatDock/dockState";
 import { hasReferenceDrag } from "@/lib/chatDock/dragReference";
 
 // Two docks can be on the page at once (the assistant everywhere, the
@@ -61,7 +68,9 @@ function laneRightPx(base: number, rightInset: number): number {
 // Width of the self-rendered docked column. Exported because the shell
 // (AppShell) reserves exactly this much so the dock pushes the page
 // aside instead of covering it.
-export const DOCKED_WIDTH_PX = 380;
+// Re-exported from the lib so the layout reservation, the persisted width and
+// this panel cannot drift apart.
+export const DOCKED_WIDTH_PX = DOCKED_WIDTH_DEFAULT_PX;
 
 export interface ChatDockShellProps {
   dock: DockState;
@@ -97,6 +106,16 @@ export interface ChatDockShellProps {
   // "host": the shell renders nothing and the host lays the panel out
   // via ChatDockPanel (the run console, whose SideDock owns the column).
   dockedRightMode?: "self" | "host";
+  // Width of the self-hosted docked column, and the setter that makes it
+  // resizable. Owned by the caller because the SAME number drives the host
+  // page's layout reservation — a width the panel kept to itself would let
+  // the page and the dock disagree about where the edge is. Omitting
+  // onWidthChange simply leaves the column fixed.
+  dockedWidth?: number;
+  onWidthChange?: (px: number) => void;
+  // localStorage key under which the FLOATING panel remembers the size the
+  // operator dragged it to. Omitted = the panel resizes but forgets.
+  floatingSizeKey?: string;
   children: ReactNode;
 }
 
@@ -118,6 +137,9 @@ export function ChatDockShell({
   attentionTitle,
   openOnReferenceDrag = false,
   dockedRightMode = "host",
+  dockedWidth = DOCKED_WIDTH_DEFAULT_PX,
+  onWidthChange,
+  floatingSizeKey,
   children,
 }: ChatDockShellProps) {
   // Did the operator just open this, or is it restoring a persisted
@@ -167,8 +189,11 @@ export function ChatDockShell({
     return (
       <div
         className="fixed top-0 right-0 bottom-0 z-[var(--z-dock)]"
-        style={{ width: `min(${DOCKED_WIDTH_PX}px, 100vw)` }}
+        style={{ width: `min(${dockedWidth}px, 100vw)` }}
       >
+        {onWidthChange && (
+          <DockResizeHandle width={dockedWidth} onWidthChange={onWidthChange} />
+        )}
         <ChatDockPanel
           title={title}
           titleHint={titleHint}
@@ -187,6 +212,7 @@ export function ChatDockShell({
       lane={lane}
       rightInset={rightInset}
       focusOnMount={openedByOperator.current}
+      sizeKey={floatingSizeKey}
       onClose={() => changeDock("closed")}
     >
       <ChatDockChrome
@@ -212,9 +238,11 @@ export function ChatDockFloating({
   lane = 0,
   rightInset = 0,
   focusOnMount = false,
+  sizeKey,
   onClose,
   children,
 }: {
+  sizeKey?: string;
   label: string;
   lane?: DockLane;
   rightInset?: number;
@@ -226,6 +254,41 @@ export function ChatDockFloating({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+
+  // The panel is resized by the browser's own handle (CSS `resize`), which
+  // mutates the element and tells React nothing — so the size is READ back
+  // from the element rather than driven by state. Persisted per surface so a
+  // reopen restores the shape the operator chose.
+  const [size] = useState<DockSize>(() =>
+    sizeKey
+      ? readDockSize(sizeKey, {
+          width: FLOATING_WIDTH_PX,
+          height: FLOATING_HEIGHT_PX,
+        })
+      : { width: FLOATING_WIDTH_PX, height: FLOATING_HEIGHT_PX },
+  );
+  useEffect(() => {
+    const el = ref.current;
+    if (!sizeKey || !el || typeof ResizeObserver === "undefined") return;
+    // Trailing-edge write: a drag fires continuously and localStorage is
+    // synchronous, so debounce to the end of the gesture.
+    let t = 0;
+    const obs = new ResizeObserver(() => {
+      window.clearTimeout(t);
+      t = window.setTimeout(() => {
+        writeDockSize(sizeKey, {
+          width: el.offsetWidth,
+          height: el.offsetHeight,
+        });
+      }, 200);
+    });
+    obs.observe(el);
+    return () => {
+      window.clearTimeout(t);
+      obs.disconnect();
+    };
+  }, [sizeKey]);
+
   useEffect(() => {
     if (!focusOnMount) return;
     // Defer focus so any layout / autofocus inside children settles first.
@@ -247,8 +310,8 @@ export function ChatDockFloating({
       className="fixed bottom-4 z-[var(--z-dock)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
       style={{
         right: laneRightPx(FLOATING_LANE_PX[lane], rightInset),
-        width: FLOATING_WIDTH_PX,
-        height: FLOATING_HEIGHT_PX,
+        width: size.width,
+        height: size.height,
         minWidth: 320,
         minHeight: 280,
       }}
@@ -411,5 +474,66 @@ export function ChatDockChrome({
         </IconButton>
       </div>
     </div>
+  );
+}
+
+// Drag the docked column wider or narrower from its inner edge.
+//
+// Pointer events rather than mouse: one code path covers trackpad, mouse and
+// touch, and setPointerCapture keeps the drag alive when the cursor outruns
+// the 6px strip — which it always does. Width is committed on every move so
+// the page reflows WITH the drag; the clamp lives in setDockWidth, so a drag
+// past the ceiling simply stops widening.
+//
+// Keyboard-reachable on purpose: a separator that only answers to a drag is
+// unusable to anyone who cannot make one.
+function DockResizeHandle({
+  width,
+  onWidthChange,
+}: {
+  width: number;
+  onWidthChange: (px: number) => void;
+}) {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = width;
+    const onMove = (ev: PointerEvent) => {
+      // The panel is pinned to the RIGHT edge, so dragging left (a smaller
+      // clientX) makes it wider.
+      onWidthChange(startWidth + (startX - ev.clientX));
+    };
+    const onUp = (ev: PointerEvent) => {
+      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the assistant panel"
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 64 : 16;
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          onWidthChange(width + step);
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          onWidthChange(width - step);
+        }
+      }}
+      title="Drag to resize"
+      className="absolute left-0 top-0 bottom-0 z-10 w-1.5 -ml-0.5 cursor-col-resize hover:bg-accent/40 focus:bg-accent/60 focus:outline-none"
+    />
   );
 }

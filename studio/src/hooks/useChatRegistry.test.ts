@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { FIRST_CLASS_BOTS } from "@/lib/whats-next/firstClassBots";
 
-import { chatRegistryWithFloor, resolveChatBot } from "./useChatRegistry";
+import {
+  chatRegistryWithFloor,
+  resolveChatBot,
+  resolveDockBot,
+} from "./useChatRegistry";
 
 import type { BotEntry } from "@/api/bots";
 
@@ -25,6 +29,47 @@ describe("resolveChatBot", () => {
     expect(
       resolveChatBot(FIRST_CLASS_BOTS, [defaultBot], "whats-next", true),
     ).toBe(defaultBot);
+  });
+});
+
+// Nexie owns /whats-next and ONLY that route. The dock is the general
+// assistant everywhere else, so its resolution has to REFUSE the whats-next
+// bot rather than merely rank it last — otherwise a persisted selection from
+// before the split, or an empty registry, puts Nexie back on /board.
+describe("resolveDockBot", () => {
+  const nexie = FIRST_CLASS_BOTS["whats-next"]!;
+  const copi = {
+    id: "copilot",
+    label: "Copi",
+    description: "",
+    workflowPath: "bots/copilot/main.bot",
+    launcherVars: [],
+    nodeMap: {},
+  };
+  const byId = { ...FIRST_CLASS_BOTS, copilot: copi };
+
+  it("defaults to the iterion assistant, not to Nexie", () => {
+    expect(resolveDockBot(byId, [copi], "", false)).toBe(copi);
+  });
+
+  it("refuses the whats-next bot even when it is explicitly persisted", () => {
+    const got = resolveDockBot(byId, [copi], "whats-next", false);
+    expect(got).toBe(copi);
+    expect(got).not.toBe(nexie);
+  });
+
+  it("refuses it during loading too, instead of parking on it", () => {
+    expect(resolveDockBot(byId, [copi], "whats-next", true)).toBe(copi);
+  });
+
+  it("honours any other persisted choice", () => {
+    expect(resolveDockBot(byId, [copi], "copilot", false)).toBe(copi);
+  });
+
+  it("stands the dock down when Nexie is the only bot discovered", () => {
+    // The built-in floor is Nexie alone. The dock having no correspondent is
+    // the honest outcome here — resurrecting her would undo the split.
+    expect(resolveDockBot(FIRST_CLASS_BOTS, [], "", false)).toBeNull();
   });
 });
 

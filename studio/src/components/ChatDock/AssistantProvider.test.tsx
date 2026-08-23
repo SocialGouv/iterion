@@ -29,7 +29,9 @@ vi.mock("@/hooks/useChatRegistry", () => ({
     return {
       byId: bot ? { [bot.id]: bot } : {},
       bots: bot ? [bot] : [],
+      dockBots: bot ? [bot] : [],
       resolve: () => bot,
+      resolveDock: () => bot,
       loading: false,
       error: null,
     };

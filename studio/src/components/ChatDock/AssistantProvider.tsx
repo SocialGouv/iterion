@@ -40,21 +40,25 @@ import {
 import { useLocation } from "wouter";
 
 import {
-  DOCKED_WIDTH_PX,
   FLOATING_FOOTPRINT_PX,
 } from "@/components/ChatDock/ChatDockShell";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
-import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
+import { dockStandsDown, isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
 import {
   ASSISTANT_BOT_KEY,
   ASSISTANT_DOCK_KEY,
   DOCK_BREAKPOINT_PX,
+  DOCKED_WIDTH_DEFAULT_PX,
+  clampDockWidth,
   readDockState,
+  readDockWidth,
   writeDockState,
+  writeDockWidth,
   type DockState,
 } from "@/lib/chatDock/dockState";
 import { readStringFlag, writeStringFlag } from "@/lib/localStorageFlag";
 import { useChatRegistry } from "@/hooks/useChatRegistry";
+import { DEFAULT_WHATS_NEXT_BOT_ID } from "@/lib/whats-next/firstClassBots";
 import {
   type FirstClassBot,
 } from "@/lib/whats-next/firstClassBots";
@@ -89,6 +93,11 @@ interface AssistantDockContextValue {
   // the shell reserves 380px for a dock that rendered nothing. Cheap to
   // keep here because the lookup is a stable registry hit.
   hasSession: boolean;
+  // Width of the docked-right column, in px. Shared through the DOCK context
+  // (not the session one) because AppShell's layout reservation reads it and
+  // must not re-render on every websocket event.
+  dockWidth: number;
+  setDockWidth: (px: number) => void;
 }
 
 interface AssistantSessionContextValue {
@@ -170,13 +179,21 @@ function AssistantSessionHost({
   children: ReactNode;
 }) {
   const registry = useChatRegistry();
-  // Which chat bot answers, remembered per browser. A choice that resets on
-  // every reload is not a choice: an operator who switched to the iterion
-  // copilot is telling us what they want the dock to be.
+  // Which chat bot answers IN THE DOCK, remembered per browser. A choice that
+  // resets on every reload is not a choice: an operator who switched the dock
+  // to another assistant is telling us what they want it to be.
   const [selectedId, setSelectedId] = useState<string>(() =>
     readStringFlag(ASSISTANT_BOT_KEY, ""),
   );
-  const bot = registry.resolve(selectedId);
+  // Two lanes, one session host. Nexie owns /whats-next and is not offered
+  // anywhere else; the dock is the general assistant on every other route.
+  // Route-derived rather than a second mounted session: one session hook means
+  // one discovery/poll, and switching correspondent re-attaches to that bot's
+  // own run (useWhatsNextSession resets on bot.id).
+  const [location] = useLocation();
+  const bot = isAssistantOwnRoute(location)
+    ? registry.byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? null
+    : registry.resolveDock(selectedId);
   const selectBot = useCallback((id: string) => {
     setSelectedId(id);
     writeStringFlag(ASSISTANT_BOT_KEY, id);
@@ -191,6 +208,15 @@ function AssistantSessionHost({
     writeDockState(ASSISTANT_DOCK_KEY, next);
   }, []);
 
+  const [dockWidth, setDockWidthState] = useState<number>(() =>
+    readDockWidth(DOCKED_WIDTH_DEFAULT_PX),
+  );
+  const setDockWidth = useCallback((px: number) => {
+    const next = clampDockWidth(px);
+    setDockWidthState(next);
+    writeDockWidth(next);
+  }, []);
+
   const [dismissedRef, setDismissedRef] = useState<string | null>(null);
 
   const dockValue = useMemo<AssistantDockContextValue>(
@@ -201,12 +227,14 @@ function AssistantSessionHost({
       dismissedRef,
       setDismissedRef,
       hasSession: bot !== null,
+      dockWidth,
+      setDockWidth,
     }),
-    [store, dock, setDock, dismissedRef, bot],
+    [store, dock, setDock, dismissedRef, bot, dockWidth, setDockWidth],
   );
   const sessionValue = useMemo<AssistantSessionContextValue>(
-    () => ({ bot, session, bots: registry.bots, selectBot }),
-    [bot, session, registry.bots, selectBot],
+    () => ({ bot, session, bots: registry.dockBots, selectBot }),
+    [bot, session, registry.dockBots, selectBot],
   );
 
   return (
@@ -265,8 +293,8 @@ export function useAssistantReservedWidthPx(): number {
   // full-width-safe and can be minimised to reveal the untouched page.
   return ctx.dock === "docked-right" &&
     reservesLayout &&
-    !isAssistantOwnRoute(location)
-    ? DOCKED_WIDTH_PX
+    !dockStandsDown(location)
+    ? ctx.dockWidth
     : 0;
 }
 
@@ -304,8 +332,8 @@ function useWideDockViewport(): boolean {
 export function useAssistantFixedInsetPx(): number {
   const ctx = useContext(AssistantDockContext);
   const [location] = useLocation();
-  if (!ctx?.hasSession || isAssistantOwnRoute(location)) return 0;
-  if (ctx.dock === "docked-right") return DOCKED_WIDTH_PX;
+  if (!ctx?.hasSession || dockStandsDown(location)) return 0;
+  if (ctx.dock === "docked-right") return ctx.dockWidth;
   if (ctx.dock === "floating") return FLOATING_FOOTPRINT_PX;
   return 0;
 }

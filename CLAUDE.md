@@ -207,7 +207,8 @@ the hours this one spent.
   second conversational bot is a bundle, not a studio release), the
   page-context chip, dragging a run/card/bot onto the composer, and
   assistant-vs-steering on a run page. Read it before adding a chat
-  surface or wondering why the dock shows Nexie and not Copi.
+  surface, or to know which bot answers where: Nexie owns `/whats-next`
+  and only that route, the dock everywhere else is Copi.
 - [docs/models.md](docs/models.md) — the model registry (`iterion models`,
   `GET /api/models`: known × usable × capabilities × pricing), the launch-time
   model/backend/effort overrides, and how to change the studio assistant's

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
@@ -36,6 +36,10 @@ interface Props {
   // assistant bubble — Nexie's reply — must stay in the flow), but
   // its own textarea/buttons are suppressed.
   composerHandlesId?: string;
+  // Rendered inside the LAST turn's assistant bubble. For something that turn
+  // produced — an offer the assistant just made. Below the bubble it reads as
+  // chrome and gets missed; inside it, it reads as part of what was said.
+  bubbleSlot?: ReactNode;
 }
 
 export default function ChatTranscript({
@@ -44,6 +48,7 @@ export default function ChatTranscript({
   onHumanSubmit,
   busyMessageId = null,
   composerHandlesId,
+  bubbleSlot,
 }: Props) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -121,6 +126,7 @@ export default function ChatTranscript({
         <MessageRow
           key={m.id}
           message={m}
+          bubbleSlot={m.id === visible[visible.length - 1]?.id ? bubbleSlot : undefined}
           bot={bot}
           onHumanSubmit={onHumanSubmit}
           busy={m.kind === "human-question" && busyMessageId === m.id}
@@ -129,7 +135,7 @@ export default function ChatTranscript({
       ))}
       {messages.length === 0 && (
         <p className="text-body text-fg-subtle italic">
-          The conversation will start as soon as Nexie's first turn begins.
+          The conversation will start as soon as the first turn begins.
         </p>
       )}
       <div ref={endRef} />
@@ -143,12 +149,14 @@ function MessageRow({
   onHumanSubmit,
   busy,
   inputHidden,
+  bubbleSlot,
 }: {
   message: WhatsNextMessage;
   bot?: FirstClassBot;
   onHumanSubmit?: Props["onHumanSubmit"];
   busy: boolean;
   inputHidden: boolean;
+  bubbleSlot?: ReactNode;
 }) {
   switch (message.kind) {
     case "banner":
@@ -158,6 +166,8 @@ function MessageRow({
       return (
         <HumanChatTurn
           message={message}
+          persona={bot?.label ?? ""}
+          bubbleSlot={bubbleSlot}
           form={form}
           inputHidden={inputHidden}
           onSubmit={

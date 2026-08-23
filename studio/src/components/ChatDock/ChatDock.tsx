@@ -13,7 +13,8 @@
 // carried as a one-line pointer on every message.
 
 import { useCallback, useEffect, useState, type DragEvent as ReactDragEvent } from "react";
-import { useLocation } from "wouter";
+import { ArrowRightIcon, Pencil2Icon, PlusIcon } from "@radix-ui/react-icons";
+import { Link, useLocation } from "wouter";
 
 import {
   AssistantStoreScope,
@@ -33,20 +34,26 @@ import {
 } from "@/lib/chatDock/dragReference";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
+import { IconButton } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
 import { withPageContext } from "@/lib/chatDock/contextMessage";
-import type { DockState } from "@/lib/chatDock/dockState";
+import {
+  ASSISTANT_FLOATING_SIZE_KEY,
+  type DockState,
+} from "@/lib/chatDock/dockState";
 import { ASSISTANT_HINT, ASSISTANT_LANE, ASSISTANT_TITLE } from "@/lib/chatDock/labels";
-import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
+import { dockStandsDown } from "@/lib/chatDock/routeReference";
 import { useRouteReference } from "@/lib/chatDock/useRouteReference";
 import { useUnreadWhileClosed } from "@/lib/chatDock/useUnreadWhileClosed";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
+import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
+import { useDraftBotAvailable } from "@/hooks/useDraftBot";
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 export default function ChatDock() {
@@ -54,9 +61,10 @@ export default function ChatDock() {
   const sessionCtx = useAssistantSession();
   const [location] = useLocation();
   if (!dockCtx || !sessionCtx?.bot) return null;
-  // /whats-next renders this same session full-width — the dock would be
-  // a second composer over one conversation.
-  if (isAssistantOwnRoute(location)) return null;
+  // /whats-next renders this same session full-width — the dock would be a
+  // second composer over one conversation — and the pipelines control center
+  // is read across its full width.
+  if (dockStandsDown(location)) return null;
   return (
     // The transcript and composer read the run store; re-enter the
     // assistant's isolated one (the app around us sees the default).
@@ -72,6 +80,8 @@ export default function ChatDock() {
         session={sessionCtx.session}
         dock={dockCtx.dock}
         onDockChange={dockCtx.setDock}
+        dockWidth={dockCtx.dockWidth}
+        onWidthChange={dockCtx.setDockWidth}
       />
     </AssistantStoreScope>
   );
@@ -84,6 +94,8 @@ function AssistantDock({
   session,
   dock,
   onDockChange,
+  dockWidth,
+  onWidthChange,
 }: {
   bot: FirstClassBot;
   bots: readonly FirstClassBot[];
@@ -91,6 +103,8 @@ function AssistantDock({
   session: UseWhatsNextSession;
   dock: DockState;
   onDockChange: (next: DockState) => void;
+  dockWidth: number;
+  onWidthChange: (px: number) => void;
 }) {
   const { reference, active, dismissed, dismiss, restore } = useRouteReference();
 
@@ -114,6 +128,10 @@ function AssistantDock({
     [active, attached],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
+  // The chat equivalent of a CLI's `/new`. Lives in the dock's own chrome
+  // because a bot that answers ONLY here (Copi) would otherwise have no way
+  // to end a conversation — /whats-next's header is Nexie's, not his.
+  const newSession = useNewSessionAction({ bot, session });
 
   // Consume the attachments when a message leaves. Wrapping the composer's
   // send rather than clearing optimistically: a send that throws keeps the
@@ -152,7 +170,25 @@ function AssistantDock({
       title={ASSISTANT_TITLE}
       titleHint={ASSISTANT_HINT}
       headerSlot={
-        <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
+        <>
+          <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
+          {newSession.available && (
+            <IconButton
+              label={`Start a new ${bot.label} conversation`}
+              tooltip={
+                newSession.busy
+                  ? "Cancelling…"
+                  : "New conversation (ends this one)"
+              }
+              size="sm"
+              variant="ghost"
+              disabled={newSession.busy}
+              onClick={() => void newSession.start()}
+            >
+              <PlusIcon className="h-3.5 w-3.5" />
+            </IconButton>
+          )}
+        </>
       }
       lane={ASSISTANT_LANE}
       bubbleLabel="Open assistant"
@@ -162,7 +198,14 @@ function AssistantDock({
       attention={needsAttention}
       openOnReferenceDrag
       dockedRightMode="self"
+      dockedWidth={dockWidth}
+      onWidthChange={onWidthChange}
+      floatingSizeKey={ASSISTANT_FLOATING_SIZE_KEY}
     >
+      {/* The confirm for "new conversation". Rendered inside the dock so it
+          is reachable from wherever the dock is — the assistant is not
+          route-bound and neither is ending its session. */}
+      {newSession.dialog}
       {/* The whole dock body is the drop target, not just the textarea: an
           operator dragging a run card aims at the panel, and a 40px-tall
           bullseye is a feature nobody finds. dragOver only lights up for a
@@ -207,6 +250,12 @@ function AssistantDock({
             // The pending turn's input lives in the composer below, same
             // contract as the /whats-next route.
             composerHandlesId={composer.pendingHumanQuestion?.id}
+            bubbleSlot={
+              <DraftBotOffer
+                runId={session.runId}
+                revision={session.messages.length}
+              />
+            }
             onHumanSubmit={(messageId, outcome) => {
               const m = session.messages.find((x) => x.id === messageId);
               if (!m || m.kind !== "human-question") return;
@@ -367,4 +416,42 @@ export function AssistantDockCrashed() {
     if (docked && setDock) setDock("closed");
   }, [docked, setDock]);
   return null;
+}
+
+// The assistant's one write-shaped affordance, and it writes nothing: when a
+// turn produced a `.bot` draft, offer to OPEN it where bots are edited.
+//
+// A link rather than an automatic redirect, deliberately. The assistant may
+// propose a change of page; it may not perform one — a view that swaps itself
+// under the operator steals the control the dock exists to keep (it is
+// non-modal for the same reason). The draft is already compiled by the run's
+// own deterministic validator, so what this opens has been checked before it
+// is offered.
+//
+// The INVITATION is deliberately not rendered here. It is the bot's last
+// sentence (see the `design` posture in bots/copilot/main.bot), so it lands in
+// the operator's own language and in the assistant's voice — a static caption
+// underneath read as a disclaimer bolted to the message rather than part of
+// it. This component contributes the button; the bot contributes the offer.
+function DraftBotOffer({
+  runId,
+  revision,
+}: {
+  runId: string | null;
+  revision: number;
+}) {
+  const available = useDraftBotAvailable(runId, revision);
+  if (!runId || !available) return null;
+  return (
+    <div className="mt-3 border-t border-border-subtle pt-2.5">
+      <Link
+        href={`/editor?draft=${encodeURIComponent(runId)}`}
+        className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-label font-medium text-accent-contrast hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-accent-emphasis"
+      >
+        <Pencil2Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+        Open this draft in the editor
+        <ArrowRightIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      </Link>
+    </div>
+  );
 }

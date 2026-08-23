@@ -27,18 +27,31 @@ and it is still docked on `/runs`.
 `Escape` closes the floating panel. It is deliberately not a focus trap:
 the dock is a helper you consult while working, not a modal.
 
-## One session, everywhere
+## One session per correspondent, everywhere
 
-The dock and `/whats-next` are two views onto **one** session. Navigating
-between routes cannot start a second run or lose the transcript — the
-session is mounted above the route tree, so it is never unmounted by
-navigation.
+The session is mounted **above** the route tree, so navigating cannot start a
+second run or lose a transcript — that part is unconditional.
 
-The draft you are typing is shared too: start a sentence in the dock,
-open `/whats-next`, and it is still there.
+What the session is *pointed at* is the route's business, because there are
+**two lanes**:
+
+| Where | Who answers |
+| --- | --- |
+| `/whats-next` | **Nexie**, always — she is that tab's co-CTO and is not substitutable there |
+| every other route | the **dock's** correspondent: the general iterion assistant (Copi by default) |
+
+So a correspondent is not lost by navigating away: leave `/board` for
+`/whats-next` and back, and Copi's conversation is still the one in the dock.
+Each bot keeps its own run, and the draft you are typing is per session too.
+
+This is deliberately **not** one shared bot across both surfaces. That shape
+was wrong in both directions: Nexie occupied the dock on `/board` and `/runs`
+by default, and picking Copi for the dock made the "What's Next" tab answer as
+Copi. Pinned by
+[`AssistantRouteLane.test.tsx`](../studio/src/components/ChatDock/AssistantRouteLane.test.tsx).
 
 On `/whats-next` itself the dock stands down — that route already renders
-the same conversation full-width.
+Nexie's conversation full-width.
 
 If no session exists yet, the composer is still live: your first message
 starts one.
@@ -51,7 +64,14 @@ second one over it.
 
 ## Which bot answers
 
-The dock's correspondent is **discovered**, not hard-coded. A bot becomes
+The dock's correspondent is **discovered**, not hard-coded — with one
+structural exception: the bot that owns `/whats-next` is refused there, so a
+persisted selection naming it (or one left over from before the two lanes)
+resolves to the dock's default instead of putting Nexie back on `/board`
+(`resolveDockBot`). When Nexie is the only conversational bot a workspace has,
+the dock stands down rather than resurrect her; her own tab still works.
+
+A bot becomes
 a conversational bot by declaring a `chat:` block in its
 `manifest.yaml` — which node speaks, which one takes the reply, what the
 session launcher asks first:

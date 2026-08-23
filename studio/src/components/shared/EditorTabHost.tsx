@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
@@ -14,6 +14,8 @@ import {
   getOrCreateSelectionStore,
 } from "@/store/selection";
 import * as api from "@/api/client";
+import { parseSource } from "@/api/client";
+import { findDraftBotSource } from "@/api/runs/artifacts";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
@@ -31,6 +33,12 @@ interface Props {
   // on first mount. Subsequent renders are no-op (the store keeps the
   // previously-opened document and lets the user edit / save).
   file?: string;
+  // Run id of a conversation that drafted a `.bot`. The tab is seeded with
+  // that draft as an UNSAVED buffer — no file path, so the first save is a
+  // Save As and the operator chooses where it lands. This is the whole of the
+  // assistant's write authority here: it produced text, the operator carries
+  // it to disk. Ignored once the tab has a source (never clobbers edits).
+  draft?: string;
 }
 
 // EditorTabHost owns one editor subtree's local state: it instantiates
@@ -44,7 +52,7 @@ interface Props {
 // Disposal of the per-tab stores is driven by useTabsStore.closeTab,
 // not by this component's unmount — StrictMode would otherwise dispose-
 // then-recreate fresh, dropping the document on every mount.
-export default function EditorTabHost({ tabId, file }: Props) {
+export default function EditorTabHost({ tabId, file, draft }: Props) {
   const docStore = useMemo(() => getOrCreateDocumentStore(tabId), [tabId]);
   const selStore = useMemo(() => getOrCreateSelectionStore(tabId), [tabId]);
   const addToast = useUIStore((s) => s.addToast);
@@ -56,11 +64,33 @@ export default function EditorTabHost({ tabId, file }: Props) {
   const isActive = useTabsStore((s) => s.activeEditorTabId === tabId);
   const tab = useTabsStore((s) => s.tabs.find((t) => t.id === tabId));
 
-  const [loadState, setLoadState] = useState<LoadState>(() =>
-    file && docStore.getState().currentFilePath !== file ? "loading" : "ready",
-  );
+  const [loadState, setLoadState] = useState<LoadState>(() => {
+    if (file) return docStore.getState().currentFilePath !== file ? "loading" : "ready";
+    // A fresh store has a null source; anything else means the tab already
+    // carries a document we must not replace.
+    if (draft) return docStore.getState().currentSource === null ? "loading" : "ready";
+    return "ready";
+  });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+
+  // A toast is app-level, so it reads as the answer to whatever the operator
+  // just did. But EVERY hydrated tab is mounted (inactive ones are only
+  // display:none), so a BACKGROUND tab failing to reload — a draft whose run
+  // is gone, a file that moved — would raise one over an unrelated screen.
+  // That is how a working link came to look broken.
+  //
+  // The failure is not swallowed: the tab renders TabLoadErrorState inline,
+  // with Retry and Close, which is where it belongs. Toast only for the tab
+  // the operator is actually looking at, read at failure time rather than
+  // captured when the effect ran.
+  const toastIfOnScreen = useCallback(
+    (err: unknown, title: string) => {
+      if (useTabsStore.getState().activeEditorTabId !== tabId) return;
+      toastError(addToast, err, title);
+    },
+    [tabId, addToast],
+  );
 
   // Initial file hydration. We trigger it once per (tabId, file). If
   // the file changes via deep-link navigation later we let EditorView's
@@ -95,12 +125,59 @@ export default function EditorTabHost({ tabId, file }: Props) {
         if (cancelled) return;
         setLoadState("error");
         setLoadError(err instanceof Error ? err.message : String(err));
-        toastError(addToast, err, "Open file failed");
+        toastIfOnScreen(err, "Open file failed");
       });
     return () => {
       cancelled = true;
     };
-  }, [file, docStore, addToast, retryNonce]);
+  }, [file, docStore, toastIfOnScreen, retryNonce]);
+
+  // Draft hydration — the assistant's counterpart to opening a file. The
+  // draft lives in the conversation's artifact, never on disk, so it is
+  // fetched and parsed into the same shape openFile produces. Deliberately
+  // NOT markSaved(): the buffer is dirty from the first frame, because
+  // nothing has written it anywhere yet.
+  useEffect(() => {
+    if (!draft || file) return;
+    if (docStore.getState().currentSource !== null) {
+      setLoadState("ready");
+      return;
+    }
+    let cancelled = false;
+    const ctrl = new AbortController();
+    setLoadState("loading");
+    setLoadError(null);
+    void findDraftBotSource(draft, { signal: ctrl.signal })
+      .then(async (source) => {
+        if (cancelled) return;
+        if (!source) {
+          throw new Error(
+            "That conversation has no .bot draft to open — ask the assistant to draft one first.",
+          );
+        }
+        const parsed = await parseSource(source);
+        if (cancelled) return;
+        const st = docStore.getState();
+        // Same race guard as the file path: the operator may have started
+        // typing while the fetch was in flight.
+        if (st.currentSource === null) {
+          st.setDocument(parsed.document);
+          st.setCurrentSource(source);
+          st.setDiagnostics(parsed.diagnostics);
+        }
+        setLoadState("ready");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadState("error");
+        setLoadError(err instanceof Error ? err.message : String(err));
+        toastIfOnScreen(err, "Open draft failed");
+      });
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+  }, [draft, file, docStore, toastIfOnScreen, retryNonce]);
 
   // A tab restored from localStorage whose label names a file but whose
   // params carry none can't reload its document — surface that instead
@@ -109,8 +186,15 @@ export default function EditorTabHost({ tabId, file }: Props) {
   // marks a legitimate untitled scaffold; in-session tabs mid-open —
   // example fork, toolbar Open — legitimately have no file param yet and
   // are excluded by `restored`.
+  // A DRAFT tab has no file by construction and is re-hydratable from its
+  // run's artifact, so it is not a lost binding — excluded explicitly or a
+  // reload turns every draft into "couldn't reload".
   const lostBinding =
-    !file && !!tab?.restored && !!tab.label && !isDefaultTabLabel(tab.label);
+    !file &&
+    !draft &&
+    !!tab?.restored &&
+    !!tab.label &&
+    !isDefaultTabLabel(tab.label);
 
   let body;
   if (lostBinding) {
@@ -121,9 +205,9 @@ export default function EditorTabHost({ tabId, file }: Props) {
         message="This tab lost its link to the file it was editing. Reopen the file from Home → Recent files or the file picker."
       />
     );
-  } else if (file && loadState === "loading") {
+  } else if ((file || draft) && loadState === "loading") {
     body = <MainSpinner />;
-  } else if (file && loadState === "error") {
+  } else if ((file || draft) && loadState === "error") {
     body = (
       <TabLoadErrorState
         tabId={tabId}

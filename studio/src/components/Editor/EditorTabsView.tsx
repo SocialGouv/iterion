@@ -33,9 +33,24 @@ export default function EditorTabsView() {
   const tabs = useTabsStore(useShallow(selectEditorTabs));
   const activeTabId = useTabsStore((s) => s.activeEditorTabId);
 
+  // Assign, don't merely open: see the invariant note below.
+  const ensureActive = (id: string) => {
+    if (useTabsStore.getState().activeEditorTabId !== id) {
+      useTabsStore.getState().setActive(id);
+    }
+  };
+
   const fileParam = useMemo(() => {
     const sp = new URLSearchParams(search);
     return sp.get("file") ?? "";
+  }, [search]);
+
+  // `?draft=<runId>` — the assistant drafted a `.bot` and proposed opening it
+  // here. A draft has no path (the bot never wrote to the workspace), so it
+  // keys its own tab and hydrates into an unsaved buffer.
+  const draftParam = useMemo(() => {
+    const sp = new URLSearchParams(search);
+    return sp.get("draft") ?? "";
   }, [search]);
 
   // URL → tab: when `?file=X` is present, ensure the matching editor
@@ -45,8 +60,32 @@ export default function EditorTabsView() {
   // takes over and presents the picker instead of an empty editor.
   useEffect(() => {
     if (!fileParam) return;
-    useTabsStore.getState().openTab("editor", { file: fileParam });
-  }, [fileParam]);
+    ensureActive(useTabsStore.getState().openTab("editor", { file: fileParam }));
+  }, [fileParam, tabs, activeTabId]);
+
+  // Same contract as `?file=`: idempotent, because openTab focuses an
+  // existing tab carrying identical params rather than opening a second one.
+  useEffect(() => {
+    if (!draftParam || fileParam) return;
+    ensureActive(
+      useTabsStore.getState().openTab("editor", { draft: draftParam }, "Draft"),
+    );
+  }, [draftParam, fileParam, tabs, activeTabId]);
+
+  // The invariant both effects above keep: if the URL names a document, ITS
+  // tab is the one on screen.
+  //
+  // openTab already activates what it opens — but the persist middleware
+  // rehydrates `activeEditorTabId` from localStorage and can land AFTER these
+  // effects, restoring a previously-active tab over the one the URL just
+  // asked for. The operator then reads a stale tab's state as the answer to
+  // the link they clicked (an old draft's "couldn't reload", say) and
+  // concludes the link is broken.
+  //
+  // Re-asserting on every tabs/active change makes the effects self-correcting
+  // whatever the ordering. It cannot fight a manual tab click either: selecting
+  // a tab rewrites the URL first (to `?file=…` or bare `/editor`), so the guard
+  // above returns before reaching here.
 
   // Cold-start restore: the persisted ACTIVE tab rehydrates dormant
   // (hydrated:false) and is never clicked, so without this it shows selected in
@@ -140,7 +179,11 @@ export default function EditorTabsView() {
                 className={`absolute inset-0 ${tab.id === activeTabId ? "block" : "hidden"}`}
                 aria-hidden={tab.id === activeTabId ? undefined : true}
               >
-                <EditorTabHost tabId={tab.id} file={tab.params.file} />
+                <EditorTabHost
+                  tabId={tab.id}
+                  file={tab.params.file}
+                  draft={tab.params.draft}
+                />
               </div>
             ))}
         </div>

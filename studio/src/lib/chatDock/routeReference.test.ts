@@ -6,6 +6,7 @@ import {
   mintReference,
   referenceForRoute,
   sanitizeReferenceText,
+  dockStandsDown,
 } from "./routeReference";
 
 describe("sanitizeReferenceText", () => {
@@ -281,5 +282,34 @@ describe("mintReference", () => {
     expect(
       mintReference("bot", "bots/copilot/main.bot", "Copilot")?.ref,
     ).toBe("bot/bots/copilot/main.bot");
+  });
+});
+
+// The dock is mounted at shell level, so "where does it NOT appear" is a
+// route rule rather than a per-view decision. Both exclusions exist for the
+// same reason — the surface is read full-width and a parked panel is in the
+// way — but they reach it differently: /whats-next already renders the very
+// same session, while /pipelines simply wants the room.
+describe("dockStandsDown", () => {
+  it("stands down on the assistant's own route", () => {
+    expect(dockStandsDown("/whats-next")).toBe(true);
+  });
+
+  it("stands down on the pipelines control center", () => {
+    expect(dockStandsDown("/pipelines")).toBe(true);
+  });
+
+  it("stands down on a pipelines card too", () => {
+    expect(dockStandsDown("/pipelines/cards/native/abc123")).toBe(true);
+  });
+
+  it("does not swallow a route that merely shares the prefix", () => {
+    expect(dockStandsDown("/pipelinesX")).toBe(false);
+  });
+
+  it("rides every ordinary route", () => {
+    for (const path of ["/", "/board", "/runs", "/runs/019f", "/bots"]) {
+      expect(dockStandsDown(path)).toBe(false);
+    }
   });
 });

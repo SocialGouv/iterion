@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import type {
   HumanQuestionMessage,
@@ -50,6 +50,11 @@ interface Props {
   // message must stay in the transcript flow) but no inline
   // textarea/buttons.
   inputHidden?: boolean;
+  // Display name of the bot speaking (manifest display_name, e.g. "Copi").
+  persona: string;
+  // Rendered inside this turn's assistant bubble. Only the turn that produced
+  // the thing gets one — see ChatTranscript's `bubbleSlot`.
+  bubbleSlot?: ReactNode;
 }
 
 export default function HumanChatTurn({
@@ -58,6 +63,8 @@ export default function HumanChatTurn({
   onSubmit,
   busy = false,
   inputHidden = false,
+  persona,
+  bubbleSlot,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -105,7 +112,7 @@ export default function HumanChatTurn({
   const disabled = busy || localSubmitting;
 
   if (message.status === "answered") {
-    return <AnsweredTurn message={message} />;
+    return <AnsweredTurn message={message} persona={persona} />;
   }
 
   const hasActions = (message.actions?.length ?? 0) > 0;
@@ -165,14 +172,14 @@ export default function HumanChatTurn({
   if (inputHidden) {
     return (
       <div className="space-y-2">
-        <AssistantBubble text={message.prompt} />
+        <AssistantBubble text={message.prompt} persona={persona} slot={bubbleSlot} />
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      <AssistantBubble text={message.prompt} />
+      <AssistantBubble text={message.prompt} persona={persona} slot={bubbleSlot} />
 
       {hasForm && (
         <div className="ml-6">
@@ -319,28 +326,46 @@ function QuickActionStrip({
   );
 }
 
-function AssistantBubble({ text }: { text: string }) {
+function AssistantBubble({
+  text,
+  persona,
+  slot,
+}: {
+  text: string;
+  persona: string;
+  // Rendered INSIDE the bubble, under the text. For an offer this turn made —
+  // outside it, the offer reads as chrome and gets missed.
+  slot?: ReactNode;
+}) {
   return (
     <div className="flex items-start gap-2">
       <span
         className="mt-1 px-2 py-0.5 rounded-full bg-accent-soft text-accent-fg text-caption font-bold flex items-center justify-center shrink-0"
         aria-hidden="true"
       >
-        {/* whats-next's persona (manifest display_name); this bubble is
-            whats-next-specific so the name is fixed here. */}
-        Nexie
+        {/* The correspondent's persona (manifest display_name). The dock
+            is multi-bot, so this is threaded from the active bot rather
+            than fixed: a Copi reply must not be labelled "Nexie". */}
+        {persona}
       </span>
       <div className="flex-1 rounded-lg bg-surface-2 border border-border-subtle px-3 py-2 text-label text-fg-default">
         <MarkdownText value={text} size="sm" />
+        {slot}
       </div>
     </div>
   );
 }
 
-function AnsweredTurn({ message }: { message: HumanQuestionMessage }) {
+function AnsweredTurn({
+  message,
+  persona,
+}: {
+  message: HumanQuestionMessage;
+  persona: string;
+}) {
   return (
     <div className="space-y-2">
-      <AssistantBubble text={message.prompt} />
+      <AssistantBubble text={message.prompt} persona={persona} />
       <div className="flex items-start gap-2 ml-6">
         <span
           className="mt-1 px-2 py-0.5 rounded-full bg-surface-3 text-fg-default text-caption font-bold flex items-center justify-center shrink-0"
