@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -45,7 +47,7 @@ type subbotDepthKey struct{}
 // whereas here the daemon's cwd is the host repo, so workDir must be threaded
 // explicitly or the child resolves relative paths (a bot's `.venv/bin/python`)
 // against the wrong tree.
-func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, logger *iterlog.Logger) runtime.SubbotRunner {
+func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger) runtime.SubbotRunner {
 	parentDir := filepath.Dir(parentPath)
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
@@ -60,6 +62,14 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// it twice.
 		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
 			return out, aerr
+		}
+
+		// Le workDir EFFECTIF du parent prime : sous `worktree: auto` le moteur a
+		// troqué le sien contre un worktree par run, et le chemin de lancement
+		// pointerait alors sur un arbre qui ignore tout du travail du parent.
+		childWorkDir := workDir
+		if req.WorkDir != "" {
+			childWorkDir = req.WorkDir
 		}
 
 		childPath := req.Source
@@ -111,6 +121,10 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// the child workflow's name and the same subbot ends up with two
 			// memory spaces depending on which surface launched the parent.
 			BotID: runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath),
+			// Sans ce liant, un message adressé à l'enfant depuis le board est
+			// accepté, persisté `queued`, et jamais délivré : un silence, pas
+			// une erreur. Le parent le câble, le studio aussi.
+			Inbox: &model.StoreInboxBinder{Store: s},
 		}
 		// Local secret injection, gated on the CHILD's own declaration: a
 		// child that declares `secrets:` needs them resolved even when the
@@ -146,7 +160,13 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.
-			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, workDir, s, sealer, logger)),
+			runtime.WithSubbotRunner(subbotRunnerForDispatch(childPath, storeDir, childWorkDir, s, sealer, dailyCap, logger)),
+			// Le parent a six reprises à repli exponentiel sur un incident
+			// transitoire (timeout http2, 429, DNS) ; sans ça l'enfant mourrait
+			// définitivement au premier, et comme `ReattachSubbotChild` repart
+			// de zéro sur un enfant `failed`, la reprise du dispatcher repaierait
+			// tout son travail déjà fait.
+			runtime.WithRecoveryDispatch(recovery.Dispatch(recovery.DefaultRecipes())),
 			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {
 					lastMu.Lock()
@@ -155,8 +175,16 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 				}
 			}),
 		}
-		if workDir != "" {
-			opts = append(opts, runtime.WithWorkDir(workDir))
+		if childWorkDir != "" {
+			opts = append(opts, runtime.WithWorkDir(childWorkDir))
+		}
+		// Le plafond de dépense quotidien : le parent l'a, l'enfant ne l'avait
+		// pas. Or le subbot est précisément là où l'on délègue le travail
+		// agentique coûteux — un bot qui pousse ses nœuds LLM dans ses enfants
+		// dépassait donc `limits.max_cost_per_day_usd` sans jamais le déclencher,
+		// et le registre partagé ne voyait pas l'essentiel de la dépense.
+		if dailyCap != nil {
+			opts = append(opts, runtime.WithDailyCap(dailyCap))
 		}
 		childEng := runtime.New(childWf, s, childExec, opts...)
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)

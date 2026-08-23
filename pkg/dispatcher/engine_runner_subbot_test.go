@@ -212,35 +212,58 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		})
 	}()
 
-	// Catch the child mid-pass and prove its lock is held.
+	// Catch the child mid-pass and prove its lock is held. A free lock is only
+	// damning while the child is STILL running: the child writes its terminal
+	// status before releaseLock() runs, so a probe landing in that window would
+	// see "running, lock free" without any defect — hence the re-read before
+	// failing, and the requirement to have positively observed the lock held.
 	childID := ""
+	held := false
 	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) && childID == "" {
+	for time.Now().Before(deadline) && !held {
 		ids, lerr := probe.ListRuns(context.Background())
 		if lerr != nil {
 			t.Fatalf("ListRuns: %v", lerr)
 		}
+		terminal := false
 		for _, id := range ids {
 			if id == runID {
 				continue
 			}
 			r, rerr := probe.LoadRun(context.Background(), id)
-			if rerr != nil || r.ParentRunID != runID || r.Status != store.RunStatusRunning {
+			if rerr != nil || r.ParentRunID != runID {
 				continue
 			}
 			childID = id
-			if lock, aerr := probe.LockRun(context.Background(), id); aerr == nil {
-				_ = lock.Unlock()
+			if r.Status != store.RunStatusRunning {
+				terminal = r.Status.IsTerminal()
+				break
+			}
+			lock, aerr := probe.LockRun(context.Background(), id)
+			if aerr != nil {
+				held = true // locked by the child engine — what we came to see
+				break
+			}
+			_ = lock.Unlock()
+			after, arr := probe.LoadRun(context.Background(), id)
+			if arr == nil && after.Status == store.RunStatusRunning {
 				t.Fatalf("child %s is running but its run lock was free — the orphan reaper would read it as dead", id)
 			}
+			terminal = true // raced the end of the active pass, not a defect
 			break
 		}
-		if childID == "" {
+		if terminal {
+			break
+		}
+		if !held {
 			time.Sleep(25 * time.Millisecond)
 		}
 	}
 	if childID == "" {
-		t.Fatal("never observed the child run in `running` state — cannot assert on its lock")
+		t.Fatal("never observed a child run — the subbot node did not spawn one")
+	}
+	if !held {
+		t.Fatal("never caught the child mid-pass — its lock was never observed held; raise the child's sleep so the probe has a window")
 	}
 
 	if derr := <-done; derr != nil {

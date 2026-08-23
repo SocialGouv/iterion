@@ -336,7 +336,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		// so without it a child resolves its relative paths against the wrong
 		// tree. See subbotRunnerForDispatch.
 		runtime.WithSubbotRunner(subbotRunnerForDispatch(
-			r.workflowPath, spec.StoreDir, spec.WorkspacePath, s, r.sealer, runLogger,
+			r.workflowPath, spec.StoreDir, spec.WorkspacePath, s, r.sealer, spec.DailyCap, runLogger,
 		)),
 	}
 	// Stamp the issue back-reference so the studio's RunHeader can

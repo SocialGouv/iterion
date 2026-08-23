@@ -195,6 +195,14 @@ type SubbotRequest struct {
 	// disambiguates loops). Mongo-field-safe (no '.'/'$'). Empty disables
 	// re-attach (the runner always spawns fresh).
 	ReattachKey string
+	// WorkDir is the parent engine's EFFECTIVE working directory at the moment
+	// the subbot node runs — not the one it was launched with. Under the
+	// default `worktree: auto` the engine swaps its workDir for a fresh per-run
+	// worktree (engine_run.go), so a runner that reused the launch-time path
+	// would point the child at a checkout holding none of the parent's work,
+	// including anything the parent committed. Advisory: empty means "the host
+	// decides".
+	WorkDir string
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
