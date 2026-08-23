@@ -290,6 +290,9 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 		return err
 	}
 	if opts.ClearLastRun {
+		if err := refuseClearWhileRunAlive(opts.IssueCommonOptions, iss.LastRunID); err != nil {
+			return err
+		}
 		if err := s.SetLastRun(id, "", ""); err != nil {
 			return err
 		}
@@ -304,6 +307,46 @@ func RunIssueUpdate(p *Printer, opts IssueUpdateOptions) error {
 	p.Line("Updated %s", shortID(iss.ID))
 	if opts.ClearLastRun {
 		p.Line("Cleared the last-run pointer — the next dispatch starts a fresh run instead of resuming.")
+	}
+	return nil
+}
+
+// refuseClearWhileRunAlive stops `--clear-last-run` from forgetting a run that
+// is still ALIVE. The pointer is the sole persisted input to the dispatcher's
+// sibling guard (lastRunForbidsFresh, pkg/dispatcher/retry.go): with it gone,
+// the next dispatch mints a fresh run from the workflow entry — and if the
+// original is still running or parked on a question, that is two agents on one
+// ticket, two branches and two PRs for one issue.
+//
+// The flag's whole purpose is to defeat that guard for a run that is dead but
+// RESUMABLE (`failed_resumable` / `cancelled` — the documented case, and both
+// forbidden statuses), so the discrimination that matters is dead-vs-live, not
+// terminal-vs-not. A run that cannot be read is not protected: it is already
+// gone as far as the dispatcher is concerned.
+func refuseClearWhileRunAlive(opts IssueCommonOptions, runID string) error {
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	rs, err := store.New(store.ResolveStoreDir(cwd, opts.StoreDir))
+	if err != nil {
+		// No readable store — nothing to protect, and refusing here would
+		// block the escape hatch over a condition we cannot establish.
+		return nil
+	}
+	run, err := rs.LoadRun(context.Background(), runID)
+	if err != nil || run == nil {
+		return nil
+	}
+	switch run.Status {
+	case store.RunStatusRunning, store.RunStatusQueued,
+		store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		return fmt.Errorf(
+			"issue update: run %s is still %s — clearing the pointer now would let the next dispatch start a SECOND run on this ticket; stop or answer it first (`iterion inspect --run-id %s`)",
+			shortID(runID), run.Status, runID)
 	}
 	return nil
 }

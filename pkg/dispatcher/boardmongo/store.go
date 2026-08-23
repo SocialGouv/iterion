@@ -451,7 +451,11 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if err != nil {
 		return err
 	}
-	if sameGiveUp(iss.GaveUp, g) && (g == nil || g.State == iss.State) {
+	// Compare against what would ACTUALLY be written — the store overrides a
+	// caller's state with the ticket's own (below), so comparing the caller's
+	// value would re-write and re-emit on every repeat call whenever the two
+	// disagree.
+	if sameGiveUp(iss.GaveUp, giveUpFor(iss, g)) {
 		return nil
 	}
 	// stamped is what actually landed on the issue (nil for a clear); the
@@ -461,14 +465,10 @@ func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
 	if g == nil {
 		iss.GaveUp = nil
 	} else {
-		stamp := *g
+		stamp := *giveUpFor(iss, g)
 		if stamp.At.IsZero() {
 			stamp.At = time.Now().UTC()
 		}
-		// Recorded against the state the ticket is actually in — see the
-		// filesystem store's SetGaveUp for why a stamp that disagrees with
-		// its issue would be dropped by the write that persists it.
-		stamp.State = iss.State
 		iss.GaveUp = &stamp
 		stamped = &stamp
 	}
@@ -496,6 +496,23 @@ func expireGiveUp(iss *native.Issue) {
 	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
 		iss.GaveUp = nil
 	}
+}
+
+// giveUpFor returns the stamp that would land on iss for a caller's g: the
+// same values, but described against the state the ticket is ACTUALLY in.
+//
+// The store overrides the caller's state on purpose. A stamp born disagreeing
+// with its issue would be expired by the very write that persists it
+// (expireGiveUp) and vanish silently; recording what is true keeps the
+// caller's intent ("filed as X") and the record in agreement, and lets the
+// idempotence check compare like with like.
+func giveUpFor(iss *native.Issue, g *native.GiveUp) *native.GiveUp {
+	if g == nil {
+		return nil
+	}
+	out := *g
+	out.State = iss.State
+	return &out
 }
 
 // sameGiveUp compares two stamps on the fields that decide behaviour (the

@@ -1092,3 +1092,36 @@ func TestSetGaveUpEventReportsTheStateItStamped(t *testing.T) {
 		t.Errorf("event run_id = %v, want run-9", got)
 	}
 }
+
+// Re-stamping the same give-up must stay a no-op even when the caller's state
+// disagrees with the ticket's — the store overrides it, so comparing the
+// caller's value would re-write and re-emit on every call, churning the card's
+// UpdatedAt (and with it the board's `?since=` pruning) on every dispatcher tick.
+func TestSetGaveUpIsIdempotentAgainstWhatItWouldWrite(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "raced", State: StateInProgress})
+	stamp := func() *GiveUp {
+		return &GiveUp{RunID: "run-9", State: StateBlocked, Attempts: 2}
+	}
+	if err := s.SetGaveUp(iss.ID, stamp()); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+	first, _ := s.Get(iss.ID)
+	if err := s.SetGaveUp(iss.ID, stamp()); err != nil {
+		t.Fatalf("SetGaveUp again: %v", err)
+	}
+	again, _ := s.Get(iss.ID)
+	if !again.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Errorf("a repeat stamp rewrote the issue: %s → %s", first.UpdatedAt, again.UpdatedAt)
+	}
+	n := 0
+	_ = s.ScanEvents(func(e *Event) bool {
+		if e.Type == EvtIssueGaveUp && e.IssueID == iss.ID {
+			n++
+		}
+		return true
+	})
+	if n != 1 {
+		t.Errorf("give-up events = %d, want 1 — the repeat call re-emitted", n)
+	}
+}

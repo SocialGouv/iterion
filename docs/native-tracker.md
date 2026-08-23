@@ -175,6 +175,14 @@ names a resumable run the dispatcher **resumes** it on the next dispatch
 instead of starting one; clearing it is how an operator gets back to a fresh
 run after a failure resuming cannot fix. The run history (`runs`) is kept.
 
+Two limits are deliberate. It **refuses** while the run is still alive
+(`running` / `queued` / `paused_*`): that pointer is also the dispatcher's
+sibling guard, and clearing it there would let the next dispatch start a
+*second* run on the same ticket. And a live dispatcher with a retry already
+scheduled for the ticket holds its own in-memory pointer, which wins over the
+persisted one for that attempt — for a ticket the dispatcher has **given up**
+on, the retry was dropped at give-up, so the flag takes effect immediately.
+
 `iterion issue list` accepts `--json` (the global flag) to emit
 machine-readable output:
 

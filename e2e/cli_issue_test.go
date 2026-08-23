@@ -3,6 +3,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // `iterion issue` is the operator's hands-on surface onto the native
@@ -385,6 +387,89 @@ func TestIssueCloseRefusesABoardWithNoTerminalState(t *testing.T) {
 	}
 	if got.State != native.StateReady {
 		t.Errorf("a refused close moved the card to %q; it must stay put", got.State)
+	}
+}
+
+// `--clear-last-run` must NOT forget a run that is still alive. The pointer is
+// the dispatcher's sibling guard (lastRunForbidsFresh): clearing it while the
+// run is running or parked on a question lets the next dispatch mint a second
+// run on the same ticket — two agents, and on a `worktree: auto` bot two
+// branches and two PRs for one issue.
+//
+// Mutation check: drop the guard and the live case clears the pointer.
+func TestIssueCLIClearLastRunRefusesWhileTheRunIsAlive(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     store.RunStatus
+		wantRefuse bool
+	}{
+		{"running", store.RunStatusRunning, true},
+		{"parked on a question", store.RunStatusPausedWaitingHuman, true},
+		{"queued for a slot", store.RunStatusQueued, true},
+		// The documented case: dead, but resumable — which is exactly why the
+		// flag exists, since a resumable pointer is what keeps being resumed.
+		{"failed_resumable", store.RunStatusFailedResumable, false},
+		{"cancelled", store.RunStatusCancelled, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			storeDir := t.TempDir()
+			common := cli.IssueCommonOptions{StoreDir: storeDir}
+			card := createIssueViaCLI(t, cli.IssueCreateOptions{
+				IssueCommonOptions: common,
+				Title:              "owns a run",
+				State:              native.StateInProgress,
+			})
+			rs, err := store.New(storeDir)
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			ctx := context.Background()
+			if _, err := rs.CreateRun(ctx, "run-live", "bot", nil); err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			run, err := rs.LoadRun(ctx, "run-live")
+			if err != nil {
+				t.Fatalf("LoadRun: %v", err)
+			}
+			run.Status = c.status
+			if err := rs.SaveRun(ctx, run); err != nil {
+				t.Fatalf("SaveRun: %v", err)
+			}
+			if err := reopenBoard(t, storeDir).SetLastRun(card.ID, "run-live", ""); err != nil {
+				t.Fatalf("SetLastRun: %v", err)
+			}
+
+			var buf bytes.Buffer
+			p := &cli.Printer{W: &buf, Format: cli.OutputHuman}
+			err = cli.RunIssueUpdate(p, cli.IssueUpdateOptions{
+				IssueCommonOptions: common,
+				IDOrPrefix:         card.ID,
+				ClearLastRun:       true,
+			})
+			got, getErr := reopenBoard(t, storeDir).Get(card.ID)
+			if getErr != nil {
+				t.Fatalf("reload issue: %v", getErr)
+			}
+			if c.wantRefuse {
+				if err == nil {
+					t.Fatalf("clearing a %s run was allowed — the next dispatch could start a sibling", c.status)
+				}
+				if !strings.Contains(err.Error(), "SECOND run") {
+					t.Errorf("error = %v, want it to name the consequence", err)
+				}
+				if got.LastRunID != "run-live" {
+					t.Errorf("a refused clear still dropped the pointer: %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("clearing a %s run was refused: %v", c.status, err)
+			}
+			if got.LastRunID != "" {
+				t.Errorf("pointer survived on a %s run: %+v", c.status, got)
+			}
+		})
 	}
 }
 
