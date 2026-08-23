@@ -34,7 +34,7 @@ const (
 	DiagRefFieldNotInSchema      DiagCode = "C031" // outputs ref field not in output schema
 	DiagRefNodeNoSchema          DiagCode = "C032" // outputs ref field on node without output schema
 	DiagUndeclaredVar            DiagCode = "C033" // vars ref to undeclared variable
-	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in input schema
+	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in the namespace C034 validates (node input schema, or source output schema on an edge with-mapping)
 	DiagUnknownResourceInNeeds   DiagCode = "C195" // needs: references a resource not declared in resources:
 	DiagUnknownArtifact          DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable      DiagCode = "C036" // outputs ref to node not reachable before consumer

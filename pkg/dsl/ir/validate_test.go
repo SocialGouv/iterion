@@ -2178,7 +2178,7 @@ workflow test:
 }
 
 // ---------------------------------------------------------------------------
-// C034 — input ref field not in input schema
+// C034 — input ref field not in the validated namespace
 // ---------------------------------------------------------------------------
 
 func TestValidateRefInputFieldNotInSchema(t *testing.T) {
@@ -2253,6 +2253,146 @@ agent a:
 workflow test:
   entry: a
   a -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+}
+
+// C034 on an edge with-mapping validates {{input.x}} against the SOURCE
+// node's OUTPUT schema — the payload available when the edge fires — not
+// the source input schema and not run-level inputs / vars.
+
+const edgeInputRefSrc = `
+schema src_in:
+  only_in: string
+
+schema src_out:
+  produced: string
+
+schema dst_in:
+  from_out: string
+  from_in: string
+  from_run: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent src:
+  model: "m"
+  input: src_in
+  output: src_out
+  system: sys
+  user: usr
+
+agent dst:
+  model: "m"
+  input: dst_in
+  output: src_out
+  system: sys
+  user: usr
+
+vars:
+  reviewer: string
+
+workflow test:
+  entry: src
+  src -> dst with {
+    from_out: "{{input.produced}}",
+    from_in: "{{input.only_in}}",
+    from_run: "{{input.reviewer}}"
+  }
+  dst -> done
+`
+
+func TestValidateRefInputOnEdge_SourceOutputOK(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	for _, d := range r.Diagnostics {
+		if d.Code != DiagInputFieldNotInSchema {
+			continue
+		}
+		if strings.Contains(d.Message, `field "produced"`) {
+			t.Errorf("C034 on source-output field produced: %s", d.Message)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_SourceInputOnly_C034(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagInputFieldNotInSchema && strings.Contains(d.Message, `field "only_in"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C034 for {{input.only_in}} on the edge, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"output schema",
+		"source node",
+		"edge with-mappings",
+		"input schema, not its output",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C034 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_RunInputOnly_C034VarsHint(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagInputFieldNotInSchema && strings.Contains(d.Message, `field "reviewer"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C034 for {{input.reviewer}} on the edge, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"output schema",
+		"source node",
+		"edge with-mappings",
+		"{{vars.reviewer}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C034 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_RouterPassThrough_NoSchemaSkip(t *testing.T) {
+	src := `
+schema payload:
+  data: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+router distribute:
+  mode: fan_out_all
+
+agent analyzer:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+  readonly: true
+
+workflow test:
+  entry: distribute
+  distribute -> analyzer with { data: "{{input.data}}" }
+  analyzer -> done
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagInputFieldNotInSchema)

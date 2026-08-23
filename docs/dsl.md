@@ -123,7 +123,7 @@ Schemas define structured node inputs/outputs. Field types match variable types 
 | Reference | Meaning |
 |---|---|
 | `{{vars.name}}` | Resolved workflow variable. |
-| `{{input.field}}` | Current node input. |
+| `{{input.field}}` | Current node input (prompts, tool commands, compute exprs). On an edge `with` mapping: the **source node's output** — the payload available when the edge fires. A router copies its input to its output, so this is how router pass-through works. Launch-time values use `{{vars.name}}`, not a silent fallback to run inputs. |
 | `{{outputs.node}}` / `.field` | Prior node output or a field within it. |
 | `{{outputs.node.history}}` | Outputs accumulated across loop iterations. |
 | `{{artifacts.name}}` | Published artifact. |
@@ -608,11 +608,12 @@ src -> dst as retry(unbounded 200)
 src -> dst as foreach scan(item in "{{outputs.plan.items}}")
 src -> dst with {
   context: "{{outputs.src}}",
+  produced: "{{input.field}}",
   mode: "{{vars.mode}}"
 }
 ```
 
-Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language.
+Optional `when`/`else`, `as`, and `with` clauses may appear in any order, once each. `else` is the explicit fallback when no sibling guard matched. A quoted `when` uses the bounded expression language. In a `with` mapping, `{{input.field}}` is the source node's output (C034 checks that output schema); `{{vars.name}}` is a workflow variable; `{{outputs.node.field}}` names any prior node. There is no silent fallback from `input` to run-level inputs.
 
 Every cycle must carry an `as <loop>(...)` clause. A cap may be a literal, a runtime template, or `unbounded` with a fuel ceiling. If an unbounded loop omits its local fuel, `budget.max_iterations` must supply it; the runtime also applies a no-progress liveness monitor. `as foreach` is different: it walks a finite array sequentially and binds the `each.<name>` namespace.
 

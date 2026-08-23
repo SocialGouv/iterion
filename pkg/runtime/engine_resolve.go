@@ -75,24 +75,23 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 			return
 		}
 
-		// Build effective input context: {{input.X}} in with-mappings should
-		// resolve from the edge source's output (e.g. a router's pass-through
-		// input) with run-level inputs as fallback.
-		effectiveInputs := sc.runInputs
-		if sourceOut := sc.outputs[edge.From]; sourceOut != nil {
-			effectiveInputs = make(map[string]any, len(sc.runInputs)+len(sourceOut))
-			for k, v := range sc.runInputs {
-				effectiveInputs[k] = v
-			}
-			for k, v := range sourceOut {
-				effectiveInputs[k] = v
-			}
+		// {{input.X}} in a with-mapping is the source node's output —
+		// the payload available when the edge fires. A router copies
+		// its input to its output, so this is also how router
+		// pass-through works (an entry router's input is the run-level
+		// payload). Run-level inputs and vars are a different
+		// namespace: use {{vars.X}}. There is no silent fallback to
+		// runInputs — that coincidence is what C034 used to disagree
+		// with the resolver about (#479).
+		sourceOut := sc.outputs[edge.From]
+		effectiveInputs := make(map[string]any, len(sourceOut))
+		for k, v := range sourceOut {
+			effectiveInputs[k] = v
 		}
 
 		// Per-edge scope: same maps as the caller's scope, except
-		// runInputs is shadowed by the edge-source's outputs so
-		// {{input.*}} refs in the with-mapping resolve against the
-		// source node's output instead of the run-level inputs.
+		// runInputs is the source output so {{input.*}} refs in the
+		// with-mapping resolve against that namespace.
 		edgeScope := sc
 		edgeScope.runInputs = effectiveInputs
 

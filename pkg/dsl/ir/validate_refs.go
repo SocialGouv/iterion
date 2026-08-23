@@ -18,9 +18,10 @@ import (
 // human-readable location string for diagnostics.
 type refContext struct {
 	Ref         *Ref
-	NodeID      string // consuming node ID
+	NodeID      string // consuming node ID (edge with-mappings: the source)
 	Location    string // e.g. "prompt 'sys' (node 'a')"
 	IncludeSelf bool   // true for edge with-mappings: the source node itself is available
+	EdgeTo      string // destination of an edge with-mapping; empty otherwise
 }
 
 // collectAllRefs gathers every template reference in the workflow together
@@ -50,10 +51,14 @@ func collectAllRefs(w *Workflow) []refContext {
 		}
 	}
 
-	// Edge with-mapping refs. The with-mapping is evaluated when the
-	// edge fires, so the source node (From) and all its predecessors
-	// have already produced their outputs. We use From as the consumer
-	// context and include From itself as an additional "self" predecessor.
+	// Edge with-mapping refs. The mapping is evaluated when the edge
+	// fires, so the source (From) has already produced its output.
+	// {{input.x}} in that mapping is the source output (a router copies
+	// its input to its output, which is how pass-through works) — not
+	// the source input schema, and not a silent fallback to run-level
+	// inputs. C034 checks the source output schema; use {{vars.x}} for
+	// a launch-time value. IncludeSelf so {{outputs.<source>}} is
+	// reachable too.
 	for _, e := range w.Edges {
 		for _, dm := range e.With {
 			for _, ref := range dm.Refs {
@@ -62,6 +67,7 @@ func collectAllRefs(w *Workflow) []refContext {
 					NodeID:      e.From,
 					Location:    fmt.Sprintf("edge %s -> %s, with %q", e.From, e.To, dm.Key),
 					IncludeSelf: true,
+					EdgeTo:      e.To,
 				})
 			}
 		}
@@ -475,13 +481,25 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 		return
 	}
 	fieldName := rc.Ref.Path[0]
+	if isRuntimeInjectedField(fieldName) {
+		return
+	}
 
 	node, ok := w.Nodes[rc.NodeID]
 	if !ok {
 		return
 	}
 
-	// Can only validate if the consuming node has an input schema.
+	if rc.EdgeTo != "" {
+		c.validateEdgeInputRef(w, rc, node, fieldName)
+		return
+	}
+	c.validateNodeInputRef(w, rc, node, fieldName)
+}
+
+// validateNodeInputRef is C034 for prompts, tool commands, and compute
+// exprs: {{input.x}} is a field of the consuming node's input.
+func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
 	inSchema := NodeInputSchema(node)
 	if inSchema == "" {
 		return
@@ -497,6 +515,47 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
 	}
+}
+
+// validateEdgeInputRef is C034 for edge with-mappings: {{input.x}} is a
+// field of the source node's output (the payload available when the
+// edge fires). A router has no output schema and copies its input to
+// its output, so the check is skipped there — runtime still resolves
+// from that pass-through map. Run-level inputs / vars are a different
+// namespace ({{vars.x}}).
+func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
+	if implicit := NodeImplicitOutputFields(node); implicit != nil {
+		if !slices.Contains(implicit, fieldName) {
+			c.errorf(DiagInputFieldNotInSchema,
+				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
+				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
+		}
+		return
+	}
+
+	outSchema := NodeOutputSchema(node)
+	if outSchema == "" {
+		return
+	}
+	schema, ok := w.Schemas[outSchema]
+	if !ok {
+		return // already reported by C002
+	}
+	if findField(schema, fieldName) != nil {
+		return
+	}
+
+	msg := fmt.Sprintf("%s: reference %s accesses field %q not found in output schema %q of source node %q (edge with-mappings resolve {{input.*}} against the source node's output)",
+		rc.Location, rc.Ref.Raw, fieldName, outSchema, rc.NodeID)
+	if _, isVar := w.Vars[fieldName]; isVar {
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+	}
+	if inSchema := NodeInputSchema(node); inSchema != "" {
+		if s, ok := w.Schemas[inSchema]; ok && findField(s, fieldName) != nil {
+			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
+		}
+	}
+	c.errorf(DiagInputFieldNotInSchema, "%s", msg)
 }
 
 func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {
