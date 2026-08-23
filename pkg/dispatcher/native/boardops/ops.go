@@ -525,8 +525,7 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			return nil, fmt.Errorf("state %q is not terminal", target)
 		}
 	}
-	iss, err := store.SetState(resolved, target)
-	if err != nil {
+	if _, err := store.SetState(resolved, target); err != nil {
 		return nil, err
 	}
 	// Closing acknowledges the ticket, so any dispatcher give-up stamp on it
@@ -537,7 +536,8 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	if err := store.SetGaveUp(resolved, nil); err != nil {
 		return nil, err
 	}
-	if iss, err = store.Get(resolved); err != nil {
+	iss, err := store.Get(resolved)
+	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(iss)

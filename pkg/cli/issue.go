@@ -329,8 +329,7 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if terminal == "" {
 		return errors.New("issue close: board has no terminal state — declare one or use `issue move`")
 	}
-	iss, err := s.SetState(id, terminal)
-	if err != nil {
+	if _, err := s.SetState(id, terminal); err != nil {
 		return err
 	}
 	// Closing is the operator ACKNOWLEDGING the ticket, so drop any
@@ -341,7 +340,8 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if err := s.SetGaveUp(id, nil); err != nil {
 		return err
 	}
-	if iss, err = s.Get(id); err != nil {
+	iss, err := s.Get(id)
+	if err != nil {
 		return err
 	}
 	if p.Format == OutputJSON {
