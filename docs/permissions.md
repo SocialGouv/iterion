@@ -159,6 +159,22 @@ gate for the rest of the node — an escalation the in-process claude_code and
 claw gates cannot have, since their policy never leaves iterion's memory. A
 policy the hook cannot decode fails **closed**.
 
+**`sandbox: none` is required today, and C136 says so at compile time.** The
+hook binary and the CLI home are host-side, so a sandboxed run cannot reach
+them and the node is refused before the CLI starts. Since the shipped default
+is `sandbox: auto`, a gated grok/kimi node with no `sandbox:` block would
+otherwise compile clean and die mid-run — so the compiler warns (C136) rather
+than letting the operator discover the coupling after launch. `--sandbox none`
+and `ITERION_SANDBOX_DEFAULT=none` satisfy it too, which is why C136 warns
+instead of rejecting. Lifting the restriction means carrying the shadow home
+and the hook binary into the container; until then the refusal is the honest
+answer.
+
+**Windows** needs Developer Mode (or an elevated process): the shadow home
+links the operator's CLI home with symlinks, which stock Windows denies to
+unprivileged processes. The failure names the limitation. Copying the entries
+is deliberately not the fallback — that tree is a credential store.
+
 Neither external hook is admitted on a declaration: each earned its entry in
 `gateEnforcingModes` with a live denial where a filesystem sentinel — not model
 prose — is the oracle (`e2e/live_feat_permission_{kimi,grok}_test.go`). Delete

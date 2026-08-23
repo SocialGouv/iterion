@@ -110,6 +110,16 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 					"%s %q: primary route %s", kind, id, reason)
 			}
 		}
+		// An external-hook backend cannot be gated inside a container: the CLI
+		// home and the hook binary are host-side. That refusal is correct, but
+		// it fires at the AGENT NODE, mid-run — and the shipped default is
+		// `sandbox: auto`, so the common shape (no `sandbox:` block) reaches it
+		// every time. Warn at compile time so the operator learns the coupling
+		// before launching, not after. A warning rather than an error because
+		// `ITERION_SANDBOX_DEFAULT=none` and `--sandbox none` both make the run
+		// legal without the workflow saying anything.
+		c.checkGatedCLIBackendSandbox(kind, id, nn, nodeBackend, effectivePermission, w)
+
 		if len(fbs) == 0 {
 			continue
 		}
@@ -121,6 +131,57 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
 		}
 	}
+}
+
+// externalHookGateBackends are the gate-enforcing backends whose hook is an
+// out-of-process CLI hook, and which therefore need a host-side run. Kept
+// separate from gateEnforcingModes: that set answers "can this backend enforce
+// the gate at all", this one answers "what does enforcing it cost the run".
+var externalHookGateBackends = map[string]bool{"grok": true, "kimi": true}
+
+// checkGatedCLIBackendSandbox warns when a gated node routes to an
+// external-hook backend on a workflow that has not opted out of the sandbox.
+func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, nodeBackend, permission string, w *Workflow) {
+	mode := strings.ToLower(strings.TrimSpace(permission))
+	if mode == "" || mode == "off" {
+		return
+	}
+	// nodeSandboxSpec (validate_sandbox.go) takes a Node; every LLMNode is one.
+	if sandboxOptsOut(nodeSandboxSpec(nn.(Node))) || sandboxOptsOut(w.Sandbox) {
+		return
+	}
+	routes := []string{}
+	if externalHookGateBackends[nodeBackend] {
+		routes = append(routes, nodeBackend)
+	}
+	for _, fb := range nn.GetFallbacks() {
+		if externalHookGateBackends[fb.Backend] {
+			routes = append(routes, fb.Backend)
+		}
+	}
+	if len(routes) == 0 {
+		return
+	}
+	c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
+		"%s %q: permission: %s is enforced on %s through a host-side CLI hook, which a sandboxed run cannot reach — and the shipped default is sandbox: auto, so this node will FAIL at run time unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+		kind, id, mode, strings.Join(dedupeStrings(routes), ", "))
+}
+
+// sandboxOptsOut reports whether a spec explicitly declines the sandbox.
+func sandboxOptsOut(spec *SandboxSpec) bool {
+	return spec != nil && strings.EqualFold(strings.TrimSpace(spec.Mode), "none")
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0:0]
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // checkFallbackShape validates the route on its own terms.

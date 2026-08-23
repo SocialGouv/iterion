@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -496,6 +497,15 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 			continue
 		}
 		if err := os.Symlink(filepath.Join(realHome, entry.Name()), filepath.Join(shadowHome, entry.Name())); err != nil {
+			// On stock Windows an unprivileged process cannot create symlinks
+			// at all, so this is the whole seam failing, not one entry. Say so:
+			// the bare "A required privilege is not held by the client" names
+			// neither the platform limitation nor a way forward. Copying the
+			// entries instead is deliberately NOT the fallback — this tree is
+			// the operator's credential store (#498 review, R8f7762).
+			if runtime.GOOS == "windows" {
+				return fmt.Errorf("%w — the permission seam links the CLI home with symlinks, which stock Windows denies to unprivileged processes; enable Developer Mode (or run elevated) to use permission: deny on this backend", err)
+			}
 			return err
 		}
 	}

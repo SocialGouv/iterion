@@ -344,3 +344,56 @@ func TestFallbackDriftDoesNotLieAboutReasoningEffort(t *testing.T) {
 		t.Error("C177 must still fire for a backend that really has no dial")
 	}
 }
+
+// TestGatedExternalHookBackendWarnsAboutSandbox: the gate on grok/kimi runs
+// through a HOST-side hook, and the shipped default is `sandbox: auto`. Without
+// this warning the coupling is invisible until the agent node dies mid-run
+// (#498 review, R9ab052) — the headline capability looking unreachable in the
+// default configuration.
+func TestGatedExternalHookBackendWarnsAboutSandbox(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("expected C136 for a gated %s node with no sandbox opt-out: %+v", tc.backend, cr.Diagnostics)
+			}
+			if cr.HasErrors() {
+				t.Errorf("C136 must WARN, not reject: --sandbox none and ITERION_SANDBOX_DEFAULT=none both make this legal at run time")
+			}
+		})
+	}
+}
+
+func TestGatedExternalHookBackendSilentWhenSandboxDeclined(t *testing.T) {
+	cases := map[string]string{
+		"workflow-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  sandbox: none\n  entry: x\n  x -> done\n",
+		"node-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n  sandbox: none\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+		"gate off": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("C136 fired although the run can reach the host-side hook: %+v", cr.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestGatedExternalHookFallbackWarnsAboutSandbox: a fallback ROUTE to grok/kimi
+// carries the same host-side requirement as a primary one — the fall-through
+// would otherwise die mid-run, at the worst possible moment.
+func TestGatedExternalHookFallbackWarnsAboutSandbox(t *testing.T) {
+	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+		t.Fatalf("expected C136 for a gated fallback route to kimi: %+v", cr.Diagnostics)
+	}
+}
