@@ -142,6 +142,10 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 				e.logger.Warn("runtime: workspace %s has no commits yet — running in-place (worktree needs a HEAD to anchor on)", e.workDir)
 			}
 		} else {
+			// The pool this run is about to grow is bounded here, before
+			// it grows. Best-effort and never fatal — see boundWorktreePool.
+			e.boundWorktreePool(ctx, e.store.Root())
+
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)

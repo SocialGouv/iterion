@@ -625,14 +625,25 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// to the parent. There is thus nothing to register — a Manager here
 		// would have no caller. Per-child control is a studio-only capability.
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+		childLock, err := s.LockRun(childCtx, childRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
+		}
+		runErr := func() error {
+			// Keep the unlock scoped to the active pass: the human-gate park
+			// below must remain unlocked, while a panic recovered by a fan-out
+			// branch must still release the child run lock.
+			defer func() { _ = childLock.Unlock() }()
+			return childEng.Run(childCtx, childRunID, req.Vars)
+		}()
+		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is
 			// paused_waiting_human with a checkpoint + interaction); that is
 			// not a parent failure. Park this subbot node until the operator
 			// answers the child's review (pipeline-board sidebar / `iterion
 			// resume --run-id <child>`) and the child reaches a terminal
 			// state, then pick up its output from the store.
-			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
 				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
 				if aerr == nil {
 					// Consumed — tidy the record. On error (shutdown mid-park or
@@ -642,7 +653,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				return out, aerr
 			}
 			// Non-pause error: leave the re-attach record for the resume path.
-			return nil, err
+			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
 		return last, nil
