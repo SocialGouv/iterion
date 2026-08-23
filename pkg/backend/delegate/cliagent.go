@@ -505,7 +505,13 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		cleanup()
 		return nil, nil, fmt.Errorf("delegate: %s: encode permission policy: %w", backendName, err)
 	}
-	command := shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy-b64 " + shellQuote(policyB64)
+	// The CLIs spawn this command with cwd = the gated workspace. Prefix a
+	// cd to the shadow home (already outside the checkout) so even a future
+	// main() preamble that reads from cwd cannot see an agent-written `.env`.
+	// loadDotEnvFromCwd is also skipped for this command in cmd/iterion;
+	// both halves are required because either can be undone independently
+	// (#498 review, R6fa6d2).
+	command := "cd " + shellQuote(shadowHome) + " && " + shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy-b64 " + shellQuote(policyB64)
 	if err := hook.WriteRegistration(realHome, shadowHome, command); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)

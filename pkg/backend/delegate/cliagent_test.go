@@ -298,7 +298,7 @@ func TestCLIAgentPermissionShadowHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", "--policy-b64"} {
+	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", "--policy-b64", "cd " + shellQuote(shadow)} {
 		if !strings.Contains(string(config), want) {
 			t.Errorf("shadow config missing %q:\n%s", want, config)
 		}
@@ -514,6 +514,9 @@ func TestCLIAgentPermissionAbsolutisesRelativeBinOutsideWorkspace(t *testing.T) 
 	}
 	if strings.Contains(string(config), "'./iterion'") {
 		t.Errorf("registration still has a cwd-relative binary:\n%s", config)
+	}
+	if !strings.Contains(string(config), "cd "+shellQuote(shadow)) {
+		t.Errorf("registration must cd out of the gated workspace:\n%s", config)
 	}
 }
 

@@ -187,6 +187,14 @@ path) and would then resolve against the CLI's cwd — the gated workspace — a
 spawn time. iterion refuses an in-workspace binary and points at `ITERION_BIN`
 on a stable install path outside the repo.
 
+**The hook process must not read the workspace either.** Both CLIs spawn it
+with cwd = the project and re-execute it on every tool call; a timeout is an
+ALLOW. So `__permission-hook` skips `loadDotEnvFromCwd` and `errtrack.Init`
+(an unbounded `.env` the agent can write would be enough to blow grok's hook
+timeout, and a `SENTRY_DSN` line in the same file would point the gate at an
+endpoint the operator did not choose), and the registered command `cd`s into
+the shadow home before `iterion` starts.
+
 **Windows is refused.** The hook `command` is quoted for a POSIX shell; Node-based
 CLIs on Windows run that string through `cmd.exe`, which does not treat `'` as
 quoting. A spawn failure is an ALLOW on both CLIs, so enabling Developer Mode
