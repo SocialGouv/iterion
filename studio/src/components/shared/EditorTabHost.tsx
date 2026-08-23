@@ -1,4 +1,12 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
@@ -15,7 +23,10 @@ import {
 } from "@/store/selection";
 import * as api from "@/api/client";
 import { parseSource } from "@/api/client";
+import { useQuery } from "@tanstack/react-query";
+
 import { findDraftBotSource } from "@/api/runs/artifacts";
+import { editorDraftKey } from "@/hooks/useDraftBot";
 import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
@@ -26,6 +37,11 @@ import { Button, EmptyState } from "@/components/ui";
 const EditorView = lazy(() => import("@/components/EditorView"));
 
 type LoadState = "ready" | "loading" | "error";
+
+// A safety net only — the dock's invalidation is what actually refreshes an
+// open draft tab. Generous on purpose: this exists for the case where nothing
+// is around to invalidate, not for the normal path.
+const DRAFT_FALLBACK_REFETCH_MS = 30000;
 
 interface Props {
   tabId: string;
@@ -132,52 +148,104 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     };
   }, [file, docStore, toastIfOnScreen, retryNonce]);
 
-  // Draft hydration — the assistant's counterpart to opening a file. The
-  // draft lives in the conversation's artifact, never on disk, so it is
-  // fetched and parsed into the same shape openFile produces. Deliberately
-  // NOT markSaved(): the buffer is dirty from the first frame, because
-  // nothing has written it anywhere yet.
+  // Draft hydration — the assistant's counterpart to opening a file. The draft
+  // lives in the conversation's artifact, never on disk, so it is fetched and
+  // parsed into the same shape openFile produces. Deliberately NOT
+  // markSaved(): the buffer is dirty from the first frame, because nothing has
+  // written it anywhere yet.
+  //
+  // This FOLLOWS the conversation rather than seeding once: the assistant
+  // redrafts across turns ("now add a judge"), and a tab that only took its
+  // first draft left the canvas frozen while the assistant announced an update
+  // the operator could not see.
+  //
+  // It does not poll. The dock invalidates this key when a turn lands (see
+  // ChatDock), which is the earliest moment there is anything new to read —
+  // the draft is a node OUTPUT, written at `artifact_written`, so it does not
+  // exist until the turn is over. The slow refetch below is a net for the case
+  // where nothing is there to invalidate, not the mechanism.
+  const draftQuery = useQuery({
+    queryKey: editorDraftKey(draft ?? ""),
+    queryFn: ({ signal }) => findDraftBotSource(draft as string, { signal }),
+    enabled: !!draft && !file,
+    staleTime: Infinity,
+    refetchInterval: DRAFT_FALLBACK_REFETCH_MS,
+    retry: false,
+  });
+
+  const appliedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!draft || file) return;
-    if (docStore.getState().currentSource !== null) {
-      setLoadState("ready");
+    const source = draftQuery.data;
+
+    if (draftQuery.isPending) return;
+    if (draftQuery.isError) {
+      if (appliedRef.current !== null) return; // keep a canvas already in use
+      setLoadState("error");
+      const err = draftQuery.error;
+      setLoadError(err instanceof Error ? err.message : String(err));
+      toastIfOnScreen(err, "Open draft failed");
       return;
     }
+    if (!source) {
+      // Only the FIRST look is an error. A later read that finds nothing is
+      // transient, not a reason to blank a canvas already in use.
+      if (appliedRef.current !== null) return;
+      const missing = new Error(
+        "That conversation has no .bot draft to open — ask the assistant to draft one first.",
+      );
+      setLoadState("error");
+      setLoadError(missing.message);
+      toastIfOnScreen(missing, "Open draft failed");
+      return;
+    }
+    if (source === appliedRef.current) return;
+
+    const st = docStore.getState();
+    // Never clobber the operator. We own the buffer only while it still holds
+    // exactly what we last put there; the moment they edit it, the canvas is
+    // theirs and a new draft waits for them to ask for it.
+    if (st.currentSource !== null && st.currentSource !== appliedRef.current) {
+      return;
+    }
+
     let cancelled = false;
-    const ctrl = new AbortController();
-    setLoadState("loading");
-    setLoadError(null);
-    void findDraftBotSource(draft, { signal: ctrl.signal })
-      .then(async (source) => {
+    void parseSource(source)
+      .then((parsed) => {
         if (cancelled) return;
-        if (!source) {
-          throw new Error(
-            "That conversation has no .bot draft to open — ask the assistant to draft one first.",
-          );
+        const st2 = docStore.getState();
+        if (
+          st2.currentSource !== null &&
+          st2.currentSource !== appliedRef.current
+        ) {
+          return; // they started typing while we were parsing
         }
-        const parsed = await parseSource(source);
-        if (cancelled) return;
-        const st = docStore.getState();
-        // Same race guard as the file path: the operator may have started
-        // typing while the fetch was in flight.
-        if (st.currentSource === null) {
-          st.setDocument(parsed.document);
-          st.setCurrentSource(source);
-          st.setDiagnostics(parsed.diagnostics);
-        }
+        st2.setDocument(parsed.document);
+        st2.setCurrentSource(source);
+        st2.setDiagnostics(parsed.diagnostics);
+        appliedRef.current = source;
         setLoadState("ready");
       })
       .catch((err) => {
         if (cancelled) return;
+        if (appliedRef.current !== null) return;
         setLoadState("error");
         setLoadError(err instanceof Error ? err.message : String(err));
         toastIfOnScreen(err, "Open draft failed");
       });
     return () => {
       cancelled = true;
-      ctrl.abort();
     };
-  }, [draft, file, docStore, toastIfOnScreen, retryNonce]);
+  }, [
+    draft,
+    file,
+    docStore,
+    toastIfOnScreen,
+    draftQuery.data,
+    draftQuery.isPending,
+    draftQuery.isError,
+    draftQuery.error,
+  ]);
 
   // A tab restored from localStorage whose label names a file but whose
   // params carry none can't reload its document — surface that instead

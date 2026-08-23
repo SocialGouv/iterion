@@ -81,14 +81,15 @@ export function DraftBotOffer({
   const onEditor = location.startsWith("/editor");
   const hasDraft = !!source;
 
-  // Auto-load, once per draft. The ref is what keeps this from fighting the
-  // operator: if they close the tab or navigate within the editor, we do not
-  // re-open it behind them.
-  const loadedRef = useRef<string | null>(null);
+  // Open the draft tab once per RUN — that is all this does. Keeping the tab
+  // in step across later turns is the tab's own job (EditorTabHost subscribes
+  // to the draft), because re-navigating to the same URL would change nothing:
+  // same params, same tab.
+  const openedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!runId || !hasDraft || !onEditor) return;
-    if (loadedRef.current === runId) return;
-    loadedRef.current = runId;
+    if (openedRef.current === runId) return;
+    openedRef.current = runId;
     // `replace` — this is not a place the operator navigated to, so it must
     // not cost them a Back press to leave.
     setLocation(`/editor?draft=${encodeURIComponent(runId)}`, { replace: true });

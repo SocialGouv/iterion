@@ -23,6 +23,13 @@ export function draftBotQueryKey(runId: string, revision: number) {
   return ["draft-bot", runId, revision] as const;
 }
 
+// The key an open editor tab watches. Deliberately WITHOUT a revision: the tab
+// has no idea how many turns the conversation has had, and does not need to —
+// it is told when to look again.
+export function editorDraftKey(runId: string) {
+  return ["editor-draft", runId] as const;
+}
+
 /**
  * useDraftState reports what the conversation has to offer the editor.
  *

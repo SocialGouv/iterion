@@ -12,6 +12,7 @@
 // The failure is not swallowed — the tab renders it inline with Retry/Close.
 // These tests pin WHERE it is announced, not whether.
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useTabsStore } from "@/store/tabs";
@@ -46,13 +47,25 @@ function openDraftTab(draft: string) {
   return useTabsStore.getState().openTab("editor", { draft }, "Draft");
 }
 
+// The host reads its draft through react-query now, so it needs a client.
+function mount(tabId: string, draft: string) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={qc}>
+      <EditorTabHost tabId={tabId} draft={draft} />
+    </QueryClientProvider>,
+  );
+}
+
 describe("where a failed tab load is announced", () => {
   it("stays silent when the failing tab is not the one on screen", async () => {
     const background = openDraftTab("run-old");
     const foreground = openDraftTab("run-new");
     expect(useTabsStore.getState().activeEditorTabId).toBe(foreground);
 
-    render(<EditorTabHost tabId={background} draft="run-old" />);
+    mount(background, "run-old");
 
     // The inline state still reports it, in the tab it belongs to.
     await waitFor(() => expect(screen.getByText(/couldn't reload/i)).toBeTruthy());
@@ -63,7 +76,7 @@ describe("where a failed tab load is announced", () => {
     const active = openDraftTab("run-new");
     expect(useTabsStore.getState().activeEditorTabId).toBe(active);
 
-    render(<EditorTabHost tabId={active} draft="run-new" />);
+    mount(active, "run-new");
 
     await waitFor(() => expect(addToast).toHaveBeenCalled());
   });

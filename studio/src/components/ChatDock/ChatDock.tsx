@@ -58,10 +58,13 @@ import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
 import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
+import { useQueryClient } from "@tanstack/react-query";
+
 import {
   DraftBotOffer,
   useEditorConsent,
 } from "@/components/ChatDock/draftBotOffer";
+import { editorDraftKey } from "@/hooks/useDraftBot";
 
 
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
@@ -144,6 +147,21 @@ function AssistantDock({
   const newSession = useNewSessionAction({ bot, session });
 
   const editorConsent = useEditorConsent(composer.submitPending);
+
+  // Tell an open editor tab when there is something new to read.
+  //
+  // The draft is a node OUTPUT — written at `artifact_written`, when the turn
+  // ends — so this is the earliest instant anything could have changed, and
+  // the tab needs no clock of its own. The conversation drives the canvas
+  // instead of the canvas guessing.
+  const queryClient = useQueryClient();
+  const turnCount = session.messages.length;
+  useEffect(() => {
+    if (!session.runId) return;
+    void queryClient.invalidateQueries({
+      queryKey: editorDraftKey(session.runId),
+    });
+  }, [session.runId, turnCount, queryClient]);
 
   // Consume the attachments when a message leaves. Wrapping the composer's
   // send rather than clearing optimistically: a send that throws keeps the
