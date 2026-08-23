@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { WizardForm } from "@/components/ui/WizardForm";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
+
+import { OperatorBubble } from "./OperatorBubble";
 import { useUIStore } from "@/store/ui";
 
 // Default quick-actions surfaced on every free-text turn unless the
@@ -369,27 +371,16 @@ function AnsweredTurn({
   return (
     <div className="space-y-2">
       <AssistantBubble text={message.prompt} persona={persona} />
-      <div className="flex items-start gap-2 ml-6">
-        <span
-          className="mt-1 px-2 py-0.5 rounded-full bg-surface-3 text-fg-default text-caption font-bold flex items-center justify-center shrink-0"
-          aria-hidden="true"
-        >
-          You
-        </span>
-        <div className="flex-1 rounded-lg bg-surface-1 border border-border-subtle px-3 py-2 text-label text-fg-default">
-          {message.userReply ? (
-            <MarkdownText value={message.userReply} size="sm" />
-          ) : (
-            <span className="italic text-fg-subtle">
-              {message.outcome && "approved" in message.outcome
-                ? message.outcome.approved
-                  ? "approved"
-                  : "requested revision"
-                : "(empty reply)"}
-            </span>
-          )}
-        </div>
-      </div>
+      <OperatorBubble
+        text={message.userReply ?? ""}
+        empty={
+          message.outcome && "approved" in message.outcome
+            ? message.outcome.approved
+              ? "approved"
+              : "requested revision"
+            : undefined
+        }
+      />
     </div>
   );
 }

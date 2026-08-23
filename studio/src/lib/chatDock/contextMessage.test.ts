@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { CONTEXT_PREFIX, withPageContext } from "./contextMessage";
+import { CONTEXT_PREFIX, withPageContext,
+  withoutPageContext,
+} from "./contextMessage";
 import { referenceForRoute } from "./routeReference";
 import type { TypedReference } from "./routeReference";
 import { activeReference } from "./useRouteReference";
@@ -136,5 +138,42 @@ describe("withPageContext — attached references", () => {
     const many = Array.from({ length: 20 }, (_, i) => ref(`run/${i}`));
     const header = withPageContext("x", null, many).split("\n")[0] ?? "";
     expect(header.split(", ")).toHaveLength(8);
+  });
+});
+
+// The context lines are protocol, not speech. The operator already sees what
+// the assistant was told (the chip above the composer), so echoing them inside
+// their own bubble shows the same fact twice — in the one place where it reads
+// as something they typed.
+describe("withoutPageContext", () => {
+  it("drops the page-context line", () => {
+    expect(withoutPageContext("[page context: view/editor]\nsalut")).toBe("salut");
+  });
+
+  it("drops both lines when a reference was attached", () => {
+    expect(
+      withoutPageContext(
+        "[page context: view/board]\n[attached: run/019f]\nregarde ça",
+      ),
+    ).toBe("regarde ça");
+  });
+
+  it("leaves an ordinary message untouched", () => {
+    expect(withoutPageContext("dis moi bonjour")).toBe("dis moi bonjour");
+  });
+
+  // Only at the top: further down it is content, and content is never
+  // rewritten — an operator quoting a context line keeps it.
+  it("keeps a bracketed line that is not the header", () => {
+    const body = "voici ce que j'ai vu :\n[page context: view/board]";
+    expect(withoutPageContext(body)).toBe(body);
+  });
+
+  it("preserves the rest verbatim, blank lines included", () => {
+    expect(withoutPageContext("[page context: view/board]\na\n\nb")).toBe("a\n\nb");
+  });
+
+  it("survives a message that is nothing but context", () => {
+    expect(withoutPageContext("[page context: view/board]")).toBe("");
   });
 });

@@ -7,6 +7,7 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 import HumanChatTurn from "./HumanChatTurn";
+import { OperatorBubble } from "./OperatorBubble";
 import NodeBanner from "./NodeBanner";
 
 interface Props {
@@ -216,51 +217,56 @@ function UserMessageRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "user-message" }>;
 }) {
-  const { label, tone, hint } = userStatusMeta(message.status);
+  const meta = userStatusMeta(message.status);
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-lg border border-info/30 bg-info-soft/50 px-3 py-2">
-        <div className="text-body text-fg-default">
-          <MarkdownText value={message.text} size="sm" />
-        </div>
-        <div className="mt-1 flex items-center justify-end gap-1.5">
+    <OperatorBubble
+      text={message.text}
+      // A settled message is just a message. The chip only earns its place
+      // while the message is still in flight or has failed — which is exactly
+      // when the operator needs to know it has not landed.
+      badge={
+        meta.transient ? (
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${tone}`}
-            title={hint}
+            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${meta.tone}`}
+            title={meta.hint}
           >
-            {label}
+            {meta.label}
           </span>
-        </div>
-      </div>
-    </div>
+        ) : null
+      }
+    />
   );
 }
 
 function userStatusMeta(
   status: Extract<WhatsNextMessage, { kind: "user-message" }>["status"],
-): { label: string; tone: string; hint: string } {
+): { label: string; tone: string; hint: string; transient: boolean } {
   switch (status) {
     case "queued":
       return {
         label: "Queued",
+        transient: true,
         tone: "bg-warning-soft text-warning-fg",
         hint: "Waiting for the agent's next turn. The agent has not seen it yet.",
       };
     case "delivered":
       return {
         label: "In agent's context",
+        transient: true,
         tone: "bg-info-soft text-info-fg",
         hint: "Injected into the agent's conversation. The next LLM turn will read it — but the agent has not processed it yet.",
       };
     case "consumed":
       return {
         label: "Read by agent",
+        transient: false,
         tone: "bg-success-soft text-success-fg",
         hint: "The agent finished a turn that included this message. Note: this does not mean the agent acted on it — only that it had the chance to.",
       };
     case "cancelled":
       return {
         label: "Cancelled",
+        transient: true,
         tone: "bg-surface-2 text-fg-muted",
         hint: "Removed before delivery.",
       };
@@ -274,6 +280,7 @@ function userStatusMeta(
         label: String(_exhaustive),
         tone: "bg-surface-2 text-fg-muted",
         hint: "",
+        transient: true,
       };
     }
   }
