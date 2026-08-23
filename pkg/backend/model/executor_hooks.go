@@ -25,7 +25,25 @@ type RetryInfo struct {
 
 // DelegateInfo describes a backend execution attempt, passed to backend hooks.
 type DelegateInfo struct {
-	BackendName        string        // e.g. "claude_code", "codex"
+	BackendName string // e.g. "claude_code", "codex"
+	// DeclaredModel is the workflow-declared `model:` (or the launch
+	// override that replaced it) — what the node ASKED for. Empty when
+	// the node left model unset (auto-detect / backend default).
+	DeclaredModel string
+	// EffectiveModel is the model the backend actually used, as
+	// reported by the provider. Distinct from DeclaredModel when a
+	// fallback, env override (ANTHROPIC_MODEL), or proxy rewrote it.
+	// Empty when the backend does not report it.
+	EffectiveModel string
+	// ContextWindow is the effective model's context window in tokens.
+	// Zero when unknown.
+	ContextWindow int
+	// MaxOutputTokens is the per-call output cap reported for the
+	// effective model. Zero when unknown.
+	MaxOutputTokens int
+	// PeakInputTokens is the largest context load observed across the
+	// session. Zero when unknown.
+	PeakInputTokens    int
 	Duration           time.Duration // subprocess wall-clock time
 	Tokens             int           // estimated total tokens consumed
 	ExitCode           int           // process exit code
@@ -45,10 +63,10 @@ type DelegateInfo struct {
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —
-// the eight fields every post-call hook (OnDelegateFinished / OnDelegateError /
-// the schema-fallback OnDelegateRetry) copies off delegate.Result. Callers pass
-// BackendName explicitly (it varies: result.BackendName, a fallback, or the
-// requested name) and set Error / Attempt afterward as the hook needs.
+// duration, tokens, exit, stderr, raw length, parse/formatting flags, cost,
+// plus the model/window the backend actually used. Callers pass BackendName
+// explicitly (it varies: result.BackendName, a fallback, or the requested
+// name) and set Error / Attempt / DeclaredModel afterward as the hook needs.
 func delegateInfoFromResult(backendName string, result delegate.Result) DelegateInfo {
 	return DelegateInfo{
 		BackendName:        backendName,
@@ -60,6 +78,10 @@ func delegateInfoFromResult(backendName string, result delegate.Result) Delegate
 		ParseFallback:      result.ParseFallback,
 		FormattingPassUsed: result.FormattingPassUsed,
 		CostUSD:            cost.USDFromOutput(result.Output),
+		EffectiveModel:     result.EffectiveModel,
+		ContextWindow:      result.ContextWindow,
+		MaxOutputTokens:    result.MaxOutputTokens,
+		PeakInputTokens:    result.PeakInputTokens,
 	}
 }
 
@@ -125,7 +147,10 @@ type EventHooks struct {
 	OnToolNodeResult func(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error)
 
 	// Delegation lifecycle hooks.
-	OnDelegateStarted  func(nodeID string, backendName string)
+	// OnDelegateStarted fires before the backend is invoked. The payload
+	// carries the requested BackendName and DeclaredModel; EffectiveModel
+	// is filled later on Finished/Error once the provider reports it.
+	OnDelegateStarted  func(nodeID string, info DelegateInfo)
 	OnDelegateFinished func(nodeID string, info DelegateInfo)
 	OnDelegateError    func(nodeID string, info DelegateInfo)
 	OnDelegateRetry    func(nodeID string, info DelegateInfo)

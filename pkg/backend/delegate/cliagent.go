@@ -361,7 +361,7 @@ func (b *CLIAgentBackend) Execute(ctx context.Context, task Task) (Result, error
 		return result, parsed.Err
 	}
 
-	if parsed.EffectiveModel != "" && task.Model != "" && !sameModelID(parsed.EffectiveModel, task.Model) && b.Logger != nil {
+	if parsed.EffectiveModel != "" && task.Model != "" && !SameModelID(parsed.EffectiveModel, task.Model) && b.Logger != nil {
 		b.Logger.Warn("[%s#%d/%s] requested model %q resolved to %q",
 			task.NodeID, task.Iteration, backendName, task.Model, parsed.EffectiveModel)
 	}
@@ -585,11 +585,18 @@ func (b *CLIAgentBackend) parseStdout(proto CLIAgentProtocol, stdout string) CLI
 	return CLIAgentParse{Text: stdout}
 }
 
-// sameModelID reports whether two model specs name the same model, ignoring
-// any `provider/` routing prefix on either side.
-func sameModelID(a, b string) bool {
+// SameModelID reports whether two model specs name the same model, ignoring
+// any `provider/` routing prefix on either side (`anthropic/claude-opus-5`
+// vs `claude-opus-5`). Used by the store-hook layer to decide whether a
+// `model_drift` event is warranted.
+func SameModelID(a, b string) bool {
 	return bareModelID(a) == bareModelID(b)
 }
+
+// sameModelID is the historical unexported name; kept as an alias so
+// in-package callers that predate the export still compile while we
+// migrate them.
+func sameModelID(a, b string) bool { return SameModelID(a, b) }
 
 func bareModelID(spec string) string {
 	if i := strings.LastIndex(spec, "/"); i >= 0 {

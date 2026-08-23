@@ -68,6 +68,15 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`nodes_served` maps each LLM node's id to the last `(backend, model)` that
+served it (`model` is the provider-reported effective model; `declared_model`
+is what the node asked for). It is the run-record half of making a finished
+run self-describing without replaying `events.jsonl`. Empty for legacy runs
+and for workflows that never delegated. The event stream is the full history
+(`delegate_started` / `delegate_finished` carry `declared_model` /
+`effective_model` / `context_window` / `max_output_tokens`; `model_drift`
+fires when the two model fields name different models).
+
 ### Run statuses
 
 | Status | Meaning | Resume posture |
@@ -159,7 +168,7 @@ emitter when a consumer needs an exact payload contract.
 |---|---|
 | Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
 | Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `artifact_written`, `plan_written` |
-| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback` |
+| LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |

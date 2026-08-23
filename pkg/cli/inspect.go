@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -132,6 +133,31 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	}
 	if r.Error != "" {
 		p.KV("Error", r.Error)
+	}
+
+	if len(r.NodesServed) > 0 {
+		p.Blank()
+		p.Header("Served")
+		ids := make([]string, 0, len(r.NodesServed))
+		for id := range r.NodesServed {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			s := r.NodesServed[id]
+			label := s.Backend
+			model := s.Model
+			if model == "" {
+				model = s.DeclaredModel
+			}
+			if model != "" {
+				label += " " + model
+			}
+			if s.DeclaredModel != "" && s.Model != "" && s.DeclaredModel != s.Model {
+				label += " (declared " + s.DeclaredModel + ")"
+			}
+			p.KV(id, label)
+		}
 	}
 
 	// Checkpoint info (for paused runs).

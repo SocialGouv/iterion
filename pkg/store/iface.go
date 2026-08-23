@@ -83,6 +83,12 @@ type RunStore interface {
 	// the operator gave, not a steering knob an operator turned.
 	PatchRunPermissionGrants(ctx context.Context, runID string, grants map[string][]string) error
 
+	// RecordNodeServed persists the last (backend, model) that served
+	// nodeID onto Run.NodesServed. Last write wins per node, so parallel
+	// branches writing distinct keys do not clobber each other. Empty
+	// nodeID is a no-op. Missing run → ErrRunNotFound.
+	RecordNodeServed(ctx context.Context, runID, nodeID string, served NodeServed) error
+
 	// PruneDeletionMarkers reaps the durable tombstones DeleteRun
 	// leaves behind (the resurrection guard) once they are older than
 	// cutoff — the marker must outlive any plausible late writer, not

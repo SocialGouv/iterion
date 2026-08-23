@@ -64,6 +64,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
+	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
@@ -758,6 +759,63 @@ func testSubbotChildren(t *testing.T, s store.RunStore) {
 	}
 	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", ""); err != nil {
 		t.Errorf("ClearSubbotChild empty key: %v", err)
+	}
+}
+
+func testNodesServed(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_served", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	first := store.NodeServed{
+		Backend:         "claude_code",
+		Model:           "glm-4.6",
+		DeclaredModel:   "anthropic/claude-opus-5",
+		ContextWindow:   200_000,
+		MaxOutputTokens: 8192,
+	}
+	if err := s.RecordNodeServed(ctx, "run_served", "implement", first); err != nil {
+		t.Fatalf("RecordNodeServed implement: %v", err)
+	}
+	second := store.NodeServed{Backend: "claw", Model: "openai/gpt-5.5"}
+	if err := s.RecordNodeServed(ctx, "run_served", "review", second); err != nil {
+		t.Fatalf("RecordNodeServed review: %v", err)
+	}
+
+	r, err := s.LoadRun(ctx, "run_served")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.NodesServed["implement"]; got != first {
+		t.Errorf("implement = %+v, want %+v", got, first)
+	}
+	if got := r.NodesServed["review"]; got != second {
+		t.Errorf("review = %+v, want %+v", got, second)
+	}
+
+	// Last write wins on the same node (a loop's last pass).
+	updated := store.NodeServed{Backend: "pi", Model: "kimi-k2"}
+	if err := s.RecordNodeServed(ctx, "run_served", "implement", updated); err != nil {
+		t.Fatalf("RecordNodeServed overwrite: %v", err)
+	}
+	r, err = s.LoadRun(ctx, "run_served")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.NodesServed["implement"]; got != updated {
+		t.Errorf("after overwrite implement = %+v, want %+v", got, updated)
+	}
+	if got := r.NodesServed["review"]; got != second {
+		t.Errorf("sibling review lost: %+v", got)
+	}
+
+	if err := s.RecordNodeServed(ctx, "run_served", "", first); err != nil {
+		t.Errorf("empty nodeID: %v", err)
+	}
+	if err := s.RecordNodeServed(ctx, "no-such-run", "n", first); err == nil {
+		t.Error("unknown run returned no error")
 	}
 }
 
