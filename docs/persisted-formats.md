@@ -73,9 +73,10 @@ served it (`model` is the provider-reported effective model; `declared_model`
 is what the node asked for). It is the run-record half of making a finished
 run self-describing without replaying `events.jsonl`. Empty for legacy runs
 and for workflows that never delegated. The event stream is the full history
-(`delegate_started` / `delegate_finished` carry `declared_model` /
-`effective_model` / `context_window` / `max_output_tokens`; `model_drift`
-fires when the two model fields name different models).
+(`delegate_started` carries `declared_model`; `delegate_finished` /
+`delegate_error` add `effective_model` / `context_window` /
+`max_output_tokens`; `model_drift` fires when the two model fields name
+different models).
 
 ### Run statuses
 
