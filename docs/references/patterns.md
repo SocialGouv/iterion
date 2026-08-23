@@ -116,7 +116,7 @@ workflow parallel_analysis:
 - `await: wait_all` on the synthesizer makes it wait for both branches
 - Set `max_parallel_branches` in budget to control concurrency
 - `session: inherit` and `session: fork` are forbidden on nodes with `await` (use `fresh`, `artifacts_only`, or `persist`)
-- `{{input.data}}` on `distribute -> analyzer_*` is **router pass-through**: the router copies its input (here the entry run payload) onto its output, and an edge `with` mapping resolves `{{input.*}}` against that source output. It is not a fallback to run-level inputs. Launch-time values that the source does not emit belong in `{{vars.*}}`.
+- `{{input.data}}` on `distribute -> analyzer_*` is **router pass-through**: every router mode copies its input onto its output (an `llm` router also records the selection on that map), and an edge `with` mapping resolves `{{input.*}}` against that source output. It is not a fallback to run-level inputs. Launch-time values that the source does not emit belong in `{{vars.*}}`.
 
 ---
 

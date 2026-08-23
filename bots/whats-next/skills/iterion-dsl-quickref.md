@@ -417,7 +417,7 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 | Form | Meaning |
 |---|---|
 | `{{vars.x}}` | workflow var |
-| `{{input.field}}` | this node's input (prompts/commands/exprs). On an edge `with` mapping: the source node's output (router pass-through included). Launch-time values: `{{vars.x}}`. |
+| `{{input.field}}` | this node's input (prompts/commands/exprs). On an edge `with` mapping: the source node's output (every router mode copies its input onto its output; an `llm` router also records the selection). Launch-time values: `{{vars.x}}`. Schemaless non-router source: C032. |
 | `{{outputs.id}}` / `{{outputs.id.field}}` | upstream node output |
 | `{{outputs.id.history}}` | array across loop iterations |
 | `{{loop.<name>.iteration}}` | current loop count |

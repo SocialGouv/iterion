@@ -53,11 +53,12 @@ func collectAllRefs(w *Workflow) []refContext {
 
 	// Edge with-mapping refs. The mapping is evaluated when the edge
 	// fires, so the source (From) has already produced its output.
-	// {{input.x}} in that mapping is the source output (a router copies
-	// its input to its output, which is how pass-through works) — not
-	// the source input schema, and not a silent fallback to run-level
-	// inputs. C034 checks the source output schema; use {{vars.x}} for
-	// a launch-time value. IncludeSelf so {{outputs.<source>}} is
+	// {{input.x}} in that mapping is the source output (every router
+	// copies its input onto its output, which is how pass-through
+	// works) — not the source input schema, and not a silent fallback
+	// to run-level inputs. C034 checks the source output schema; a
+	// schemaless non-router source warns C032. Use {{vars.x}} for a
+	// launch-time value. IncludeSelf so {{outputs.<source>}} is
 	// reachable too.
 	for _, e := range w.Edges {
 		for _, dm := range e.With {
@@ -481,9 +482,6 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 		return
 	}
 	fieldName := rc.Ref.Path[0]
-	if isRuntimeInjectedField(fieldName) {
-		return
-	}
 
 	node, ok := w.Nodes[rc.NodeID]
 	if !ok {
@@ -519,11 +517,17 @@ func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, f
 
 // validateEdgeInputRef is C034 for edge with-mappings: {{input.x}} is a
 // field of the source node's output (the payload available when the
-// edge fires). A router has no output schema and copies its input to
-// its output, so the check is skipped there — runtime still resolves
-// from that pass-through map. Run-level inputs / vars are a different
-// namespace ({{vars.x}}).
+// edge fires). Routers copy their input onto their output (an llm
+// router also records the selection), so they have no output schema
+// and the check is skipped — runtime still resolves from that
+// pass-through map. Any other schemaless source cannot be verified:
+// C032 warns, because dropping the run-input fallback would otherwise
+// turn a coincidental {{input.var}} into a silent nil. Run-level
+// inputs / vars are a different namespace ({{vars.x}}).
 func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
+	if isRuntimeInjectedField(fieldName) {
+		return
+	}
 	if implicit := NodeImplicitOutputFields(node); implicit != nil {
 		if !slices.Contains(implicit, fieldName) {
 			c.errorf(DiagInputFieldNotInSchema,
@@ -535,6 +539,15 @@ func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, f
 
 	outSchema := NodeOutputSchema(node)
 	if outSchema == "" {
+		if _, isRouter := node.(*RouterNode); isRouter {
+			return
+		}
+		msg := fmt.Sprintf("%s: reference %s accesses field %q on node %q which has no output schema; cannot verify (edge with-mappings resolve {{input.*}} against the source node's output, not run inputs)",
+			rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+		if _, isVar := w.Vars[fieldName]; isVar {
+			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		}
+		c.warnf(DiagRefNodeNoSchema, "%s", msg)
 		return
 	}
 	schema, ok := w.Schemas[outSchema]

@@ -258,3 +258,170 @@ func TestEdgeInputRef_RouterPassThrough(t *testing.T) {
 		t.Errorf("router pass-through: analyzer inputs a=%#v b=%#v, want payload", got["a"], got["b"])
 	}
 }
+
+const llmRouterPassThroughBot = `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+router pick:
+  mode: llm
+  model: "m"
+  system: sys
+  user: usr
+
+agent left:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+agent right:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+workflow test:
+  entry: pick
+  worktree: none
+  sandbox: none
+  pick -> left with { topic: "{{input.topic}}" }
+  pick -> right with { topic: "{{input.topic}}" }
+  left -> done
+  right -> done
+`
+
+// TestEdgeInputRef_LLMRouterPassThrough is R3bc3ad: an llm router used
+// to store only {selected_route, reasoning}, so {{input.topic}} on an
+// outgoing with-mapping was nil. It now overlays the selection onto
+// the payload it received, like every other router mode.
+func TestEdgeInputRef_LLMRouterPassThrough(t *testing.T) {
+	cr := compileBot(t, llmRouterPassThroughBot)
+	if cr.Workflow == nil {
+		t.Fatalf("compile returned nil workflow: %v", cr.Diagnostics)
+	}
+	if msgs := c034Messages(cr); len(msgs) > 0 {
+		t.Fatalf("llm-router {{input.topic}} must not trip C034: %v", msgs)
+	}
+
+	var got any
+	exec := newStubExecutor()
+	exec.on("pick", func(in map[string]any) (map[string]any, error) {
+		if _, ok := in["_route_candidates"]; !ok {
+			t.Error("expected _route_candidates on the llm router input")
+		}
+		return map[string]any{"selected_route": "left", "reasoning": "go left"}, nil
+	})
+	exec.on("left", func(in map[string]any) (map[string]any, error) {
+		got = in["topic"]
+		return map[string]any{"topic": in["topic"]}, nil
+	})
+	exec.on("right", func(map[string]any) (map[string]any, error) {
+		t.Error("right must not run")
+		return map[string]any{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(cr.Workflow, s, exec)
+	if err := eng.Run(context.Background(), "run-llm-pass", map[string]any{"topic": "hello"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("left topic = %#v, want hello (llm router must pass its input through)", got)
+	}
+}
+
+const schemalessSeedBot = `
+schema dst_in:
+  reviewer: string
+  produced: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  system: sys
+  user: usr
+
+agent dst:
+  model: "m"
+  input: dst_in
+  output: dst_in
+  system: sys
+  user: usr
+
+vars:
+  reviewer: string
+
+workflow test:
+  entry: seed
+  worktree: none
+  sandbox: none
+  seed -> dst with {
+    reviewer: "{{input.reviewer}}",
+    produced: "{{input.produced}}"
+  }
+  dst -> done
+`
+
+// TestEdgeInputRef_SchemalessSourceWarnsAndDoesNotFallBack is R79a8cc:
+// a schemaless agent used to leak --var reviewer=on into {{input.reviewer}}
+// with no diagnostic. C032 now warns, and the resolver does not fall back.
+func TestEdgeInputRef_SchemalessSourceWarnsAndDoesNotFallBack(t *testing.T) {
+	cr := compileBot(t, schemalessSeedBot)
+	if cr.Workflow == nil {
+		t.Fatalf("compile returned nil workflow: %v", cr.Diagnostics)
+	}
+	if hasC034Field(c034Messages(cr), "reviewer") {
+		t.Errorf("schemaless {{input.reviewer}} must warn C032, not error C034")
+	}
+	var warned bool
+	for _, d := range cr.Diagnostics {
+		if d.Code == ir.DiagRefNodeNoSchema && strings.Contains(d.Message, `field "reviewer"`) {
+			warned = true
+			if d.Severity != ir.SeverityWarning {
+				t.Errorf("C032 severity = %s, want warning", d.Severity)
+			}
+		}
+	}
+	if !warned {
+		t.Fatalf("missing C032 for schemaless {{input.reviewer}}: %v", cr.Diagnostics)
+	}
+
+	var got map[string]any
+	exec := newStubExecutor()
+	exec.on("seed", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"produced": "from-seed"}, nil
+	})
+	exec.on("dst", func(in map[string]any) (map[string]any, error) {
+		got = in
+		return map[string]any{"reviewer": "", "produced": "ok"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(cr.Workflow, s, exec)
+	if err := eng.Run(context.Background(), "run-schemaless", map[string]any{"reviewer": "on"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got == nil {
+		t.Fatal("dst was not executed")
+	}
+	if got["produced"] != "from-seed" {
+		t.Errorf("produced (source output) = %#v, want from-seed", got["produced"])
+	}
+	if got["reviewer"] != nil {
+		t.Errorf("reviewer (run input only) = %#v, want nil — C032 warned and runtime must not fall back; use {{vars.reviewer}}", got["reviewer"])
+	}
+}

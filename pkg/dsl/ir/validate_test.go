@@ -2396,6 +2396,62 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+func TestValidateRefInputOnEdge_SchemalessSource_C032Warn(t *testing.T) {
+	src := `
+schema dst_in:
+  reviewer: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  system: sys
+  user: usr
+
+agent dst:
+  model: "m"
+  input: dst_in
+  output: dst_in
+  system: sys
+  user: usr
+
+vars:
+  reviewer: string
+
+workflow test:
+  entry: seed
+  seed -> dst with { reviewer: "{{input.reviewer}}" }
+  dst -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectDiag(t, r, DiagRefNodeNoSchema)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagRefNodeNoSchema && strings.Contains(d.Message, `field "reviewer"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C032 for {{input.reviewer}} on a schemaless source, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"no output schema",
+		"not run inputs",
+		"{{vars.reviewer}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C032 message missing %q: %s", want, msg)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
