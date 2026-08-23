@@ -199,3 +199,61 @@ func TestRunFallbackAcceptedWhenToolsResolve(t *testing.T) {
 		t.Fatalf("want the route attached, got %+v", agent.Fallbacks)
 	}
 }
+
+// TestUnknownRecoveryAgentToolOnClaw: rung 4 of a Verified Action (ADR-044)
+// hands `agent_tools:` to a synthetic agent node, so the same names hit the
+// same registry — and there the failure lands after the deterministic rungs
+// have already failed, which is the worst moment to discover it.
+func TestUnknownRecoveryAgentToolOnClaw(t *testing.T) {
+	src := `prompt p:
+  hi
+
+tool build:
+  command: "make build"
+  goal: "the build passes"
+  postcondition: "make build"
+  policy: recover
+  recovery:
+    max_agent_attempts: 1
+    agent_tools: [read_file, run_command]
+
+workflow w:
+  default_backend: "claw"
+  entry: build
+  build -> done
+`
+	cr := compileToolsSrc(t, src)
+	got := diagsFor(cr, DiagUnknownTool)
+	if len(got) != 1 {
+		t.Fatalf("want one C135 for agent_tools, got %+v", cr.Diagnostics)
+	}
+	if !strings.Contains(got[0], "agent_tools") || !strings.Contains(got[0], `"bash"`) {
+		t.Errorf("the message must name the field and the replacement: %s", got[0])
+	}
+}
+
+// TestRecoveryAgentToolsSilentWithoutClawDefault: the synthetic node declares
+// no backend, so only the workflow default can make it claw — anything else is
+// the unresolved case and must stay silent.
+func TestRecoveryAgentToolsSilentWithoutClawDefault(t *testing.T) {
+	src := `prompt p:
+  hi
+
+tool build:
+  command: "make build"
+  goal: "the build passes"
+  postcondition: "make build"
+  policy: recover
+  recovery:
+    max_agent_attempts: 1
+    agent_tools: [read_file, run_command]
+
+workflow w:
+  entry: build
+  build -> done
+`
+	cr := compileToolsSrc(t, src)
+	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
+		t.Fatalf("an unresolved backend must not be guessed at, got %v", got)
+	}
+}

@@ -12,8 +12,10 @@ const (
 	DiagUnknownTool DiagCode = "C135" // a `tools:` entry cannot resolve on a backend the list actually constrains (error)
 )
 
-// validateNodeTools checks that every name in an agent/judge node's `tools:`
-// list can actually resolve — but only where the list is a real constraint.
+// validateNodeTools checks that every declared tool name can actually resolve
+// — but only where the list is a real constraint. Two lists carry such names:
+// an agent/judge node's `tools:`, and a Verified Action's rung-4
+// `recovery: agent_tools:` (see validateRecoveryAgentTools).
 //
 // The failure this closes is deterministic from the source and costs a model
 // call to discover: `tools: [read_file, list_files]` on claw compiles, the run
@@ -38,6 +40,10 @@ const (
 // and on the likeliest one (claude_code) the list is inert.
 func (c *compiler) validateNodeTools(w *Workflow) {
 	for _, n := range w.Nodes {
+		if tn, ok := n.(*ToolNode); ok {
+			c.validateRecoveryAgentTools(w, tn)
+			continue
+		}
 		nn, ok := n.(LLMNode)
 		if !ok {
 			continue
@@ -77,6 +83,31 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 			}
 			break
 		}
+	}
+}
+
+// validateRecoveryAgentTools covers the other place a declared tool list
+// reaches a backend: a Verified Action's rung-4 recovery agent (ADR-044).
+// executor_verified_action hand-builds an ir.AgentNode carrying `agent_tools:`
+// verbatim, so the same names go through the same registry resolution — and
+// the same `unknown tool` failure, at the worst possible moment, since rung 4
+// runs only after the deterministic rungs have already failed.
+//
+// The synthetic node declares no backend of its own, so only the workflow
+// default can make it claw; anything else stays unresolved and silent, exactly
+// as for a node's own `tools:`.
+func (c *compiler) validateRecoveryAgentTools(w *Workflow, tn *ToolNode) {
+	if tn == nil || tn.Recovery == nil {
+		return
+	}
+	backend := effectiveNodeBackend("", w.DefaultBackend)
+	if !toolcatalog.ConstrainsTools(backend) {
+		return
+	}
+	for _, name := range unresolvableToolNames(tn.Recovery.AgentTools) {
+		c.errorfAt(DiagUnknownTool, tn.ID, "",
+			"tool %q: recovery agent_tools: names %q, which backend %q cannot resolve — the rung-4 recovery agent fails after the deterministic rungs already have%s",
+			tn.ID, name, backend, toolHint(name))
 	}
 }
 
