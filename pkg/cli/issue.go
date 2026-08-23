@@ -329,7 +329,8 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if terminal == "" {
 		return errors.New("issue close: board has no terminal state — declare one or use `issue move`")
 	}
-	if _, err := s.SetState(id, terminal); err != nil {
+	filed, err := s.SetState(id, terminal)
+	if err != nil {
 		return err
 	}
 	// Closing is the operator ACKNOWLEDGING the ticket, so drop any
@@ -344,9 +345,11 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 	if err := s.SetGaveUp(id, nil); err != nil {
 		p.Line("warning: could not clear the dispatcher give-up stamp on %s: %v", shortID(id), err)
 	}
-	iss, err := s.Get(id)
-	if err != nil {
-		return err
+	// Same for the re-read: the close has landed, so fall back to SetState's
+	// snapshot rather than report a committed close as a failure.
+	iss := filed
+	if refreshed, getErr := s.Get(id); getErr == nil {
+		iss = refreshed
 	}
 	if p.Format == OutputJSON {
 		p.JSON(iss)

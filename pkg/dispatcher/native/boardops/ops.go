@@ -525,7 +525,8 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 			return nil, fmt.Errorf("state %q is not terminal", target)
 		}
 	}
-	if _, err := store.SetState(resolved, target); err != nil {
+	filed, err := store.SetState(resolved, target)
+	if err != nil {
 		return nil, err
 	}
 	// Closing acknowledges the ticket, so any dispatcher give-up stamp on it
@@ -538,9 +539,13 @@ func doClose(store native.BoardStore, raw json.RawMessage) (json.RawMessage, err
 	// card in the wrong lane, not correctness — the same call the pipeline
 	// board's Close makes.
 	_ = store.SetGaveUp(resolved, nil)
-	iss, err := store.Get(resolved)
-	if err != nil {
-		return nil, err
+	// Same reasoning for the re-read. On a cloud board this Get is a network
+	// round-trip that can fail transiently, and the close has already landed:
+	// degrade to the pre-clear snapshot rather than tell the agent a close
+	// that DID happen failed (it would retry, or report the ticket open).
+	iss := filed
+	if refreshed, getErr := store.Get(resolved); getErr == nil {
+		iss = refreshed
 	}
 	return json.Marshal(iss)
 }
