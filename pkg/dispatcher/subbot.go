@@ -129,9 +129,6 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			releaseLock()
 			return nil, err
 		}
-		if c, ok := any(childExec).(io.Closer); ok {
-			defer func() { _ = c.Close() }()
-		}
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result. The callback fires concurrently when the
@@ -170,12 +167,21 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		// take the lock itself. Holding it across the park would block that
 		// resume — the very thing the park is waiting for.
 		releaseLock()
-		if err := runErr; err != nil {
+		// Close promptly — BEFORE a potentially hours-long human wait below — so
+		// per-child MCP servers / board-store watchers don't accumulate under
+		// parallel fan-out (the inotify-instance exhaustion #197 fixed for the
+		// studio). A `defer` here would hold all N of them open for the whole
+		// park, and this path is the fan-out-heavy one: a chapter bot dispatches
+		// N identity subbots at once and every one of them parks on its gate.
+		if c, ok := any(childExec).(io.Closer); ok {
+			_ = c.Close()
+		}
+		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run; that is not a
 			// parent failure. Park this subbot node until the operator answers
 			// the child's review and it reaches a terminal state, then pick up
 			// its output from the store.
-			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
 				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
 				if aerr == nil {
 					// Consumed — tidy the record. On error (shutdown mid-park or
@@ -185,7 +191,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 				return out, aerr
 			}
 			// Non-pause error: leave the re-attach record for the resume path.
-			return nil, err
+			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
 		return last, nil
