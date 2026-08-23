@@ -369,6 +369,15 @@ func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
 		t.Fatalf("sandboxed gated run error = %v, want an explicit refusal", err)
 	}
+
+	// A noop-driver Run reads as Hostless() — but runOnce still takes the
+	// `Sandbox != nil` branch, where ExecOpts.Env drops the shadow-home
+	// override and the node would run ungated. The guard must key on the same
+	// predicate runOnce does (#498 review, Re8c9e8).
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: noopLikeRun{}}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+		t.Fatalf("noop-driver gated run error = %v, want the same refusal: ExecOpts.Env would drop the shadow home", err)
+	}
 }
 
 // TestCLIAgentPermissionUnknownDialectRefuses pins the fail-CLOSED direction of

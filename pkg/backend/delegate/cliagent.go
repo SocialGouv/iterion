@@ -380,7 +380,16 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 	if policy.CanAsk() {
 		return nil, nil, fmt.Errorf("delegate: %s: permission policy can ask for operator approval, but an external CLI hook cannot pause the iterion run; use permission: deny without ask rules", backendName)
 	}
-	if !task.Hostless() {
+	// Deliberately `Sandbox != nil` and not `!Hostless()`: a noop-driver Run is
+	// host-side for CREDENTIAL purposes, which is all Hostless() answers, but
+	// runOnce still routes any non-nil Sandbox through Sandbox.Command, whose
+	// ExecOpts.Env comes from sandboxEnv and never carries permissionEnv. The
+	// shadow home would then never reach the CLI: it would read the operator's
+	// real home, find no iterion hook, and run ungated while iterion believed
+	// the gate held. Refusing on the wider predicate is a strict superset of
+	// the narrower one, and it is the fail-closed direction (#498 review,
+	// Re8c9e8).
+	if task.Sandbox != nil {
 		return nil, nil, fmt.Errorf("delegate: %s: permission-gated sandboxed runs are unsupported because the CLI home and hook binary are host-side; refusing to run ungated", backendName)
 	}
 
