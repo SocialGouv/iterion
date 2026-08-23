@@ -18,17 +18,19 @@ var permissionHookCmd = &cobra.Command{
 			return nil
 		}
 		backend, _ := cmd.Flags().GetString("backend")
-		policyPath, _ := cmd.Flags().GetString("policy")
-		if backend == "" || policyPath == "" {
-			return fmt.Errorf("__permission-hook: --backend and --policy are required")
+		policyB64, _ := cmd.Flags().GetString("policy-b64")
+		if backend == "" || policyB64 == "" {
+			return fmt.Errorf("__permission-hook: --backend and --policy-b64 are required")
 		}
-		return permissionhook.Run(backend, policyPath, os.Stdin, os.Stdout)
+		return permissionhook.Run(backend, policyB64, os.Stdin, os.Stdout)
 	},
 }
 
 func init() {
 	permissionHookCmd.Flags().String("backend", "", "native CLI hook dialect")
-	permissionHookCmd.Flags().String("policy", "", "serialised permission policy")
+	// By value, never a path: the CLI freezes this argv at session start, so
+	// the gated agent cannot rewrite the gate's own authority mid-run.
+	permissionHookCmd.Flags().String("policy-b64", "", "base64 permission policy (carried by value)")
 	permissionHookCmd.Flags().Bool("probe", false, "verify that this binary supports permission hooks")
 	rootCmd.AddCommand(permissionHookCmd)
 }

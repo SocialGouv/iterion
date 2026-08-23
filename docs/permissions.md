@@ -136,7 +136,7 @@ and evaluated by each gated backend before every tool runs:
 - **kimi (`deny` only)** — iterion creates a private shadow
   `KIMI_CODE_HOME` for each invocation, links the operator's credentials and
   config into it, and appends a `PreToolUse` hook. The hook subprocess rebuilds
-  the serialised policy and evaluates it with the same Go implementation. A
+  the policy and evaluates it with the same Go implementation. A
   deny is returned in kimi's native `hookSpecificOutput` shape. The real
   `~/.kimi-code` is never modified.
 - **grok (`deny` only)** — the same shadow-home design uses `GROK_HOME` plus a
@@ -145,6 +145,19 @@ and evaluated by each gated backend before every tool runs:
   `--permission-mode bypassPermissions --always-approve` flags iterion always
   passes, because grok's authorization pipeline runs `PreToolUse` hooks *first*
   and always-approve only short-circuits the checks *after* them.
+
+**The policy travels by value, and the shadow home lives outside the
+workspace.** Both matter for the same reason: the hook subprocess is the gate's
+entire authority on these backends, and the agent it gates runs as the same OS
+user. So the serialised `PolicyConfig` is passed base64-encoded in the hook's
+own argv — which both CLIs freeze when the session starts — instead of as a
+file the hook would re-read on every tool call; and the shadow home is created
+under the OS temp dir rather than `<workspace>/.iterion/<backend>`, which is
+where a repo-scoped `Edit(**)` / `Write(**)` allow rule would reach. Without
+those two properties, one allowed write of `{"mode":"off"}` would disarm the
+gate for the rest of the node — an escalation the in-process claude_code and
+claw gates cannot have, since their policy never leaves iterion's memory. A
+policy the hook cannot decode fails **closed**.
 
 Neither external hook is admitted on a declaration: each earned its entry in
 `gateEnforcingModes` with a live denial where a filesystem sentinel — not model

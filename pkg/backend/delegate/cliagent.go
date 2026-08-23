@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -397,14 +398,16 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, nil, fmt.Errorf("delegate: %s: iterion hook binary %q is stale or unusable: %w (%s)", backendName, iterionBin, err, strings.TrimSpace(string(output)))
 	}
 
-	root, loc := task.StateDir(backendName)
-	if err := PrepareStateRoot(task, root, loc, backendName+" backend", "the permission shadow home and linked CLI credentials", b.Logger); err != nil {
-		return nil, nil, err
-	}
-	if err := os.MkdirAll(root, 0o750); err != nil {
-		return nil, nil, fmt.Errorf("delegate: %s: create permission state dir: %w", backendName, err)
-	}
-	shadowHome, err := os.MkdirTemp(root, "permission-home-*")
+	// The shadow home deliberately does NOT go under task.StateDir: that root
+	// resolves to <workspace>/.iterion/<backend> in the shipped local shape,
+	// which is exactly where a repo-scoped `Edit(**)` / `Write(**)` allow rule
+	// reaches — and hideWorkspaceStateDir gitignores it, so a mutation there
+	// would not even show in `git status`. The hook registration is the CLI's
+	// own authority; keeping it off the workspace means a gated agent needs a
+	// rule granting writes outside the repo before it can touch the gate at
+	// all. os.TempDir() is safe here precisely because a permission-gated
+	// sandboxed run is refused above: this path is always host-side.
+	shadowHome, err := os.MkdirTemp("", "iterion-permission-home-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("delegate: %s: create permission shadow home: %w", backendName, err)
 	}
@@ -438,16 +441,17 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 		return nil, nil, fmt.Errorf("delegate: %s: build permission shadow home: %w", backendName, err)
 	}
 
-	policyPath := filepath.Join(shadowHome, ".iterion-permission-policy.json")
-	rawPolicy, err := json.Marshal(policy.Config())
-	if err == nil {
-		err = os.WriteFile(policyPath, rawPolicy, 0o600)
-	}
+	// The policy travels BY VALUE in the registration argv, never as a path.
+	// Both CLIs freeze their hook configuration when the session starts, so
+	// this string is beyond the agent's reach for the rest of the node; a file
+	// would instead be re-read on every tool call, and a single allowed write
+	// of `{"mode":"off"}` would silently disarm the gate from that point on.
+	policyB64, err := permissionhook.EncodePolicy(policy.Config())
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("delegate: %s: write permission policy: %w", backendName, err)
+		return nil, nil, fmt.Errorf("delegate: %s: encode permission policy: %w", backendName, err)
 	}
-	command := shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy " + shellQuote(policyPath)
+	command := shellQuote(iterionBin) + " __permission-hook --backend " + shellQuote(backendName) + " --policy-b64 " + shellQuote(policyB64)
 	if err := hook.WriteRegistration(realHome, shadowHome, command); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("delegate: %s: register permission hook: %w", backendName, err)
@@ -464,7 +468,6 @@ func linkShadowHome(realHome, shadowHome string, excluded []string) error {
 		return err
 	}
 	skip := make(map[string]bool, len(excluded))
-	skip[".iterion-permission-policy.json"] = true
 	for _, name := range excluded {
 		skip[name] = true
 	}

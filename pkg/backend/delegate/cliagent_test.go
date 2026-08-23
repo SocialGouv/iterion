@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -297,16 +298,34 @@ func TestCLIAgentPermissionShadowHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", filepath.Join(shadow, ".iterion-permission-policy.json")} {
+	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", "--policy-b64"} {
 		if !strings.Contains(string(config), want) {
 			t.Errorf("shadow config missing %q:\n%s", want, config)
 		}
 	}
+	// The gate's authority must travel by value in the frozen argv, never as a
+	// file the gated agent could rewrite between two tool calls (#498 R3e6bb0).
+	wantPolicy, err := permissionhook.EncodePolicy(policy.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), wantPolicy) {
+		t.Errorf("registration does not carry the policy by value:\n%s", config)
+	}
+	if entries, err := os.ReadDir(shadow); err == nil {
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "policy") {
+				t.Errorf("a policy file was materialised in the shadow home: %s", e.Name())
+			}
+		}
+	}
+	// The shadow home must sit outside the workspace: <workspace>/.iterion is
+	// exactly where a repo-scoped Edit(**)/Write(**) allow rule reaches.
+	if stateRoot, _ := task.StateDir(BackendKimi); strings.HasPrefix(shadow, stateRoot) {
+		t.Errorf("shadow home %s sits under the run state dir %s, which a repo-scoped write rule can reach", shadow, stateRoot)
+	}
 	if info, err := os.Lstat(filepath.Join(shadow, "credentials")); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("credentials were not linked into the shadow home: info=%v err=%v", info, err)
-	}
-	if _, err := os.Stat(filepath.Join(shadow, ".iterion-permission-policy.json")); err != nil {
-		t.Errorf("serialised policy missing: %v", err)
 	}
 	cleanup()
 	if _, err := os.Stat(shadow); !os.IsNotExist(err) {

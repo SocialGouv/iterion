@@ -1000,7 +1000,10 @@ backend. That is **distinct** from calling the xAI HTTP API via
   node's `tools:` list remains advisory. For `permission: deny`, iterion points
   the CLI at a per-invocation shadow home (`KIMI_CODE_HOME` / `GROK_HOME`) that
   links the real credentials but adds an iterion `PreToolUse` hook; the
-  operator's home is untouched. Both denial paths are live-proven — a real
+  operator's home is untouched, and that shadow home is created outside the
+  workspace so a repo-scoped write rule cannot reach the gate's own
+  registration. The policy itself rides base64-encoded in the hook argv the
+  CLI freezes at session start, never as a re-read file. Both denial paths are live-proven — a real
   model's real tool call blocked, with a filesystem sentinel rather than model
   prose as the oracle (`e2e/live_feat_permission_{kimi,grok}_test.go`) — and
   both are admitted by C176 for `deny`. Grok keeps its
