@@ -21,6 +21,12 @@ import {
   type AskUserOption,
 } from "@/lib/askUserOptions";
 
+import {
+  botDeclaresReviewer,
+  readReviewer,
+  reviewerVars,
+} from "@/lib/chatDock/assistantPrefs";
+
 import type { FirstClassBot } from "./firstClassBots";
 import type { WhatsNextMessage } from "./messages";
 import type { UseWhatsNextSession } from "./useWhatsNextSession";
@@ -132,7 +138,16 @@ export function useAssistantComposer({
           );
         }
         const seedVar = bot.seedVar ?? "initial_message";
+        // Cross-review is a per-CONVERSATION decision (priced per turn, for
+        // the whole session), so it rides the launch vars — but ONLY for a bot
+        // whose manifest declares it. Sending it blind would push a var at
+        // bots that have none, and guessing which bots support what is exactly
+        // what the manifest registry exists to stop.
+        //
+        // `lastVars` is spread after, so a re-seed of a closed session keeps
+        // the choice made when it was launched rather than today's default.
         await session.launch({
+          ...(botDeclaresReviewer(bot) ? reviewerVars(readReviewer()) : {}),
           ...(session.lastVars ?? {}),
           [seedVar]: decorated,
         });

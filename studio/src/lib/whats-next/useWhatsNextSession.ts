@@ -98,7 +98,17 @@ export interface UseWhatsNextSession {
   resume: () => Promise<void>;
 }
 
-export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
+export interface WhatsNextSessionOptions {
+  // See useSessionDiscovery's `discover`. A conversation the operator just
+  // opened passes false: discovery is keyed on (bot, scope), so it would hand
+  // this tab the run another tab is already showing.
+  discover?: boolean;
+}
+
+export function useWhatsNextSession(
+  bot: FirstClassBot,
+  options?: WhatsNextSessionOptions,
+): UseWhatsNextSession {
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<WhatsNextStatus>("idle");
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
@@ -200,6 +210,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     activeRepo,
     onAttached: setRunId,
     setStatus,
+    discover: options?.discover ?? true,
   });
 
   // Reset to "idle" state when runId becomes null (Étape 5 lets the

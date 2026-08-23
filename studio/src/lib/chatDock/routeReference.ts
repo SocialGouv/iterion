@@ -428,3 +428,45 @@ export function referenceForRoute(
   }
   return null;
 }
+
+// The reverse direction: from a reference back to the page it names.
+//
+// Used by the conversation strip to offer "back to what this is about". It is
+// an ALLOWLIST, not a formatter: a reference is attacker-influenceable (it can
+// come from a crafted URL the operator opened), and here it would become a
+// destination. Only the kinds with a known route are honoured, and the id is
+// re-encoded on the way out; anything else returns null and the offer is
+// simply not made.
+export function hrefForReference(reference: string): string | null {
+  const slash = reference.indexOf("/");
+  const kind = slash === -1 ? reference : reference.slice(0, slash);
+  const id = slash === -1 ? "" : reference.slice(slash + 1);
+  switch (kind) {
+    case "run":
+      return id ? `/runs/${encodeURIComponent(id)}` : null;
+    case "card":
+      return id ? `/board?card=${encodeURIComponent(id)}` : null;
+    case "bot":
+      return id ? `/editor?file=${encodeURIComponent(id)}` : null;
+    case "view":
+      // The view kinds the dock mints, and only those.
+      return VIEW_HREFS[id] ?? null;
+    default:
+      // `node/…` and `repo/…` have no page of their own to return to.
+      return null;
+  }
+}
+
+const VIEW_HREFS: Record<string, string> = {
+  board: "/board",
+  runs: "/runs",
+  bots: "/bots",
+  editor: "/editor",
+  pipelines: "/pipelines",
+  dispatcher: "/dispatcher",
+  marketplace: "/marketplace",
+  plugins: "/plugins",
+  skills: "/skills",
+  secrets: "/secrets",
+  automations: "/automations",
+};

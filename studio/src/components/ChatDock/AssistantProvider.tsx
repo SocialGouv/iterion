@@ -36,6 +36,7 @@ import {
   useMemo,
   useState,
   type ReactNode,
+  useRef,
 } from "react";
 import { useLocation } from "wouter";
 
@@ -43,7 +44,24 @@ import {
   FLOATING_FOOTPRINT_PX,
 } from "@/components/ChatDock/ChatDockShell";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
-import { dockStandsDown, isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
+import {
+  dockStandsDown,
+  isAssistantOwnRoute,
+  referenceForRoute,
+} from "@/lib/chatDock/routeReference";
+import { cancelRun, type RunStatus } from "@/api/runs";
+import {
+  MAX_CONVERSATIONS,
+  addConversation,
+  closeConversation,
+  newConversationId,
+  readActiveConversation,
+  readConversations,
+  resolveActive,
+  writeActiveConversation,
+  writeConversations,
+  type Conversation,
+} from "@/lib/chatDock/conversations";
 import {
   ASSISTANT_BOT_KEY,
   ASSISTANT_DOCK_KEY,
@@ -98,6 +116,14 @@ interface AssistantDockContextValue {
   // must not re-render on every websocket event.
   dockWidth: number;
   setDockWidth: (px: number) => void;
+  // The open conversations, and the one on screen. Several at a time, each
+  // its own run — see lib/chatDock/conversations.
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  openConversation: () => void;
+  selectConversation: (id: string) => void;
+  closeConversationById: (id: string) => void;
+  atConversationLimit: boolean;
 }
 
 interface AssistantSessionContextValue {
@@ -163,42 +189,132 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           </RunStoreProvider>
         }
       >
-        <AssistantSessionHost store={store}>{children}</AssistantSessionHost>
+        <AssistantSessionHost>{children}</AssistantSessionHost>
       </ErrorBoundary>
     </RunStoreProvider>
   );
 }
 
-// Runs the session hook — which must execute UNDER the assistant store,
-// hence the split from AssistantProvider.
-function AssistantSessionHost({
-  store,
-  children,
-}: {
-  store: RunStore;
-  children: ReactNode;
-}) {
+// The conversation strip lives here; each conversation gets its own host
+// below, and only the active one publishes context to the app.
+//
+// Why one host per conversation rather than one hook switching between them:
+// a session is not a value you can swap, it is a live thing — a websocket, a
+// discovery, a transcript fold. Mounting them separately is what lets a
+// conversation KEEP RUNNING while you read another, which is the entire point
+// of having more than one.
+function AssistantSessionHost({ children }: { children: ReactNode }) {
   const registry = useChatRegistry();
-  // Which chat bot answers IN THE DOCK, remembered per browser. A choice that
-  // resets on every reload is not a choice: an operator who switched the dock
-  // to another assistant is telling us what they want it to be.
-  const [selectedId, setSelectedId] = useState<string>(() =>
-    readStringFlag(ASSISTANT_BOT_KEY, ""),
-  );
-  // Two lanes, one session host. Nexie owns /whats-next and is not offered
-  // anywhere else; the dock is the general assistant on every other route.
-  // Route-derived rather than a second mounted session: one session hook means
-  // one discovery/poll, and switching correspondent re-attaches to that bot's
-  // own run (useWhatsNextSession resets on bot.id).
   const [location] = useLocation();
-  const bot = isAssistantOwnRoute(location)
-    ? registry.byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? null
-    : registry.resolveDock(selectedId);
-  const selectBot = useCallback((id: string) => {
-    setSelectedId(id);
-    writeStringFlag(ASSISTANT_BOT_KEY, id);
+
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    readConversations(),
+  );
+  const [activeId, setActiveId] = useState<string>(() =>
+    readActiveConversation(),
+  );
+
+  // One run store PER conversation, kept for the host's lifetime.
+  //
+  // Not one shared store: the session hook resets on a bot change, not on a
+  // conversation change, so two conversations with the same bot would show
+  // each other's run. Keeping them apart is also what lets a background
+  // conversation still be there — transcript and all — when you come back.
+  const storesRef = useRef<Map<string, RunStore>>(new Map());
+  const storeFor = useCallback((id: string): RunStore => {
+    const existing = storesRef.current.get(id);
+    if (existing) return existing;
+    const made = createRunStore();
+    storesRef.current.set(id, made);
+    return made;
   }, []);
-  const session = useWhatsNextSession(bot ?? FALLBACK_BOT);
+
+  const persist = useCallback((list: Conversation[], active: string | null) => {
+    setConversations(list);
+    writeConversations(list);
+    setActiveId(active ?? "");
+    writeActiveConversation(active ?? "");
+  }, []);
+
+  // The dock always has at least one conversation to show. Created lazily, so
+  // a browser that never opens the dock never persists one.
+  const ensured = useMemo(() => {
+    if (conversations.length > 0) return conversations;
+    const seed: Conversation = {
+      id: newConversationId(),
+      botId: readStringFlag(ASSISTANT_BOT_KEY, ""),
+    };
+    return [seed];
+  }, [conversations]);
+
+  const active = resolveActive(ensured, activeId);
+
+  const openConversation = useCallback(() => {
+    const next = addConversation(ensured, {
+      id: newConversationId(),
+      botId: active?.botId ?? "",
+      fresh: true,
+      ...currentOrigin(location),
+    });
+    if (next.length === ensured.length) return; // at the ceiling
+    persist(next, next[next.length - 1]!.id);
+  }, [ensured, active, location, persist]);
+
+  const selectConversation = useCallback(
+    (id: string) => persist(ensured, id),
+    [ensured, persist],
+  );
+
+  // Once a conversation has a run of its own it is no longer fresh: on the
+  // next mount it SHOULD attach to it rather than start empty again.
+  const markActiveLaunched = useCallback(() => {
+    if (!active?.fresh) return;
+    persist(
+      ensured.map((c) => (c.id === active.id ? { ...c, fresh: false } : c)),
+      active.id,
+    );
+  }, [active, ensured, persist]);
+
+  const closeConversationById = useCallback(
+    (id: string) => {
+      // Closing a tab must CANCEL its run, not just forget it. A conversation
+      // is a live agent: dropped without cancelling, it keeps burning model
+      // spend until a stall watchdog or a process restart tears it down, and
+      // nothing on screen would ever mention it again. Same rule the
+      // new-session action follows.
+      const snapshot = storesRef.current.get(id)?.getState().snapshot;
+      const runId = snapshot?.run.id;
+      const status = snapshot?.run.status;
+      if (runId && status && LIVE_RUN_STATUSES.has(status)) {
+        // Best effort: a cancel that races a run finishing on its own must not
+        // keep the tab open. The worst case is a quiescent run the existing
+        // sweep reconciles.
+        void cancelRun(runId).catch(() => {});
+      }
+      storesRef.current.delete(id);
+      const got = closeConversation(ensured, id, active?.id ?? "");
+      persist(got.list, got.activeId);
+    },
+    [ensured, active, persist, storesRef],
+  );
+
+  // Two lanes, still. Nexie owns /whats-next and answers there whatever the
+  // dock's strip holds, so that route runs its OWN conversation rather than
+  // taking over one of the operator's.
+  const onNexieRoute = isAssistantOwnRoute(location);
+  const nexieBot = registry.byId[DEFAULT_WHATS_NEXT_BOT_ID] ?? null;
+
+  const selectBot = useCallback(
+    (id: string) => {
+      writeStringFlag(ASSISTANT_BOT_KEY, id);
+      if (!active) return;
+      persist(
+        ensured.map((c) => (c.id === active.id ? { ...c, botId: id } : c)),
+        active.id,
+      );
+    },
+    [active, ensured, persist],
+  );
 
   const [dock, setDockState] = useState<DockState>(() =>
     readDockState(ASSISTANT_DOCK_KEY, "closed"),
@@ -219,34 +335,197 @@ function AssistantSessionHost({
 
   const [dismissedRef, setDismissedRef] = useState<string | null>(null);
 
+  const activeBot = onNexieRoute
+    ? nexieBot
+    : registry.resolveDock(active?.botId ?? "");
+
+  // /whats-next runs Nexie's own conversation, so it gets its own store too
+  // rather than borrowing whichever dock tab happens to be active.
+  const activeStore = onNexieRoute
+    ? storeFor("__whats-next")
+    : storeFor(active?.id ?? "__none");
+
   const dockValue = useMemo<AssistantDockContextValue>(
     () => ({
-      store,
+      store: activeStore,
       dock,
       setDock,
       dismissedRef,
       setDismissedRef,
-      hasSession: bot !== null,
+      hasSession: activeBot !== null,
       dockWidth,
       setDockWidth,
+      conversations: ensured,
+      activeConversationId: active?.id ?? null,
+      openConversation,
+      selectConversation,
+      closeConversationById,
+      atConversationLimit: ensured.length >= MAX_CONVERSATIONS,
     }),
-    [store, dock, setDock, dismissedRef, bot, dockWidth, setDockWidth],
+    [
+      activeStore,
+      dock,
+      setDock,
+      dismissedRef,
+      activeBot,
+      dockWidth,
+      setDockWidth,
+      ensured,
+      active,
+      openConversation,
+      selectConversation,
+      closeConversationById,
+    ],
   );
-  const sessionValue = useMemo<AssistantSessionContextValue>(
-    () => ({ bot, session, bots: registry.dockBots, selectBot }),
-    [bot, session, registry.dockBots, selectBot],
-  );
+
+  // Background conversations are mounted for one reason: to keep running while
+  // the operator reads another. They render nothing.
+  const background = ensured.filter((c) => c.id !== active?.id || onNexieRoute);
 
   return (
     <AssistantDockContext.Provider value={dockValue}>
-      <AssistantSessionContext.Provider value={sessionValue}>
-        {/* Hand the default store back: everything below is the ordinary
-            app, and must not read the assistant's run. */}
-        <RunStoreProvider store={getDefaultRunStore()}>
-          {children}
-        </RunStoreProvider>
-      </AssistantSessionContext.Provider>
+      {background.map((c) => (
+        <BackgroundConversation
+          key={c.id}
+          bot={registry.resolveDock(c.botId)}
+          store={storeFor(c.id)}
+          discover={!c.fresh}
+        />
+      ))}
+      <ActiveConversation
+        // Keyed on the conversation AND the bot: switching either is a
+        // different session, and a stale transcript must not bleed across.
+        key={`${active?.id ?? "none"}:${activeBot?.id ?? "none"}`}
+        bot={activeBot}
+        bots={registry.dockBots}
+        selectBot={selectBot}
+        store={activeStore}
+        discover={onNexieRoute ? true : !active?.fresh}
+        onLaunched={markActiveLaunched}
+      >
+        {children}
+      </ActiveConversation>
     </AssistantDockContext.Provider>
+  );
+}
+
+// The statuses where a run is still consuming something. `paused_*` included:
+// a paused run holds its worktree and its place in the concurrency budget, and
+// the operator closing the tab is saying they are done with it.
+const LIVE_RUN_STATUSES = new Set<RunStatus>([
+  "queued",
+  "running",
+  "paused_waiting_human",
+  "paused_operator",
+]);
+
+// currentOrigin captures WHERE a conversation was opened from, so the operator
+// can get back to what they were talking about after switching tabs. The
+// reverse of the page context the dock already sends the bot.
+function currentOrigin(path: string): Pick<Conversation, "origin" | "originLabel"> {
+  const ref = referenceForRoute(path, "");
+  if (!ref) return {};
+  return { origin: ref.ref, originLabel: ref.label };
+}
+
+// A conversation that is not on screen. It runs; it renders nothing.
+function BackgroundConversation({
+  bot,
+  store,
+  discover,
+}: {
+  bot: FirstClassBot | null;
+  store: RunStore;
+  discover: boolean;
+}) {
+  return (
+    <RunStoreProvider store={store}>
+      <RunSessionPump bot={bot ?? FALLBACK_BOT} discover={discover} />
+    </RunStoreProvider>
+  );
+}
+
+function RunSessionPump({
+  bot,
+  discover,
+}: {
+  bot: FirstClassBot;
+  discover: boolean;
+}) {
+  useWhatsNextSession(bot, { discover });
+  return null;
+}
+
+// The conversation on screen: it runs the session AND publishes it, so the
+// dock and /whats-next read the same one.
+function ActiveConversation({
+  bot,
+  bots,
+  selectBot,
+  store,
+  discover,
+  onLaunched,
+  children,
+}: {
+  bot: FirstClassBot | null;
+  bots: FirstClassBot[];
+  selectBot: (id: string) => void;
+  store: RunStore;
+  discover: boolean;
+  onLaunched: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <RunStoreProvider store={store}>
+      <ActiveConversationInner
+        bot={bot}
+        bots={bots}
+        selectBot={selectBot}
+        discover={discover}
+        onLaunched={onLaunched}
+      >
+        {children}
+      </ActiveConversationInner>
+    </RunStoreProvider>
+  );
+}
+
+// Split so the session hook runs UNDER its conversation's store — the same
+// reason AssistantSessionHost is split from AssistantProvider.
+function ActiveConversationInner({
+  bot,
+  bots,
+  selectBot,
+  discover,
+  onLaunched,
+  children,
+}: {
+  bot: FirstClassBot | null;
+  bots: FirstClassBot[];
+  selectBot: (id: string) => void;
+  discover: boolean;
+  onLaunched: () => void;
+  children: ReactNode;
+}) {
+  const session = useWhatsNextSession(bot ?? FALLBACK_BOT, { discover });
+  const launchedRef = useRef(false);
+  useEffect(() => {
+    if (!session.runId || launchedRef.current) return;
+    launchedRef.current = true;
+    onLaunched();
+  }, [session.runId, onLaunched]);
+  const sessionValue = useMemo<AssistantSessionContextValue>(
+    () => ({ bot, session, bots, selectBot }),
+    [bot, session, bots, selectBot],
+  );
+  return (
+    <AssistantSessionContext.Provider value={sessionValue}>
+      {/* Hand the default store back: everything below is the ordinary
+          app, and must not read the assistant's run. */}
+      <RunStoreProvider store={getDefaultRunStore()}>
+        {children}
+      </RunStoreProvider>
+    </AssistantSessionContext.Provider>
   );
 }
 

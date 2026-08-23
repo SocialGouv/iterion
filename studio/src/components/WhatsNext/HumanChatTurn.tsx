@@ -349,7 +349,10 @@ function AssistantBubble({
         {persona}
       </span>
       <div className="flex-1 rounded-lg bg-surface-2 border border-border-subtle px-3 py-2 text-label text-fg-default">
-        <MarkdownText value={text} size="sm" />
+        {/* The prose is the message; a pasted `.bot` is evidence behind it.
+            Folded, the sentence that explains the workflow is readable without
+            scrolling past the workflow itself. */}
+        <MarkdownText value={text} size="sm" collapsibleCode />
         {slot}
       </div>
     </div>

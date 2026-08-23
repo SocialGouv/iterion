@@ -18,7 +18,6 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
 } from "react";
-import { PlusIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
 import {
@@ -39,8 +38,8 @@ import {
 } from "@/lib/chatDock/dragReference";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
-import { IconButton } from "@/components/ui";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
@@ -64,7 +63,18 @@ import {
   DraftBotOffer,
   useEditorConsent,
 } from "@/components/ChatDock/draftBotOffer";
+import {
+  ConversationStrip,
+  OriginLink,
+} from "@/components/ChatDock/ConversationStrip";
 import { editorDraftKey } from "@/hooks/useDraftBot";
+import {
+  botDeclaresReviewer,
+  readAskBeforeStart,
+  readReviewer,
+  writeAskBeforeStart,
+  writeReviewer,
+} from "@/lib/chatDock/assistantPrefs";
 
 
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
@@ -147,6 +157,24 @@ function AssistantDock({
   const newSession = useNewSessionAction({ bot, session });
 
   const editorConsent = useEditorConsent(composer.submitPending);
+  const [route] = useLocation();
+
+  // The strip and the origin link both read the dock context, which is where
+  // the conversations live (the session context changes on every event and
+  // would re-render the strip with it).
+  const dockCtx = useAssistantDock();
+  const strip = {
+    conversations: dockCtx?.conversations ?? [],
+    activeConversationId: dockCtx?.activeConversationId ?? null,
+    atConversationLimit: dockCtx?.atConversationLimit ?? false,
+    selectConversation: dockCtx?.selectConversation ?? (() => {}),
+    closeConversationById: dockCtx?.closeConversationById ?? (() => {}),
+    openConversation: dockCtx?.openConversation ?? (() => {}),
+    labelFor: (c: { botId: string }) =>
+      bots.find((b) => b.id === c.botId)?.label ?? bot.label,
+  };
+  const activeConversation =
+    strip.conversations.find((c) => c.id === strip.activeConversationId) ?? null;
 
   // Tell an open editor tab when there is something new to read.
   //
@@ -202,22 +230,16 @@ function AssistantDock({
       headerSlot={
         <>
           <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
-          {newSession.available && (
-            <IconButton
-              label={`Start a new ${bot.label} conversation`}
-              tooltip={
-                newSession.busy
-                  ? "Cancelling…"
-                  : "New conversation (ends this one)"
-              }
-              size="sm"
-              variant="ghost"
-              disabled={newSession.busy}
-              onClick={() => void newSession.start()}
-            >
-              <PlusIcon className="h-3.5 w-3.5" />
-            </IconButton>
-          )}
+          <ConversationStrip
+            conversations={strip.conversations}
+            activeId={strip.activeConversationId}
+            atLimit={strip.atConversationLimit}
+            onSelect={strip.selectConversation}
+            onClose={strip.closeConversationById}
+            onOpen={strip.openConversation}
+            labelFor={(c) => strip.labelFor(c)}
+          />
+
         </>
       }
       lane={ASSISTANT_LANE}
@@ -271,7 +293,7 @@ function AssistantDock({
           and only scrolls as a flex child. */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {session.messages.length === 0 ? (
-          <EmptyState session={session} />
+          <EmptyState session={session} bot={bot} />
         ) : (
           <ChatTranscript
             messages={session.messages}
@@ -322,6 +344,7 @@ function AssistantDock({
         </div>
       ) : (
         <div className="shrink-0 border-t border-border-default bg-surface-0">
+          <OriginLink conversation={activeConversation} currentPath={route} />
           <AttachedReferences references={attached} onDetach={detach} />
           {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
@@ -397,7 +420,59 @@ function AssistantDock({
 // are different states, and here they are one keystroke from a blind
 // double-launch. Say so with the same words as SessionLauncher, the
 // sibling that renders this session full-width.
-function EmptyState({ session }: { session: UseWhatsNextSession }) {
+// Offered BEFORE a conversation exists, because cross-review is priced per
+// turn for the whole session — a switch buried in settings would be found after
+// the money was spent. Dismissible for good: "don't ask again" keeps the saved
+// answer and stops the question, and Settings → Assistant can change both.
+function StartOptions({ bot }: { bot: FirstClassBot }) {
+  const [reviewer, setReviewer] = useState(readReviewer);
+  const [ask, setAsk] = useState(readAskBeforeStart);
+  // Only for a bot whose manifest says it understands cross-review. Offering a
+  // toggle that does nothing is worse than not offering one.
+  if (!ask || !botDeclaresReviewer(bot)) return null;
+  return (
+    <div className="mb-3 rounded-md border border-border-subtle bg-surface-2 p-2.5 space-y-2 text-left">
+      <p className="text-caption text-fg-muted">Before you start</p>
+      <Checkbox
+        checked={reviewer}
+        onChange={(e) => {
+          setReviewer(e.target.checked);
+          writeReviewer(e.target.checked);
+        }}
+        label={
+          <span>
+            Cross-review each answer
+            <span className="block text-caption text-fg-subtle">
+              A second model, from another family, criticises the answer before
+              you read it. Costs a full extra call per turn.
+            </span>
+          </span>
+        }
+      />
+      <Checkbox
+        checked={!ask}
+        onChange={(e) => {
+          const nextAsk = !e.target.checked;
+          setAsk(nextAsk);
+          writeAskBeforeStart(nextAsk);
+        }}
+        label={
+          <span className="text-caption text-fg-subtle">
+            Don't ask again — change it in Settings → Assistant
+          </span>
+        }
+      />
+    </div>
+  );
+}
+
+function EmptyState({
+  session,
+  bot,
+}: {
+  session: UseWhatsNextSession;
+  bot: FirstClassBot;
+}) {
   if (session.discoveryError) {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto p-3">
@@ -417,12 +492,18 @@ function EmptyState({ session }: { session: UseWhatsNextSession }) {
       </div>
     );
   }
+  if (session.status === "launching") {
+    return (
+      <div className="flex-1 min-h-0 grid place-items-center px-4 text-center">
+        <p className="text-caption text-fg-muted">Starting a session…</p>
+      </div>
+    );
+  }
   return (
-    <div className="flex-1 min-h-0 grid place-items-center px-4 text-center">
-      <p className="text-caption text-fg-muted">
-        {session.status === "launching"
-          ? "Starting a session…"
-          : "Ask about the page you're on — the first message starts a session."}
+    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col justify-center">
+      <StartOptions bot={bot} />
+      <p className="text-caption text-fg-muted text-center">
+        Ask about the page you're on — the first message starts a session.
       </p>
     </div>
   );

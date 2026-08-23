@@ -54,6 +54,13 @@ launch:
 ## `chat:` now, so a second chat bot needs no studio code (issue #333).
 chat:
   seed_var: initial_message
+  ## Declared so the studio KNOWS this bot understands cross-review and can
+  ## offer the choice before a conversation starts. Without it the studio
+  ## would either have to guess, or send `reviewer` to every chat bot —
+  ## including ones that declare no such var.
+  launcher_vars:
+    - name: reviewer
+      label: "Cross-review each answer"
   nodes:
     seed: {kind: silent}
     gate: {kind: silent}

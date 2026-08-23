@@ -7,6 +7,7 @@ import {
   referenceForRoute,
   sanitizeReferenceText,
   dockStandsDown,
+  hrefForReference,
 } from "./routeReference";
 
 describe("sanitizeReferenceText", () => {
@@ -311,5 +312,41 @@ describe("dockStandsDown", () => {
     for (const path of ["/", "/board", "/runs", "/runs/019f", "/bots"]) {
       expect(dockStandsDown(path)).toBe(false);
     }
+  });
+});
+
+// The reverse direction, used to offer "back to what this conversation is
+// about". It is an ALLOWLIST, not a formatter: a reference can come from a
+// crafted URL the operator opened, and here it becomes a DESTINATION. What is
+// not recognised produces no offer at all.
+describe("hrefForReference", () => {
+  it("returns to a run, a card, a bot and a view", () => {
+    expect(hrefForReference("run/019f")).toBe("/runs/019f");
+    expect(hrefForReference("card/native:abc")).toBe("/board?card=native%3Aabc");
+    expect(hrefForReference("bot/bots/copilot/main.bot")).toBe(
+      "/editor?file=bots%2Fcopilot%2Fmain.bot",
+    );
+    expect(hrefForReference("view/board")).toBe("/board");
+  });
+
+  it("refuses a kind with no page of its own", () => {
+    expect(hrefForReference("node/run/step")).toBeNull();
+    expect(hrefForReference("repo/o/n")).toBeNull();
+  });
+
+  it("refuses an unknown view rather than inventing a route", () => {
+    expect(hrefForReference("view/../../etc")).toBeNull();
+    expect(hrefForReference("view/admin-secret")).toBeNull();
+  });
+
+  it("refuses a reference with no id, and junk", () => {
+    expect(hrefForReference("run/")).toBeNull();
+    expect(hrefForReference("run")).toBeNull();
+    expect(hrefForReference("")).toBeNull();
+    expect(hrefForReference("javascript:alert(1)")).toBeNull();
+  });
+
+  it("encodes the id rather than splicing it into the path", () => {
+    expect(hrefForReference("run/a b&c")).toBe("/runs/a%20b%26c");
   });
 });

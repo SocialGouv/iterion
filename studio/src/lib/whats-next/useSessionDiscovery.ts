@@ -38,8 +38,17 @@ export function useSessionDiscovery(opts: {
   // Called with the attached run's id once the store is hydrated.
   onAttached: (runId: string) => void;
   setStatus: (status: WhatsNextStatus) => void;
+  // Should this session look for an existing run to attach to?
+  //
+  // Discovery is keyed on (bot, scope), so with several conversations open on
+  // the SAME bot it hands every one of them the same run — clicking "new
+  // conversation" showed the old one. A conversation the operator just opened
+  // must therefore start empty and launch its own; only a session that IS the
+  // continuation of an earlier one should attach.
+  discover?: boolean;
 }): SessionDiscovery {
   const { bot, scopeKey, repoScopeEnabled, overview, activeRepo } = opts;
+  const discover = opts.discover ?? true;
   const { onAttached, setStatus } = opts;
   // The store this session lives in — the assistant's isolated one when
   // mounted under AssistantProvider, the module default otherwise. Stable
@@ -64,6 +73,12 @@ export function useSessionDiscovery(opts: {
   const attachAttemptedRef = useRef(false);
   useEffect(() => {
     if (attachAttemptedRef.current) return;
+    if (!discover) {
+      // Not an error state: this conversation is meant to be empty until the
+      // operator says something.
+      attachAttemptedRef.current = true;
+      return;
+    }
     if (!bot.id) return;
     // In cloud, wait for the repo scope to resolve before discovering —
     // the scope key participates in both storage and filtering.
@@ -157,7 +172,7 @@ export function useSessionDiscovery(opts: {
     // scopeKey folds in (team, active repo) — a repo switch re-runs the
     // discovery for the new scope; discoveryNonce is the manual retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bot.id, scopeKey, discoveryNonce]);
+  }, [bot.id, scopeKey, discoveryNonce, discover]);
 
   const retryDiscovery = useCallback(() => {
     setDiscoveryError(null);
