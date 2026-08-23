@@ -110,6 +110,8 @@ type Engine struct {
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                   // in-source preset name selected at launch, set via WithPreset
+	extraSkills              []string                 // operator-added skill-library skills (--skill / ITERION_SKILLS), unioned with the workflow's own; set via WithExtraSkills
+	extraSkillsOrigin        string                   // "flag" | "env" — where extraSkills came from, reported on the skills_injected event
 	runName                  string                   // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
 	mergeInto                string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto

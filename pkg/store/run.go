@@ -233,6 +233,16 @@ type Run struct {
 	// caller having to re-supply it. Empty when no preset was selected
 	// or the workflow declares none.
 	Preset string `json:"preset,omitempty" bson:"preset,omitempty"`
+	// ExtraSkills are skill-library skills the OPERATOR added to this run
+	// (`--skill <name>`, repeatable, or the ITERION_SKILLS machine default),
+	// on top of whatever the workflow declares. ADDITIVE by construction: a
+	// run-level list never removes a skill the bot's author declared.
+	//
+	// Persisted for the same reason as Preset, and it matters more here: a
+	// conversational bot resumes on every turn, so a launch-only list would
+	// silently vanish after the first reply. `iterion resume` re-applies
+	// this without the caller re-typing it.
+	ExtraSkills []string `json:"extra_skills,omitempty" bson:"extra_skills,omitempty"`
 	// PermissionMode is the workflow-declared tool-permission gate mode
 	// ("" | "off" | "ask" | "deny") captured at launch, surfaced in the
 	// studio RunHeader so a gated run reads at a glance. See

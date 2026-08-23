@@ -461,7 +461,10 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard},
+		// r.ExtraSkills, re-read from the run record, is what makes an
+		// operator-added skill survive the SECOND turn of a conversation:
+		// the dock drives one resume per message.
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume"},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -635,6 +638,9 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	if len(ex.extraSkills) > 0 {
+		opts = append(opts, runtime.WithExtraSkills(ex.extraSkills, ex.extraSkillsOrigin))
 	}
 	if parentRunID != "" {
 		opts = append(opts, runtime.WithParentRunID(parentRunID))
@@ -818,6 +824,18 @@ type launchExtras struct {
 	// run-level override for the back-edge affordability guard, the level
 	// above the workflow's own `loop_budget_guard:`.
 	loopBudgetGuard string
+	// extraSkills are the skill-library skills the OPERATOR added to this
+	// run, carried on BOTH paths for different reasons: on launch it is the
+	// caller's request, on resume it is re-read from the run record.
+	//
+	// The resume half is the load-bearing one. A conversational bot resumes
+	// on every turn, and the dock drives those resumes — so a list applied
+	// only at launch would be gone by the operator's second message, on a
+	// run they launched from the CLI with --skill precisely to get it.
+	extraSkills []string
+	// extraSkillsOrigin is "flag" | "env" | "flag+env" | "resume", reported
+	// on the skills_injected event so the run says where the list came from.
+	extraSkillsOrigin string
 }
 
 // engineOptions builds the standard option set for both Launch and

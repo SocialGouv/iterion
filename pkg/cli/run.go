@@ -38,6 +38,7 @@ type RunOptions struct {
 	Recipe        string               // recipe JSON file path (alternative to File)
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
+	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
 	RunID         string               // explicit run ID (auto-generated if empty)
 	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
 	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
@@ -344,6 +345,17 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars)
 	if err != nil {
 		return err
+	}
+
+	// Fail here, not at run start: an operator-typed skill name that
+	// resolves to nothing must be an error they see immediately, next to
+	// the command that named it — the same treatment `--preset <unknown>`
+	// gets. The workflow's OWN refs stay soft (a bundle ships its skills;
+	// the library is a fallback), but nobody typed those.
+	if names, _ := ResolveExtraSkills(opts.Skills); len(names) > 0 {
+		if err := runtime.ResolveExtraSkills(storeDir, names); err != nil {
+			return err
+		}
 	}
 
 	// Resolve the mono/dual review topology for bi-model review-loop bots.
@@ -700,6 +712,7 @@ func buildEngine(
 
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
+	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,
 		append(base,
 			runtime.WithWorkflowHash(wfHash),
@@ -718,6 +731,7 @@ func buildEngine(
 			runtime.WithRepoDevbox(opts.RepoDevbox),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
+			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
 			runtime.WithSource(opts.Source),
 		)...,
 	)
