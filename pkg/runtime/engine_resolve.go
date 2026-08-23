@@ -194,6 +194,9 @@ func (e *Engine) warnMissingEdgeInput(edge *ir.Edge, dm *ir.DataMapping, sourceO
 			continue
 		}
 		field := ref.Path[0]
+		if len(field) > 0 && field[0] == '_' {
+			continue
+		}
 		if _, ok := sourceOut[field]; ok {
 			continue
 		}

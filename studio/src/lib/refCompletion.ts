@@ -52,6 +52,42 @@ function findNodeOutputSchema(doc: IterDocument, nodeName: string): string {
   return "";
 }
 
+function findRouter(doc: IterDocument, name: string) {
+  return (doc.routers ?? []).find((r) => r.name === name);
+}
+
+/** Keys a router copies onto its output — mirrors ir.routerPassThroughKeys. */
+function routerPassThroughFields(
+  doc: IterDocument,
+  wf: WorkflowDecl | undefined,
+  routerName: string,
+): string[] {
+  const router = findRouter(doc, routerName);
+  if (!router || !wf) return [];
+  const keys = new Set<string>();
+  for (const e of wf.edges ?? []) {
+    if (e.to !== routerName) continue;
+    for (const w of e.with ?? []) {
+      if (w.key) keys.add(w.key);
+    }
+  }
+  if (wf.entry === routerName) {
+    for (const v of doc.vars?.fields ?? []) if (v.name) keys.add(v.name);
+    for (const v of wf.vars?.fields ?? []) if (v.name) keys.add(v.name);
+  }
+  if (router.mode === "llm") {
+    keys.add("reasoning");
+    keys.add(router.multi ? "selected_routes" : "selected_route");
+  }
+  if (router.mode === "fan_out_each") {
+    keys.add(router.as || "item");
+    keys.add("item");
+    keys.add("index");
+    keys.add("count");
+  }
+  return [...keys];
+}
+
 interface NodeRef {
   name: string;
   output: string;
@@ -103,12 +139,24 @@ export function computeRefs(
   const refs: RefSuggestion[] = [];
 
   // {{input.*}}: in a prompt, the consuming node's input schema; in an
-  // edge with-mapping, the SOURCE node's output schema (the payload
-  // available when the edge fires). Destination input fields belong in
-  // the mapping KEYS, not in {{input.*}} values — C034 rejects those.
+  // edge with-mapping, the SOURCE node's output — schema fields for
+  // agents/tools, pass-through keys for routers (incoming with + mode
+  // bindings). Destination input fields belong in the mapping KEYS.
   let inputSchemaName = "";
   if (ctx.kind === "edge-with" && ctx.edgeFrom) {
-    inputSchemaName = findNodeOutputSchema(doc, ctx.edgeFrom);
+    const wf = activeWorkflow(doc, activeWorkflowName);
+    if (findRouter(doc, ctx.edgeFrom)) {
+      for (const name of routerPassThroughFields(doc, wf, ctx.edgeFrom)) {
+        refs.push({
+          label: name,
+          value: `{{input.${name}}}`,
+          group: "input",
+          detail: "router pass-through",
+        });
+      }
+    } else {
+      inputSchemaName = findNodeOutputSchema(doc, ctx.edgeFrom);
+    }
   } else if (ctx.kind === "node-prompt" && ctx.nodeId) {
     inputSchemaName = findNodeInputSchema(doc, ctx.nodeId);
   }

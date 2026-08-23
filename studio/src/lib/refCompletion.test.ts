@@ -51,4 +51,26 @@ describe("computeRefs — edge-with {{input.*}}", () => {
     expect(inputVals).toContain("{{input.from_dst}}");
     expect(inputVals).not.toContain("{{input.produced}}");
   });
+
+  it("suggests a router's incoming with-keys, not the destination input schema", () => {
+    const routed = doc({
+      schemas: [{ name: "dst_in", fields: [{ name: "from_dst", type: "string" }] }],
+      routers: [{ name: "dispatch", mode: "fan_out_all" }],
+      agents: [agent("src", "", "src_out"), agent("dst", "dst_in", "src_out")],
+      workflows: [
+        {
+          name: "w",
+          entry: "src",
+          edges: [
+            { from: "src", to: "dispatch", with: [{ key: "topic", value: "{{outputs.src.topic}}" }] },
+            { from: "dispatch", to: "dst" },
+          ],
+        } as WorkflowDecl,
+      ],
+    });
+    const refs = computeRefs(routed, { kind: "edge-with", edgeFrom: "dispatch", edgeTo: "dst" });
+    const inputVals = refs.filter((r) => r.group === "input").map((r) => r.value);
+    expect(inputVals).toContain("{{input.topic}}");
+    expect(inputVals).not.toContain("{{input.from_dst}}");
+  });
 });
