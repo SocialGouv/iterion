@@ -7,6 +7,9 @@ import (
 
 	clawtools "github.com/SocialGouv/claw-code-go/pkg/api/tools"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
 	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
@@ -86,6 +89,68 @@ func TestClawCatalogMatchesRegistry(t *testing.T) {
 	}
 }
 
+// TestInternalMCPShorthandsMatchRegistry guards the second half of the
+// catalog: the bare names Registry.Resolve reaches through its shorthand path
+// (a dot-free reference matched as a unique suffix over the registered MCP
+// tools). iterion registers the board and watch families itself for every run,
+// so `tools: [create_issue]` on a claw node resolves — and C135 must not
+// reject it. If a board op is added or renamed and the catalog is not updated,
+// the compiler starts refusing a workflow that runs; this fails first.
+func TestInternalMCPShorthandsMatchRegistry(t *testing.T) {
+	reg := NewRegistry()
+	store, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("open board store: %v", err)
+	}
+	if err := RegisterClawBoardTools(reg, &BoardConfig{Store: store, Capabilities: boardops.AllCapabilities()}); err != nil {
+		t.Fatalf("RegisterClawBoardTools: %v", err)
+	}
+	if err := RegisterClawWatchTools(reg, &WatchConfig{
+		Store:        conformanceWatchStore{},
+		RunID:        "run-1",
+		Capabilities: []string{"watch.subscribe", "watch.unsubscribe"},
+	}); err != nil {
+		t.Fatalf("RegisterClawWatchTools: %v", err)
+	}
+
+	var registered []string
+	for _, td := range reg.List() {
+		if td.Origin.Kind != OriginMCP {
+			continue
+		}
+		// The shorthand key is the segment after the last dot.
+		idx := strings.LastIndex(td.QualifiedName, ".")
+		if idx < 0 {
+			continue
+		}
+		registered = append(registered, td.QualifiedName[idx+1:])
+	}
+	if len(registered) == 0 {
+		t.Fatal("no internal MCP tools registered — the wiring changed shape")
+	}
+	for _, bare := range registered {
+		if !toolcatalog.ResolvesViaShorthand(bare) {
+			t.Errorf("%q resolves through Registry.Resolve's shorthand path but the catalog rejects it — C135 would refuse a workflow that runs; add it to internalMCPShorthands", bare)
+		}
+	}
+	// And nothing stale in the other direction: a name the catalog accepts
+	// but nothing registers is a name C135 waves through to a dispatch-time
+	// failure.
+	live := map[string]bool{}
+	for _, bare := range registered {
+		live[bare] = true
+	}
+	for _, bare := range []string{
+		"assign_issue", "close_issue", "comment_issue", "create_issue",
+		"get_issue", "list_issues", "list_labels", "set_bot", "set_labels",
+		"transition_issue", "subscribe", "unsubscribe",
+	} {
+		if !live[bare] {
+			t.Errorf("the catalog accepts %q but no internal MCP server registers it any more", bare)
+		}
+	}
+}
+
 // TestClawCatalogSuggestionsResolve keeps the "did you mean" advice honest: a
 // suggestion naming a tool that does not exist sends the author from one
 // unresolvable name to another.
@@ -114,4 +179,16 @@ func sorted(in []string) []string {
 		}
 	}
 	return out
+}
+
+// conformanceWatchStore satisfies WatchStore without touching a run store —
+// this test only cares that the tools REGISTER under their names.
+type conformanceWatchStore struct{}
+
+func (conformanceWatchStore) AddWatchedIssues(_ context.Context, _ string, ids []string) ([]string, error) {
+	return ids, nil
+}
+
+func (conformanceWatchStore) RemoveWatchedIssues(_ context.Context, _ string, _ []string) ([]string, error) {
+	return nil, nil
 }

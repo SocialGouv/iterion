@@ -24,8 +24,15 @@ func TestIsStaticBuiltinRef(t *testing.T) {
 		"mcp.github.create_issue",     // discovered when the server connects
 		"mcp.github.*",                // wildcard, expanded at run time
 		"mcp__iterion_board__create",  // the claude_code FQN alias form
-		"${EXTRA_TOOL}",               // resolved from the environment
 		"mcp.iterion_board.card_move", // board caps register under MCP
+	}
+	// An env/template reference is decidable — and unresolvable: `tools:` is
+	// the one field iterion never expands. The dotted form must not slip
+	// through the MCP-shape check.
+	for _, name := range []string{"${EXTRA_TOOL}", "{{vars.extra}}"} {
+		if !IsStaticBuiltinRef(name) || !IsUnexpandedRef(name) {
+			t.Errorf("%q is an unexpanded reference the catalog decides", name)
+		}
 	}
 	for _, name := range static {
 		if !IsStaticBuiltinRef(name) {
@@ -56,6 +63,22 @@ func TestIsBuiltinCoversConditionalFamilies(t *testing.T) {
 	for _, name := range []string{"list_files", "git_diff", "search_codebase", "", "memory_read"} {
 		if IsBuiltin(name) {
 			t.Errorf("%q is not registered — accepting it defeats the check", name)
+		}
+	}
+}
+
+func TestResolvesViaShorthand(t *testing.T) {
+	// Registered by the runtime for every run under mcp.iterion_board.* /
+	// mcp.iterion_watch.*, and reachable by their bare name through
+	// Registry.Resolve's shorthand path.
+	for _, name := range []string{"create_issue", "list_issues", "set_bot", "subscribe", "unsubscribe"} {
+		if !ResolvesViaShorthand(name) {
+			t.Errorf("%q resolves by its bare name today — rejecting it would block a workflow that runs", name)
+		}
+	}
+	for _, name := range []string{"read_file", "list_files", "browser_click", ""} {
+		if ResolvesViaShorthand(name) {
+			t.Errorf("%q is not one of iterion's internal MCP tools", name)
 		}
 	}
 }

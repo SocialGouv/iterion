@@ -106,13 +106,13 @@ func TestUnknownToolInheritsWorkflowDefaultBackend(t *testing.T) {
 	}
 }
 
-// TestUnknownToolIgnoresMCPAndEnvRefs: everything the compiler cannot decide
-// stays the run time's business — MCP names and wildcards are discovered when
-// the server connects, `${VAR}` is read from the environment.
-func TestUnknownToolIgnoresMCPAndEnvRefs(t *testing.T) {
+// TestUnknownToolIgnoresQualifiedMCPRefs: a qualified MCP reference names a
+// server's tools, which exist only once it connects — the compiler has no
+// opinion on those, in any of the three spellings.
+func TestUnknownToolIgnoresQualifiedMCPRefs(t *testing.T) {
 	cr := compileToolsSrc(t, toolsWorkflow(
 		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n"+
-			"  tools: [read_file, mcp.github.create_issue, mcp.github.*, mcp__iterion_board__create, \"${EXTRA_TOOL}\"]\n"))
+			"  tools: [read_file, mcp.github.create_issue, mcp.github.*, mcp__iterion_board__create]\n"))
 	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
 		t.Fatalf("dynamic tool references must not be rejected, got %v", got)
 	}
@@ -255,5 +255,65 @@ workflow w:
 	cr := compileToolsSrc(t, src)
 	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
 		t.Fatalf("an unresolved backend must not be guessed at, got %v", got)
+	}
+}
+
+// TestBoardShorthandIsAccepted (R4290e1): Registry.Resolve matches a bare name
+// as a unique suffix over the registered MCP tools, and the runtime registers
+// the board family for every run — so `tools: [create_issue]` on a claw node
+// resolves and runs today. Rejecting it would be the expensive direction of
+// drift: a hard error on a workflow that works.
+func TestBoardShorthandIsAccepted(t *testing.T) {
+	cr := compileToolsSrc(t, toolsWorkflow(
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n"+
+			"  capabilities: [board.create, board.read]\n"+
+			"  tools: [read_file, create_issue, list_issues, subscribe]\n"))
+	if got := diagsFor(cr, DiagUnknownTool); len(got) > 0 {
+		t.Fatalf("iterion's own board/watch tools resolve by their bare name, got %v", got)
+	}
+}
+
+// TestUnknownToolWarnsWhenWorkflowWiresMCP: a third-party server's tool list
+// exists only once it connects, so the compiler cannot rule out that a bare
+// name resolves through the shorthand path. The finding survives — the author
+// keeps the signal — but as a warning, since blocking would reject a workflow
+// that runs.
+func TestUnknownToolWarnsWhenWorkflowWiresMCP(t *testing.T) {
+	src := toolsWorkflow(
+		"  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  tools: [read_file, browser_click]\n") +
+		"\nmcp_server playwright:\n  transport: http\n  url: \"https://example.com/mcp\"\n"
+	cr := compileToolsSrc(t, src)
+	if got := diagsFor(cr, DiagUnknownTool); len(got) != 1 {
+		t.Fatalf("want one C135, got %+v", cr.Diagnostics)
+	}
+	if cr.HasErrors() {
+		t.Errorf("with MCP servers wired the finding must not BLOCK: %+v", cr.Diagnostics)
+	}
+}
+
+// TestUnexpandedToolRefIsReported (Rd78359): `tools:` is the one field iterion
+// never expands — unlike model:/backend:/command:/timeout:, which all go
+// through ir.ExpandEnvWithDefault. A `${VAR}` entry therefore reaches the
+// registry verbatim and can only fail, so it is reported with a message saying
+// why, instead of being exempted on a promise nothing keeps.
+//
+// Asserted below the parser on purpose: the .bot grammar accepts only bare and
+// dotted identifiers in a tools list (parseToolRef), so a quoted `${VAR}` is
+// dropped at parse. The shape is reachable through the AST/JSON path the
+// studio editor and `iterion import` write, where Tools is a []string carried
+// verbatim.
+func TestUnexpandedToolRefIsReported(t *testing.T) {
+	got := unresolvableToolNames([]string{"read_file", "${EXTRA_TOOL}", "{{vars.extra}}"})
+	want := []string{"${EXTRA_TOOL}", "{{vars.extra}}"}
+	if len(got) != len(want) {
+		t.Fatalf("unresolvableToolNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unresolvableToolNames = %v, want %v", got, want)
+		}
+	}
+	if hint := toolHint("${EXTRA_TOOL}"); !strings.Contains(hint, "does not expand") {
+		t.Errorf("the hint must explain why the ref cannot work: %s", hint)
 	}
 }

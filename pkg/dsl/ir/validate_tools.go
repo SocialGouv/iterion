@@ -39,6 +39,7 @@ const (
 // detection, so the compiler genuinely cannot know which backend will serve —
 // and on the likeliest one (claude_code) the list is inert.
 func (c *compiler) validateNodeTools(w *Workflow) {
+	report := c.toolDiagReporter(w)
 	for _, n := range w.Nodes {
 		if tn, ok := n.(*ToolNode); ok {
 			c.validateRecoveryAgentTools(w, tn)
@@ -59,7 +60,7 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 		backend := effectiveNodeBackend(nn.GetLLMFields().Backend, w.DefaultBackend)
 		if toolcatalog.ConstrainsTools(backend) {
 			for _, name := range unresolvable {
-				c.errorfAt(DiagUnknownTool, id, "",
+				report(DiagUnknownTool, id, "",
 					"%s %q: tools: names %q, which backend %q cannot resolve — the node fails the moment it dispatches%s",
 					kind, id, name, backend, toolHint(name))
 			}
@@ -77,7 +78,7 @@ func (c *compiler) validateNodeTools(w *Workflow) {
 				continue
 			}
 			for _, name := range unresolvable {
-				c.errorfAt(DiagUnknownTool, id, "",
+				report(DiagUnknownTool, id, "",
 					"%s %q: tools: names %q, which fallback %s cannot resolve on backend %q — the route would fail at the moment the run is already falling back%s",
 					kind, id, name, fallbackLabel(fb), fb.Backend, toolHint(name))
 			}
@@ -104,11 +105,32 @@ func (c *compiler) validateRecoveryAgentTools(w *Workflow, tn *ToolNode) {
 	if !toolcatalog.ConstrainsTools(backend) {
 		return
 	}
+	report := c.toolDiagReporter(w)
 	for _, name := range unresolvableToolNames(tn.Recovery.AgentTools) {
-		c.errorfAt(DiagUnknownTool, tn.ID, "",
+		report(DiagUnknownTool, tn.ID, "",
 			"tool %q: recovery agent_tools: names %q, which backend %q cannot resolve — the rung-4 recovery agent fails after the deterministic rungs already have%s",
 			tn.ID, name, backend, toolHint(name))
 	}
+}
+
+// toolDiagReporter picks C135's severity for this workflow.
+//
+// The finding is an ERROR by default: the name cannot resolve, so the node
+// cannot run. It degrades to a WARNING when the workflow wires MCP servers of
+// its own, because Registry.Resolve matches a dot-free name as a unique suffix
+// over the connected servers — and those servers' tool lists exist only once
+// they connect. Blocking there would reject a workflow that runs, which is the
+// expensive direction: the author keeps a real signal, and the qualified
+// `mcp.<server>.<tool>` form settles it either way.
+//
+// iterion's own board/watch tools do NOT go through this softening: their
+// names are fixed and known, so unresolvableToolNames accepts them outright
+// and the check keeps its teeth on every other name.
+func (c *compiler) toolDiagReporter(w *Workflow) func(DiagCode, string, string, string, ...any) {
+	if w != nil && len(w.MCPServers) > 0 {
+		return c.warnfAt
+	}
+	return c.errorfAt
 }
 
 // unresolvableToolNames returns the entries of a `tools:` list that name a
@@ -119,6 +141,12 @@ func unresolvableToolNames(tools []string) []string {
 	for _, t := range tools {
 		name := strings.TrimSpace(t)
 		if !toolcatalog.IsStaticBuiltinRef(name) || toolcatalog.IsBuiltin(name) || seen[name] {
+			continue
+		}
+		// iterion's own board / watch tools are registered under the MCP
+		// namespace but reachable by their bare name through Registry.Resolve's
+		// shorthand path, and the runtime registers them for every run.
+		if toolcatalog.ResolvesViaShorthand(name) {
 			continue
 		}
 		seen[name] = true
@@ -132,6 +160,9 @@ func unresolvableToolNames(tools []string) []string {
 // Returned with its own leading punctuation so the caller's format string
 // reads as one sentence either way.
 func toolHint(name string) string {
+	if toolcatalog.IsUnexpandedRef(name) {
+		return ". Tool names are the one field iterion does not expand — unlike model:, backend: and command:, a `${VAR}` or `{{ref}}` entry reaches the registry verbatim; name the tool literally"
+	}
 	if suggestion := toolcatalog.Suggest(name); suggestion != "" {
 		return fmt.Sprintf(". Did you mean %q?", suggestion)
 	}

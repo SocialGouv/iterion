@@ -607,8 +607,22 @@ letting the run die on `unknown tool "list_files"` after the workspace
 is prepared, and it names the nearest built-in. The check applies to
 claw only — on every CLI backend the lowercase list is advisory, so an
 unknown name there is dead config, not a failure — and it never touches
-`mcp.<server>.<tool>` entries, wildcards, or `${VAR}` refs, which are
-resolved when the server connects or the environment is read.
+qualified MCP references (`mcp.<server>.<tool>`, the `mcp__server__tool`
+alias form, wildcards), which are resolved when the server connects.
+
+Two more things it deliberately lets through. iterion's own board and
+watch tools are accepted by their **bare** name (`create_issue`,
+`subscribe`, …): the registry resolves a dot-free name as a unique
+suffix over the connected MCP tools, and the runtime registers those
+families for every run. And where the workflow declares `mcp_server:`
+blocks of its own, the same shorthand may reach a server tool the
+compiler cannot enumerate, so the finding degrades from an error to a
+warning.
+
+One thing it does **not** let through: `tools:` is the single node field
+iterion never expands — `model:`, `backend:`, `command:` and `timeout:`
+all go through `${VAR}` substitution, this one reaches the registry
+verbatim. A `${VAR}` entry can therefore only fail, and C135 says so.
 
 ### xAI Grok (`model: "xai/…"`)
 

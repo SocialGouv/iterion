@@ -74,24 +74,82 @@ func Builtins() []string {
 // built-in reference this package can decide — i.e. one the registry resolves
 // by exact name against its built-in namespace.
 //
-// Everything else is deliberately outside the catalog's authority and must be
-// left alone:
+// Only qualified MCP names are outside the catalog's authority: a dotted name
+// (`mcp.github.create_issue`), a wildcard (`mcp.github.*`) and the claude_code
+// FQN alias (`mcp__iterion_board__create`) all name an MCP server's tools,
+// discovered when the server connects, so they exist nowhere at compile time.
 //
-//   - a dotted name (`mcp.github.create_issue`) or a wildcard
-//     (`mcp.github.*`) names an MCP server's tools, discovered when the
-//     server connects — they exist nowhere at compile time;
-//   - the claude_code FQN alias form (`mcp__iterion_board__create`) is the
-//     same thing spelled for a CLI;
-//   - a `${VAR}` reference is resolved from the environment at run time.
+// A `${VAR}` or `{{ref}}` entry is NOT exempt, and that is deliberate. Tool
+// names are the one field iterion never expands: `model:`, `backend:`,
+// `command:` and `timeout:` all go through ir.ExpandEnvWithDefault, but
+// `tools:` reaches Registry.Resolve verbatim. So such an entry cannot resolve
+// on a constraining backend — ever — and exempting it would hide exactly the
+// dispatch-time failure this package exists to predict. IsUnexpandedRef says
+// so in the diagnostic.
 func IsStaticBuiltinRef(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false
 	}
-	if strings.Contains(name, ".") || strings.Contains(name, "__") || strings.Contains(name, "${") {
+	// Checked before the MCP shapes: a reference carrying `${…}` or `{{…}}`
+	// is not a qualified MCP name either, and a dot inside one
+	// (`{{vars.extra}}`) would otherwise read as `mcp.<server>.<tool>` and be
+	// waved through.
+	if IsUnexpandedRef(name) {
+		return true
+	}
+	if strings.Contains(name, ".") || strings.Contains(name, "__") {
 		return false
 	}
 	return true
+}
+
+// IsUnexpandedRef reports whether an entry looks like an environment or
+// template reference. Such an entry is unresolvable for a reason worth its own
+// sentence — the author is expecting a substitution that this field, alone
+// among the node's fields, does not perform.
+func IsUnexpandedRef(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.Contains(name, "${") || strings.Contains(name, "{{")
+}
+
+// ResolvesViaShorthand reports whether a bare name is one of iterion's OWN
+// internal MCP tools, which Registry.Resolve reaches through its shorthand
+// path: a dot-free reference with no exact built-in match is matched as a
+// unique suffix over the registered MCP tools.
+//
+// The board and watch families are registered by the runtime itself for every
+// run (pkg/runview/executor.go), not by anything visible in the .bot — the
+// node's `capabilities:` gate the CALL, not the registration. So
+// `tools: [read_file, create_issue]` on a claw node resolves and runs today,
+// and rejecting it would be the expensive direction of drift this package's
+// doc comment warns about.
+//
+// Third-party MCP tools are NOT here and cannot be: their names exist only
+// once the server connects. Where a workflow wires such servers the compiler
+// degrades its finding to a warning instead (see validateNodeTools).
+func ResolvesViaShorthand(name string) bool {
+	return internalMCPShorthands[strings.TrimSpace(name)]
+}
+
+// internalMCPShorthands are the bare names of iterion's own MCP tools. Kept in
+// sync with pkg/dispatcher/native/boardops and pkg/backend/tool's watch
+// registrar by the same conformance test that guards clawBuiltins.
+var internalMCPShorthands = map[string]bool{
+	// mcp.iterion_board.* — boardops.AllTools()
+	"assign_issue":     true,
+	"close_issue":      true,
+	"comment_issue":    true,
+	"create_issue":     true,
+	"get_issue":        true,
+	"list_issues":      true,
+	"list_labels":      true,
+	"set_bot":          true,
+	"set_labels":       true,
+	"transition_issue": true,
+	// mcp.iterion_watch.* — RegisterClawWatchTools
+	"subscribe":   true,
+	"unsubscribe": true,
 }
 
 // Suggest returns the built-in that most plausibly replaces an unresolvable
