@@ -51,7 +51,7 @@ agent implement:
   system: implement_sys
   user: implement_user
   output: work_output
-  tools: [read_file, run_command]
+  tools: [read_file, bash]
   fallbacks:
     ## Same model, different instrument: the forfait is out, the API key
     ## is not. `on:` is omitted, so this route takes the default

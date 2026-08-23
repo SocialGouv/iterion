@@ -272,7 +272,7 @@ through `claw`. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md).
 agent implement:
   backend: "claude_code"          # forfait
   model: "claude-opus-5"
-  tools: [read_file, run_command]
+  tools: [read_file, bash]
   fallbacks:
     api:                          # same model, metered Anthropic key
       backend: "claw"
@@ -366,6 +366,14 @@ run would be silently wrong rather than merely worse:
   - **CLI → claw is refused only when the list is empty**, which on claw
     means *zero* tools. Declaring the tools explicitly is the documented
     pattern: inert on the CLI primary, load-bearing on the claw route.
+
+A third refusal is `C135`: a claw route on a node whose `tools:` list
+names something claw cannot resolve. The list is inert on the CLI
+primary, so a name like `run_command` or `list_files` looks harmless
+there — but the route resolves every name against the in-process
+registry, so it would fail at the exact moment the run is already
+falling back. Declare the tools with claw's own names (`bash`,
+`glob`, …); the diagnostic names the nearest one.
 
 A route that changes `backend:` must pin its own `model:` (`C173`):
 model specs are not portable (`claw` needs `provider/model`,
@@ -582,6 +590,25 @@ order) — currently
 `anthropic/glm-5.2` for z.ai,
 `openai/gpt-5.4-mini` for OpenAI, and
 `xai/grok-3` for xAI.
+
+#### The `tools:` list is load-bearing here (`C135`)
+
+claw is the one backend a node's `tools:` list actually constrains: it
+resolves every declared name against the in-process registry and fails
+the node on one it does not have. So the names must be claw's own —
+`read_file`, `write_file`, `file_edit`, `glob`, `grep`, `bash`,
+`web_fetch`, `skill`, `web_search`, the `task_*` / `worker_*` families,
+… — and **not** the names that circulate in older examples
+(`list_files`, `run_command`, `git_diff`, `search_codebase`, `tree`,
+`patch`): none of those has ever been registered.
+
+`iterion validate` catches this before launch (`C135`) rather than
+letting the run die on `unknown tool "list_files"` after the workspace
+is prepared, and it names the nearest built-in. The check applies to
+claw only — on every CLI backend the lowercase list is advisory, so an
+unknown name there is dead config, not a failure — and it never touches
+`mcp.<server>.<tool>` entries, wildcards, or `${VAR}` refs, which are
+resolved when the server connects or the environment is read.
 
 ### xAI Grok (`model: "xai/…"`)
 
