@@ -373,7 +373,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated {
+		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated && e.parentRunID == "" {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself. Only promote this to a managed-worktree baseline
 			// when the workspace was DELEGATED to the engine (WithWorkDir —
@@ -391,6 +391,17 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			//     without the workDirDelegated gate, closing such a run
 			//     would create an iterion/run/* branch there and best-effort
 			//     FF the operator's checked-out branch onto its HEAD.
+			//   - A NESTED run (subbot child) is handed its parent's workspace,
+			//     not given one of its own: the parent is still working in that
+			//     directory. Delegation says "this workspace is yours to close",
+			//     and only one run can mean it. Without the parentRunID gate a
+			//     `worktree: none` child stamps Worktree=true over its parent's
+			//     live tree, and every resume path finalizes unconditionally —
+			//     so answering the child's human gate would `git add -A &&
+			//     git commit` the parent's half-written tree and branch it, and
+			//     a child review gate would squash-merge it into the operator's
+			//     checkout. The parent owns its workspace for its whole life,
+			//     child included.
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {

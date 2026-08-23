@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,4 +275,156 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		t.Fatalf("child lock still held after the active pass — an external resume of a parked child would be blocked: %v", err)
 	}
 	_ = lock.Unlock()
+}
+
+// worktreeNoneParentBot mirrors the film pipeline that surfaced this: the
+// PARENT declares `worktree: none` too, so its workDir stays the dispatcher's
+// per-issue linked worktree instead of a fresh per-run one — and that is the
+// directory the child gets handed, and would have claimed.
+const worktreeNoneParentBot = `
+schema seed_out:
+  ok: bool
+
+schema child_out:
+  validated: bool
+  echoed: string
+
+compute seed:
+  output: seed_out
+  expr:
+    ok: "true"
+
+subbot run_child:
+  source: "child.bot"
+  output: child_out
+
+workflow subbot_dispatch_demo:
+  worktree: none
+  entry: seed
+  seed      -> run_child
+  run_child -> done when validated
+  run_child -> fail
+`
+
+// worktreeNoneChildBot is the shape that makes the adoption fire: a child that
+// declares `worktree: none`, so it never builds a worktree of its own and the
+// workDir it was handed is the only one it has.
+const worktreeNoneChildBot = `
+schema child_out:
+  validated: bool
+  echoed: string
+
+tool work:
+  command: "cat marker.json"
+  output: child_out
+
+workflow subbot_child:
+  worktree: none
+  entry: work
+  work -> done
+`
+
+// TestEngineRunner_SubbotChildNeverAdoptsParentWorktree pins the invariant that
+// a nested run does not own the workspace it was lent.
+//
+// `WithWorkDir` sets workDirDelegated, and runPersistWorkspace reads that as
+// "this workspace is yours to close": for a `worktree: none` run whose workDir
+// is a linked worktree, it stamps Worktree=true + RepoRoot=<main checkout> +
+// BaseCommit=<HEAD>. Handing the child its parent's workDir therefore made the
+// CHILD claim the directory the PARENT is still writing in — and every resume
+// path finalizes unconditionally, so answering the child's human gate would
+// `git add -A && git commit` the parent's half-written tree, branch it as
+// iterion/run/*, and (with a review gate) squash-merge it into the operator's
+// checkout. The step-0 guard does not catch it: it only refuses when
+// wtPath == repoRoot, and here they differ.
+//
+// Observed live before the gate: a paused identity child carried
+// Worktree=true with RepoRoot pointing at the operator's own repository.
+func TestEngineRunner_SubbotChildNeverAdoptsParentWorktree(t *testing.T) {
+	botDir := t.TempDir()
+	parentPath := filepath.Join(botDir, "parent.bot")
+	if err := os.WriteFile(parentPath, []byte(worktreeNoneParentBot), 0o644); err != nil {
+		t.Fatalf("write parent bot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "child.bot"), []byte(worktreeNoneChildBot), 0o644); err != nil {
+		t.Fatalf("write child bot: %v", err)
+	}
+
+	// The workspace must be a LINKED worktree of a main checkout — that is the
+	// shape the dispatcher's after_create hook seeds, and the one the adoption
+	// branch tests for (mainRepoRoot != worktreeRoot).
+	mainRepo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "T"},
+		{"commit", "-q", "--allow-empty", "-m", "seed"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = mainRepo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	workspace := filepath.Join(t.TempDir(), "issue-ws")
+	cmd := exec.Command("git", "worktree", "add", "--detach", workspace, "HEAD")
+	cmd.Dir = mainRepo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	marker := `{"validated":true,"echoed":"from-workspace"}`
+	if err := os.WriteFile(filepath.Join(workspace, "marker.json"), []byte(marker), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	storeDir := t.TempDir()
+	runner, err := NewEngineRunner(parentPath, iterlog.Nop())
+	if err != nil {
+		t.Fatalf("NewEngineRunner: %v", err)
+	}
+	defer func() { _ = runner.Close() }()
+	runID, err := store.GenerateRunID()
+	if err != nil {
+		t.Fatalf("GenerateRunID: %v", err)
+	}
+	if derr := runner.Dispatch(context.Background(), DispatchSpec{
+		RunID:         runID,
+		WorkspacePath: workspace,
+		StoreDir:      storeDir,
+		Issue:         &IssueRef{ID: "native:" + runID, Identifier: runID, Title: "subbot worktree adoption"},
+	}); derr != nil {
+		t.Fatalf("Dispatch: %v", derr)
+	}
+
+	s, err := store.New(storeDir, store.WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ids, err := s.ListRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	seen := false
+	for _, id := range ids {
+		if id == runID {
+			continue
+		}
+		child, lerr := s.LoadRun(context.Background(), id)
+		if lerr != nil || child.ParentRunID != runID {
+			continue
+		}
+		seen = true
+		if child.Worktree {
+			t.Fatalf("child %s claimed its parent's workspace as a managed worktree "+
+				"(RepoRoot=%q BaseCommit=%q) — finalization would commit and branch the tree "+
+				"the parent is still writing in", id, child.RepoRoot, child.BaseCommit)
+		}
+		if child.RepoRoot != "" || child.BaseCommit != "" {
+			t.Fatalf("child %s stamped a repo baseline it does not own: RepoRoot=%q BaseCommit=%q",
+				id, child.RepoRoot, child.BaseCommit)
+		}
+	}
+	if !seen {
+		t.Fatal("no child run linked to the parent — the subbot node did not spawn one")
+	}
 }
