@@ -425,19 +425,6 @@ func (b *CLIAgentBackend) preparePermissionHook(ctx context.Context, task Task, 
 			"delegate: %s: the permission hook would run %q, which is inside the workspace this gate protects — a write rule reaching it disarms the gate, and a corrupted binary fails OPEN on both CLIs; point ITERION_BIN at an iterion outside the workspace (e.g. an installed one)",
 			backendName, iterionBin)
 	}
-	// The hook binary is the third thing the agent must not be able to reach,
-	// alongside the policy (carried by value) and the shadow home (kept off the
-	// workspace). It is the weakest of the three: LocateIterionBinary's first
-	// branch is os.Executable()'s directory, which in the repo-root shape the
-	// docs themselves use (`./iterion run …` after `task build`) sits INSIDE
-	// the gated workspace — and it is re-executed on every tool call, where a
-	// spawn failure makes both CLIs fail OPEN. So an agent holding any write
-	// rule that reaches that path needs only to CORRUPT the file, not craft a
-	// working one, to disarm the gate for the rest of the node
-	// (#498 review, R8d24f4).
-	if pathInsideCheckout(task.WorkDir, iterionBin) {
-		return nil, nil, fmt.Errorf("delegate: %s: the permission hook would run %q, which is inside the workspace this gate protects — a single allowed write there disarms the gate on the next tool call; point ITERION_BIN at an iterion outside the workspace (e.g. an installed /usr/bin/iterion)", backendName, iterionBin)
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if output, err := exec.CommandContext(probeCtx, iterionBin, "__permission-hook", "--probe").CombinedOutput(); err != nil {
