@@ -797,16 +797,6 @@ func (p *Publisher) acquireFromPool(ctx context.Context, runID, orgID, tenantID,
 // server's auth middleware) and propagate to both the persisted Run
 // document and the NATS message so the runner can verify isolation.
 func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview.LaunchSpec, wf *ir.Workflow, hash string) (int, error) {
-	// ModelOverrides cannot cross the queue: queue.RunMessage (schema v7)
-	// has no field for them, and the runner honours only what the wire
-	// carries. Launching anyway would execute the workflow WITHOUT the
-	// backend/model pins the operator explicitly chose — silently re-making
-	// operator intent on the pod, the exact failure class issue #481
-	// forbids. Reject loudly until schema v8 carries the field; the rollout
-	// path is docs/cloud-queue-schema-rollout.md.
-	if len(spec.ModelOverrides) > 0 {
-		return 0, fmt.Errorf("cloudpublisher: model_overrides are not supported on queued cloud runs: queue schema v%d cannot carry them and dropping them would silently run without the operator's backend/model pins (issue #481) — run locally, or wait for schema v8 (docs/cloud-queue-schema-rollout.md)", queue.SchemaVersion)
-	}
 	// 1. Persist the run with status=queued + workflow_hash + file_path
 	//    so List endpoints see it instantly and Resume can reload the
 	//    workflow. Single SaveRun (upsert) avoids the CreateRun → LoadRun

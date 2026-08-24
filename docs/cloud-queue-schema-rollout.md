@@ -25,8 +25,8 @@ ordering alone is not sufficient (issue #481).
   because dropping it would quietly re-make the operator's choice on the pod.
 - **Until the bump ships, reject — never drop.** A launch that carries a
   field the current wire version cannot transport must fail loudly at publish
-  time. Precedent: `cloudpublisher.SubmitLaunch` rejects `model_overrides`
-  on queued cloud runs while schema v7 cannot carry them (issue #481).
+  time. Once the carrier and version bump ship together, the rejection can be
+  removed. Schema v8's `ModelOverrides` rollout is the reference transition.
 
 ## What a mixed fleet does to a mismatched message
 
@@ -94,21 +94,17 @@ rejecting vN messages still in the queue — to chance.
 
 ## Checklist: v7 → v8 (ModelOverrides)
 
-Schema v8 exists to carry launch-time `model_overrides` to the runner
-(issue #481 — today they are silently dropped in cloud mode, and
-`SubmitLaunch` rejects them loudly). Before v8 ships:
+Schema v8 carries launch-time `model_overrides` to the runner. The code-side
+preconditions for its rollout now ship together:
 
-- [ ] The safety mechanics above are deployed everywhere (delayed Nak +
-      DLQ park + status flip) — they are what makes this rollout safe.
-- [ ] v8 adds `ModelOverrides` to `queue.RunMessage`, the publisher sets it,
-      the runner applies it (`model.WithModelOverrides` /
-      `runtime.WithModelOverrides` in `executeRun`), and the publish-time
-      rejection in `SubmitLaunch` is removed.
-- [ ] The mixed-fleet integration test
-      (`pkg/runner/schema_rollout_integration_test.go`) covers the new
-      version pair.
-- [ ] Roll out per Path A or Path B above; until then, cloud launches with
-      `model_overrides` keep failing loudly at launch time.
+- [x] Delayed mismatch Nak, final DLQ park and actionable status flip.
+- [x] `ModelOverrides` on `queue.RunMessage`, set by the publisher and
+      applied by the runner executor; resumes preserve the same pins.
+- [x] `SchemaVersion = 8`, so a stale v7 runner rejects the payload instead
+      of silently ignoring the new field.
+- [x] The live-JetStream mixed-fleet integration test covers both version
+      directions and the recovery paths.
+- [ ] Operators roll out per Path A or Path B above.
 
 ## If something went wrong
 

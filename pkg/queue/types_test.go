@@ -172,9 +172,9 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=7 (2026-08-11) added LoopBudgetGuard for the same reason one layer
 	// down: dropped, the pod re-decides whether a loop stops early or dies at
 	// its ceiling, overruling the operator who said otherwise.
-	// v=8 (2026-08-25) added Supervisors so a launch-time `--supervisors off`
-	// reaches the pod — dropped, the pod re-decides from its own env and
-	// spawns LLM watchers the operator explicitly declined.
+	// v=8 (2026-08-25) added ModelOverrides and Supervisors: without the bump
+	// a stale runner silently ignores model/backend pins and re-decides an
+	// explicit `--supervisors off` from its own environment.
 	if SchemaVersion != 8 {
 		t.Errorf("SchemaVersion = %d, want 8 (bump intentionally)", SchemaVersion)
 	}

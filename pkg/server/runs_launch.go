@@ -104,9 +104,8 @@ type launchRunRequest struct {
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
-	// See runview.ModelOverrideEntry. Local runs only for now: the queue
-	// wire (schema v7) cannot carry them, so a cloud launch that sets them
-	// is rejected with a 400 at admission (issue #481).
+	// See runview.ModelOverrideEntry. Queue schema v8 carries them to cloud
+	// runners as well, where they are applied to the executor (issues #481/#513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
 	// Fallback is the operator's single run-level fallback route, taken
 	// when an agent node's primary fails. It applies only to agent nodes
@@ -223,6 +222,12 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
+	// Launch admission: suspend → concurrency → rate → cost cap →
+	// monthly run quota (which also meters). Super-admin bypasses.
+	if _, d := s.gateLaunch(r.Context()); d != nil {
+		s.writeLaunchDenial(w, r, d)
+		return
+	}
 	// Root span for the launch path. Keeping it on the request ctx
 	// means the OTel HTTP middleware (when wired) sees it as a child
 	// of the inbound HTTP server span. The detached ctx below
@@ -296,26 +301,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// model_overrides cannot cross the queue wire (schema v7) and a silent
-	// drop would run the workflow WITHOUT the operator's backend/model pins
-	// (issue #481). Reject at admission — BEFORE the launch gate charges
-	// the org's quota for a run that can never start. cloudpublisher's
-	// SubmitLaunch enforces the same rule for the non-HTTP launchers
-	// (webhook/scheduler/dispatcher) that bypass this handler.
-	if s.cfg.Mode == "cloud" && len(req.ModelOverrides) > 0 {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "model_overrides are not supported on queued cloud runs: queue schema v7 cannot carry them and dropping them would silently run without the operator's backend/model pins (issue #481) — run locally, or wait for schema v8 (docs/cloud-queue-schema-rollout.md)")
-		span.SetStatus(codes.Error, "model_overrides on cloud launch")
-		return
-	}
-	// Launch admission: suspend → concurrency → rate → cost cap →
-	// monthly run quota (which also meters). Super-admin bypasses. Keep it
-	// after request admission above: malformed or unsupported requests must
-	// never consume a monthly run from an operator's quota.
-	if _, d := s.gateLaunch(r.Context()); d != nil {
-		s.writeLaunchDenial(w, r, d)
-		return
-	}
-
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.
 	var repoProjectPath string

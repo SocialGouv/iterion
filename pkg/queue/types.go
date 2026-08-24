@@ -30,9 +30,9 @@ import (
 //     never dropped, never left `queued` in silence.
 //   - Any ADDITIVE field whose omission changes operator intent (a knob the
 //     caller explicitly set, that a stale runner would silently fall back
-//     from) is a BREAKING change: bump SchemaVersion. Until the bump ships,
-//     the publisher must reject a launch carrying such a field rather than
-//     drop it (see cloudpublisher's model_overrides rejection, issue #481).
+//     from) is a BREAKING change: bump SchemaVersion. The publisher must
+//     reject a launch carrying such a field until both the wire carrier and
+//     its version bump ship; it must never silently drop the field.
 //
 // v=3 (2026-06-10): added BotID so cloud runners can qualify structured bot memory.
 // v=4 (2026-07-11): added Budget so launch-time budget overrides reach the
@@ -59,11 +59,12 @@ import (
 // bot declaring `off` gets a run that can still strand its work at the cap.
 // The knob decides whether a loop stops early or dies at its ceiling, which
 // is exactly the kind of choice that must not be quietly re-made on the pod.
-// v=8 (2026-08-25): added Supervisors so a launch-time `--supervisors off`
-// reaches the runner. Same failure direction as v=6/v=7: dropping the field
-// makes the pod re-decide from its own env and spawn LLM watchers the
-// operator explicitly declined — spend outside the run's own budget, the one
-// thing the kill switch exists to prevent.
+// v=8 (2026-08-25): added ModelOverrides and Supervisors. A v7 runner would
+// silently ignore launch-time model/backend/provider pins and could execute a
+// different model than the operator selected. It would also re-decide an
+// explicit `--supervisors off` from its own environment and spawn LLM watchers
+// the operator declined. Both are intent-changing additive fields and ship
+// under the same breaking wire version (issues #481/#513/#522).
 const SchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
