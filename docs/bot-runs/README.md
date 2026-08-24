@@ -84,4 +84,7 @@ first bilan for a bot lands.
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
 | Goldy | `golden-master` | behavioural non-regression net, falsifiable both ways | [golden-master.md](golden-master.md) |
 | Morphy | `modernize` | gate-to-gate modernisation lots, oracle-protected | [modernize.md](modernize.md) |
+| Campy | `campaign` | modernisation-programme supervisor (runs `modernize` as a subbot; progress judged by git, not self-report) | [campaign.md](campaign.md) |
+| Themis | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | _not yet_ |
+| Envy | `review-env` | live review environment — deploys the current commit, hands back a real https URL | _not yet_ |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |
