@@ -12,6 +12,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
+// blindListBoard simulates the cross-replica race window: List never sees
+// what the other replica just created, so the dedup pre-check passes on both.
+type blindListBoard struct {
+	native.BoardStore
+}
+
+func (b blindListBoard) List(native.ListFilter) ([]*native.Issue, error) {
+	return nil, nil
+}
+
 // The relaunch lane is the recovery half of the reconciler: a gating run that
 // died without a verdict gets its bot re-run ONCE per head, through the same
 // admission tail as any webhook launch, and a head whose one attempt is spent
@@ -228,6 +238,47 @@ func TestGateRelaunch(t *testing.T) {
 		}
 		if rc.calls != 1 {
 			t.Fatalf("PR escalation comments after a third death = %d, want still 1", rc.calls)
+		}
+	})
+
+	// The gate sweep runs unelected on every replica, so two replicas can race
+	// past the List pre-check before either card commits. The deterministic
+	// card id is what serialises them: the loser's Create is refused by the
+	// store, and neither a second card NOR a second PR comment lands.
+	t.Run("two replicas racing the escalation file one card and one comment", func(t *testing.T) {
+		w := build(t, nil)
+		rc := &fakeReviewClient{}
+		w.s.forgeReviewClientFor = func(context.Context, forge.Connection) (forge.ReviewClient, error) {
+			return rc, nil
+		}
+		// A board whose List NEVER sees the other replica's card — the race
+		// window in which both replicas decide to file.
+		w.s.cfg.CloudBoardFor = func(string) native.BoardStore { return blindListBoard{w.board} }
+		runID := seedDeadRun(t, w.s)
+		run, err := w.s.cfg.Store.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := deadGateRun{
+			run:   run,
+			grant: ForgePublishGrant{TeamID: team, ConnectionID: "c1", Repo: repo},
+			conn:  forge.Connection{ID: "c1", TenantID: team, Provider: forge.ProviderGitHub},
+			repo:  repo, number: 7,
+			pr:      forge.PullRef{HeadSHA: head},
+			gateCtx: gateNm, prURL: prURL,
+		}
+		if filed := w.s.escalateDeadGateToBoard(context.Background(), d, "", "first replica"); !filed {
+			t.Fatal("the first replica must file the card")
+		}
+		if filed := w.s.escalateDeadGateToBoard(context.Background(), d, "", "second replica"); filed {
+			t.Fatal("the second replica raced past the List pre-check and must lose on the deterministic card id")
+		}
+		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil || len(cards) != 1 {
+			t.Fatalf("board cards = %d (%v), want exactly 1", len(cards), err)
+		}
+		if rc.calls != 1 {
+			t.Fatalf("PR escalation comments = %d, want 1 — the losing replica must not repeat it", rc.calls)
 		}
 	})
 

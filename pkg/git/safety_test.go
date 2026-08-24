@@ -37,6 +37,8 @@ func TestValidateBranchName(t *testing.T) {
 		{"", "empty"},
 		{"-force", "leading dash (flag injection)"},
 		{"--force", "looks like a long flag"},
+		{"+force", "leading plus (refspec force sigil at fetch call sites)"},
+		{"HEAD", "git check-ref-format --branch refuses it"},
 		{"/abs", "leading slash"},
 		{".hidden", "leading dot"},
 		{"x/.hidden", "component starting with dot"},

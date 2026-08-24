@@ -75,6 +75,39 @@ func TestCancelRunWithReason(t *testing.T) {
 		}
 	})
 
+	// The composition that lost the reason in production: for a RUNNING run
+	// the publisher flips the doc first, then the runner (holding the lease)
+	// unwinds and writes its own generic "run cancelled". The engine's write
+	// is a CAS from non-terminal statuses (pkg/runtime/run_failure.go), so
+	// the publisher's specific reason must survive it.
+	t.Run("the runner's engine cancel does not overwrite a recorded reason", func(t *testing.T) {
+		p, st := newPub(t)
+		seed(t, st, "run-4", store.RunStatusRunning, "")
+		if err := p.CancelRunWithReason(context.Background(), "run-4", "superseded by a newer delivery for the same subject"); err != nil {
+			t.Fatalf("CancelRunWithReason: %v", err)
+		}
+		// The exact write the engine performs on ctx-cancel.
+		changed, err := st.UpdateRunStatusIf(context.Background(), "run-4", store.RunStatusCancelled, "run cancelled", []store.RunStatus{
+			store.RunStatusRunning,
+			store.RunStatusPausedWaitingHuman,
+			store.RunStatusPausedOperator,
+			store.RunStatusFailedResumable,
+		})
+		if err != nil {
+			t.Fatalf("engine CAS: %v", err)
+		}
+		if changed {
+			t.Fatal("the engine's write applied over an already-cancelled run — the recorded reason is lost")
+		}
+		run, err := st.LoadRun(context.Background(), "run-4")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(run.Error, "superseded by a newer delivery") {
+			t.Errorf("error = %q — the supersede reason did not survive the runner's cancel", run.Error)
+		}
+	})
+
 	t.Run("an empty reason still names the fact", func(t *testing.T) {
 		p, st := newPub(t)
 		seed(t, st, "run-3", store.RunStatusQueued, "")

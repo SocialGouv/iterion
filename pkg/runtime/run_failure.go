@@ -203,8 +203,23 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		if err := e.store.SaveCheckpoint(storeCtx, rs.runID, cp); err != nil {
 			e.logger.Error("failed to save checkpoint on cancellation: %v", err)
 		}
-		if err := e.store.UpdateRunStatus(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
+		// CAS, not a blind write: in cloud mode the publisher flips the doc to
+		// cancelled WITH a specific reason ("superseded by a newer delivery…",
+		// "cancelled by user") BEFORE the cancel subject reaches this engine.
+		// An unconditional write here would overwrite that reason with the
+		// generic "run cancelled" — which is then what the run list, board
+		// cards and merge-gate synthetic statuses display. Skip the write when
+		// the run is already terminal; the reason recorded first is the truth.
+		cancellable := []store.RunStatus{
+			store.RunStatusRunning,
+			store.RunStatusPausedWaitingHuman,
+			store.RunStatusPausedOperator,
+			store.RunStatusFailedResumable,
+		}
+		if changed, err := e.store.UpdateRunStatusIf(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled", cancellable); err != nil {
 			e.logger.Error("failed to persist cancellation status: %v", err)
+		} else if !changed {
+			e.logger.Debug("run %s already terminal — keeping the recorded cancellation reason", rs.runID)
 		}
 		if err := e.emit(storeCtx, rs.runID, store.EventRunCancelled, nodeID, map[string]any{
 			"reason": "context cancelled",

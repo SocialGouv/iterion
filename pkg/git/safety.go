@@ -148,6 +148,19 @@ func ValidateBranchName(name string) error {
 	if strings.HasPrefix(name, "-") {
 		return fmt.Errorf("git: branch name %q must not start with '-' (would be parsed as a flag)", name)
 	}
+	// git itself accepts a leading '+' in a branch NAME, but several callers
+	// place the validated value in a refspec position (`git fetch origin
+	// <ref>`), where '+' is the force sigil and silently changes what is
+	// fetched. No dependency bot generates such names; refusing is the safe
+	// uniform rule.
+	if strings.HasPrefix(name, "+") {
+		return fmt.Errorf("git: branch name %q must not start with '+' (a refspec force sigil)", name)
+	}
+	// `git check-ref-format --branch HEAD` refuses it too; accepting it here
+	// only defers to a noisier failure at `git checkout -B`.
+	if name == "HEAD" {
+		return fmt.Errorf("git: branch name must not be 'HEAD'")
+	}
 	// git check-ref-format: no spaces, no control bytes, and none of the
 	// ref-syntax metacharacters. Byte-wise walk is UTF-8 safe — multi-byte
 	// runes are all >= 0x80 and pass through untouched.
