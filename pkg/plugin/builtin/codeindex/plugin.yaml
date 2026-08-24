@@ -33,7 +33,7 @@ contributes:
       args:
         - -y
         # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-        - "@maxgfr/codeindex@2.17.1"
+        - "@maxgfr/codeindex@2.28.0"
         - mcp
         # Pin the server to the workspace so all 26 tools take `repo` as
         # optional — agents never have to know the absolute checkout path.
@@ -84,9 +84,9 @@ contributes:
     # the regex manager captures the version on the line following the comment,
     # so an unannotated occurrence would silently go stale.
     # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-    index: "npx -y @maxgfr/codeindex@2.17.1 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+    index: "npx -y @maxgfr/codeindex@2.28.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
     # renovate: datasource=npm depName=@maxgfr/codeindex versioning=npm
-    refresh: "npx -y @maxgfr/codeindex@2.17.1 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
+    refresh: "npx -y @maxgfr/codeindex@2.28.0 index --repo {{workspace}} --out {{workspace}}/.codeindex --max-files {{config.max_files}}"
   skills:
     - skills/code-index.md
   commands:
