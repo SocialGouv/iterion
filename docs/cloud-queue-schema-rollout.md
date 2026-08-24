@@ -33,7 +33,9 @@ ordering alone is not sufficient (issue #481).
 Since #481, a version mismatch is transient and recoverable:
 
 1. The consumer **Naks with a 30s delay**
-   (`nats.SchemaMismatchNakDelay`), so the MaxDeliver budget (default 8)
+   (`nats.SchemaMismatchNakDelay`, configurable with
+   `ITERION_RUNNER_SCHEMA_MISMATCH_DELAY` or
+   `runner.schema_mismatch_delay`), so the MaxDeliver budget (default 8)
    stretches over ~4 minutes of wall clock instead of being burned in
    seconds — enough for a rolling restart of the runner Deployment to
    schedule a pod that speaks the new version.
@@ -81,9 +83,14 @@ rejecting vN messages still in the queue — to chance.
    ```
 4. Verify each replayed run leaves `failed_resumable` (back to `queued` →
    `running`) and the DLQ returns to its pre-rollout depth.
-5. Same drill for the reverse direction: if the queue still held vN messages
-   when the vN+1 runners came up, they parked on the DLQ too (reason
-   `N unsupported (want N+1)`) — replay them exactly the same way.
+5. The reverse direction does **not** replay. If the queue still held vN
+   messages when the vN+1 runners came up, they parked with reason
+   `N unsupported (want N+1)` — and a replay re-publishes those exact
+   bytes, which the vN+1 fleet rejects identically and re-parks: an
+   operator replay loop that never succeeds. Recover those runs by
+   **resuming** them instead (`POST /api/runs/{id}/resume`: the publisher
+   stamps the CURRENT `SchemaVersion` on the resume message), then discard
+   the stale parked copies with `DELETE /api/admin/dlq/$SEQ`.
 
 ## Checklist: v7 → v8 (ModelOverrides)
 

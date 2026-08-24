@@ -14,6 +14,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -359,6 +360,45 @@ func TestLaunch_RejectsBadBudgetDuration(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if !bytes.Contains(b, []byte("invalid budget")) {
 		t.Errorf("body = %q, want it to contain %q", string(b), "invalid budget")
+	}
+}
+
+// TestLaunch_RejectsModelOverridesInCloud pins the admission contract from
+// issue #481: the queue wire (schema v7) cannot carry model_overrides, so a
+// cloud launch that sets them must 400 BEFORE the launch gate charges the
+// org's quota — never run with the operator's backend/model pins silently
+// dropped. Local mode is untouched (overrides apply in-process there).
+func TestLaunch_RejectsModelOverridesInCloud(t *testing.T) {
+	srv := newOrgTestServer(t)
+	srv.cfg.Mode = "cloud"
+	counter := orgusage.NewMemoryCounter()
+	srv.orgUsage = counter
+	ctx := seedGate(t, srv, gateSpec{id: "model-overrides-team"})
+
+	body, err := json.Marshal(map[string]any{
+		"source":          "workflow demo:\n  entry: done\n",
+		"model_overrides": []map[string]any{{"selector": "reviewer_*", "model": "anthropic/claude-opus-4-8"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleLaunchRun(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	b := w.Body.Bytes()
+	if !bytes.Contains(b, []byte("model_overrides")) {
+		t.Errorf("body = %q, want it to name model_overrides", string(b))
+	}
+	usage, err := counter.Usage(context.Background(), "model-overrides-team", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if usage.Runs != 0 {
+		t.Fatalf("quota runs = %d, want 0 for an unsupported request rejected before launch admission", usage.Runs)
 	}
 }
 

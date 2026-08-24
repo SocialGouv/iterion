@@ -332,6 +332,14 @@ type RunnerConfig struct {
 	// its in-flight run before capping it for a checkpoint-resume. The k8s
 	// terminationGracePeriodSeconds must be >= this + margin.
 	DrainTimeout time.Duration `yaml:"drain_timeout"`
+	// SchemaMismatchDelay is the redelivery delay applied when this runner
+	// rejects a queue message whose schema version it does not recognise
+	// (mixed fleet during a rolling schema bump). It must be long enough
+	// that the MaxDeliver budget stretches over a rolling restart of the
+	// runner Deployment — an immediate Nak burns it in seconds and parks
+	// the message on the DLQ for manual replay (issue #481). Fleets with a
+	// slow lame-duck turnover (long DrainTimeout) should raise it.
+	SchemaMismatchDelay time.Duration `yaml:"schema_mismatch_delay"`
 }
 
 // ServerConfig holds server-specific settings.
@@ -393,6 +401,9 @@ func Defaults() Config {
 			LockTTL:      60 * time.Second,
 			DrainMode:    "complete",
 			DrainTimeout: 8 * time.Hour,
+			// Mirrors natsq.SchemaMismatchNakDelay (kept literal here so
+			// pkg/config stays free of the NATS client dependency).
+			SchemaMismatchDelay: 30 * time.Second,
 		},
 		Server: ServerConfig{
 			ShutdownDelay:    5 * time.Second,
@@ -596,6 +607,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Runner.DrainTimeout < 0 {
 		return fmt.Errorf("ITERION_RUNNER_DRAIN_TIMEOUT %s invalid (want >= 0)", c.Runner.DrainTimeout)
+	}
+	if c.Runner.SchemaMismatchDelay < 0 {
+		return fmt.Errorf("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY %s invalid (want >= 0)", c.Runner.SchemaMismatchDelay)
 	}
 
 	switch c.Sandbox.Default {

@@ -61,6 +61,7 @@ default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`, and
 | `ITERION_SCRATCH_RETENTION` | How long an untouched `${PROJECT_SCRATCH_DIR}` entry is kept. A run sweeps the workspace's scratch on its way out, and `iterion clean` sweeps it too; both take only entries nothing has written to for this long — **age is the concurrency guard**, because scratch is deliberately shared between runs (a subbot writes into its parent's, which is how fan-in works). `off` disables the automatic sweep. | `168h` (7 days) |
 | `ITERION_RUNNER_DRAIN_MODE` | `complete` (lame-duck: finish the in-flight run before exiting) or `interrupt` (cancel + checkpoint for auto-resume elsewhere). | `complete` |
 | `ITERION_RUNNER_DRAIN_TIMEOUT` | Lame-duck ceiling — the longest a runner pod waits for its in-flight run before capping it for a checkpoint-resume. | `8h` |
+| `ITERION_RUNNER_SCHEMA_MISMATCH_DELAY` | Redelivery delay a runner applies when it rejects a queue message whose schema version it does not speak (mixed fleet during a rolling schema bump). Must cover a rolling restart of the runner Deployment — raise it on fleets with a slow lame-duck turnover. See [cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md). | `30s` |
 
 ## See also
 

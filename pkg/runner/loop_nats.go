@@ -30,6 +30,15 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 			r.handleSchemaMismatch(delivery, err)
 			return nil, false
 		}
+		// A payload from ANOTHER schema version need not even unmarshal
+		// into this build's RunMessage (a bump may change a field's JSON
+		// type), so the version is also peeked from the raw envelope —
+		// otherwise such a message takes the malformed branch below and
+		// is Termed away, which is exactly the loss #481 closes.
+		if env, envErr := delivery.Envelope(); envErr == nil && env.V > 0 && env.V != queue.SchemaVersion {
+			r.handleSchemaMismatch(delivery, fmt.Errorf("%w: %d unsupported (want %d)", queue.ErrSchemaVersion, env.V, queue.SchemaVersion))
+			return nil, false
+		}
 		r.cfg.Logger.Error("runner: decode delivery: %v", err)
 		if termErr := delivery.Term(); termErr != nil {
 			// A failed Term leaves the malformed message in the queue
@@ -58,13 +67,16 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 //     minutes of wall clock, which is what a rolling restart needs.
 //  2. On the FINAL permitted delivery the message is parked on the DLQ and
 //     Termed, and the run document is flipped from `queued` to
-//     `failed_resumable` with an actionable message. Without this bridge
-//     JetStream silently drops the exhausted message: the queue entry is
-//     gone while the run document sits `queued` forever, the refusal visible
-//     only in one pod's log. Seen in production during a schema bump — two
-//     runs vanished that way before the fleet finished rolling. Parked
-//     messages replay verbatim once the fleet speaks their version (see
-//     docs/cloud-queue-schema-rollout.md).
+//     `failed_resumable` with an actionable message — whether or not the
+//     DLQ park itself succeeded (with the budget spent a Nak is inert, so
+//     a park failure loses the queue entry; the flip is then the ONLY
+//     actionable trail, with a relaunch hint instead of a replay hint).
+//     Without this bridge JetStream silently drops the exhausted message:
+//     the queue entry is gone while the run document sits `queued` forever,
+//     the refusal visible only in one pod's log. Seen in production during
+//     a schema bump — two runs vanished that way before the fleet finished
+//     rolling. Parked messages replay verbatim once the fleet speaks their
+//     version (see docs/cloud-queue-schema-rollout.md).
 func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error) {
 	logger := r.cfg.Logger
 	delay := r.cfg.SchemaMismatchDelay
@@ -83,27 +95,47 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		decodeErr, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
 	bg, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if perr := r.cfg.NATS.PublishDLQ(bg, delivery, decodeErr.Error()); perr != nil {
-		// DLQ unavailable: keep the delayed JetStream redelivery as the
-		// only remaining safety net rather than Terming the message away.
-		logger.Error("runner: DLQ park after version mismatch failed: %v — naking with delay instead", perr)
-		if nakErr := delivery.NakWithDelay(delay); nakErr != nil {
-			logger.Warn("runner: nak after DLQ park failure: %v", nakErr)
-		}
-		return
+	env, envErr := delivery.Envelope()
+	if envErr != nil {
+		logger.Warn("runner: envelope decode on final delivery: %v — run document cannot be flipped", envErr)
 	}
-	if env, envErr := delivery.Envelope(); envErr != nil {
-		logger.Warn("runner: envelope decode after DLQ park: %v — run document not flipped", envErr)
-	} else {
+	// Direction-neutral guidance: replay only helps when the fleet speaks
+	// the parked message's version; in the other direction (or if nothing
+	// was parked) resuming/relaunching re-publishes at the CURRENT version.
+	runErr := fmt.Sprintf("schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)", decodeErr, env.V, env.V)
+	if perr := r.cfg.NATS.PublishDLQ(bg, delivery, decodeErr.Error()); perr != nil {
+		logger.Error("runner: DLQ park after version mismatch failed: %v — queue entry lost with the budget spent", perr)
+		runErr = fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", decodeErr, perr)
+	}
+	// The flip is scoped by the tenant identity: a payload without
+	// tenant_id is logged, never written under an unfiltered (privileged)
+	// store context.
+	var outcomeMsg *queue.RunMessage
+	switch {
+	case envErr != nil:
+		// Already logged above.
+	case env.TenantID == "":
+		logger.Warn("runner: mismatched message for run %s has no tenant_id — run document not flipped", env.RunID)
+	default:
 		sctx := store.WithIdentity(bg, env.TenantID, env.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunStatusIf(sctx, env.RunID, store.RunStatusFailedResumable,
-			fmt.Sprintf("schema version mismatch: %v (parked on DLQ — replay via /api/admin/dlq once the runner fleet runs schema v%d, see docs/cloud-queue-schema-rollout.md)", decodeErr, env.V),
-			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil {
-			logger.Warn("runner: DLQ status flip for %s: %v", env.RunID, serr)
+		changed, serr := r.cfg.Store.UpdateRunStatusIf(sctx, env.RunID, store.RunStatusFailedResumable, runErr,
+			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued})
+		if serr != nil {
+			logger.Warn("runner: schema-mismatch status flip for %s: %v", env.RunID, serr)
+		} else if changed {
+			// A schema park is a final disposition just like the generic DLQ
+			// path in processOne. Preserve its two user-facing side effects:
+			// completion callbacks and run-outcome events for notifications /
+			// trigger chaining. Only the successful CAS owner emits them.
+			outcomeMsg = &queue.RunMessage{RunID: env.RunID, TenantID: env.TenantID, OwnerID: env.OwnerID}
 		}
 	}
 	if termErr := delivery.Term(); termErr != nil {
-		logger.Warn("runner: term after DLQ park: %v", termErr)
+		logger.Warn("runner: term after schema-mismatch handling: %v", termErr)
+	}
+	if outcomeMsg != nil {
+		r.fireCompletionNotifier(outcomeMsg)
+		r.fireOutcomeEvent(outcomeMsg, decodeErr)
 	}
 }
 

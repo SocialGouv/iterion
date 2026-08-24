@@ -109,6 +109,10 @@ type Config struct {
 	DLQMaxAge    time.Duration // default 7d
 	MaxDeliver   int           // default DefaultStreamMaxRetry (8)
 	AckWait      time.Duration // default DefaultAckWait (10m)
+	// SchemaMismatchDelay is the delayed-Nak interval used by runners during
+	// mixed-schema rollouts. It also contributes to RedeliveryWindow so the
+	// orphan sweeper never races a legitimately bouncing message.
+	SchemaMismatchDelay time.Duration // default SchemaMismatchNakDelay (30s)
 	// MaxAckPending caps fleet-wide in-flight (delivered-unacked) runs on the
 	// shared consumer; 0 → DefaultMaxAckPending. Keep ≥ max runner pods.
 	MaxAckPending int
@@ -129,11 +133,17 @@ type Conn struct {
 }
 
 // RedeliveryWindow is the worst-case time a healthy queued message can
-// spend bouncing through redeliveries before parking in the DLQ
-// (MaxDeliver × AckWait). The server's orphan sweeper derives its
-// queued-staleness cutoff from it so the two never drift apart.
+// spend bouncing through redeliveries before parking in the DLQ. Ordinary
+// retries are bounded by AckWait; schema mismatches use an explicit delayed
+// Nak, which an operator may configure above AckWait. The server's orphan
+// sweeper derives its queued-staleness cutoff from the larger interval so it
+// never flips a message that is still legitimately waiting for redelivery.
 func (c *Conn) RedeliveryWindow() time.Duration {
-	return time.Duration(c.cfg.MaxDeliver) * c.cfg.AckWait
+	interval := c.cfg.AckWait
+	if c.cfg.SchemaMismatchDelay > interval {
+		interval = c.cfg.SchemaMismatchDelay
+	}
+	return time.Duration(c.cfg.MaxDeliver) * interval
 }
 
 // Connect opens the NATS connection, pins the stream + DLQ + KV
@@ -609,6 +619,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.AckWait == 0 {
 		c.AckWait = DefaultAckWait
+	}
+	if c.SchemaMismatchDelay == 0 {
+		c.SchemaMismatchDelay = SchemaMismatchNakDelay
 	}
 	if c.MaxAckPending == 0 {
 		c.MaxAckPending = DefaultMaxAckPending

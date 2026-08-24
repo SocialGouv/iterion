@@ -13,9 +13,9 @@ import (
 // NOTE on coverage scope. The bulk of pkg/queue/nats wraps the NATS
 // client + JetStream + KV; meaningful coverage of Connect, EnsureSchema,
 // PublishRun, Fetch, AcquireLock, Refresh requires a live JetStream
-// broker. We don't (yet) vendor `nats-server/v2` for an embedded test
-// broker — that's tracked as a follow-up. The tests below cover the
-// pure / standalone bits so the package isn't fully blind:
+// broker. CI's nats-conformance job now supplies one for the mixed-schema
+// delivery + DLQ lifecycle in pkg/runner/schema_rollout_integration_test.go;
+// the ordinary unit suite below still covers the pure / standalone bits:
 //   - Config defaults
 //   - URL validation in Connect
 //   - CancelRun input validation
@@ -48,6 +48,9 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.AckWait != DefaultAckWait {
 		t.Errorf("AckWait: got %v want %v", got.AckWait, DefaultAckWait)
 	}
+	if got.SchemaMismatchDelay != SchemaMismatchNakDelay {
+		t.Errorf("SchemaMismatchDelay: got %v want %v", got.SchemaMismatchDelay, SchemaMismatchNakDelay)
+	}
 	if got.MaxAckPending != DefaultMaxAckPending {
 		t.Errorf("MaxAckPending: got %d want %d", got.MaxAckPending, DefaultMaxAckPending)
 	}
@@ -65,21 +68,42 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	logger := iterlog.New(iterlog.LevelDebug, nil)
 	in := Config{
-		StreamName:    "X",
-		DLQStream:     "Y",
-		KVBucket:      "Z",
-		ConsumerName:  "C",
-		MaxAge:        1 * time.Hour,
-		DLQMaxAge:     2 * time.Hour,
-		MaxDeliver:    42,
-		AckWait:       30 * time.Second,
-		MaxAckPending: 12,
-		LockTTL:       15 * time.Second,
-		Logger:        logger,
+		StreamName:          "X",
+		DLQStream:           "Y",
+		KVBucket:            "Z",
+		ConsumerName:        "C",
+		MaxAge:              1 * time.Hour,
+		DLQMaxAge:           2 * time.Hour,
+		MaxDeliver:          42,
+		AckWait:             30 * time.Second,
+		SchemaMismatchDelay: 45 * time.Second,
+		MaxAckPending:       12,
+		LockTTL:             15 * time.Second,
+		Logger:              logger,
 	}
 	got := applyDefaults(in)
 	if got != in {
 		t.Errorf("explicit fields should be preserved verbatim; got %+v want %+v", got, in)
+	}
+}
+
+func TestRedeliveryWindowAccountsForSchemaMismatchDelay(t *testing.T) {
+	cases := []struct {
+		name  string
+		ack   time.Duration
+		delay time.Duration
+		want  time.Duration
+	}{
+		{"ack wait is larger", 10 * time.Minute, 30 * time.Second, 80 * time.Minute},
+		{"schema delay is larger", time.Minute, 2 * time.Minute, 16 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Conn{cfg: Config{MaxDeliver: 8, AckWait: tc.ack, SchemaMismatchDelay: tc.delay}}
+			if got := c.RedeliveryWindow(); got != tc.want {
+				t.Errorf("RedeliveryWindow() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
