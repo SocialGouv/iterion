@@ -4,6 +4,32 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-08-24 — period headlines reversed to send-date titles (runs 01a03268 / 01a032d6)
+- Status: validated (probe) · tsjs delivery pending its 09:08 UTC usage-window resume
+- Versions: bot 1.4.0 · iterion 359668383
+- Method: operator arbitrage after PR #452's window-dating shipped — cyber titled
+  "21 → 24 août", gopyrust "30 juillet → 24 août" after two quota-dead Mondays.
+  New contract: the headline names digest_title + the SEND date only
+  (deterministic `digest_date` emitted by load_pending, checkpointed at
+  queue-drain time); #452's anti-breaking spirit stays as one body clause when
+  span_days > 1. Validated by a local dry-run probe (11-day span → title
+  "24 août 2026" alone, window in the body). Adversarial review (2 agents):
+  no high/critical; MEDIUM accepted+documented (digest_date frozen across a
+  cross-midnight resume — off by the resume lag, body note stays correct);
+  pre-existing digests.jsonl malformed-line crash now skips loudly.
+- Ops findings the same morning: tsjs 06:15 burned its full 30-min duration
+  budget in usage-cap-throttled delegate retries (soft 5h cap at 85%) before
+  dying on BUDGET_EXCEEDED (not auto-resumed, by design); the relaunched run
+  parked cleanly in 15s with a typed session-limit error and an armed 09:08
+  retry — the fail-fast vs budget-burn contrast is worth an engine look
+  (native board candidate: bound delegate usage-cap retries under a soft cap
+  so a capped node parks resumable instead of eating its duration budget).
+- Engine hardening (same session, separate commit): `iterion remote teams
+  switch` was broken for every account — the CLI decoded a removed flat
+  `teams` field from /api/auth/me (fix: RemoteMe aliases the server's own
+  response type; membership authority = the mint endpoint's canViewTeam; the
+  mint now states the pinned team's org).
+
 ## 2026-08-19 — the veille came back, and the bot learned to report its own silence
 
 - Status: **resolved** (the 13→18 outage) + hardening shipped
