@@ -47,26 +47,65 @@ Since #481, a version mismatch is transient and recoverable:
 3. A DLQ replay re-publishes the **exact original bytes**, so a parked v8
    message replays correctly once runners run v8.
 
+> **This section describes runner builds from v8 onward.** A pre-#481 (v7
+> or older) runner answers a mismatch with an immediate bare `Nak()`: it
+> burns the MaxDeliver budget in seconds, JetStream drops the message, and
+> nothing is parked to replay. That asymmetry drives the path choice below.
+
+## Server-first ordering with the shipped chart
+
+Every procedure below hinges on deploying the server (producer) before the
+runners. A plain `helm upgrade` does NOT give you that ordering: the server
+and runner Deployments both resolve to the same image tag
+(`include "iterion.image" .`), so they roll together. Use the chart's
+per-runner image override to sequence the two phases:
+
+```bash
+# Phase 1 — pin the runners to the CURRENT (old) image, roll the server only.
+helm upgrade iterion ./charts/iterion \
+  --set image.tag=<new-tag> \
+  --set runner.image=ghcr.io/socialgouv/iterion:<old-tag>
+
+# Phase 2 — once the server runs <new-tag>, unpin and roll the runners.
+helm upgrade iterion ./charts/iterion --set image.tag=<new-tag>
+```
+
+(If your deploy pipeline sequences Deployments itself, use it instead — the
+requirement is only that no vN+1 message is published before the procedure
+below is chosen and running.)
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 Choose **one** of the two paths below. Deployment ordering alone (server
 first) is NOT a third option: it leaves the reverse case — vN+1 runners
 rejecting vN messages still in the queue — to chance.
 
-### Path A — drained queue before cutover (preferred when feasible)
+### Path A — drained queue before cutover
+
+**Mandatory for v7 → v8** (see below); the recommended default for every
+later bump as well.
 
 1. Stop new launches (maintenance window) or accept that launches during the
-   window follow Path B.
+   window follow Path B — which, for v7 → v8, they cannot: keep the window.
 2. Wait for the queue to drain: `iterion_nats_pending_messages` = 0 and no
    `queued` runs older than the AckWait window.
-3. Deploy the server (vN+1), then roll the runners (vN+1).
+3. Deploy the server (vN+1), then roll the runners (vN+1) — per the
+   two-phase chart upgrade above.
 4. Sanity-check: one launch end-to-end, DLQ depth 0.
 
 ### Path B — DLQ identification + replay after cutover
 
-1. Deploy the server (vN+1) first, then roll the runners. During the window,
-   stale runners hold vN+1 messages via delayed Naks; after MaxDeliver they
-   park them on the DLQ and flip the runs to `failed_resumable`.
+**Valid only from v8 → v9 onward.** Path B leans on the delayed Nak, the
+DLQ park and the status flip — and those ship *with* schema v8. For the
+v7 → v8 cutover itself the outgoing runners are pre-#481 builds: they bare-
+`Nak()` a v8 message, burn its MaxDeliver budget in seconds, and leave an
+empty DLQ and a run stuck `queued` — the exact loss #481 closes. **Do not
+run Path B for v7 → v8; use Path A.**
+
+1. Deploy the server (vN+1) first, then roll the runners (two-phase upgrade
+   above). During the window, stale runners hold vN+1 messages via delayed
+   Naks; after MaxDeliver they park them on the DLQ and flip the runs to
+   `failed_resumable`.
 2. Once **all** runners run vN+1, list the DLQ and identify the parked
    messages from the transition — the `Iterion-DLQ-Reason` header reads
    `queue: schema version: N+1 unsupported (want N)`:
@@ -104,7 +143,10 @@ preconditions for its rollout now ship together:
       of silently ignoring the new field.
 - [x] The live-JetStream mixed-fleet integration test covers both version
       directions and the recovery paths.
-- [ ] Operators roll out per Path A or Path B above.
+- [ ] Operators roll out per **Path A** (drained queue) — Path B is not an
+      option for v7 → v8: the outgoing v7 runners predate the delayed-Nak /
+      DLQ-park mechanics this release introduces, so only a drained queue
+      protects in-flight messages during this specific cutover.
 
 ## If something went wrong
 
