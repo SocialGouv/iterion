@@ -925,6 +925,16 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 			return fmt.Errorf("forge: delete managed secret: %w", derr)
 		}
 	}
+	// The security-read map is SHARED across connections, so it survives this
+	// one — withdraw just this connection's org entry. Disconnecting is the
+	// operator's most explicit cut: leaving a live org-wide alerts token
+	// readable by every bot of the team (and then unreachable, since the
+	// connection is gone) is the opposite of what they asked for.
+	if conn.SecurityReadEnabled {
+		if derr := RemoveSecurityReadToken(ctx, o.Secrets, o.Sealer, &conn); derr != nil {
+			return fmt.Errorf("forge: withdraw security-read token: %w", derr)
+		}
+	}
 	return o.Connections.Delete(ctx, connID)
 }
 

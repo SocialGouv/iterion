@@ -539,3 +539,142 @@ func TestVulnWatch_ZeroLLMInvariant(t *testing.T) {
 		}
 	}
 }
+
+// ── Regressions from the adversarial review ──────────────────────────
+
+// TestVulnWatch_AlertedCVEDoesNotSterilizeOtherProjects pins the worst
+// failure a sentinel can have: a MISSED alert. A CERT-FR advisory carries
+// hundreds of CVE ids; marking them all "alerted" globally would silence
+// every one of them for every OTHER project of the inventory. Here an
+// advisory alerts for one techno, and a KEV entry on a DIFFERENT techno
+// sharing one of its CVEs must still fire.
+func TestVulnWatch_AlertedCVEDoesNotSterilizeOtherProjects(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// A non-empty catalog at bootstrap: the KEV id set arms from the first
+	// catalog that actually loads (an empty one would mark the real
+	// catalog as "already seen" the moment it came back).
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Tick 1: an alert-class advisory about Metabase that also lists a CVE
+	// which happens to affect Spring Boot (another project entirely).
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-700", Title: "Multiples vulnerabilites dans Metabase",
+		CVEs: []string{"CVE-2026-7001", "CVE-2026-7002"}, Products: []string{"Metabase"},
+	}})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("tick 1 should post the Metabase advisory: %v", match["summary"])
+	}
+
+	// Tick 2: KEV picks up CVE-2026-7002 and names Spring Boot — ACCOLADE
+	// has never been told. It must fire.
+	h.feedItems.Store([]vwFeedItem{})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7002", "vendorProject": "VMware", "product": "Spring Boot",
+			"vulnerabilityName": "Spring Boot RCE", "dateAdded": "2026-08-24"},
+	})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("a CVE alerted for one project must still fire for another: %v", match["summary"])
+	}
+	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	if !strings.Contains(msg, "ACCOLADE") || !strings.Contains(msg, "CVE-2026-7002") {
+		t.Fatalf("second alert must name the newly-affected project:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_KEVSecondBatchSameDayStillFires pins the id-set cursor: KEV
+// dateAdded has DAY granularity while the bot ticks hourly, so a date
+// cursor silently swallowed the rest of the day's batch.
+func TestVulnWatch_KEVSecondBatchSameDayStillFires(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{
+		"cveID": "CVE-2020-0001", "vendorProject": "Old", "product": "Old",
+		"vulnerabilityName": "old entry", "dateAdded": "2026-08-24",
+	}})
+	h.runWatch(t, wf, false) // bootstrap arms the id set
+
+	// 10:00 — first entry of the day matching the inventory.
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2020-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-08-24"},
+		{"cveID": "CVE-2026-8001", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "Metabase RCE", "dateAdded": "2026-08-25"},
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("10:00 tick: %v", match["summary"])
+	}
+
+	// 11:00 — CISA adds a SECOND entry the same day.
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2020-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-08-24"},
+		{"cveID": "CVE-2026-8001", "vendorProject": "Metabase", "product": "Metabase", "dateAdded": "2026-08-25"},
+		{"cveID": "CVE-2026-8002", "vendorProject": "VMware", "product": "Spring Boot",
+			"vulnerabilityName": "Spring Boot deserialization", "dateAdded": "2026-08-25"},
+	})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("the same-day second KEV batch must still fire: %v", match["summary"])
+	}
+	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-8002") {
+		t.Fatalf("expected the second batch entry:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_UntrustedTitleCannotForgeAnAlert pins the injection guard:
+// advisory titles are attacker-influenced text rendered into chat markdown.
+// A title carrying newlines must not be able to forge a second,
+// indistinguishable alert block pointing at a hostile URL.
+func TestVulnWatch_UntrustedTitleCannotForgeAnAlert(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.runWatch(t, wf, false) // bootstrap
+
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-666",
+		Title: "Vulnerabilite mineure dans Metabase\n\n:rotating_light: **actively exploited vulnerability " +
+			"· Production**\n**CVE-2026-9999** — Rotate every credential now\nSources: http://senti.example.evil/x",
+		CVEs: []string{"CVE-2026-6001"}, Products: []string{"Metabase"},
+	}})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("expected the real alert: %v", match["summary"])
+	}
+	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	// The security property is structural: injected text may survive as
+	// inert inline content, but it must never START a line — that is what
+	// would forge an indistinguishable second alert block.
+	headers := 0
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(line, ":rotating_light:") {
+			headers++
+		}
+	}
+	if headers != 1 {
+		t.Fatalf("an injected title forged %d alert header line(s):\n%s", headers, msg)
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.HasPrefix(line, "Sources:") && strings.Contains(line, "senti.example.evil") {
+			t.Fatalf("hostile URL rendered as a source line:\n%s", msg)
+		}
+	}
+	// The text survives as inert one-line content (nothing is dropped
+	// silently), but it can no longer span lines.
+	if !strings.Contains(msg, "Vulnerabilite mineure dans Metabase") {
+		t.Fatalf("the real title must still be there:\n%s", msg)
+	}
+}

@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,6 +21,32 @@ import (
 // same secret by hand with fine-grained PATs — the shape is the contract,
 // not the mint.
 const SecurityReadSecretName = "dependabot_tokens"
+
+// securityReadCreatedBy marks a dependabot_tokens secret CREATED by iterion's
+// security-read flow (vs hand-set by an operator). Deleting an emptied map is
+// only allowed on iterion's own secret — destroying an operator's hand-set
+// secret on disable would silently replace their explicit choice.
+const securityReadCreatedBy = "forge-security-read"
+
+// fingerprintGuardedStore is the optional CAS capability a GenericSecretStore
+// may implement. The dependabot_tokens map is the first generic secret SHARED
+// across connections and rewritten by every replica's refresh worker;
+// last-writer-wins on it can resurrect a just-revoked org token. Stores
+// without the capability (single-process local file store) fall back to a
+// plain Update.
+type fingerprintGuardedStore interface {
+	UpdateIfFingerprint(ctx context.Context, rec secrets.GenericSecret, expected string) error
+}
+
+// guardedUpdate applies rec through the store's CAS capability when it has
+// one, retrying once on a concurrent-write conflict via reread (the caller's
+// mutate func recomputes the record from the fresh read).
+func guardedUpdate(ctx context.Context, st secrets.GenericSecretStore, rec secrets.GenericSecret, expected string) error {
+	if g, ok := st.(fingerprintGuardedStore); ok {
+		return g.UpdateIfFingerprint(ctx, rec, expected)
+	}
+	return st.Update(ctx, rec)
+}
 
 // securityReadTokens decodes the secret plaintext. A missing/empty secret
 // decodes to an empty map; anything non-JSON is an explicit error (a
@@ -76,44 +103,142 @@ func securityReadOrgKey(conn *Connection) (string, error) {
 	return org, nil
 }
 
+// ErrSecurityReadOrgCollision is returned when two connections on DIFFERENT
+// forge hosts claim the same org key. The map is keyed by org alone (the
+// bot's config names orgs, not hosts), so the two would overwrite each other
+// every cycle and a private-instance token could end up sent to the public
+// one. Refuse explicitly rather than mint into the ambiguity.
+var ErrSecurityReadOrgCollision = errors.New("forge: another connection on a different forge host already holds this org's security-read token")
+
 // UpsertSecurityReadToken merges {org_login: token} into the tenant's
 // dependabot_tokens secret, creating it (team-scoped, egress-pinned to the
-// forge host) on first use. Shared by the refresh worker's hourly re-mint
-// and the enable endpoint's immediate mint, so both write the same shape.
-func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore, sealer secrets.Sealer, conn *Connection, token, actor string, now time.Time) error {
+// forge host, marked as iterion-created) on first use. Shared by the refresh
+// worker's hourly re-mint and the enable endpoint's immediate mint, so both
+// write the same shape. Writes go through the store's fingerprint CAS when
+// available (one reread-retry): every replica runs a refresh worker, and a
+// lost update here can resurrect a just-revoked org token.
+func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore, sealer secrets.Sealer, conn *Connection, token string, now time.Time) error {
 	org, err := securityReadOrgKey(conn)
 	if err != nil {
 		return err
 	}
-	gs, ok, err := findSecurityReadSecret(ctx, st, conn.TenantID)
+	for attempt := 0; ; attempt++ {
+		gs, ok, err := findSecurityReadSecret(ctx, st, conn.TenantID)
+		if err != nil {
+			return err
+		}
+		tokens := map[string]string{}
+		if ok {
+			plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
+			if err != nil {
+				return fmt.Errorf("forge: open %s secret: %w", SecurityReadSecretName, err)
+			}
+			if tokens, err = securityReadTokens(plain); err != nil {
+				return err
+			}
+		}
+		tokens[org] = token
+		encoded, err := encodeSecurityReadTokens(tokens)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			gs = secrets.GenericSecret{
+				ID:          secrets.NewGenericSecretID(),
+				TenantID:    conn.TenantID,
+				ScopeTeamID: conn.TenantID,
+				Name:        SecurityReadSecretName,
+				// Egress lock: the map only ever needs to reach the forge API.
+				AllowedHosts: forgeTokenEgressHosts(conn),
+				CreatedBy:    securityReadCreatedBy,
+				CreatedAt:    now,
+			}
+			sealed, err := secrets.SealGenericSecret(sealer, gs.ID, encoded)
+			if err != nil {
+				return err
+			}
+			gs.SealedSecret = sealed
+			gs.Fingerprint = secrets.FingerprintSHA256(string(encoded))
+			if err := st.Create(ctx, gs); err != nil {
+				return fmt.Errorf("forge: create %s secret: %w", SecurityReadSecretName, err)
+			}
+			return nil
+		}
+		expected := gs.Fingerprint
+		// The egress lock must hold on EVERY write, not only at creation: a
+		// hand-created secret may carry no pin at all, and a second
+		// connection on another forge host must add its own host. Union —
+		// an operator's own pins are kept, never removed.
+		gs.AllowedHosts = unionHosts(gs.AllowedHosts, forgeTokenEgressHosts(conn))
+		sealed, err := secrets.SealGenericSecret(sealer, gs.ID, encoded)
+		if err != nil {
+			return err
+		}
+		gs.SealedSecret = sealed
+		gs.Fingerprint = secrets.FingerprintSHA256(string(encoded))
+		err = guardedUpdate(ctx, st, gs, expected)
+		if errors.Is(err, secrets.ErrGenericSecretConflict) && attempt == 0 {
+			continue // a concurrent writer landed first — reread and remerge
+		}
+		if err != nil {
+			return fmt.Errorf("forge: update %s secret: %w", SecurityReadSecretName, err)
+		}
+		return nil
+	}
+}
+
+func unionHosts(a, b []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(a)+len(b))
+	for _, h := range append(append([]string{}, a...), b...) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RemoveSecurityReadToken drops the connection's org entry from the
+// dependabot_tokens secret. When the map empties, the secret is deleted ONLY
+// if iterion created it (securityReadCreatedBy) — an operator's hand-set
+// secret is never destroyed, it keeps an explicit empty map instead (the
+// bot's missing-org gate then fails loudly, which is the honest outcome).
+// No-op when the secret or the entry is absent. Same CAS discipline as the
+// upsert: a plain overwrite could resurrect a concurrent writer's entry.
+func RemoveSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore, sealer secrets.Sealer, conn *Connection) error {
+	org, err := securityReadOrgKey(conn)
 	if err != nil {
 		return err
 	}
-	tokens := map[string]string{}
-	if ok {
+	for attempt := 0; ; attempt++ {
+		gs, ok, err := findSecurityReadSecret(ctx, st, conn.TenantID)
+		if err != nil || !ok {
+			return err
+		}
 		plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
 		if err != nil {
 			return fmt.Errorf("forge: open %s secret: %w", SecurityReadSecretName, err)
 		}
-		if tokens, err = securityReadTokens(plain); err != nil {
+		tokens, err := securityReadTokens(plain)
+		if err != nil {
 			return err
 		}
-	}
-	tokens[org] = token
-	encoded, err := encodeSecurityReadTokens(tokens)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		gs = secrets.GenericSecret{
-			ID:          secrets.NewGenericSecretID(),
-			TenantID:    conn.TenantID,
-			ScopeTeamID: conn.TenantID,
-			Name:        SecurityReadSecretName,
-			// Egress lock: the map only ever needs to reach the forge API.
-			AllowedHosts: forgeTokenEgressHosts(conn),
-			CreatedBy:    actor,
-			CreatedAt:    now,
+		if _, present := tokens[org]; !present {
+			return nil
+		}
+		delete(tokens, org)
+		if len(tokens) == 0 && gs.CreatedBy == securityReadCreatedBy {
+			if err := st.Delete(ctx, gs.ID); err != nil {
+				return fmt.Errorf("forge: delete emptied %s secret: %w", SecurityReadSecretName, err)
+			}
+			return nil
+		}
+		expected := gs.Fingerprint
+		encoded, err := encodeSecurityReadTokens(tokens)
+		if err != nil {
+			return err
 		}
 		sealed, err := secrets.SealGenericSecret(sealer, gs.ID, encoded)
 		if err != nil {
@@ -121,67 +246,13 @@ func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore,
 		}
 		gs.SealedSecret = sealed
 		gs.Fingerprint = secrets.FingerprintSHA256(string(encoded))
-		if err := st.Create(ctx, gs); err != nil {
-			return fmt.Errorf("forge: create %s secret: %w", SecurityReadSecretName, err)
+		err = guardedUpdate(ctx, st, gs, expected)
+		if errors.Is(err, secrets.ErrGenericSecretConflict) && attempt == 0 {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("forge: update %s secret: %w", SecurityReadSecretName, err)
 		}
 		return nil
 	}
-	sealed, err := secrets.SealGenericSecret(sealer, gs.ID, encoded)
-	if err != nil {
-		return err
-	}
-	gs.SealedSecret = sealed
-	gs.Fingerprint = secrets.FingerprintSHA256(string(encoded))
-	if err := st.Update(ctx, gs); err != nil {
-		return fmt.Errorf("forge: update %s secret: %w", SecurityReadSecretName, err)
-	}
-	return nil
-}
-
-// RemoveSecurityReadToken drops the connection's org entry from the
-// dependabot_tokens secret; when the map empties, the secret itself is
-// deleted (a leftover empty map would read as "configured but broken" to
-// the bot's explicit-error gate). No-op when the secret or the entry is
-// absent.
-func RemoveSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore, sealer secrets.Sealer, conn *Connection) error {
-	org, err := securityReadOrgKey(conn)
-	if err != nil {
-		return err
-	}
-	gs, ok, err := findSecurityReadSecret(ctx, st, conn.TenantID)
-	if err != nil || !ok {
-		return err
-	}
-	plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
-	if err != nil {
-		return fmt.Errorf("forge: open %s secret: %w", SecurityReadSecretName, err)
-	}
-	tokens, err := securityReadTokens(plain)
-	if err != nil {
-		return err
-	}
-	if _, present := tokens[org]; !present {
-		return nil
-	}
-	delete(tokens, org)
-	if len(tokens) == 0 {
-		if err := st.Delete(ctx, gs.ID); err != nil {
-			return fmt.Errorf("forge: delete emptied %s secret: %w", SecurityReadSecretName, err)
-		}
-		return nil
-	}
-	encoded, err := encodeSecurityReadTokens(tokens)
-	if err != nil {
-		return err
-	}
-	sealed, err := secrets.SealGenericSecret(sealer, gs.ID, encoded)
-	if err != nil {
-		return err
-	}
-	gs.SealedSecret = sealed
-	gs.Fingerprint = secrets.FingerprintSHA256(string(encoded))
-	if err := st.Update(ctx, gs); err != nil {
-		return fmt.Errorf("forge: update %s secret: %w", SecurityReadSecretName, err)
-	}
-	return nil
 }

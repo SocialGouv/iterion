@@ -106,9 +106,13 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// A degraded connection failed on a PERMANENT config mismatch (see
 	// markDegraded). Re-minting it every tick can never self-heal — it just
 	// re-hits the forge and re-spams the warning — so skip it until an
-	// operator reconnect flips it back to StatusActive.
+	// operator reconnect flips it back to StatusActive. Its security-read
+	// entry is withdrawn rather than left rotting: the map carries no
+	// expiry, so a stale token would only surface as an unexplained 401 in
+	// the consuming bot an hour later — pulling the entry makes the bot's
+	// missing-org gate name the problem instead.
 	if conn.Status == StatusDegraded {
-		return nil
+		return w.dropSecurityReadEntry(ctx, conn)
 	}
 	// RunOnce iterates connections across every tenant, so its ctx carries no
 	// tenant. The managed-secret store is tenant-scoped (Get/Update require the
@@ -192,9 +196,23 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 		if err != nil {
 			return fmt.Errorf("forge: security-read mint for connection %s: %w", conn.ID, err)
 		}
-		if err := UpsertSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn, secTok, "forge-refresh-worker", w.now()); err != nil {
+		if err := UpsertSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn, secTok, w.now()); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// dropSecurityReadEntry withdraws a connection's org entry from the
+// dependabot_tokens map when the connection can no longer mint (degraded /
+// revoked): a token in that map is a promise of freshness, and a connection
+// that stopped refreshing must not leave a silently-dying one behind.
+func (w *RefreshWorker) dropSecurityReadEntry(ctx context.Context, conn Connection) error {
+	if !conn.SecurityReadEnabled || conn.Kind != KindGitHubApp {
+		return nil
+	}
+	if err := RemoveSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn); err != nil {
+		return fmt.Errorf("forge: withdraw security-read entry for stalled connection %s: %w", conn.ID, err)
 	}
 	return nil
 }
@@ -218,7 +236,12 @@ func (w *RefreshWorker) markRevoked(ctx context.Context, conn Connection) error 
 	now := w.now()
 	conn.Status = StatusNeedsReauth
 	conn.UpdatedAt = now
-	return w.Connections.Update(ctx, conn)
+	if err := w.Connections.Update(ctx, conn); err != nil {
+		return err
+	}
+	// A revoked credential can no longer refresh the org token either —
+	// withdraw it (same rationale as the degraded path).
+	return w.dropSecurityReadEntry(ctx, conn)
 }
 
 // markDegraded flips a connection to StatusDegraded on a permanent config

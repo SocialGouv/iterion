@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -402,6 +404,28 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusUnprocessableEntity, "security-read requires a github_app connection (this one is %s); a non-App deployment can set the %q team secret by hand instead", conn.Kind, forge.SecurityReadSecretName)
 			return
 		}
+		// A personal secret of the same name OUTRANKS the team map at
+		// resolution (user > team), so enabling here would look fine while
+		// every run of that member reads a different token map. Name the
+		// conflict instead of minting into a shadowed secret.
+		if owner, clash, err := s.securityReadNameClash(ctx, teamID); err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		} else if clash {
+			httpError(w, http.StatusConflict, "a personal secret named %q already exists in this team (owner %s) and would shadow the managed map for that user's runs — remove it first", forge.SecurityReadSecretName, owner)
+			return
+		}
+		// The map is keyed by ORG alone (the bot's config names orgs, not
+		// hosts). Two connections claiming the same org on different forge
+		// hosts would overwrite each other every cycle, and a private
+		// instance's token could end up filed where the public one is read.
+		if other, err := s.securityReadOrgCollision(ctx, conn); err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		} else if other != "" {
+			httpError(w, http.StatusConflict, "connection %s (host %s) already holds the security-read token for org %q; the token map is keyed by org, so both cannot be enabled — disable that one first", other, conn.Host(), conn.AccountLogin)
+			return
+		}
 		tok, err := s.forgeSecurityTokenMinter(ctx, conn)
 		if err != nil {
 			if errors.Is(err, forge.ErrPermissionsNotGranted) {
@@ -411,11 +435,15 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
 			return
 		}
-		if err := forge.UpsertSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn, tok, id.UserID, time.Now().UTC()); err != nil {
+		if err := forge.UpsertSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn, tok, time.Now().UTC()); err != nil {
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
 		}
-	} else if conn.SecurityReadEnabled {
+	} else {
+		// Unconditional: the stored flag and the secret map can disagree (a
+		// failed persist after a successful mint), and gating the withdrawal
+		// on the flag would answer 200 while leaving the org token in place.
+		// RemoveSecurityReadToken is idempotent on absence.
 		if err := forge.RemoveSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn); err != nil {
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
@@ -468,6 +496,55 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, struct {
 		Repos []forge.RepoSummary `json:"repos"`
 	}{Repos: repos})
+}
+
+// securityReadNameClash reports whether a USER-scoped secret named
+// dependabot_tokens exists in the team. Resolution ranks user > team, so such
+// a secret silently outranks the managed map for that member's runs — the
+// enable endpoint refuses rather than mint into something shadowed.
+func (s *Server) securityReadNameClash(ctx context.Context, teamID string) (string, bool, error) {
+	// Optional capability: ListByTeam is a per-USER resolution view and
+	// cannot see other members' personal secrets. Stores without the
+	// whole-team view (the single-user local file store) skip the check.
+	lister, ok := s.genericSecrets.(interface {
+		ListAllInTeam(context.Context, string) ([]secrets.GenericSecret, error)
+	})
+	if !ok {
+		return "", false, nil
+	}
+	list, err := lister.ListAllInTeam(ctx, teamID)
+	if err != nil {
+		return "", false, fmt.Errorf("list team secrets: %w", err)
+	}
+	for _, sec := range list {
+		if sec.Name == forge.SecurityReadSecretName && sec.ScopeUserID != "" {
+			return sec.ScopeUserID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// securityReadOrgCollision returns the id of another security-read-enabled
+// connection of the same tenant that claims the SAME org login on a
+// DIFFERENT forge host (see forge.ErrSecurityReadOrgCollision), or "".
+func (s *Server) securityReadOrgCollision(ctx context.Context, conn forge.Connection) (string, error) {
+	org := strings.ToLower(strings.TrimSpace(conn.AccountLogin))
+	if org == "" || s.forgeConnections == nil {
+		return "", nil
+	}
+	list, err := s.forgeConnections.ListByTenant(ctx, conn.TenantID)
+	if err != nil {
+		return "", fmt.Errorf("list connections: %w", err)
+	}
+	for _, other := range list {
+		if other.ID == conn.ID || !other.SecurityReadEnabled {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(other.AccountLogin)) == org && other.Host() != conn.Host() {
+			return other.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // forgeConnForTenant fetches a connection and asserts tenant ownership.

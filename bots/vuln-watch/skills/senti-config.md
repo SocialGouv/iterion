@@ -82,6 +82,21 @@ Dedup is by CVE alias set (GHSA↔CVE from the GitHub advisory,
 two lanes posts once. New repos joining an already-alerted advisory
 stay silent (counted in the state).
 
+**Suppression is SCOPED, not global.** A CERT-FR advisory can list
+hundreds of CVE ids; marking them all "alerted" outright would silence
+every one of them for every *other* project of the inventory. So the
+state records which scopes (projects, repos) each CVE has been alerted
+FOR, and the same CVE still fires when it later concerns a project that
+was never told — including the routine case where a techno-level KEV
+alert is followed by the Dependabot unit that names the actual repos
+and the fixed version.
+
+**Delivery is all-or-nothing per tick.** The state advances only when
+every prepared message reached at least one sink; a rate-limited sink
+that drops the third alert of a burst makes the whole tick replay
+(at-least-once: a delivered alert may repeat once, which is strictly
+better than losing the others).
+
 ## The two secrets
 
 - `webhooks` — JSON map name → incoming-webhook URL, identical to
@@ -159,8 +174,12 @@ accepted the messages (or nothing needed posting). A failed delivery
 replays the same alerts next run (at-least-once, never lost).
 `dry_run=true` posts nothing and consumes nothing.
 
-**Bootstrap**: the first run (no state.json) sets every cursor to
-"now" and alerts NOTHING — the pre-existing backlog is not news.
+**Bootstrap**: the first run (no state.json) arms every cursor and
+alerts NOTHING — the pre-existing backlog is not news. The KEV lane
+arms an id SET (not a date): `dateAdded` has day granularity while the
+bot ticks hourly, and a date cursor would swallow the rest of the day's
+batch. It only ever arms from a catalog that actually loaded, so a KEV
+outage during the arming tick cannot blank the catalog.
 Verify the wiring with a dry-run after seeding state, not on the
 bootstrap tick.
 
@@ -199,6 +218,11 @@ iterion remote schedules create --data '{"bot_id":"vuln-watch",
   N observed` is the policy working (nothing exploited); `BOOTSTRAP`
   means the first tick just armed the cursors; `suppressed` counts
   dedup hits.
-- **Same alert twice** — expected only if delivery partially failed
-  (state not consumed) or the tier escalated (one re-fire per unit,
-  by design).
+- **Same alert twice** — expected when a delivery partially failed
+  (the tick did not consume, so everything replays) or when the tier
+  escalated (one re-fire per unit, by design).
+- **State pushes conflict forever** — the state dir ships a
+  `.gitattributes` marking `alertlog.jsonl` as `merge=union` (two
+  runners appending to one branch always conflict otherwise). If a
+  rebase still fails, the run resets to origin rather than stacking a
+  commit that would replay the same conflict every hour.
