@@ -1430,7 +1430,10 @@ tool commit_state:
     os.chdir(ws)
 
     def _commit_push_state(sdir, msg):
-        subprocess.run(['git', 'add', sdir], check=True)
+        ## Every git call captures its streams: the engine parses this
+        ## node's WHOLE stdout as one JSON object, and `git commit`'s
+        ## "[branch sha] msg" summary would silently corrupt the output.
+        subprocess.run(['git', 'add', sdir], check=True, capture_output=True)
         ## Guard: the bot may ONLY ever commit the state dir. A staged path
         ## outside it (vuln-watch.json, inventory.json, .github/**) would be
         ## a bug or an injection — hard-fail before the push rather than
@@ -1444,7 +1447,7 @@ tool commit_state:
                              repr(sdir) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
-        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        subprocess.run(['git', 'commit', '-m', msg], check=True, capture_output=True)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
@@ -1462,7 +1465,7 @@ tool commit_state:
             rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br],
                                      capture_output=True, text=True)
             if rebased.returncode != 0:
-                subprocess.run(['git', 'rebase', '--abort'])
+                subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
                 raise SystemExit('vuln-watch: could not rebase onto origin/' + br +
                                  ' to retry the push -- aborting. git said: ' +
                                  (rebased.stderr or '')[-400:].strip())
