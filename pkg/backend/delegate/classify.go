@@ -62,16 +62,18 @@ const (
 
 // ErrModelUnavailable marks a model the resolved credential cannot
 // reach — a bad or withdrawn id, or one the account is not entitled to.
-// Non-transient: retrying the same (credential, model) pair cannot fix
-// it, which is precisely what makes it a good reason to try the next
-// chain element.
+// Normally non-transient: retrying the same (credential, model) pair cannot
+// fix it, which is precisely what makes it a good reason to try the next
+// chain element. ResetAt is reserved for a future stage-3 producer that can
+// report a temporary provider unavailability window; no shipped backend sets
+// it today.
 type ErrModelUnavailable struct {
 	Provider string // backend that reported it ("claude_code", …)
 	Model    string // the model id that was refused
 	Detail   string // raw upstream message for diagnostics
-	// ResetAt is the provider-reported instant at which this temporary
-	// unavailability may clear. Most unavailable errors do not carry one;
-	// callers must fail open when it is zero.
+	// ResetAt is the provider-reported instant at which a temporary
+	// unavailability may clear. Reserved for ADR-087 stage 3; callers must
+	// fail open when it is zero.
 	ResetAt time.Time
 }
 

@@ -729,6 +729,13 @@ func (e *ClawExecutor) dispatchChain(
 					next := chain[j]
 					e.noteCooldownFallback(ctx, nodeID, el, next, backendName,
 						effModel(el), effModel(next), cd)
+					// The call was skipped, but the condition that caused the
+					// skip is still active. Preserve its typed cause so a later
+					// fallback failure cannot hide a usage-window wall from the
+					// run-level durable retry or credential-pool donor rest.
+					if cd.Cause != nil {
+						causes = append(causes, cd.Cause)
+					}
 					nextAllowed = j
 					continue
 				}

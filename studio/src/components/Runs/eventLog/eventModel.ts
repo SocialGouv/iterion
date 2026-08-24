@@ -91,6 +91,12 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "to",
     // model_fallback: the route change and why it happened.
     "reason",
+    // A zero-attempt route change is a proactive cooldown skip, not a
+    // second provider refusal. Keep that distinction visible in the row
+    // preview without requiring operators to open the raw event payload.
+    "cooldown",
+    "cooldown_until",
+    "attempts",
     "from_backend",
     "to_backend",
     "to_model",

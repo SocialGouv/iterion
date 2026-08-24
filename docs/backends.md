@@ -322,14 +322,15 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
-When a `usage_window` (or temporary `unavailable`) failure carries a provider
-reset instant, the executor also puts the effective `(backend, credential
-hint, model)` route on a reactive cooldown until that instant. Later nodes in
-the same run enter the chain at the first route whose `on:` filter accepts the
-remembered category, without spawning the refused backend again. The skip
-remains visible as a `model_fallback` event with `attempts: 0`, `cooldown:
-true` and `cooldown_until`; it is an info line rather than another rate-limit
-warning.
+When a `usage_window` failure carries a provider reset instant, the executor
+also puts the effective `(backend, credential hint, model)` route on a reactive
+cooldown until that instant. The ledger is ready to do the same for a typed
+temporary `unavailable` failure with a reset instant, but no shipped backend
+produces that stage-3 condition yet. Later nodes in the same run enter the
+chain at the first route whose `on:` filter accepts the remembered category,
+without spawning the refused backend again. The skip remains visible as a
+`model_fallback` event with `attempts: 0`, `cooldown: true` and
+`cooldown_until`; it is an info line rather than another rate-limit warning.
 
 Cooldown is strictly fail-open: an absent/already-passed reset, or no later
 route accepting the failure, leaves dispatch unchanged. Entries expire on

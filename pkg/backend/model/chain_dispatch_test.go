@@ -325,6 +325,65 @@ func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
 	}
 }
 
+// A cooldown avoids the repeated provider call, not the provider condition.
+// If the serving fallback then fails, downstream run-level recovery must still
+// see the remembered usage-window cause and park until its reset instant.
+func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  reset,
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw},
+	}
+	dispatch := func(nodeID string) error {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		_, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		return err
+	}
+
+	if err := dispatch("learn-window"); err != nil {
+		t.Fatalf("learning dispatch: %v", err)
+	}
+	tail.fail = &delegate.ErrAuthFailed{Provider: "claw", Detail: "no API key"}
+	err := dispatch("cooled-primary")
+	if err == nil {
+		t.Fatal("expected the fallback failure to exhaust the chain")
+	}
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+	var rl *delegate.ErrRateLimited
+	if !errors.As(err, &rl) || rl.Kind != delegate.RateLimitKindUsageWindow || !rl.ResetAt.Equal(reset) {
+		t.Errorf("remembered usage-window cause lost from terminal error: %v", err)
+	}
+	var auth *delegate.ErrAuthFailed
+	if !errors.As(err, &auth) {
+		t.Errorf("fallback auth cause lost from terminal error: %v", err)
+	}
+	var exhausted *ErrChainExhausted
+	if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+		t.Errorf("terminal error = %#v, want two-cause ErrChainExhausted", err)
+	}
+}
+
 // TestErrChainExhaustedPreservesEveryCause is the decision that keeps the
 // surrounding machinery alive. The run-level usage-window retry and the
 // credential-pool donor cooldown both errors.As on a node's terminal

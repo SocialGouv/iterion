@@ -20,6 +20,11 @@ type routeCooldownKey struct {
 type routeCooldown struct {
 	Category delegate.FallbackCategory
 	Until    time.Time
+	// Cause preserves the typed provider condition that armed the entry.
+	// A later dispatch may skip the call, but if its fallback also fails the
+	// chain's terminal error must still expose this cause to the durable
+	// usage-window retry and credential-pool health classifiers.
+	Cause error
 }
 
 // routeCooldownLedger is deliberately process-memory only. A missed entry
@@ -75,12 +80,12 @@ func cooldownForFailure(err error, cat delegate.FallbackCategory) routeCooldown 
 	case delegate.FallbackUsageWindow:
 		var rl *delegate.ErrRateLimited
 		if errors.As(err, &rl) {
-			return routeCooldown{Category: cat, Until: rl.ResetAt}
+			return routeCooldown{Category: cat, Until: rl.ResetAt, Cause: err}
 		}
 	case delegate.FallbackUnavailable:
 		var unavailable *delegate.ErrModelUnavailable
 		if errors.As(err, &unavailable) {
-			return routeCooldown{Category: cat, Until: unavailable.ResetAt}
+			return routeCooldown{Category: cat, Until: unavailable.ResetAt, Cause: err}
 		}
 	}
 	return routeCooldown{}
