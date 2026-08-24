@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -166,6 +167,12 @@ type Config struct {
 	// status, secrets/bindings/webhooks CRUD, member changes…) and
 	// enables GET /api/teams/{id}/audit + /api/admin/audit.
 	Audit audit.Store
+	// UsageCapSettings, when non-nil, is the platform runtime-settings
+	// store (usage-cap percentages, DB-backed over the ITERION_USAGE_CAP_*
+	// env defaults). Enables the super-admin
+	// GET/PUT /api/admin/settings/usage-caps routes and switches the
+	// /healthz usage_cap echo to the EFFECTIVE (db-or-env) values.
+	UsageCapSettings usagecap.SettingsStore
 	// OrgDefaults are the platform-wide launch limits applied when a
 	// team has no per-org override. Zero values mean "no limit".
 	OrgDefaults OrgLimitDefaults

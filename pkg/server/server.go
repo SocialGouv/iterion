@@ -36,6 +36,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -143,9 +144,15 @@ type Server struct {
 	credPoolLeases    credpool.LeaseStore
 	credPoolLedger    credpool.Ledger
 	auditStore        audit.Store
-	pats              pat.Store
-	queue             QueueBackend
-	botBindings       secrets.BotSecretBindingStore
+	// usageCapSettings + usageCapSource are the platform runtime-settings
+	// store and its TTL-cached resolver (nil in env-only deployments):
+	// the admin settings routes mutate the former, /healthz and the
+	// launch preflight read the latter.
+	usageCapSettings usagecap.SettingsStore
+	usageCapSource   *usagecap.Resolver
+	pats             pat.Store
+	queue            QueueBackend
+	botBindings      secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
@@ -421,6 +428,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolLeases:    cfg.CredPoolLeases,
 		credPoolLedger:    cfg.CredPoolLedger,
 		auditStore:        cfg.Audit,
+		usageCapSettings:  cfg.UsageCapSettings,
 		pats:              cfg.PATs,
 		queue:             cfg.Queue,
 		botBindings:       cfg.BotBindings,
@@ -437,6 +445,18 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		locCache:          newRunLOCCache(),
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
+	}
+	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
+	// A malformed env policy leaves it nil — the health echo reports the
+	// invalid value (existing behaviour) instead of a resolver quietly
+	// built over a policy the enforcement paths refused.
+	if cfg.UsageCapSettings != nil {
+		if envPol, err := usagecap.FromEnv(); err == nil {
+			s.usageCapSource = usagecap.NewResolver(cfg.UsageCapSettings, envPol,
+				usagecap.WithWarnLogger(logger.Warn))
+		} else {
+			logger.Warn("server: usage-cap runtime settings disabled — env policy invalid: %v", err)
+		}
 	}
 	// Local mode wires a *LayeredGenericSecretStore; keep the concrete type so
 	// the /api/local/secrets handlers use its scope-aware ops directly. Cloud
