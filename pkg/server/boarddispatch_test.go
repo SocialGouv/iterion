@@ -34,8 +34,11 @@ func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
 
 // ListEligible honours the real coordinator's contract — unclaimed cards in
 // one of the requested states, capped — so a caller sweeping the wrong state
-// list (or ignoring the claim filter) fails here instead of passing vacuously.
-func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit int) ([]boardmongo.Candidate, error) {
+// list (or ignoring the claim filter) fails here instead of passing
+// vacuously. The UpdatedAt ordering (newestFirst) is exercised against the
+// real store in boardmongo's conformance suite, not here: the fake carries
+// no timestamps.
+func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit int, _ bool) ([]boardmongo.Candidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []boardmongo.Candidate
@@ -677,6 +680,77 @@ func TestBoardDispatcher_SweepAdoptsFinishedFork(t *testing.T) {
 	// Nil wiring (sweep disabled) must be a hard no-op, not a panic.
 	d2 := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
 	d2.sweepForkAdoptions(context.Background())
+}
+
+// TestBoardDispatcher_SweepMemoizesUnreadablePointer: a card whose LastRunID
+// no longer resolves (the run was pruned or deleted) fails statusFor on
+// every tick — permanently. The memo must be written BEFORE the read, or
+// exactly the cards it exists to bound pay one run load per 5s tick forever
+// (R08601b).
+func TestBoardDispatcher_SweepMemoizesUnreadablePointer(t *testing.T) {
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:pruned", State: native.StateBlocked, LastRunID: "run-gone"},
+	})
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	var reads int
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		reads++
+		return "", errors.New("run run-gone not found (pruned)")
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) { return nil, errors.New("gone") }
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+
+	d.sweepForkAdoptions(context.Background())
+	d.sweepForkAdoptions(context.Background())
+
+	if reads != 1 {
+		t.Errorf("statusFor reads across two sweeps = %d, want 1 (an unreadable pointer must be memoized for the TTL, not re-read per tick)", reads)
+	}
+	if got, moved := f.states["native:pruned"]; moved {
+		t.Errorf("unreadable pointer must leave the card in place, was moved to %q", got)
+	}
+}
+
+// TestBoardDispatcher_SweepSaturationWarnDedups: the listing-cap warning
+// fires once per condition EDGE, not per 5s tick (~17k identical lines/day
+// otherwise), and re-arms when the board drops back under the cap (R0544a9).
+func TestBoardDispatcher_SweepSaturationWarnDedups(t *testing.T) {
+	cands := make([]boardmongo.Candidate, sweepCardLimit)
+	for i := range cands {
+		cands[i] = boardmongo.Candidate{
+			Tenant: "t1",
+			Issue:  native.Issue{ID: fmt.Sprintf("native:%d", i), State: native.StateBlocked},
+		}
+	}
+	f := newFakeBoardCoord(cands...)
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) { return "", errors.New("x") }
+	d.runFor = func(context.Context, string, string) (*store.Run, error) { return nil, errors.New("x") }
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+
+	d.sweepForkAdoptions(context.Background())
+	if !d.saturationWarned {
+		t.Fatal("a full listing window must flag saturation")
+	}
+	d.sweepForkAdoptions(context.Background())
+	if !d.saturationWarned {
+		t.Fatal("saturation must stay flagged while the condition holds")
+	}
+
+	// Drop under the cap: the flag resets so the next saturation warns again.
+	f.mu.Lock()
+	f.cands = f.cands[:sweepCardLimit-1]
+	f.mu.Unlock()
+	d.sweepForkAdoptions(context.Background())
+	if d.saturationWarned {
+		t.Fatal("dropping under the cap must reset the saturation flag")
+	}
 }
 
 // TestBoardDispatcher_SweepSkipsFilingOnStampFailure: done is terminal for

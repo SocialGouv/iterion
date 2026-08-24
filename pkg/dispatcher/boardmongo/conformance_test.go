@@ -577,7 +577,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 			}
 		}
 	}
-	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50)
+	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50, false)
 	if eerr != nil {
 		t.Fatalf("ListEligible: %v", eerr)
 	}
@@ -593,6 +593,22 @@ func TestMongoStore_Conformance(t *testing.T) {
 	}
 	if _, ok := gotTitles["claimed"]; ok {
 		t.Error("claimed card must not be eligible")
+	}
+
+	// Ordering contract: the dispatch tick lists oldest-updated first (FIFO
+	// fairness); the stranded-card sweep lists NEWEST first, so a capped
+	// window always contains the freshest strandings on a saturated board
+	// (R0544a9). ready-a was created before ready-b, so their UpdatedAt
+	// order is creation order.
+	if len(elig) == 2 && !(elig[0].Issue.Title == "ready-a" && elig[1].Issue.Title == "ready-b") {
+		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
+	}
+	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)
+	if derr != nil {
+		t.Fatalf("ListEligible newest-first: %v", derr)
+	}
+	if len(desc) != 1 || desc[0].Issue.Title != "ready-b" {
+		t.Errorf("newest-first capped window = %v, want the freshest card ready-b", desc)
 	}
 }
 

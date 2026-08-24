@@ -19,7 +19,7 @@ import (
 // boardCoordinator is the cross-tenant board view the cloud dispatcher needs.
 // *boardmongo.Coordinator satisfies it; tests pass a fake.
 type boardCoordinator interface {
-	ListEligible(ctx context.Context, eligible []string, limit int) ([]boardmongo.Candidate, error)
+	ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]boardmongo.Candidate, error)
 	Claim(ctx context.Context, tenant, id, marker string) error
 	SetState(ctx context.Context, tenant, id, state string) error
 	Release(ctx context.Context, tenant, id, marker string) error
@@ -76,6 +76,11 @@ type boardDispatcher struct {
 	reconcileMemoMu sync.Mutex
 	reconcileMemo   map[string]time.Time
 
+	// saturationWarned dedups the fork-adoption sweep's listing-cap warning
+	// to one line per condition edge (only touched from the run-loop
+	// goroutine, which calls the sweeps sequentially).
+	saturationWarned bool
+
 	interval time.Duration
 	sem      chan struct{}
 	logger   *iterlog.Logger
@@ -105,7 +110,7 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 // tick claims as many eligible cards as there are free slots and dispatches
 // each in a detached goroutine. Returns the number it claimed this tick.
 func (d *boardDispatcher) tick(ctx context.Context) int {
-	cands, err := d.coord.ListEligible(ctx, d.eligible, cap(d.sem)*2)
+	cands, err := d.coord.ListEligible(ctx, d.eligible, cap(d.sem)*2, false)
 	if err != nil {
 		d.warn("list eligible: %v", err)
 		return 0
@@ -170,7 +175,7 @@ func (d *boardDispatcher) sweepParked(ctx context.Context) {
 	if d.statusFor == nil {
 		return
 	}
-	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, sweepCardLimit)
+	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, sweepCardLimit, false)
 	if err != nil {
 		d.warn("parked sweep list: %v", err)
 		return
@@ -250,16 +255,27 @@ func (d *boardDispatcher) sweepForkAdoptions(ctx context.Context) {
 	if d.statusFor == nil || d.runFor == nil || d.issueRuns == nil || d.adoptRun == nil {
 		return
 	}
-	cands, err := d.coord.ListEligible(ctx, []string{d.inProgressState, d.blockedState}, sweepCardLimit)
+	// Newest-updated FIRST: a stranding bumps the card's UpdatedAt, so the
+	// freshest strandings always enter the window even on a board saturated
+	// past the cap — under oldest-first the forgotten blocked pile (which the
+	// sweep leaves in place, so its timestamps never move) would occupy the
+	// window permanently and starve exactly the cards this sweep exists to
+	// rescue (R0544a9).
+	cands, err := d.coord.ListEligible(ctx, []string{d.inProgressState, d.blockedState}, sweepCardLimit, true)
 	if err != nil {
 		d.warn("fork-adoption sweep list: %v", err)
 		return
 	}
-	// blocked accumulates board-wide and the listing is oldest-updated
-	// first: once a deployment sits at the cap, the window starves every
-	// newly-stranded card. Say so — the saturation is otherwise silent.
-	if len(cands) == sweepCardLimit {
-		d.warn("fork-adoption sweep at the %d-card listing cap — newly stranded cards may be starved", sweepCardLimit)
+	// At the cap, cards older than the window's tail are out of reach until
+	// operators drain the pile. Say so — once per condition edge, not per
+	// 5s tick (the sweeps run on the single run-loop goroutine).
+	if saturated := len(cands) == sweepCardLimit; saturated != d.saturationWarned {
+		d.saturationWarned = saturated
+		if saturated {
+			d.warn("fork-adoption sweep at the %d-card listing cap — cards stranded longer than the newest %d are out of reach until the blocked pile drains", sweepCardLimit, sweepCardLimit)
+		} else {
+			d.log("fork-adoption sweep back under the %d-card listing cap", sweepCardLimit)
+		}
 	}
 	for _, c := range cands {
 		d.reconcileDeadPointer(ctx, c)
@@ -278,14 +294,17 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	if !d.reconcileDue(c.Tenant, c.Issue.ID) {
 		return
 	}
+	// The card is being evaluated: memoize BEFORE the read, not after. A
+	// card whose LastRunID no longer resolves (the run was pruned or
+	// deleted) fails statusFor on EVERY tick — permanently, not
+	// transiently — so memoizing only on success would leave exactly the
+	// cards the memo exists for paying one run load per tick, forever
+	// (R08601b). A genuinely transient blip just waits out one TTL.
+	d.noteReconcile(c.Tenant, c.Issue.ID)
 	st, err := d.statusFor(ctx, c.Tenant, runID)
 	if err != nil {
-		return // transient read failure — retry next tick, unmemoized
+		return // unreadable pointer — re-evaluated after the TTL
 	}
-	// The card was evaluated: memoize so the next evaluation waits
-	// forkAdoptionScanTTL instead of running every tick. Filed cards leave
-	// the listing anyway; the memo is what bounds the cards that STAY.
-	defer d.noteReconcile(c.Tenant, c.Issue.ID)
 	if st == store.RunStatusFinished {
 		// Only in_progress is the dispatcher's own orphan window (the run
 		// finished, the state move never landed). A blocked card is an

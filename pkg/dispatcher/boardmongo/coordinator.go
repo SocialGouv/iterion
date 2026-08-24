@@ -35,15 +35,25 @@ func NewCoordinator(db *mongo.Database) *Coordinator {
 func (c *Coordinator) StoreFor(tenant string) *Store { return New(c.db, tenant) }
 
 // ListEligible returns up to `limit` UNCLAIMED issues whose state is in
-// `eligible`, across every tenant, oldest-updated first. (v1 assumes the
-// default-board eligibility passed by the caller; a per-tenant custom board
-// schema is a future refinement. Blocker gating is left to the per-issue
-// processor.)
-func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit int) ([]Candidate, error) {
+// `eligible`, across every tenant, in the requested update order:
+// oldest-updated first (newestFirst=false) for the dispatch tick — FIFO
+// fairness — or newest-updated first for the stranded-card sweeps, whose
+// capped window must always contain the freshest strandings (a stranding
+// bumps UpdatedAt, and a sweep that leaves a card in place does not, so
+// under oldest-first a saturated board's forgotten pile occupies the window
+// permanently and starves exactly the cards the sweep exists to rescue).
+// (v1 assumes the default-board eligibility passed by the caller; a
+// per-tenant custom board schema is a future refinement. Blocker gating is
+// left to the per-issue processor.)
+func (c *Coordinator) ListEligible(ctx context.Context, eligible []string, limit int, newestFirst bool) ([]Candidate, error) {
 	if len(eligible) == 0 {
 		return nil, nil
 	}
-	opt := options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: 1}})
+	order := 1
+	if newestFirst {
+		order = -1
+	}
+	opt := options.Find().SetSort(bson.D{{Key: "issue.updatedat", Value: order}})
 	if limit > 0 {
 		opt.SetLimit(int64(limit))
 	}
