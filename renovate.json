@@ -8,20 +8,31 @@
   ],
   "pinDigests": true,
   "timezone": "Etc/UTC",
-  "schedule": ["before 6am on monday"],
-  "labels": ["dependencies"],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "labels": [
+    "dependencies"
+  ],
   "prHourlyLimit": 4,
   "ignorePaths": [
     "e2e/fixtures/**",
     "vendor/**"
   ],
-  "postUpdateOptions": ["gomodTidy", "pnpmDedupe"],
+  "postUpdateOptions": [
+    "gomodTidy",
+    "pnpmDedupe"
+  ],
   "customManagers": [
     {
       "customType": "regex",
       "description": "devbox: track version-pinned Nix packages (only numeric pins like go@1.26; @latest entries are floating and have nothing to bump). To track another pinned tool, add a matchStrings line with its datasource.",
-      "managerFilePatterns": ["/(^|/)devbox\\.json$/"],
-      "matchStrings": ["\"go@(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\""],
+      "managerFilePatterns": [
+        "/(^|/)devbox\\.json$/"
+      ],
+      "matchStrings": [
+        "\"go@(?<currentValue>\\d+\\.\\d+(?:\\.\\d+)?)\""
+      ],
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "go"
@@ -41,71 +52,112 @@
   ],
   "packageRules": [
     {
-      "description": "Bitnami exit (operator decision 2026-08-24): the minio and mongodb subcharts of charts/iterion live in Broadcom's archived, purged Bitnami ecosystem — every bump PR is a symptom (audited holds on #4/#440). No updates until the migration off Bitnami lands; remove this rule when it does (board ticket 'Exit the Bitnami minio + mongodb subcharts').",
-      "matchManagers": ["helmv3"],
-      "matchPackageNames": ["minio", "mongodb"],
+      "description": "Bitnami exit (operator decision 2026-08-24): the minio and mongodb subcharts of charts/iterion live in Broadcom's archived, purged Bitnami ecosystem — every bump PR is a symptom (audited holds on #4/#440). No updates until the migration off Bitnami lands; remove this rule when it does (board ticket 'Exit the Bitnami minio + mongodb subcharts'). The glob targets packageName, not depName: for an OCI repository the helmv3 manager sets packageName to the full registry path (registry-1.docker.io/bitnamicharts/<name>) and Renovate 44 matches matchPackageNames against packageName only — a bare chart name here would never match, and it also future-proofs against any other bitnamicharts dep.",
+      "matchManagers": [
+        "helmv3"
+      ],
+      "matchPackageNames": [
+        "**/bitnamicharts/**"
+      ],
       "enabled": false
     },
     {
       "description": "Keep the GitHub Actions SHA pins current, with the precise semver in the trailing comment.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github-actions",
       "pinDigests": true
     },
     {
       "description": "Maintain container base-image digest pins (Dockerfiles).",
-      "matchManagers": ["dockerfile"],
+      "matchManagers": [
+        "dockerfile"
+      ],
       "groupName": "docker base images",
       "pinDigests": true
     },
     {
       "description": "Maintain docker-compose image pins.",
-      "matchManagers": ["docker-compose"],
+      "matchManagers": [
+        "docker-compose"
+      ],
       "groupName": "docker-compose"
     },
     {
       "description": "Group non-major npm updates in the pnpm workspace.",
-      "matchManagers": ["npm"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "npm"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "npm (non-major)"
     },
     {
       "description": "LLM CLIs baked into the container image (docker/llm-clis/package.json). task docker:pin-llm-clis regenerates the same file from `claude --version`/`codex --version`; both writers target only these two keys, so they coexist.",
-      "matchFileNames": ["docker/llm-clis/package.json"],
-      "matchPackageNames": ["@anthropic-ai/claude-code", "@openai/codex"],
+      "matchFileNames": [
+        "docker/llm-clis/package.json"
+      ],
+      "matchPackageNames": [
+        "@anthropic-ai/claude-code",
+        "@openai/codex"
+      ],
       "groupName": "llm-clis"
     },
     {
       "description": "Group Go module updates.",
-      "matchManagers": ["gomod"],
+      "matchManagers": [
+        "gomod"
+      ],
       "groupName": "go modules"
     },
     {
       "description": "Group Helm chart dependency updates (charts/iterion/Chart.yaml).",
-      "matchManagers": ["helmv3"],
+      "matchManagers": [
+        "helmv3"
+      ],
       "groupName": "helm charts"
     },
     {
       "description": "Group devcontainer feature/image updates.",
-      "matchManagers": ["devcontainer"],
+      "matchManagers": [
+        "devcontainer"
+      ],
       "groupName": "devcontainer"
     },
     {
       "description": "Group devbox (Nix) version-pinned package updates from the custom manager.",
-      "matchManagers": ["custom.regex"],
-      "matchDepNames": ["go"],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
       "groupName": "devbox"
     },
     {
       "description": "firecrawl-mcp is pinned in BOTH the runner Dockerfile ARG and the firecrawl plugin manifest; group them so one PR bumps both in lockstep. Labelled security — it's a supply-chain-sensitive runtime download baked into the runner image.",
-      "matchManagers": ["custom.regex"],
-      "matchDepNames": ["firecrawl-mcp"],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "firecrawl-mcp"
+      ],
       "groupName": "firecrawl-mcp",
-      "labels": ["dependencies", "security"]
+      "labels": [
+        "dependencies",
+        "security"
+      ]
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"],
-    "schedule": ["at any time"]
+    "labels": [
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ]
   }
 }
