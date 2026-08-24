@@ -331,6 +331,12 @@ func (s *Server) ListenAndServe() error {
 			// and clear the denormalized ⏸ badge when the sweep moves a card.
 			d.statusFor = s.boardRunStatus
 			d.clearBadge = func(tenant, id string) { s.setCardAwaitingInput(tenant, id, false) }
+			// Fork-adoption sweep wiring: full run record + the issue's runs
+			// (tenant-scoped) to resolve a finished fork, and the CloudBoardFor
+			// seam to adopt it onto the stranded card.
+			d.runFor = s.boardRun
+			d.issueRuns = s.boardIssueRuns
+			d.adoptRun = s.adoptCardRun
 			d.run(ctx)
 		}()
 	}

@@ -90,6 +90,17 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	issues := db.Collection(IssuesCollection)
 	_, err := issues.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}}, Options: options.Index().SetName("tenant")},
+		// Serves Coordinator.ListEligible — three cross-tenant queries per
+		// 5s tick per replica, one of them over in_progress+blocked (the
+		// states that only accumulate). Without it each is a COLLSCAN plus
+		// a blocking in-memory sort that trips Mongo's non-indexed-sort
+		// limit at scale. The trailing updatedat key serves BOTH sort
+		// directions (an index walks backwards for free).
+		{Keys: bson.D{
+			{Key: "issue.state", Value: 1},
+			{Key: "issue.claim", Value: 1},
+			{Key: "issue.updatedat", Value: 1},
+		}, Options: options.Index().SetName("eligible_by_updated")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure issues index: %w", err)
