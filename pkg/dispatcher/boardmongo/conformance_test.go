@@ -599,8 +599,13 @@ func TestMongoStore_Conformance(t *testing.T) {
 	// fairness); the stranded-card sweep lists NEWEST first, so a capped
 	// window always contains the freshest strandings on a saturated board
 	// (R0544a9). ready-a was created before ready-b, so their UpdatedAt
-	// order is creation order.
-	if len(elig) == 2 && (elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b") {
+	// order is creation order. The count is FATAL: a stray ready+unclaimed
+	// card leaked by an earlier suite would otherwise silently void the
+	// ordering assertions below.
+	if len(elig) != 2 {
+		t.Fatalf("cross-tenant eligible count = %d (%v), want exactly ready-a + ready-b", len(elig), gotTitles)
+	}
+	if elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b" {
 		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
 	}
 	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)

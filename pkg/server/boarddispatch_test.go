@@ -26,10 +26,11 @@ type fakeBoardCoord struct {
 	claimed  map[string]string
 	states   map[string]string
 	claimErr map[string]error
+	stateErr map[string]error
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
-	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}}
+	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}}
 }
 
 // ListEligible honours the real coordinator's contract — unclaimed cards in
@@ -73,8 +74,11 @@ func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) error {
 
 func (f *fakeBoardCoord) SetState(_ context.Context, _, id, state string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.stateErr[id]; err != nil {
+		return err
+	}
 	f.states[id] = state
-	f.mu.Unlock()
 	return nil
 }
 
@@ -753,6 +757,57 @@ func TestBoardDispatcher_SweepSaturationWarnDedups(t *testing.T) {
 	}
 }
 
+// TestBoardDispatcher_SweepRevertsAdoptionOnFilingFailure: adoptRun then
+// SetState(done) are two writes; if the second fails the card would be
+// HALF-adopted — blocked, pointer reading finished — and the
+// operator-placement guard would skip it on every later pass, stranding it
+// forever with a mutated pointer (R716c91). The sweep must revert the
+// pointer to the dead parent so the next TTL retries the adoption as a
+// unit.
+func TestBoardDispatcher_SweepRevertsAdoptionOnFilingFailure(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(30 * time.Minute)
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:stuck", State: native.StateBlocked, LastRunID: "run-dead", LastWorkdir: "/wt/dead"},
+	})
+	f.stateErr["native:stuck"] = errors.New("transition rejected: no done column")
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		return store.RunStatusFailed, nil
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) {
+		return &store.Run{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older}, nil
+	}
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) {
+		return []*store.Run{
+			{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older,
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+			{ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(10 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead", WorkDir: "/wt/fork",
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+		}, nil
+	}
+	var stamps [][2]string
+	d.adoptRun = func(_, _, runID, workdir string) error {
+		stamps = append(stamps, [2]string{runID, workdir})
+		return nil
+	}
+
+	d.sweepForkAdoptions(context.Background())
+
+	want := [][2]string{{"run-fork", "/wt/fork"}, {"run-dead", "/wt/dead"}}
+	if len(stamps) != 2 || stamps[0] != want[0] || stamps[1] != want[1] {
+		t.Errorf("stamps = %v, want adopt-then-revert %v", stamps, want)
+	}
+	if got, moved := f.states["native:stuck"]; moved {
+		t.Errorf("filing failed — the card must not move, was set to %q", got)
+	}
+}
+
 // TestBoardDispatcher_SweepSkipsFilingOnStampFailure: done is terminal for
 // the sweep ({in_progress, blocked} is all it lists), so a card filed done
 // while SetLastRun failed would show a Done card pointing at the FAILED
@@ -878,12 +933,17 @@ func TestAdoptCardRun(t *testing.T) {
 	if got.LastRunID != "run-fork" || got.LastWorkdir != "/wt/fork" {
 		t.Fatalf("card pointer = (%q, %q), want (run-fork, /wt/fork)", got.LastRunID, got.LastWorkdir)
 	}
-	// A failed stamp must SURFACE (the sweep skips the done filing on it),
-	// while a missing seam stays a silent no-op (nothing to converge with).
+	// A failed stamp must SURFACE (the sweep skips the done filing on it) —
+	// and so must a missing seam: a wiring that sweeps without the board
+	// seam must not file cards it cannot stamp. Only an empty run id is a
+	// no-op (nothing to stamp).
 	if err := s.adoptCardRun("t1", "native:no-such-card", "run-y", ""); err == nil {
 		t.Error("stamping a missing card must return the store error, got nil")
 	}
-	if err := (&Server{}).adoptCardRun("t1", iss.ID, "run-x", ""); err != nil { // CloudBoardFor nil → no-op
-		t.Errorf("nil seam must be a silent no-op, got %v", err)
+	if err := (&Server{}).adoptCardRun("t1", iss.ID, "run-x", ""); err == nil {
+		t.Error("a missing CloudBoardFor seam must surface as an error, got nil")
+	}
+	if err := (&Server{}).adoptCardRun("t1", iss.ID, "", ""); err != nil {
+		t.Errorf("an empty run id is a no-op, got %v", err)
 	}
 }

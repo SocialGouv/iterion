@@ -358,7 +358,17 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	}
 	d.log("card %s/%s adopted finished fork %s over dead run %s — moving to %s", c.Tenant, c.Issue.ID, fork.ID, runID, d.doneState)
 	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
-		d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
+		d.warn("fork-adoption move %s/%s → %s: %v — reverting the pointer so the adoption retries whole", c.Tenant, c.Issue.ID, d.doneState, err)
+		// Half-adopted is the one shape nothing revisits (R716c91): a
+		// blocked card whose pointer now reads finished is skipped by the
+		// operator-placement guard above, so the filing would never
+		// complete. Put the dead parent back (best-effort) so the next TTL
+		// retries the adoption as a UNIT — including the deterministic
+		// SetState failure of a custom board with no done column, which
+		// stays a per-TTL warn instead of a silent permanent stranding.
+		if rerr := d.adoptRun(c.Tenant, c.Issue.ID, runID, c.Issue.LastWorkdir); rerr != nil {
+			d.warn("fork-adoption revert %s/%s to %s: %v — card left half-adopted; an operator state move re-arms the sweep", c.Tenant, c.Issue.ID, runID, rerr)
+		}
 	}
 }
 
@@ -494,15 +504,21 @@ func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
 // included) via the CloudBoardFor seam. The fork-adoption sweep uses it to
 // converge a stranded card's pointer with the finished fork the projection
 // already shows — and the returned error is what lets the sweep SKIP the done
-// filing when the stamp did not land (Re9efb2). A missing seam or empty run
-// id stays a silent no-op: there is no board to converge with.
+// filing when the stamp did not land (Re9efb2). A missing seam is therefore
+// an ERROR, not a silent no-op: a wiring that runs the sweep without the
+// board seam must not file cards it cannot stamp (production wires
+// CloudBoardCoordinator and CloudBoardFor together; this guards any future
+// wiring that doesn't). Only an empty run id is a no-op — nothing to stamp.
 func (s *Server) adoptCardRun(tenant, cardID, runID, workdir string) error {
-	if s.cfg.CloudBoardFor == nil || runID == "" {
+	if runID == "" {
 		return nil
+	}
+	if s.cfg.CloudBoardFor == nil {
+		return errors.New("cloud board seam unwired (CloudBoardFor)")
 	}
 	store := s.cfg.CloudBoardFor(tenant)
 	if store == nil {
-		return nil
+		return fmt.Errorf("no board store for tenant %s", tenant)
 	}
 	return store.SetLastRun(cardID, runID, workdir)
 }
