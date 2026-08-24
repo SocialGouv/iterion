@@ -2,9 +2,25 @@
 
 **Audience.** Anyone calling iterion programmatically — a CI job, an
 SDK author, an operator writing curl runbooks. Every endpoint listed
-here exists in
-[pkg/server/](../pkg/server/); the table is grouped by domain and
-machine-grepped from the `register*` functions, not curated by hand.
+here exists in [pkg/server/](../pkg/server/), grouped by domain.
+
+This page is **curated, not exhaustive**: it covers the cloud- and
+team-facing surface, and leaves out the local-studio-only routes
+(`/api/local/*`, `/api/files`, `/api/projects`, `/api/examples`,
+`/api/filesystem/*`) along with much of the run-console read surface.
+For the complete inventory of the build you are actually running, use
+the generated spec — every route is recorded by the server's
+`recordingMux`, so it cannot drift:
+
+```bash
+iterion openapi                 # OpenAPI 3.1 for this binary, offline, to stdout
+curl .../api/openapi.json       # the same, from a live instance
+curl .../api/routes             # just the method+pattern inventory
+```
+
+(The `/api/v1/native`, `/api/v1/dispatcher` and `/api/v1/mcp/board`
+sub-trees are served on a separate mux and are deliberately absent from
+that spec.)
 
 Authentication. Most routes accept any of:
 
@@ -284,11 +300,22 @@ Read-only views plus the launch / resume mutations the studio drives.
 | `POST` | `/api/runs/{id}/pause` | member | Pause |
 | `POST` | `/api/runs/{id}/resume` | member | Resume (re-publishes through the queue) |
 | `POST` | `/api/runs/{id}/fork` | member | Fork at a prior turn |
-| `POST` | `/api/runs/{id}/merge` | member | Merge the run's worktree onto a branch |
+| `POST` | `/api/runs/{id}/merge` | member | Land the run's storage branch on a target branch. For a **repo-targeted** run — whose workspace is gone by the time it returns — the server materialises its own clone of the launch ref, runs the same merge pipeline, and pushes the advanced target back to the forge (never force). The merge is persisted as merged only once the forge has it; a refused push records `merge_status=failed`. |
+| `GET` | `/api/runs/{id}/merge/conflicts` | member | Conflicting paths left by a merge attempt |
+| `POST` | `/api/runs/{id}/merge/conflicts/resolve` | member | Resolve one conflicting path with supplied content |
+| `POST` | `/api/runs/{id}/merge/conflicts/resolve-with-agent` | member | Delegate one conflict to the resolver agent (`ITERION_CONFLICT_RESOLVER_MODEL`) |
+| `POST` | `/api/runs/{id}/merge/conflicts/finalize` | member | Commit the resolved merge and continue the pipeline |
+| `POST` | `/api/runs/{id}/merge/conflicts/abort` | member | Abandon the merge; the storage branch is preserved |
 | `POST` | `/api/runs/{id}/commit-and-finalize` | member | Commit pending work and finalise |
 | `POST` | `/api/runs/{id}/rename` | member | Rename a run |
+| `GET` | `/api/runs/{id}/children` | member | Child (subbot) runs |
+| `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | member | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
+| `GET` | `/api/runs/{id}/session-board` | member | Session-board widgets ([session-board.md](session-board.md)) |
+| `GET` | `/api/runs/{id}/interactions/pending` | member | Unanswered `ask_user_async` questions |
+| `GET`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message/{msgID}` | member | Pending steering messages for the run |
 | `GET` | `/api/runs/{id}/log` | member | Streamed run log |
 | `GET` | `/api/runs/{id}/preview` | member | Preview proxy (SSRF-guarded) |
+| `GET` | `/api/ws/runs/{id}/shell` | member (via `?t=`) | Post-mortem PTY in a preserved worktree ([post-mortem-shell.md](post-mortem-shell.md)) |
 | `GET` | `/api/ws/runs/{id}` | member (via `?t=`) | Live run-console WebSocket |
 | `GET` | `/api/v1/runs/stats` | member | Rolling stats (for the studio) |
 | `GET` | `/api/v1/limits/cost` | member | Cost-cap status |
