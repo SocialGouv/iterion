@@ -59,18 +59,22 @@ type boardDispatcher struct {
 	// (the sweep needs CreatedAt to order fork candidates, which statusFor
 	// alone can't provide); issueRuns lists the runs sourced from an issue
 	// via the indexed reverse edge; adoptRun stamps the adopted fork onto
-	// the card via the CloudBoardFor seam. All optional — a nil runFor
-	// disables the sweep.
+	// the card via the CloudBoardFor seam — a stamp error must SKIP the
+	// filing (done is terminal for the sweep, so a card filed while still
+	// pointing at the dead parent would never self-heal). All optional — a
+	// nil runFor disables the sweep.
 	runFor    func(ctx context.Context, tenant, runID string) (*store.Run, error)
 	issueRuns func(ctx context.Context, tenant, issueID string) ([]*store.Run, error)
-	adoptRun  func(tenant, cardID, runID, workdir string)
+	adoptRun  func(tenant, cardID, runID, workdir string) error
 
-	// forkScanMemo bounds the fork-adoption sweep's search cost: a stuck
-	// card whose issue turned up no finished fork is not re-searched until
-	// forkAdoptionScanTTL has elapsed, so an abandoned failure does not
-	// turn into a per-tick query forever (keyed tenant|issueID).
-	forkScanMemoMu sync.Mutex
-	forkScanMemo   map[string]time.Time
+	// reconcileMemo bounds the fork-adoption sweep's per-card cost: a card
+	// the sweep evaluated and left in place is not re-evaluated until
+	// forkAdoptionScanTTL has elapsed — in_progress/blocked are resting
+	// states that never drain on their own, so an unmemoized per-tick read
+	// would cost one run load per abandoned card per tick forever
+	// (keyed tenant|issueID).
+	reconcileMemoMu sync.Mutex
+	reconcileMemo   map[string]time.Time
 
 	interval time.Duration
 	sem      chan struct{}
@@ -166,7 +170,7 @@ func (d *boardDispatcher) sweepParked(ctx context.Context) {
 	if d.statusFor == nil {
 		return
 	}
-	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, 200)
+	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, sweepCardLimit)
 	if err != nil {
 		d.warn("parked sweep list: %v", err)
 		return
@@ -200,11 +204,16 @@ func (d *boardDispatcher) sweepParked(ctx context.Context) {
 	}
 }
 
-// forkAdoptionScanTTL bounds how often the fork-adoption sweep re-searches
-// the runs of an issue that turned up no finished fork: one indexed query
-// per stuck card per TTL instead of one per tick, forever, for a failure
-// the operator never addresses.
+// forkAdoptionScanTTL bounds how often the fork-adoption sweep re-evaluates
+// a card it left in place: one evaluation per stranded card per TTL instead
+// of one per tick — in_progress/blocked are resting states that never drain
+// on their own, so an unmemoized per-tick read would cost one run load per
+// abandoned card per tick, forever (R642c4d).
 const forkAdoptionScanTTL = 30 * time.Second
+
+// sweepCardLimit caps the cross-tenant listing a sweep pass works through
+// (shared by sweepParked and sweepForkAdoptions).
+const sweepCardLimit = 200
 
 // sweepForkAdoptions reconciles cards stranded on a DEAD pointer: the card
 // sits in in_progress or blocked (the run's terminal resting states once its
@@ -223,16 +232,17 @@ const forkAdoptionScanTTL = 30 * time.Second
 // The sweep rides ListEligible, so it only sees UNCLAIMED cards: a card
 // being processed right now is claimed (invisible — its live pointer fails
 // the terminal check anyway), and a card still claimed by a hard-killed
-// replica stays out of reach until its claim is released.
+// replica stays out of reach — boardmongo claims carry no TTL and no
+// reaper exists yet, so the replica-death case needs that reaper first
+// (R5ceb26, follow-up). The reachable stranded states are the ones
+// processCard itself released (blocked after a failure) or an operator
+// moved by hand.
 //
-// A card whose pointer finished cleanly is filed done outright — the
-// orphan window between a run's finish and processCard's state move is
-// small but real (a hard-killed replica never makes the move).
-//
-// Cost: the per-card pointer status read mirrors sweepParked's; the fork
-// search runs ONLY for stuck cards and rides the indexed
-// ListRunsBySourceIssue edge (never a full store scan), negative results
-// memoized per (tenant, issue) for forkAdoptionScanTTL. Multi-replica safe
+// Cost: the fork search runs ONLY for stuck cards and rides the indexed
+// ListRunsBySourceIssue edge (never a full store scan); every evaluated
+// card is then memoized per (tenant, issue) for forkAdoptionScanTTL, so a
+// board of abandoned failures pays one status read + at most one indexed
+// query per card per TTL — not per tick (R642c4d). Multi-replica safe
 // without claims: the fork choice is deterministic, SetLastRun/SetState are
 // idempotent for the same values, and neither in_progress nor blocked is in
 // `eligible`, so no replica re-dispatches a filed card.
@@ -240,10 +250,16 @@ func (d *boardDispatcher) sweepForkAdoptions(ctx context.Context) {
 	if d.statusFor == nil || d.runFor == nil || d.issueRuns == nil || d.adoptRun == nil {
 		return
 	}
-	cands, err := d.coord.ListEligible(ctx, []string{d.inProgressState, d.blockedState}, 200)
+	cands, err := d.coord.ListEligible(ctx, []string{d.inProgressState, d.blockedState}, sweepCardLimit)
 	if err != nil {
 		d.warn("fork-adoption sweep list: %v", err)
 		return
+	}
+	// blocked accumulates board-wide and the listing is oldest-updated
+	// first: once a deployment sits at the cap, the window starves every
+	// newly-stranded card. Say so — the saturation is otherwise silent.
+	if len(cands) == sweepCardLimit {
+		d.warn("fork-adoption sweep at the %d-card listing cap — newly stranded cards may be starved", sweepCardLimit)
 	}
 	for _, c := range cands {
 		d.reconcileDeadPointer(ctx, c)
@@ -259,11 +275,25 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	if runID == "" {
 		return
 	}
+	if !d.reconcileDue(c.Tenant, c.Issue.ID) {
+		return
+	}
 	st, err := d.statusFor(ctx, c.Tenant, runID)
 	if err != nil {
-		return // best-effort: unreadable run → leave the card alone
+		return // transient read failure — retry next tick, unmemoized
 	}
+	// The card was evaluated: memoize so the next evaluation waits
+	// forkAdoptionScanTTL instead of running every tick. Filed cards leave
+	// the listing anyway; the memo is what bounds the cards that STAY.
+	defer d.noteReconcile(c.Tenant, c.Issue.ID)
 	if st == store.RunStatusFinished {
+		// Only in_progress is the dispatcher's own orphan window (the run
+		// finished, the state move never landed). A blocked card is an
+		// operator-facing "bad outcome" flag — re-filing it done would
+		// override a deliberate placement within one tick (R751dc1).
+		if c.Issue.State != d.inProgressState {
+			return
+		}
 		d.log("card %s/%s pointer run %s finished but the card was never filed — moving to %s", c.Tenant, c.Issue.ID, runID, d.doneState)
 		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
 			d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
@@ -273,10 +303,6 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	if !st.IsTerminal() {
 		return // live pointer — processCard (or a resume) still owns the card
 	}
-	if !d.forkScanDue(c.Tenant, c.Issue.ID) {
-		return
-	}
-	d.noteForkScan(c.Tenant, c.Issue.ID)
 	pointer, err := d.runFor(ctx, c.Tenant, runID)
 	if err != nil || pointer == nil {
 		return
@@ -303,40 +329,46 @@ func (d *boardDispatcher) reconcileDeadPointer(ctx context.Context, c boardmongo
 	// Adopt the fork as the current attempt so the pointer converges with
 	// what the card already shows — workdir included, unlike launch-time
 	// stamps: the fork has already executed, and LastWorkdir feeds the
-	// studio's inspect-the-diff link.
-	d.adoptRun(c.Tenant, c.Issue.ID, fork.ID, fork.WorkDir)
+	// studio's inspect-the-diff link. A stamp failure must SKIP the filing
+	// (mirror pipeline_admission.go's guard): done is terminal for this
+	// sweep, so a card filed while still pointing at the dead parent would
+	// never self-heal.
+	if err := d.adoptRun(c.Tenant, c.Issue.ID, fork.ID, fork.WorkDir); err != nil {
+		d.warn("fork-adoption stamp %s on card %s/%s: %v", fork.ID, c.Tenant, c.Issue.ID, err)
+		return
+	}
 	d.log("card %s/%s adopted finished fork %s over dead run %s — moving to %s", c.Tenant, c.Issue.ID, fork.ID, runID, d.doneState)
 	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, d.doneState); err != nil {
 		d.warn("fork-adoption move %s/%s → %s: %v", c.Tenant, c.Issue.ID, d.doneState, err)
 	}
 }
 
-// forkScanDue reports whether the fork search for a (tenant, issue) pair is
-// due again — false while a previous empty search is younger than
+// reconcileDue reports whether the sweep's evaluation of a (tenant, issue)
+// card is due again — false while a previous evaluation is younger than
 // forkAdoptionScanTTL.
-func (d *boardDispatcher) forkScanDue(tenant, issueID string) bool {
-	d.forkScanMemoMu.Lock()
-	defer d.forkScanMemoMu.Unlock()
-	last, ok := d.forkScanMemo[tenant+"|"+issueID]
+func (d *boardDispatcher) reconcileDue(tenant, issueID string) bool {
+	d.reconcileMemoMu.Lock()
+	defer d.reconcileMemoMu.Unlock()
+	last, ok := d.reconcileMemo[tenant+"|"+issueID]
 	return !ok || time.Since(last) >= forkAdoptionScanTTL
 }
 
-// noteForkScan records that a (tenant, issue) fork search ran and found
-// nothing to adopt, and prunes expired entries so the memo can't grow past
-// the set of recently-stuck cards.
-func (d *boardDispatcher) noteForkScan(tenant, issueID string) {
-	d.forkScanMemoMu.Lock()
-	defer d.forkScanMemoMu.Unlock()
-	if d.forkScanMemo == nil {
-		d.forkScanMemo = map[string]time.Time{}
+// noteReconcile records that a (tenant, issue) card was evaluated, and
+// prunes expired entries so the memo can't grow past the set of
+// recently-stuck cards.
+func (d *boardDispatcher) noteReconcile(tenant, issueID string) {
+	d.reconcileMemoMu.Lock()
+	defer d.reconcileMemoMu.Unlock()
+	if d.reconcileMemo == nil {
+		d.reconcileMemo = map[string]time.Time{}
 	}
 	now := time.Now()
-	for k, at := range d.forkScanMemo {
+	for k, at := range d.reconcileMemo {
 		if now.Sub(at) >= forkAdoptionScanTTL {
-			delete(d.forkScanMemo, k)
+			delete(d.reconcileMemo, k)
 		}
 	}
-	d.forkScanMemo[tenant+"|"+issueID] = now
+	d.reconcileMemo[tenant+"|"+issueID] = now
 }
 
 // run loops tick every interval until ctx is cancelled, then drains in-flight
@@ -434,24 +466,26 @@ func liftBoardLaunchContext(botArgs map[string]string) (boardLaunchContext, erro
 // (the Mongo-backed store in cloud, a native store in tests). Best-effort: a
 // stamp failure never fails the run — the card simply lacks its live-run link.
 func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
-	s.adoptCardRun(tenant, cardID, runID, "")
+	if err := s.adoptCardRun(tenant, cardID, runID, ""); err != nil && s.logger != nil {
+		s.logger.Warn("board dispatcher: stamp run %s on card %s/%s: %v", runID, tenant, cardID, err)
+	}
 }
 
 // adoptCardRun stamps a run onto the tenant's board card (SetLastRun, workdir
 // included) via the CloudBoardFor seam. The fork-adoption sweep uses it to
 // converge a stranded card's pointer with the finished fork the projection
-// already shows. Best-effort: a stamp failure never fails the sweep.
-func (s *Server) adoptCardRun(tenant, cardID, runID, workdir string) {
+// already shows — and the returned error is what lets the sweep SKIP the done
+// filing when the stamp did not land (Re9efb2). A missing seam or empty run
+// id stays a silent no-op: there is no board to converge with.
+func (s *Server) adoptCardRun(tenant, cardID, runID, workdir string) error {
 	if s.cfg.CloudBoardFor == nil || runID == "" {
-		return
+		return nil
 	}
 	store := s.cfg.CloudBoardFor(tenant)
 	if store == nil {
-		return
+		return nil
 	}
-	if err := store.SetLastRun(cardID, runID, workdir); err != nil && s.logger != nil {
-		s.logger.Warn("board dispatcher: stamp run %s on card %s/%s: %v", runID, tenant, cardID, err)
-	}
+	return store.SetLastRun(cardID, runID, workdir)
 }
 
 // setCardAwaitingInput denormalizes the pause hint onto the tenant's board
@@ -557,6 +591,18 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		RepoRef:         lc.RepoRef,
 		KeyOverrides:    lc.KeyOverrides,
 		SecretOverrides: lc.SecretOverrides,
+		// Stamp the card onto the run record (ADR-046 SourceRef) — the
+		// card→run edge SetLastRun writes below is not enough: the
+		// fork-adoption sweep resolves an issue's runs through the indexed
+		// ListRunsBySourceIssue REVERSE edge, which only exists when every
+		// board-dispatched run persists Source.IssueID (Rf72821 — without
+		// it the sweep's fork search comes back empty forever in cloud).
+		// Kind mirrors the local dispatcher's engine_runner stamp.
+		SourceRef: &store.RunSource{
+			Kind:       store.RunSourceKindDispatcher,
+			IssueID:    iss.ID,
+			IssueTitle: iss.Title,
+		},
 	})
 	if err != nil {
 		return err
