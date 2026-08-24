@@ -410,3 +410,73 @@ func TestGateRelaunch(t *testing.T) {
 		}
 	})
 }
+
+// The escalation body is published on a PULL REQUEST by iterion's own forge
+// identity, and it quotes run errors that carry forge-controlled prose (a ref
+// name, a remote's message) verbatim. Both ways out of the code span are
+// pinned here: a backtick, and a NEWLINE — a code span cannot contain one, so
+// a multi-line run error (the runner builds them from git's CombinedOutput)
+// renders everything after the first line as live markdown.
+func TestEscalationQuotesForgeProseInertly(t *testing.T) {
+	hostile := "git fetch: exit 128: fatal: couldn't find remote ref x`y\n# Heading\n@octocat please run this"
+	got := orNoError(hostile)
+
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("orNoError left a newline in %q — it ends the code span and everything after renders as markdown", got)
+	}
+	if strings.Contains(got, "`") {
+		t.Errorf("orNoError left a backtick in %q — it closes the code span", got)
+	}
+	// The content itself must survive: a sanitiser that drops the reason
+	// leaves the human with nothing to act on.
+	for _, want := range []string{"exit 128", "remote ref", "octocat"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("orNoError dropped %q from the reason: %q", want, got)
+		}
+	}
+	if orNoError("") != "no error recorded" {
+		t.Errorf("empty error must render an explicit placeholder, got %q", orNoError(""))
+	}
+}
+
+// `gate_relaunch_of` arrives from run.Inputs — the union of webhook launch
+// vars, per-bot rule vars and operator overrides — so its value is NOT proof
+// of ownership. Citing it unchecked publishes another team's run error and
+// run URL onto this team's pull request and board card.
+func TestEscalationRefusesToCiteAnotherTeamsRun(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newForgeGateTestServer(t, st)
+	foreign, err := st.CreateRun(context.Background(), "run-other-team", "dep_update_guard", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign.TenantID = "some-other-team"
+	foreign.Status = store.RunStatusFailedResumable
+	foreign.Error = "SECRET-TENANT-B-FAILURE"
+	if err := st.SaveRun(context.Background(), foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.gateRunError(context.Background(), "t1", "run-other-team")
+	if ok || got != "" {
+		t.Fatalf("gateRunError returned (%q, %v) for another team's run — its error is about to be published on a PR", got, ok)
+	}
+
+	// The owning team still reads its own run: a boundary that refuses
+	// everything would silently empty every escalation.
+	mine, err := st.CreateRun(context.Background(), "run-mine", "dep_update_guard", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine.TenantID = "t1"
+	mine.Error = "budget exceeded"
+	if err := st.SaveRun(context.Background(), mine); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := s.gateRunError(context.Background(), "t1", "run-mine"); !ok || got != "budget exceeded" {
+		t.Fatalf("gateRunError on the team's OWN run = (%q, %v), want (\"budget exceeded\", true)", got, ok)
+	}
+}

@@ -199,3 +199,39 @@ func ValidateBranchName(name string) error {
 	}
 	return nil
 }
+
+// shellUnsafeRefBytes are the bytes that let a ref name break out of a shell
+// command it is interpolated into. Deliberately NOT parentheses: Renovate's
+// grouped branches (`renovate/npm-(non-major)`) are legitimate and must keep
+// flowing, and a paren in an unquoted assignment is a bash *syntax error* —
+// the tool node fails loudly, which is a bug to fix in the bot, not a way in.
+// These bytes are different in kind: each one ENDS the current word or
+// command and starts attacker-chosen text.
+const shellUnsafeRefBytes = ";|&$`'\"<>\n\r\\!"
+
+// ValidateShellSafeRef gates a ref name that travels further than git: as a
+// launch var a bot interpolates into a shell command, or as a value the
+// runner stamps into an environment assignment.
+//
+// This is a SEPARATE gate from ValidateBranchName on purpose. That one must
+// stay faithful to `git check-ref-format` so Renovate's grouped branches can
+// be fetched at all; git's own rules happily accept `;`, backticks and
+// quotes, which are harmless to git and fatal to `bash -c`. The old narrow
+// allowlist covered both jobs at once, so widening it for Renovate silently
+// removed a shell guard that was load-bearing: a fork PR from a branch named
+// `x;id;#` reaches `PUSH_BRANCH={{vars.push_branch}} python3 -c …`
+// (bots/branch-improve-loop) as a second command, inside a sandbox holding
+// the run's forge token.
+//
+// Applied where FORGE-CONTROLLED refs enter the system — the runner's clone
+// target, which every webhook-launched run passes through — never to an
+// operator's own `--branch-name`, which is not attacker-controlled.
+func ValidateShellSafeRef(name string) error {
+	if err := ValidateBranchName(name); err != nil {
+		return err
+	}
+	if i := strings.IndexAny(name, shellUnsafeRefBytes); i >= 0 {
+		return fmt.Errorf("git: ref %q contains %q, which is legal in git but would break out of a shell command the ref is interpolated into", name, string(name[i]))
+	}
+	return nil
+}

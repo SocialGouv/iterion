@@ -261,14 +261,22 @@ func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, pri
 		relaunchID, relaunchErr = d.run.ID, originalErr
 		originalID, originalErr = runInputString(d.run, gateRelaunchOfVar), ""
 	}
-	if relaunchID != "" && relaunchErr == "" && s.cfg.Store != nil {
-		if r, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), relaunchID); err == nil && r != nil {
-			relaunchErr = strings.TrimSpace(r.Error)
+	// The two ids do NOT have the same provenance, so they are not trusted
+	// the same way. relaunchID comes from iterion's own idempotency claim —
+	// the delivery record proves this team launched it — so an unreadable run
+	// only costs its error text. originalID comes from a LAUNCH VAR, which an
+	// operator can pin on a webhook: it is a claim, not proof, and one this
+	// lane is about to publish on a pull request.
+	if relaunchID != "" && relaunchErr == "" {
+		if e, ok := s.gateRunError(ctx, d.grant.TeamID, relaunchID); ok {
+			relaunchErr = e
 		}
 	}
-	if originalID != "" && originalErr == "" && s.cfg.Store != nil {
-		if r, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), originalID); err == nil && r != nil {
-			originalErr = strings.TrimSpace(r.Error)
+	if originalID != "" && originalErr == "" {
+		if e, ok := s.gateRunError(ctx, d.grant.TeamID, originalID); ok {
+			originalErr = e
+		} else {
+			originalID = "" // unreadable, or another team's — do not cite it
 		}
 	}
 
@@ -316,16 +324,50 @@ func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, pri
 	return true
 }
 
+// gateRunError reads another run's failure reason for the escalation, and is
+// the TENANT BOUNDARY of this lane. `originalID` reaches it from a launch var
+// (`gate_relaunch_of`), which an operator can pin on a webhook — so the id can
+// name a run this team does not own, whose error and URL are about to be
+// published on a pull request and a board card. The untenanted load is
+// deliberate (the reconciler runs on a bus goroutine with no request tenant),
+// which is exactly why the ownership check has to be explicit here.
+//
+// Reports ok=false when the run is unreadable, missing, or another team's —
+// the caller then drops the id entirely rather than citing a run it cannot
+// vouch for.
+func (s *Server) gateRunError(ctx context.Context, teamID, runID string) (string, bool) {
+	if s.cfg.Store == nil {
+		return "", false
+	}
+	r, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
+	if err != nil || r == nil {
+		return "", false
+	}
+	if r.TenantID != "" && teamID != "" && !strings.EqualFold(r.TenantID, teamID) {
+		s.logWarn("gate relaunch: refusing to cite run %s (team %s) in team %s's escalation — the id came from a launch var",
+			runID, r.TenantID, teamID)
+		return "", false
+	}
+	return strings.TrimSpace(r.Error), true
+}
+
 // orNoError renders a run error for embedding in a markdown `code span`: an
-// empty error becomes an explicit placeholder, and backticks are replaced so
-// forge-controlled error prose (which can quote a hostile ref name verbatim)
-// cannot close the span and smuggle active markdown (@mentions) into the
-// escalation comment.
+// empty error becomes an explicit placeholder, and everything that can END
+// the span is neutralised, so forge-controlled error prose (which quotes a
+// hostile ref name and a remote's message verbatim) cannot smuggle active
+// markdown — @mentions, headings — into a comment posted by iterion's own
+// forge identity.
+//
+// A NEWLINE ends a code span just as surely as a backtick does, and run
+// errors are routinely multi-line: the runner builds them from git's full
+// CombinedOutput. Collapsing first is what makes the backtick escaping mean
+// anything.
 func orNoError(err string) string {
 	if err == "" {
 		return "no error recorded"
 	}
-	return strings.ReplaceAll(err, "`", "'")
+	flat := strings.Join(strings.Fields(err), " ")
+	return strings.ReplaceAll(flat, "`", "'")
 }
 
 // commentDeadGateOnPR posts the escalation on the pull request itself — the
