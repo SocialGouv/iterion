@@ -165,8 +165,14 @@ func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("iter %d: run: %v", i, err)
 			}
-		case <-time.After(3 * time.Second):
-			t.Fatalf("iter %d: run did not converge in 3s — doorbell missed (poll=60s and node timeout=30s both well outside this window)", i)
+		// The ceiling bounds a FULL engine lifecycle, not just the doorbell
+		// wake: under -race on a loaded CI runner one iteration takes
+		// several seconds before the gate node even parks (observed: 3s
+		// tripped on iter 0 in CI while 30 local -race runs stayed <2s).
+		// 15s keeps the discriminant intact — the poll is at 60s and the
+		// node timeout at 30s, so only the doorbell can release in time.
+		case <-time.After(15 * time.Second):
+			t.Fatalf("iter %d: run did not converge in 15s — doorbell missed (poll=60s and node timeout=30s both well outside this window)", i)
 		}
 
 		r, err := s.LoadRun(context.Background(), runID)
