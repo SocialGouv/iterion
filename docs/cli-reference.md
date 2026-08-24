@@ -26,6 +26,7 @@ This page maps every public top-level command in the current binary and document
 | `remote` | Authenticate to and drive a remote/cloud Iterion server. |
 | `report` | Generate a chronological run report. |
 | `resume` | Resume a paused, cancelled, or resumable failed run. |
+| `rewind` | Re-anchor a run on an earlier node and invalidate everything downstream (same run id). |
 | `run` | Execute a `.bot`, `.botz`, or bundle directory. |
 | `runner` | Run the cloud NATS worker process. |
 | `runs` | Apply local run-store lifecycle operations. |
@@ -115,7 +116,9 @@ Launch-time graph overrides:
 |---|---|
 | `--model selector=model` | Override by node id, id glob, or kind (`agent`/`judge`); repeatable. A bare model targets all LLM nodes. |
 | `--backend selector=backend` | Same selector rules for a supported backend; repeatable. `claw`/`claude_code` are in the default auto-selection order; Codex, `pi`, Kimi and Grok are explicit opt-ins. |
+| `--fallback <backend>:<model>` | Run-level fallback route taken when an agent node's primary fails, e.g. `claw:openai/gpt-5.5`. Applies only to agent nodes that declare no `fallbacks:` of their own, never to judges, and uses the default trigger set (`usage_window`, `unavailable`) — author a `fallbacks:` block for anything finer. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md). |
 | `--max-cost-usd`, `--max-duration`, `--max-tokens`, `--max-iterations`, `--max-parallel-branches` | Override non-zero workflow budget fields. |
+| `--loop-budget-guard on\|off` | Decline a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path with the work it banked instead of dying mid-iteration. Empty inherits the workflow `loop_budget_guard:` then `ITERION_LOOP_BUDGET_GUARD`; default on. |
 | `--review-mode mono\|dual\|auto` | Select the reviewer topology for workflows that declare a `review_mode` var (currently `review-pr` and `evolve`). `mono` runs one family, `dual` runs both, and `auto` resolves to mono on the preferred detected family. No-op for other workflows. |
 
 Access/isolation:
@@ -128,6 +131,8 @@ Access/isolation:
 | `--sandbox-default-image <ref>` | Fallback image for `auto`. |
 | `--sandbox-host-state auto\|none` | Bind or exclude host `~/.iterion`/`~/.claude`; use `none` on multitenant runners. |
 | `--compress off\|on\|ultra` | Override command-output rewriting/compression. |
+| `--auto-memory on\|off` | Let agent/judge nodes read and maintain a persistent `MEMORY.md` across runs of this bot on this project. Empty inherits the workflow/node `auto_memory:` then `ITERION_AUTO_MEMORY`; the default is off, so a run is hermetic unless it opts in. Honoured by `claude_code`, `claw` and `pi`. |
+| `--repo-devbox on\|off` | Install the **target** repository's `devbox.json` for this run. Turn it off for a run that reads a repo without building it (a review, an audit) and would otherwise pay its whole Nix toolchain; the bot's own `devbox.json` is unaffected. Empty inherits the workflow `repo_devbox:` then `ITERION_REPO_DEVBOX`; default on. |
 
 Worktree finalization:
 
@@ -138,7 +143,7 @@ Worktree finalization:
 | `--merge-strategy squash\|merge` | Collapse run commits or preserve fast-forward history. |
 | `--auto-merge=<bool>` | Apply the finalization automatically; CLI default is true, studio launches defer it. |
 
-See [permissions](permissions.md), [sandbox](sandbox.md), [merge policy](merge-policy.md), and [settings precedence](settings-precedence.md).
+See [permissions](permissions.md), [sandbox](sandbox.md), [merge policy](merge-policy.md), [memory](memory-and-knowledge.md), and [settings precedence](settings-precedence.md).
 
 ### `iterion inspect`
 
@@ -169,7 +174,7 @@ iterion resume --run-id RUN --answers-file answers.json
 iterion resume --run-id RUN --answer music=@./theme.mp3   # file field → staged as an attachment
 ```
 
-`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, all `--max-*` budget overrides, and permission mode/rules. Model/backend launch overrides are not persisted, so repeat them when continuity matters. See [resume](resume.md).
+`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the three run-shape toggles `--auto-memory`, `--repo-devbox` and `--loop-budget-guard`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
 
 ### `iterion fork`
 
