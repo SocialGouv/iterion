@@ -511,7 +511,12 @@ Code:
   read-before-edit/parallel-tool/`file:line`/refusal posture); appending
   keeps it as the base. iterion also emits `--setting-sources user,project`
   so the target repo's `CLAUDE.md`/settings are honoured (tunable via
-  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). Tool restriction: under the
+  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). MCP is the opposite —
+  `--strict-mcp-config` makes the node's resolved MCP set (`mcp_server:`/
+  `mcp:` blocks, repo `.mcp.json`, iterion's ask_user/board servers)
+  authoritative: the operator's personal `~/.claude.json` servers never
+  boot inside a bot node (`ITERION_CLAUDE_CODE_STRICT_MCP=0` restores
+  inheritance). Tool restriction: under the
   always-on `--permission-mode bypassPermissions`, `--allowedTools` does
   **not** gate the toolset — claude_code nodes always have the full native
   toolset (a node's lowercase `tools:` list is a no-op here; the real

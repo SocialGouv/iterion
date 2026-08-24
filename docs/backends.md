@@ -502,6 +502,18 @@ only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
+**MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
+only MCP servers a node gets are the ones iterion resolves and passes via
+`--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
+`.mcp.json` (workflow `autoload_project`, default on), and iterion's own
+ask_user/board servers. The operator's personal user-scope servers
+(`~/.claude.json`) do **not** boot inside bot nodes — inheriting them meant
+undeclared tools reaching the agent, an `npx`/server boot per node visit
+(a CPU spike per iteration on loop-heavy bots), and personal API keys on the
+subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
+restores host-config inheritance. Settings remain inherited independently
+(`--setting-sources`, above).
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent

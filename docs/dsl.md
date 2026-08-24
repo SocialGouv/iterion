@@ -425,6 +425,15 @@ mcp_server remote_tools:
 
 Supported transports are `stdio`, `http`, and `sse`. Workflow `mcp:` blocks may set `autoload_project`, `servers`, and `disable`; node blocks use `inherit`, `servers`, and `disable`.
 
+The resolved set is **authoritative** on `claude_code`: iterion passes it via
+`--mcp-config --strict-mcp-config`, so the operator's personal user-scope MCP
+servers (`~/.claude.json`) do NOT boot inside bot nodes — a node's `mcp:`
+block (plus the repo's `.mcp.json` through `autoload_project` and iterion's
+own ask_user/board servers) is the complete truth. Set
+`ITERION_CLAUDE_CODE_STRICT_MCP=0` to deliberately restore host-config
+inheritance. (pi and claw are strict by construction — pi's MCP client only
+connects declared servers, claw registers in-process tools.)
+
 ## Workflows and edges
 
 A workflow selects the entry node, configures run-wide controls, and declares edges:
