@@ -64,6 +64,23 @@ func (rs *runState) scope() resolveScope {
 func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any {
 	result := make(map[string]any)
 
+	// Entry floor: launch payload + var defaults. Incoming with-mappings
+	// overlay this, and bounded-iteration back-edges still win on a
+	// shared key (applied last below). Gating the floor on
+	// len(result)==0 dropped the run payload on re-entry the moment a
+	// back-edge carried a with-mapping, so {{input.x}} on an entry
+	// router's outgoing edges went nil from iteration 2 (R7dd005).
+	if nodeID == e.workflow.Entry {
+		for name, v := range e.workflow.Vars {
+			if v.HasDefault {
+				result[name] = v.Default
+			}
+		}
+		for k, v := range sc.runInputs {
+			result[k] = v
+		}
+	}
+
 	// applyEdge merges one edge's with-mappings into result. Only edges whose
 	// source has already produced output contribute (so a not-yet-run source
 	// leaves the mapping to a later-firing edge / the entry fallback).
@@ -75,28 +92,28 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 			return
 		}
 
-		// Build effective input context: {{input.X}} in with-mappings should
-		// resolve from the edge source's output (e.g. a router's pass-through
-		// input) with run-level inputs as fallback.
-		effectiveInputs := sc.runInputs
-		if sourceOut := sc.outputs[edge.From]; sourceOut != nil {
-			effectiveInputs = make(map[string]any, len(sc.runInputs)+len(sourceOut))
-			for k, v := range sc.runInputs {
-				effectiveInputs[k] = v
-			}
-			for k, v := range sourceOut {
-				effectiveInputs[k] = v
-			}
+		// {{input.X}} in a with-mapping is the source node's output —
+		// the payload available when the edge fires. A router copies
+		// its input to its output, so this is also how router
+		// pass-through works (an entry router's input is the run-level
+		// payload). Run-level inputs and vars are a different
+		// namespace: use {{vars.X}}. There is no silent fallback to
+		// runInputs — that coincidence is what C034 used to disagree
+		// with the resolver about (#479).
+		sourceOut := sc.outputs[edge.From]
+		effectiveInputs := make(map[string]any, len(sourceOut))
+		for k, v := range sourceOut {
+			effectiveInputs[k] = v
 		}
 
 		// Per-edge scope: same maps as the caller's scope, except
-		// runInputs is shadowed by the edge-source's outputs so
-		// {{input.*}} refs in the with-mapping resolve against the
-		// source node's output instead of the run-level inputs.
+		// runInputs is the source output so {{input.*}} refs in the
+		// with-mapping resolve against that namespace.
 		edgeScope := sc
 		edgeScope.runInputs = effectiveInputs
 
 		for _, dm := range edge.With {
+			e.warnMissingEdgeInput(edge, dm, effectiveInputs)
 			val := e.resolveMapping(dm, edgeScope)
 			// Include nil values too: a ref that resolves to nil
 			// (e.g. `{{outputs.fixer.pushback}}` before the fixer
@@ -142,23 +159,6 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		}
 	}
 
-	// Fallback: for the entry node merge workflow var defaults with run-level
-	// inputs so that {{input.X}} references resolve to the var default when
-	// --var X=... was not provided on the CLI. Without this, vars declared
-	// with a default like `scope_notes: string = ""` are missing from the
-	// entry node's input map and the placeholder is left literal in prompts.
-	// CLI inputs override defaults.
-	if len(result) == 0 && nodeID == e.workflow.Entry {
-		for name, v := range e.workflow.Vars {
-			if v.HasDefault {
-				result[name] = v.Default
-			}
-		}
-		for k, v := range sc.runInputs {
-			result[k] = v
-		}
-	}
-
 	// The reserved permission keys are engine-owned. Run inputs are
 	// caller-supplied and land wholesale on the entry node above, so a
 	// launch payload naming them would otherwise seed policy allow rules
@@ -178,6 +178,31 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	}
 
 	return result
+}
+
+// warnMissingEdgeInput logs when a with-mapping {{input.x}} names a
+// field the source output does not have. C032 is only a compile
+// warning, and `iterion run` does not print those, so without this the
+// nil would splice the literal `{{input.x}}` into a tool command and
+// the run would still finish green (#479 / Rd285bb).
+func (e *Engine) warnMissingEdgeInput(edge *ir.Edge, dm *ir.DataMapping, sourceOut map[string]any) {
+	if e.logger == nil {
+		return
+	}
+	for _, ref := range dm.Refs {
+		if ref == nil || ref.Kind != ir.RefInput || len(ref.Path) == 0 {
+			continue
+		}
+		field := ref.Path[0]
+		if len(field) > 0 && field[0] == '_' {
+			continue
+		}
+		if _, ok := sourceOut[field]; ok {
+			continue
+		}
+		e.logger.Warn("runtime: edge %s -> %s with %q: {{input.%s}} is not on the source node's output (no run-input fallback; use {{vars.%s}} for a launch-time value)",
+			edge.From, edge.To, dm.Key, field, field)
+	}
 }
 
 // resolveMapping resolves a DataMapping's references to concrete values.

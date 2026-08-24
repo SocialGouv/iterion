@@ -417,7 +417,7 @@ postcondition · **C105** recovery on a gate (`recipe == postcondition`) ·
 | Form | Meaning |
 |---|---|
 | `{{vars.x}}` | workflow var |
-| `{{input.field}}` | this node's input |
+| `{{input.field}}` | this node's input (prompts/commands/exprs). On an edge `with` mapping: the source node's output. Routers copy their input onto their output (llm also records the selection). Entry router = run payload; mid-graph router = incoming `with` keys (C032 otherwise). Launch-time values: `{{vars.x}}`. |
 | `{{outputs.id}}` / `{{outputs.id.field}}` | upstream node output |
 | `{{outputs.id.history}}` | array across loop iterations |
 | `{{loop.<name>.iteration}}` | current loop count |

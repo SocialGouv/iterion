@@ -288,6 +288,14 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		return nil, true
 	}
 
+	// Nested llm routers skip execLLMRouter (trunk only) and hit the
+	// executor directly. Overlay the selection onto the payload the
+	// router received so {{input.x}} on outgoing edges matches the
+	// trunk contract.
+	if rn, ok := node.(*ir.RouterNode); ok && rn.RouterMode == ir.RouterLLM {
+		output = mergeRouterPassThrough(nodeInput, output)
+	}
+
 	result.outputs[currentNodeID] = output
 
 	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
