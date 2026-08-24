@@ -623,7 +623,12 @@ type webhookLaunchResult struct {
 func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) {
 	cancel := s.webhookCancelRun
 	if cancel == nil && s.runs != nil {
-		cancel = s.runs.Cancel
+		// Named reason: this cancel is nobody's click. It lands in run.Error,
+		// which the merge-gate synthetic status quotes — "cancelled by user"
+		// there sent operators hunting for a human who did nothing.
+		cancel = func(runID string) error {
+			return s.runs.CancelWithReason(runID, supersededRunReason)
+		}
 	}
 	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
 		return
@@ -666,6 +671,11 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 // live runs are necessarily among the most recent deliveries on its webhook,
 // and an unbounded scan would put the whole delivery history on the hot path.
 const supersedeLookback = 50
+
+// supersededRunReason is recorded as the run error of a run cancelled by the
+// overlap=supersede lane. Kept short: the merge-gate synthetic description
+// quotes it within a 60-rune budget.
+const supersededRunReason = "superseded by a newer delivery for the same subject"
 
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise

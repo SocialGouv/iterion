@@ -21,6 +21,9 @@ func (*operatorResumePublisher) SubmitLaunch(context.Context, string, LaunchSpec
 }
 
 func (*operatorResumePublisher) CancelRun(context.Context, string) error { return nil }
+func (*operatorResumePublisher) CancelRunWithReason(context.Context, string, string) error {
+	return nil
+}
 
 func (p *operatorResumePublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
 	p.resumeCalls++

@@ -3,7 +3,6 @@ package git
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -58,14 +57,6 @@ func ValidateRelPath(p string) error {
 	}
 	return nil
 }
-
-// branchNameAllowed accepts an alphanumeric, hyphen, underscore, dot
-// or slash sequence. The leading byte must be alphanumeric so a value
-// starting with `-` can never reach `git branch` as a positional that
-// might be re-parsed as a flag (defense in depth — callers should also
-// pass `--` to git, but this catches the bug earlier with a friendly
-// error).
-var branchNameAllowed = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
 // ValidateCloneSource gates the URL passed to `git clone`. The `--` sentinel
 // in ShallowClone already blocks command-line flag injection, but it does NOT
@@ -133,17 +124,20 @@ func ValidateCloneSource(src string) error {
 	return fmt.Errorf("git: clone source %q is not a supported git transport (only https:// and ssh git URLs are allowed; install a local bundle by its directory path instead)", src)
 }
 
-// ValidateBranchName accepts a branch name coming from a user-controlled
-// surface (`--branch-name` CLI flag, Launch API, studio modal) and
-// rejects forms that could either confuse `git branch` flag parsing or
-// be rejected by `git check-ref-format` downstream — failing early with
-// a clear error rather than surfacing a noisy git stderr to the caller.
+// ValidateBranchName accepts a branch/ref name coming from a user-controlled
+// surface (`--branch-name` CLI flag, Launch API, studio modal, webhook repo
+// refs) and rejects forms that could either confuse git flag parsing or be
+// rejected by `git check-ref-format` downstream — failing early with a clear
+// error rather than surfacing a noisy git stderr to the caller.
 //
-// The rules are intentionally tighter than git's own check-ref-format:
-// we want a small allowlist (letters, digits, `.`, `_`, `/`, `-`) so
-// every accepted value also passes git's checks. Combined with the
-// `--` sentinel used by callers, this prevents flag injection through
-// the storage-branch name.
+// The rules mirror git's own check-ref-format for a one-level ref, with ONE
+// deliberate extra: a leading `-` is refused so a value can never reach a git
+// invocation as something an argv parser might re-read as a flag (defense in
+// depth — callers also pass `--`). Everything else git accepts is accepted
+// here — parentheses, `+`, `@` inside a name, non-ASCII. An earlier allowlist
+// ([A-Za-z0-9][A-Za-z0-9._/-]*) rejected legal names: Renovate's grouped
+// branches (`renovate/npm-(non-major)`) could never be fetched, which made
+// their PRs permanently unreviewable on the webhook lane.
 func ValidateBranchName(name string) error {
 	if name == "" {
 		return fmt.Errorf("git: branch name must not be empty")
@@ -151,23 +145,93 @@ func ValidateBranchName(name string) error {
 	if len(name) > 255 {
 		return fmt.Errorf("git: branch name must be at most 255 bytes")
 	}
-	if strings.ContainsRune(name, 0) {
-		return fmt.Errorf("git: branch name contains null byte")
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("git: branch name %q must not start with '-' (would be parsed as a flag)", name)
 	}
-	if !branchNameAllowed.MatchString(name) {
-		return fmt.Errorf("git: branch name %q must match [A-Za-z0-9][A-Za-z0-9._/-]* (no leading -/./_, no spaces or special chars)", name)
+	// git itself accepts a leading '+' in a branch NAME, but several callers
+	// place the validated value in a refspec position (`git fetch origin
+	// <ref>`), where '+' is the force sigil and silently changes what is
+	// fetched. No dependency bot generates such names; refusing is the safe
+	// uniform rule.
+	if strings.HasPrefix(name, "+") {
+		return fmt.Errorf("git: branch name %q must not start with '+' (a refspec force sigil)", name)
+	}
+	// `git check-ref-format --branch HEAD` refuses it too; accepting it here
+	// only defers to a noisier failure at `git checkout -B`.
+	if name == "HEAD" {
+		return fmt.Errorf("git: branch name must not be 'HEAD'")
+	}
+	// git check-ref-format: no spaces, no control bytes, and none of the
+	// ref-syntax metacharacters. Byte-wise walk is UTF-8 safe — multi-byte
+	// runes are all >= 0x80 and pass through untouched.
+	for i := 0; i < len(name); i++ {
+		b := name[i]
+		if b <= 0x20 || b == 0x7f {
+			return fmt.Errorf("git: branch name %q contains a space or control character", name)
+		}
+		switch b {
+		case '~', '^', ':', '?', '*', '[', '\\':
+			return fmt.Errorf("git: branch name %q contains %q, which git check-ref-format refuses", name, string(rune(b)))
+		}
+	}
+	if name == "@" {
+		return fmt.Errorf("git: branch name must not be the single character '@'")
+	}
+	if strings.Contains(name, "@{") {
+		return fmt.Errorf("git: branch name %q must not contain '@{'", name)
 	}
 	if strings.Contains(name, "..") {
 		return fmt.Errorf("git: branch name %q must not contain '..'", name)
 	}
-	if strings.Contains(name, "//") {
-		return fmt.Errorf("git: branch name %q must not contain '//'", name)
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.Contains(name, "//") {
+		return fmt.Errorf("git: branch name %q must not start or end with '/' or contain '//'", name)
 	}
-	if strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") {
-		return fmt.Errorf("git: branch name %q must not end with '/' or '.'", name)
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("git: branch name %q must not end with '.'", name)
 	}
-	if strings.HasSuffix(name, ".lock") {
-		return fmt.Errorf("git: branch name %q must not end with '.lock'", name)
+	for _, seg := range strings.Split(name, "/") {
+		if strings.HasPrefix(seg, ".") {
+			return fmt.Errorf("git: branch name %q has a path component starting with '.'", name)
+		}
+		if strings.HasSuffix(seg, ".lock") {
+			return fmt.Errorf("git: branch name %q has a path component ending with '.lock'", name)
+		}
+	}
+	return nil
+}
+
+// shellUnsafeRefBytes are the bytes that let a ref name break out of a shell
+// command it is interpolated into. Deliberately NOT parentheses: Renovate's
+// grouped branches (`renovate/npm-(non-major)`) are legitimate and must keep
+// flowing, and a paren in an unquoted assignment is a bash *syntax error* —
+// the tool node fails loudly, which is a bug to fix in the bot, not a way in.
+// These bytes are different in kind: each one ENDS the current word or
+// command and starts attacker-chosen text.
+const shellUnsafeRefBytes = ";|&$`'\"<>\n\r\\!"
+
+// ValidateShellSafeRef gates a ref name that travels further than git: as a
+// launch var a bot interpolates into a shell command, or as a value the
+// runner stamps into an environment assignment.
+//
+// This is a SEPARATE gate from ValidateBranchName on purpose. That one must
+// stay faithful to `git check-ref-format` so Renovate's grouped branches can
+// be fetched at all; git's own rules happily accept `;`, backticks and
+// quotes, which are harmless to git and fatal to `bash -c`. The old narrow
+// allowlist covered both jobs at once, so widening it for Renovate silently
+// removed a shell guard that was load-bearing: a fork PR from a branch named
+// `x;id;#` reaches `PUSH_BRANCH={{vars.push_branch}} python3 -c …`
+// (bots/branch-improve-loop) as a second command, inside a sandbox holding
+// the run's forge token.
+//
+// Applied where FORGE-CONTROLLED refs enter the system — the runner's clone
+// target, which every webhook-launched run passes through — never to an
+// operator's own `--branch-name`, which is not attacker-controlled.
+func ValidateShellSafeRef(name string) error {
+	if err := ValidateBranchName(name); err != nil {
+		return err
+	}
+	if i := strings.IndexAny(name, shellUnsafeRefBytes); i >= 0 {
+		return fmt.Errorf("git: ref %q contains %q, which is legal in git but would break out of a shell command the ref is interpolated into", name, string(name[i]))
 	}
 	return nil
 }
