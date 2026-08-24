@@ -84,6 +84,13 @@ type RunMessage struct {
 	// applies it after loading the workflow and BEFORE its multitenant
 	// cloud ceiling, so a tenant can only lower the effective caps.
 	Budget *BudgetOverrides `json:"budget,omitempty"`
+	// ModelOverrides carries the launch-time per-node/-group model/backend/
+	// provider pins so the claiming runner APPLIES them to its executor —
+	// the wire mirror of store.RunModelOverride, same doctrine as Budget
+	// above. Without this field the cloud path persisted the pins
+	// display-only: the studio showed an override the delegates never
+	// honoured.
+	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
@@ -175,6 +182,17 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+}
+
+// ModelOverride is one launch-time selector→override directive (the wire
+// mirror of store.RunModelOverride, kept local so this schema package
+// stays dependency-free). Selector semantics are the executor's: exact
+// node id, id glob, kind keyword ("agent"|"judge"|…) or "*".
+type ModelOverride struct {
+	Selector string `json:"selector"`
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

@@ -1683,6 +1683,10 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
+		// The operator's launch-time model/backend pins, replayed from the
+		// wire. Before this, the cloud path persisted them display-only:
+		// the studio showed an override the delegates never honoured.
+		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -1726,4 +1730,24 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// modelOverridesFromMsg folds the wire pins into the executor's override
+// set — the runner-side twin of runview's launch-entry fold, so a cloud
+// run resolves per-node models exactly like a local launch with the same
+// flags.
+func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
+	var o model.ModelOverrides
+	for _, e := range entries {
+		if e.Backend != "" {
+			o.SetBackend(e.Selector, e.Backend)
+		}
+		if e.Model != "" {
+			o.SetModel(e.Selector, e.Model)
+		}
+		if e.Provider != "" {
+			o.SetProvider(e.Selector, e.Provider)
+		}
+	}
+	return o
 }

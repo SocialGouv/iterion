@@ -810,6 +810,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackURL:        spec.CallbackURL,
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
+		// Same display parity a local launch gets from the engine: the
+		// studio Overview reads the pins from the run doc, and the resume
+		// path replays them onto its RunMessage from here.
+		ModelOverrides: runModelOverrides(spec.ModelOverrides),
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -917,6 +921,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
 		Budget:  budget,
+		// The operator's model/backend pins must ride the wire: the runner
+		// pod builds its own executor, so a pin only persisted on the run
+		// doc is display-only — the studio would show an override the
+		// delegates never honoured.
+		ModelOverrides: queueModelOverrides(spec.ModelOverrides),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -1088,6 +1097,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		// A resumed attempt must honour the SAME pins the launch declared —
+		// replayed from the run doc, the single source the launch stamped.
+		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -1418,6 +1430,46 @@ func varsAsAny(in map[string]string) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// queueModelOverrides converts the launch entries into the wire form the
+// claiming runner applies to its executor. Nil in, nil out — an absent
+// field keeps older messages byte-identical.
+func queueModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+	}
+	return out
+}
+
+// runModelOverrides converts the launch entries into the persisted run-doc
+// form (studio display + the resume path's replay source).
+func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+	}
+	return out
+}
+
+// queueOverridesFromRun replays a run doc's persisted pins onto a resume
+// publication.
+func queueOverridesFromRun(entries []store.RunModelOverride) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
 	}
 	return out
 }
