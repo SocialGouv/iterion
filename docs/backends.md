@@ -32,8 +32,8 @@ flowchart LR
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
 | `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
-| `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `kimi` | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
+| `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ## TL;DR
