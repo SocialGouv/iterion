@@ -4,7 +4,7 @@
 
 image:
   repository: ghcr.io/socialgouv/iterion
-  tag: ""              # defaults to .Chart.AppVersion when empty
+  tag: "@sha256:bc93c3afc58c70ed29bf703e9e5c13444318583fbf61c899f20777ce180d8fb4"              # defaults to .Chart.AppVersion when empty
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
