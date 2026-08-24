@@ -1,0 +1,1577 @@
+## ─────────────────────────────────────────────────────────────────
+## vuln_watch — "Senti", an inventory-scoped vulnerability sentinel.
+##
+## One deterministic run mode (mode=watch, hourly), ZERO LLM: the
+## compiled workflow contains no agent/judge node, so a run can neither
+## spend a token nor show a project name to a model. The techno→projects
+## join happens in the deterministic notify step.
+##
+##   mode=watch
+##     plan             (tool) read + validate the workspace config and
+##                             the technology inventory; fail loudly
+##                             BEFORE any network work
+##     poll_dependabot  (tool) GitHub org Dependabot alerts (lane A):
+##                             new alerts since the per-org cursor,
+##                             grouped by advisory
+##     poll_advisories  (tool) advisory feeds (lane B, CERT-FR-style):
+##                             new publications + their structured JSON
+##                             (cves, affected systems) when available
+##     poll_exploit     (tool) CISA KEV catalog (lane C half 1)
+##     match_policy     (tool) the brain: match units against the
+##                             inventory, join EPSS scores (lane C half
+##                             2), apply the exploitation-driven alert
+##                             policy, dedup against the seen state,
+##                             RE-FIRE observed CVEs whose exploitation
+##                             signal just lit up, compute the next
+##                             state (nothing persisted yet)
+##     notify           (tool) render label-templated messages (any
+##                             language via config) and POST them to the
+##                             webhook sinks; also announces sources
+##                             silent for too long
+##     commit_state     (tool) persist the new state under flock and —
+##                             with state_commit=true — commit+push it
+##                             (git as the state store, required on
+##                             ephemeral cloud runners)
+##
+## Alert policy (the anti-noise core): a matched vulnerability alerts
+## immediately ONLY on an exploitation signal — a CISA KEV entry, an
+## alert-class advisory (CERT-FR "alerte"), or EPSS ≥ threshold.
+## Everything else is recorded in an observation window and re-fires
+## the day its signal lights up (the Metabase scenario: the CVE lands
+## quietly, KEV picks it up two weeks later → THAT is when the alert
+## goes out). Optional floors re-enable severity-driven alerting per
+## deployment (dependabot_alert_floor, certfr_avis).
+##
+## State lives in `<state_dir>/` inside the workspace:
+##   state.json      seen CVEs/units + per-source cursors + health
+##   alertlog.jsonl  append-only history of every alert posted
+##
+## Universal by design: no org, feed, webhook, techno or language is
+## baked in — everything comes from the workspace config
+## (vuln-watch.json) + inventory (inventory.json) + the `webhooks` and
+## `dependabot_tokens` secrets. The KEV/EPSS defaults point at the
+## public CISA/FIRST endpoints (neutral standards infrastructure) and
+## are overridable. Requires python3 (stdlib only) on the execution
+## host. See skills/senti-config.md.
+## ─────────────────────────────────────────────────────────────────
+
+secrets:
+  ## JSON map of webhook name → incoming-webhook URL (same contract as
+  ## feed-watch). Config sinks reference entries by NAME so URLs never
+  ## appear in the repo. Optional: dry-run and sink-less runs need none.
+  webhooks:
+    as: file
+    optional: true
+
+  ## JSON map of github org login (lowercase) → API token able to read
+  ## that org's Dependabot alerts. On an iterion cloud deployment the
+  ## forge refresh worker maintains this secret from the GitHub App
+  ## (connection security_read_enabled — see docs/forge-security-read.md);
+  ## anywhere else, set it by hand with fine-grained PATs
+  ## ("Dependabot alerts: read"). Mounted read-only as a FILE, read only
+  ## by the poll step — never into a prompt (there is no prompt).
+  ## Optional so feed/KEV-only deployments run with no binding; a
+  ## CONFIGURED org with no usable token FAILS the run explicitly.
+  dependabot_tokens:
+    as: file
+    optional: true
+
+  ## Forge API token, mounted read-only as a FILE (path/env only). Used
+  ## by state_commit=true runs so the cloud runner injects it into the
+  ## clone URL and the bot's `git push` of the state dir authenticates.
+  ## optional: true — a local/host run authenticates git via the host.
+  forge_token:
+    as: file
+    optional: true
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+
+  ## watch = poll sources, match inventory, alert, commit state.
+  ## (Single mode today; the enum leaves room for refresh/recap modes.)
+  mode: string [enum: "watch"] = "watch"
+
+  ## Workspace-relative config file (JSON). See skills/senti-config.md.
+  config_path: string = "vuln-watch.json"
+
+  ## Workspace-relative technology inventory (JSON): technologies →
+  ## match keywords + projects; projects → repos. Overridable from the
+  ## config's own `inventory_path` field; this var is the fallback.
+  inventory_path: string = "inventory.json"
+
+  ## Workspace-relative state root (gitignore it, or set
+  ## state_commit=true to version it — required on ephemeral runners).
+  state_dir: string = ".vuln-watch"
+
+  ## Prepare + print every message and payload, deliver nothing, persist
+  ## nothing (the next real run recomputes the same alerts).
+  dry_run: bool = false
+
+  ## Commit (and push) the state dir after each mutation. Needs the
+  ## state_dir NOT gitignored and push credentials on the workspace.
+  state_commit: bool = false
+
+  ## Per-request HTTP timeout (feeds, APIs).
+  fetch_timeout_secs: int = 20
+
+  ## SSRF posture for every outbound fetch (feeds, GitHub API, KEV,
+  ## EPSS, advisory JSON). Default (false) is strict: http/https only,
+  ## and any host resolving to a private / loopback / link-local /
+  ## cloud-metadata address is refused, up-front and on every redirect
+  ## hop. true relaxes it (private hosts + file:// sources) for trusted
+  ## on-prem deployments and hermetic tests ONLY.
+  allow_private_sources: bool = false
+
+  ## Per-run cap on posted alerts. Overflow units stay OBSERVED (they
+  ## re-fire next run) and the overflow is announced explicitly — never
+  ## a silent truncation.
+  max_alerts_per_run: int = 20
+
+  ## Days a non-alerted CVE stays in the observation window, re-scored
+  ## against KEV/EPSS every run (the re-fire mechanism).
+  observe_window_days: int = 60
+
+  ## Hours without a successful poll of a configured source before the
+  ## bot announces the silence on the sinks (at most once per window) —
+  ## the "finished is not delivered" lesson. 0 disables.
+  source_stale_hours: int = 24
+
+  ## Out-of-tree scratch for the inter-node handoff files.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/vuln-watch"
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+schema plan_output:
+  ## Normalized config, ready for the poll/match nodes.
+  github_orgs: string[]
+  github_api_base: string
+  ## [{url, kind}] — kind: "alert" (exploitation signal by itself,
+  ## e.g. CERT-FR alerte) or "advisory" (observe by default).
+  advisory_feeds: json
+  kev_url: string
+  epss_url: string
+  ## -1 disables the EPSS signal.
+  epss_threshold: float
+  ## exploited | critical | high — when a new Dependabot advisory may
+  ## alert WITHOUT an exploitation signal.
+  dependabot_alert_floor: string
+  ## observe | alert — whether a matched non-alert advisory posts.
+  certfr_avis: string
+  sinks: json
+  ## Message labels: built-in English defaults merged with the config's
+  ## `labels` map (any language without touching the bot).
+  labels: json
+  inventory_path: string
+  summary: string
+
+schema dependabot_input:
+  orgs: string[]
+  api_base: string
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+  workspace: string
+  state_dir: string
+
+schema dependabot_output:
+  ## Scratch file holding the raw new alerts (page-walked per org until
+  ## the per-org cursor).
+  alerts_file: string
+  new_alerts: int
+  orgs_ok: int
+  orgs_failed: int
+  ## [{org, error}] — transient failures; auth/config failures already
+  ## hard-failed the node.
+  errors: json
+
+schema advisories_input:
+  feeds: json
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+  workspace: string
+  state_dir: string
+
+schema advisories_output:
+  units_file: string
+  new_units: int
+  feeds_ok: int
+  feeds_failed: int
+  errors: json
+
+schema exploit_input:
+  kev_url: string
+  timeout_secs: int
+  scratch_dir: string
+  allow_private: bool
+
+schema exploit_output:
+  kev_file: string
+  kev_count: int
+  kev_ok: bool
+  error: string
+
+schema match_input:
+  alerts_file: string
+  units_file: string
+  kev_file: string
+  dependabot_errors: json
+  advisory_errors: json
+  kev_error: string
+  epss_url: string
+  epss_threshold: float
+  dependabot_alert_floor: string
+  certfr_avis: string
+  github_orgs: string[]
+  advisory_feeds: json
+  kev_url: string
+  inventory_path: string
+  workspace: string
+  state_dir: string
+  scratch_dir: string
+  timeout_secs: int
+  allow_private: bool
+  max_alerts: int
+  observe_window_days: int
+  source_stale_hours: int
+
+schema match_output:
+  ## Alert units to post, fully joined (ids, title, signals, severity,
+  ## fix, projects, repos, links, refire info).
+  alerts: json
+  alert_count: int
+  overflow_count: int
+  observed_count: int
+  suppressed_count: int
+  refire_count: int
+  ## [{source, hours, last_ok}] — sources silent beyond the window and
+  ## not yet announced this window.
+  stale_sources: json
+  bootstrap: bool
+  ## The next state, staged out-of-tree; commit_state persists it only
+  ## after delivery so a failed post replays instead of losing alerts.
+  state_next_file: string
+  alertlog_file: string
+  summary: string
+
+schema notify_input:
+  alerts: json
+  overflow_count: int
+  stale_sources: json
+  sinks: json
+  labels: json
+  dry_run: bool
+
+schema notify_output:
+  posted: bool
+  dry_run: bool
+  delivered: int
+  ## True when the run may persist the staged state: not a dry-run, and
+  ## either nothing needed posting or something was actually delivered.
+  ## A run that computed alerts but delivered none keeps the old state,
+  ## so the next run recomputes the SAME alerts (at-least-once).
+  consume: bool
+  targets: string[]
+  summary: string
+
+schema commit_input:
+  state_next_file: string
+  alertlog_file: string
+  state_commit: bool
+  workspace: string
+  state_dir: string
+
+schema commit_output:
+  committed: bool
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+## Deterministic entry: validate mode + config + inventory, normalize
+## defaults, merge message labels. Config problems fail HERE, loudly,
+## before any network work.
+tool plan:
+  output: plan_output
+  language: py
+  script: |
+    import json, os
+    ws = {{vars.workspace_dir}}
+    cfg_path = {{vars.config_path}}
+    inv_fallback = {{vars.inventory_path}}
+    mode = {{vars.mode}}
+    os.chdir(ws)
+    if mode != 'watch':
+        raise SystemExit('vuln-watch: invalid mode ' + repr(mode) + ' -- only mode=watch exists')
+    if not os.path.exists(cfg_path):
+        raise SystemExit('vuln-watch: config file ' + repr(cfg_path) + ' not found in ' + os.getcwd() +
+                         ' -- create it (see the senti-config skill) or pass --var config_path=...')
+    cfg = json.load(open(cfg_path, encoding='utf-8'))
+
+    orgs = [str(o).strip().lower() for o in (cfg.get('github_orgs') or []) if str(o).strip()]
+    feeds = []
+    for f in (cfg.get('advisory_feeds') or []):
+        if isinstance(f, str):
+            feeds.append({'url': f, 'kind': 'advisory'})
+        elif isinstance(f, dict) and f.get('url'):
+            kind = f.get('kind') or 'advisory'
+            if kind not in ('alert', 'advisory'):
+                raise SystemExit('vuln-watch: advisory_feeds[].kind must be "alert" or "advisory", got ' + repr(kind))
+            feeds.append({'url': f['url'], 'kind': kind})
+        else:
+            raise SystemExit('vuln-watch: advisory_feeds entries must be a URL string or {url, kind}')
+    ## Neutral public defaults (CISA / FIRST — standards infrastructure),
+    ## overridable per deployment; "" (explicit empty) disables the lane.
+    kev_url = cfg.get('kev_url')
+    if kev_url is None:
+        kev_url = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
+    epss_url = cfg.get('epss_url')
+    if epss_url is None:
+        epss_url = 'https://api.first.org/data/v1/epss'
+    thr = cfg.get('epss_threshold')
+    thr = -1.0 if thr is None and not epss_url else float(thr if thr is not None else 0.5)
+    if not epss_url:
+        thr = -1.0
+    floor = cfg.get('dependabot_alert_floor') or 'exploited'
+    if floor not in ('exploited', 'critical', 'high'):
+        raise SystemExit('vuln-watch: dependabot_alert_floor must be exploited|critical|high, got ' + repr(floor))
+    avis = cfg.get('certfr_avis') or 'observe'
+    if avis not in ('observe', 'alert'):
+        raise SystemExit('vuln-watch: certfr_avis must be observe|alert, got ' + repr(avis))
+    if not orgs and not feeds and not kev_url:
+        raise SystemExit('vuln-watch: config declares no source at all (github_orgs, advisory_feeds and kev_url all empty)')
+
+    inv_path = cfg.get('inventory_path') or inv_fallback
+    if not os.path.exists(inv_path):
+        raise SystemExit('vuln-watch: inventory file ' + repr(inv_path) + ' not found -- generate it (see the senti-config skill) or set inventory_path')
+    inv = json.load(open(inv_path, encoding='utf-8'))
+    techs = inv.get('technologies') or {}
+    projects = inv.get('projects') or {}
+    if not isinstance(techs, dict) or not isinstance(projects, dict):
+        raise SystemExit('vuln-watch: inventory must carry technologies + projects maps (see the senti-config skill)')
+    if (feeds or kev_url) and not any((t or {}).get('match') for t in techs.values()):
+        raise SystemExit('vuln-watch: advisory/KEV lanes are configured but no inventory technology has match keywords -- nothing could ever match')
+    for key, p in projects.items():
+        if not isinstance(p, dict):
+            raise SystemExit('vuln-watch: inventory project ' + repr(key) + ' must be an object')
+    for key, t in techs.items():
+        for pref in (t or {}).get('projects') or []:
+            if pref not in projects:
+                raise SystemExit('vuln-watch: inventory technology ' + repr(key) + ' references unknown project ' + repr(pref))
+
+    ## English defaults; the config's `labels` map overrides any subset —
+    ## this bot bakes in no language (deterministic messages included).
+    labels = {
+        'exploited': 'actively exploited vulnerability',
+        'alert': 'security alert',
+        'signal': 'Signal',
+        'severity': 'severity',
+        'fix': 'Fix',
+        'no_fix': 'none published yet',
+        'projects': 'Affected projects',
+        'repos': 'repo(s)',
+        'via_dependabot': 'flagged by Dependabot in {n} repo(s)',
+        'sources': 'Sources',
+        'more': 'more',
+        'refire': 'first observed {date} (kept silent) — alerted now: {signal}',
+        'overflow': '{n} more alert(s) exceeded the per-run cap; they stay pending and will fire on the next run',
+        'stale': 'source silent: {source} without a successful poll for {hours}h (last OK: {last})',
+        'kev_signal': 'CISA KEV {date}',
+        'ale_signal': 'alert-class advisory',
+        'epss_signal': 'EPSS {pct}%',
+        'sev_signal': 'severity floor {sev}',
+    }
+    for k, v in (cfg.get('labels') or {}).items():
+        if k in labels and isinstance(v, str) and v:
+            labels[k] = v
+
+    sinks = cfg.get('sinks') or []
+    summary = ('watch: ' + str(len(orgs)) + ' org(s), ' + str(len(feeds)) + ' feed(s), KEV ' +
+               ('on' if kev_url else 'off') + ', EPSS ' + (('>=' + str(thr)) if thr >= 0 else 'off') +
+               ', floor=' + floor + ', ' + str(len(techs)) + ' technologies / ' + str(len(projects)) + ' projects')
+    print(json.dumps({'github_orgs': orgs,
+                      'github_api_base': (cfg.get('github_api_base') or 'https://api.github.com').rstrip('/'),
+                      'advisory_feeds': feeds, 'kev_url': kev_url, 'epss_url': epss_url,
+                      'epss_threshold': thr, 'dependabot_alert_floor': floor, 'certfr_avis': avis,
+                      'sinks': sinks, 'labels': labels, 'inventory_path': inv_path,
+                      'summary': summary}, ensure_ascii=False))
+
+## Lane A: GitHub org Dependabot alerts. Walks each org's open alerts
+## (sorted created desc) until the per-org cursor from the state; the
+## cursor itself only advances in commit_state, after delivery. A
+## configured org with no usable token, or a 401/403, HARD-FAILS the
+## run (credential problems are actionable now, and a silent skip would
+## be a zero-alert façade). Transient failures (5xx, timeout) are
+## collected per org; the health net announces a source silent >24h.
+tool poll_dependabot:
+  input: dependabot_input
+  output: dependabot_output
+  language: py
+  script: |
+    import json, os, socket, ipaddress, time
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    orgs = {{input.orgs}} or []
+    api_base = {{input.api_base}}
+    timeout = {{input.timeout_secs}}
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    tokens_file = {{secrets.dependabot_tokens.path}}
+    os.makedirs(scratch, exist_ok=True)
+    out_path = os.path.join(scratch, 'dependabot.json')
+
+    if not orgs:
+        with open(out_path, 'w', encoding='utf-8') as fh:
+            json.dump({}, fh)
+        print(json.dumps({'alerts_file': out_path, 'new_alerts': 0, 'orgs_ok': 0, 'orgs_failed': 0, 'errors': []}))
+        raise SystemExit(0)
+
+    tokens = {}
+    if tokens_file and os.path.exists(tokens_file):
+        try:
+            raw = open(tokens_file, encoding='utf-8').read().strip()
+            tokens = json.loads(raw) if raw else {}
+        except ValueError:
+            raise SystemExit('vuln-watch: the dependabot_tokens secret is not a JSON map of org->token')
+    missing = [o for o in orgs if not (tokens.get(o) or tokens.get('*'))]
+    if missing:
+        raise SystemExit('vuln-watch: no Dependabot token for configured org(s) ' + ', '.join(missing) +
+                         ' -- enable security_read on the GitHub App connection (docs/forge-security-read.md)'
+                         ' or set the dependabot_tokens secret to a JSON map {org: fine-grained PAT}')
+
+    def _addr_ok(ip):
+        if allow_private:
+            return True
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        return (a.is_global and not (a.is_private or a.is_loopback or a.is_link_local or
+                a.is_reserved or a.is_multicast or a.is_unspecified))
+    def _validate_host(host):
+        if allow_private or not host:
+            return
+        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
+            v = (os.environ.get(k) or '').strip()
+            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
+                return
+        infos = socket.getaddrinfo(host, None)
+        for info in infos:
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    ## Read-only peek at the state for the per-org cursor (advancing it
+    ## stays commit_state's job). Missing state = bootstrap: page 1 only.
+    cursors = {}
+    spath = os.path.join(ws, state_dir, 'state.json')
+    if os.path.exists(spath):
+        try:
+            cursors = (json.load(open(spath, encoding='utf-8')).get('cursors') or {}).get('dependabot') or {}
+        except ValueError:
+            raise SystemExit('vuln-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
+
+    base_host = urlsplit(api_base).hostname or ''
+    _validate_host(base_host)
+
+    def get(url, token):
+        req = urllib.request.Request(url, headers={
+            'Authorization': 'Bearer ' + token,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'vuln-watch/0.1 (iterion; +https://github.com/SocialGouv/iterion)'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return json.loads(r.read(8 * 1024 * 1024).decode('utf-8')), (r.headers.get('Link') or '')
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise SystemExit('vuln-watch: GitHub rejected the Dependabot token (HTTP ' + str(e.code) +
+                                     ') on ' + url.split('?')[0] + ' -- the token lacks Dependabot-alerts read'
+                                     ' access or expired; rotate it (docs/forge-security-read.md)')
+                last = e
+                if e.code < 500:
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+        raise last
+
+    def next_link(link_header):
+        for part in (link_header or '').split(','):
+            if 'rel="next"' in part:
+                s = part.find('<'); e = part.find('>')
+                if 0 <= s < e:
+                    return part[s + 1:e]
+        return ''
+
+    by_org, errors, ok, total = {}, [], 0, 0
+    MAX_PAGES = 10  # bounded walk; truncation is REPORTED, never silent
+    for org in orgs:
+        token = tokens.get(org) or tokens.get('*')
+        cursor = cursors.get(org) or ''
+        url = api_base + '/orgs/' + org + '/dependabot/alerts?state=open&sort=created&direction=desc&per_page=100'
+        fresh, pages, truncated = [], 0, False
+        try:
+            while url:
+                data, link = get(url, token)
+                pages += 1
+                stop = False
+                for a in data:
+                    created = a.get('created_at') or ''
+                    if cursor and created <= cursor:
+                        stop = True
+                        break
+                    fresh.append(a)
+                if stop or not data:
+                    break
+                url = next_link(link)
+                if pages >= MAX_PAGES and url:
+                    truncated = True
+                    break
+            by_org[org] = {'alerts': fresh, 'bootstrap': not cursor, 'truncated': truncated}
+            ok += 1
+            total += len(fresh)
+            if truncated:
+                errors.append({'org': org, 'error': 'more than ' + str(MAX_PAGES) + ' pages of new alerts; oldest not scanned this run'})
+        except SystemExit:
+            raise
+        except Exception as e:
+            errors.append({'org': org, 'error': type(e).__name__ + ': ' + str(e)[:300]})
+    if orgs and ok == 0:
+        raise SystemExit('vuln-watch: every org poll failed: ' + json.dumps(errors)[:1500])
+    with open(out_path, 'w', encoding='utf-8') as fh:
+        json.dump(by_org, fh, ensure_ascii=False)
+    print(json.dumps({'alerts_file': out_path, 'new_alerts': total, 'orgs_ok': ok,
+                      'orgs_failed': len(errors), 'errors': errors}, ensure_ascii=False))
+
+## Lane B: advisory feeds. Parses each RSS/Atom feed (stdlib), keeps the
+## entries whose id is not in the seen state, and enriches each new one
+## through the CERT-FR-style `<link>/json/` endpoint (cves[] +
+## affected_systems[]) when it answers; otherwise the entry title +
+## summary carry the match text and CVE ids are regex-extracted. Same
+## SSRF guard as feed-watch: config-supplied URLs are untrusted input.
+tool poll_advisories:
+  input: advisories_input
+  output: advisories_output
+  language: py
+  script: |
+    import json, os, re, gzip, socket, ipaddress, time
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    import xml.etree.ElementTree as ET
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    feeds = {{input.feeds}} or []
+    timeout = {{input.timeout_secs}}
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    os.makedirs(scratch, exist_ok=True)
+    out_path = os.path.join(scratch, 'advisories.json')
+
+    if not feeds:
+        with open(out_path, 'w', encoding='utf-8') as fh:
+            json.dump([], fh)
+        print(json.dumps({'units_file': out_path, 'new_units': 0, 'feeds_ok': 0, 'feeds_failed': 0, 'errors': []}))
+        raise SystemExit(0)
+
+    seen = set()
+    spath = os.path.join(ws, state_dir, 'state.json')
+    if os.path.exists(spath):
+        try:
+            seen = set((json.load(open(spath, encoding='utf-8')).get('cursors') or {}).get('feeds_seen') or [])
+        except ValueError:
+            raise SystemExit('vuln-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
+
+    _real_getaddrinfo = socket.getaddrinfo
+    def _env_proxy_hosts():
+        hosts = set()
+        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'):
+            v = (os.environ.get(k) or '').strip()
+            if not v:
+                continue
+            try:
+                h = urlsplit(v if '://' in v else 'http://' + v).hostname
+            except ValueError:
+                h = None
+            if h:
+                hosts.add(h)
+        return hosts
+    _proxy_hosts = _env_proxy_hosts()
+    _behind_proxy = bool(_proxy_hosts)
+    def _addr_ok(ip):
+        if allow_private:
+            return True
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        return (a.is_global and not (a.is_private or a.is_loopback or a.is_link_local or
+                a.is_reserved or a.is_multicast or a.is_unspecified))
+    def _guarded_getaddrinfo(host, port, *a, **k):
+        infos = _real_getaddrinfo(host, port, *a, **k)
+        for info in infos:
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+        return infos
+    def _validate_host(host):
+        if allow_private or not host or host in _proxy_hosts:
+            return
+        infos = _real_getaddrinfo(host, None)
+        for info in infos:
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+    class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if urlsplit(newurl).scheme not in ('http', 'https'):
+                return None
+            _validate_host(urlsplit(newurl).hostname or '')
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    _opener = urllib.request.build_opener(_SafeRedirect())
+
+    def fetch(url):
+        parts = urlsplit(url)
+        schemes = ('http', 'https', 'file') if allow_private else ('http', 'https')
+        if parts.scheme not in schemes:
+            raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
+        if parts.scheme in ('http', 'https'):
+            if parts.username or parts.password:
+                raise ValueError('URL must not carry embedded credentials')
+            if not parts.hostname:
+                raise ValueError('URL has no host')
+            _validate_host(parts.hostname)
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'vuln-watch/0.1 (iterion; +https://github.com/SocialGouv/iterion)',
+            'Accept': 'application/rss+xml, application/atom+xml, application/xml, application/json, text/xml, */*',
+            'Accept-Encoding': 'gzip, identity'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with _opener.open(req, timeout=timeout) as r:
+                    raw = r.read(8 * 1024 * 1024)
+                if raw[:2] == b'\x1f\x8b':
+                    raw = gzip.decompress(raw)
+                return raw
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code < 500:
+                    raise
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+        raise last
+
+    def local(tag):
+        return tag.rsplit('}', 1)[-1] if isinstance(tag, str) else ''
+    def text(el):
+        return (el.text or '').strip() if el is not None else ''
+    def strip_html(s):
+        s = re.sub(r'<[^>]+>', ' ', s or '')
+        s = re.sub(r'&#?\w+;', ' ', s)
+        return re.sub(r'\s+', ' ', s).strip()
+    def entry_from(el):
+        d = {'id': '', 'url': '', 'title': '', 'summary': '', 'published': ''}
+        for ch in el:
+            n = local(ch.tag)
+            if n == 'title':
+                d['title'] = strip_html(text(ch))
+            elif n == 'link':
+                href = (ch.get('href') or '').strip()
+                d['url'] = href or text(ch) or d['url']
+            elif n in ('guid', 'id'):
+                d['id'] = text(ch)
+            elif n in ('description', 'summary') and not d['summary']:
+                d['summary'] = strip_html(text(ch))[:600]
+            elif n in ('pubDate', 'published', 'updated', 'date') and not d['published']:
+                d['published'] = text(ch)
+        if not d['id']:
+            d['id'] = d['url'] or d['title']
+        return d
+    def parse_feed(raw):
+        root = ET.fromstring(raw)
+        if local(root.tag) == 'feed':
+            return [entry_from(el) for el in root if local(el.tag) == 'entry']
+        return [entry_from(el) for el in root.findall('.//*') if local(el.tag) == 'item']
+
+    CVE_RE = re.compile(r'CVE-\d{4}-\d{4,}')
+    units, errors, ok = [], [], 0
+    if not _behind_proxy:
+        socket.getaddrinfo = _guarded_getaddrinfo
+    try:
+        for f in feeds:
+            furl, kind = f.get('url') or '', f.get('kind') or 'advisory'
+            try:
+                entries = parse_feed(fetch(furl))
+                ok += 1
+            except Exception as e:
+                errors.append({'feed': furl, 'error': type(e).__name__ + ': ' + str(e)[:300]})
+                continue
+            for d in entries:
+                uid = d['id']
+                if not uid or uid in seen:
+                    continue
+                unit = {'id': uid, 'kind': kind, 'title': d['title'], 'url': d['url'],
+                        'published': d['published'], 'cves': [], 'match_text': d['title'] + ' ' + d['summary'],
+                        'feed': furl}
+                ## CERT-FR-style structured enrichment: <link>/json/ names
+                ## the CVEs and affected products. Best-effort — a feed
+                ## without it falls back to title+summary matching.
+                if d['url'].startswith(('http://', 'https://', 'file://')):
+                    try:
+                        j = json.loads(fetch(d['url'].rstrip('/') + '/json/').decode('utf-8'))
+                        unit['cves'] = sorted({c.get('name') for c in (j.get('cves') or []) if c.get('name')})
+                        prods = []
+                        for a in (j.get('affected_systems') or []):
+                            p = (a.get('product') or {})
+                            prods.append(' '.join(x for x in (
+                                (p.get('vendor') or {}).get('name') or '', p.get('name') or '',
+                                a.get('description') or '') if x))
+                        unit['match_text'] = ' '.join([j.get('title') or d['title']] + prods)
+                        unit['title'] = j.get('title') or d['title']
+                    except Exception:
+                        pass
+                if not unit['cves']:
+                    unit['cves'] = sorted(set(CVE_RE.findall(unit['match_text'] + ' ' + d['summary'])))
+                units.append(unit)
+    finally:
+        socket.getaddrinfo = _real_getaddrinfo
+    if feeds and ok == 0:
+        raise SystemExit('vuln-watch: all ' + str(len(feeds)) + ' advisory feed fetches failed: ' + json.dumps(errors)[:1500])
+    with open(out_path, 'w', encoding='utf-8') as fh:
+        json.dump(units, fh, ensure_ascii=False)
+    print(json.dumps({'units_file': out_path, 'new_units': len(units), 'feeds_ok': ok,
+                      'feeds_failed': len(errors), 'errors': errors}, ensure_ascii=False))
+
+## Lane C (half 1): the CISA KEV catalog — the full set every run (the
+## lookup that answers "is this CVE exploited?" for every lane) plus the
+## diff-by-dateAdded that match_policy joins directly against the
+## inventory (the Metabase scenario needs no other lane to have seen the
+## CVE first). A fetch failure is reported, not fatal: the other lanes
+## still alert, and the health net announces a KEV silent >24h.
+tool poll_exploit:
+  input: exploit_input
+  output: exploit_output
+  language: py
+  script: |
+    import json, os, gzip, socket, ipaddress, time
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    kev_url = {{input.kev_url}}
+    timeout = {{input.timeout_secs}}
+    scratch = {{input.scratch_dir}}
+    allow_private = {{input.allow_private}}
+    os.makedirs(scratch, exist_ok=True)
+    out_path = os.path.join(scratch, 'kev.json')
+
+    if not kev_url:
+        with open(out_path, 'w', encoding='utf-8') as fh:
+            json.dump({'vulnerabilities': []}, fh)
+        print(json.dumps({'kev_file': out_path, 'kev_count': 0, 'kev_ok': True, 'error': ''}))
+        raise SystemExit(0)
+
+    def _addr_ok(ip):
+        if allow_private:
+            return True
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if a.version == 6 and a.ipv4_mapped is not None:
+            a = a.ipv4_mapped
+        return (a.is_global and not (a.is_private or a.is_loopback or a.is_link_local or
+                a.is_reserved or a.is_multicast or a.is_unspecified))
+    def _validate_host(host):
+        if allow_private or not host:
+            return
+        for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
+            v = (os.environ.get(k) or '').strip()
+            if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
+                return
+        for info in socket.getaddrinfo(host, None):
+            if not _addr_ok(info[4][0]):
+                raise OSError('SSRF-unsafe address ' + str(info[4][0]) + ' for host ' + str(host))
+
+    parts = urlsplit(kev_url)
+    schemes = ('http', 'https', 'file') if allow_private else ('http', 'https')
+    error, data = '', {'vulnerabilities': []}
+    try:
+        if parts.scheme not in schemes:
+            raise ValueError('unsupported URL scheme ' + repr(parts.scheme))
+        if parts.scheme in ('http', 'https'):
+            _validate_host(parts.hostname or '')
+        req = urllib.request.Request(kev_url, headers={
+            'User-Agent': 'vuln-watch/0.1 (iterion; +https://github.com/SocialGouv/iterion)',
+            'Accept': 'application/json', 'Accept-Encoding': 'gzip, identity'})
+        last = None
+        for attempt in (0, 1):
+            if attempt:
+                time.sleep(2)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    raw = r.read(32 * 1024 * 1024)
+                break
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code < 500:
+                    raise
+                raw = None
+            except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
+                last = e
+                raw = None
+        if raw is None:
+            raise last
+        if raw[:2] == b'\x1f\x8b':
+            raw = gzip.decompress(raw)
+        data = json.loads(raw.decode('utf-8'))
+        if not isinstance(data.get('vulnerabilities'), list):
+            raise ValueError('KEV payload has no vulnerabilities list')
+    except Exception as e:
+        error = type(e).__name__ + ': ' + str(e)[:300]
+        data = {'vulnerabilities': []}
+    with open(out_path, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    print(json.dumps({'kev_file': out_path, 'kev_count': len(data.get('vulnerabilities') or []),
+                      'kev_ok': not error, 'error': error}, ensure_ascii=False))
+
+## The brain — pure computation over the polled files + the seen state:
+## inventory matching (word-boundary keyword regexes), EPSS batch
+## scoring of the candidate CVEs, the exploitation-driven alert policy,
+## alias-set dedup, the re-fire scan over the observation window, the
+## per-run cap (overflow reported, never silent), source-health staleness,
+## and the NEXT state staged out-of-tree. Persists nothing: a failed
+## delivery downstream must replay these alerts, not lose them.
+tool match_policy:
+  input: match_input
+  output: match_output
+  language: py
+  script: |
+    import json, os, re, datetime, socket, ipaddress
+    import urllib.request, urllib.error
+    from urllib.parse import urlsplit, quote
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    alerts_file = {{input.alerts_file}}
+    units_file = {{input.units_file}}
+    kev_file = {{input.kev_file}}
+    dep_errors = {{input.dependabot_errors}} or []
+    adv_errors = {{input.advisory_errors}} or []
+    kev_error = {{input.kev_error}}
+    epss_url = {{input.epss_url}}
+    epss_thr = float({{input.epss_threshold}})
+    floor = {{input.dependabot_alert_floor}}
+    avis_mode = {{input.certfr_avis}}
+    orgs = {{input.github_orgs}} or []
+    feeds = {{input.advisory_feeds}} or []
+    kev_url = {{input.kev_url}}
+    inv_path = {{input.inventory_path}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    scratch = {{input.scratch_dir}}
+    timeout = {{input.timeout_secs}}
+    allow_private = {{input.allow_private}}
+    max_alerts = int({{input.max_alerts}})
+    observe_days = int({{input.observe_window_days}})
+    stale_hours = int({{input.source_stale_hours}})
+    os.chdir(ws)
+    now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    now_iso = now.isoformat()
+
+    def jload(path, default):
+        if path and os.path.exists(path):
+            with open(path, encoding='utf-8') as fh:
+                return json.load(fh)
+        return default
+
+    dep_by_org = jload(alerts_file, {})
+    adv_units = jload(units_file, [])
+    kev = jload(kev_file, {'vulnerabilities': []})
+    inv = jload(inv_path, {})
+    techs = inv.get('technologies') or {}
+    projects = inv.get('projects') or {}
+
+    spath = os.path.join(state_dir, 'state.json')
+    bootstrap = not os.path.exists(spath)
+    state = jload(spath, {'version': 1, 'cves': {}, 'units': {}, 'cursors': {}, 'health': {}})
+    st_cves = state.setdefault('cves', {})
+    st_units = state.setdefault('units', {})
+    cursors = state.setdefault('cursors', {})
+    health = state.setdefault('health', {})
+
+    ## ── inventory match machinery ───────────────────────────────────
+    repo_index = {}
+    for pkey, p in projects.items():
+        for r in (p.get('repos') or []):
+            repo_index[str(r).lower()] = pkey
+    tech_res = []
+    for tkey, t in techs.items():
+        if not (t or {}).get('watch', True):
+            continue
+        kws = [k for k in ((t or {}).get('match') or []) if k]
+        if not kws:
+            continue
+        pat = re.compile(r'(?<![\w-])(' + '|'.join(re.escape(k.lower()) for k in kws) + r')(?![\w-])')
+        tech_res.append((tkey, pat))
+    def match_techs(text):
+        low = (text or '').lower()
+        return sorted({tkey for tkey, pat in tech_res if pat.search(low)})
+    def tech_projects(tkeys):
+        out = []
+        for tk in tkeys:
+            for pk in (techs.get(tk) or {}).get('projects') or []:
+                if pk not in out:
+                    out.append(pk)
+        return out
+
+    ## ── KEV lookup + diff ───────────────────────────────────────────
+    kev_map = {}
+    for v in (kev.get('vulnerabilities') or []):
+        cid = v.get('cveID') or ''
+        if cid:
+            kev_map[cid] = v
+    kev_cursor = cursors.get('kev_date_added') or ''
+    kev_max = max([v.get('dateAdded') or '' for v in kev_map.values()] + [kev_cursor]) if kev_map else kev_cursor
+    kev_fresh = [v for v in kev_map.values() if kev_cursor and (v.get('dateAdded') or '') > kev_cursor]
+
+    ## ── build this run's candidate units ────────────────────────────
+    units = []
+    dep_cursor_next = dict((cursors.get('dependabot') or {}))
+    for org, blob in (dep_by_org or {}).items():
+        newest = dep_cursor_next.get(org) or ''
+        groups = {}
+        for a in (blob.get('alerts') or []):
+            adv = a.get('security_advisory') or {}
+            gid = adv.get('ghsa_id') or adv.get('cve_id') or ''
+            if not gid:
+                continue
+            created = a.get('created_at') or ''
+            if created > newest:
+                newest = created
+            g = groups.setdefault(gid, {'id': gid, 'kind': 'dependabot',
+                                        'title': adv.get('summary') or gid,
+                                        'severity': (adv.get('severity') or '').lower(),
+                                        'cves': [], 'repos': [], 'fixes': [], 'org': org,
+                                        'package': '', 'ecosystem': '',
+                                        'url': 'https://github.com/advisories/' + gid if gid.startswith('GHSA-') else ''})
+            cve = adv.get('cve_id') or ''
+            if cve and cve not in g['cves']:
+                g['cves'].append(cve)
+            repo = ((a.get('repository') or {}).get('full_name') or '')
+            if repo and repo not in g['repos']:
+                g['repos'].append(repo)
+            pkg = ((a.get('dependency') or {}).get('package') or {})
+            g['package'] = g['package'] or (pkg.get('name') or '')
+            g['ecosystem'] = g['ecosystem'] or (pkg.get('ecosystem') or '')
+            for vv in (adv.get('vulnerabilities') or []):
+                fp = vv.get('first_patched_version') or {}
+                ident = fp.get('identifier') if isinstance(fp, dict) else ''
+                if ident and ident not in g['fixes']:
+                    g['fixes'].append(ident)
+        if blob.get('bootstrap') and not newest:
+            newest = now_iso
+        dep_cursor_next[org] = newest or dep_cursor_next.get(org) or now_iso
+        units.extend(groups.values())
+
+    feed_seen_next = list((cursors.get('feeds_seen') or []))
+    for u in adv_units:
+        feed_seen_next.append(u['id'])
+        tkeys = match_techs(u.get('match_text') or '')
+        if not tkeys:
+            continue
+        units.append({'id': u['id'], 'kind': u.get('kind') or 'advisory', 'title': u.get('title') or u['id'],
+                      'cves': u.get('cves') or [], 'techs': tkeys, 'url': u.get('url') or '',
+                      'severity': '', 'repos': [], 'fixes': []})
+    feed_seen_next = feed_seen_next[-2000:]
+
+    for v in kev_fresh:
+        text = ' '.join([v.get('vendorProject') or '', v.get('product') or '', v.get('vulnerabilityName') or ''])
+        tkeys = match_techs(text)
+        if not tkeys:
+            continue
+        cid = v.get('cveID') or ''
+        units.append({'id': 'kev:' + cid, 'kind': 'kev', 'title': v.get('vulnerabilityName') or cid,
+                      'cves': [cid] if cid else [], 'techs': tkeys,
+                      'url': 'https://nvd.nist.gov/vuln/detail/' + cid if cid else '',
+                      'severity': '', 'repos': [], 'fixes': [],
+                      'kev_note': (v.get('shortDescription') or '')[:400]})
+
+    ## ── EPSS batch over candidates + the observation window ─────────
+    candidates = set()
+    for u in units:
+        candidates.update(u.get('cves') or [])
+    for cid, rec in st_cves.items():
+        if rec.get('status') == 'observed':
+            candidates.add(cid)
+    epss = {}
+    epss_err = ''
+    if epss_thr >= 0 and epss_url and candidates:
+        def _addr_ok(ip):
+            if allow_private:
+                return True
+            try:
+                a = ipaddress.ip_address(ip)
+            except ValueError:
+                return False
+            if a.version == 6 and a.ipv4_mapped is not None:
+                a = a.ipv4_mapped
+            return (a.is_global and not (a.is_private or a.is_loopback or a.is_link_local or
+                    a.is_reserved or a.is_multicast or a.is_unspecified))
+        host = urlsplit(epss_url).hostname or ''
+        try:
+            if not allow_private and host:
+                behind = False
+                for k in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
+                    v = (os.environ.get(k) or '').strip()
+                    if v and (urlsplit(v if '://' in v else 'http://' + v).hostname == host):
+                        behind = True
+                if not behind:
+                    for info in socket.getaddrinfo(host, None):
+                        if not _addr_ok(info[4][0]):
+                            raise OSError('SSRF-unsafe address for EPSS host ' + host)
+            cand = sorted(candidates)
+            for i in range(0, len(cand), 100):
+                q = epss_url + ('&' if '?' in epss_url else '?') + 'cve=' + quote(','.join(cand[i:i + 100]))
+                req = urllib.request.Request(q, headers={
+                    'User-Agent': 'vuln-watch/0.1 (iterion; +https://github.com/SocialGouv/iterion)',
+                    'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    for row in (json.loads(r.read(8 * 1024 * 1024).decode('utf-8')).get('data') or []):
+                        try:
+                            epss[row.get('cve') or ''] = float(row.get('epss') or 0)
+                        except (TypeError, ValueError):
+                            pass
+        except Exception as e:
+            epss_err = type(e).__name__ + ': ' + str(e)[:300]
+
+    ## ── signals + policy ────────────────────────────────────────────
+    def signals_for(u):
+        sig = []
+        for c in (u.get('cves') or []):
+            v = kev_map.get(c)
+            if v:
+                sig.append({'type': 'kev', 'cve': c, 'date': v.get('dateAdded') or ''})
+        if u.get('kind') == 'alert':
+            sig.append({'type': 'ale'})
+        for c in (u.get('cves') or []):
+            s = epss.get(c)
+            if s is not None and epss_thr >= 0 and s >= epss_thr:
+                sig.append({'type': 'epss', 'cve': c, 'score': s})
+        return sig
+
+    def alert_decision(u, sig):
+        if sig:
+            return True
+        if u.get('kind') == 'dependabot':
+            sev = u.get('severity') or ''
+            if floor == 'critical' and sev == 'critical':
+                return True
+            if floor == 'high' and sev in ('critical', 'high'):
+                return True
+        if u.get('kind') == 'advisory' and avis_mode == 'alert':
+            return True
+        return False
+
+    def already_alerted(u):
+        cves = u.get('cves') or []
+        if cves:
+            return all((st_cves.get(c) or {}).get('status') == 'alerted' for c in cves)
+        return (st_units.get(u['id']) or {}).get('alerted_at') is not None
+
+    def render_fields(u, sig, refire_of=''):
+        best_epss = max([s.get('score') or 0 for s in sig if s['type'] == 'epss'] + [0])
+        return {'id': u['id'], 'kind': u.get('kind') or '', 'title': u.get('title') or '',
+                'cves': u.get('cves') or [], 'severity': u.get('severity') or '',
+                'package': u.get('package') or '', 'ecosystem': u.get('ecosystem') or '',
+                'repos': u.get('repos') or [], 'techs': u.get('techs') or [],
+                'fixes': u.get('fixes') or [], 'url': u.get('url') or '',
+                'signals': sig, 'epss_max': best_epss,
+                'projects': ([repo_index.get(r.lower()) for r in (u.get('repos') or [])]
+                             if u.get('repos') else tech_projects(u.get('techs') or [])),
+                'refire_of': refire_of}
+
+    alerts, observed_new, suppressed = [], 0, 0
+    if not bootstrap:
+        for u in units:
+            if already_alerted(u):
+                suppressed += 1
+                continue
+            sig = signals_for(u)
+            if alert_decision(u, sig):
+                alerts.append(render_fields(u, sig))
+            else:
+                observed_new += 1
+                for c in (u.get('cves') or []):
+                    st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
+                st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None))
+
+        ## Re-fire: an OBSERVED unit whose exploitation signal lit up since —
+        ## the Metabase scenario. One alert, then it flips to alerted.
+        refire = []
+        for uid, u in list(st_units.items()):
+            if u.get('alerted_at') is not None:
+                continue
+            if any((st_cves.get(c) or {}).get('status') == 'alerted' for c in (u.get('cves') or [])):
+                continue
+            sig = signals_for(u)
+            if sig and alert_decision(u, sig):
+                refire.append(render_fields(u, sig, refire_of=u.get('first_seen') or ''))
+        alerts.extend(refire)
+        refire_count = len(refire)
+    else:
+        ## Bootstrap: set every cursor to "now", alert nothing — the
+        ## backlog is not news, and flooding the channel on day one
+        ## teaches everyone to mute it.
+        refire_count = 0
+        suppressed = len(units)
+
+    ## priority: KEV first, then alert-class, then EPSS, then severity.
+    sev_rank = {'critical': 3, 'high': 2, 'medium': 1, 'low': 0}
+    def prio(a):
+        kinds = {s['type'] for s in a['signals']}
+        return ('kev' in kinds, 'ale' in kinds, a['epss_max'], sev_rank.get(a['severity'] or '', 0))
+    alerts.sort(key=prio, reverse=True)
+    overflow = max(0, len(alerts) - max_alerts)
+    posted_alerts, deferred = alerts[:max_alerts], alerts[max_alerts:]
+    ## Overflowed units stay eligible: record them observed, not alerted.
+    for a in deferred:
+        for c in a['cves']:
+            st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
+        if a['id'] not in st_units:
+            st_units[a['id']] = {'id': a['id'], 'kind': a['kind'], 'title': a['title'],
+                                 'cves': a['cves'], 'severity': a['severity'],
+                                 'package': a['package'], 'ecosystem': a['ecosystem'],
+                                 'repos': a['repos'], 'techs': a['techs'], 'fixes': a['fixes'],
+                                 'url': a['url'], 'first_seen': now_iso, 'alerted_at': None}
+    ## Posted units flip to alerted (applied to the STAGED state; it only
+    ## persists after delivery).
+    for a in posted_alerts:
+        for c in a['cves']:
+            st_cves[c] = dict(st_cves.get(c) or {}, status='alerted',
+                              first_seen=(st_cves.get(c) or {}).get('first_seen') or now_iso,
+                              alerted_at=now_iso)
+        rec = st_units.get(a['id']) or {'id': a['id'], 'kind': a['kind'], 'title': a['title'],
+                                        'cves': a['cves'], 'severity': a['severity'],
+                                        'package': a['package'], 'ecosystem': a['ecosystem'],
+                                        'repos': a['repos'], 'techs': a['techs'], 'fixes': a['fixes'],
+                                        'url': a['url'], 'first_seen': now_iso}
+        rec['alerted_at'] = now_iso
+        st_units[a['id']] = rec
+
+    ## ── health + staleness ──────────────────────────────────────────
+    def mark(source, ok, err=''):
+        h = health.setdefault(source, {})
+        if ok:
+            h['last_ok'] = now_iso
+            h.pop('last_error', None)
+        elif err:
+            h['last_error'] = err
+    for org in orgs:
+        err = next((e['error'] for e in dep_errors if e.get('org') == org), '')
+        mark('dependabot:' + org, org in (dep_by_org or {}) and not err, err)
+    for f in feeds:
+        furl = f.get('url') or ''
+        err = next((e['error'] for e in adv_errors if e.get('feed') == furl), '')
+        mark('feed:' + furl, not err, err)
+    if kev_url:
+        mark('kev', not kev_error, kev_error)
+    if epss_thr >= 0 and epss_url:
+        mark('epss', not epss_err, epss_err)
+
+    stale = []
+    if stale_hours > 0 and not bootstrap:
+        for source, h in sorted(health.items()):
+            last_ok = h.get('last_ok') or ''
+            try:
+                age_h = (now - datetime.datetime.fromisoformat(last_ok)).total_seconds() / 3600 if last_ok else 10 ** 6
+            except ValueError:
+                age_h = 10 ** 6
+            if age_h < stale_hours:
+                continue
+            warned = h.get('last_warned') or ''
+            try:
+                warned_age = (now - datetime.datetime.fromisoformat(warned)).total_seconds() / 3600 if warned else 10 ** 6
+            except ValueError:
+                warned_age = 10 ** 6
+            if warned_age < stale_hours:
+                continue
+            stale.append({'source': source, 'hours': int(age_h) if age_h < 10 ** 6 else -1, 'last_ok': last_ok})
+            h['last_warned'] = now_iso
+
+    ## ── prune + cursors + stage the next state ──────────────────────
+    cutoff = (now - datetime.timedelta(days=observe_days)).isoformat()
+    for cid in [c for c, r in st_cves.items() if r.get('status') == 'observed' and (r.get('first_seen') or '') < cutoff]:
+        del st_cves[cid]
+    for uid in [uid for uid, u in st_units.items()
+                if u.get('alerted_at') is None and (u.get('first_seen') or '') < cutoff]:
+        del st_units[uid]
+    if len(st_units) > 5000:
+        for uid, _ in sorted(st_units.items(), key=lambda kv: kv[1].get('first_seen') or '')[:len(st_units) - 5000]:
+            del st_units[uid]
+    cursors['dependabot'] = dep_cursor_next
+    cursors['feeds_seen'] = feed_seen_next
+    if kev_map or not cursors.get('kev_date_added'):
+        cursors['kev_date_added'] = kev_max or now_iso[:10]
+
+    os.makedirs(scratch, exist_ok=True)
+    state_next = os.path.join(scratch, 'state_next.json')
+    with open(state_next, 'w', encoding='utf-8') as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=1, sort_keys=True)
+    alertlog = os.path.join(scratch, 'alertlog_delta.jsonl')
+    with open(alertlog, 'w', encoding='utf-8') as fh:
+        for a in posted_alerts:
+            fh.write(json.dumps({'at': now_iso, 'id': a['id'], 'kind': a['kind'], 'cves': a['cves'],
+                                 'severity': a['severity'], 'signals': a['signals'],
+                                 'projects': a['projects'], 'repos': a['repos'], 'techs': a['techs'],
+                                 'title': a['title'], 'refire_of': a['refire_of']},
+                                ensure_ascii=False) + chr(10))
+
+    ## Zero-façade guard: if EVERY configured lane errored this run there
+    ## is no basis to claim "no alert" — fail loudly instead.
+    lanes_cfg = (1 if orgs else 0) + (1 if feeds else 0) + (1 if kev_url else 0)
+    lanes_dead = ((1 if orgs and len(dep_errors) >= len(orgs) and not dep_by_org else 0) +
+                  (1 if feeds and len(adv_errors) >= len(feeds) else 0) +
+                  (1 if kev_url and kev_error else 0))
+    if lanes_cfg and lanes_dead == lanes_cfg:
+        raise SystemExit('vuln-watch: every configured source failed this run -- refusing to report a zero-alert facade')
+
+    ## Attach project display info for notify (names resolved here so the
+    ## message step stays a pure renderer).
+    for a in posted_alerts:
+        a['project_names'] = [((projects.get(p) or {}).get('name') or p) for p in (a['projects'] or []) if p]
+        a['project_repos'] = {p: (projects.get(p) or {}).get('repos') or [] for p in (a['projects'] or []) if p}
+        a['tech_labels'] = [((techs.get(t) or {}).get('label') or t) for t in (a['techs'] or [])]
+
+    summary = ('alerts: ' + str(len(posted_alerts)) + ' to post (' + str(refire_count) + ' refire, ' +
+               str(overflow) + ' overflow), ' + str(observed_new) + ' observed, ' + str(suppressed) +
+               ' suppressed' + (', BOOTSTRAP' if bootstrap else '') +
+               ((' -- source errors: ' + json.dumps(dep_errors + adv_errors)[:400]) if (dep_errors or adv_errors) else '') +
+               ((' -- kev: ' + kev_error) if kev_error else '') +
+               ((' -- epss: ' + epss_err) if epss_err else ''))
+    print(json.dumps({'alerts': posted_alerts, 'alert_count': len(posted_alerts),
+                      'overflow_count': overflow, 'observed_count': observed_new,
+                      'suppressed_count': suppressed, 'refire_count': refire_count,
+                      'stale_sources': stale, 'bootstrap': bool(bootstrap),
+                      'state_next_file': state_next, 'alertlog_file': alertlog,
+                      'summary': summary}, ensure_ascii=False))
+
+## Deterministic delivery: render each alert from the label templates
+## (language comes from config, structure from here) and POST one
+## message per alert + one overflow note + one staleness warning to the
+## configured sinks. The techno→projects join arrives pre-resolved —
+## this node is a renderer and a courier, nothing more.
+tool notify:
+  input: notify_input
+  output: notify_output
+  language: py
+  script: |
+    import json, os, urllib.request
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    alerts = {{input.alerts}} or []
+    overflow = int({{input.overflow_count}} or 0)
+    stale = {{input.stale_sources}} or []
+    sinks = {{input.sinks}} or []
+    labels = {{input.labels}} or {}
+    dry_run = {{input.dry_run}}
+    webhooks_file = {{secrets.webhooks.path}}
+
+    def out(o):
+        print(json.dumps(o, ensure_ascii=False))
+        raise SystemExit(0)
+
+    def render(a):
+        sig_bits = []
+        for s in a.get('signals') or []:
+            if s['type'] == 'kev':
+                sig_bits.append(labels['kev_signal'].replace('{date}', s.get('date') or '?'))
+            elif s['type'] == 'ale':
+                sig_bits.append(labels['ale_signal'])
+            elif s['type'] == 'epss':
+                sig_bits.append(labels['epss_signal'].replace('{pct}', str(int(round((s.get('score') or 0) * 100)))))
+        if not sig_bits:
+            sig_bits.append(labels['sev_signal'].replace('{sev}', a.get('severity') or '?'))
+        head_subject = ' / '.join(a.get('tech_labels') or []) or \
+            ((a.get('package') or a.get('id')) + ((' (' + a['ecosystem'] + ')') if a.get('ecosystem') else ''))
+        ids = ' / '.join((a.get('cves') or []) or [a.get('id') or '?'])
+        fix = ', '.join(a.get('fixes') or []) or labels['no_fix']
+        lines = []
+        lines.append(':rotating_light: **' + labels['exploited' if (a.get('signals')) else 'alert'] + ' · ' + head_subject + '**')
+        lines.append('**' + ids + '** — ' + (a.get('title') or ''))
+        sev = (a.get('severity') or '').upper()
+        lines.append(labels['signal'] + ': ' + ' · '.join(sig_bits) +
+                     ((' · ' + labels['severity'] + ' ' + sev) if sev else '') +
+                     ' · ' + labels['fix'] + ': ' + fix)
+        pnames = a.get('project_names') or []
+        prepos = a.get('project_repos') or {}
+        if a.get('repos'):
+            shown = a['repos'][:12]
+            extra = len(a['repos']) - len(shown)
+            per_proj = {}
+            for r in a['repos']:
+                for pk, rs in prepos.items():
+                    if r.lower() in [x.lower() for x in rs]:
+                        per_proj.setdefault(pk, []).append(r)
+            named = [(( [n for p, n in zip(a.get('projects') or [], pnames) if p == pk] or [pk])[0]) for pk in per_proj]
+            proj_part = (', '.join(sorted(set(named))) + ' — ') if named else ''
+            lines.append(labels['projects'] + ' (' + str(len(a['repos'])) + ' ' + labels['repos'] + '): ' +
+                         proj_part + ', '.join('`' + r + '`' for r in shown) +
+                         ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
+            lines.append('_' + labels['via_dependabot'].replace('{n}', str(len(a['repos']))) + '_')
+        elif pnames:
+            shown = pnames[:12]
+            extra = len(pnames) - len(shown)
+            lines.append(labels['projects'] + ' (' + str(len(pnames)) + '): ' + ', '.join(shown) +
+                         ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
+        src = []
+        if a.get('url'):
+            src.append(a['url'])
+        for c in (a.get('cves') or [])[:3]:
+            u = 'https://nvd.nist.gov/vuln/detail/' + c
+            if u not in src and u != a.get('url'):
+                src.append(u)
+        if src:
+            lines.append(labels['sources'] + ': ' + ' · '.join(src))
+        if a.get('refire_of'):
+            sig_txt = ', '.join(sig_bits)
+            lines.append('_' + labels['refire'].replace('{date}', a['refire_of'][:10]).replace('{signal}', sig_txt) + '_')
+        return chr(10).join(lines)
+
+    messages = [(':rotating_light:', render(a)) for a in alerts]
+    if overflow > 0:
+        messages.append((':warning:', ':warning: ' + labels['overflow'].replace('{n}', str(overflow))))
+    for s in stale:
+        messages.append((':warning:', ':warning: ' + labels['stale']
+                         .replace('{source}', s.get('source') or '?')
+                         .replace('{hours}', str(s.get('hours')))
+                         .replace('{last}', s.get('last_ok') or 'never')))
+
+    if not messages:
+        out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'consume': not dry_run,
+             'targets': [], 'summary': 'nothing to deliver'})
+    if not sinks:
+        ## Alerts with nowhere to go are NOT consumed: the state stays put,
+        ## the same alerts recompute every run, and the failure is visible —
+        ## a config gap must be fixed, not absorbed.
+        out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'consume': False,
+             'targets': [], 'summary': str(len(messages)) + ' message(s) prepared but NO sinks configured -- alerts kept pending (fix the config)'})
+    payloads = []
+    for icon, text in messages:
+        for s in sinks:
+            payloads.append(((s.get('webhook') or ''),
+                             {'text': text[:14000], 'channel': s.get('channel') or '',
+                              'username': s.get('username') or 'Senti',
+                              'icon_emoji': s.get('icon_emoji') or ':shield:'}))
+    if dry_run:
+        for name, p in payloads:
+            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + chr(10) + p['text'] + chr(10) + '---')
+        out({'posted': False, 'dry_run': True, 'delivered': 0, 'consume': False,
+             'targets': [n for n, _ in payloads],
+             'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted, nothing consumed'})
+    whmap = {}
+    if webhooks_file and os.path.exists(webhooks_file):
+        with open(webhooks_file, encoding='utf-8') as fh:
+            whmap = json.load(fh)
+    missing = sorted({n for n, _ in payloads if not whmap.get(n)})
+    if missing:
+        raise SystemExit('vuln-watch: webhook name(s) [' + ', '.join(missing) + '] not found in the bound `webhooks` secret (JSON map name -> url)')
+    delivered, failures, targets = 0, [], []
+    for name, p in payloads:
+        req = urllib.request.Request(whmap[name], data=json.dumps(p).encode('utf-8'),
+                                     headers={'Content-Type': 'application/json',
+                                              'User-Agent': 'vuln-watch (iterion)'}, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=20):
+                delivered += 1
+                targets.append(name + '->' + (p['channel'] or 'default'))
+        except Exception as e:
+            failures.append(name + ': ' + type(e).__name__ + ': ' + str(e)[:200])
+    if delivered == 0:
+        raise SystemExit('vuln-watch: all ' + str(len(payloads)) + ' webhook post(s) failed: ' + '; '.join(failures))
+    out({'posted': True, 'dry_run': False, 'delivered': delivered, 'consume': True,
+         'targets': sorted(set(targets)),
+         'summary': 'delivered ' + str(delivered) + '/' + str(len(payloads)) +
+                    ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
+
+## Persist the staged state under flock: write state.json, append the
+## alert log, and — with state_commit=true — commit+push the state dir
+## with the rebase-retry discipline (ephemeral cloud runners share the
+## branch). Runs ONLY after delivery succeeded (or nothing needed
+## delivering): a failed post replays next run instead of losing alerts.
+tool commit_state:
+  input: commit_input
+  output: commit_output
+  language: py
+  script: |
+    import json, os, fcntl, subprocess
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    state_next = {{input.state_next_file}}
+    alertlog_delta = {{input.alertlog_file}}
+    state_commit = {{input.state_commit}}
+    ws = {{input.workspace}}
+    state_dir = {{input.state_dir}}
+    os.chdir(ws)
+
+    def _commit_push_state(sdir, msg):
+        subprocess.run(['git', 'add', sdir], check=True)
+        ## Guard: the bot may ONLY ever commit the state dir. A staged path
+        ## outside it (vuln-watch.json, inventory.json, .github/**) would be
+        ## a bug or an injection — hard-fail before the push rather than
+        ## persisting it under the bot's identity.
+        staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
+                                capture_output=True, text=True).stdout.split(chr(10))
+        pfx = sdir.rstrip('/') + '/'
+        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        if outside:
+            raise SystemExit('vuln-watch: refusing to commit path(s) outside the state dir ' +
+                             repr(sdir) + ': ' + ', '.join(outside[:10]))
+        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
+            return False
+        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                            capture_output=True, text=True).stdout.strip() or 'HEAD'
+        for _ in range(5):
+            pushed = subprocess.run(['git', 'push', 'origin', 'HEAD'],
+                                    capture_output=True, text=True)
+            if pushed.returncode == 0:
+                return True
+            err = (pushed.stderr or '')[-400:]
+            if 'could not read Username' in err or 'Authentication failed' in err \
+                    or 'terminal prompts disabled' in err or 'Permission denied' in err:
+                raise SystemExit('vuln-watch: git push was refused for lack of credentials -- '
+                                 'the state was committed locally and is NOT pushed, so alerts may '
+                                 'replay next run. Bind the forge_token secret (or run with '
+                                 'state_commit=false). git said: ' + err.strip())
+            rebased = subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br],
+                                     capture_output=True, text=True)
+            if rebased.returncode != 0:
+                subprocess.run(['git', 'rebase', '--abort'])
+                raise SystemExit('vuln-watch: could not rebase onto origin/' + br +
+                                 ' to retry the push -- aborting. git said: ' +
+                                 (rebased.stderr or '')[-400:].strip())
+        raise SystemExit('vuln-watch: git push failed after 5 retries (non-fast-forward or network)')
+
+    os.makedirs(state_dir, exist_ok=True)
+    lock = open(os.path.join(state_dir, '.lock'), 'w')
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(state_next, encoding='utf-8') as fh:
+        staged = fh.read()
+    tmp = os.path.join(state_dir, 'state.json.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        fh.write(staged)
+    os.replace(tmp, os.path.join(state_dir, 'state.json'))
+    appended = 0
+    if alertlog_delta and os.path.exists(alertlog_delta):
+        with open(alertlog_delta, encoding='utf-8') as src:
+            delta = [ln for ln in src.read().split(chr(10)) if ln.strip()]
+        if delta:
+            with open(os.path.join(state_dir, 'alertlog.jsonl'), 'a', encoding='utf-8') as dst:
+                for ln in delta:
+                    dst.write(ln + chr(10))
+            appended = len(delta)
+    committed = False
+    if state_commit:
+        committed = _commit_push_state(state_dir, 'chore(vuln-watch): watch tick, ' + str(appended) + ' alert(s)')
+    print(json.dumps({'committed': committed,
+                      'summary': 'state persisted (' + str(appended) + ' alert(s) logged)' +
+                                 (', pushed' if committed else '')}, ensure_ascii=False))
+
+## ─── Workflow ───────────────────────────────────────────────────
+
+workflow vuln_watch:
+  entry: plan
+
+  ## The state (seen/cursors/health + alert log) IS the product and must
+  ## persist in the workspace across runs — a run worktree would isolate
+  ## the writes and discard them at finalization. Never auto.
+  worktree: none
+
+  ## This bot never builds the target repo: it reads two JSON files and
+  ## talks to security APIs. Realising the workspace's toolchain would
+  ## buy nothing and slow the hourly tick.
+  repo_devbox: off
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "15m"
+    ## Belt only — the workflow has no LLM node to spend anything.
+    max_cost_usd: 0.5
+
+  plan -> poll_dependabot with {
+    orgs: "{{outputs.plan.github_orgs}}",
+    api_base: "{{outputs.plan.github_api_base}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}"
+  }
+
+  poll_dependabot -> poll_advisories with {
+    feeds: "{{outputs.plan.advisory_feeds}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}"
+  }
+
+  poll_advisories -> poll_exploit with {
+    kev_url: "{{outputs.plan.kev_url}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    allow_private: "{{vars.allow_private_sources}}"
+  }
+
+  poll_exploit -> match_policy with {
+    alerts_file: "{{outputs.poll_dependabot.alerts_file}}",
+    units_file: "{{outputs.poll_advisories.units_file}}",
+    kev_file: "{{outputs.poll_exploit.kev_file}}",
+    dependabot_errors: "{{outputs.poll_dependabot.errors}}",
+    advisory_errors: "{{outputs.poll_advisories.errors}}",
+    kev_error: "{{outputs.poll_exploit.error}}",
+    epss_url: "{{outputs.plan.epss_url}}",
+    epss_threshold: "{{outputs.plan.epss_threshold}}",
+    dependabot_alert_floor: "{{outputs.plan.dependabot_alert_floor}}",
+    certfr_avis: "{{outputs.plan.certfr_avis}}",
+    github_orgs: "{{outputs.plan.github_orgs}}",
+    advisory_feeds: "{{outputs.plan.advisory_feeds}}",
+    kev_url: "{{outputs.plan.kev_url}}",
+    inventory_path: "{{outputs.plan.inventory_path}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}",
+    scratch_dir: "{{vars.scratch_dir}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}",
+    max_alerts: "{{vars.max_alerts_per_run}}",
+    observe_window_days: "{{vars.observe_window_days}}",
+    source_stale_hours: "{{vars.source_stale_hours}}"
+  }
+
+  match_policy -> notify with {
+    alerts: "{{outputs.match_policy.alerts}}",
+    overflow_count: "{{outputs.match_policy.overflow_count}}",
+    stale_sources: "{{outputs.match_policy.stale_sources}}",
+    sinks: "{{outputs.plan.sinks}}",
+    labels: "{{outputs.plan.labels}}",
+    dry_run: "{{vars.dry_run}}"
+  }
+
+  ## Only a completed delivery (or a nothing-to-deliver tick) consumes
+  ## the staged state; dry-runs and sink-less alert runs keep the old
+  ## state so the SAME alerts recompute next run (at-least-once).
+  notify -> done when not consume
+  notify -> commit_state when consume with {
+    state_next_file: "{{outputs.match_policy.state_next_file}}",
+    alertlog_file: "{{outputs.match_policy.alertlog_file}}",
+    state_commit: "{{vars.state_commit}}",
+    workspace: "{{vars.workspace_dir}}",
+    state_dir: "{{vars.state_dir}}"
+  }
+  commit_state -> done
