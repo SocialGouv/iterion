@@ -1,6 +1,9 @@
 package delegate
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ---------------------------------------------------------------------------
 // Fallback-trigger classification.
@@ -66,6 +69,10 @@ type ErrModelUnavailable struct {
 	Provider string // backend that reported it ("claude_code", …)
 	Model    string // the model id that was refused
 	Detail   string // raw upstream message for diagnostics
+	// ResetAt is the provider-reported instant at which this temporary
+	// unavailability may clear. Most unavailable errors do not carry one;
+	// callers must fail open when it is zero.
+	ResetAt time.Time
 }
 
 func (e *ErrModelUnavailable) Error() string {

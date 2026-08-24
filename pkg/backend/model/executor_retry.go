@@ -717,6 +717,23 @@ func (e *ClawExecutor) dispatchChain(
 			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
 			continue
 		}
+		key := cooldownKey(backendName, task)
+		if fallbackRemains {
+			if cd, cooled := e.routeCooldowns.active(key, e.cooldownNow()); cooled {
+				// A remembered failure obeys the same per-route `on:` filters
+				// as a fresh one. If nothing later accepts it, fail open by
+				// attempting this element normally — especially important for
+				// a node whose authored fallback does not cover this category.
+				j := firstAcceptingFrom(chain, i+1, cd.Category)
+				if j >= 0 {
+					next := chain[j]
+					e.noteCooldownFallback(ctx, nodeID, el, next, backendName,
+						effModel(el), effModel(next), cd)
+					nextAllowed = j
+					continue
+				}
+			}
+		}
 		// Whether ANY remaining route would take a given failure — the
 		// carve-out must not strip a retry budget the chain will not
 		// compensate for. Scanning the whole rest (not just the next
@@ -764,6 +781,10 @@ func (e *ClawExecutor) dispatchChain(
 			// and the tail folds it with `spent.applyTo` (R5180a7).
 			break
 		}
+		// Remember only typed failures whose provider supplied a future
+		// reset. Missing or stale reset data deliberately leaves the route
+		// hot, so bookkeeping uncertainty cannot suppress a healthy call.
+		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
 		for k := i + 1; k < j; k++ {
 			if e.logger != nil {
 				e.logger.Warn("[%s#%d/%s] %q failed (%s); skipping %q (does not accept) — trying later routes",
@@ -802,6 +823,48 @@ func (e *ClawExecutor) dispatchChain(
 		return chainOutcome{Result: result}, &ErrChainExhausted{Chain: chainLabel(chain), Errs: causes}
 	}
 	return chainOutcome{Result: result}, err
+}
+
+// noteCooldownFallback exposes a route change that cost no delegate attempt.
+// It remains a model_fallback timeline event, but attempts=0 and the cooldown
+// metadata distinguish it from the refusal that originally armed the entry.
+func (e *ClawExecutor) noteCooldownFallback(
+	ctx context.Context,
+	nodeID string,
+	from, to chainElement,
+	backendName string,
+	fromModel, toModel string,
+	cd routeCooldown,
+) {
+	fromBackend := from.Backend
+	if fromBackend == "" {
+		fromBackend = backendName
+	}
+	toBackend := to.Backend
+	if toBackend == "" {
+		toBackend = backendName
+	}
+	if e.logger != nil {
+		e.logger.Info("[%s#%d/%s] skipping %q: %s cooldown active until %s; routing to %q",
+			nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(from),
+			cd.Category, cd.Until.UTC().Format(time.RFC3339), stepLabel(to))
+	}
+	if e.hooks.OnProviderFallback == nil {
+		return
+	}
+	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
+		BackendName:   backendName,
+		From:          from.Provider,
+		To:            to.Provider,
+		FromModel:     fromModel,
+		ToModel:       toModel,
+		FromBackend:   fromBackend,
+		ToBackend:     toBackend,
+		Reason:        string(cd.Category),
+		Attempts:      0,
+		Cooldown:      true,
+		CooldownUntil: cd.Until,
+	})
 }
 
 // noteFallback emits the one log line and the one hook that make a

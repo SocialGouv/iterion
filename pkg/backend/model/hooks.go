@@ -940,9 +940,9 @@ func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
 // onProviderFallback implements the OnProviderFallback hook: it turns a
 // chain fall-through into a first-class store event.
 //
-// The log line is a Warn rather than an Info deliberately — a
-// fall-through means the primary route is gone, which an operator wants
-// to see even when the run goes on to succeed.
+// A fresh failure is Warn-level: the primary route just went away. A
+// cooldown skip is Info-level because the original refusal was already
+// warned and the skip is the optimisation working as intended.
 func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo) {
 	data := map[string]any{
 		"from_backend":  info.FromBackend,
@@ -954,6 +954,12 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 		"reason":        info.Reason,
 		"attempts":      info.Attempts,
 	}
+	if info.Cooldown {
+		data["cooldown"] = true
+	}
+	if !info.CooldownUntil.IsZero() {
+		data["cooldown_until"] = info.CooldownUntil.UTC().Format(time.RFC3339)
+	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()
 	}
@@ -962,6 +968,13 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 	errMsg := ""
 	if info.Err != nil {
 		errMsg = info.Err.Error()
+	}
+	if info.Cooldown {
+		h.logger.Info("Model fallback [%s]: %s → %s (%s cooldown until %s)",
+			nodeID, fallbackRouteLabel(info.FromBackend, info.From, info.FromModel),
+			fallbackRouteLabel(info.ToBackend, info.To, info.ToModel), info.Reason,
+			info.CooldownUntil.UTC().Format(time.RFC3339))
+		return
 	}
 	h.logger.Warn("Model fallback [%s]: %s → %s (%s): %s",
 		nodeID, fallbackRouteLabel(info.FromBackend, info.From, info.FromModel),
