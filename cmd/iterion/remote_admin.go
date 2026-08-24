@@ -247,6 +247,68 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 	}),
 }
 
+// --- platform runtime settings: usage caps (DB-backed env fallback) ---
+
+var (
+	remoteCapsFiveHour  int
+	remoteCapsWeek      int
+	remoteCapsClearFive bool
+	remoteCapsClearWeek bool
+)
+
+var remoteAdminCapsCmd = &cobra.Command{
+	Use:   "caps [set]",
+	Short: "Platform usage caps: show the effective values (default) or retune them without a restart",
+	Long: `Platform usage caps — the runtime-settings form of
+ITERION_USAGE_CAP_5H_PCT / ITERION_USAGE_CAP_WEEK_PCT.
+
+Without arguments, prints the stored record, the env defaults, the
+EFFECTIVE policy and its source. "set" writes overrides (merge
+semantics: a window you don't name keeps its current state):
+
+  iterion remote admin caps set --five-hour 80 --week 70
+  iterion remote admin caps set --clear-week        # back to the env default
+
+Changes propagate to every server and runner replica within the
+advertised propagation bound (no restart). Enforcement postures
+(soft/hard modes) and the ITERION_USAGE_CAP kill switch stay env-only.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/usage-caps"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		if args[0] != "set" {
+			return fmt.Errorf("unknown caps action %q (want set)", args[0])
+		}
+		fields := map[string]string{}
+		if cmd.Flags().Changed("five-hour") {
+			fields["five_hour_pct"] = fmt.Sprintf("%d", remoteCapsFiveHour)
+		}
+		if remoteCapsClearFive {
+			fields["five_hour_pct"] = "null"
+		}
+		if cmd.Flags().Changed("week") {
+			fields["week_pct"] = fmt.Sprintf("%d", remoteCapsWeek)
+		}
+		if remoteCapsClearWeek {
+			fields["week_pct"] = "null"
+		}
+		if len(fields) == 0 {
+			return fmt.Errorf("usage: admin caps set --five-hour <0-100> and/or --week <0-100> (or --clear-five-hour / --clear-week)")
+		}
+		body := "{"
+		for k, v := range fields {
+			if len(body) > 1 {
+				body += ","
+			}
+			body += fmt.Sprintf("%q:%s", k, v)
+		}
+		body += "}"
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(body))
+	}),
+}
+
 // --- org SSO ---
 
 var remoteSSOData string
@@ -359,7 +421,12 @@ func init() {
 	remoteAdminLLMKeysCmd.Flags().StringVar(&remoteLLMKeyData, "data", "", "Patch JSON for update (literal or @file)")
 	remoteAdminLLMCmd.AddCommand(remoteAdminLLMKeysCmd, remoteAdminLLMOAuthCmd)
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd)
+	remoteAdminCapsCmd.Flags().IntVar(&remoteCapsFiveHour, "five-hour", 0, "Five-hour window cap percentage (0–100; 0 = no cap)")
+	remoteAdminCapsCmd.Flags().IntVar(&remoteCapsWeek, "week", 0, "Weekly window cap percentage (0–100; 0 = no cap)")
+	remoteAdminCapsCmd.Flags().BoolVar(&remoteCapsClearFive, "clear-five-hour", false, "Clear the five-hour override (fall back to the env default)")
+	remoteAdminCapsCmd.Flags().BoolVar(&remoteCapsClearWeek, "clear-week", false, "Clear the weekly override (fall back to the env default)")
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
