@@ -21,7 +21,7 @@ name: iterion-web-search
 services:
   # ---- Tier 2: SearXNG (sovereign metasearch) --------------------------
   searxng:
-    image: searxng/searxng:latest@sha256:c2dc2d9e6b910653e8628361c23443222490e4cabbb9e02667b7847143db843b
+    image: searxng/searxng:latest@sha256:11a9b34cdc0b1ec2b991470a2762ecb5a1a531898289fb51dcd015260450729e
     restart: unless-stopped
     ports:
       - "${SEARXNG_PORT:-8080}:8080"
@@ -40,7 +40,7 @@ services:
   # Image-based (no local build). Firecrawl's `search` delegates to the
   # SearXNG above via SEARXNG_ENDPOINT — one instance serves both tiers.
   redis:
-    image: redis:alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+    image: redis:alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
     profiles: ["firecrawl"]
     command: redis-server --bind 0.0.0.0
     networks: [websearch]
@@ -86,7 +86,7 @@ services:
       options: { max-size: "5m", max-file: "2" }
 
   firecrawl:
-    image: ghcr.io/firecrawl/firecrawl:latest@sha256:ba9d387d0f28532607a97cec14b9c05b3a8850c03078119b50b629b7cef03173
+    image: ghcr.io/firecrawl/firecrawl:latest@sha256:99f6c3c62e2f3ab3b6fac0d1ed561e207547c40f314e9affa72215875ddcc103
     profiles: ["firecrawl"]
     depends_on:
       redis: { condition: service_started }
