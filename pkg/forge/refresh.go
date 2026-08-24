@@ -43,6 +43,12 @@ type RefreshWorker struct {
 	// Returns (nil, nil) when the connection kind cannot/should-not refresh
 	// (e.g. PAT) — the worker skips it.
 	RefresherFor func(conn Connection) TokenRefresher
+	// SecurityMinter, when set, mints the org-wide vulnerability_alerts:read
+	// installation token for a github_app connection that opted into
+	// SecurityReadEnabled. The worker re-mints it alongside each connection
+	// refresh (both tokens live ~1h, so they rotate together) and merges it
+	// into the tenant's dependabot_tokens secret. Nil = feature unwired.
+	SecurityMinter func(ctx context.Context, conn Connection) (string, error)
 	// Lead is how far before expiry a token is refreshed (default 5m).
 	Lead time.Duration
 	Now  func() time.Time
@@ -169,6 +175,24 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// the next tick — acceptable (the connection is already updated).
 	if conn.ManagedSecretID != "" {
 		if err := w.rewriteManagedSecret(ctx, conn.ManagedSecretID, out.AccessToken); err != nil {
+			return err
+		}
+	}
+
+	// 3) security-read token (opt-in): re-mint the org-wide
+	// vulnerability_alerts:read token in the same cycle — it shares the
+	// ~1h installation-token lifetime, so refreshing it here keeps the
+	// dependabot_tokens map exactly as fresh as the forge token. A failure
+	// is returned (→ one visible warn per cycle, and the connection health
+	// view names the missing grant), never silently swallowed: an hourly
+	// vuln-watch reading a dead token would otherwise fail with no trail
+	// on the server side.
+	if conn.SecurityReadEnabled && conn.Kind == KindGitHubApp && w.SecurityMinter != nil {
+		secTok, err := w.SecurityMinter(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("forge: security-read mint for connection %s: %w", conn.ID, err)
+		}
+		if err := UpsertSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn, secTok, "forge-refresh-worker", w.now()); err != nil {
 			return err
 		}
 	}

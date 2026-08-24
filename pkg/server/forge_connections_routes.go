@@ -147,6 +147,12 @@ type forgeConnectionHealth struct {
 	// has minted one for the installation.
 	TokenPermissions        map[string]string `json:"token_permissions,omitempty"`
 	TokenMissingPermissions []string          `json:"token_missing_permissions,omitempty"`
+	// SecurityReadEnabled mirrors the connection's opt-in into the org-wide
+	// Dependabot-alerts token flow; MissingSecurityPermissions names the
+	// grant it would need (vulnerability_alerts) when the installation
+	// hasn't approved it — the fix is the ManageInstallURL page.
+	SecurityReadEnabled        bool     `json:"security_read_enabled"`
+	MissingSecurityPermissions []string `json:"missing_security_permissions,omitempty"`
 }
 
 // syncGrantedPermissions persists the installation's live grant onto the
@@ -192,13 +198,14 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	h := forgeConnectionHealth{
-		Status:         string(conn.Status),
-		StatusReason:   conn.StatusReason,
-		Provider:       string(conn.Provider),
-		Kind:           string(conn.Kind),
-		AccountLogin:   conn.AccountLogin,
-		AppSlug:        conn.AppSlug,
-		InstallationID: conn.InstallationID,
+		Status:              string(conn.Status),
+		StatusReason:        conn.StatusReason,
+		Provider:            string(conn.Provider),
+		Kind:                string(conn.Kind),
+		AccountLogin:        conn.AccountLogin,
+		AppSlug:             conn.AppSlug,
+		InstallationID:      conn.InstallationID,
+		SecurityReadEnabled: conn.SecurityReadEnabled,
 	}
 	if names, err := s.forgeConnRepoNames(r.Context(), conn); err == nil {
 		h.ProvisionedRepoCount = len(names)
@@ -214,6 +221,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				h.ManageInstallURL = inst.HTMLURL
 				h.GrantedPermissions = inst.Permissions
 				h.MissingPermissions = forgegithub.MissingDeliveryPermissions(inst.Permissions)
+				h.MissingSecurityPermissions = forgegithub.MissingSecurityPermissions(inst.Permissions)
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
 				// long after the install.
@@ -350,6 +358,79 @@ func (s *Server) handleDeleteForgeConnection(w http.ResponseWriter, r *http.Requ
 	}
 	s.auditTenant(r, teamID, "forge.connection.deleted", "forge_connection", connID, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type forgeConnectionPatchReq struct {
+	// SecurityReadEnabled toggles the org-wide Dependabot-alerts token flow
+	// for this github_app connection (see forge.SecurityReadSecretName).
+	SecurityReadEnabled *bool `json:"security_read_enabled,omitempty"`
+}
+
+// handlePatchForgeConnection updates a connection's operator-tunable flags.
+// Enabling security-read mints the token IMMEDIATELY (not at the next
+// refresh tick) so the operator learns on the spot whether the installation
+// granted 'Dependabot alerts: read' — a missing grant answers 422 with the
+// remediation named, and nothing is persisted. Disabling removes the
+// connection's org entry from the dependabot_tokens secret.
+func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	if s.forgeConnections == nil {
+		httpError(w, http.StatusNotFound, "forge integrations disabled")
+		return
+	}
+	conn, ok := s.forgeConnForTenant(w, r, teamID, r.PathValue("conn_id"))
+	if !ok {
+		return
+	}
+	var req forgeConnectionPatchReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.SecurityReadEnabled == nil {
+		httpError(w, http.StatusBadRequest, "nothing to update: security_read_enabled is the only patchable field")
+		return
+	}
+	enable := *req.SecurityReadEnabled
+	ctx := store.WithTenant(r.Context(), teamID)
+	if enable {
+		if conn.Kind != forge.KindGitHubApp {
+			httpError(w, http.StatusUnprocessableEntity, "security-read requires a github_app connection (this one is %s); a non-App deployment can set the %q team secret by hand instead", conn.Kind, forge.SecurityReadSecretName)
+			return
+		}
+		tok, err := s.forgeSecurityTokenMinter(ctx, conn)
+		if err != nil {
+			if errors.Is(err, forge.ErrPermissionsNotGranted) {
+				httpError(w, http.StatusUnprocessableEntity, "%v", err)
+				return
+			}
+			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
+			return
+		}
+		if err := forge.UpsertSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn, tok, id.UserID, time.Now().UTC()); err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+	} else if conn.SecurityReadEnabled {
+		if err := forge.RemoveSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn); err != nil {
+			httpError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+	}
+	conn.SecurityReadEnabled = enable
+	conn.UpdatedAt = time.Now().UTC()
+	if err := s.forgeConnections.Update(ctx, conn); err != nil {
+		httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
+		return
+	}
+	s.auditTenant(r, teamID, "forge.connection.security_read", "forge_connection", conn.ID, map[string]any{
+		"enabled": enable, "account": conn.AccountLogin,
+	})
+	writeJSON(w, conn)
 }
 
 func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {

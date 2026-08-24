@@ -126,6 +126,15 @@ type Connection struct {
 	// baseline.
 	GrantedPermissions map[string]string `bson:"granted_permissions,omitempty" json:"granted_permissions,omitempty"`
 
+	// SecurityReadEnabled opts this github_app connection into the
+	// security-read token flow: the refresh worker (and the enable endpoint)
+	// mint an org-wide vulnerability_alerts:read installation token and
+	// merge it into the tenant's `dependabot_tokens` generic secret
+	// (SecurityReadSecretName) under the installation's org login — the
+	// secret the vuln-watch bot reads. Off by default: alert data is
+	// sensitive, so a team turns it on per connection, deliberately.
+	SecurityReadEnabled bool `bson:"security_read_enabled,omitempty" json:"security_read_enabled,omitempty"`
+
 	Status ConnectionStatus `bson:"status" json:"status"`
 
 	// StatusReason is a human-readable explanation for a non-active Status

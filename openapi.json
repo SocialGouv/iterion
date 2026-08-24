@@ -317,6 +317,9 @@
             },
             "type": "array"
           },
+          "security_read_enabled": {
+            "type": "boolean"
+          },
           "status": {
             "type": "string"
           },
@@ -2065,11 +2068,20 @@
             },
             "type": "array"
           },
+          "missing_security_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "provider": {
             "type": "string"
           },
           "provisioned_repo_count": {
             "type": "integer"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -2094,7 +2106,8 @@
           "status",
           "provider",
           "kind",
-          "provisioned_repo_count"
+          "provisioned_repo_count",
+          "security_read_enabled"
         ],
         "type": "object"
       },
@@ -7216,7 +7229,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdForgeConnectionsByConnId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
       "get": {
