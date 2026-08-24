@@ -4,11 +4,22 @@
 # on the hosted Mend Renovate App. The repository config (renovate.json at
 # the repo root) is picked up automatically as the per-repo config.
 #
-# REQUIRED SECRET: `RENOVATE_TOKEN` — a Personal Access Token (classic:
-# `repo` scope, or fine-grained: Contents + Pull requests: read & write)
-# for the account Renovate should open PRs as. The default GITHUB_TOKEN is
-# intentionally not used: PRs it opens do not trigger other workflows
-# (tests.yml would not run on Renovate PRs).
+# Renovate authenticates with the dedicated "SocialGouv Renovate" GitHub App
+# (same setup as buildkit-operator) and NOT with GITHUB_TOKEN or a user PAT:
+# - GITHUB_TOKEN-opened PRs do not trigger other workflows (tests.yml would
+#   never run on Renovate PRs);
+# - a user PAT authors the PRs as that human, which downstream classifies as
+#   human-authored — the iterion webhook lane then routes dep PRs to the
+#   generic reviewer instead of the dependency auditor (Vetty), and nothing
+#   ever arms auto-merge. Under the App the author is
+#   `socialgouv-renovate[bot]`, which is the identity the dependency lane
+#   keys on.
+# The App needs `workflows: write`: helpers:pinGitHubActionDigests rewrites
+# .github/workflows/**, and an App push without that permission is refused.
+#
+# REQUIRED SECRETS: `RENOVATE_APP_ID` + `RENOVATE_APP_PRIVATE_KEY` (the same
+# pair buildkit-operator carries), and the repo must be in the App
+# installation's repository list. Renovate fails loudly when they are absent.
 #
 # Action versions are SHA-pinned (repo convention); Renovate's own
 # github-actions manager keeps these pins current.
@@ -20,6 +31,11 @@ on:
     - cron: "0 4 * * 1"
   workflow_dispatch:
     inputs:
+      dryRun:
+        description: "Dry run: log what would be done, create nothing"
+        required: false
+        default: false
+        type: boolean
       logLevel:
         description: "Renovate log level"
         required: false
@@ -47,16 +63,20 @@ jobs:
   renovate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
 
       - name: Run Renovate
         uses: renovatebot/github-action@316d7cd859606d6039a2182b7d69199e9b036835 # v46.2.1
         with:
-          token: ${{ secrets.RENOVATE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
         env:
           LOG_LEVEL: ${{ inputs.logLevel || 'info' }}
           RENOVATE_REPOSITORIES: ${{ github.repository }}
-          # Honour the per-repo renovate.json checked out above.
+          # Honour the per-repo renovate.json.
           RENOVATE_ONBOARDING: "false"
           RENOVATE_REQUIRE_CONFIG: "required"
+          RENOVATE_DRY_RUN: ${{ inputs.dryRun && 'full' || '' }}
