@@ -178,8 +178,12 @@ the hours this one spent.
 - [docs/usage-caps.md](docs/usage-caps.md) — capping the LLM
   subscription below the provider's own wall (`ITERION_USAGE_CAP_*`:
   soft on the 5h window, hard on the weekly one), where the numbers
-  come from, and the KEDA emergency brake. Read it when bots are eating
-  the forfait an operator also works on.
+  come from, and the KEDA emergency brake. The percentages are also
+  **runtime-mutable without a restart** (`iterion remote admin caps set
+  --five-hour 80 --week 70`, super-admin; DB record over the env
+  defaults, ≤30s propagation to both deployments, `/healthz` echoes the
+  effective values — ADR-090). Read it when bots are eating the forfait
+  an operator also works on.
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).
