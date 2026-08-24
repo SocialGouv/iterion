@@ -161,7 +161,7 @@ func TestPATBearer_AuthenticatesProgrammaticClientsThroughTheRealServer(t *testi
 		if status != http.StatusOK {
 			t.Fatalf("GET /api/auth/me with PAT = %d body=%s", status, body)
 		}
-		var me authResponse
+		var me AuthMeResponse
 		if err := json.Unmarshal(body, &me); err != nil {
 			t.Fatalf("decode me: %v (%s)", err, body)
 		}

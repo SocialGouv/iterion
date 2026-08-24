@@ -12,9 +12,9 @@ import (
 
 // ---- Request / response shapes ----
 
-type authResponse struct {
-	User          userView      `json:"user"`
-	Orgs          []orgTreeView `json:"orgs"`
+type AuthMeResponse struct {
+	User          UserView      `json:"user"`
+	Orgs          []OrgTreeView `json:"orgs"`
 	ActiveOrg     string        `json:"active_org_id,omitempty"`
 	ActiveOrgRole string        `json:"active_org_role,omitempty"`
 	ActiveTeam    string        `json:"active_team_id,omitempty"`
@@ -23,19 +23,23 @@ type authResponse struct {
 	ExpiresAt     string        `json:"expires_at,omitempty"`
 }
 
-// orgTreeView is one organization the user belongs to, with the teams
+// OrgTreeView is one organization the user belongs to, with the teams
 // inside it they can access. It is the shape /api/auth/me returns so
 // the SPA can render an Org picker → Team picker without extra calls.
-type orgTreeView struct {
+// Exported (with AuthMeResponse / MembershipView / UserView): pkg/cli
+// decodes /api/auth/me with these exact types (RemoteMe aliases
+// AuthMeResponse), so the CLI's decode target cannot drift from this
+// wire.
+type OrgTreeView struct {
 	OrgID    string           `json:"org_id"`
 	OrgName  string           `json:"org_name"`
 	OrgSlug  string           `json:"org_slug"`
 	OrgRole  string           `json:"org_role"`
 	Personal bool             `json:"personal,omitempty"`
-	Teams    []membershipView `json:"teams"`
+	Teams    []MembershipView `json:"teams"`
 }
 
-type userView struct {
+type UserView struct {
 	ID           string `json:"id"`
 	Email        string `json:"email"`
 	Name         string `json:"name,omitempty"`
@@ -44,7 +48,7 @@ type userView struct {
 	CreatedAt    string `json:"created_at,omitempty"`
 }
 
-type membershipView struct {
+type MembershipView struct {
 	TeamID   string `json:"team_id"`
 	TeamName string `json:"team_name"`
 	TeamSlug string `json:"team_slug"`
@@ -93,8 +97,8 @@ type adminUpdateUserReq struct {
 
 // ---- Helpers ----
 
-func (s *Server) toUserView(u identity.User) userView {
-	return userView{
+func (s *Server) toUserView(u identity.User) UserView {
+	return UserView{
 		ID:           u.ID,
 		Email:        u.Email,
 		Name:         u.Name,
@@ -129,7 +133,7 @@ func isBrowserClient(r *http.Request) bool {
 func (s *Server) renderAuthResponse(w http.ResponseWriter, r *http.Request, res auth.LoginResult) {
 	orgs, _ := s.buildOrgTree(r.Context(), res.User.ID)
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)
-	resp := authResponse{
+	resp := AuthMeResponse{
 		User:          s.toUserView(res.User),
 		Orgs:          orgs,
 		ActiveOrg:     res.ActiveOrgID,
@@ -148,7 +152,7 @@ func (s *Server) renderAuthResponse(w http.ResponseWriter, r *http.Request, res 
 // belong to (via OrgMembership, plus any org reachable through a team
 // grant), each carrying the teams in it they can access. Org admins see
 // every team in their org; plain members see only their granted teams.
-func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView, error) {
+func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]OrgTreeView, error) {
 	st := s.authStore()
 	if st == nil {
 		return nil, nil
@@ -175,7 +179,7 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 	if err != nil && s.logger != nil {
 		s.logger.Warn("auth: bulk-load orgs for user %s: %v", userID, err)
 	}
-	out := make([]orgTreeView, 0, len(orgMems))
+	out := make([]OrgTreeView, 0, len(orgMems))
 	for _, om := range orgMems {
 		org, ok := orgsByID[om.OrgID]
 		if !ok {
@@ -183,7 +187,7 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 		}
 		orgRole := om.Role
 		teams, _ := st.ListTeamsByOrg(ctx, om.OrgID)
-		tv := make([]membershipView, 0, len(teams))
+		tv := make([]MembershipView, 0, len(teams))
 		for _, t := range teams {
 			role, granted := teamRole[t.ID]
 			if !granted {
@@ -193,7 +197,7 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 				}
 				role = identity.RoleAdmin
 			}
-			tv = append(tv, membershipView{
+			tv = append(tv, MembershipView{
 				TeamID:   t.ID,
 				TeamName: t.Name,
 				TeamSlug: t.Slug,
@@ -201,7 +205,7 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 				Personal: t.Personal,
 			})
 		}
-		out = append(out, orgTreeView{
+		out = append(out, OrgTreeView{
 			OrgID:    org.ID,
 			OrgName:  org.Name,
 			OrgSlug:  org.Slug,
@@ -222,7 +226,7 @@ func (s *Server) writeIdentityResponse(w http.ResponseWriter, r *http.Request, i
 		u = identity.User{ID: id.UserID, Email: id.Email}
 	}
 	orgs, _ := s.buildOrgTree(r.Context(), id.UserID)
-	resp := authResponse{
+	resp := AuthMeResponse{
 		User:          s.toUserView(u),
 		Orgs:          orgs,
 		ActiveOrg:     id.OrgID,

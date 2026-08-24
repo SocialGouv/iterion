@@ -4769,6 +4769,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthMeResponse: {
+            access_token?: string;
+            active_org_id?: string;
+            active_org_role?: string;
+            active_role?: string;
+            active_team_id?: string;
+            expires_at?: string;
+            orgs: components["schemas"]["OrgTreeView"][];
+            user: components["schemas"]["UserView"];
+        };
         BackendUsage: {
             backend: string;
             model?: string;
@@ -5009,6 +5019,13 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        MembershipView: {
+            personal?: boolean;
+            role: string;
+            team_id: string;
+            team_name: string;
+            team_slug: string;
+        };
         NodeServed: {
             backend: string;
             context_window?: number;
@@ -5022,6 +5039,14 @@ export interface components {
             fingerprint?: string;
             session_id?: string;
             state_ref?: string;
+        };
+        OrgTreeView: {
+            org_id: string;
+            org_name: string;
+            org_role: string;
+            org_slug: string;
+            personal?: boolean;
+            teams: components["schemas"]["MembershipView"][];
         };
         PipelineBoardAttempt: {
             /** Format: date-time */
@@ -5285,6 +5310,14 @@ export interface components {
             token_last4: string;
             user_id: string;
         };
+        UserView: {
+            created_at?: string;
+            email: string;
+            id: string;
+            is_super_admin: boolean;
+            name?: string;
+            status: string;
+        };
         WireEdge: {
             condition?: string;
             expression?: string;
@@ -5328,16 +5361,6 @@ export interface components {
             name: string;
             provider: string;
             scope_user_id?: string;
-        };
-        authResponse: {
-            access_token?: string;
-            active_org_id?: string;
-            active_org_role?: string;
-            active_role?: string;
-            active_team_id?: string;
-            expires_at?: string;
-            orgs: components["schemas"]["orgTreeView"][];
-            user: components["schemas"]["userView"];
         };
         createApiKeyReq: {
             is_default?: boolean;
@@ -5427,21 +5450,6 @@ export interface components {
         loginReq: {
             email: string;
             password: string;
-        };
-        membershipView: {
-            personal?: boolean;
-            role: string;
-            team_id: string;
-            team_name: string;
-            team_slug: string;
-        };
-        orgTreeView: {
-            org_id: string;
-            org_name: string;
-            org_role: string;
-            org_slug: string;
-            personal?: boolean;
-            teams: components["schemas"]["membershipView"][];
         };
         orgView: {
             created_at?: string;
@@ -5534,14 +5542,6 @@ export interface components {
             monthly_run_quota?: number;
             name?: string;
             slug?: string;
-        };
-        userView: {
-            created_at?: string;
-            email: string;
-            id: string;
-            is_super_admin: boolean;
-            name?: string;
-            status: string;
         };
     };
     responses: never;
@@ -6133,7 +6133,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };
@@ -6171,7 +6171,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };

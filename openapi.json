@@ -1,6 +1,42 @@
 {
   "components": {
     "schemas": {
+      "AuthMeResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "active_org_id": {
+            "type": "string"
+          },
+          "active_org_role": {
+            "type": "string"
+          },
+          "active_role": {
+            "type": "string"
+          },
+          "active_team_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "orgs": {
+            "items": {
+              "$ref": "#/components/schemas/OrgTreeView"
+            },
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user",
+          "orgs"
+        ],
+        "type": "object"
+      },
       "BackendUsage": {
         "properties": {
           "backend": {
@@ -740,6 +776,32 @@
         ],
         "type": "object"
       },
+      "MembershipView": {
+        "properties": {
+          "personal": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "team_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "team_name",
+          "team_slug",
+          "role"
+        ],
+        "type": "object"
+      },
       "NodeServed": {
         "properties": {
           "backend": {
@@ -783,6 +845,39 @@
         },
         "required": [
           "backend"
+        ],
+        "type": "object"
+      },
+      "OrgTreeView": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_role": {
+            "type": "string"
+          },
+          "org_slug": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "org_id",
+          "org_name",
+          "org_slug",
+          "org_role",
+          "teams"
         ],
         "type": "object"
       },
@@ -1630,6 +1725,35 @@
         ],
         "type": "object"
       },
+      "UserView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_super_admin": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "status",
+          "is_super_admin"
+        ],
+        "type": "object"
+      },
       "WireEdge": {
         "properties": {
           "condition": {
@@ -1797,42 +1921,6 @@
           "name",
           "is_default",
           "created_at"
-        ],
-        "type": "object"
-      },
-      "authResponse": {
-        "properties": {
-          "access_token": {
-            "type": "string"
-          },
-          "active_org_id": {
-            "type": "string"
-          },
-          "active_org_role": {
-            "type": "string"
-          },
-          "active_role": {
-            "type": "string"
-          },
-          "active_team_id": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "string"
-          },
-          "orgs": {
-            "items": {
-              "$ref": "#/components/schemas/orgTreeView"
-            },
-            "type": "array"
-          },
-          "user": {
-            "$ref": "#/components/schemas/userView"
-          }
-        },
-        "required": [
-          "user",
-          "orgs"
         ],
         "type": "object"
       },
@@ -2136,65 +2224,6 @@
         "required": [
           "email",
           "password"
-        ],
-        "type": "object"
-      },
-      "membershipView": {
-        "properties": {
-          "personal": {
-            "type": "boolean"
-          },
-          "role": {
-            "type": "string"
-          },
-          "team_id": {
-            "type": "string"
-          },
-          "team_name": {
-            "type": "string"
-          },
-          "team_slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "team_id",
-          "team_name",
-          "team_slug",
-          "role"
-        ],
-        "type": "object"
-      },
-      "orgTreeView": {
-        "properties": {
-          "org_id": {
-            "type": "string"
-          },
-          "org_name": {
-            "type": "string"
-          },
-          "org_role": {
-            "type": "string"
-          },
-          "org_slug": {
-            "type": "string"
-          },
-          "personal": {
-            "type": "boolean"
-          },
-          "teams": {
-            "items": {
-              "$ref": "#/components/schemas/membershipView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "org_id",
-          "org_name",
-          "org_slug",
-          "org_role",
-          "teams"
         ],
         "type": "object"
       },
@@ -2508,35 +2537,6 @@
             "type": "string"
           }
         },
-        "type": "object"
-      },
-      "userView": {
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "is_super_admin": {
-            "type": "boolean"
-          },
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "email",
-          "status",
-          "is_super_admin"
-        ],
         "type": "object"
       }
     }
@@ -3206,7 +3206,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
@@ -3241,7 +3241,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
