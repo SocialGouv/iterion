@@ -41,6 +41,12 @@
   ],
   "packageRules": [
     {
+      "description": "Bitnami exit (operator decision 2026-08-24): the minio and mongodb subcharts of charts/iterion live in Broadcom's archived, purged Bitnami ecosystem — every bump PR is a symptom (audited holds on #4/#440). No updates until the migration off Bitnami lands; remove this rule when it does (board ticket 'Exit the Bitnami minio + mongodb subcharts').",
+      "matchManagers": ["helmv3"],
+      "matchPackageNames": ["minio", "mongodb"],
+      "enabled": false
+    },
+    {
       "description": "Keep the GitHub Actions SHA pins current, with the precise semver in the trailing comment.",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions",
