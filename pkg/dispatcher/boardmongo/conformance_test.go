@@ -600,7 +600,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 	// window always contains the freshest strandings on a saturated board
 	// (R0544a9). ready-a was created before ready-b, so their UpdatedAt
 	// order is creation order.
-	if len(elig) == 2 && !(elig[0].Issue.Title == "ready-a" && elig[1].Issue.Title == "ready-b") {
+	if len(elig) == 2 && (elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b") {
 		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
 	}
 	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)
