@@ -306,6 +306,24 @@ func TestGateReconcile_ReasonTruncationIsRuneSafe(t *testing.T) {
 	}
 }
 
+// The reason on the synthetic status must survive the queue/runner wrappers:
+// the raw error of a runner reject reads "max deliveries exhausted: runner:
+// prepare repo workspace for <id>: runner: reject repo ref: …" and the
+// 60-rune budget used to truncate before the only actionable part.
+func TestGateReconcile_ReasonStripsMechanicalWrappers(t *testing.T) {
+	run := &store.Run{Error: `max deliveries exhausted: runner: prepare repo workspace for 01a0321a-7945-7dfe-a886-0cb56054caa4: runner: reject repo ref: git: branch name "renovate/npm-(non-major)" must match [A-Za-z0-9][A-Za-z0-9._/-]* (parked on DLQ — replay via /api/admin/dlq)`}
+	got := gateInterruptedDescriptionFor(run)
+	if !strings.Contains(got, `reject repo ref`) || !strings.Contains(got, "renovate/npm-(non-major)") {
+		t.Errorf("description lost the actionable cause: %q", got)
+	}
+	if strings.Contains(got, "max deliveries exhausted") || strings.Contains(got, "prepare repo workspace") {
+		t.Errorf("description still carries mechanical wrappers: %q", got)
+	}
+	if !isSyntheticGateInterruption(got) {
+		t.Errorf("stripped description no longer recognized as synthetic: %q", got)
+	}
+}
+
 // The synthetic marker must be recognized in both its shapes and must never
 // swallow a real verdict.
 func TestGateReconcile_SyntheticMarker(t *testing.T) {

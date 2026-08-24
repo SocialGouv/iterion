@@ -126,6 +126,9 @@ func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec Lau
 	return 1, nil
 }
 func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
+func (p *stubLaunchPublisher) CancelRunWithReason(context.Context, string, string) error {
+	return nil
+}
 func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
 	return nil
 }

@@ -152,6 +152,9 @@ func TestGateRelaunch(t *testing.T) {
 		if vars["pr_url"] != prURL || vars["arm_automerge"] != "true" {
 			t.Errorf("relaunch dropped original launch vars: %v", vars)
 		}
+		if vars[gateRelaunchOfVar] != runID {
+			t.Errorf("%s = %q, want the dead run %s — the second death cannot name the original without it", gateRelaunchOfVar, vars[gateRelaunchOfVar], runID)
+		}
 		if tok := vars[forgePublishVarToken]; tok == "" || tok == "run-token" {
 			t.Errorf("publish token = %q — the tail must mint a FRESH grant, not reuse the dead run's", tok)
 		}
@@ -163,13 +166,20 @@ func TestGateRelaunch(t *testing.T) {
 	})
 
 	// The natural second-death sequence: the first death posted the synthetic
-	// failure and spent the head's one relaunch; now the RELAUNCHED run dies
-	// too. The gate carries the reconciler's own marker — which must not read
-	// as "already posted", or this exact case would go silent right where the
-	// recovery runs out (found adversarially: an earlier version stood down on
-	// its own synthetic status and the board escalation was unreachable).
+	// failure and spent the head's one relaunch; now another run of the same
+	// bot dies on the head. The marker must not read as "already posted" for
+	// the ESCALATION (found adversarially: an earlier version stood down on
+	// its own synthetic status and the board escalation was unreachable) —
+	// but it IS enough as a status: re-posting from a run the marker does not
+	// speak for is what produced the 116-write storm on one head (two dead
+	// runs re-pointing the target URL at themselves every sweep tick,
+	// buildkit-operator#21 2026-08-17).
 	t.Run("the second death on the same head escalates to the board instead", func(t *testing.T) {
 		w := build(t, nil)
+		rc := &fakeReviewClient{}
+		w.s.forgeReviewClientFor = func(context.Context, forge.Connection) (forge.ReviewClient, error) {
+			return rc, nil
+		}
 		// The head's one attempt is already spent…
 		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
 			ID: "d-spent", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
@@ -177,33 +187,108 @@ func TestGateRelaunch(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		// …and the gate still shows the first death's synthetic failure.
+		// …and the gate still shows the first death's synthetic failure,
+		// pointing at the run that posted it.
 		w.gc.statuses = []forge.CommitStatus{{
 			Context: gateNm, State: forge.CommitStateFailure,
 			Description: gateInterruptedDescription,
+			TargetURL:   "https://iterion.test/runs/run-prior-relaunch",
 		}}
 		runID := seedDeadRun(t, w.s)
 		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID))
 		if *w.launched != 0 {
 			t.Fatalf("launched %d runs, want 0 — one relaunch per head, ever", *w.launched)
 		}
-		if w.gc.setCalls != 1 {
-			t.Fatalf("posted %d statuses, want 1 — the synthetic failure is refreshed with the newest death's reason", w.gc.setCalls)
+		if w.gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — one synthetic marker per head is enough; re-posting is the status storm", w.gc.setCalls)
 		}
 		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("board cards = %d (%v), want exactly 1", len(cards), err)
 		}
-		if !strings.Contains(cards[0].Body, "run-prior-relaunch") || !strings.Contains(cards[0].Body, "budget exceeded") {
-			t.Errorf("the card must name the dead runs and the reason; got body:\n%s", cards[0].Body)
+		if !strings.Contains(cards[0].Body, "run-prior-relaunch") || !strings.Contains(cards[0].Body, runID) || !strings.Contains(cards[0].Body, "budget exceeded") {
+			t.Errorf("the card must name BOTH dead runs and the reason; got body:\n%s", cards[0].Body)
+		}
+		// The escalation is also posted on the PR — the board card alone sat
+		// unseen for 7 days while a security PR stayed blocked.
+		if rc.calls != 1 {
+			t.Fatalf("PR escalation comments = %d, want 1", rc.calls)
+		}
+		if rc.repo != repo || rc.number != 7 || !strings.Contains(rc.in.Body, "run-prior-relaunch") {
+			t.Errorf("comment landed on %s#%d with body:\n%s", rc.repo, rc.number, rc.in.Body)
 		}
 
-		// A third death on the same head adds no second card.
+		// A third death on the same head adds no second card — and no second
+		// comment (the card dedup is what bounds the comment).
 		runID2 := seedDeadRun(t, w.s)
 		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent(runID2))
 		cards, err = w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("board cards after a third death = %d (%v), want still 1", len(cards), err)
+		}
+		if rc.calls != 1 {
+			t.Fatalf("PR escalation comments after a third death = %d, want still 1", rc.calls)
+		}
+	})
+
+	// The escalating pass is usually the RELAUNCHED run's own death: the
+	// idempotency claim then names that run itself. The card used to cite it
+	// as both "dead run" and "relaunched run" — one URL twice, the original
+	// death unfindable (observed on buildkit-operator#21). The original's id
+	// travels on the relaunch's launch vars and must resurface here, with its
+	// own error loaded from the store.
+	t.Run("the relaunched run's own death names the original run", func(t *testing.T) {
+		w := build(t, nil)
+		// The original dead run, with its own distinct error.
+		orig, err := w.s.cfg.Store.CreateRun(context.Background(), "run-original", "dep_update_guard", deadInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orig.Status = store.RunStatusCancelled
+		orig.Error = "superseded by a rolling deploy drain"
+		if err := w.s.cfg.Store.SaveRun(context.Background(), orig); err != nil {
+			t.Fatal(err)
+		}
+		// The relaunched run, stamped with its parent, now dead too.
+		relInputs := map[string]any{}
+		for k, v := range deadInputs {
+			relInputs[k] = v
+		}
+		relInputs[gateRelaunchOfVar] = "run-original"
+		rel, err := w.s.cfg.Store.CreateRun(context.Background(), "run-relaunch", "dep_update_guard", relInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel.BotID = botID
+		rel.Status = store.RunStatusFailedResumable
+		rel.Error = "budget exceeded: duration"
+		if err := w.s.cfg.Store.SaveRun(context.Background(), rel); err != nil {
+			t.Fatal(err)
+		}
+		// The head's claim names the relaunch ITSELF, and the gate carries its
+		// in-flight claim — the shape its own death event finds.
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "d-self", TenantID: team, WebhookID: "w1", IdempotencyKey: relaunchIdem,
+			Status: webhooks.StatusLaunched, RunID: "run-relaunch",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w.gc.statuses = []forge.CommitStatus{{
+			Context: gateNm, State: forge.CommitStatePending,
+			Description: gateInFlightDescription,
+			TargetURL:   "https://iterion.test/runs/run-relaunch",
+		}}
+		_ = w.s.reconcileGateForRun(context.Background(), terminalEvent("run-relaunch"))
+		cards, err := w.board.List(native.ListFilter{Labels: []string{gateRelaunchLabel}})
+		if err != nil || len(cards) != 1 {
+			t.Fatalf("board cards = %d (%v), want 1", len(cards), err)
+		}
+		body := cards[0].Body
+		if !strings.Contains(body, "run-original") || !strings.Contains(body, "superseded by a rolling deploy drain") {
+			t.Errorf("the card must name the ORIGINAL dead run and its error; got:\n%s", body)
+		}
+		if got := strings.Count(body, "run-relaunch"); got != 1 {
+			t.Errorf("the relaunched run appears %d times, want exactly 1 (one URL twice is the defect being pinned):\n%s", got, body)
 		}
 	})
 

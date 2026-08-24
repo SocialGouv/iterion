@@ -34,6 +34,14 @@ const gateRelaunchEventKind = "gate_relaunch"
 // (or Nexie) can find every gate that died past recovery in one query.
 const gateRelaunchLabel = "source:gate-reconcile"
 
+// gateRelaunchOfVar rides the relaunch's launch vars and names the dead run it
+// replaces. The workflow itself drops undeclared vars, but run.Inputs keeps
+// them (same mechanism as the publish token), which is what lets the SECOND
+// death name the ORIGINAL run in its escalation: the escalating pass is the
+// relaunched run's own, and without this stamp the card cited one run twice
+// while the first death stayed unfindable.
+const gateRelaunchOfVar = "gate_relaunch_of"
+
 // deadGateRun carries what reconcileGateForRun already resolved about the dead
 // run, so the relaunch re-validates nothing it does not have to.
 type deadGateRun struct {
@@ -108,7 +116,7 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 	// PR facts, the operator's pinned gate_context/arm_automerge, the bot's
 	// own vars. Only the per-run publish grant is dropped: the launch tail
 	// mints a fresh one (and would overwrite a stale copy anyway).
-	vars := make(map[string]string, len(d.run.Inputs))
+	vars := make(map[string]string, len(d.run.Inputs)+1)
 	for k, v := range d.run.Inputs {
 		if k == forgePublishVarToken || k == forgePublishVarURL {
 			continue
@@ -117,6 +125,7 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 			vars[k] = sv
 		}
 	}
+	vars[gateRelaunchOfVar] = d.run.ID
 
 	actor := "gaterelaunch:" + cfg.ID
 	launchCtx := auth.WithIdentity(ctx, auth.Identity{
@@ -182,7 +191,7 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		}
 		s.logWarn("gate relaunch: %s on %s#%d@%s already got its one relaunch (run %s) and died again — escalating to the board",
 			d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA), res.RunID)
-		s.escalateDeadGateToBoard(d, res.RunID, "the automatic relaunch died too")
+		s.escalateDeadGateToBoard(ctx, d, res.RunID, "the automatic relaunch died too")
 	default:
 		why := strings.TrimSpace(res.Error)
 		if why == "" {
@@ -190,7 +199,7 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 		}
 		s.logWarn("gate relaunch: could not relaunch %s on %s#%d@%s (%s) — escalating to the board",
 			botID, d.repo, d.number, shortSHA(d.pr.HeadSHA), why)
-		s.escalateDeadGateToBoard(d, "", "the automatic relaunch could not start: "+why)
+		s.escalateDeadGateToBoard(ctx, d, "", "the automatic relaunch could not start: "+why)
 	}
 }
 
@@ -202,7 +211,10 @@ func (s *Server) relaunchDeadGateRun(ctx context.Context, d deadGateRun) {
 //
 // One card per (PR, head): a closed card means a human already dealt with this
 // revision, and a fresh death on the SAME head adds nothing they don't know.
-func (s *Server) escalateDeadGateToBoard(d deadGateRun, priorRelaunchRunID, why string) {
+// A freshly filed card is ALSO posted as a PR comment — the board is the
+// operator's queue, but the PR is where the people waiting on the merge look
+// (a card alone sat unseen for 7 days while a security PR stayed blocked).
+func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, priorRelaunchRunID, why string) {
 	if s.cfg.CloudBoardFor == nil {
 		s.logWarn("gate relaunch: no board on this deployment — %s#%d stays red with no card; the failure status carries the remedy", d.repo, d.number)
 		return
@@ -217,22 +229,43 @@ func (s *Server) escalateDeadGateToBoard(d deadGateRun, priorRelaunchRunID, why 
 		return
 	}
 
-	reason := strings.TrimSpace(d.run.Error)
-	if reason == "" {
-		reason = "(no error recorded on the run)"
+	// Name the two runs that died — not one of them twice. The escalating
+	// pass is usually the RELAUNCHED run's own death: the idempotency claim
+	// then names d.run itself, and the card used to cite that one URL as both
+	// "dead run" and "relaunched run" while the original death stayed
+	// unfindable. The original's id travels on the relaunch's launch vars.
+	originalID, originalErr := d.run.ID, strings.TrimSpace(d.run.Error)
+	relaunchID, relaunchErr := strings.TrimSpace(priorRelaunchRunID), ""
+	if relaunchID != "" && strings.EqualFold(relaunchID, d.run.ID) {
+		relaunchID, relaunchErr = d.run.ID, originalErr
+		originalID, originalErr = runInputString(d.run, gateRelaunchOfVar), ""
 	}
+	if relaunchID != "" && relaunchErr == "" && s.cfg.Store != nil {
+		if r, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), relaunchID); err == nil && r != nil {
+			relaunchErr = strings.TrimSpace(r.Error)
+		}
+	}
+	if originalID != "" && originalErr == "" && s.cfg.Store != nil {
+		if r, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), originalID); err == nil && r != nil {
+			originalErr = strings.TrimSpace(r.Error)
+		}
+	}
+
 	base := strings.TrimRight(strings.TrimSpace(s.cfg.PublicURL), "/")
 	body := fmt.Sprintf(
 		"The merge gate `%s` on %s#%d died without posting a verdict, and the automatic recovery is exhausted: %s.\n\n"+
 			"- Pull request: %s\n"+
-			"- Head audited: `%s`\n"+
-			"- Dead run: %s — `%s`\n",
+			"- Head audited: `%s`\n",
 		d.gateCtx, d.repo, d.number, why,
 		d.prURL,
-		d.pr.HeadSHA,
-		gateRunURL(base, d.run.ID), reason)
-	if priorRelaunchRunID != "" {
-		body += fmt.Sprintf("- Relaunched run (also dead): %s\n", gateRunURL(base, priorRelaunchRunID))
+		d.pr.HeadSHA)
+	if originalID != "" {
+		body += fmt.Sprintf("- Dead run: %s — `%s`\n", gateRunURL(base, originalID), orNoError(originalErr))
+	} else {
+		body += "- Dead run: unknown (the relaunch was launched before its parent run was stamped)\n"
+	}
+	if relaunchID != "" && !strings.EqualFold(relaunchID, originalID) {
+		body += fmt.Sprintf("- Relaunched run (also dead): %s — `%s`\n", gateRunURL(base, relaunchID), orNoError(relaunchErr))
 	}
 	body += "\nA required check dying twice on one revision usually means a structural problem — " +
 		"a run budget too short for this workload, a recurring provider quota, or a bot defect. " +
@@ -249,6 +282,42 @@ func (s *Server) escalateDeadGateToBoard(d deadGateRun, priorRelaunchRunID, why 
 	}
 	if s.logger != nil {
 		s.logger.Info("gate relaunch: board card filed for %s on %s#%d@%s", d.gateCtx, d.repo, d.number, shortSHA(d.pr.HeadSHA))
+	}
+	s.commentDeadGateOnPR(ctx, d, body)
+}
+
+// orNoError renders an empty run error as an explicit placeholder so the
+// escalation never shows a bare empty code span.
+func orNoError(err string) string {
+	if err == "" {
+		return "no error recorded"
+	}
+	return err
+}
+
+// commentDeadGateOnPR posts the escalation on the pull request itself — the
+// one surface the PR's audience is guaranteed to see. The commit status only
+// offers 140 characters and the board card lives on the integration's team
+// board, which the people waiting on THIS merge may never open. Best-effort,
+// and deliberately gated on the board card having just been created: the card
+// dedup is what bounds this to one comment per (PR, head) — a deployment with
+// no board gets no comment rather than one per sweep pass.
+func (s *Server) commentDeadGateOnPR(ctx context.Context, d deadGateRun, body string) {
+	rc, err := s.reviewClientFor(ctx, d.conn)
+	if err != nil {
+		s.logWarn("gate relaunch: no review client for %s (%v) — escalation stays board+status only", d.repo, err)
+		return
+	}
+	if rc == nil {
+		s.logWarn("gate relaunch: provider %s cannot post PR comments — escalation stays board+status only", d.conn.Provider)
+		return
+	}
+	if _, err := rc.CreatePullReview(ctx, d.repo, d.number, forge.NewReview{Body: body}); err != nil {
+		s.logWarn("gate relaunch: escalation comment on %s#%d failed: %v", d.repo, d.number, err)
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("gate relaunch: escalation comment posted on %s#%d", d.repo, d.number)
 	}
 }
 
