@@ -136,8 +136,15 @@ reviewer shape: whole-improve-loop and branch-improve-loop first
 (ADR-058 v2, 2026-07-03), then feature-dev, docs-refresh and
 secured-renovacy Phase 2 (the fleet-wide rollout, 2026-07-07). Their
 convergence oracle is now the deterministic verify gate + termination
-contract of the v2 campaign shape; the `review_mode`/`mono_family` vars
-are no longer declared by any catalog bot.
+contract of the v2 campaign shape; those five no longer declare the
+`review_mode`/`mono_family` vars.
+
+Two catalog bots still do, and are the topology's live consumers:
+`review-pr` (bots/review-pr/main.bot:188,193) and `evolve`
+(bots/evolve/main.bot:37,41). Both default to `mono` — since the
+2026-07-29 resolver change, `auto` itself resolves to mono, so
+cross-family confirmation is an explicit `--var review_mode=dual` rather
+than something a host opts into by having two providers configured.
 
 The MACHINERY built here stays, deliberately:
 - `pkg/reviewtopology` (resolution + `InjectIfDeclared`) and its three
