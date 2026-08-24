@@ -454,11 +454,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
-	// UsageCapPolicy is the operator's ceiling on the LLM subscription's
-	// own usage windows (pkg/usagecap), resolved machine-wide at startup.
-	// The zero value caps nothing, which leaves runs bounded only by the
-	// provider's wall — the historical behaviour.
-	UsageCapPolicy usagecap.Policy
+	// UsageCapSource answers the operator's ceiling on the LLM
+	// subscription's own usage windows (pkg/usagecap) — consulted per
+	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
+	// runtime cap change effective on live runs within its TTL. Wrap a
+	// fixed policy in usagecap.StaticPolicy for the env-only shape. nil
+	// caps nothing, which leaves runs bounded only by the provider's
+	// wall — the historical behaviour.
+	UsageCapSource usagecap.PolicySource
 	// UsageCaps is where readings of those windows are shared across
 	// replicas, so a pod can park a run before spending anything on
 	// rediscovering a ceiling another pod already hit. nil disables the

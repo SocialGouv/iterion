@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
@@ -480,6 +481,12 @@ type Service struct {
 	// Empty = neutral (no default), the contract tests rely on.
 	sandboxDefault string
 
+	// usageCapSource, when non-nil, is the LIVE usage-cap policy source
+	// (the DB-backed runtime-settings resolver) consulted by the launch
+	// preflight and threaded into every in-process executor's guard —
+	// see WithUsageCapSource. Nil keeps the env-only resolution.
+	usageCapSource usagecap.PolicySource
+
 	// sbStore persists per-run Session-board specs (the LLM curation
 	// layer's output). Nil when no on-disk store dir is available (cloud
 	// mode) — curation then stays disabled. The deterministic task-list
@@ -664,6 +671,15 @@ func WithSandboxDefault(mode string) ServiceOption {
 	return func(s *Service) {
 		s.sandboxDefault = mode
 	}
+}
+
+// WithUsageCapSource wires a LIVE usage-cap policy source (the DB-backed
+// runtime-settings resolver, pkg/usagecap.Resolver) into the service: the
+// launch-time preflight and every in-process executor's guard then read
+// the effective (db-or-env) policy per evaluation instead of the env
+// value frozen at process start. Nil keeps env-only resolution.
+func WithUsageCapSource(src usagecap.PolicySource) ServiceOption {
+	return func(s *Service) { s.usageCapSource = src }
 }
 
 // AlertSettings configures the run-health alert Manager the service

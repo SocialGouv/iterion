@@ -125,7 +125,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// reads the shared ledger and parks the run with a retry rather than
 	// refusing it — here the operator is present, so an immediate refusal
 	// is the honest answer.
-	if blocked, reason := LocalUsagePreflight(); blocked {
+	if blocked, reason := usagePreflightFrom(s.usageCapSource); blocked {
 		// …unless this workflow cannot call a model at all, in which case
 		// the cap guards nothing it could spend. The compile is paid ONLY
 		// on the blocked path, so the common case stays free.
@@ -207,13 +207,14 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// would then fall back to the workflow name — while a RESUME of that
 		// same run derives the id from the path and lands on a different
 		// memory space. Same rule on both sides, so the two cannot diverge.
-		BotID:         ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
-		BoardRegister: s.boardRegister,
-		Compress:      spec.Compress,
-		AutoMemory:    spec.AutoMemory,
-		Permission:    spec.Permission,
-		LocalSecrets:  s.localSecrets,
-		LocalSealer:   s.localSealer,
+		BotID:          ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
+		BoardRegister:  s.boardRegister,
+		Compress:       spec.Compress,
+		AutoMemory:     spec.AutoMemory,
+		Permission:     spec.Permission,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
+		UsageCapSource: s.usageCapSource,
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -430,11 +431,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// name here and aim the resumed run at a different space than its own
 		// earlier nodes wrote to — an empty memory, and notes landing where
 		// nothing will read them again.
-		BotID:         BotIDForRun(r),
-		AutoMemory:    spec.AutoMemory,
-		BoardRegister: s.boardRegister,
-		LocalSecrets:  s.localSecrets,
-		LocalSealer:   s.localSealer,
+		BotID:          BotIDForRun(r),
+		AutoMemory:     spec.AutoMemory,
+		BoardRegister:  s.boardRegister,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
+		UsageCapSource: s.usageCapSource,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)
