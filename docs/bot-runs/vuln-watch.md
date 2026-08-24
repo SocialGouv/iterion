@@ -34,6 +34,38 @@
   guard (warn when a tool node's stdout carries non-JSON prefix lines)
   as a follow-up.
 
-## 2026-08-24 — first full-config dry-run in the veille workspace
-- Status: pending (inventory build in progress — carto + GitHub org
-  sweep; will be appended after the run)
+## 2026-08-24 — full-config dry-run, veille workspace, LIVE sources
+- Status: validated
+- Versions: bot 0.1.0 · iterion feat/vuln-watch-senti (post stdout-fix)
+- Method: real engine from the iterion-veille workspace (sandbox none,
+  store `$PWD/.iterion`), production config (2 orgs, CERT-FR
+  alerte+avis, KEV, EPSS≥0.5, floor=exploited) + the freshly built
+  inventory (402 technologies / 212 watched / 207 projects — full
+  carto report + 542-repo GitHub sweep). Dependabot tokens = gh OAuth
+  set via `iterion secret set --from-env` (removed after). State
+  seeded with rewound cursors (Dependabot 08-20, KEV 08-10) to replay
+  a real window; dry_run so nothing posts, nothing consumes.
+- Result: 45 new Dependabot alerts + 80 CERT-FR publications + 1675
+  KEV entries in → **5 alerts out** (React-RSC ALE → 53 projets,
+  WordPress → RITM, GitLab → 17 projets, Metabase → CDTN+DOMIFA+
+  SI-Honorabilité, Splunk/Kafka → 1 repo), 1 suppressed duplicate,
+  20 observed. ~2-3 alertes/semaine au rythme réel — le volume cible.
+- Findings (all fixed in the same session, red-first via the replay):
+  1. intra-run alias dedup missing — Metabase posted TWICE (CERT-FR
+     avis + KEV entry, same tick);
+  2. a Splunk avis carrying 222 CVE ids rendered them ALL in the
+     message title — display now caps at 4 + "+N";
+  3. "Correctif: aucun publié" was false for advisory/KEV units
+     (absence of data ≠ no fix) → "voir l'avis" label; signal
+     fragments deduped to one per kind;
+  4. bootstrap paged the whole open-alert backlog (10 pages/org) for
+     nothing — now stops at page 1 (only the newest created_at arms
+     the cursor).
+- Value: the exploitation-driven policy holds on real data — an
+  ordinary week of new criticals stays silent, and the one thing the
+  team truly needed to hear this month (Metabase, KEV 08-11) is
+  exactly what fires. FP rate on the replay: 1 borderline (Splunk
+  Connect for Kafka matched the kafka keyword — the message's real
+  title makes it self-explanatory).
+- Next: prod wiring (App permission + DNUM install + connection
+  opt-in + schedule) — see docs/forge-security-read.md.
