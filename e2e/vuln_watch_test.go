@@ -514,8 +514,9 @@ func TestVulnWatch_DryRunAndNoSinksDoNotConsume(t *testing.T) {
 		"sinks": []any{}, "labels": map[string]any{
 			"overflow": "x", "stale": "x", "kev_signal": "x", "ale_signal": "x",
 			"epss_signal": "x", "sev_signal": "x", "exploited": "x", "alert": "x",
-			"signal": "x", "severity": "x", "fix": "x", "no_fix": "x", "projects": "x",
-			"repos": "x", "via_dependabot": "x", "sources": "x", "more": "x", "refire": "x",
+			"signal": "x", "severity": "x", "fix": "x", "no_fix": "x", "fix_see_source": "x",
+			"projects": "x", "repos": "x", "via_dependabot": "x", "sources": "x",
+			"more": "x", "refire": "x",
 		}, "dry_run": false,
 	}, nil, map[string]string{"webhooks": h.webhooksFile}))
 	if err != nil {

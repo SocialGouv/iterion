@@ -372,6 +372,7 @@ tool plan:
         'severity': 'severity',
         'fix': 'Fix',
         'no_fix': 'none published yet',
+        'fix_see_source': 'see the advisory',
         'projects': 'Affected projects',
         'repos': 'repo(s)',
         'via_dependabot': 'flagged by Dependabot in {n} repo(s)',
@@ -533,7 +534,11 @@ tool poll_dependabot:
                         stop = True
                         break
                     fresh.append(a)
-                if stop or not data:
+                ## Bootstrap (no cursor): page 1 is enough — the whole open
+                ## backlog is not news, only the newest created_at matters
+                ## (it arms the cursor). Walking further would page through
+                ## thousands of historical alerts for nothing.
+                if stop or not data or not cursor:
                     break
                 url = next_link(link)
                 if pages >= MAX_PAGES and url:
@@ -1143,6 +1148,23 @@ tool match_policy:
         kinds = {s['type'] for s in a['signals']}
         return ('kev' in kinds, 'ale' in kinds, a['epss_max'], sev_rank.get(a['severity'] or '', 0))
     alerts.sort(key=prio, reverse=True)
+    ## Intra-run alias dedup: two lanes can surface the SAME vulnerability
+    ## in one tick (a CERT-FR avis listing the CVEs + the KEV entry for
+    ## one of them — observed live: Metabase posted twice). After the
+    ## priority sort, drop any unit whose CVE set is fully covered by the
+    ## units already kept this run.
+    covered = set()
+    kept = []
+    for a in alerts:
+        cves = a.get('cves') or []
+        if cves and all(c in covered for c in cves):
+            suppressed += 1
+            ## Its CVEs are being alerted through the covering unit — keep
+            ## the staged state consistent (alerted, not observed).
+            continue
+        covered.update(cves)
+        kept.append(a)
+    alerts = kept
     overflow = max(0, len(alerts) - max_alerts)
     posted_alerts, deferred = alerts[:max_alerts], alerts[max_alerts:]
     ## Overflowed units stay eligible: record them observed, not alerted.
@@ -1292,20 +1314,40 @@ tool notify:
         raise SystemExit(0)
 
     def render(a):
+        ## One fragment per signal KIND (a multi-CVE unit repeats them —
+        ## observed: "CISA KEV · CISA KEV · EPSS 80% · EPSS 98%"): the
+        ## latest KEV date, the alert-class flag once, the max EPSS.
+        sigs = a.get('signals') or []
         sig_bits = []
-        for s in a.get('signals') or []:
-            if s['type'] == 'kev':
-                sig_bits.append(labels['kev_signal'].replace('{date}', s.get('date') or '?'))
-            elif s['type'] == 'ale':
-                sig_bits.append(labels['ale_signal'])
-            elif s['type'] == 'epss':
-                sig_bits.append(labels['epss_signal'].replace('{pct}', str(int(round((s.get('score') or 0) * 100)))))
+        kev_dates = sorted({s.get('date') or '?' for s in sigs if s['type'] == 'kev'})
+        if kev_dates:
+            sig_bits.append(labels['kev_signal'].replace('{date}', kev_dates[-1]))
+        if any(s['type'] == 'ale' for s in sigs):
+            sig_bits.append(labels['ale_signal'])
+        epss_scores = [s.get('score') or 0 for s in sigs if s['type'] == 'epss']
+        if epss_scores:
+            sig_bits.append(labels['epss_signal'].replace('{pct}', str(int(round(max(epss_scores) * 100)))))
         if not sig_bits:
             sig_bits.append(labels['sev_signal'].replace('{sev}', a.get('severity') or '?'))
         head_subject = ' / '.join(a.get('tech_labels') or []) or \
             ((a.get('package') or a.get('id')) + ((' (' + a['ecosystem'] + ')') if a.get('ecosystem') else ''))
-        ids = ' / '.join((a.get('cves') or []) or [a.get('id') or '?'])
-        fix = ', '.join(a.get('fixes') or []) or labels['no_fix']
+        ## A CERT-FR avis can carry HUNDREDS of CVE ids (observed: 222 on
+        ## one Splunk avis) — cap the display; the full set lives in the
+        ## alert log and the state.
+        all_cves = (a.get('cves') or []) or [a.get('id') or '?']
+        shown_cves = all_cves[:4]
+        ids = ' / '.join(shown_cves) + \
+            ((' +' + str(len(all_cves) - len(shown_cves)) + ' ' + labels['more']) if len(all_cves) > len(shown_cves) else '')
+        ## Honest fix line: Dependabot data DOES say whether a patched
+        ## version exists (empty = truly none); an advisory/KEV unit
+        ## carries no structured fix field, so absence of data must read
+        ## "see the advisory", never "none published".
+        if a.get('fixes'):
+            fix = ', '.join(a['fixes'])
+        elif a.get('kind') == 'dependabot':
+            fix = labels['no_fix']
+        else:
+            fix = labels['fix_see_source']
         lines = []
         lines.append(':rotating_light: **' + labels['exploited' if (a.get('signals')) else 'alert'] + ' · ' + head_subject + '**')
         lines.append('**' + ids + '** — ' + (a.get('title') or ''))
