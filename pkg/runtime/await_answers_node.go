@@ -17,7 +17,22 @@ import (
 // await_answers node is parked. The in-process answersBell wakes it
 // immediately for same-process answers; the poll is the cross-process
 // net (CLI answering the store while the engine runs elsewhere).
-const awaitAnswersPollInterval = 5 * time.Second
+// A package var (not const) so tests can retune it via
+// SetAwaitAnswersPollInterval; production callers never touch it.
+var awaitAnswersPollInterval = 5 * time.Second
+
+// SetAwaitAnswersPollInterval overrides the await_answers store-recheck
+// cadence and returns the previous value so the caller can restore it.
+// TEST-ONLY: a stress test that must isolate the doorbell path from the
+// fallback poll pushes the interval far out; a stress test on the
+// fallback poll itself pushes it in. Nothing outside tests should call
+// this — the production value is deliberately conservative for the
+// cross-process CLI-answer path.
+func SetAwaitAnswersPollInterval(d time.Duration) time.Duration {
+	prev := awaitAnswersPollInterval
+	awaitAnswersPollInterval = d
+	return prev
+}
 
 // awaitAsyncAnswers is the body of an await_answers node (ADR-081): a
 // level-triggered wait until no pending Kind=async interaction remains
@@ -31,6 +46,19 @@ func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID str
 	defer ticker.Stop()
 
 	for {
+		// Arm the doorbell BEFORE checking the store. A ring landing after
+		// this arm closes `bell` and wakes the select below; a ring landing
+		// before it is caught by the store check that follows (the answer
+		// is already persisted). The inverse order (check-then-arm) has a
+		// race window: a ring in the [check … arm] gap creates a fresh
+		// channel that the arm returns, and the select then blocks on that
+		// fresh channel until the poll ticker fires — up to a full poll
+		// interval of extra latency, and on a heavily-loaded pod where the
+		// deadline collides with the ticker (same duration for the fixture
+		// timeout AND the poll cadence) the deadline can win the select
+		// and time the branch out on an answered question.
+		bell := e.answersBell.wait()
+
 		pending, err := store.ListPendingAsyncInteractions(ctx, e.store, rs.runID, an.From)
 		if err != nil {
 			return nil, &RuntimeError{
@@ -44,10 +72,6 @@ func (e *Engine) awaitAsyncAnswers(ctx context.Context, rs *runState, nodeID str
 			return e.awaitAnswersOutput(ctx, rs.runID, nodeID, an.From)
 		}
 
-		// Arm the doorbell BEFORE re-checking via select so an answer
-		// landing between the list above and the select cannot be missed
-		// beyond one poll tick.
-		bell := e.answersBell.wait()
 		select {
 		case <-bell:
 		case <-ticker.C:
