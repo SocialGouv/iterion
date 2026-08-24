@@ -265,6 +265,11 @@ schema notify_input:
 schema notify_output:
   posted: bool
   dry_run: bool
+  ## The rendered messages (webhook/channel/text) — the run artifact IS
+  ## the dry-run review surface. Stdout carries ONLY the final JSON: the
+  ## engine parses the whole stream as one object, so diagnostics go to
+  ## stderr, never stdout.
+  messages: json
   delivered: int
   ## True when the run may persist the staged state: not a dry-run, and
   ## either nothing needed posting or something was actually delivered.
@@ -1272,7 +1277,7 @@ tool notify:
   output: notify_output
   language: py
   script: |
-    import json, os, urllib.request
+    import json, os, sys, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     alerts = {{input.alerts}} or []
     overflow = int({{input.overflow_count}} or 0)
@@ -1352,15 +1357,17 @@ tool notify:
                          .replace('{hours}', str(s.get('hours')))
                          .replace('{last}', s.get('last_ok') or 'never')))
 
+    rendered = [{'text': text} for _, text in messages]
     if not messages:
-        out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'consume': not dry_run,
-             'targets': [], 'summary': 'nothing to deliver'})
+        out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
+             'consume': not dry_run, 'targets': [], 'summary': 'nothing to deliver'})
     if not sinks:
         ## Alerts with nowhere to go are NOT consumed: the state stays put,
         ## the same alerts recompute every run, and the failure is visible —
         ## a config gap must be fixed, not absorbed.
-        out({'posted': False, 'dry_run': bool(dry_run), 'delivered': 0, 'consume': False,
-             'targets': [], 'summary': str(len(messages)) + ' message(s) prepared but NO sinks configured -- alerts kept pending (fix the config)'})
+        out({'posted': False, 'dry_run': bool(dry_run), 'messages': rendered, 'delivered': 0,
+             'consume': False, 'targets': [],
+             'summary': str(len(messages)) + ' message(s) prepared but NO sinks configured -- alerts kept pending (fix the config)'})
     payloads = []
     for icon, text in messages:
         for s in sinks:
@@ -1368,11 +1375,15 @@ tool notify:
                              {'text': text[:14000], 'channel': s.get('channel') or '',
                               'username': s.get('username') or 'Senti',
                               'icon_emoji': s.get('icon_emoji') or ':shield:'}))
+    rendered = [{'webhook': n, 'channel': p['channel'], 'text': p['text']} for n, p in payloads]
     if dry_run:
+        ## stderr only: the engine parses the WHOLE stdout as one JSON
+        ## object, so any extra stdout line silently breaks the node output
+        ## (found live: NO_OUTGOING_EDGE on the first dry-run).
         for name, p in payloads:
-            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + chr(10) + p['text'] + chr(10) + '---')
-        out({'posted': False, 'dry_run': True, 'delivered': 0, 'consume': False,
-             'targets': [n for n, _ in payloads],
+            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + chr(10) + p['text'] + chr(10) + '---', file=sys.stderr)
+        out({'posted': False, 'dry_run': True, 'messages': rendered, 'delivered': 0,
+             'consume': False, 'targets': [n for n, _ in payloads],
              'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted, nothing consumed'})
     whmap = {}
     if webhooks_file and os.path.exists(webhooks_file):
@@ -1394,8 +1405,8 @@ tool notify:
             failures.append(name + ': ' + type(e).__name__ + ': ' + str(e)[:200])
     if delivered == 0:
         raise SystemExit('vuln-watch: all ' + str(len(payloads)) + ' webhook post(s) failed: ' + '; '.join(failures))
-    out({'posted': True, 'dry_run': False, 'delivered': delivered, 'consume': True,
-         'targets': sorted(set(targets)),
+    out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered,
+         'consume': True, 'targets': sorted(set(targets)),
          'summary': 'delivered ' + str(delivered) + '/' + str(len(payloads)) +
                     ((' -- FAILED: ' + '; '.join(failures)) if failures else '')})
 
