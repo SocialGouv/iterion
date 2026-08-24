@@ -50,7 +50,7 @@ func capTestPolicy() usagecap.Policy {
 func capRunner(pol usagecap.Policy, caps usagecap.Store, rs store.RunStore) *Runner {
 	return &Runner{cfg: Config{
 		Logger:         iterlog.Nop(),
-		UsageCapPolicy: pol,
+		UsageCapSource: usagecap.StaticPolicy(pol),
 		UsageCaps:      caps,
 		Store:          rs,
 	}}
@@ -114,6 +114,58 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	// paused or cancelled it in the meantime must win.
 	if len(rs.gotFrom) == 0 {
 		t.Error("the flip must be conditional on the run still being claimed")
+	}
+}
+
+// The runtime settings path, at THIS enforcement point: a cap written to
+// the settings store starts refusing runs on the same Runner value —
+// no restart, no reconstruction — once the resolver's TTL elapses.
+func TestUsageCapPreflight_RuntimeSettingsChangeIsLive(t *testing.T) {
+	ctx := t.Context()
+	caps := usagecap.NewMemStore()
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform)
+	if err := caps.Record(ctx, key, usagecap.Reading{
+		Window:      usagecap.WindowSevenDay,
+		Utilization: 0.60,
+		Status:      usagecap.StatusAllowed,
+		ResetsAt:    time.Now().UTC().Add(30 * time.Hour),
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Env default: week capped at 75% — the 60% reading passes.
+	envPol := usagecap.Policy{Week: usagecap.WindowPolicy{MaxPercent: 75, Mode: usagecap.ModeHard}}
+	settings := usagecap.NewMemorySettingsStore()
+	now := time.Now().UTC()
+	src := usagecap.NewResolver(settings, envPol,
+		usagecap.WithClock(func() time.Time { return now }))
+	rs := &capStatusStore{}
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.Nop(),
+		UsageCapSource: src,
+		UsageCaps:      caps,
+		Store:          rs,
+	}}
+
+	if err := r.usageCapPreflight(ctx, capLLMWorkflow(), &queue.RunMessage{RunID: "run-1"}, iterlog.Nop()); err != nil {
+		t.Fatalf("60%% under the env 75%% cap must pass, got %v", err)
+	}
+
+	// The operator tightens the cap to 50% through the settings record.
+	pct := 50
+	if err := settings.PutSettings(ctx, usagecap.Settings{WeekPct: &pct}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(usagecap.DefaultSettingsTTL)
+
+	err := r.usageCapPreflight(ctx, capLLMWorkflow(), &queue.RunMessage{RunID: "run-2"}, iterlog.Nop())
+	if err == nil {
+		t.Fatal("the tightened runtime cap must refuse the next claim — same Runner, no restart")
+	}
+	var rl *delegate.ErrRateLimited
+	if !errors.As(err, &rl) || rl.Kind != delegate.RateLimitKindUsageWindow {
+		t.Fatalf("got %v, want the usage-window park error", err)
 	}
 }
 

@@ -136,10 +136,11 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:         ResolveBotID("", BundleNameForPath(childPath), childPath),
-			BoardRegister: s.boardRegister,
-			LocalSecrets:  s.localSecrets,
-			LocalSealer:   s.localSealer,
+			BotID:          ResolveBotID("", BundleNameForPath(childPath), childPath),
+			BoardRegister:  s.boardRegister,
+			LocalSecrets:   s.localSecrets,
+			LocalSealer:    s.localSealer,
+			UsageCapSource: s.usageCapSource,
 		})
 		if err != nil {
 			releaseChild()

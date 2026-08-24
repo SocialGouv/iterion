@@ -570,6 +570,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.Alerts != nil {
 			opts = append(opts, runview.WithAlerts(*cfg.Alerts))
 		}
+		if s.usageCapSource != nil {
+			opts = append(opts, runview.WithUsageCapSource(s.usageCapSource))
+		}
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)
@@ -595,6 +598,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		}
+		if s.usageCapSource != nil {
+			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {

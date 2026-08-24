@@ -140,6 +140,13 @@ type ExecutorSpec struct {
 	// a CLI run and inert when no cap is configured.
 	UsageGuard *usagecap.Guard
 
+	// UsageCapSource, when non-nil (and UsageGuard is nil), builds the
+	// run's guard over a LIVE policy source — the DB-backed runtime
+	// settings resolver — instead of the frozen env policy, so a cap
+	// changed through the admin API reaches in-process runs within the
+	// source's TTL. The service threads its own source here.
+	UsageCapSource usagecap.PolicySource
+
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"), highest-priority input to the gate's
 	// mode precedence (above node/workflow DSL and ITERION_PERMISSION).
