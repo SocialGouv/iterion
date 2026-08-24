@@ -63,6 +63,12 @@ type processConfig struct {
 	// MCPConfigJSON is the JSON-encoded MCP server config (written to a temp file).
 	MCPConfigJSON []byte
 
+	// StrictMCPConfig maps to --strict-mcp-config: the CLI uses only the
+	// servers from --mcp-config and ignores every other MCP scope (user-level
+	// ~/.claude.json, project .mcp.json approvals, local). Emitted even when
+	// no --mcp-config follows — that is the "no MCP servers at all" case.
+	StrictMCPConfig bool
+
 	// AgentsJSON is the JSON-encoded agents config.
 	AgentsJSON []byte
 
@@ -169,6 +175,10 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 
 	if len(cfg.SettingsJSON) > 0 {
 		args = append(args, "--settings", string(cfg.SettingsJSON))
+	}
+
+	if cfg.StrictMCPConfig {
+		args = append(args, "--strict-mcp-config")
 	}
 
 	return args

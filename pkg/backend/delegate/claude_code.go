@@ -94,6 +94,17 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if srcs := settingSourcesFromEnv(); len(srcs) > 0 {
 		opts = append(opts, claudesdk.WithSettingSources(srcs...))
 	}
+	// Setting sources are inherited (above); MCP servers are NOT. The node's
+	// resolved MCP set — .bot `mcp_server:`/`mcp:` blocks, the repo's
+	// .mcp.json via autoload_project, iterion's ask_user/board servers —
+	// travels via --mcp-config, and --strict-mcp-config makes that set
+	// authoritative: the operator's personal ~/.claude.json servers don't
+	// boot inside bot nodes (undeclared tools, per-visit npx/chromium boots
+	// on loop-heavy bots, API keys on the argv — issue #506).
+	// ITERION_CLAUDE_CODE_STRICT_MCP=0 restores host inheritance.
+	if strictMCPFromEnv() {
+		opts = append(opts, claudesdk.WithStrictMCPConfig(true))
+	}
 	// Cwd handling differs by sandbox state. On the host (no sandbox)
 	// we pass the workdir straight through to claudesdk → cmd.Dir.
 	// In the sandbox it's the host worktree path that doesn't exist

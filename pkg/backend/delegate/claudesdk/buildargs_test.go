@@ -71,6 +71,20 @@ func TestBuildArgs_SettingSourcesAllThree(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_StrictMCPConfig(t *testing.T) {
+	if !hasFlag(buildArgs(processConfig{StrictMCPConfig: true}, true), "--strict-mcp-config") {
+		t.Error("--strict-mcp-config must be emitted when StrictMCPConfig is set")
+	}
+	// Emitted with no --mcp-config too: "no servers at all" is the point —
+	// the CLI must not fall back to user/project MCP scopes.
+	if !hasFlag(buildArgs(processConfig{StrictMCPConfig: true}, false), "--strict-mcp-config") {
+		t.Error("--strict-mcp-config must be emitted on the one-shot path as well")
+	}
+	if hasFlag(buildArgs(processConfig{}, true), "--strict-mcp-config") {
+		t.Error("--strict-mcp-config must be omitted when unset (host inheritance opt-in)")
+	}
+}
+
 func TestBuildArgs_Settings(t *testing.T) {
 	args := buildArgs(processConfig{
 		SettingsJSON: []byte(`{"autoMemoryEnabled":true}`),
