@@ -3084,6 +3084,32 @@
         }
       ]
     },
+    "/api/admin/settings/usage-caps": {
+      "get": {
+        "operationId": "getAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/users": {
       "get": {
         "operationId": "getAdminUsers",
