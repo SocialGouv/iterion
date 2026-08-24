@@ -1,0 +1,113 @@
+# Queue schema rollout runbook
+
+How to ship a `queue.RunMessage` schema bump (`pkg/queue/types.go`,
+`SchemaVersion`) without executing a payload with silently dropped semantics,
+and without losing runs while the server and runner fleets run mixed
+versions. This runbook is **mandatory** for every schema bump — deployment
+ordering alone is not sufficient (issue #481).
+
+## Wire compatibility policy
+
+- **Strict equality.** A consumer rejects any `v` it does not recognise, in
+  both directions: a v7 runner rejects v8 messages *and* a v8 runner rejects
+  v7 messages still sitting in the queue. There is no "forward-compatible"
+  read.
+- **Server first.** Deploy the server (producer) before the runners. The new
+  server is the only side that can start emitting the new version; runners
+  that don't speak it yet hold those messages (see below) instead of
+  destroying them.
+- **Additive field whose omission changes operator intent = breaking
+  change.** If a new field carries a decision the caller explicitly made
+  (budget caps, skills, auto-memory, loop guard, model pins…), a stale runner
+  that silently falls back from it is a correctness bug, not a cosmetic one.
+  Such a field REQUIRES a schema bump. History: v4 `Budget`, v5
+  `Contributions`, v6 `AutoMemory`, v7 `LoopBudgetGuard` — each exists
+  because dropping it would quietly re-make the operator's choice on the pod.
+- **Until the bump ships, reject — never drop.** A launch that carries a
+  field the current wire version cannot transport must fail loudly at publish
+  time. Precedent: `cloudpublisher.SubmitLaunch` rejects `model_overrides`
+  on queued cloud runs while schema v7 cannot carry them (issue #481).
+
+## What a mixed fleet does to a mismatched message
+
+Since #481, a version mismatch is transient and recoverable:
+
+1. The consumer **Naks with a 30s delay**
+   (`nats.SchemaMismatchNakDelay`), so the MaxDeliver budget (default 8)
+   stretches over ~4 minutes of wall clock instead of being burned in
+   seconds — enough for a rolling restart of the runner Deployment to
+   schedule a pod that speaks the new version.
+2. If the budget is exhausted anyway, the consumer **parks the payload
+   verbatim on the DLQ**, Terms the queue entry, and flips the run document
+   from `queued` to `failed_resumable` with an actionable error pointing at
+   this runbook and `/api/admin/dlq`. The run is never silently dropped and
+   never left `queued` with no recovery path.
+3. A DLQ replay re-publishes the **exact original bytes**, so a parked v8
+   message replays correctly once runners run v8.
+
+## Rollout procedure for a schema bump vN → vN+1
+
+Choose **one** of the two paths below. Deployment ordering alone (server
+first) is NOT a third option: it leaves the reverse case — vN+1 runners
+rejecting vN messages still in the queue — to chance.
+
+### Path A — drained queue before cutover (preferred when feasible)
+
+1. Stop new launches (maintenance window) or accept that launches during the
+   window follow Path B.
+2. Wait for the queue to drain: `iterion_nats_pending_messages` = 0 and no
+   `queued` runs older than the AckWait window.
+3. Deploy the server (vN+1), then roll the runners (vN+1).
+4. Sanity-check: one launch end-to-end, DLQ depth 0.
+
+### Path B — DLQ identification + replay after cutover
+
+1. Deploy the server (vN+1) first, then roll the runners. During the window,
+   stale runners hold vN+1 messages via delayed Naks; after MaxDeliver they
+   park them on the DLQ and flip the runs to `failed_resumable`.
+2. Once **all** runners run vN+1, list the DLQ and identify the parked
+   messages from the transition — the `Iterion-DLQ-Reason` header reads
+   `queue: schema version: N+1 unsupported (want N)`:
+
+   ```bash
+   curl "https://iterion.example.com/api/admin/dlq?limit=200"
+   curl "https://iterion.example.com/api/admin/dlq/$SEQ"   # peek: check the reason + run_id
+   ```
+3. Replay each transition message; the replay re-publishes the exact payload
+   and a vN+1 runner picks it up:
+
+   ```bash
+   curl -X POST "https://iterion.example.com/api/admin/dlq/$SEQ/replay"
+   ```
+4. Verify each replayed run leaves `failed_resumable` (back to `queued` →
+   `running`) and the DLQ returns to its pre-rollout depth.
+5. Same drill for the reverse direction: if the queue still held vN messages
+   when the vN+1 runners came up, they parked on the DLQ too (reason
+   `N unsupported (want N+1)`) — replay them exactly the same way.
+
+## Checklist: v7 → v8 (ModelOverrides)
+
+Schema v8 exists to carry launch-time `model_overrides` to the runner
+(issue #481 — today they are silently dropped in cloud mode, and
+`SubmitLaunch` rejects them loudly). Before v8 ships:
+
+- [ ] The safety mechanics above are deployed everywhere (delayed Nak +
+      DLQ park + status flip) — they are what makes this rollout safe.
+- [ ] v8 adds `ModelOverrides` to `queue.RunMessage`, the publisher sets it,
+      the runner applies it (`model.WithModelOverrides` /
+      `runtime.WithModelOverrides` in `executeRun`), and the publish-time
+      rejection in `SubmitLaunch` is removed.
+- [ ] The mixed-fleet integration test
+      (`pkg/runner/schema_rollout_integration_test.go`) covers the new
+      version pair.
+- [ ] Roll out per Path A or Path B above; until then, cloud launches with
+      `model_overrides` keep failing loudly at launch time.
+
+## If something went wrong
+
+- **Runs stuck `queued` after a rollout**: check the DLQ (they parked there
+  if this runbook's mechanics were deployed) and the orphan sweeper; replay
+  per Path B.
+- **A run executed with dropped semantics** (e.g. wrong model): that means a
+  field crossed the wire without a schema bump. Treat as an incident, add
+  the field to the additive-field rule above, and bump.

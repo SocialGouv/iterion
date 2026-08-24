@@ -84,6 +84,18 @@ const (
 	// its serial loop), so a high ceiling just removes the artificial cap and
 	// lets KEDA autoscaling be the real capacity lever, as intended.
 	DefaultMaxAckPending = 256
+
+	// SchemaMismatchNakDelay is the redelivery delay a runner applies when it
+	// rejects a message whose schema version it does not recognise (rolling
+	// upgrade in flight). A bare Nak is immediate: with MaxDeliver=8, a single
+	// stale pod can burn the whole redelivery budget in seconds — long before
+	// an upgraded runner is scheduled to take the message — and JetStream
+	// then drops it (issue #481). 30s stretches the 8-delivery budget over
+	// ~4 minutes of wall clock, which covers a rolling restart of the runner
+	// deployment; if the fleet still hasn't caught up, the exhausted message
+	// is parked on the DLQ with an actionable run status (recoverable via
+	// /api/admin/dlq) rather than silently dropped.
+	SchemaMismatchNakDelay = 30 * time.Second
 )
 
 // Config carries the connection settings for the cloud queue.
@@ -527,11 +539,27 @@ func (d *Delivery) Decode() (*queue.RunMessage, error) {
 	return &msg, nil
 }
 
+// Envelope extracts the stable identity fields (v, run_id, tenant_id,
+// owner_id) WITHOUT validating the schema version. This is the decode path
+// for messages this build rejects: a version-mismatched payload must still be
+// identifiable so it can be parked on the DLQ and its run document flipped to
+// an actionable status (issue #481).
+func (d *Delivery) Envelope() (queue.Envelope, error) {
+	return queue.PeekEnvelope(d.raw.Data())
+}
+
 // Ack marks the delivery as successfully processed. Stops redelivery.
 func (d *Delivery) Ack() error { return d.raw.Ack() }
 
 // Nak schedules a redelivery (after AckWait expires or sooner).
 func (d *Delivery) Nak() error { return d.raw.Nak() }
+
+// NakWithDelay schedules a redelivery no sooner than delay. Use it instead of
+// Nak whenever the redelivery is meant to wait for an EXTERNAL condition —
+// e.g. a schema-version mismatch waiting for the runner fleet to finish
+// rolling. A bare Nak is immediate: MaxDeliver attempts can be burned in
+// seconds, long before the condition had a chance to change (issue #481).
+func (d *Delivery) NakWithDelay(delay time.Duration) error { return d.raw.NakWithDelay(delay) }
 
 // Term tells JetStream to permanently drop the message — used after
 // MaxDeliver attempts when the runner publishes a DLQ copy itself.
