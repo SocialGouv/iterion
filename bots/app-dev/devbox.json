@@ -3,7 +3,7 @@
   "packages": [
     "gh@2.96.0",
     "glab@1.108.0",
-    "go-containerregistry@0.21.6",
+    "go-containerregistry@0.21.9",
     "yq-go@4.53.3"
   ],
   "env": {
