@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 #
 # iterion-sandbox-browser — opt-in variant of iterion-sandbox-slim
 # that bundles Chromium + Playwright MCP for the run console's
@@ -21,7 +21,7 @@
 # Image budget target: < 1.2 GB compressed. Chromium + Playwright
 # add ~280 MB on top of slim's ~250 MB.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge@sha256:9bda52529cb5dec74d4fb3c26da02dafe088628632b32e954fa3e6ee5570a6dc
 FROM ${BASE}
 
 USER root

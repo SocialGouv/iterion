@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 #
 # iterion-sandbox-slim-base — tool-only base of iterion-sandbox-slim.
 # Contains NO iterion binary: sandbox/finalize/Dockerfile layers the
@@ -17,7 +17,7 @@
 # node, and those need to be available system-wide regardless of
 # what the user's devbox.json declares.
 
-FROM jetpackio/devbox:latest@sha256:04562895294750bab6fcf75533a35566a854d272256933fa9c416e7f9859186f
+FROM jetpackio/devbox:latest@sha256:3446246d7fbadd0fb0fa53f434593d01b5711148e7608accee74ac448137169e
 
 USER root
 
