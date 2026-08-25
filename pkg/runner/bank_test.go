@@ -99,7 +99,9 @@ func TestBankRepoWorkspaceNoWorkIsNoop(t *testing.T) {
 func TestBankRepoWorkspacePushFailureIsNamed(t *testing.T) {
 	r, msg, work, _, base := bankFixture(t)
 	gitOut(t, work, "commit", "--allow-empty", "-m", "work")
-	msg.RepoURL = filepath.Join(t.TempDir(), "no-such-remote.git")
+	// The bank pushes through `origin` (live credential store) — break
+	// THAT to exercise the refusal path.
+	gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
 
@@ -235,5 +237,30 @@ func TestBankRepoWorkspaceRefShadowRecoversBySHA(t *testing.T) {
 	}
 	if run.FinalBranchError != "" {
 		t.Errorf("successful SHA recovery still recorded an error: %q", run.FinalBranchError)
+	}
+}
+
+
+// The bank must push through the clone's `origin` remote — whose
+// credential the mid-run refresher keeps LIVE — never through a URL
+// carrying the claim-time token: a GitHub App installation token lives
+// one hour and a paused run's bank then died on a dead credential
+// (run 01a0335f-af54). Proven by divergence: origin points at a live
+// bare, msg.RepoURL at a dead path — the old shape pushed at RepoURL
+// and failed, the fixed one lands the branch on origin.
+func TestBankPushesThroughOriginNotClaimTimeURL(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+	msg.RepoURL = filepath.Join(t.TempDir(), "dead-claim-url.git")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("bank landed %q (present=%v) on origin, want %s — the push must resolve through origin's live credential, not the claim-time URL", got, ok, head)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranch == "" || run.FinalBranchError != "" {
+		t.Fatalf("bank recorded %q with error %q, want a clean banked branch", run.FinalBranch, run.FinalBranchError)
 	}
 }

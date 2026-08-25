@@ -647,13 +647,16 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 	}
-	pushURL := msg.RepoURL
-	if tok != "" {
-		pushURL = injectGitToken(msg.RepoURL, tok)
-	}
-	// --force: the branch is namespaced to THIS run id; a re-banked
-	// attempt owns it entirely.
-	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", pushURL, head+":refs/heads/"+branch)
+	// Push through `origin` so git resolves the credential from the
+	// clone's live store (installGitCredentialStore wired
+	// `credential.helper store --file=.git/iterion-credentials`, and
+	// refreshGitCredentialsLoop keeps that file on the CURRENT token for
+	// the whole run). The previous shape injected the claim-time token
+	// into the push URL — a GitHub App installation token lives one hour,
+	// a paused-and-resumed run can end far later, and the bank push then
+	// died on a dead credential while a live one sat in the store. The
+	// claim-time token stays only as the redaction key for error output.
+	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", "origin", head+":refs/heads/"+branch)
 
 	// Persist on a background ctx carrying the run's tenant identity (the
 	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
