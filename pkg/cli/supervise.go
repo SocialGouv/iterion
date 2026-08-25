@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -47,9 +46,9 @@ func RunSupervise(p *Printer, opts SuperviseOptions) error {
 	if err != nil {
 		return err
 	}
-	monitors, err := parseMonitorSpecs(opts.Monitors)
+	monitors, err := supervise.ParseMonitorSpecs(opts.Monitors)
 	if err != nil {
-		return err
+		return fmt.Errorf("--monitor: %w", err)
 	}
 	name := opts.Name
 	if name == "" {
@@ -184,44 +183,4 @@ func resolveSystemPolicy(s string) (string, error) {
 		return string(data), nil
 	}
 	return s, nil
-}
-
-// parseMonitorSpecs parses repeatable --monitor flags of the form
-// "event_type=tool_error,tool_name=Bash" into supervise.Monitor values.
-func parseMonitorSpecs(specs []string) ([]supervise.Monitor, error) {
-	var out []supervise.Monitor
-	for _, spec := range specs {
-		var m supervise.Monitor
-		for _, kv := range strings.Split(spec, ",") {
-			kv = strings.TrimSpace(kv)
-			if kv == "" {
-				continue
-			}
-			k, v, ok := strings.Cut(kv, "=")
-			if !ok {
-				return nil, fmt.Errorf("supervise: malformed --monitor %q (want key=val)", spec)
-			}
-			k, v = strings.TrimSpace(k), strings.TrimSpace(v)
-			switch k {
-			case "event_type":
-				m.EventType = v
-			case "node_id":
-				m.NodeID = v
-			case "tool_name":
-				m.ToolName = v
-			case "text_contains":
-				m.TextContains = v
-			case "cost_gt":
-				f, err := strconv.ParseFloat(v, 64)
-				if err != nil {
-					return nil, fmt.Errorf("supervise: --monitor cost_gt %q: %w", v, err)
-				}
-				m.CostGt = f
-			default:
-				return nil, fmt.Errorf("supervise: --monitor unknown key %q", k)
-			}
-		}
-		out = append(out, m)
-	}
-	return out, nil
 }

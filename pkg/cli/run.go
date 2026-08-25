@@ -101,6 +101,10 @@ type RunOptions struct {
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
 	// is on.
 	LoopBudgetGuard string
+	// Supervisors is the run-level override for spawning DSL-declared
+	// `supervisor NAME:` watchers ("", "on", "off"). "" inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string
 
 	// RepoDevbox is the run-level override deciding whether the TARGET
 	// REPO's devbox.json is installed for this run ("on"|"off"; empty
@@ -190,6 +194,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
 		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
+	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
 
 	if opts.BranchName != "" {
 		if err := git.ValidateBranchName(opts.BranchName); err != nil {
@@ -254,15 +261,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
-	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
-	// event hub onto the engine so each coordinator can observe this run
-	// live. Injection (store-direct) is set up after the store exists.
-	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 {
-		superviseHub = supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-	}
-
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
 	// Workspace versioning, on the same terms as a studio launch: a run
@@ -281,6 +279,18 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	}
 
+	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
+	// event hub onto the engine so each coordinator can observe this run
+	// live. Injection (store-direct) is set up after the store exists.
+	// The shared gate resolves the kill switch (--supervisors →
+	// ITERION_SUPERVISORS → on) and logs the skip — AFTER the tee, so
+	// "why didn't the coach steer?" is answerable from run.log.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+	}
+
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot create store: %w", err)
@@ -295,8 +305,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if telemetry.prometheus != nil {
 		exporterHooks = telemetry.prometheus
 	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
 	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
-		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile))
+		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
 	}
@@ -429,37 +443,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // `supervisor NAME:` block on the workflow, observing this run through
 // the in-process hub and steering via a store-direct injector (same
 // store handle as the engine, so the inbox doorbell stays in lockstep).
-// Returns a stop func to drain them when the run ends.
+// Returns a stop func to drain them when the run ends. The kill switch
+// was already resolved where the hub was created.
 func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	var coords []*supervise.Coordinator
-	for _, sup := range wf.Supervisors {
-		system := ""
-		if sup.System != "" {
-			if p, ok := wf.Prompts[sup.System]; ok && p != nil {
-				system = p.Body
-			}
-		}
-		spec := supervise.Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   system,
-			Watches:  sup.Watches,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
-		}
-		coord := supervise.New(hub, inj, runID, spec, nil, logger)
-		if coord == nil {
-			continue
-		}
-		coord.Start(ctx)
-		coords = append(coords, coord)
-	}
-	return func() {
-		for _, c := range coords {
-			c.Close()
-		}
-	}
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any
@@ -481,6 +469,7 @@ func buildRunExecutor(
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
 	botID string,
+	hookObservers []func(store.Event),
 ) (runtime.NodeExecutor, error) {
 	if opts.Executor != nil {
 		return opts.Executor, nil
@@ -494,14 +483,19 @@ func buildRunExecutor(
 		return nil, err
 	}
 	execSpec := runview.ExecutorSpec{
-		Workflow:   wf,
-		Vars:       opts.Vars,
-		Store:      s,
-		RunID:      runID,
-		Logger:     logger,
-		StoreDir:   storeDir,
-		Compress:   opts.Compress,
-		AutoMemory: opts.AutoMemory,
+		Workflow: wf,
+		Vars:     opts.Vars,
+		Store:    s,
+		RunID:    runID,
+		Logger:   logger,
+		StoreDir: storeDir,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire ONLY
+		// this seam — a declared supervisor's hub must ride it or its
+		// text monitors can never see the agent speak (the engine seam
+		// carries none of them).
+		EventObservers: hookObservers,
+		Compress:       opts.Compress,
+		AutoMemory:     opts.AutoMemory,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -580,7 +574,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
-			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath))
+			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath), nil)
 		if err != nil {
 			return nil, err
 		}

@@ -259,6 +259,18 @@ prompt campaign_system:
   KEEP GOING, one slice at a time, until the feature is fully shipped
   within your budget. Then STOP and report.
 
+  PERSISTENCE — the durable path, to the end. Never declare a
+  sub-problem infeasible on reasoning alone: instrument it (add debug
+  output, shrink the repro, bisect) and let the evidence decide — most
+  premature verdicts of infeasibility are one experiment away from a
+  small fix. Prefer the durable path over the expedient shortcut: no
+  façade that satisfies the letter of the gate, no silently skipped or
+  weakened test, no temporary patch where the real fix is reachable
+  this pass. If something genuinely stays out of reach, bank your
+  state first — commit what is green, then a precise `work_remaining`
+  note naming the paths you tried and the evidence that closed them —
+  never a silent abandon.
+
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets re-poked):
     - feature_complete: true ONLY when a fresh re-read of the feature
@@ -299,6 +311,63 @@ prompt campaign_user:
   of the feature prompt finds nothing left to do. Read `git log` first
   to see what earlier passes already landed. Then report the termination
   contract (feature_complete, commits_this_pass, work_remaining).
+
+## ─── supervisor (Persy, the perseverance coach) ─────────────────────
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch.
+
+## Every text marker is pinned to `assistant_text` — the agent's own
+## words. Unpinned, the same substrings match rendered tool inputs and
+## outputs (a grep hit in the repo, a Read of a file mentioning the
+## word), which measured at 5 of 10 evals burned on echoes in a run
+## where the agent never gave up. Pinning also lets the marker set use
+## the same vocabulary as the contract without self-firing on the
+## prompt text.
+supervisor persy:
+  watches: [campaign]
+  system: persy_policy
+  cooldown: "5m"
+  max_evals: 10
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
+
+prompt persy_policy:
+  You are Persy, a perseverance coach watching a senior engineer agent
+  (the `campaign` node) ship one feature end to end. Your ONLY job is
+  to keep it on the durable path and moving to completion — the push a
+  good human operator supplies when watching the session live. The
+  agent's own contract already states the policy (its PERSISTENCE
+  clause); you enforce it from outside when the agent drifts.
+
+  STAY SILENT while progress is steady — exploration, edits, passing
+  builds, commits landing. Silence is your default; most wakes end
+  with intervene: false. Your monitors are pre-seeded; register more
+  only when the run shows you a sharper signal.
+
+  INTERVENE with ONE short message (2–4 sentences, specific and
+  actionable, like an operator typing mid-session) only on:
+  1. GIVING UP — a sub-problem declared hopeless, or quietly
+     skipped/reported away. Demand one more INSTRUMENTED attempt (add
+     debug output, shrink the repro, bisect) and name the cheapest
+     next experiment visible in the recent events. Evidence decides,
+     not fatigue.
+  2. EXPEDIENT PATH — a façade, a skipped or weakened test, a
+     temporary patch where the durable fix is reachable this pass.
+     Name the durable alternative and ask for it.
+  3. FAILURE LOOP — the same command failing repeatedly with no change
+     of approach. Ask for a different approach, not another retry.
+  4. PRESSURE — a budget warning or a visibly long pass. Tell it to
+     BANK NOW: commit what is green, write a precise work_remaining,
+     leave the tree clean — before attempting anything else.
+
+  NEVER: contest an honest termination report — feature_complete, or a
+  precise work_remaining with evidence, is a valid outcome (completion
+  is the goal, not perpetual motion); enlarge the scope beyond the
+  feature prompt; re-raise a point the agent already answered with
+  evidence; stack a second message on a signal you already steered.
+  Once the agent reports its structured termination output, you are
+  done.
 
 ## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
 ## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes

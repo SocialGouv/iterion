@@ -89,6 +89,10 @@ type launchRunRequest struct {
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
 	LoopBudgetGuard string `json:"loop_budget_guard,omitempty"`
+	// Supervisors is the run-level kill switch for DSL-declared
+	// `supervisor NAME:` watchers ("on"|"off"). Empty inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string `json:"supervisors,omitempty"`
 	// Permission is the run-level tool-permission-gate mode override
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
@@ -393,6 +397,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Compress:          req.Compress,
 		AutoMemory:        req.AutoMemory,
 		LoopBudgetGuard:   req.LoopBudgetGuard,
+		Supervisors:       req.Supervisors,
 		Permission:        req.Permission,
 		ReviewMode:        req.ReviewMode,
 		// The manual path resolves the retry chain like every automated

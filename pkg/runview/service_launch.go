@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // LaunchResult is returned by Launch on success.
@@ -81,6 +82,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err := spec.Budget.Validate(); err != nil {
 			return nil, fmt.Errorf("budget: %w", err)
 		}
+	}
+	// Same pre-flight for the supervisors kill switch: a typo would read
+	// as "inherit" in-process while the detached runner's CLI rejects it
+	// — one input, one behaviour.
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 	runID := spec.RunID
 	if runID == "" {
@@ -190,10 +197,17 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow:       wf,
-		Vars:           spec.Vars,
-		Store:          s.store,
-		EventObservers: spec.ExtraObservers,
+		Workflow: wf,
+		Vars:     spec.Vars,
+		Store:    s.store,
+		// The broker rides the hook seam too: backend-hook events
+		// (assistant_text, tool_*, llm_*) never fire the engine's
+		// observer, so without this a declared supervisor observing via
+		// ObserveRun — and any live broker subscriber of an in-process
+		// run — is blind to the agent's own words. Subscribers dedup by
+		// Seq, and the two event sets are disjoint, so nothing arrives
+		// twice.
+		EventObservers: append(append([]func(store.Event){}, spec.ExtraObservers...), s.broker.Publish),
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -288,7 +302,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -344,6 +358,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
+	}
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything
@@ -463,7 +480,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard},
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -674,7 +691,7 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger)
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
@@ -778,6 +795,10 @@ type launchExtras struct {
 	// run-level override for the back-edge affordability guard, the level
 	// above the workflow's own `loop_budget_guard:`.
 	loopBudgetGuard string
+	// supervisors mirrors LaunchSpec/ResumeSpec.Supervisors: the
+	// run-level kill switch for DSL-declared supervisor watchers,
+	// resolved above ITERION_SUPERVISORS.
+	supervisors string
 }
 
 // engineOptions builds the standard option set for both Launch and
