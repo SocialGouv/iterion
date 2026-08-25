@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1021,5 +1023,102 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	out, _ := log.CombinedOutput()
 	if !strings.Contains(string(out), "operator's own commit") {
 		t.Fatalf("the operator's unpushed commit was destroyed:\n%s", out)
+	}
+}
+
+// TestVulnWatch_ProjectLabelsAreNotShifted pins the routing promise: an
+// org-wide Dependabot poll returns alerts for repos ABSENT from the
+// inventory, whose project key is nil. Zipping a filtered name list against
+// the unfiltered key list shifted the labels and named the WRONG team.
+func TestVulnWatch_ProjectLabelsAreNotShifted(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	// Seed the bootstrap with an OLD alert so the per-org cursor lands in the
+	// past — otherwise it arms at "now" and the fixture's dated alerts sit
+	// behind it.
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-seed-0001", "CVE-2020-0001", "low", "testorg/domifa", "seed", "2026-08-01T00:00:00Z", "1.0.0"),
+	})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// One advisory across three repos, the FIRST of which the inventory does
+	// not know (project key nil) — the shifting case.
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-shift-0001", "CVE-2026-4242", "critical", "testorg/not-inventoried", "pkg", "2026-08-24T10:00:00Z", "3.0.0"),
+		vwDepAlert("GHSA-shift-0001", "CVE-2026-4242", "critical", "testorg/domifa", "pkg", "2026-08-24T10:01:00Z", "3.0.0"),
+		vwDepAlert("GHSA-shift-0001", "CVE-2026-4242", "critical", "testorg/accolade-env", "pkg", "2026-08-24T10:02:00Z", "3.0.0"),
+	})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-4242", "vendorProject": "x", "product": "x",
+			"vulnerabilityName": "exploited", "dateAdded": "2026-08-24"},
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("expected one grouped alert: %v", match["summary"])
+	}
+	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	// Both real projects must be named by their OWN label, and the raw key
+	// must never leak in place of a name.
+	if !strings.Contains(msg, "DOMIFA") || !strings.Contains(msg, "ACCOLADE") {
+		t.Fatalf("both inventoried projects must be named:\n%s", msg)
+	}
+	if strings.Contains(msg, "accolade,") || strings.Contains(msg, " domifa") {
+		t.Fatalf("a raw project key leaked instead of its label:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_RefusesADecompressionBomb pins the bounded inflate: a feed
+// (or the enrichment URL the feed itself names) can serve a small gzip body
+// that expands to gigabytes, killing the run or the pod.
+func TestVulnWatch_RefusesADecompressionBomb(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	// 512 MiB of zeros → a few hundred KiB compressed.
+	chunk := make([]byte, 1<<20)
+	for i := 0; i < 512; i++ {
+		if _, err := zw.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bomb := buf.Bytes()
+	t.Logf("bomb: %d compressed bytes → 512 MiB inflated", len(bomb))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write(bomb)
+	}))
+	defer srv.Close()
+
+	scratch := t.TempDir()
+	out, stderr, err := runPy(t, t.TempDir(), vwSub(t, vwTool(t, wf, "poll_advisories").Script, map[string]any{
+		"feeds":        []map[string]any{{"url": srv.URL + "/feed/", "kind": "alert"}},
+		"timeout_secs": 10, "scratch_dir": scratch, "allow_private": true,
+		"workspace": t.TempDir(), "state_dir": ".vuln-watch",
+	}, nil, nil))
+	// Either the node refuses outright (all feeds failed) or it records the
+	// refusal per-feed — never a multi-gigabyte allocation.
+	if err == nil {
+		errs, _ := json.Marshal(out["errors"])
+		if !strings.Contains(string(errs), "inflates beyond") {
+			t.Fatalf("expected a bounded-inflate refusal, got errors=%s", errs)
+		}
+		return
+	}
+	if !strings.Contains(stderr, "inflates beyond") {
+		t.Fatalf("expected a bounded-inflate refusal, got: %s", stderr)
 	}
 }

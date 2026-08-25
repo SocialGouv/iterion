@@ -75,7 +75,13 @@ type Orchestrator struct {
 	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
 	// server so the orchestrator stays free of the github package + App key.
 	GitHubAppMinter func(ctx context.Context, conn Connection) (string, error)
-	PublicURL       string
+	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
+	// a security-read withdrawal that could not run while disconnecting).
+	// Injected like the other seams so the package stays logger-free; nil
+	// silences it, which is why callers that CAN act on the error get it
+	// returned instead.
+	LogWarn   func(format string, args ...any)
+	PublicURL string
 
 	// Optional injection points for tests (default to time.Now / uuid).
 	Now   func() time.Time
@@ -932,7 +938,14 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	// connection is gone) is the opposite of what they asked for.
 	if conn.SecurityReadEnabled {
 		if derr := RemoveSecurityReadToken(ctx, o.Secrets, o.Sealer, &conn); derr != nil {
-			return fmt.Errorf("forge: withdraw security-read token: %w", derr)
+			// Disconnecting is the operator's most explicit security action;
+			// it must not be blocked by an unrelated malformed secret (the
+			// documented hand-set path makes "a bare PAT instead of a JSON
+			// map" the obvious mistake). Report and continue — the
+			// connection, and with it the ability to mint, still goes away.
+			if o.LogWarn != nil {
+				o.LogWarn("forge: could not withdraw the security-read entry for %s while disconnecting: %v", conn.ID, derr)
+			}
 		}
 	}
 	return o.Connections.Delete(ctx, connID)

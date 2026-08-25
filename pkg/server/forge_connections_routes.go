@@ -452,6 +452,15 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 	conn.SecurityReadEnabled = enable
 	conn.UpdatedAt = time.Now().UTC()
 	if err := s.forgeConnections.Update(ctx, conn); err != nil {
+		// The token is already in the map but the flag says otherwise, so no
+		// lifecycle owns it: the worker skips it, the withdrawal skips it,
+		// deprovision skips it — it dies in ~1h and the hourly bot then
+		// fails on a 401 with no trail. Roll it back.
+		if enable {
+			if rerr := forge.RemoveSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn); rerr != nil && s.logger != nil {
+				s.logger.Warn("forge: could not roll back the security-read token for %s after a failed persist: %v", conn.ID, rerr)
+			}
+		}
 		httpError(w, http.StatusInternalServerError, "persist connection: %v", err)
 		return
 	}

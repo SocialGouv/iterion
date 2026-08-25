@@ -164,6 +164,24 @@ func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore,
 			if err := st.Create(ctx, gs); err != nil {
 				return fmt.Errorf("forge: create %s secret: %w", SecurityReadSecretName, err)
 			}
+			// The create path cannot CAS (there is nothing to compare
+			// against) and the store has no unique (team, name) index, so two
+			// replicas first-minting concurrently would leave TWO secrets of
+			// this name — one shadowing the other, its org's token filed
+			// where nothing reads it, and the bot hard-failing on a missing
+			// org with no server-side signal. Re-read: if another writer's
+			// record is the one that resolves, fold our entry into it and
+			// drop ours.
+			winner, found, ferr := findSecurityReadSecret(ctx, st, conn.TenantID)
+			if ferr != nil || !found || winner.ID == gs.ID {
+				return nil
+			}
+			if err := st.Delete(ctx, gs.ID); err != nil {
+				return fmt.Errorf("forge: drop duplicate %s secret: %w", SecurityReadSecretName, err)
+			}
+			if attempt == 0 {
+				continue // merge into the winner through the ordinary CAS path
+			}
 			return nil
 		}
 		expected := gs.Fingerprint

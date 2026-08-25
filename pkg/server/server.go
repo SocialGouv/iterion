@@ -490,6 +490,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.forgeStates = newForgeStateStore(10 * time.Minute)
 		}
 		s.forgeOrchestrator = &forge.Orchestrator{
+			LogWarn:         s.forgeLogWarn,
 			Connections:     s.forgeConnections,
 			Integrations:    s.forgeIntegrations,
 			Webhooks:        s.webhookConfigs,

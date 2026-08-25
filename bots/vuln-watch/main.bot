@@ -625,10 +625,23 @@ tool poll_advisories:
   output: advisories_output
   language: py
   script: |
-    import json, os, re, gzip, socket, ipaddress, time
+    import json, os, re, zlib, socket, ipaddress, time
     import urllib.request, urllib.error
     from urllib.parse import urlsplit
     import xml.etree.ElementTree as ET
+
+    MAX_INFLATED = 64 * 1024 * 1024
+    def gunzip(raw, limit=MAX_INFLATED):
+        ## Bounded inflate: gzip.decompress() has no output cap, and a
+        ## repetitive XML body compresses ~400:1 (a zero stream ~1000:1), so
+        ## an 8 MiB response expands past 3 GB in ONE allocation and kills
+        ## the run — or the pod. Reachable from any feed, and from the
+        ## enrichment URL the feed itself names.
+        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        out = d.decompress(raw, limit)
+        if d.unconsumed_tail:
+            raise ValueError('refusing a body that inflates beyond ' + str(limit) + ' bytes')
+        return out
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     feeds = {{input.feeds}} or []
     timeout = {{input.timeout_secs}}
@@ -724,7 +737,7 @@ tool poll_advisories:
                 with _opener.open(req, timeout=timeout) as r:
                     raw = r.read(8 * 1024 * 1024)
                 if raw[:2] == b'\x1f\x8b':
-                    raw = gzip.decompress(raw)
+                    raw = gunzip(raw)
                 return raw
             except urllib.error.HTTPError as e:
                 last = e
@@ -834,7 +847,7 @@ tool poll_exploit:
   output: exploit_output
   language: py
   script: |
-    import json, os, gzip, socket, ipaddress, time
+    import json, os, zlib, socket, ipaddress, time
     import urllib.request, urllib.error
     from urllib.parse import urlsplit
     null = None; true = True; false = False  # JSON-literal shim for missing refs
@@ -915,7 +928,11 @@ tool poll_exploit:
         if raw is None:
             raise last
         if raw[:2] == b'\x1f\x8b':
-            raw = gzip.decompress(raw)
+            ## Bounded inflate — see poll_advisories' gunzip for the why.
+            _d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            raw = _d.decompress(raw, 128 * 1024 * 1024)
+            if _d.unconsumed_tail:
+                raise ValueError('refusing a KEV body that inflates beyond 128 MiB')
         data = json.loads(raw.decode('utf-8'))
         if not isinstance(data.get('vulnerabilities'), list):
             raise ValueError('KEV payload has no vulnerabilities list')
@@ -1506,7 +1523,15 @@ tool match_policy:
     ## Attach project display info for notify (names resolved here so the
     ## message step stays a pure renderer).
     for a in posted_alerts:
-        a['project_names'] = [((projects.get(p) or {}).get('name') or p) for p in (a['projects'] or []) if p]
+        ## A KEYED map, not a parallel list: a Dependabot unit's `projects`
+        ## carries None for every repo absent from the inventory (the common
+        ## case on an org-wide poll), so a filtered list zipped against the
+        ## unfiltered one shifts and labels a project with ANOTHER project's
+        ## name — the alert would route the fix to the wrong team, which is
+        ## this bot's headline promise inverted.
+        a['project_label'] = {p: ((projects.get(p) or {}).get('name') or p)
+                              for p in (a['projects'] or []) if p}
+        a['project_names'] = [a['project_label'][p] for p in (a['projects'] or []) if p]
         a['project_repos'] = {p: (projects.get(p) or {}).get('repos') or [] for p in (a['projects'] or []) if p}
         a['tech_labels'] = [((techs.get(t) or {}).get('label') or t) for t in (a['techs'] or [])]
 
@@ -1618,7 +1643,8 @@ tool notify:
                 for pk, rs in prepos.items():
                     if r.lower() in [x.lower() for x in rs]:
                         per_proj.setdefault(pk, []).append(r)
-            named = [flat((([n for p, n in zip(a.get('projects') or [], pnames) if p == pk] or [pk])[0]), 60) for pk in per_proj]
+            labels_by_key = a.get('project_label') or {}
+            named = [flat(labels_by_key.get(pk) or pk, 60) for pk in per_proj]
             proj_part = (', '.join(sorted(set(named))) + ' — ') if named else ''
             lines.append(labels['projects'] + ' (' + str(len(a['repos'])) + ' ' + labels['repos'] + '): ' +
                          proj_part + ', '.join('`' + r + '`' for r in shown) +

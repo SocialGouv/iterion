@@ -381,6 +381,14 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	return tok, err
 }
 
+// forgeLogWarn is the orchestrator's non-blocking-anomaly seam, wired to the
+// server logger (the forge package stays logger-free).
+func (s *Server) forgeLogWarn(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Warn(format, args...)
+	}
+}
+
 // forgeSecurityTokenMinter mints a github_app connection's org-wide
 // security-read installation token (vulnerability_alerts:read + metadata) —
 // the RefreshWorker's SecurityMinter and the enable endpoint's immediate
