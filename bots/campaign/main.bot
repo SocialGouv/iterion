@@ -830,11 +830,14 @@ tool finalize:
     # out one command per character (or per mapping key) and manufacture a
     # verdict nobody's gate ever rendered.
     def gate_commands(l):
+        """(commands, defect): commands is None when the gate is not
+        requalifiable, and defect names WHICH refusal, verbatim for the
+        committed verdict — the two causes are distinct diagnoses."""
         gates = l.get("exit_gate") or []
         if isinstance(gates, str):
             gates = [gates]
         if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
-            return None
+            return None, "unreadable exit_gate (%s)" % type(l.get("exit_gate")).__name__
         # A command containing an INTERIOR newline is refused by modernize's
         # reader (its transport is newline-joined); accepting it here would
         # let this supervisor requalify a lot the executing bot cannot even
@@ -843,25 +846,24 @@ tool finalize:
         gates = [g.strip() for g in gates]
         gates = [g for g in gates if g]
         if any("\n" in g for g in gates):
-            return None
-        return gates
+            return None, "multi-line exit_gate command"
+        return gates, ""
 
     requal = {"head": head[:12], "commands": {}, "lots": {}}
     if not dirty and blocked:
         cmds = []
         for l in blocked:
-            for g in (gate_commands(l) or []):
+            for g in (gate_commands(l)[0] or []):
                 if g not in cmds:
                     cmds.append(g)
         for c in cmds:
             code, log = sh(c)
             requal["commands"][c] = {"rc": code, "tail": log[-400:]}
         for l in blocked:
-            gates = gate_commands(l)
+            gates, defect = gate_commands(l)
             if gates is None:
-                requal["lots"][l.get("id")] = {"verdict": "unreadable exit_gate "
-                                               "(%s) — not requalifiable"
-                                               % type(l.get("exit_gate")).__name__}
+                requal["lots"][l.get("id")] = {"verdict": "%s — not "
+                                               "requalifiable" % defect}
                 continue
             if not gates:
                 # Zero commands ran; "every gate command green" over an empty
