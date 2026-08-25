@@ -835,9 +835,13 @@ tool finalize:
             gates = [gates]
         if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
             return None
-        # A command containing a newline is refused by modernize's reader
-        # (its transport is newline-joined); accepting it here would let this
-        # supervisor requalify a lot the executing bot cannot even read.
+        # A command containing an INTERIOR newline is refused by modernize's
+        # reader (its transport is newline-joined); accepting it here would
+        # let this supervisor requalify a lot the executing bot cannot even
+        # read. Strip first — yq hands every block/folded scalar with a
+        # trailing newline, and a single-command block is legitimate.
+        gates = [g.strip() for g in gates]
+        gates = [g for g in gates if g]
         if any("\n" in g for g in gates):
             return None
         return gates

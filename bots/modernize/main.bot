@@ -336,8 +336,12 @@ tool plan_read:
     # One command, one line: the field travels to the verifier newline-joined
     # and is split back on newlines there, so a command CONTAINING a newline
     # (a `|` block scalar, a multi-line list item) would be torn apart into
-    # fragments nobody declared. Multi-line logic belongs in a script file
-    # the gate invokes.
+    # fragments nobody declared. Strip before judging — yq hands every block
+    # and folded scalar with a TRAILING newline, and a single-command block
+    # is legitimate; only an interior newline is the multi-line thing being
+    # refused. Multi-line logic belongs in a script file the gate invokes.
+    gate = [c.strip() for c in gate]
+    gate = [c for c in gate if c]
     if any("\n" in c for c in gate):
         refuse("lot %s declares a multi-line exit_gate command. Each command "
                "must be a single line; put multi-line logic in a script file "

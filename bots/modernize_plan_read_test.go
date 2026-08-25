@@ -128,6 +128,20 @@ lots:
 		}
 	})
 
+	t.Run("single-command block scalar is one command, trailing newline stripped", func(t *testing.T) {
+		res := run(t, `version: 1
+lots:
+  - id: T4
+    title: block
+    exit_gate: |
+      test -f .tool-versions
+    status: todo
+`, 0)
+		if res.ExitGate != "test -f .tool-versions" {
+			t.Fatalf("exit_gate = %q, want the stripped single command", res.ExitGate)
+		}
+	})
+
 	t.Run("block-scalar gate is refused as multi-line", func(t *testing.T) {
 		res := run(t, `version: 1
 lots:
