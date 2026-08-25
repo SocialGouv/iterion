@@ -35,6 +35,19 @@ type Decision struct {
 	Done bool `json:"done,omitempty"`
 }
 
+// logSummary renders the decision as one log fragment; nil-safe (a nil
+// decision is a real, silent case) so log call sites need no guards.
+func (d *Decision) logSummary() string {
+	if d == nil {
+		return "no decision"
+	}
+	s := fmt.Sprintf("intervene=%v watch+%d done=%v", d.Intervene, len(d.Watch), d.Done)
+	if d.Reason != "" {
+		s += " reason=" + d.Reason
+	}
+	return s
+}
+
 // decisionSchema is the structured-output contract handed to
 // GenerateObjectDirect's synthetic tool.
 const decisionSchema = `{

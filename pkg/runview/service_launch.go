@@ -288,7 +288,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -463,7 +463,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard},
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -674,7 +674,7 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger)
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
@@ -778,6 +778,10 @@ type launchExtras struct {
 	// run-level override for the back-edge affordability guard, the level
 	// above the workflow's own `loop_budget_guard:`.
 	loopBudgetGuard string
+	// supervisors mirrors LaunchSpec/ResumeSpec.Supervisors: the
+	// run-level kill switch for DSL-declared supervisor watchers,
+	// resolved above ITERION_SUPERVISORS.
+	supervisors string
 }
 
 // engineOptions builds the standard option set for both Launch and

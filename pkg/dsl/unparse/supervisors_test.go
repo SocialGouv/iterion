@@ -13,6 +13,7 @@ const supervisorsRoundtripSrc = `supervisor watchdog:
   system: watchdog_policy
   cooldown: "45s"
   max_evals: 12
+  monitors: ["event_type=tool_error,tool_name=Bash", "text_contains=impossible"]
 
 prompt watchdog_policy:
   Intervene if the implementer edits files outside src/.
@@ -59,6 +60,7 @@ func TestSupervisorsRoundtrip(t *testing.T) {
 		"system: watchdog_policy",
 		`cooldown: "45s"`,
 		"max_evals: 12",
+		`monitors: ["event_type=tool_error,tool_name=Bash", "text_contains=impossible"]`,
 	} {
 		if !strings.Contains(out1, want) {
 			t.Errorf("unparsed source missing %q\n---\n%s", want, out1)

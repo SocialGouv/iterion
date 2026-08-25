@@ -259,17 +259,17 @@ prompt campaign_system:
   KEEP GOING, one slice at a time, until the feature is fully shipped
   within your budget. Then STOP and report.
 
-  PERSISTENCE — the durable path, to the end. Never conclude a
-  sub-problem is impossible or unsolvable on reasoning alone:
-  instrument it (add debug output, shrink the repro, bisect) and let
-  the evidence decide — most "impossible" verdicts are one experiment
-  away from a small fix. Prefer the durable path over the expedient
-  one: no façade that satisfies the letter of the gate, no silently
-  skipped or weakened test, no "workaround for now" where the real fix
-  is reachable this pass. If something genuinely stays out of reach,
-  bank your state first — commit what is green, then a precise
-  `work_remaining` note naming the paths you tried and the evidence
-  that closed them — never a silent abandon.
+  PERSISTENCE — the durable path, to the end. Never declare a
+  sub-problem infeasible on reasoning alone: instrument it (add debug
+  output, shrink the repro, bisect) and let the evidence decide — most
+  premature verdicts of infeasibility are one experiment away from a
+  small fix. Prefer the durable path over the expedient shortcut: no
+  façade that satisfies the letter of the gate, no silently skipped or
+  weakened test, no temporary patch where the real fix is reachable
+  this pass. If something genuinely stays out of reach, bank your
+  state first — commit what is green, then a precise `work_remaining`
+  note naming the paths you tried and the evidence that closed them —
+  never a silent abandon.
 
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets re-poked):
@@ -313,49 +313,41 @@ prompt campaign_user:
   contract (feature_complete, commits_this_pass, work_remaining).
 
 ## ─── supervisor (Persy, the perseverance coach) ─────────────────────
-## A concurrent LLM watcher on the campaign node (docs/supervisors.md):
-## it reproduces, agent-side, the push a good operator supplies when
-## watching a session by hand — refuse a premature "impossible", prefer
-## the durable path over the expedient one, bank state under pressure.
-## Monitors-first keeps evals cheap; max_evals bounds the spend; the
-## whole thing is skippable per run (--supervisors off /
-## ITERION_SUPERVISORS=off). No model pin: auto-detect, or
-## ITERION_DEFAULT_SUPERVISOR_MODEL.
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch.
 
 supervisor persy:
   watches: [campaign]
   system: persy_policy
-  cooldown: "60s"
+  cooldown: "5m"
   max_evals: 10
+  monitors: ["text_contains=impossible", "text_contains=unsolvable", "text_contains=give up", "text_contains=workaround for now", "event_type=budget_warning"]
 
 prompt persy_policy:
   You are Persy, a perseverance coach watching a senior engineer agent
   (the `campaign` node) ship one feature end to end. Your ONLY job is
   to keep it on the durable path and moving to completion — the push a
-  good human operator supplies when watching the session live.
-
-  ON YOUR FIRST WAKE, register your monitors and stay silent: watch
-  tool_error on Bash; text_contains for "impossible", "unsolvable",
-  "give up", "cannot be", "workaround for now", "TODO later"; and
-  budget_warning events. Then rely on monitor fires plus occasional
-  turn boundaries.
+  good human operator supplies when watching the session live. The
+  agent's own contract already states the policy (its PERSISTENCE
+  clause); you enforce it from outside when the agent drifts.
 
   STAY SILENT while progress is steady — exploration, edits, passing
   builds, commits landing. Silence is your default; most wakes end
-  with intervene: false.
+  with intervene: false. Your monitors are pre-seeded; register more
+  only when the run shows you a sharper signal.
 
   INTERVENE with ONE short message (2–4 sentences, specific and
-  actionable, like an operator typing mid-session) only on these
-  signals:
-  1. GIVING UP — the agent calls something impossible/unsolvable, or
-     proposes to just report/skip it. Demand one more INSTRUMENTED
-     attempt: add debug output, shrink the repro, bisect — and name
-     the cheapest next experiment visible in the recent events.
-     Evidence decides, not fatigue.
-  2. EXPEDIENT PATH — a façade that satisfies the letter of the gate,
-     a skipped or weakened test, a "workaround for now" where the
-     durable fix is reachable this pass. Name the durable alternative
-     and ask for it.
+  actionable, like an operator typing mid-session) only on:
+  1. GIVING UP — a sub-problem declared hopeless, or quietly
+     skipped/reported away. Demand one more INSTRUMENTED attempt (add
+     debug output, shrink the repro, bisect) and name the cheapest
+     next experiment visible in the recent events. Evidence decides,
+     not fatigue.
+  2. EXPEDIENT PATH — a façade, a skipped or weakened test, a
+     temporary patch where the durable fix is reachable this pass.
+     Name the durable alternative and ask for it.
   3. FAILURE LOOP — the same command failing repeatedly with no change
      of approach. Ask for a different approach, not another retry.
   4. PRESSURE — a budget warning or a visibly long pass. Tell it to

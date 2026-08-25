@@ -109,41 +109,16 @@ func (s *Service) Inject(ctx context.Context, runID, nodeID, text string) error 
 // lifetime via ctx. They observe through the broker (in-process) and
 // steer via Inject. Returns a stop func the caller defers to drain them
 // before the run goroutine exits. A no-op when the workflow declares
-// none — supervision is an enhancement, never a hard dependency, so any
-// individual coordinator that fails to construct is simply skipped.
-func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, logger *iterlog.Logger) (stop func()) {
+// none, or when the kill switch (override → ITERION_SUPERVISORS → on)
+// says off — the skip is logged by the shared gate.
+func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf *ir.Workflow, logger *iterlog.Logger, override string) (stop func()) {
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return func() {}
 	}
-	// Kill switch (ITERION_SUPERVISORS; the CLI adds a per-run
-	// --supervisors layer on its own path). Skipped loudly — a declared
-	// capability never disappears in silence.
-	if enabled, source := supervise.DeclaredEnabled(""); !enabled {
-		logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
+	if !supervise.DeclaredEnabledOrWarn(override, len(wf.Supervisors), logger) {
 		return func() {}
 	}
-	var coords []*supervise.Coordinator
-	for _, sup := range wf.Supervisors {
-		spec := supervise.Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   resolvePromptBody(wf, sup.System),
-			Watches:  sup.Watches,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
-		}
-		coord := supervise.New(s, s, runID, spec, nil, logger)
-		if coord == nil {
-			continue
-		}
-		coord.Start(ctx)
-		coords = append(coords, coord)
-	}
-	return func() {
-		for _, c := range coords {
-			c.Close()
-		}
-	}
+	return supervise.StartDeclared(ctx, s, s, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
 }
 
 // Publish persists an updated Session-board spec for runID. It satisfies
@@ -189,17 +164,4 @@ func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, lo
 	}
 	coord.Start(ctx)
 	return coord.Close
-}
-
-// resolvePromptBody returns the raw text of a workflow prompt by name,
-// or "" when the name is empty/undeclared (the supervisor then runs with
-// only its built-in framing).
-func resolvePromptBody(wf *ir.Workflow, name string) string {
-	if name == "" || wf == nil {
-		return ""
-	}
-	if p, ok := wf.Prompts[name]; ok && p != nil {
-		return p.Body
-	}
-	return ""
 }

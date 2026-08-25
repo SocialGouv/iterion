@@ -120,6 +120,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	logger := iterlog.New(level, os.Stderr)
 
+	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
+
 	// Same anchor as run: a run must be resumable from the directory it was
 	// launched in, whether or not --file names the bot.
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
@@ -254,16 +258,9 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	// the same campaign the supervisor was declared to watch. Same wiring
 	// and kill switch as the run path (run.go).
 	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 {
-		if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
-			return UserInputError(fmt.Errorf("--supervisors: %w", err))
-		}
-		if enabled, source := supervise.DeclaredEnabled(opts.Supervisors); enabled {
-			superviseHub = supervise.NewEventHub()
-			resumeOpts = append(resumeOpts, runtime.WithEventObserver(superviseHub.Publish))
-		} else {
-			logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
-		}
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		resumeOpts = append(resumeOpts, runtime.WithEventObserver(superviseHub.Publish))
 	}
 	// Keep capturing across a resume: stopping here would leave a hole in
 	// the workspace history exactly where the operator is iterating.

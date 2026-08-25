@@ -264,16 +264,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
 	// event hub onto the engine so each coordinator can observe this run
 	// live. Injection (store-direct) is set up after the store exists.
-	// The kill switch (--supervisors / ITERION_SUPERVISORS) skips the
-	// wiring loudly — a declared capability never disappears in silence.
+	// The shared gate resolves the kill switch (--supervisors →
+	// ITERION_SUPERVISORS → on) and logs the skip.
 	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 {
-		if enabled, source := supervise.DeclaredEnabled(opts.Supervisors); enabled {
-			superviseHub = supervise.NewEventHub()
-			engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-		} else {
-			logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
-		}
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
 	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)
@@ -442,37 +438,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // `supervisor NAME:` block on the workflow, observing this run through
 // the in-process hub and steering via a store-direct injector (same
 // store handle as the engine, so the inbox doorbell stays in lockstep).
-// Returns a stop func to drain them when the run ends.
+// Returns a stop func to drain them when the run ends. The kill switch
+// was already resolved where the hub was created.
 func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	var coords []*supervise.Coordinator
-	for _, sup := range wf.Supervisors {
-		system := ""
-		if sup.System != "" {
-			if p, ok := wf.Prompts[sup.System]; ok && p != nil {
-				system = p.Body
-			}
-		}
-		spec := supervise.Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   system,
-			Watches:  sup.Watches,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
-		}
-		coord := supervise.New(hub, inj, runID, spec, nil, logger)
-		if coord == nil {
-			continue
-		}
-		coord.Start(ctx)
-		coords = append(coords, coord)
-	}
-	return func() {
-		for _, c := range coords {
-			c.Close()
-		}
-	}
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any

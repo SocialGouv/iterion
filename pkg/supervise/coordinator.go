@@ -274,8 +274,8 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 	// A silent verdict is the common (and desired) case — log it anyway
 	// so an operator can tell "evaluated and chose silence" from "never
 	// woke", and see the eval budget drain.
-	c.info("supervise[%s]: eval %d/%d (wake=%s) → intervene=%v watch+%d done=%v",
-		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec != nil && dec.Intervene, len(decWatch(dec)), dec != nil && dec.Done)
+	c.info("supervise[%s]: eval %d/%d (wake=%s) → %s",
+		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
 	c.applyDecision(dec)
 }
@@ -316,14 +316,6 @@ func (c *Coordinator) inject(text string) {
 		return
 	}
 	c.info("supervise[%s]: 📨 steered run %s (node=%q): %s", c.spec.Name, c.runID, scopeNode, truncate(text, 120))
-}
-
-// decWatch returns the decision's watch list, nil-safe for logging.
-func decWatch(dec *Decision) []Monitor {
-	if dec == nil {
-		return nil
-	}
-	return dec.Watch
 }
 
 func (c *Coordinator) info(format string, args ...any) {

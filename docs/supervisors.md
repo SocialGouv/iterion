@@ -63,11 +63,20 @@ supervisor watchdog:
   system: watchdog_policy              # a prompt: ref — the supervision policy
   cooldown: "45s"                      # min between turn-boundary evals (default 30s)
   max_evals: 12                        # hard eval cap (default 20)
+  monitors: ["event_type=tool_error,tool_name=Bash"]  # pre-seeded patterns (CLI --monitor grammar)
 
 prompt watchdog_policy:
   Intervene only if the implementer edits files outside src/, or a Bash
   test fails twice in a row. Keep messages short and actionable.
 ```
+
+`monitors:` pre-seeds event patterns at coordinator construction, so
+they are armed from the run's very first event — the supervisor bot can
+still register more at runtime, but anything it registers only exists
+after its first eval (a measured blind window when the marker you care
+about appears early). Each entry uses the CLI `--monitor` grammar
+(`key=val,key=val`); a malformed entry gets a `C191` warning at
+validate and is dropped at spawn.
 
 Launch the workflow normally (`iterion run`); the supervisor is
 auto-spawned, observes the run, and is torn down when the run ends. The
@@ -85,8 +94,10 @@ run-level override → env → on:
 - `iterion run --supervisors off` (and `iterion resume --supervisors
   off` — like the other run-level overrides it is NOT persisted on the
   run, so a launch-time `off` must be re-stated on resume);
-- `ITERION_SUPERVISORS=off` machine-wide (also the switch for
-  studio/server-launched runs, which have no per-run flag yet).
+- `runview.LaunchSpec.Supervisors` / `ResumeSpec.Supervisors` for
+  programmatic launches (forwarded to detached runners as
+  `--supervisors`; the studio Launch modal does not expose it yet);
+- `ITERION_SUPERVISORS=off` machine-wide.
 
 The skip is loud (a `supervisors: N declared supervisor(s) disabled by
 …` warning) — a declared capability never disappears in silence. Use it
@@ -102,10 +113,14 @@ reproduces, agent-side, the push a good operator supplies when watching
 a coding session live. Its policy is a reference for authoring similar
 coaches:
 
-- **monitors-first** — register `text_contains` monitors on give-up
-  markers ("impossible", "unsolvable", "give up", "workaround for
-  now"…), `tool_error` on Bash, and `budget_warning`; stay silent on
-  ordinary turn boundaries so evals stay cheap;
+- **monitors-first, pre-seeded** — the give-up markers
+  (`text_contains=impossible`, `unsolvable`, `give up`, `workaround for
+  now`) and `budget_warning` are declared in the DSL `monitors:` list,
+  armed from the first event; a long `cooldown` (5m) keeps ordinary
+  turn-boundary evals sparse so the eval budget survives to the late,
+  hard stretch of a campaign. Deliberately NO `tool_error` monitor: a
+  red test is routine in a build loop, and monitor wakes bypass the
+  cooldown — it would drain the budget on noise;
 - **four intervention classes** — premature impossibility (demand one
   more *instrumented* attempt: debug output, smaller repro, bisect),
   the expedient path (name the durable alternative), a failure loop
@@ -221,9 +236,10 @@ main token-saver.
 
 ## Roadmap
 
-- **Inline `monitors:` in the DSL block** — today monitors are registered
-  by the bot at runtime or pre-seeded via the CLI `--monitor` flag.
 - **Session-scoped raw inbox by default** — disambiguate concurrent
   `claude` sessions in the same repo (currently project-keyed with a
   session-id refinement).
 - **Cloud event-source mode** for `ObserveRun` (today local broker mode).
+- **Studio Launch-modal toggle** for the per-run kill switch (the
+  `LaunchSpec.Supervisors` seam is wired; only the UI control is
+  missing).

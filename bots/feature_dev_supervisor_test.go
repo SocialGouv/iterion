@@ -1,41 +1,26 @@
 package bots
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // TestFeatureDevPerseveranceCoach guards feature-dev's supervisor (the
 // perseverance coach) non-vacuously. The supervisor cross-reference
-// diagnostics (C190 unknown watched node, C193 unknown system prompt)
-// are WARNINGS by design — a typo'd `watches:` or `system:` still
-// compiles clean and the coach silently never arms. This test pins what
-// the bot promises: a supervisor exists, it watches the campaign agent
-// node, its policy prompt is declared, and both the policy and the
-// campaign contract carry the coaching clauses they were shipped for.
+// diagnostics (C190 unknown watched node, C191 malformed monitor, C193
+// unknown system prompt) are WARNINGS by design — a typo'd `watches:`,
+// `monitors:` or `system:` still compiles clean and the coach silently
+// never arms. This test pins what the bot promises: a supervisor
+// exists, it watches the campaign agent node with pre-seeded monitors,
+// its policy prompt is declared, and the campaign contract keeps the
+// PERSISTENCE clause the coach enforces. (Compile errors are already
+// caught for every bot by TestCatalogBotsParseAndCompileClean.)
 func TestFeatureDevPerseveranceCoach(t *testing.T) {
-	const path = "feature-dev/main.bot"
-	src, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	pr := parser.Parse(path, string(src))
-	if pr.File == nil {
-		t.Fatalf("%s: parser produced no File", path)
-	}
-	cr := ir.Compile(pr.File)
-	for _, d := range cr.Diagnostics {
-		if d.Severity == ir.SeverityError {
-			t.Fatalf("%s: compile error: %s", path, d.Error())
-		}
-	}
-	wf := cr.Workflow
+	wf := compileBot(t, "feature-dev")
 	if wf == nil {
-		t.Fatalf("%s: compile produced no workflow", path)
+		t.Fatal("feature-dev did not compile")
 	}
 
 	if len(wf.Supervisors) == 0 {
@@ -68,18 +53,38 @@ func TestFeatureDevPerseveranceCoach(t *testing.T) {
 		t.Errorf("supervisor %q pins model %q — catalog bots leave it to auto-detect / ITERION_DEFAULT_SUPERVISOR_MODEL", sup.Name, sup.Model)
 	}
 
+	// Pre-seeded monitors are what closes the first-wake blind window
+	// (measured in docs/bot-runs/feature-dev.md): every declared spec
+	// must satisfy the grammar the spawn-time parser enforces, and the
+	// set must include at least one give-up marker.
+	if len(sup.Monitors) == 0 {
+		t.Error("supervisor declares no pre-seeded monitors — the coach is blind until its first eval")
+	}
+	hasTextMarker := false
+	for _, spec := range sup.Monitors {
+		if err := ir.CheckMonitorSpec(spec); err != nil {
+			t.Errorf("supervisor monitor %q is malformed (C191 is only a warning): %v", spec, err)
+		}
+		if strings.Contains(spec, "text_contains=") {
+			hasTextMarker = true
+		}
+	}
+	if !hasTextMarker {
+		t.Error("no text_contains give-up marker among the pre-seeded monitors")
+	}
+
 	policy, ok := wf.Prompts[sup.System]
 	if !ok || policy == nil {
 		t.Fatalf("supervisor %q system prompt %q is not declared (C193 is only a warning — fix the reference)", sup.Name, sup.System)
 	}
-	for _, clause := range []string{"GIVING UP", "EXPEDIENT", "BANK NOW", "termination"} {
-		if !strings.Contains(policy.Body, clause) {
-			t.Errorf("supervisor policy %q lost its %q clause", sup.System, clause)
-		}
+	// One sentinel: the policy must still be the coaching policy, not a
+	// stub. Wording beyond this is free to evolve.
+	if !strings.Contains(policy.Body, "INTERVENE") {
+		t.Errorf("supervisor policy %q no longer reads as the coaching policy (INTERVENE sentinel missing)", sup.System)
 	}
 
 	// The static half of the same shipment: the campaign contract's
-	// PERSISTENCE clause (anti-premature-impossible + bank-before-abandon).
+	// PERSISTENCE clause (anti-premature-infeasibility + bank-before-abandon).
 	campaign, _ := wf.Nodes["campaign"].(*ir.AgentNode)
 	if campaign == nil {
 		t.Fatal("feature-dev has no campaign agent node")
