@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -160,7 +161,13 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	now := w.now()
 	conn.SealedPayload = sealed
 	conn.Status = StatusActive
-	conn.StatusReason = "" // a successful mint clears any prior degrade/reauth reason
+	// A successful mint clears a prior degrade/reauth reason — but NOT the
+	// security-read one: that lane is independent (the forge token is fine,
+	// the alerts grant is not), so wiping it here would leave the opt-in
+	// switched off with nothing left to say why, ~55 minutes later.
+	if conn.SecurityReadEnabled || !strings.HasPrefix(conn.StatusReason, securityReadDegradePrefix) {
+		conn.StatusReason = ""
+	}
 	conn.LastRefreshedAt = &now
 	if !out.ExpiresAt.IsZero() {
 		exp := out.ExpiresAt
@@ -215,6 +222,11 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	return nil
 }
 
+// securityReadDegradePrefix marks a StatusReason that belongs to the
+// security-read lane, so an ordinary (successful) token refresh does not
+// erase the one explanation an operator has for a silently-off opt-in.
+const securityReadDegradePrefix = "security-read disabled: "
+
 // markSecurityReadDegraded turns the security-read opt-in back off on a
 // PERMANENT mint failure, stamping the actionable reason. The connection
 // itself stays usable (its forge token is unaffected) — only the alerts
@@ -223,8 +235,8 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 func (w *RefreshWorker) markSecurityReadDegraded(ctx context.Context, conn Connection, cause error) error {
 	conn.SecurityReadEnabled = false
 	conn.StatusReason = fmt.Sprintf(
-		"security-read disabled: %v — approve 'Dependabot alerts: read' on the installation, then re-enable it",
-		cause)
+		"%s%v — approve 'Dependabot alerts: read' on the installation, then re-enable it",
+		securityReadDegradePrefix, cause)
 	conn.UpdatedAt = w.now()
 	return w.Connections.Update(ctx, conn)
 }
