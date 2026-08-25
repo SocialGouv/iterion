@@ -164,6 +164,39 @@ iterion remote api POST /api/teams/<team-id>/oauth/codex/credentials \
 iterion remote api GET /api/teams/<team-id>/oauth/connections
 ```
 
+## Activating the cross-model plan review (one credential, nothing else)
+
+The campaign bots (feature-dev, app-dev, branch-improve-loop,
+whole-improve-loop) carry an opt-in **peer-reviewed plan phase**
+([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)): a
+cross-family reviewer (default `claw` + `openai/gpt-5.6-sol`) critiques
+the plan before the campaign implements. `plan_review: auto` resolves at
+launch from the run's credentials — **on cloud, from what actually seals
+into the run's bundle** (BYOK → oauth-forfait → pool → platform tier),
+so activation is exactly one provisioning step and zero bot config:
+
+```sh
+# User/org tier — the Codex auth.json (ChatGPT forfait):
+iterion remote api POST /api/me/oauth/codex/credentials --data "@$HOME/.codex/auth.json"
+# …or team-scoped for automated (webhook/cron/dispatcher) runs:
+iterion remote api POST /api/teams/<team-id>/oauth/codex/credentials --data "@$HOME/.codex/auth.json"
+# …or deployment-wide (platform tier, super-admin):
+iterion remote admin llm oauth set codex --from-file ~/.codex/auth.json
+```
+
+The next launch of a declaring bot logs
+`plan review: on · llm families: claude,gpt` and runs the phase. Verify
+with the usual smoke: a one-node `claw` + `openai/gpt-5.6-sol` bot via
+`iterion remote runs launch --follow`. To force or refuse per run:
+`--var plan_review=on|off`; mid-run peer-forfait exhaustion follows
+`--var plan_review_policy=wait|skip` (wait = the run parks
+failed_resumable and the usage-window retry resumes it when the window
+reopens; skip = continue without the review, loudly stamped). Gotcha:
+the ChatGPT-forfait wire gates models by the codex-cli `version:` header
+— if gpt-5.6 is refused with a model-availability error, set
+`ITERION_CODEX_VERSION` to a recent codex-cli version (gpt-5.5 needed
+≥ 0.130).
+
 ## Platform credentials — rotate the deployment's fallback without a redeploy
 
 The credential every tenant-less run used to inherit from the runner pod's

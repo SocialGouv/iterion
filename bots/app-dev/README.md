@@ -101,3 +101,16 @@ Preset: `--preset nextjs-dsfr` biases stack + skeleton and loads the
 stack-specific knowledge lives HERE, never in the DSL), plus byte-shared
 copies of feature-dev's `verify-build`, `code-review-invariants`,
 `forge-mr-create`, and `rgaa-dsfr` (for the nextjs-dsfr preset).
+
+## Plan phase (cross-model pair review, ADR-091)
+
+`plan_review: auto` resolves at launch from the run's credentials: when a
+SECOND model family is available, the build plan is authored after the
+spec hand-off (claude, read-only), critiqued by a cross-family peer
+(`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME
+author session before the campaign builds; otherwise the spec hands off
+straight to the campaign (the v2 shape, unchanged). `plan_review_policy`
+picks the mid-run peer-unavailability behaviour: `wait` (default — the
+run parks failed_resumable, the usage-window retry resumes it) or `skip`
+(the reviewer's `action: skip` route — continue unreviewed, loudly
+stamped).
