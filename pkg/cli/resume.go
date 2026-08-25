@@ -248,19 +248,23 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
-	executor, err := buildResumeExecutor(opts, wf, s, storeDir, logger, r)
-	if err != nil {
-		return err
-	}
-
-	resumeOpts := []runtime.EngineOption{}
 	// DSL-declared supervisors resume with the run: the resumed stretch is
 	// the same campaign the supervisor was declared to watch. Same wiring
-	// and kill switch as the run path (run.go).
+	// and kill switch as the run path (run.go). Created BEFORE the
+	// executor so the hub also rides the backend-hook seam (the only one
+	// carrying assistant_text / tool events).
+	resumeOpts := []runtime.EngineOption{}
 	var superviseHub *supervise.EventHub
+	var hookObservers []func(store.Event)
 	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
 		superviseHub = supervise.NewEventHub()
 		resumeOpts = append(resumeOpts, runtime.WithEventObserver(superviseHub.Publish))
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+
+	executor, err := buildResumeExecutor(opts, wf, s, storeDir, logger, r, hookObservers)
+	if err != nil {
+		return err
 	}
 	// Keep capturing across a resume: stopping here would leave a hole in
 	// the workspace history exactly where the operator is iterating.

@@ -197,10 +197,17 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow:       wf,
-		Vars:           spec.Vars,
-		Store:          s.store,
-		EventObservers: spec.ExtraObservers,
+		Workflow: wf,
+		Vars:     spec.Vars,
+		Store:    s.store,
+		// The broker rides the hook seam too: backend-hook events
+		// (assistant_text, tool_*, llm_*) never fire the engine's
+		// observer, so without this a declared supervisor observing via
+		// ObserveRun — and any live broker subscriber of an in-process
+		// run — is blind to the agent's own words. Subscribers dedup by
+		// Seq, and the two event sets are disjoint, so nothing arrives
+		// twice.
+		EventObservers: append(append([]func(store.Event){}, spec.ExtraObservers...), s.broker.Publish),
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,

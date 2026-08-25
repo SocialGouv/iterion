@@ -85,11 +85,17 @@ Semantics that matter when choosing the set:
   substring is matched against EVERY rendered event — tool inputs and
   outputs included — so a `grep` hit in the repo or a Read of a file
   mentioning the word wakes an eval.
-- **Pre-seeded matches honour the `cooldown`**; only monitors the bot
-  registers itself (via its decision's `watch`) bypass it. A seeded
-  match also never resurrects a supervisor whose bot declared `done` —
-  re-arming is the job of a bot-registered monitor or a fresh watched
-  `node_started`.
+- **Pre-seeded matches honour the `cooldown`** — a match inside the
+  window is DEFERRED to the cooldown's expiry (the trigger event rides
+  the wake reason, so it survives even if evicted from the recent
+  ring), never dropped. Only monitors the bot registers itself (via its
+  decision's `watch`) bypass the cooldown, and re-listing a seeded
+  pattern does not promote it. A seeded match also never resurrects a
+  supervisor whose bot declared `done` — re-arming is the job of a
+  bot-registered monitor or a fresh watched `node_started`.
+- **A failed evaluation does not consume `max_evals`** — but three
+  consecutive failures (no reachable model, auth) park supervision with
+  a logged warning instead of burning the budget on transport errors.
 - **Budget events are node-scoped like everything else**: a supervisor
   watching `campaign` never sees a `budget_warning` raised while
   another node (a verifier, a reviewer) is the active one.
@@ -116,10 +122,14 @@ run-level override → env → on:
 - `iterion run --supervisors off` (and `iterion resume --supervisors
   off` — like the other run-level overrides it is NOT persisted on the
   run, so a launch-time `off` must be re-stated on resume);
-- `runview.LaunchSpec.Supervisors` / `ResumeSpec.Supervisors` for
-  programmatic launches (forwarded to detached runners as
-  `--supervisors`; the studio Launch modal does not expose it yet);
-- `ITERION_SUPERVISORS=off` machine-wide.
+- the launch API field `supervisors` /
+  `runview.LaunchSpec.Supervisors` / `ResumeSpec.Supervisors` for
+  programmatic launches — forwarded to detached runners as
+  `--supervisors` AND onto the cloud queue (`RunMessage.supervisors`,
+  schema v8), so a pod never re-decides an operator's `off` from its
+  own env. The studio Launch modal does not expose it yet;
+- `ITERION_SUPERVISORS=off` machine-wide (the layer below the run-level
+  override).
 
 The skip is loud (a `supervisors: N declared supervisor(s) disabled by
 …` warning) — a declared capability never disappears in silence. Use it

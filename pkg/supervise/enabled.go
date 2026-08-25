@@ -22,16 +22,19 @@ const EnabledEnv = "ITERION_SUPERVISORS"
 // or isolating a supervisor suspected of steering a run astray).
 func DeclaredEnabled(override string) (enabled bool, source string) {
 	if v, ok := parseOnOff(override); ok {
-		return v, "--supervisors"
+		// The override arrives from --supervisors, the launch API field,
+		// or the queue envelope — name the level, not one surface.
+		return v, "run-level override"
 	}
-	if env := os.Getenv(EnabledEnv); env != "" {
+	if env := strings.TrimSpace(os.Getenv(EnabledEnv)); env != "" {
 		if v, ok := parseOnOff(env); ok {
 			return v, EnabledEnv
 		}
 		// An unreadable env value falls through to the default — flag it
 		// rather than silently spawning what the operator meant to
-		// disable (the failure direction here spends LLM budget).
-		return true, EnabledEnv + " unreadable (" + env + ") — default on"
+		// disable (the failure direction here spends LLM budget). %q so
+		// a value carrying newlines cannot forge log lines.
+		return true, fmt.Sprintf("%s unreadable (%q) — default on", EnabledEnv, env)
 	}
 	return true, "default"
 }
@@ -49,12 +52,17 @@ func parseOnOff(v string) (enabled, ok bool) {
 	return false, false
 }
 
-// ValidateSupervisorsMode rejects a --supervisors value that is neither
-// empty (inherit) nor on|off. A typo would otherwise read as "inherit"
-// and silently keep supervisors an operator asked to disable.
+// ValidateSupervisorsMode rejects a --supervisors value that neither is
+// empty (inherit) nor parses as a boolean spelling. A typo would
+// otherwise read as "inherit" and silently keep supervisors an operator
+// asked to disable. The accepted set is exactly parseOnOff's — the same
+// grammar ITERION_SUPERVISORS reads, so a wrapper forwarding the env
+// value as the flag cannot break.
 func ValidateSupervisorsMode(v string) error {
-	switch strings.TrimSpace(strings.ToLower(v)) {
-	case "", "on", "off":
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	if _, ok := parseOnOff(v); ok {
 		return nil
 	}
 	return fmt.Errorf("invalid supervisors mode %q: expected on or off", v)

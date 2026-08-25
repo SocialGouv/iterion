@@ -897,6 +897,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors:     spec.Supervisors,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:        tenantID,
@@ -1109,6 +1110,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors:     spec.Supervisors,
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.

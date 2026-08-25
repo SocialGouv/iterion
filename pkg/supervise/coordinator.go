@@ -72,14 +72,18 @@ type Coordinator struct {
 	// declarative and broad, so their matches honour the cooldown;
 	// bot-registered ones (the rest of the slice) were chosen by the
 	// bot for precision and bypass it.
-	seedCount  int
-	recent     []string
-	last       *Decision
-	evalCount  int
-	inTokens   int
-	outTokens  int
-	lastEvalAt time.Time
-	finished   bool // bot signalled Done; re-armed by a bot-registered monitor match
+	seedCount int
+	recent    []string
+	last      *Decision
+	// evalCount counts COMPLETED evaluations against MaxEvals;
+	// evalFailures counts consecutive transport/model failures, which do
+	// not consume the budget but park supervision at maxEvalFailures.
+	evalCount    int
+	evalFailures int
+	inTokens     int
+	outTokens    int
+	lastEvalAt   time.Time
+	finished     bool // bot signalled Done; re-armed by a bot-registered monitor match
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -151,27 +155,73 @@ func (c *Coordinator) run() {
 
 	var debounce *time.Timer
 	var debounceC <-chan time.Time
-	// Stop the debounce timer on every exit path (ctx cancel, event-channel
-	// close, terminal event) so a run that ends mid-debounce doesn't leave a
-	// live timer until it fires.
+	var debounceOpenedAt time.Time
+	// pending defers a cooldown-suppressed SEEDED monitor match to the
+	// cooldown's expiry instead of dropping it: the reason string carries
+	// the rendered trigger event, so the signal survives even if the
+	// event is evicted from the recent ring meanwhile. One slot — the
+	// first suppressed match wins; later ones add nothing (the eval that
+	// eventually fires sees the whole recent window anyway).
+	var pending *time.Timer
+	var pendingC <-chan time.Time
+	pendingWake := ""
+	// Stop both timers on every exit path (ctx cancel, event-channel
+	// close, terminal event) so a run that ends mid-debounce doesn't
+	// leave a live timer until it fires.
 	defer func() {
 		if debounce != nil {
 			debounce.Stop()
+		}
+		if pending != nil {
+			pending.Stop()
 		}
 	}()
 	armDebounce := func() {
 		if debounce == nil {
 			debounce = time.NewTimer(turnDebounce)
+			debounceOpenedAt = time.Now()
+			debounceC = debounce.C
+			return
+		}
+		if debounceC == nil {
+			debounceOpenedAt = time.Now()
+		} else if time.Since(debounceOpenedAt) >= c.spec.Cooldown {
+			// A sustained boundary stream (a busy claude_code node emits
+			// one every few seconds) would otherwise push the deadline
+			// forward forever and starve the periodic wake entirely. Once
+			// the window has been open a full cooldown, let it fire.
+			return
+		}
+		if !debounce.Stop() {
+			select {
+			case <-debounce.C:
+			default:
+			}
+		}
+		debounce.Reset(turnDebounce)
+		debounceC = debounce.C
+	}
+	armPending := func(reason string) {
+		if pendingC != nil {
+			return
+		}
+		pendingWake = reason
+		wait := c.spec.Cooldown - time.Since(c.lastEvalAt) + 100*time.Millisecond
+		if wait < 100*time.Millisecond {
+			wait = 100 * time.Millisecond
+		}
+		if pending == nil {
+			pending = time.NewTimer(wait)
 		} else {
-			if !debounce.Stop() {
+			if !pending.Stop() {
 				select {
-				case <-debounce.C:
+				case <-pending.C:
 				default:
 				}
 			}
-			debounce.Reset(turnDebounce)
+			pending.Reset(wait)
 		}
-		debounceC = debounce.C
+		pendingC = pending.C
 	}
 
 	for {
@@ -212,9 +262,14 @@ func (c *Coordinator) run() {
 					c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
 				} else if !c.finished {
 					// Pre-seeded (declarative) monitors are broad; their
-					// matches wake immediately but honour the cooldown so
-					// a chatty marker cannot drain the eval budget.
-					c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), false)
+					// matches honour the cooldown — but a suppressed match
+					// is DEFERRED to the cooldown's expiry, never dropped
+					// (a give-up marker fires once; losing it kills the
+					// monitor lane's whole purpose).
+					reason := fmt.Sprintf("monitor matched: %s", RenderEvent(evt))
+					if suppressed := c.evaluate(reason, false); suppressed {
+						armPending(reason)
+					}
 				}
 			} else if !c.finished && IsTurnBoundary(evt) {
 				armDebounce()
@@ -223,6 +278,16 @@ func (c *Coordinator) run() {
 			debounceC = nil
 			if c.armed() && !c.finished {
 				c.evaluate("turn_boundary", false)
+			}
+		case <-pendingC:
+			pendingC = nil
+			reason := pendingWake
+			pendingWake = ""
+			if c.armed() && !c.finished {
+				if suppressed := c.evaluate(reason+" (deferred by cooldown)", false); suppressed {
+					// Another wake consumed the slot first — push again.
+					armPending(reason)
+				}
 			}
 		}
 	}
@@ -300,22 +365,35 @@ func (c *Coordinator) matchesMonitor(evt *store.Event) (matched, registered bool
 	return matched, false
 }
 
+// maxEvalFailures is the consecutive-failure cap after which the
+// coordinator stops trying: a supervisor with no reachable model would
+// otherwise burn its whole eval budget on transport errors in seconds
+// and read as spawned-but-silent.
+const maxEvalFailures = 3
+
 // evaluate consults the bot and applies its decision. bypassCooldown is
-// true for monitor-match wakes (high-signal); turn-boundary wakes honour
-// the cooldown floor. Both honour the hard MaxEvals budget.
-func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
+// true for bot-registered monitor wakes (high-signal); seeded-monitor
+// and turn-boundary wakes honour the cooldown floor. All honour the
+// hard MaxEvals budget (of COMPLETED evaluations — a failed call does
+// not consume it, but maxEvalFailures consecutive failures park
+// supervision). Returns suppressed=true iff the wake was skipped by the
+// cooldown — the one outcome the caller may defer and retry.
+func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed bool) {
 	if c.finished {
-		return
+		return false
+	}
+	if c.evalFailures >= maxEvalFailures {
+		return false
 	}
 	if c.evalCount >= c.spec.MaxEvals {
 		if c.evalCount == c.spec.MaxEvals {
 			c.info("supervise[%s]: eval budget exhausted (%d) on run %s — supervision paused", c.spec.Name, c.spec.MaxEvals, c.runID)
 			c.evalCount++ // log once
 		}
-		return
+		return false
 	}
 	if !bypassCooldown && !c.lastEvalAt.IsZero() && time.Since(c.lastEvalAt) < c.spec.Cooldown {
-		return
+		return true
 	}
 
 	in := EvalInput{
@@ -328,13 +406,18 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 	}
 	dec, usage, err := c.eval.Evaluate(c.ctx, in)
 	c.lastEvalAt = time.Now()
-	c.evalCount++
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
 	if err != nil {
-		c.warn("supervise[%s]: evaluation failed on run %s: %v", c.spec.Name, c.runID, err)
-		return
+		c.evalFailures++
+		c.warn("supervise[%s]: evaluation failed on run %s (wake=%s): %v", c.spec.Name, c.runID, reason, err)
+		if c.evalFailures >= maxEvalFailures {
+			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
+		}
+		return false
 	}
+	c.evalFailures = 0
+	c.evalCount++
 	// A silent verdict is the common (and desired) case — log it anyway
 	// so an operator can tell "evaluated and chose silence" from "never
 	// woke", and see the eval budget drain.
@@ -342,6 +425,7 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
 	c.applyDecision(dec)
+	return false
 }
 
 // applyDecision registers any new monitors and enqueues the steering

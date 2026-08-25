@@ -305,8 +305,12 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if telemetry.prometheus != nil {
 		exporterHooks = telemetry.prometheus
 	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
 	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
-		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile))
+		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
 	}
@@ -465,6 +469,7 @@ func buildRunExecutor(
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
 	botID string,
+	hookObservers []func(store.Event),
 ) (runtime.NodeExecutor, error) {
 	if opts.Executor != nil {
 		return opts.Executor, nil
@@ -478,14 +483,19 @@ func buildRunExecutor(
 		return nil, err
 	}
 	execSpec := runview.ExecutorSpec{
-		Workflow:   wf,
-		Vars:       opts.Vars,
-		Store:      s,
-		RunID:      runID,
-		Logger:     logger,
-		StoreDir:   storeDir,
-		Compress:   opts.Compress,
-		AutoMemory: opts.AutoMemory,
+		Workflow: wf,
+		Vars:     opts.Vars,
+		Store:    s,
+		RunID:    runID,
+		Logger:   logger,
+		StoreDir: storeDir,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire ONLY
+		// this seam — a declared supervisor's hub must ride it or its
+		// text monitors can never see the agent speak (the engine seam
+		// carries none of them).
+		EventObservers: hookObservers,
+		Compress:       opts.Compress,
+		AutoMemory:     opts.AutoMemory,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -564,7 +574,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
-			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath))
+			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath), nil)
 		if err != nil {
 			return nil, err
 		}

@@ -59,11 +59,11 @@ const decisionSchema = `{
     "reason":    {"type": "string", "description": "Short rationale for the decision (logs only)."},
     "watch": {
       "type": "array",
-      "description": "Event patterns to keep watching. When any fires you are woken immediately. Register the few signals you care about so you are not re-consulted on every turn.",
+      "description": "Event patterns to ADD to your watch set (existing ones persist and cannot be removed; re-listing them changes nothing). When a pattern you registered fires you are woken immediately. Register the few precise signals you care about.",
       "items": {
         "type": "object",
         "properties": {
-          "event_type":    {"type": "string", "description": "Event type to match, e.g. tool_error, node_finished, budget_warning."},
+          "event_type":    {"type": "string", "description": "Event type to match, e.g. tool_error, assistant_text, budget_warning. (The watched node's own node_finished is not observable — the supervisor disarms on it.)"},
           "node_id":       {"type": "string"},
           "tool_name":     {"type": "string", "description": "Match a tool by name, e.g. Bash, Edit."},
           "text_contains": {"type": "string", "description": "Case-insensitive substring matched against the rendered event."},

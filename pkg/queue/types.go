@@ -47,7 +47,12 @@ import (
 // bot declaring `off` gets a run that can still strand its work at the cap.
 // The knob decides whether a loop stops early or dies at its ceiling, which
 // is exactly the kind of choice that must not be quietly re-made on the pod.
-const SchemaVersion = 7
+// v=8 (2026-08-25): added Supervisors so a launch-time `--supervisors off`
+// reaches the runner. Same failure direction as v=6/v=7: dropping the field
+// makes the pod re-decide from its own env and spawn LLM watchers the
+// operator explicitly declined — spend outside the run's own budget, the one
+// thing the kill switch exists to prevent.
+const SchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -98,11 +103,16 @@ type RunMessage struct {
 	// LoopBudgetGuard is the launch-time back-edge affordability override —
 	// the wire half of that knob's strongest precedence level. Empty means
 	// the caller expressed nothing and the workflow/env decide.
-	LoopBudgetGuard string        `json:"loop_budget_guard,omitempty"`
-	BackendConfig   BackendConfig `json:"backend"`
-	Resume          *ResumeSpec   `json:"resume,omitempty"`
-	Trace           TraceContext  `json:"trace"`
-	PublishedAtRFC  string        `json:"published_at"`
+	LoopBudgetGuard string `json:"loop_budget_guard,omitempty"`
+	// Supervisors is the launch-time kill switch for DSL-declared
+	// supervisor watchers — the wire half of that knob's strongest
+	// precedence level. Empty means the caller expressed nothing and the
+	// pod's ITERION_SUPERVISORS (then the default on) decides.
+	Supervisors    string        `json:"supervisors,omitempty"`
+	BackendConfig  BackendConfig `json:"backend"`
+	Resume         *ResumeSpec   `json:"resume,omitempty"`
+	Trace          TraceContext  `json:"trace"`
+	PublishedAtRFC string        `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted

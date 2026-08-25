@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -68,7 +69,17 @@ type StoreInjector struct {
 // Inject implements the Injector seam: append a queued message tagged
 // with nodeID (so the engine's drain delivers it only while that node is
 // active), and emit user_message_queued so the run console reflects it.
+// A terminal run is refused — runview.Service.QueueMessage has the same
+// guard, and without it an eval finishing after the run's end would park
+// a stale steering message that the NEXT resume/redelivery drains into a
+// fresh pass.
 func (i *StoreInjector) Inject(ctx context.Context, runID, nodeID, text string) error {
+	if r, err := i.Store.LoadRun(ctx, runID); err == nil && r != nil {
+		switch r.Status {
+		case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
+			return fmt.Errorf("supervise: run %s is %s — steering message refused", runID, r.Status)
+		}
+	}
 	msg := store.QueuedUserMessage{ID: newInboxMessageID(), Text: text, NodeID: nodeID}
 	if err := i.Store.AppendQueuedMessage(ctx, runID, msg); err != nil {
 		return err

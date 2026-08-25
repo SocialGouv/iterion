@@ -1350,7 +1350,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
+	// DSL-declared supervisors run on the pod alongside the engine —
+	// this path builds its engine directly (no runview.Launch), so it
+	// wires the hub + coordinators itself, exactly like the CLI. The hub
+	// is created BEFORE the executor so it also rides the backend-hook
+	// seam (the only one carrying assistant_text / tool events). The
+	// run-level override travels on the queue (msg.Supervisors); the
+	// pod's ITERION_SUPERVISORS is the layer below.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(msg.Supervisors, len(wf.Supervisors), runLogger) {
+		superviseHub = supervise.NewEventHub()
+	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger, hookObservers)
 	if err != nil {
 		return err
 	}
@@ -1450,16 +1465,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
-	// DSL-declared supervisors run on the pod alongside the engine —
-	// this path builds its engine directly (no runview.Launch), so it
-	// wires the hub + coordinators itself, exactly like the CLI. No
-	// per-run override travels on the queue yet, so the pod's
-	// ITERION_SUPERVISORS decides; the skip is logged.
-	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(wf.Supervisors), r.cfg.Logger) {
-		hub := supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(hub.Publish))
-		stopSup := supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: r.cfg.Store},
-			msg.RunID, supervise.SpecsFromWorkflow(wf, r.cfg.Logger), r.cfg.Logger)
+	if superviseHub != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
 		defer stopSup()
 	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
@@ -1661,7 +1670,7 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
@@ -1682,6 +1691,9 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		Vars:     vars,
 		Store:    usage,
 		RunID:    msg.RunID,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
+		// this seam — the declared-supervisor hub rides it.
+		EventObservers: hookObservers,
 		// The run-scoped logger (teed into the RunLogStore) — the executor
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would

@@ -270,6 +270,19 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// PostToolUse hook on the delegate). Without this the operator's
 	// message stays `queued` for the entire run because nothing binds a
 	// hook to the per-run queue.
+	// DSL-declared supervisors: this direct-engine path bypasses
+	// runview.Launch, so it must wire the hub + coordinators itself —
+	// otherwise a dispatched bot's declared supervisor (feature-dev's
+	// coach, dispatched by default) is silently inert. The hub is
+	// created BEFORE the executor so it also rides the backend-hook
+	// seam (the only one carrying assistant_text / tool events). The
+	// per-run override has no dispatcher surface, so the env layer
+	// decides.
+	var superviseHub *supervise.EventHub
+	if len(r.workflow.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(r.workflow.Supervisors), runLogger) {
+		superviseHub = supervise.NewEventHub()
+	}
+
 	execSpec := runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: r.workflow,
@@ -284,6 +297,9 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		// launch surface follows, so a bot dispatched here and the same bot run
 		// from the CLI or the studio share one memory instead of three.
 		BotID: runview.ResolveBotID("", r.bundleName(), r.workflowPath),
+	}
+	if superviseHub != nil {
+		execSpec.EventObservers = []func(store.Event){superviseHub.Publish}
 	}
 	// Local (self-hosted) secret injection: the dispatcher's in-process runner
 	// is only ever the local path (never a cloud runner pod), so resolve the
@@ -380,16 +396,9 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.DailyCap != nil {
 		opts = append(opts, runtime.WithDailyCap(spec.DailyCap))
 	}
-	// DSL-declared supervisors: this direct-engine path bypasses
-	// runview.Launch, so it must wire the hub + coordinators itself —
-	// otherwise a dispatched bot's declared supervisor (feature-dev's
-	// coach, dispatched by default) is silently inert. Same gate and
-	// spawn helpers as the CLI; the per-run override has no dispatcher
-	// surface, so the env layer decides.
-	if len(r.workflow.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(r.workflow.Supervisors), runLogger) {
-		hub := supervise.NewEventHub()
-		opts = append(opts, runtime.WithEventObserver(hub.Publish))
-		stopSup := supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: s},
+	if superviseHub != nil {
+		opts = append(opts, runtime.WithEventObserver(superviseHub.Publish))
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
 			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
 		defer stopSup()
 	}

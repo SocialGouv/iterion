@@ -910,10 +910,18 @@ is an `Observer` and the inbox an `Injector`, so the same Coordinator/bot
 drive both managed and raw targets. The block may pre-seed `monitors:`
 (CLI `--monitor` grammar, armed from the first event — the bot-registered
 kind only exists after its first eval). Declared supervisors spawn by
-default on run AND resume, with the usual escape hatch: `--supervisors
-on|off` → `ITERION_SUPERVISORS` → on (skip always logged; the resolution
-lives in `pkg/supervise`, shared by every spawn site). feature-dev's
-Persy (perseverance coach) is the shipped reference use. Reference:
+default on every launch surface (CLI run/resume, studio/runview, the
+dispatcher's direct engine path, cloud runner pods), with the usual
+escape hatch: run-level `--supervisors on|off` / launch-API field →
+`ITERION_SUPERVISORS` → on (skip always logged; the resolution lives in
+`pkg/supervise`, shared by every spawn site) — and like `auto_memory:`
+the run-level override travels onto the cloud queue
+(`RunMessage.supervisors`, schema v8) so a pod never re-decides an
+operator's `off`. The supervisor hub rides BOTH event seams (engine
+observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
+(`assistant_text`, `tool_*`) never fire the engine seam, and text
+monitors are blind without the second wire. feature-dev's Persy
+(perseverance coach) is the shipped reference use. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 
