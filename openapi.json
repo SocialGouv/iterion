@@ -2152,6 +2152,9 @@
           "allow_repo_creation": {
             "type": "boolean"
           },
+          "allow_security_read": {
+            "type": "boolean"
+          },
           "client_id": {
             "type": "string"
           },

@@ -384,12 +384,16 @@ export async function startGitHubManifest(
   // allow_app_delivery requests workflows:write + packages:write so a bot can
   // publish the CI that builds an app and the image it produces — without
   // them GitHub refuses any push touching .github/workflows/**.
+  // allow_security_read requests vulnerability_alerts:read so a bot can read
+  // the org's Dependabot alerts (docs/forge-security-read.md); off by default
+  // and only ever minted into a dedicated token.
   input: {
     forge_base_url?: string;
     next?: string;
     github_org?: string;
     allow_repo_creation?: boolean;
     allow_app_delivery?: boolean;
+    allow_security_read?: boolean;
   },
 ): Promise<GitHubManifestStart> {
   // Body type-checked against the spec's forgeOAuthAppReq (provider is

@@ -28,6 +28,13 @@ const SecurityReadSecretName = "dependabot_tokens"
 // secret on disable would silently replace their explicit choice.
 const securityReadCreatedBy = "forge-security-read"
 
+// ErrSecurityReadMalformed marks a dependabot_tokens secret whose plaintext
+// is not the JSON map the contract requires — an operator's hand-set value,
+// typically a bare PAT. Callers that can act on it surface it; the ones for
+// which it is incidental (disconnecting) may skip past it. Distinguishing it
+// from a store/seal failure matters: those leave a LIVE token behind.
+var ErrSecurityReadMalformed = errors.New("forge: malformed security-read secret")
+
 // fingerprintGuardedStore is the optional CAS capability a GenericSecretStore
 // may implement. The dependabot_tokens map is the first generic secret SHARED
 // across connections and rewritten by every replica's refresh worker;
@@ -58,7 +65,8 @@ func securityReadTokens(plaintext []byte) (map[string]string, error) {
 		return m, nil
 	}
 	if err := json.Unmarshal(plaintext, &m); err != nil {
-		return nil, fmt.Errorf("forge: %s secret is not a JSON map of org→token: %w", SecurityReadSecretName, err)
+		return nil, fmt.Errorf("%w: %s secret is not a JSON map of org→token: %w",
+			ErrSecurityReadMalformed, SecurityReadSecretName, err)
 	}
 	return m, nil
 }

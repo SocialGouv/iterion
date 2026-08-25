@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,7 +77,27 @@ type vulnWatchHarness struct {
 	feedItems                atomic.Value // []vwFeedItem
 	srv                      *httptest.Server
 	sinkHits                 atomic.Int64
-	sinkBodies               []string
+	// sinkBodies is appended from HTTP handler goroutines and read from the
+	// test goroutine — guard it, or the race detector is right to complain.
+	sinkMu     sync.Mutex
+	sinkBodies []string
+}
+
+// bodies returns a snapshot of what the sink received.
+func (h *vulnWatchHarness) bodies() []string {
+	h.sinkMu.Lock()
+	defer h.sinkMu.Unlock()
+	return append([]string(nil), h.sinkBodies...)
+}
+
+// lastBody returns the most recent message the sink received.
+func (h *vulnWatchHarness) lastBody(t *testing.T) string {
+	t.Helper()
+	b := h.bodies()
+	if len(b) == 0 {
+		t.Fatal("the sink received nothing")
+	}
+	return b[len(b)-1]
 }
 
 type vwFeedItem struct {
@@ -146,7 +167,9 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		h.sinkHits.Add(1)
+		h.sinkMu.Lock()
 		h.sinkBodies = append(h.sinkBodies, body.Text)
+		h.sinkMu.Unlock()
 	})
 	h.srv = httptest.NewServer(mux)
 	t.Cleanup(h.srv.Close)
@@ -434,7 +457,7 @@ func TestVulnWatch_PolicyAndRefire(t *testing.T) {
 	if h.sinkHits.Load() != 1 {
 		t.Fatalf("run 2 should deliver exactly 1 message, sink got %d", h.sinkHits.Load())
 	}
-	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	msg := h.lastBody(t)
 	if !strings.Contains(msg, "CVE-2026-2222") || !strings.Contains(msg, "DOMIFA") {
 		t.Fatalf("alert message must carry the CVE and the joined project name:\n%s", msg)
 	}
@@ -454,7 +477,7 @@ func TestVulnWatch_PolicyAndRefire(t *testing.T) {
 	if got := match["alert_count"].(float64); got != 1 {
 		t.Fatalf("run 3 alert_count = %v, want 1", got)
 	}
-	msg = h.sinkBodies[len(h.sinkBodies)-1]
+	msg = h.lastBody(t)
 	for _, want := range []string{"CVE-2026-1111", "testorg/domifa", "DOMIFA", "first observed"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("re-fire message missing %q:\n%s", want, msg)
@@ -665,7 +688,7 @@ func TestVulnWatch_AlertedCVEDoesNotSterilizeOtherProjects(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("a CVE alerted for one project must still fire for another: %v", match["summary"])
 	}
-	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	msg := h.lastBody(t)
 	if !strings.Contains(msg, "ACCOLADE") || !strings.Contains(msg, "CVE-2026-7002") {
 		t.Fatalf("second alert must name the newly-affected project:\n%s", msg)
 	}
@@ -708,7 +731,7 @@ func TestVulnWatch_KEVSecondBatchSameDayStillFires(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("the same-day second KEV batch must still fire: %v", match["summary"])
 	}
-	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-8002") {
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-8002") {
 		t.Fatalf("expected the second batch entry:\n%s", msg)
 	}
 }
@@ -735,7 +758,7 @@ func TestVulnWatch_UntrustedTitleCannotForgeAnAlert(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("expected the real alert: %v", match["summary"])
 	}
-	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	msg := h.lastBody(t)
 	// The security property is structural: injected text may survive as
 	// inert inline content, but it must never START a line — that is what
 	// would forge an indistinguishable second alert block.
@@ -790,7 +813,7 @@ func TestVulnWatch_IntraRunDedupIsScopeAware(t *testing.T) {
 	if match["alert_count"].(float64) != 2 {
 		t.Fatalf("both scopes must be told in the same tick: %v", match["summary"])
 	}
-	joined := strings.Join(h.sinkBodies, "\n")
+	joined := strings.Join(h.bodies(), "\n")
 	if !strings.Contains(joined, "DOMIFA") || !strings.Contains(joined, "ACCOLADE") {
 		t.Fatalf("expected both projects named:\n%s", joined)
 	}
@@ -943,7 +966,7 @@ func TestVulnWatch_KEVAgeBeltBoundsAStateLoss(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("only the recent entry may fire: %v", match["summary"])
 	}
-	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-1500") {
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-1500") {
 		t.Fatalf("expected the recent KEV entry, got:\n%s", msg)
 	}
 }
@@ -997,7 +1020,7 @@ func TestVulnWatch_RefireScanIsScopeAware(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("the deferred unit must fire on the next tick: %v", match["summary"])
 	}
-	joined := strings.Join(h.sinkBodies, "\n")
+	joined := strings.Join(h.bodies(), "\n")
 	if !strings.Contains(joined, "DOMIFA") || !strings.Contains(joined, "ACCOLADE") {
 		t.Fatalf("both scopes must end up told:\n%s", joined)
 	}
@@ -1136,7 +1159,7 @@ func TestVulnWatch_ProjectLabelsAreNotShifted(t *testing.T) {
 	if match["alert_count"].(float64) != 1 {
 		t.Fatalf("expected one grouped alert: %v", match["summary"])
 	}
-	msg := h.sinkBodies[len(h.sinkBodies)-1]
+	msg := h.lastBody(t)
 	// Both real projects must be named by their OWN label, and the raw key
 	// must never leak in place of a name.
 	if !strings.Contains(msg, "DOMIFA") || !strings.Contains(msg, "ACCOLADE") {
@@ -1243,7 +1266,7 @@ func TestVulnWatch_EscalationOutranksCoverage(t *testing.T) {
 	if match["alert_count"].(float64) < 1 {
 		t.Fatalf("a new exploitation signal must outrank prior coverage: %v", match["summary"])
 	}
-	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-3001") {
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-3001") {
 		t.Fatalf("the escalated CVE must be named:\n%s", msg)
 	}
 }
@@ -1316,5 +1339,95 @@ func TestVulnWatch_RefusesAPlaintextAPIBase(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "https://") {
 		t.Fatalf("the refusal must name the requirement, got: %s", stderr)
+	}
+}
+
+// TestVulnWatch_TechnologyWithNoProjectStillAlerts pins the empty-scope
+// trap: the empty set is a subset of everything, so a technology declared
+// with match keywords but NO project mapping (a documented, legal shape)
+// was judged "already covered" on first sight and dropped forever — while
+// the cursors advanced past it.
+func TestVulnWatch_TechnologyWithNoProjectStillAlerts(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// A watched technology that maps to no project (nobody has claimed it
+	// yet — the inventory still wants to hear about it).
+	invPath := filepath.Join(h.ws, "inventory.json")
+	raw, err := os.ReadFile(invPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv map[string]any
+	if err := json.Unmarshal(raw, &inv); err != nil {
+		t.Fatal(err)
+	}
+	inv["technologies"].(map[string]any)["nginx"] = map[string]any{
+		"label": "Nginx", "match": []string{"nginx"}, "projects": []string{},
+	}
+	out, _ := json.MarshalIndent(inv, "", " ")
+	if err := os.WriteFile(invPath, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-5150", "vendorProject": "F5", "product": "Nginx",
+			"vulnerabilityName": "Nginx request smuggling", "dateAdded": "2026-08-25"},
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("a project-less technology must still alert: %v", match["summary"])
+	}
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-5150") {
+		t.Fatalf("expected the Nginx alert:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_BootstrapObservesWhatItConsumes pins the bootstrap contract:
+// it alerts nothing, but the cursors advance — so whatever it saw must be
+// RECORDED, or a deployment installed the day after a CVE entered KEV never
+// hears about it.
+func TestVulnWatch_BootstrapObservesWhatItConsumes(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// Day one: an advisory the bot must stay quiet about (kind advisory,
+	// certfr_avis=observe) — but never forget.
+	if err := h.setFeedKind("advisory"); err != nil {
+		t.Fatal(err)
+	}
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-AVI-1200", Title: "Vulnerabilite dans Metabase",
+		CVEs: []string{"CVE-2026-6200"}, Products: []string{"Metabase"},
+	}})
+	match, _ := h.runWatch(t, wf, false)
+	if match["bootstrap"] != true || match["alert_count"].(float64) != 0 {
+		t.Fatalf("the bootstrap must alert nothing: %v", match["summary"])
+	}
+	if h.sinkHits.Load() != 0 {
+		t.Fatalf("bootstrap posted %d message(s)", h.sinkHits.Load())
+	}
+
+	// Day two: KEV picks that CVE up. The advisory is long consumed (its id
+	// is in feeds_seen), so only a RECORDED observation can bring it back.
+	h.feedItems.Store([]vwFeedItem{})
+	h.setKEV([]map[string]any{{
+		"cveID": "CVE-2026-6200", "vendorProject": "Metabase", "product": "Metabase",
+		"vulnerabilityName": "Metabase RCE", "dateAdded": "2026-08-25",
+	}})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) < 1 {
+		t.Fatalf("what the bootstrap consumed must stay re-fireable: %v", match["summary"])
+	}
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-6200") {
+		t.Fatalf("expected the escalated advisory:\n%s", msg)
 	}
 }

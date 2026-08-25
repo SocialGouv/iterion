@@ -771,8 +771,18 @@ tool poll_advisories:
             if n == 'title':
                 d['title'] = strip_html(text(ch))
             elif n == 'link':
-                href = (ch.get('href') or '').strip()
-                d['url'] = href or text(ch) or d['url']
+                ## An Atom entry carries SEVERAL <link>s (alternate, related,
+                ## enclosure, replies). Taking the last one lands on a
+                ## non-page URL, which breaks both the enrichment fetch and
+                ## the id fallback. Prefer rel="alternate" (the entry's own
+                ## page), and never let a later link overwrite it.
+                href = (ch.get('href') or '').strip() or text(ch)
+                rel = (ch.get('rel') or 'alternate').strip() or 'alternate'
+                if href and (rel == 'alternate' or not d['url']):
+                    if rel == 'alternate' or not d.get('_url_alt'):
+                        d['url'] = href
+                        if rel == 'alternate':
+                            d['_url_alt'] = True
             elif n in ('guid', 'id'):
                 d['id'] = text(ch)
             elif n in ('description', 'summary') and not d['summary']:
@@ -781,6 +791,7 @@ tool poll_advisories:
                 d['published'] = text(ch)
         if not d['id']:
             d['id'] = d['url'] or d['title']
+        d.pop('_url_alt', None)
         return d
     def parse_feed(raw):
         root = ET.fromstring(raw)
@@ -1315,6 +1326,13 @@ tool match_policy:
         ## both — although A was never told about CVE-2, nor B about CVE-1.
         ## Same question as the two sibling suppression sites.
         scope = unit_scope(u)
+        if not scope:
+            ## The empty set is a subset of EVERYTHING, so a unit whose
+            ## technology maps to no project would be "covered" by anything
+            ## — dropped on first sight, while the cursors advanced past it.
+            ## A projects-less technology is a legal, documented shape: such
+            ## a unit is judged by its CVEs alone.
+            return all((st_cves.get(c) or {}).get('alerted_at') for c in cves)
         return all(scope <= set((st_cves.get(c) or {}).get('alerted_for') or []) for c in cves)
 
     def render_fields(u, sig, refire_of=''):
@@ -1380,11 +1398,21 @@ tool match_policy:
         alerts.extend(refire)
         refire_count = len(refire)
     else:
-        ## Bootstrap: set every cursor to "now", alert nothing — the
-        ## backlog is not news, and flooding the channel on day one
-        ## teaches everyone to mute it.
+        ## Bootstrap: alert nothing — the pre-existing backlog is not news,
+        ## and flooding the channel on day one teaches everyone to mute it.
+        ## But the cursors DO advance, so anything merely consumed here is
+        ## gone for good: record what was seen as observed, exactly like the
+        ## per-org backlog path, so an exploitation signal that lights up
+        ## later still re-fires. (A deployment installed the day after a CVE
+        ## entered KEV would otherwise never hear about it.)
         refire_count = 0
         suppressed = len(units)
+        for u in units:
+            sig = signals_for(u)
+            for c in (u.get('cves') or []):
+                st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
+            st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None,
+                                             observed_signals=signal_key(sig)))
 
     ## priority: KEV first, then alert-class, then EPSS, then severity.
     sev_rank = {'critical': 3, 'high': 2, 'medium': 1, 'low': 0}
@@ -1411,7 +1439,11 @@ tool match_policy:
         for r in (a.get('repos') or []):
             p = repo_index.get(r.lower())
             scope.add(p if p else 'repo:' + r.lower())
-        if cves and all(scope <= covered.get(c, set()) for c in cves):
+        ## Same empty-scope rule as already_alerted: a scope-less unit is a
+        ## duplicate only when its CVEs are ALREADY being posted this run,
+        ## never by vacuous subset.
+        if cves and ((scope and all(scope <= covered.get(c, set()) for c in cves))
+                     or (not scope and all(c in covered for c in cves))):
             suppressed += 1
             continue
         for c in cves:

@@ -938,13 +938,19 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	// connection is gone) is the opposite of what they asked for.
 	if conn.SecurityReadEnabled {
 		if derr := RemoveSecurityReadToken(ctx, o.Secrets, o.Sealer, &conn); derr != nil {
-			// Disconnecting is the operator's most explicit security action;
-			// it must not be blocked by an unrelated malformed secret (the
-			// documented hand-set path makes "a bare PAT instead of a JSON
-			// map" the obvious mistake). Report and continue — the
-			// connection, and with it the ability to mint, still goes away.
-			if o.LogWarn != nil {
-				o.LogWarn("forge: could not withdraw the security-read entry for %s while disconnecting: %v", conn.ID, derr)
+			// A MALFORMED map must not block the operator's most explicit
+			// security action (the documented hand-set path makes "a bare
+			// PAT instead of a JSON map" the obvious mistake), and there is
+			// nothing to withdraw from it anyway. Anything else — a store
+			// error, a seal failure — would leave a LIVE org-wide token
+			// behind, so it propagates and the disconnect is retried.
+			if errors.Is(derr, ErrSecurityReadMalformed) {
+				if o.LogWarn != nil {
+					o.LogWarn("forge: %s holds an unparseable %s secret; disconnecting %s without withdrawing it: %v",
+						conn.TenantID, SecurityReadSecretName, conn.ID, derr)
+				}
+			} else {
+				return fmt.Errorf("forge: withdraw security-read token: %w", derr)
 			}
 		}
 	}

@@ -5431,6 +5431,7 @@ export interface components {
             admin_token?: string;
             allow_app_delivery?: boolean;
             allow_repo_creation?: boolean;
+            allow_security_read?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;

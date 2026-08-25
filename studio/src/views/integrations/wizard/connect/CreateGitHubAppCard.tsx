@@ -34,6 +34,9 @@ export default function CreateGitHubAppCard({
   const [githubOrg, setGithubOrg] = useState("");
   const [allowRepoCreation, setAllowRepoCreation] = useState(true);
   const [allowAppDelivery, setAllowAppDelivery] = useState(true);
+  // Off by default: alert data names every vulnerable dependency of every
+  // repo, so the team opts in deliberately.
+  const [allowSecurityRead, setAllowSecurityRead] = useState(false);
 
   // Fetch failures stay silent (no error surfaced) — the "Pick from
   // GitHub" link below covers the empty case.
@@ -60,6 +63,7 @@ export default function CreateGitHubAppCard({
         github_org: githubOrg.trim() || undefined,
         allow_repo_creation: allowRepoCreation,
         allow_app_delivery: allowAppDelivery,
+        allow_security_read: allowSecurityRead,
         next: RETURN_PATH,
       });
       // Auto-submit the hidden form: GitHub swallows the manifest, creates
@@ -171,6 +175,26 @@ export default function CreateGitHubAppCard({
               Adds Workflows: write + Packages: write, so a bot can ship an app
               it built. Without them GitHub refuses any push that touches
               .github/workflows/, which blocks the build-and-deploy chain.
+            </span>
+          </span>
+        }
+      />
+
+      <Checkbox
+        id="wizard-allow-security-read"
+        checked={allowSecurityRead}
+        onChange={(e) => setAllowSecurityRead(e.target.checked)}
+        label={
+          <span className="text-fg-default text-xs">
+            <span className="font-medium">
+              Allow iterion to read this org&apos;s Dependabot alerts
+            </span>
+            <span className="block text-caption text-fg-muted mt-0.5">
+              Adds Dependabot alerts: read, so a vulnerability-watch bot can see
+              which repositories are affected. Alert data names every vulnerable
+              dependency of every repository, so it is off by default — and it
+              is only ever minted into a dedicated token, never the one bots
+              push with.
             </span>
           </span>
         }
