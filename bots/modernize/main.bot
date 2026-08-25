@@ -325,6 +325,14 @@ tool plan_read:
     # lettre `t`.
     if isinstance(gate, str):
         gate = [gate]
+    # Any other shape (a mapping, a list holding non-strings) would ALSO
+    # survive the join — a dict contributes its keys — and hand the verifier
+    # a gate nobody wrote. An unreadable gate is a contract that cannot be
+    # read, not a lot with nothing to do.
+    if not isinstance(gate, list) or not all(isinstance(c, str) for c in gate):
+        refuse("lot %s declares exit_gate in an unreadable shape (%s): write "
+               "one command as a string, or a list of command strings."
+               % (chosen.get("id"), type(chosen.get("exit_gate")).__name__))
     if not gate:
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "

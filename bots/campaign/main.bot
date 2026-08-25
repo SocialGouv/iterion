@@ -824,18 +824,36 @@ tool finalize:
                           else "RED (exit %d) — tail:\n\n```\n%s\n```" % (code, log[-1500:]))
 
     # Requalification: distinct commands once each, verdicts projected.
+    # Same contract surface as modernize's plan_read: a scalar exit_gate is
+    # one command, a sequence several; any other shape is unreadable and the
+    # lot carrying it is NOT requalifiable — iterating it raw would shell
+    # out one command per character (or per mapping key) and manufacture a
+    # verdict nobody's gate ever rendered.
+    def gate_commands(l):
+        gates = l.get("exit_gate") or []
+        if isinstance(gates, str):
+            gates = [gates]
+        if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
+            return None
+        return gates
+
     requal = {"head": head[:12], "commands": {}, "lots": {}}
     if not dirty and blocked:
         cmds = []
         for l in blocked:
-            for g in (l.get("exit_gate") or []):
+            for g in (gate_commands(l) or []):
                 if g not in cmds:
                     cmds.append(g)
         for c in cmds:
             code, log = sh(c)
             requal["commands"][c] = {"rc": code, "tail": log[-400:]}
         for l in blocked:
-            gates = l.get("exit_gate") or []
+            gates = gate_commands(l)
+            if gates is None:
+                requal["lots"][l.get("id")] = {"verdict": "unreadable exit_gate "
+                                               "(%s) — not requalifiable"
+                                               % type(l.get("exit_gate")).__name__}
+                continue
             reds = [g for g in gates if requal["commands"][g]["rc"] != 0]
             if reds:
                 requal["lots"][l.get("id")] = {"verdict": "still blocked",

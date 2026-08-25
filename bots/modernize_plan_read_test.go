@@ -35,13 +35,21 @@ func TestModernizePlanReadExitGateForms(t *testing.T) {
 		Notice      string `json:"notice"`
 	}
 
-	run := func(t *testing.T, planYAML string) planReadOut {
+	run := func(t *testing.T, planYAML string, wantExit int) planReadOut {
 		t.Helper()
 		ws := t.TempDir()
 		git := func(args ...string) {
 			t.Helper()
 			full := append([]string{"-C", ws}, args...)
-			if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			cmd := exec.Command("git", full...)
+			// The throwaway repo must not inherit the operator's global or
+			// system config: a core.hooksPath or commit.gpgsign there fails
+			// `git commit` for reasons unrelated to what this test pins.
+			cmd.Env = append(os.Environ(),
+				"GIT_CONFIG_GLOBAL=/dev/null",
+				"GIT_CONFIG_SYSTEM=/dev/null",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v (%s)", args, err, out)
 			}
 		}
@@ -68,8 +76,16 @@ func TestModernizePlanReadExitGateForms(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := exec.Command("python3", scriptPath).Output()
+		exit := 0
 		if err != nil {
-			t.Fatalf("plan_read failed to execute: %v (out %q)", err, out)
+			ee, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("plan_read failed to execute: %v (out %q)", err, out)
+			}
+			exit = ee.ExitCode()
+		}
+		if exit != wantExit {
+			t.Fatalf("plan_read exited %d, want %d (out %q)", exit, wantExit, out)
 		}
 		var res planReadOut
 		if uerr := json.Unmarshal(out, &res); uerr != nil {
@@ -86,7 +102,7 @@ lots:
     rebaseline_allowed: false
     exit_gate: test -f .tool-versions && bash scripts/env/probe.sh
     status: todo
-`)
+`, 0)
 		if res.NothingToDo {
 			t.Fatalf("nothing_to_do on a contract with a todo lot (notice %q)", res.Notice)
 		}
@@ -105,10 +121,24 @@ lots:
       - ./gradlew --no-daemon build -x test
       - ./gradlew --no-daemon bootJar
     status: todo
-`)
+`, 0)
 		want := "./gradlew --no-daemon build -x test\n./gradlew --no-daemon bootJar"
 		if res.ExitGate != want {
 			t.Fatalf("exit_gate = %q, want %q", res.ExitGate, want)
+		}
+	})
+
+	t.Run("mapping gate is refused as unreadable", func(t *testing.T) {
+		res := run(t, `version: 1
+lots:
+  - id: T2
+    title: slip
+    exit_gate:
+      build: ./gradlew build
+    status: todo
+`, 1)
+		if !strings.Contains(res.Notice, "unreadable shape") {
+			t.Fatalf("notice = %q, want an unreadable-shape refusal", res.Notice)
 		}
 	})
 }
