@@ -427,7 +427,8 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 		// An eval in flight when the run tears down is cancelled with it
 		// — a normal shutdown, not a supervisor malfunction: no warn
 		// after the run's terminal summary, no failure counted.
-		if c.ctx != nil && c.ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		if c.ctx != nil && c.ctx.Err() != nil &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			c.info("supervise[%s]: evaluation cancelled at run end (wake=%s)", c.spec.Name, reason)
 			return false
 		}
