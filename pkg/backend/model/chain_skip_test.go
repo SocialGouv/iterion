@@ -24,8 +24,8 @@ func skipChain(onSkip []delegate.FallbackCategory) []chainElement {
 // Skipped outcome carrying the failed route's spend, never content.
 func TestChainSkipServesSkippedOutcome(t *testing.T) {
 	head := &backendScriptedBackend{
-		name: delegate.BackendClaudeCode,
-		fail: &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Detail: "weekly cap", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
+		name:   delegate.BackendClaudeCode,
+		fail:   &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Detail: "weekly cap", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
 		tokens: 500, costUSD: 0.20,
 	}
 	reg := delegate.NewRegistry()
