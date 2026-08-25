@@ -802,10 +802,15 @@ if not scratch:
     raise SystemExit('product-docs: scratch_dir resolved empty -- the source clones have nowhere out-of-tree to live')
 os.chdir(ws)
 
-def load_yaml(path):
-    ## PyYAML when the interpreter has it; otherwise yq (declared in
-    ## this bundle devbox.json) rendering the same document as JSON.
-    ## Neither available is a LOUD failure, never a guessed parse.
+def load_catalog(path):
+    ## A .json catalog needs no dependency at all (a generated catalog
+    ## is a legitimate shape). For YAML: PyYAML when the interpreter
+    ## has it; otherwise yq (declared in this bundle devbox.json)
+    ## rendering the same document as JSON. Neither available is a LOUD
+    ## failure -- never a hand-rolled, silently-wrong parse.
+    if path.endswith('.json'):
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)
     try:
         import yaml
     except ImportError:
@@ -837,10 +842,10 @@ if os.path.isdir(cat_path):
             avail = '<unreadable>'
         raise SystemExit('product-docs: no catalog entry for product ' + repr(product) + ' in ' + cat_path + ' -- available: ' + (avail or '<none>'))
     cat_file = found
-    entry = load_yaml(cat_file)
+    entry = load_catalog(cat_file)
 elif os.path.isfile(cat_path):
     cat_file = cat_path
-    doc = load_yaml(cat_file)
+    doc = load_catalog(cat_file)
     if not isinstance(doc, dict):
         raise SystemExit('product-docs: catalog ' + cat_file + ' is not a YAML mapping')
     if isinstance(doc.get('products'), dict):
