@@ -736,6 +736,11 @@ func (e *ClawExecutor) dispatchChain(
 					if cd.Cause != nil {
 						causes = append(causes, cd.Cause)
 					}
+					// A route change drops the node's session even when no call
+					// was made on this dispatch. The store has no provider
+					// fingerprint, so a prior failed attempt's messages must not
+					// be replayed into the fallback element.
+					e.evictNodeSessionForFallback(ctx, nodeID)
 					nextAllowed = j
 					continue
 				}

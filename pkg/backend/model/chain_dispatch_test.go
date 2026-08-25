@@ -576,6 +576,59 @@ func TestChainEvictsNodeSessionOnFallThrough(t *testing.T) {
 	}
 }
 
+// A remembered fall-through is still a route change. A prior failed attempt
+// of this node may have left provider-specific messages in the session store,
+// even though the cooled primary is not called during this dispatch.
+func TestChainEvictsNodeSessionOnCooldownFallThrough(t *testing.T) {
+	const runID, nodeID = "run-1", "review"
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw},
+	}
+	build := func(id string) elementBuilder {
+		return e.newElementBuilder(id, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: id, Model: "claude-opus-5"}, nil
+			})
+	}
+
+	if _, err := e.dispatchChain(context.Background(), "learn-window", chain,
+		"claude-opus-5", build("learn-window")); err != nil {
+		t.Fatalf("learning dispatch: %v", err)
+	}
+
+	sessions := newNodeSessionStore()
+	sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`))
+	if sessions.LoadSnapshot(runID, nodeID) == nil {
+		t.Fatal("precondition: snapshot not stored")
+	}
+	ctx := withRuntimeContext(context.Background(), runID, sessions)
+	if _, err := e.dispatchChain(ctx, nodeID, chain, "claude-opus-5", build(nodeID)); err != nil {
+		t.Fatalf("cooled dispatch: %v", err)
+	}
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
+		t.Errorf("the prior attempt's conversation survived the cooldown route change: %s", snap)
+	}
+}
+
 // TestChainDropsResumeContinuityOnFallThrough: the resume continuity
 // applied at build time belongs to the element that paused. Replaying it
 // into another backend re-sends one provider's turn to a provider that
