@@ -93,8 +93,8 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 
 	logger.Error("runner: %v — delivery budget exhausted (%d/%d), parking on DLQ",
 		decodeErr, delivery.NumDelivered(), r.cfg.NATS.MaxDeliver())
-	bg, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	parkCtx, parkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer parkCancel()
 	env, envErr := delivery.Envelope()
 	if envErr != nil {
 		logger.Warn("runner: envelope decode on final delivery: %v — run document cannot be flipped", envErr)
@@ -103,7 +103,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	// the parked message's version; in the other direction (or if nothing
 	// was parked) resuming/relaunching re-publishes at the CURRENT version.
 	runErr := fmt.Sprintf("schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)", decodeErr, env.V, env.V)
-	if perr := r.cfg.NATS.PublishDLQ(bg, delivery, decodeErr.Error()); perr != nil {
+	if perr := r.cfg.NATS.PublishDLQ(parkCtx, delivery, decodeErr.Error()); perr != nil {
 		logger.Error("runner: DLQ park after version mismatch failed: %v — queue entry lost with the budget spent", perr)
 		runErr = fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", decodeErr, perr)
 	}
@@ -117,9 +117,15 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	case env.TenantID == "":
 		logger.Warn("runner: mismatched message for run %s has no tenant_id — run document not flipped", env.RunID)
 	default:
-		sctx := store.WithIdentity(bg, env.TenantID, env.OwnerID)
+		// PublishDLQ is bounded by its context alone and can consume the full
+		// park deadline during a broker outage. The status flip is the only
+		// actionable trail when that happens, so it needs an independent
+		// deadline rather than inheriting an already-expired parkCtx.
+		flipCtx, flipCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		sctx := store.WithIdentity(flipCtx, env.TenantID, env.OwnerID)
 		changed, serr := r.cfg.Store.UpdateRunStatusIf(sctx, env.RunID, store.RunStatusFailedResumable, runErr,
 			[]store.RunStatus{store.RunStatusQueued})
+		flipCancel()
 		if serr != nil {
 			logger.Warn("runner: schema-mismatch status flip for %s: %v", env.RunID, serr)
 		} else if changed {
