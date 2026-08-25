@@ -434,11 +434,15 @@ and paints a failure onto a long-merged PR). The repair re-reads the live
 status before writing, so the redundant offer costs one API read.
 
 Telling "already answered" from "must escalate" is what makes the second offer
-safe. A synthetic failure deliberately does *not* stand the REPAIR down — that
-is how a **second** death on one head (a relaunched run dying too) still walks
-the relaunch/escalation tail instead of mistaking the first death's marker for
-an answer. But the STATUS WRITE stands down either way: one marker per head is
-enough, and re-posting from a run the marker does not speak for is a storm —
+safe, and the answer turns on WHOSE marker is on the head. **Its own** — the
+event and the sweep racing, or the sweep re-reading its 60-minute window every
+minute for an hour — is already answered: the repair returns immediately,
+writing no status and walking no tail. **Another run's** is a different
+question, and only that case falls through: a **second** death on one head (a
+relaunched run dying too) must still walk the relaunch/escalation tail instead
+of mistaking the first death's marker for an answer. Even then the STATUS
+WRITE stands down: one marker per head is enough, and re-posting from a run
+the marker does not speak for is a storm —
 two dead runs re-pointing the target URL at themselves on every sweep tick
 produced **116 status writes on one head in 15 minutes**
 (buildkit-operator#21, 2026-08-17). The status's target URL names the run it
@@ -488,8 +492,13 @@ the original), the failure reasons, and the remedy. The same escalation is
 ALSO posted as a **PR comment** through the connection's review client: the
 board is the operator's queue, but the PR is where the people waiting on the
 merge look — a card alone sat unseen in a team inbox for 7 days while a
-security PR stayed blocked. Card and comment are bounded to once per
-(PR, head) by a **deterministic card id** (UUIDv5 of team/repo/PR/head): the
+security PR stayed blocked. The comment rides the card's insert, so the two
+travel together in both directions: a deployment with **no board** (no
+`CloudBoardFor`, or a team without one) gets neither, and the synthetic
+`failure` status is then the only surface carrying the interruption — worth
+knowing before pointing a board-less deployment at a required check. Card and
+comment are bounded to once per (PR, head) by a **deterministic card id**
+(UUIDv5 of team/repo/PR/head): the
 sweep runs unelected on every replica, and two replicas racing past a
 List-based dedup would each file the card AND each post the comment — the
 store's unique-id insert is what serialises them. A required check dying

@@ -480,3 +480,20 @@ func TestEscalationRefusesToCiteAnotherTeamsRun(t *testing.T) {
 		t.Fatalf("gateRunError on the team's OWN run = (%q, %v), want (\"budget exceeded\", true)", got, ok)
 	}
 }
+
+// The escalation body is published on the pull request, so a run it cannot
+// LINK it must still NAME: with no PublicURL the link builder returns "" and
+// the body read "- Dead run:  — `budget exceeded`", which tells the reader
+// nothing to look up.
+func TestEscalationNamesRunsWithoutPublicURL(t *testing.T) {
+	if got := gateRunRef("https://iterion.test", "run-x"); got != "https://iterion.test/runs/run-x" {
+		t.Errorf("with a PublicURL the reference must be the link, got %q", got)
+	}
+	got := gateRunRef("", "run-x")
+	if !strings.Contains(got, "run-x") {
+		t.Errorf("without a PublicURL the reference must still name the run, got %q", got)
+	}
+	if strings.TrimSpace(got) == "" {
+		t.Error("empty run reference — the escalation names nothing at all")
+	}
+}

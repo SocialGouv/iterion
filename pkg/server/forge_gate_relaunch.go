@@ -289,12 +289,12 @@ func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, pri
 		d.prURL,
 		d.pr.HeadSHA)
 	if originalID != "" {
-		body += fmt.Sprintf("- Dead run: %s — `%s`\n", gateRunURL(base, originalID), orNoError(originalErr))
+		body += fmt.Sprintf("- Dead run: %s — `%s`\n", gateRunRef(base, originalID), orNoError(originalErr))
 	} else {
 		body += "- Dead run: unknown (the relaunch was launched before its parent run was stamped)\n"
 	}
 	if relaunchID != "" && !strings.EqualFold(relaunchID, originalID) {
-		body += fmt.Sprintf("- Relaunched run (also dead): %s — `%s`\n", gateRunURL(base, relaunchID), orNoError(relaunchErr))
+		body += fmt.Sprintf("- Relaunched run (also dead): %s — `%s`\n", gateRunRef(base, relaunchID), orNoError(relaunchErr))
 	}
 	body += "\nA required check dying twice on one revision usually means a structural problem — " +
 		"a run budget too short for this workload, a recurring provider quota, or a bot defect. " +
@@ -322,6 +322,18 @@ func (s *Server) escalateDeadGateToBoard(ctx context.Context, d deadGateRun, pri
 	}
 	s.commentDeadGateOnPR(ctx, d, body)
 	return true
+}
+
+// gateRunRef names a run in the escalation body. A deployment with no
+// PublicURL cannot build a link (gateRunURL returns ""), and this text is now
+// published on the pull request — where "- Dead run:  — `budget exceeded`"
+// tells the reader nothing they can look up. The id alone is enough to find
+// the run through the CLI or the API, so it is what stands in.
+func gateRunRef(base, runID string) string {
+	if u := gateRunURL(base, runID); u != "" {
+		return u
+	}
+	return "`" + runID + "` (no PublicURL configured on this deployment — no link)"
 }
 
 // gateRunError reads another run's failure reason for the escalation, and is

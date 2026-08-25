@@ -685,6 +685,9 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any
 	// values — sh -c sees the placeholder and either fails informatively
 	// or the operator notices. Substituting silently would lose that
 	// signal and could mask wiring bugs.
+	// Pinned by TestToolCommandRefsAreShellEscaped: the shell itself is the
+	// oracle there, because reading a bot's `VAR={{vars.x}}` as unquoted is a
+	// mistake that has already been made confidently.
 	return resolveTemplateWith(command, refs, input, vars, guard, shellEscapeValue, false)
 }
 
