@@ -535,7 +535,18 @@ func (s *Server) securityReadNameClash(ctx context.Context, teamID string) (stri
 
 // securityReadOrgCollision returns the id of another security-read-enabled
 // connection of the same tenant that claims the SAME org login on a
-// DIFFERENT forge host (see forge.ErrSecurityReadOrgCollision), or "".
+// DIFFERENT forge host, or "".
+//
+// Same-host duplicates are deliberately NOT refused: two Apps installed on
+// one org mint interchangeable tokens for the same alert data, so they
+// overwrite each other harmlessly (the cost is a withdrawal when either is
+// disabled, and a re-mint on the next tick). The cross-host case is the
+// dangerous one — the map is keyed by org alone, so a private instance's
+// token could end up filed where the public one is read.
+//
+// This is a read-then-write check, so two admins enabling concurrently on
+// two replicas can both pass it; it narrows a misconfiguration, it is not
+// an invariant.
 func (s *Server) securityReadOrgCollision(ctx context.Context, conn forge.Connection) (string, error) {
 	org := strings.ToLower(strings.TrimSpace(conn.AccountLogin))
 	if org == "" || s.forgeConnections == nil {

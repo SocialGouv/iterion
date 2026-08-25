@@ -202,6 +202,26 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	return h
 }
 
+// setFloor switches the Dependabot severity floor (exploited | critical |
+// high) — the knob that decides whether a signal-less alert may post.
+func (h *vulnWatchHarness) setFloor(floor string) error {
+	path := filepath.Join(h.ws, "vuln-watch.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+	cfg["dependabot_alert_floor"] = floor
+	out, err := json.MarshalIndent(cfg, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
 // setFeedKind switches the harness feed between alert-class (an
 // exploitation signal by itself) and plain advisory (observe-by-default).
 func (h *vulnWatchHarness) setFeedKind(kind string) error {
@@ -552,7 +572,7 @@ func TestVulnWatch_DryRunAndNoSinksDoNotConsume(t *testing.T) {
 	}
 
 	// No sinks: alerts prepared but kept pending, explicitly.
-	nb, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "notify").Script, map[string]any{
+	_, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "notify").Script, map[string]any{
 		"alerts": match["alerts"], "overflow_count": 0, "stale_sources": []any{},
 		"sinks": []any{}, "labels": map[string]any{
 			"overflow": "x", "stale": "x", "kev_signal": "x", "ale_signal": "x",
@@ -562,11 +582,13 @@ func TestVulnWatch_DryRunAndNoSinksDoNotConsume(t *testing.T) {
 			"more": "x", "refire": "x",
 		}, "dry_run": false,
 	}, nil, map[string]string{"webhooks": h.webhooksFile}))
-	if err != nil {
-		t.Fatalf("notify(no sinks) failed: %v\n%s", err, stderr)
+	// Alerts with nowhere to go are a config gap, and a config gap that exits
+	// 0 is the silent-green outcome this bot exists to end.
+	if err == nil {
+		t.Fatal("notify must FAIL when there are alerts and no sink")
 	}
-	if nb["consume"] != false {
-		t.Fatalf("alerts with no sink must NOT be consumed: %v", nb)
+	if !strings.Contains(stderr, "NO sinks are configured") {
+		t.Fatalf("the failure must name the config gap, got: %s", stderr)
 	}
 }
 
@@ -816,12 +838,48 @@ func TestVulnWatch_NewOrgBacklogDoesNotFlood(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The backlog rule silences HISTORY, not EVIDENCE: these two are already
+	// in KEV, which is exactly what the bot exists to announce. Swallowing
+	// them would be permanent — the org cursor advances on this same tick and
+	// no lane re-produces them.
 	match, _ := h.runWatch(t, wf, false)
-	if match["alert_count"].(float64) != 0 {
-		t.Fatalf("a newly-added org's open backlog must not be posted: %v", match["summary"])
+	if match["alert_count"].(float64) != 2 {
+		t.Fatalf("already-exploited backlog alerts must fire: %v", match["summary"])
 	}
-	if match["observed_count"].(float64) != 2 {
-		t.Fatalf("the backlog should be observed (re-fireable later), got: %v", match["summary"])
+
+	// The anti-flood half: with a severity floor, a signal-LESS backlog stays
+	// quiet (that is the day-one flood the rule exists to prevent).
+	h2 := newVulnWatchHarness(t)
+	h2.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	if err := h2.setFloor("critical"); err != nil {
+		t.Fatal(err)
+	}
+	h2.runWatch(t, wf, false) // bootstrap
+	h2.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-hist-0001", "CVE-2024-7001", "critical", "testorg/domifa", "pkg-c", "2024-01-01T00:00:00Z", "1.0.0"),
+		vwDepAlert("GHSA-hist-0002", "CVE-2024-7002", "critical", "testorg/accolade-env", "pkg-d", "2024-01-02T00:00:00Z", "2.0.0"),
+	})
+	statePath2 := filepath.Join(h2.ws, ".vuln-watch", "state.json")
+	raw2, err := os.ReadFile(statePath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st2 map[string]any
+	if err := json.Unmarshal(raw2, &st2); err != nil {
+		t.Fatal(err)
+	}
+	st2["cursors"].(map[string]any)["dependabot"] = map[string]any{}
+	out2, _ := json.Marshal(st2)
+	if err := os.WriteFile(statePath2, out2, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	match2, _ := h2.runWatch(t, wf, false)
+	if match2["alert_count"].(float64) != 0 {
+		t.Fatalf("a signal-less backlog must stay quiet under a severity floor: %v", match2["summary"])
+	}
+	if match2["observed_count"].(float64) != 2 {
+		t.Fatalf("it must still be observed (re-fireable): %v", match2["summary"])
 	}
 }
 

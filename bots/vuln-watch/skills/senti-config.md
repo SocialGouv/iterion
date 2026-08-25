@@ -231,14 +231,22 @@ iterion remote schedules create --data '{"bot_id":"vuln-watch",
 - **`:warning: source silent` message** — a source has had no
   successful poll for `source_stale_hours` (default 24h). The run log
   (`match_policy` summary) carries the per-source errors.
+- **The run FAILS with "NO sinks are configured"** — there were alerts to
+  deliver and nowhere to send them. Add a `sinks` entry (or use
+  `--var dry_run=true` to preview). Nothing was consumed: the alerts come
+  back on the next run. This is deliberately a hard failure — an hourly
+  schedule reporting success while delivering nothing is the exact
+  silent-green outcome this bot exists to end.
 - **Nothing posts, ever** — check the run summary: `alerts: 0 to post,
   N observed` is the policy working (nothing exploited); `BOOTSTRAP`
   means the first tick just armed the cursors; `suppressed` counts
   dedup hits.
-- **A newly added org stays quiet on its first tick** — deliberate: an
-  org with no cursor hands back its whole OPEN backlog, which is
-  history, not news. Those units are observed and still re-fire the day
-  an exploitation signal appears. Same rule for any observed unit: the
+- **A newly added org stays quiet on its first tick** — deliberate, and
+  only for HISTORY: an org with no cursor hands back its whole OPEN
+  backlog, so units that qualify merely through a severity floor are
+  observed rather than posted. Backlog units that already carry an
+  exploitation signal (KEV / EPSS) DO fire immediately — silencing those
+  would be permanent, since the org cursor advances on that same tick. Same rule for any observed unit: the
   re-fire needs a signal that CHANGED since the bot chose silence, not
   one that was already there.
 - **Same alert twice** — expected when a delivery partially failed

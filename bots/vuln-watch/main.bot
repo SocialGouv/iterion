@@ -1299,7 +1299,13 @@ tool match_policy:
                 suppressed += 1
                 continue
             sig = signals_for(u)
-            if alert_decision(u, sig) and not u.get('backlog'):
+            ## The backlog rule silences HISTORY, never evidence. A freshly
+            ## added org's open alerts are not news — unless one of them is
+            ## already exploited (KEV / EPSS over the threshold), which is
+            ## precisely what this bot exists to announce. Those fire now,
+            ## bounded by the per-run cap and its deferral path; the rest
+            ## are observed and re-fire the day their signal lights up.
+            if alert_decision(u, sig) and (sig or not u.get('backlog')):
                 alerts.append(render_fields(u, sig))
             else:
                 observed_new += 1
@@ -1684,12 +1690,16 @@ tool notify:
         out({'posted': False, 'dry_run': bool(dry_run), 'messages': [], 'delivered': 0,
              'consume': not dry_run, 'targets': [], 'summary': 'nothing to deliver'})
     if not sinks:
-        ## Alerts with nowhere to go are NOT consumed: the state stays put,
-        ## the same alerts recompute every run, and the failure is visible —
-        ## a config gap must be fixed, not absorbed.
-        out({'posted': False, 'dry_run': bool(dry_run), 'messages': rendered, 'delivered': 0,
-             'consume': False, 'targets': [],
-             'summary': str(len(messages)) + ' message(s) prepared but NO sinks configured -- alerts kept pending (fix the config)'})
+        ## Alerts with nowhere to go are a CONFIG GAP, and a config gap that
+        ## exits 0 is the silent-green outcome this bot exists to end: an
+        ## hourly schedule would report success forever while delivering
+        ## nothing. Fail loudly — nothing is consumed, so the alerts replay
+        ## the moment a sink exists. (dry_run is handled above: previewing
+        ## without sinks is a legitimate, explicit choice.)
+        raise SystemExit('vuln-watch: ' + str(len(messages)) +
+                         ' message(s) to deliver but NO sinks are configured -- add a `sinks` entry to '
+                         'the workspace config (or run with --var dry_run=true to preview). Nothing was '
+                         'consumed: these alerts will be re-computed on the next run.')
     payloads = []
     for icon, text in messages:
         for s in sinks:
