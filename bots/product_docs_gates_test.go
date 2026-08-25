@@ -583,6 +583,115 @@ func TestProductDocsPageLint(t *testing.T) {
 	})
 }
 
+// TestProductDocsDeterministicPassConverges walks the whole deterministic
+// chain on a fixture — catalog_ingest → scan_hints → (a simulated campaign
+// pass) → scope_check → page_lint — and asserts every input the `gate`
+// compute node ANDs is green.
+//
+// The gate is `scope_ok ∧ lint_ok ∧ campaign.docs_aligned`. Only the third
+// term needs an LLM, so this test pins the other two end to end: a pass that
+// writes a hub plus step sub-pages per the documentary model, links them, and
+// commits each with BOTH trailers, converges. Without it, "the deterministic
+// half converges" would be an assertion nobody had run.
+func TestProductDocsDeterministicPassConverges(t *testing.T) {
+	requireGitPython(t)
+
+	source := newSourceRepo(t)
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\n"+
+			"docs:\n"+
+			"  product_dir: documentation_produits/demo\n"+
+			"  surfaces:\n    - name: Espace gestionnaire\n"+
+			"repos:\n  - id: demo-src\n    url: "+source+"\n",
+		`{"id":"demo","docs":{"product_dir":"documentation_produits/demo",`+
+			`"surfaces":[{"name":"Espace gestionnaire"}]},`+
+			`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+	// The docs repo publishes its own editorial line — the gate must leave it
+	// alone, and scan_hints must report it as in force.
+	writeFile(t, ws, ".product-docs/modele.md", "# Modèle local\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "chore: seed the docs repo")
+
+	// 1. catalog_ingest resolves the product and clones the source.
+	var ingest ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &ingest)
+	if ingest.OKCount != 1 || ingest.Degraded != 0 {
+		t.Fatalf("ingest = %d ok / %d degraded, want 1/0: %s", ingest.OKCount, ingest.Degraded, ingest.Log)
+	}
+	productDir := ingest.ProductDir
+
+	// 2. The first scan is a BOOTSTRAP: no page exists yet.
+	var before hintsOut
+	runJSON(t, hintsCommand(t, ws, productDir, `[{"name":"Espace gestionnaire"}]`), &before)
+	if !strings.Contains(before.HintsNote, "BOOTSTRAP") {
+		t.Fatalf("first pass on an empty product tree must announce the bootstrap: %q", before.HintsNote)
+	}
+	if !strings.Contains(before.HintsNote, "AUTHORITATIVE") {
+		t.Fatalf("the docs repo's own editorial override was not reported as in force: %q", before.HintsNote)
+	}
+
+	// 3. Simulate the campaign pass: an accueil linking the hub, a hub
+	//    linking its steps, one page per step — the documentary model — each
+	//    committed alone with both trailers.
+	stamp := ingest.Stamp
+	page := func(rel, body string) {
+		writeFile(t, ws, filepath.Join(productDir, rel), body)
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "docs("+rel+"): rédigé\n\nBot: product-docs\nProduct-Docs-Sources: "+stamp)
+	}
+	page("README.md", "# Demo\n\nDemo permet de suivre une demande.\n\n"+
+		"- [Espace gestionnaire](gestionnaire/README.md)\n")
+	page("gestionnaire/README.md", "# Espace gestionnaire\n\nCe rôle instruit les demandes.\n\n"+
+		"1. [Déposer une demande](deposer.md)\n2. [Instruire la demande](instruire.md)\n")
+	page("gestionnaire/deposer.md", "# Déposer une demande\n\nCliquez sur **Envoyer**.\n\n"+
+		"{% hint style=\"warning\" %}\nCette action est irréversible.\n{% endhint %}\n")
+	page("gestionnaire/instruire.md", "# Instruire la demande\n\n"+
+		"La demande passe au statut **En instruction**. Le délai est de 30 jours [à confirmer].\n")
+
+	// 4. Both deterministic gates must be green.
+	var scope scopeOutPD
+	runJSON(t, resolveCommand(t, toolCommand(t, "product-docs/main.bot", "scope_check"), map[string]string{
+		"vars.workspace_dir": ws,
+		"input.product_dir":  productDir,
+	}), &scope)
+	if !scope.ScopeOK {
+		t.Fatalf("scope_check red after a well-behaved pass: %v — %s", scope.OutOfScope, scope.Log)
+	}
+
+	var lint lintOut
+	runJSON(t, lintCommand(t, ws, productDir, allLintRules, ""), &lint)
+	if !lint.LintOK {
+		t.Fatalf("page_lint red on pages carrying no working notes: %+v", lint.Violations)
+	}
+	if lint.PagesLinted != 4 {
+		t.Fatalf("pages_linted = %d, want the 4 pages the pass wrote", lint.PagesLinted)
+	}
+
+	// 5. The advisory scan must now be quiet: every page reachable, every
+	//    link resolving, the declared surface covered.
+	var after hintsOut
+	runJSON(t, hintsCommand(t, ws, productDir, `[{"name":"Espace gestionnaire"}]`), &after)
+	if after.PageCount != 4 {
+		t.Fatalf("page_count = %d, want 4", after.PageCount)
+	}
+	if after.DeadLinkCount != 0 || after.OrphanCount != 0 || after.UnmappedCount != 0 {
+		t.Fatalf("hints not quiet after a converging pass: %d dead / %d orphan / %d unmapped — %v",
+			after.DeadLinkCount, after.OrphanCount, after.UnmappedCount, after.Hints)
+	}
+
+	// 6. The trailers are what make the NEXT run incremental: a fresh
+	//    scratch dir must still recover the recorded source stamp.
+	var reingest ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", t.TempDir()), &reingest)
+	if reingest.PrevStamp != stamp {
+		t.Fatalf("previous_stamp = %q, want the stamp the pass committed (%q) — the next run lost its incremental base",
+			reingest.PrevStamp, stamp)
+	}
+}
+
 type scopeOutPD struct {
 	ScopeOK    bool     `json:"scope_ok"`
 	OutOfScope []string `json:"out_of_scope"`
