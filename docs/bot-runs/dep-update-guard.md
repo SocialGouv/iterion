@@ -76,24 +76,29 @@ check — and only ever the commit it audited. See
     this session. The supersede-on-push guarantee is worth it; budget for it.
   - An identity is routing: who AUTHORS a bot's PRs decides which lane audits
     them. The shape-based routing (native:c19a8c74) remains the durable fix.
-- **The adversarial round found a [high] in MY OWN fix, and so did Revi** —
-  independently, on the same line. Widening `ValidateBranchName` to git's
-  rules removed a guard that was silently doing a SECOND job: git accepts
-  `;`, backticks and quotes, and the same forge-controlled branch name is
-  stamped into launch vars that bots interpolate into `bash -c`
-  (branch-improve-loop's `PUSH_BRANCH={{vars.push_branch}}`, UNQUOTED). A
-  fork PR from `x;id;#` was rejected at the runner BEFORE the widening and
-  cloned cleanly after it. Fixed with two distinct gates —
-  `ValidateBranchName` stays git-faithful (Renovate needs the parens),
-  `ValidateShellSafeRef` guards the runner's clone target, the choke point
-  every webhook-launched run passes. Parens stay ALLOWED on purpose: in an
-  unquoted assignment they are a bash syntax error (loud), never a second
-  command. Mutation-tested: neutralising the guard reddens 10 assertions.
-  Two mediums from the same review also landed — a markdown code span cannot
-  contain a newline (run errors are multi-line by construction), and the
-  escalation's `gate_relaunch_of` is a launch var an operator can pin, so
-  citing it needed an explicit tenant boundary. Residual class ticketed
-  (native:886c3a3f): the bots' own quoting.
+- **A [high] on my own fix — that turned out to be a FALSE POSITIVE, and that
+  is the more useful story.** Revi reported that widening `ValidateBranchName`
+  let a fork PR from a branch named `x;id;#` reach
+  `PUSH_BRANCH={{vars.push_branch}} python3 -c …` (branch-improve-loop) as a
+  second command. The reasoning was precise, the call sites were quoted
+  correctly, and it was wrong: it read the `.bot` SOURCE as if it were the
+  final command line. The engine shell-escapes every ref at substitution
+  (`resolveCommandTemplate` → `shellEscapeValue`), so the value arrives as
+  `PUSH_BRANCH='x;id;#'`. **I fixed it without reproducing it first** — adding
+  `ValidateShellSafeRef`, which closed nothing and refused branch names git
+  accepts (`!`, `&`, `$`, quotes), i.e. recreated the exact class of defect
+  this PR existed to fix. Reverted in #518, which ships what was actually
+  missing: `TestToolCommandRefsAreShellEscaped` (the resolved command is run
+  through `sh -c` and the interpreter is asked what it received — the shell as
+  oracle) and a catalog lint fencing the one REAL hole, the `{{!vars.x}}` bang
+  form that bypasses escaping per-ref (zero bots use it; the fence was free).
+  Two mediums from the same review WERE real and landed: a markdown code span
+  cannot contain a newline (run errors are multi-line by construction), and
+  the escalation's `gate_relaunch_of` is a launch var an operator can pin, so
+  citing it needed an explicit tenant boundary.
+  **The lesson is the protocol's own step 4**: a finding is a hypothesis until
+  reproduced. The absence of a canary is what made the false positive
+  credible — twice, to two independent reviewers. The canary is the fix.
 - **Operator arbitrage on the two legitimate holds — the long-term path.**
   #4 (minio 14.7→17) and #440 (mongodb 16.5→19) were CLOSED rather than
   fixed: Broadcom archived Bitnami, the free registry is purged (chart 17's
