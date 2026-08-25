@@ -793,8 +793,23 @@ tool poll_advisories:
             d['id'] = d['url'] or d['title']
         d.pop('_url_alt', None)
         return d
+    class _NoEntityTarget(ET.TreeBuilder):
+        ## A bounded inflate is undone by expat's entity expansion (roughly
+        ## 100x is still permitted), so a 64 MiB ceiling becomes a multi-GB
+        ## allocation. A syndication feed has no legitimate use for a
+        ## DTD-declared entity: refuse the document instead of expanding it.
+        def doctype(self, name, pubid, system):
+            raise ValueError('refusing a feed carrying a DTD (entity expansion)')
+
     def parse_feed(raw):
-        root = ET.fromstring(raw)
+        parser = ET.XMLParser(target=_NoEntityTarget())
+        try:
+            parser.parser.EntityDeclHandler = lambda *a, **k: (_ for _ in ()).throw(
+                ValueError('refusing a feed declaring XML entities'))
+        except AttributeError:
+            pass  # non-expat backend: the doctype guard above still applies
+        parser.feed(raw)
+        root = parser.close()
         if local(root.tag) == 'feed':
             return [entry_from(el) for el in root if local(el.tag) == 'entry']
         return [entry_from(el) for el in root.findall('.//*') if local(el.tag) == 'item']
@@ -1066,7 +1081,12 @@ tool match_policy:
         kws = [k for k in ((t or {}).get('match') or []) if k]
         if not kws:
             continue
-        pat = re.compile(r'(?<![\w-])(' + '|'.join(re.escape(k.lower()) for k in kws) + r')(?![\w-])')
+        ## The boundary excludes letters/digits (so "go" cannot fire on
+        ## "django") but NOT a hyphen: product names hyphenate constantly
+        ## ("Metabase-core", "Log4j-core", "next-auth"), and excluding it
+        ## made every one of them unmatchable — false negatives in the only
+        ## inventory join the advisory and KEV lanes have.
+        pat = re.compile(r'(?<![\w])(' + '|'.join(re.escape(k.lower()) for k in kws) + r')(?![\w])')
         tech_res.append((tkey, pat))
     def match_techs(text):
         low = (text or '').lower()
@@ -1297,6 +1317,27 @@ tool match_policy:
             return True
         return False
 
+    def remember_observed(u, sig):
+        ## setdefault would FREEZE the first observation: an entry whose
+        ## enrichment failed is stored with cves: [], and when the retry
+        ## finally succeeds the richer record is dropped — so the unit can
+        ## never be scored, never re-fire, and ages out silently. Keep the
+        ## first-seen date, take the better facts.
+        prev = st_units.get(u['id']) or {}
+        rec = dict(prev, **{k: v for k, v in u.items() if v not in (None, '', [], {})})
+        rec['first_seen'] = prev.get('first_seen') or now_iso
+        rec['alerted_at'] = prev.get('alerted_at')
+        if prev.get('deferred'):
+            rec['deferred'] = True
+        ## The signal baseline is only meaningful once we actually know the
+        ## unit's CVEs; a baseline taken on an empty set would make the
+        ## escalation test compare against nothing.
+        if not prev.get('observed_signals') or (u.get('cves') and not prev.get('cves')):
+            rec['observed_signals'] = signal_key(sig)
+        else:
+            rec['observed_signals'] = prev['observed_signals']
+        st_units[u['id']] = rec
+
     def unit_scope(u):
         ## What an alert on this unit would actually TELL someone: the
         ## projects it names, plus the repos when it carries them (a
@@ -1366,8 +1407,7 @@ tool match_policy:
                 observed_new += 1
                 for c in (u.get('cves') or []):
                     st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
-                st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None,
-                                                 observed_signals=signal_key(sig)))
+                remember_observed(u, sig)
 
         ## Re-fire: an OBSERVED unit whose exploitation signal lit up since —
         ## the Metabase scenario. One alert, then it flips to alerted.
@@ -1411,8 +1451,16 @@ tool match_policy:
             sig = signals_for(u)
             for c in (u.get('cves') or []):
                 st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
-            st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None,
-                                             observed_signals=signal_key(sig)))
+            remember_observed(u, sig)
+            if sig and alert_decision(u, sig):
+                ## Already exploited on day one. Recording that live signal as
+                ## the baseline would make the escalation test false forever —
+                ## the unit would be silent for good, which is precisely the
+                ## case the bot exists for. Mark it OWED instead: the tick
+                ## stays quiet (no flood on install), and the next one
+                ## delivers it through the deferred path, capped like any
+                ## other burst.
+                st_units[u['id']]['deferred'] = True
 
     ## priority: KEV first, then alert-class, then EPSS, then severity.
     sev_rank = {'critical': 3, 'high': 2, 'medium': 1, 'low': 0}
@@ -1513,7 +1561,10 @@ tool match_policy:
         mark('feed:' + furl, not err, err)
     if kev_url:
         mark('kev', not kev_error, kev_error)
-    if epss_thr >= 0 and epss_url:
+    if epss_thr >= 0 and epss_url and candidates:
+        ## Only when a request was actually made: stamping last_ok on a quiet
+        ## tick (no candidates → no call) would keep the staleness net from
+        ## ever firing for EPSS.
         mark('epss', not epss_err, epss_err)
 
     ## A source removed from the config must stop being watched: its health
@@ -1858,14 +1909,22 @@ tool commit_state:
         ## node's WHOLE stdout as one JSON object, and `git commit`'s
         ## "[branch sha] msg" summary would silently corrupt the output.
         subprocess.run(['git', 'add', sdir], check=True, capture_output=True)
+        ## `git diff --cached --name-only` prints REPO-ROOT-relative paths
+        ## while sdir is relative to the workspace. When the workspace is a
+        ## subdirectory of the repo, comparing the two makes every one of the
+        ## bot's own files look "outside the state dir" and the guard fires
+        ## on itself, every tick. Compare in the repo's own frame.
+        prefix = subprocess.run(['git', 'rev-parse', '--show-prefix'],
+                                capture_output=True, text=True).stdout.strip()
+        sdir_repo = (prefix + sdir.rstrip('/')).lstrip('/')
         ## Guard: the bot may ONLY ever commit the state dir. A staged path
         ## outside it (vuln-watch.json, inventory.json, .github/**) would be
         ## a bug or an injection — hard-fail before the push rather than
         ## persisting it under the bot's identity.
         staged = subprocess.run(['git', 'diff', '--cached', '--name-only'],
                                 capture_output=True, text=True).stdout.split(chr(10))
-        pfx = sdir.rstrip('/') + '/'
-        outside = [p for p in staged if p.strip() and p != sdir and not p.startswith(pfx)]
+        pfx = sdir_repo + '/'
+        outside = [p for p in staged if p.strip() and p != sdir_repo and not p.startswith(pfx)]
         if outside:
             raise SystemExit('vuln-watch: refusing to commit path(s) outside the state dir ' +
                              repr(sdir) + ': ' + ', '.join(outside[:10]))

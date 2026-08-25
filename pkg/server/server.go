@@ -167,6 +167,11 @@ type Server struct {
 	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
+	// forgeSecurityMint mints a connection's org-wide security-read token.
+	// A field rather than a direct method call so the enable endpoint can be
+	// driven without a live GitHub App (the mint is the one step that needs
+	// one, and the endpoint's guards/rollback are what matter).
+	forgeSecurityMint func(context.Context, forge.Connection) (string, error)
 	forgeOAuthApps    forge.OAuthAppStore
 	forgeGitHubApp    ForgeGitHubAppConfig
 	orgSSO            orgsso.Store
@@ -489,6 +494,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		} else {
 			s.forgeStates = newForgeStateStore(10 * time.Minute)
 		}
+		s.forgeSecurityMint = s.forgeSecurityTokenMinter
 		s.forgeOrchestrator = &forge.Orchestrator{
 			LogWarn:         s.forgeLogWarn,
 			Connections:     s.forgeConnections,

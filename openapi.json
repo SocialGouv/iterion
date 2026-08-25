@@ -292,6 +292,9 @@
           "id": {
             "type": "string"
           },
+          "installation_account": {
+            "type": "string"
+          },
           "installation_id": {
             "type": "integer"
           },

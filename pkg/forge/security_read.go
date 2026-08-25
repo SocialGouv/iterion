@@ -104,6 +104,18 @@ func findSecurityReadSecret(ctx context.Context, st secrets.GenericSecretStore, 
 // installation's account login (the GitHub org), lowercased so the bot's
 // config match is case-insensitive.
 func securityReadOrgKey(conn *Connection) (string, error) {
+	// A github_app connection authenticates AS the App (AccountLogin is the
+	// bot handle) but operates ON the org — and the bot's config names orgs.
+	// Filing the token under the bot handle produces a map no run can look
+	// up, and the failure only shows as "no Dependabot token for org X" an
+	// hour later, so refuse instead.
+	if conn.Kind == KindGitHubApp {
+		org := strings.ToLower(strings.TrimSpace(conn.InstallationAccount))
+		if org == "" {
+			return "", fmt.Errorf("forge: connection %s has no installation account recorded — cannot key its security-read token by org (reconnect, or open the connection's health view to refresh it)", conn.ID)
+		}
+		return org, nil
+	}
 	org := strings.ToLower(strings.TrimSpace(conn.AccountLogin))
 	if org == "" {
 		return "", fmt.Errorf("forge: connection %s has no account login — cannot key its security-read token", conn.ID)

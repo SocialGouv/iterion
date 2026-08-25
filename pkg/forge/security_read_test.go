@@ -37,8 +37,8 @@ func TestUpsertSecurityReadToken_CreatesThenMergesAcrossConnections(t *testing.T
 	ctx := context.Background()
 	now := time.Unix(1700000000, 0).UTC()
 
-	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "SocialGouv"}
-	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "DNUM-SocialGouv"}
+	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "SocialGouv"}
+	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "DNUM-SocialGouv"}
 
 	if err := UpsertSecurityReadToken(ctx, st, sealer, connA, "tok-a", now); err != nil {
 		t.Fatalf("upsert A: %v", err)
@@ -86,7 +86,7 @@ func TestUpsertSecurityReadToken_RefusesNonJSONHandSetSecret(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "SocialGouv"}
+	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "SocialGouv"}
 	err := UpsertSecurityReadToken(ctx, st, sealer, conn, "tok", time.Now().UTC())
 	if err == nil || !strings.Contains(err.Error(), "JSON map") {
 		t.Fatalf("err = %v, want explicit JSON-map error", err)
@@ -99,8 +99,8 @@ func TestRemoveSecurityReadToken_DropsEntryThenDeletesEmptiedSecret(t *testing.T
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "OrgA"}
-	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "OrgB"}
+	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "OrgA"}
+	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "OrgB"}
 	if err := UpsertSecurityReadToken(ctx, st, sealer, connA, "tok-a", now); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,9 @@ func seedGitHubAppConn(t *testing.T, sealer secrets.Sealer, connStore Connection
 	exp := expiresAt
 	c := Connection{
 		ID: "conn-gh", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp,
-		AccountLogin: "SocialGouv", InstallationID: 42,
+		// AS the App (bot handle) but ON the org — the key must read the
+		// second, which is why they differ here.
+		AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "SocialGouv", InstallationID: 42,
 		Status: StatusActive, SealedPayload: blob, AccessTokenExpiresAt: &exp,
 		SecurityReadEnabled: securityRead,
 	}
@@ -274,7 +276,7 @@ func TestUpsertSecurityReadToken_PinsEgressOnAPreexistingSecret(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "acme"}
+	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "acme"}
 	if err := UpsertSecurityReadToken(ctx, st, sealer, conn, "ghs_tok", time.Now().UTC()); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -285,7 +287,8 @@ func TestUpsertSecurityReadToken_PinsEgressOnAPreexistingSecret(t *testing.T) {
 	// A second connection on ANOTHER host adds its own host rather than
 	// being filed under a pin that does not cover it.
 	ghes := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp,
-		AccountLogin: "internal", ForgeBaseURL: "https://ghe.corp.example"}
+		AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "internal",
+		ForgeBaseURL: "https://ghe.corp.example"}
 	if err := UpsertSecurityReadToken(ctx, st, sealer, ghes, "ghs_ghes", time.Now().UTC()); err != nil {
 		t.Fatalf("upsert ghes: %v", err)
 	}
@@ -312,7 +315,7 @@ func TestRemoveSecurityReadToken_KeepsAnOperatorsHandSetSecret(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "acme"}
+	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "acme"}
 	if err := RemoveSecurityReadToken(ctx, st, sealer, conn); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
@@ -349,8 +352,8 @@ func TestUpsertSecurityReadToken_ConcurrentWriteIsNotLost(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
-	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "orgA"}
-	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "orgB"}
+	connA := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "orgA"}
+	connB := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]", InstallationAccount: "orgB"}
 	if err := UpsertSecurityReadToken(ctx, mem, sealer, connA, "tok-a", now); err != nil {
 		t.Fatal(err)
 	}
@@ -453,5 +456,36 @@ func TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("the minter ran %d times — a permanent failure must not be retried every tick", calls)
+	}
+}
+
+func TestSecurityReadOrgKey_RefusesTheAppBotHandle(t *testing.T) {
+	// A github_app connection's AccountLogin is the App's own bot handle;
+	// the org it operates on lives on InstallationAccount. Keying the map by
+	// the handle produced {"iterion-forge-x[bot]": …} — a map no run can look
+	// up, failing an hour later with "no Dependabot token for org X".
+	conn := &Connection{ID: "c1", TenantID: "t1", Provider: ProviderGitHub,
+		Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]",
+		InstallationAccount: "SocialGouv"}
+	key, err := securityReadOrgKey(conn)
+	if err != nil || key != "socialgouv" {
+		t.Fatalf("key = %q (err %v), want the lowercased ORG", key, err)
+	}
+
+	// Without the org recorded it must refuse — never fall back to the
+	// handle, which would look like success and fail in production.
+	orphan := &Connection{ID: "c2", TenantID: "t1", Provider: ProviderGitHub,
+		Kind: KindGitHubApp, AccountLogin: "iterion-forge-x[bot]"}
+	if _, err := securityReadOrgKey(orphan); err == nil {
+		t.Fatal("a github_app connection with no installation account must be refused")
+	} else if !strings.Contains(err.Error(), "installation account") {
+		t.Fatalf("the error must name the missing field, got %v", err)
+	}
+
+	// A PAT/OAuth connection keeps AccountLogin — it IS the account.
+	pat := &Connection{ID: "c3", TenantID: "t1", Provider: ProviderGitHub,
+		Kind: KindPAT, AccountLogin: "SomeOrg"}
+	if key, err := securityReadOrgKey(pat); err != nil || key != "someorg" {
+		t.Fatalf("pat key = %q (err %v)", key, err)
 	}
 }

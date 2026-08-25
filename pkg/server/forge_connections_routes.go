@@ -161,11 +161,19 @@ type forgeConnectionHealth struct {
 // connection when it moved. Best-effort: the health view is already correct
 // from the live probe, and the stored copy only optimises the mint — a failed
 // write must not fail the endpoint.
-func (s *Server) syncGrantedPermissions(ctx context.Context, conn forge.Connection, live map[string]string) {
-	if len(live) == 0 || s.forgeConnections == nil || samePermissions(conn.GrantedPermissions, live) {
+func (s *Server) syncGrantedPermissions(ctx context.Context, conn forge.Connection, live map[string]string, installAccount string) {
+	sameAccount := installAccount == "" || conn.InstallationAccount == installAccount
+	if s.forgeConnections == nil || (sameAccount && (len(live) == 0 || samePermissions(conn.GrantedPermissions, live))) {
 		return
 	}
-	conn.GrantedPermissions = live
+	if len(live) > 0 {
+		conn.GrantedPermissions = live
+	}
+	// Also the repair path for connections created before the field existed:
+	// without it their security-read token could never be keyed by org.
+	if installAccount != "" {
+		conn.InstallationAccount = installAccount
+	}
 	conn.UpdatedAt = time.Now().UTC()
 	if err := s.forgeConnections.Update(store.WithTenant(ctx, conn.TenantID), conn); err != nil && s.logger != nil {
 		s.logger.Warn("forge: persist granted permissions for connection %s: %v", conn.ID, err)
@@ -227,7 +235,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
 				// long after the install.
-				s.syncGrantedPermissions(r.Context(), conn, inst.Permissions)
+				s.syncGrantedPermissions(r.Context(), conn, inst.Permissions, inst.Login)
 			}
 			// What the installation GRANTED and what a token CARRIES are two
 			// different things, and reading the first as the second cost a full
@@ -426,7 +434,11 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusConflict, "connection %s (host %s) already holds the security-read token for org %q; the token map is keyed by org, so both cannot be enabled — disable that one first", other, conn.Host(), conn.AccountLogin)
 			return
 		}
-		tok, err := s.forgeSecurityTokenMinter(ctx, conn)
+		mint := s.forgeSecurityMint
+		if mint == nil {
+			mint = s.forgeSecurityTokenMinter
+		}
+		tok, err := mint(ctx, conn)
 		if err != nil {
 			if errors.Is(err, forge.ErrPermissionsNotGranted) {
 				httpError(w, http.StatusUnprocessableEntity, "%v", err)

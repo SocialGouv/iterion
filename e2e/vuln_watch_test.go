@@ -75,6 +75,8 @@ type vulnWatchHarness struct {
 	tokensFile, webhooksFile string
 	depAlerts                atomic.Value // []map[string]any served by /orgs/{org}/dependabot/alerts
 	feedItems                atomic.Value // []vwFeedItem
+	enrichBroken             atomic.Bool  // when set, <link>/json/ answers 503
+	epssScores               atomic.Value // map[string]string served by /epss
 	srv                      *httptest.Server
 	sinkHits                 atomic.Int64
 	// sinkBodies is appended from HTTP handler goroutines and read from the
@@ -111,6 +113,7 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	h := &vulnWatchHarness{ws: t.TempDir(), scratch: t.TempDir()}
 	h.depAlerts.Store([]map[string]any{})
 	h.feedItems.Store([]vwFeedItem{})
+	h.epssScores.Store(map[string]string{})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/orgs/testorg/dependabot/alerts", func(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +137,10 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	})
 	mux.HandleFunc("/alerte/", func(w http.ResponseWriter, r *http.Request) {
 		// CERT-FR-style structured JSON at <link>/json/.
+		if h.enrichBroken.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/json/") {
 			http.NotFound(w, r)
 			return
@@ -160,6 +167,18 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 			return
 		}
 		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/epss", func(w http.ResponseWriter, r *http.Request) {
+		// FIRST's shape: {"data":[{"cve":"…","epss":"0.97"}]} for the batch
+		// the caller asked about.
+		scores, _ := h.epssScores.Load().(map[string]string)
+		rows := []map[string]string{}
+		for _, cve := range strings.Split(r.URL.Query().Get("cve"), ",") {
+			if v, ok := scores[cve]; ok {
+				rows = append(rows, map[string]string{"cve": cve, "epss": v})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
 	})
 	mux.HandleFunc("/hook", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -239,6 +258,27 @@ func vwLabels() map[string]any {
 		"kev_signal": "CISA KEV {date}", "ale_signal": "alert-class advisory",
 		"epss_signal": "EPSS {pct}%", "sev_signal": "severity floor {sev}",
 	}
+}
+
+// setConfig merges keys into the workspace config.
+func (h *vulnWatchHarness) setConfig(patch map[string]any) error {
+	path := filepath.Join(h.ws, "vuln-watch.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+	for k, v := range patch {
+		cfg[k] = v
+	}
+	out, err := json.MarshalIndent(cfg, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 // setFloor switches the Dependabot severity floor (exploited | critical |
@@ -1429,5 +1469,229 @@ func TestVulnWatch_BootstrapObservesWhatItConsumes(t *testing.T) {
 	}
 	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-6200") {
 		t.Fatalf("expected the escalated advisory:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_BootstrapDeliversWhatIsAlreadyExploited pins the third form
+// of the "silence history, never evidence" rule: the bootstrap must not
+// record an ALREADY-LIVE exploitation signal as its baseline, or the unit is
+// silent forever — the exact case the bot exists for.
+func TestVulnWatch_BootstrapDeliversWhatIsAlreadyExploited(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// Day one. The KEV catalog already lists the CVE (it is history, so the
+	// KEV lane itself stays quiet), and the org's OPEN Dependabot alert for
+	// that very CVE is what the bot must not lose.
+	h.setKEV([]map[string]any{{
+		"cveID": "CVE-2026-72898", "vendorProject": "Metabase", "product": "Metabase",
+		"vulnerabilityName": "Metabase SQL injection", "dateAdded": "2026-08-25",
+	}})
+	h.depAlerts.Store([]map[string]any{
+		// The exploited one is OLDER than the newest alert, so it sits behind
+		// the cursor the bootstrap arms and is never re-emitted: only a
+		// recorded, owed observation can bring it back.
+		vwDepAlert("GHSA-mb-0001", "CVE-2026-72898", "critical", "testorg/domifa", "metabase", "2026-08-24T09:00:00Z", "0.50.0"),
+		vwDepAlert("GHSA-other-1", "CVE-2020-9999", "low", "testorg/domifa", "other", "2026-08-24T10:00:00Z", "1.0.0"),
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["bootstrap"] != true || match["alert_count"].(float64) != 0 {
+		t.Fatalf("the bootstrap tick must stay quiet: %v", match["summary"])
+	}
+
+	// The next tick delivers it: no new evidence appears, so only the OWED
+	// marking can bring it back.
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("an already-exploited unit seen at bootstrap must be delivered: %v", match["summary"])
+	}
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-72898") {
+		t.Fatalf("expected the Metabase alert:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_RetriedEnrichmentUpgradesTheObservation pins that a stored
+// observation is UPGRADED, not frozen: an entry first seen with no CVE ids
+// (its structured document was unreachable) must gain them when the retry
+// succeeds, or it can never be scored and ages out silently.
+func TestVulnWatch_RetriedEnrichmentUpgradesTheObservation(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Tick 1: the structured document is down, so the advisory arrives with
+	// no CVE ids (its title alone carries the product name).
+	if err := h.setFeedKind("advisory"); err != nil {
+		t.Fatal(err)
+	}
+	h.enrichBroken.Store(true)
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-AVI-1300", Title: "Vulnerabilite dans Metabase",
+		CVEs: []string{"CVE-2026-6300"}, Products: []string{"Metabase"},
+	}})
+	if match, _ := h.runWatch(t, wf, false); match["alert_count"].(float64) != 0 {
+		t.Fatalf("tick 1 should stay quiet: %v", match["summary"])
+	}
+
+	// Tick 2: the endpoint is back and the entry is retried (it was not
+	// consumed), so the stored observation must gain the real CVE ids.
+	h.enrichBroken.Store(false)
+	h.runWatch(t, wf, false)
+
+	// Tick 3: KEV picks that CVE up. Only an UPGRADED observation can score
+	// it — a frozen one still holds cves: [] and can never re-fire.
+	h.feedItems.Store([]vwFeedItem{})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		// Deliberately a vendor/product the inventory does NOT watch: the KEV
+		// lane produces no unit of its own, so only the stored advisory —
+		// upgraded with the CVE ids the retry recovered — can score this.
+		{"cveID": "CVE-2026-6300", "vendorProject": "Unwatched", "product": "Unwatched",
+			"vulnerabilityName": "unrelated product", "dateAdded": "2026-08-25"},
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["refire_count"].(float64) < 1 {
+		t.Fatalf("the upgraded observation must re-fire: %v", match["summary"])
+	}
+	if msg := h.lastBody(t); !strings.Contains(msg, "CVE-2026-6300") {
+		t.Fatalf("expected the escalated advisory:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_RefusesAnXMLEntityBomb pins the second half of the
+// decompression guard: a bounded inflate is undone by expat's own entity
+// expansion, so a small feed body still reaches multi-gigabyte allocations.
+func TestVulnWatch_RefusesAnXMLEntityBomb(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	// A classic billion-laughs: tiny on the wire, enormous once expanded.
+	bomb := `<?xml version="1.0"?><!DOCTYPE rss [` +
+		`<!ENTITY a "` + strings.Repeat("x", 1000) + `">` +
+		`<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">` +
+		`<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">` +
+		`<!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">` +
+		`]><rss version="2.0"><channel><title>&d;</title></channel></rss>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = w.Write([]byte(bomb))
+	}))
+	defer srv.Close()
+
+	out, stderr, err := runPy(t, t.TempDir(), vwSub(t, vwTool(t, wf, "poll_advisories").Script, map[string]any{
+		"feeds":        []map[string]any{{"url": srv.URL + "/feed/", "kind": "alert"}},
+		"timeout_secs": 10, "scratch_dir": t.TempDir(), "allow_private": true,
+		"workspace": t.TempDir(), "state_dir": ".vuln-watch",
+	}, nil, nil))
+	if err == nil {
+		errs, _ := json.Marshal(out["errors"])
+		if !strings.Contains(string(errs), "DTD") && !strings.Contains(string(errs), "entities") {
+			t.Fatalf("expected an entity-expansion refusal, got errors=%s", errs)
+		}
+		return
+	}
+	if !strings.Contains(stderr, "DTD") && !strings.Contains(stderr, "entities") {
+		t.Fatalf("expected an entity-expansion refusal, got: %s", stderr)
+	}
+}
+
+// TestVulnWatch_MatchesHyphenatedProductNames pins the inventory join on the
+// shape advisories actually use: product names hyphenate constantly, and a
+// boundary that excluded a following hyphen made every one unmatchable.
+func TestVulnWatch_MatchesHyphenatedProductNames(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-980", Title: "Vulnerabilite dans Metabase-core",
+		CVEs: []string{"CVE-2026-9500"}, Products: []string{"Metabase-core"},
+	}})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("a hyphenated product name must still match its technology: %v", match["summary"])
+	}
+	// … while the word-boundary guard still holds on the other side.
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-981", Title: "Vulnerabilite dans Django et MongoDB",
+		CVEs: []string{"CVE-2026-9501"}, Products: []string{"Django", "MongoDB"},
+	}})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 0 {
+		t.Fatalf("golang must not fire on Django/MongoDB: %v", match["summary"])
+	}
+}
+
+// TestVulnWatch_EPSSLaneAndSeverityFloor exercises the two policy branches
+// every other fixture disables: the EPSS threshold (its own exploitation
+// signal) and dependabot_alert_floor's positive branch.
+func TestVulnWatch_EPSSLaneAndSeverityFloor(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	if err := h.setConfig(map[string]any{"epss_url": h.srv.URL + "/epss", "epss_threshold": 0.5}); err != nil {
+		t.Fatal(err)
+	}
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-seed-9", "CVE-2020-0009", "low", "testorg/domifa", "seed", "2026-08-01T00:00:00Z", "1.0.0"),
+	})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Two new criticals, no KEV entry: one scores above the EPSS threshold,
+	// the other below. Under floor=exploited only the first may fire.
+	h.epssScores.Store(map[string]string{"CVE-2026-8801": "0.910", "CVE-2026-8802": "0.010"})
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-epss-hi", "CVE-2026-8801", "critical", "testorg/domifa", "libhot", "2026-08-24T10:00:00Z", "2.0.0"),
+		vwDepAlert("GHSA-epss-lo", "CVE-2026-8802", "critical", "testorg/domifa", "libcold", "2026-08-24T10:01:00Z", "3.0.0"),
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("only the CVE above the EPSS threshold may fire: %v", match["summary"])
+	}
+	msg := h.lastBody(t)
+	if !strings.Contains(msg, "CVE-2026-8801") || !strings.Contains(msg, "EPSS 91") {
+		t.Fatalf("the alert must name the CVE and its EPSS score:\n%s", msg)
+	}
+
+	// Same low-EPSS critical under floor=critical: the severity branch alone
+	// now qualifies it.
+	h2 := newVulnWatchHarness(t)
+	if err := h2.setConfig(map[string]any{"epss_url": h2.srv.URL + "/epss", "epss_threshold": 0.5,
+		"dependabot_alert_floor": "critical"}); err != nil {
+		t.Fatal(err)
+	}
+	h2.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h2.epssScores.Store(map[string]string{"CVE-2026-8802": "0.010"})
+	h2.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-seed-9", "CVE-2020-0009", "low", "testorg/domifa", "seed", "2026-08-01T00:00:00Z", "1.0.0"),
+	})
+	h2.runWatch(t, wf, false) // bootstrap
+	h2.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-epss-lo", "CVE-2026-8802", "critical", "testorg/domifa", "libcold", "2026-08-24T10:01:00Z", "3.0.0"),
+	})
+	match2, _ := h2.runWatch(t, wf, false)
+	if match2["alert_count"].(float64) != 1 {
+		t.Fatalf("floor=critical must let a signal-less critical through: %v", match2["summary"])
+	}
+	if msg := h2.lastBody(t); !strings.Contains(msg, "severity floor") {
+		t.Fatalf("the message must say what qualified it:\n%s", msg)
 	}
 }

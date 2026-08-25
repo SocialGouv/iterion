@@ -105,6 +105,13 @@ type Connection struct {
 	// GitHub-App specific (Kind == KindGitHubApp).
 	InstallationID int64  `bson:"installation_id,omitempty" json:"installation_id,omitempty"`
 	AppSlug        string `bson:"app_slug,omitempty" json:"app_slug,omitempty"`
+	// InstallationAccount is the login of the account the App is INSTALLED
+	// ON — the org. It is NOT AccountLogin, which for a github_app
+	// connection is the App's own bot handle ("iterion-forge-xxxx[bot]"):
+	// the connection authenticates AS the App, but operates ON the org.
+	// Anything keyed by org (the security-read token map, which a bot's
+	// config looks up by org name) MUST read this one.
+	InstallationAccount string `bson:"installation_account,omitempty" json:"installation_account,omitempty"`
 	// OAuthAppID points at the ForgeOAuthApp whose private key mints this
 	// installation's tokens. It exists because a tenant may hold SEVERAL GitHub
 	// Apps on one host (one per owning org — a private App is only installable

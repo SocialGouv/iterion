@@ -4880,6 +4880,7 @@ export interface components {
                 [key: string]: string;
             };
             id: string;
+            installation_account?: string;
             installation_id?: number;
             kind: string;
             /** Format: date-time */
