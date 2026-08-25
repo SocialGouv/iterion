@@ -34,6 +34,43 @@
   guard (warn when a tool node's stdout carries non-JSON prefix lines)
   as a follow-up.
 
+## 2026-08-24/25 — adversarial review + 4 Revi rounds (23 findings)
+- Status: validated
+- Method: two opus agents (one per surface: engine flow, bot) with a
+  refute-don't-validate posture and mandatory executed proof, then four
+  rounds of Revi on the PR. Every finding verified by hand before
+  fixing; every fix carries a regression test seen RED by
+  re-introducing its cause; the live dogfood replay re-run after each
+  round (stable at 5 alerts, identical rendering).
+- Result: **23 findings, all real, none dismissed.** The two worst
+  classes were both MISSED ALERTS — invisible to a green e2e suite:
+  1. *scope-blind suppression*, found at THREE sites in succession
+     (`already_alerted`, the intra-run dedup, the re-fire scan). A
+     CERT-FR advisory carrying 222 CVE ids sterilised all of them for
+     every other project. Fixing two sites and missing the third is the
+     lesson: grep the class, not the site.
+  2. *cursor granularity* — the KEV cursor compared a day-granularity
+     `dateAdded` on an hourly tick; the Dependabot one compared
+     inclusively against bulk-created same-second alerts.
+- **Two findings were regressions of my own fixes**, which is the
+  clearest argument for the loop: the anti-flood rule added for a
+  newly-onboarded org swallowed already-exploited alerts permanently,
+  and the tenant-scoping fix for the security-read withdrawal was
+  invisible to a test whose memory store ignored tenants.
+- Security-shaped findings: a decompression bomb (8 MiB → 3 GB in one
+  allocation, reachable from the URL a feed itself names), the SSRF
+  guard covering one lane of four (a 302 reached the metadata service
+  and urllib kept the Authorization header across hosts), untrusted
+  titles forging a second indistinguishable alert block, an org-wide
+  token surviving a disconnect.
+- Lessons for next run: a test double must mirror the PRODUCTION
+  contract (the memory secret store ignoring tenants hid a
+  cloud-only failure); an anti-noise rule must be stated as "silences
+  history, never evidence" or it will eventually silence evidence; and
+  a per-finding mutation is the only thing that separates a regression
+  test from decoration — two of mine passed against their own defect
+  until retargeted.
+
 ## 2026-08-24 — full-config dry-run, veille workspace, LIVE sources
 - Status: validated
 - Versions: bot 0.1.0 · iterion feat/vuln-watch-senti (post stdout-fix)
