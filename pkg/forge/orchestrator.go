@@ -75,7 +75,13 @@ type Orchestrator struct {
 	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
 	// server so the orchestrator stays free of the github package + App key.
 	GitHubAppMinter func(ctx context.Context, conn Connection) (string, error)
-	PublicURL       string
+	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
+	// a security-read withdrawal that could not run while disconnecting).
+	// Injected like the other seams so the package stays logger-free; nil
+	// silences it, which is why callers that CAN act on the error get it
+	// returned instead.
+	LogWarn   func(format string, args ...any)
+	PublicURL string
 
 	// Optional injection points for tests (default to time.Now / uuid).
 	Now   func() time.Time
@@ -923,6 +929,29 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	if conn.ManagedSecretID != "" {
 		if derr := o.Secrets.Delete(ctx, conn.ManagedSecretID); derr != nil && !errors.Is(derr, secrets.ErrGenericSecretNotFound) {
 			return fmt.Errorf("forge: delete managed secret: %w", derr)
+		}
+	}
+	// The security-read map is SHARED across connections, so it survives this
+	// one — withdraw just this connection's org entry. Disconnecting is the
+	// operator's most explicit cut: leaving a live org-wide alerts token
+	// readable by every bot of the team (and then unreachable, since the
+	// connection is gone) is the opposite of what they asked for.
+	if conn.SecurityReadEnabled {
+		if derr := RemoveSecurityReadToken(ctx, o.Secrets, o.Sealer, &conn); derr != nil {
+			// A MALFORMED map must not block the operator's most explicit
+			// security action (the documented hand-set path makes "a bare
+			// PAT instead of a JSON map" the obvious mistake), and there is
+			// nothing to withdraw from it anyway. Anything else — a store
+			// error, a seal failure — would leave a LIVE org-wide token
+			// behind, so it propagates and the disconnect is retried.
+			if errors.Is(derr, ErrSecurityReadMalformed) {
+				if o.LogWarn != nil {
+					o.LogWarn("forge: %s holds an unparseable %s secret; disconnecting %s without withdrawing it: %v",
+						conn.TenantID, SecurityReadSecretName, conn.ID, derr)
+				}
+			} else {
+				return fmt.Errorf("forge: withdraw security-read token: %w", derr)
+			}
 		}
 	}
 	return o.Connections.Delete(ctx, connID)

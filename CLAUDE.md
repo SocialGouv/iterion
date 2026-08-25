@@ -207,6 +207,14 @@ the hours this one spent.
   (`ITERION_WORKTREE_POOL_MAX`, default 8), why it spares dirty and
   resumable checkouts, and the `iterion clean` invocation for the rest.
   Read it on "the disk is full", or before pointing `--store-dir` anywhere.
+- [docs/forge-security-read.md](docs/forge-security-read.md) — giving a bot
+  org-wide **Dependabot alerts** read access: the `dependabot_tokens` team
+  secret (JSON map org→token — the shape is the contract), the GitHub App
+  path (add "Dependabot alerts: Read-only" + org approval + per-connection
+  `security_read_enabled` PATCH, refresh worker keeps it minted) vs the
+  hand-set fine-grained-PAT path, and the health/422 diagnostics. Read it
+  when wiring vuln-watch (Senti) or when its run fails on "no Dependabot
+  token".
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),

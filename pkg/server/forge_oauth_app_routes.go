@@ -56,6 +56,14 @@ type forgeOAuthAppReq struct {
 	// first step. Opt-in: workflows:write means the holder can run arbitrary
 	// code in CI.
 	AllowAppDelivery bool `json:"allow_app_delivery,omitempty"`
+	// AllowSecurityRead (github-manifest): request vulnerability_alerts:read
+	// so a bot can read the org's Dependabot alerts (see
+	// docs/forge-security-read.md). Opt-in: alert data names every
+	// vulnerable dependency of every repo, and at run time it is minted only
+	// into the dedicated security-read token, never the runtime forge one.
+	// Without it here, an existing App has to be edited on GitHub by hand
+	// and re-approved by an org admin.
+	AllowSecurityRead bool `json:"allow_security_read,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {

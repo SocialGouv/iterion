@@ -132,11 +132,12 @@ func (s *Server) ListenAndServe() error {
 	// forge orchestrator isn't wired (local mode).
 	if s.forgeOrchestrator != nil {
 		worker := &forge.RefreshWorker{
-			Connections:  s.forgeConnections,
-			Secrets:      s.genericSecrets,
-			Sealer:       s.sealer,
-			RefresherFor: s.forgeRefresherFor,
-			Lead:         5 * time.Minute,
+			Connections:    s.forgeConnections,
+			Secrets:        s.genericSecrets,
+			Sealer:         s.sealer,
+			RefresherFor:   s.forgeRefresherFor,
+			SecurityMinter: s.forgeSecurityTokenMinter,
+			Lead:           5 * time.Minute,
 		}
 		go func() {
 			ctx, cancel := context.WithCancel(context.Background())

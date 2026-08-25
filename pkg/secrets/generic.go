@@ -55,6 +55,10 @@ type GenericSecretStore interface {
 var (
 	ErrGenericSecretNotFound      = errors.New("secrets: generic secret not found")
 	ErrGenericSecretTenantMissing = errors.New("secrets: generic secret store called without tenant context")
+	// ErrGenericSecretConflict is returned by UpdateIfFingerprint when the
+	// stored fingerprint no longer matches the expected one — a concurrent
+	// writer landed first. Callers reread and remerge.
+	ErrGenericSecretConflict = errors.New("secrets: generic secret was modified concurrently")
 )
 
 type GenericResolution struct {
@@ -249,6 +253,40 @@ func (m *MemoryGenericSecretStore) Update(_ context.Context, s GenericSecret) er
 	return nil
 }
 
+// ListAllInTeam returns EVERY secret of a team, personal scopes included —
+// unlike ListByTeam, which is the resolution view of one user. Callers that
+// must reason about NAME COLLISIONS across scopes (a personal secret
+// outranks the team one at resolution) need this whole-team view.
+func (m *MemoryGenericSecretStore) ListAllInTeam(_ context.Context, teamID string) ([]GenericSecret, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []GenericSecret
+	for _, s := range m.secrets {
+		if s.ScopeTeamID == teamID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// UpdateIfFingerprint is the CAS write for documents SHARED between writers
+// (the forge security-read map is rewritten by every replica's refresh
+// worker): the replace only lands when the stored fingerprint still matches
+// what the caller read, else ErrGenericSecretConflict.
+func (m *MemoryGenericSecretStore) UpdateIfFingerprint(_ context.Context, s GenericSecret, expected string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.secrets[s.ID]
+	if !ok {
+		return ErrGenericSecretNotFound
+	}
+	if cur.Fingerprint != expected {
+		return ErrGenericSecretConflict
+	}
+	m.secrets[s.ID] = s
+	return nil
+}
+
 func (m *MemoryGenericSecretStore) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -361,6 +399,49 @@ func (s *MongoGenericSecretStore) Update(ctx context.Context, rec GenericSecret)
 	}
 	if res.MatchedCount == 0 {
 		return ErrGenericSecretNotFound
+	}
+	return nil
+}
+
+// ListAllInTeam returns every secret of a team, personal scopes included
+// (see the memory implementation for why callers need the whole-team view).
+func (s *MongoGenericSecretStore) ListAllInTeam(ctx context.Context, teamID string) ([]GenericSecret, error) {
+	filter, err := withGenericSecretTenantFilter(ctx, bson.M{"scope_team": teamID})
+	if err != nil {
+		return nil, err
+	}
+	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("secrets: list team generic secrets: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []GenericSecret
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("secrets: decode generic secrets: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateIfFingerprint is the CAS variant of Update: the replace lands only
+// when the stored fingerprint still matches what the caller read (see the
+// memory implementation for the why). A no-match is disambiguated into
+// not-found vs conflict with a second lookup.
+func (s *MongoGenericSecretStore) UpdateIfFingerprint(ctx context.Context, rec GenericSecret, expected string) error {
+	tenantID, ok := store.TenantFromContext(ctx)
+	if !ok || tenantID == "" {
+		return ErrGenericSecretTenantMissing
+	}
+	rec.TenantID = tenantID
+	res, err := s.coll.ReplaceOne(ctx,
+		bson.M{"_id": rec.ID, "tenant_id": tenantID, "fingerprint": expected}, rec)
+	if err != nil {
+		return fmt.Errorf("secrets: guarded update generic secret: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		if _, gerr := s.Get(ctx, rec.ID); errors.Is(gerr, ErrGenericSecretNotFound) {
+			return ErrGenericSecretNotFound
+		}
+		return ErrGenericSecretConflict
 	}
 	return nil
 }
