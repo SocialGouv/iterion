@@ -103,12 +103,14 @@ func securityReadOrgKey(conn *Connection) (string, error) {
 	return org, nil
 }
 
-// ErrSecurityReadOrgCollision is returned when two connections on DIFFERENT
-// forge hosts claim the same org key. The map is keyed by org alone (the
-// bot's config names orgs, not hosts), so the two would overwrite each other
-// every cycle and a private-instance token could end up sent to the public
-// one. Refuse explicitly rather than mint into the ambiguity.
-var ErrSecurityReadOrgCollision = errors.New("forge: another connection on a different forge host already holds this org's security-read token")
+// The map is keyed by org alone (the bot's config names orgs, not hosts), so
+// two connections claiming the same org would overwrite each other every
+// cycle. That is guarded at the ENABLE endpoint (securityReadOrgCollision),
+// which is a read-then-write and therefore best-effort: two admins enabling
+// concurrently on two replicas can both pass it. The failure it leaves is
+// flapping tokens for one org, not a leak across tenants — an atomic guard
+// would need the write path to see the connection store, which it
+// deliberately does not.
 
 // UpsertSecurityReadToken merges {org_login: token} into the tenant's
 // dependabot_tokens secret, creating it (team-scoped, egress-pinned to the

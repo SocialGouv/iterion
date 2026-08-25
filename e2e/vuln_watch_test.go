@@ -200,6 +200,27 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	return h
 }
 
+// setFeedKind switches the harness feed between alert-class (an
+// exploitation signal by itself) and plain advisory (observe-by-default).
+func (h *vulnWatchHarness) setFeedKind(kind string) error {
+	path := filepath.Join(h.ws, "vuln-watch.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+	feeds := cfg["advisory_feeds"].([]any)
+	feeds[0].(map[string]any)["kind"] = kind
+	out, err := json.MarshalIndent(cfg, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
 func (h *vulnWatchHarness) setKEV(entries []map[string]any) {
 	if entries == nil {
 		entries = []map[string]any{}
@@ -359,8 +380,13 @@ func TestVulnWatch_PolicyAndRefire(t *testing.T) {
 	if got := match["alert_count"].(float64); got != 1 {
 		t.Fatalf("run 2 alert_count = %v, want 1 (only the ALE): %v", got, match["summary"])
 	}
-	if got := match["observed_count"].(float64); got != 1 {
-		t.Fatalf("run 2 observed_count = %v, want 1 (the silent critical)", got)
+	// 2 observed: the new silent critical, plus the bootstrap-boundary alert
+	// re-emitted by the STRICT cursor comparison (Dependabot bulk-creates an
+	// advisory's alerts within one second, so an inclusive comparison would
+	// drop whichever of them the previous snapshot missed). Re-emission is
+	// the safe side: it stays silent and nothing is lost.
+	if got := match["observed_count"].(float64); got != 2 {
+		t.Fatalf("run 2 observed_count = %v, want 2 (silent critical + re-emitted boundary)", got)
 	}
 	alerts := match["alerts"].([]any)
 	a0 := alerts[0].(map[string]any)
@@ -843,5 +869,151 @@ func TestVulnWatch_KEVAgeBeltBoundsAStateLoss(t *testing.T) {
 	}
 	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-1500") {
 		t.Fatalf("expected the recent KEV entry, got:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_RefireScanIsScopeAware pins the THIRD suppression site (with
+// already_alerted and the intra-run dedup): a STORED observed unit must not
+// be sterilised because one of its CVEs was alerted for a different project.
+func TestVulnWatch_RefireScanIsScopeAware(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Tick 1: a Metabase advisory (kind advisory → observed, not alerted)
+	// listing two CVEs. It is STORED as an observed unit for DOMIFA.
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-AVI-900", Title: "Multiples vulnerabilites dans Metabase",
+		CVEs: []string{"CVE-2026-9001", "CVE-2026-9002"}, Products: []string{"Metabase"},
+	}})
+	if err := h.setFeedKind("advisory"); err != nil {
+		t.Fatal(err)
+	}
+	match, _ := h.runWatch(t, wf, false)
+	if match["observed_count"].(float64) != 1 {
+		t.Fatalf("tick 1 should observe the advisory: %v", match["summary"])
+	}
+
+	// Tick 2, capped at ONE alert: the Metabase advisory (now KEV-signalled)
+	// and a KEV entry for one of its CVEs naming Spring Boot both qualify.
+	// One posts, the other is DEFERRED — and the overflow notice promises it
+	// fires next run.
+	h.feedItems.Store([]vwFeedItem{})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-9001", "vendorProject": "VMware", "product": "Spring Boot",
+			"vulnerabilityName": "Spring Boot RCE", "dateAdded": "2026-08-24"},
+	})
+	match, _ = h.runWatchOpts(t, wf, false, map[string]any{"max_alerts": 1})
+	if match["alert_count"].(float64) != 1 || match["overflow_count"].(float64) != 1 {
+		t.Fatalf("tick 2 should post one and defer one: %v", match["summary"])
+	}
+
+	// Tick 3, cap lifted, nothing new: the deferred unit MUST fire. A
+	// scope-blind re-fire guard drops it — one of its CVEs is now globally
+	// "alerted" through its sibling — and the promise silently breaks.
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("the deferred unit must fire on the next tick: %v", match["summary"])
+	}
+	joined := strings.Join(h.sinkBodies, "\n")
+	if !strings.Contains(joined, "DOMIFA") || !strings.Contains(joined, "ACCOLADE") {
+		t.Fatalf("both scopes must end up told:\n%s", joined)
+	}
+}
+
+// TestVulnWatch_PushConflictKeepsOperatorWork pins the data-safety rule:
+// commit_state runs in the operator's own checkout (worktree: none), so a
+// failed rebase may drop ONLY the bot's own commit — never their
+// uncommitted work or unpushed commits.
+func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "ws")
+	bare := filepath.Join(dir, "origin.git")
+	run := func(wd string, args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = wd
+		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(dir, "init", "--bare", "-b", "main", bare)
+	run(dir, "clone", bare, ws)
+	if err := os.WriteFile(filepath.Join(ws, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(ws, "add", "seed.txt")
+	run(ws, "commit", "-m", "seed")
+	run(ws, "push", "origin", "main")
+
+	// A second clone pushes a CONFLICTING change to the same log file.
+	other := filepath.Join(dir, "other")
+	run(dir, "clone", bare, other)
+	if err := os.MkdirAll(filepath.Join(other, ".vuln-watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, ".vuln-watch", "state.json"), []byte(`{"tick":99}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(other, "add", ".")
+	run(other, "commit", "-m", "other writer")
+	run(other, "push", "origin", "main")
+
+	// The operator has uncommitted work in THEIR checkout.
+	precious := filepath.Join(ws, "operator-wip.txt")
+	if err := os.WriteFile(precious, []byte("hours of work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// … and an unpushed commit.
+	if err := os.WriteFile(filepath.Join(ws, "operator-commit.txt"), []byte("also mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(ws, "add", "operator-commit.txt")
+	run(ws, "commit", "-m", "operator's own commit")
+
+	// The bot writes its state and tries to push into that conflict.
+	scratch := t.TempDir()
+	stateNext := filepath.Join(scratch, "state_next.json")
+	if err := os.WriteFile(stateNext, []byte(`{"tick":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alertlog := filepath.Join(scratch, "alertlog_delta.jsonl")
+	if err := os.WriteFile(alertlog, []byte(`{"id":"x"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runPy(t, ws, vwSub(t, vwTool(t, wf, "commit_state").Script, map[string]any{
+		"state_next_file": stateNext, "alertlog_file": alertlog,
+		"state_commit": true, "workspace": ws, "state_dir": ".vuln-watch",
+	}, nil, nil))
+	if err == nil {
+		t.Skip("the push succeeded — no conflict to assert against on this git version")
+	}
+	if !strings.Contains(stderr, "vuln-watch:") {
+		t.Fatalf("expected an explicit vuln-watch failure, got: %s", stderr)
+	}
+	// Whatever happened to the bot's commit, the operator's work is intact.
+	if b, rerr := os.ReadFile(precious); rerr != nil || string(b) != "hours of work\n" {
+		t.Fatalf("the operator's uncommitted file was destroyed (err %v, content %q)", rerr, string(b))
+	}
+	log := exec.Command("git", "log", "--oneline")
+	log.Dir = ws
+	out, _ := log.CombinedOutput()
+	if !strings.Contains(string(out), "operator's own commit") {
+		t.Fatalf("the operator's unpushed commit was destroyed:\n%s", out)
 	}
 }

@@ -20,9 +20,16 @@ org login → token:
 `"*"` is accepted as a fallback key for every org. The **shape is the
 contract, not the mint**: a deployment without the GitHub App flow
 fills the same secret by hand with fine-grained PATs
-("Dependabot alerts: read-only", one per org):
+("Dependabot alerts: read-only", one per org).
+
+Mind which store you write, they are different secrets:
 
 ```sh
+# CLOUD (a team secret, what a cloud run resolves):
+iterion remote api POST /api/teams/<team-id>/secrets \
+  --data '{"name":"dependabot_tokens","value":"{\"my-org\":\"github_pat_…\"}"}'
+
+# LOCAL / desktop runs only (~/.iterion/secrets.json):
 iterion secret set dependabot_tokens '{"my-org": "github_pat_…"}'
 ```
 

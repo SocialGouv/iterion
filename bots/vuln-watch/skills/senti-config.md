@@ -115,8 +115,11 @@ better than losing the others).
     then maintains this secret automatically from short-lived
     installation tokens. See docs/forge-security-read.md.
   - **anywhere else**: fine-grained PATs with "Dependabot alerts:
-    read-only" (one per org), set by hand:
-    `iterion secret set dependabot_tokens '{"my-org": "github_pat_..."}'`.
+    read-only" (one per org), set by hand. Mind the store — a cloud run
+    resolves a TEAM secret, `iterion secret set` writes the local one:
+    - cloud: `iterion remote api POST /api/teams/<id>/secrets` with
+      `{"name":"dependabot_tokens","value":"{\"my-org\":\"github_pat_…\"}"}`
+    - local/desktop: `iterion secret set dependabot_tokens '{"my-org": "github_pat_…"}'`
 
   A configured org with no usable token FAILS the run explicitly —
   never a silent zero-alert.
@@ -174,6 +177,14 @@ Same two options as feed-watch, pick ONE: gitignore the state dir, or
 `--var state_commit=true` (required on ephemeral cloud runners — git
 is the state store; the workspace then needs push credentials, e.g.
 the `forge_token` binding).
+
+**`state_commit=true` expects a DEDICATED workspace clone.** The bot
+declares `worktree: none` (its state IS the product and must survive
+the run), so it commits on whatever branch the workspace has checked
+out. It only ever stages the state dir — a staged path outside it
+hard-fails the push — and on a failed rebase it drops only its OWN
+commit (`reset --soft`), never the operator's work. Still: point it at
+a veille clone, not at a checkout someone develops in.
 
 Delivery-before-persist: the state only advances after the webhooks
 accepted the messages (or nothing needed posting). A failed delivery

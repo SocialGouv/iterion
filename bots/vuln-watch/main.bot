@@ -578,7 +578,13 @@ tool poll_dependabot:
                 stop = False
                 for a in data:
                     created = a.get('created_at') or ''
-                    if cursor and created <= cursor:
+                    ## STRICT: Dependabot bulk-creates one advisory's alerts
+                    ## across many repos within the same second, so an
+                    ## inclusive comparison drops whichever of them the
+                    ## previous snapshot missed — and breaks the page walk
+                    ## on top. Re-emitting the boundary alert is harmless
+                    ## (the suppression predicate dedups it).
+                    if cursor and created < cursor:
                         stop = True
                         break
                     fresh.append(a)
@@ -1206,9 +1212,13 @@ tool match_policy:
         ## LIT UP" can be told apart from "the signal was already there when
         ## we chose to stay silent". Re-firing on the latter would replay a
         ## whole backlog the moment it is first observed.
+        ## Identity of the evidence, NOT its magnitude: FIRST republishes
+        ## EPSS daily and per-CVE scores drift, so folding the score in
+        ## would make the key change on its own and replay a backlog every
+        ## 24h. Crossing the threshold is what turns EPSS into a signal at
+        ## all — that crossing is already captured by the signal existing.
         return ';'.join(sorted(
-            s['type'] + ':' + str(s.get('cve') or '') + ':' +
-            (s.get('date') or '') + ':' + ('%.4f' % (s.get('score') or 0))
+            s['type'] + ':' + str(s.get('cve') or '') + ':' + (s.get('date') or '')
             for s in (sig or [])))
 
     def alert_decision(u, sig):
@@ -1287,7 +1297,14 @@ tool match_policy:
         for uid, u in list(st_units.items()):
             if u.get('alerted_at') is not None:
                 continue
-            if any((st_cves.get(c) or {}).get('status') == 'alerted' for c in (u.get('cves') or [])):
+            ## The scope-aware predicate, not a global "any CVE alerted"
+            ## short-circuit: this is the THIRD suppression site (with
+            ## already_alerted and the intra-run dedup) and all three must
+            ## answer the same question — has every scope this unit would
+            ## name already been told? Otherwise one alerted CVE silences an
+            ## observed advisory for every other project, and a cap-deferred
+            ## unit is dropped on the tick that promised to deliver it.
+            if already_alerted(u):
                 continue
             sig = signals_for(u)
             ## Two ways back into the alert set: the exploitation signal
@@ -1455,7 +1472,14 @@ tool match_policy:
     ## arming against an empty one (KEV down this tick) would mark the
     ## whole real catalog as "already seen" the moment it comes back.
     if kev_map:
-        cursors['kev_seen'] = sorted(set(kev_map) | kev_seen)
+        ## Pruned by the same belt that bounds freshness: an id older than
+        ## the window can never be "fresh" again, so remembering it buys
+        ## nothing — and this state file is committed to git on every
+        ## hourly tick.
+        ## The catalog IS the bound: an id it no longer carries can never
+        ## be evaluated as fresh anyway, so remembering it only grows a
+        ## state file that git commits every hourly tick.
+        cursors['kev_seen'] = sorted(kev_map)
 
     os.makedirs(scratch, exist_ok=True)
     state_next = os.path.join(scratch, 'state_next.json')
@@ -1731,6 +1755,12 @@ tool commit_state:
                              repr(sdir) + ': ' + ', '.join(outside[:10]))
         if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
             return False
+        ## Remember where we were: on a failed rebase we drop OUR commit and
+        ## nothing else. `reset --hard origin/<branch>` would also destroy
+        ## the operator's uncommitted work and unpushed commits — this bot
+        ## runs with `worktree: none`, i.e. directly in their checkout.
+        before = subprocess.run(['git', 'rev-parse', 'HEAD'],
+                                capture_output=True, text=True).stdout.strip()
         subprocess.run(['git', 'commit', '-m', msg], check=True, capture_output=True)
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
@@ -1750,12 +1780,17 @@ tool commit_state:
                                      capture_output=True, text=True)
             if rebased.returncode != 0:
                 subprocess.run(['git', 'rebase', '--abort'], capture_output=True)
-                ## Drop the local commit instead of stacking it: a retained
+                ## Drop OUR commit instead of stacking it: a retained
                 ## conflicting commit replays the SAME conflict on every
-                ## later tick, so the branch never converges again. The
-                ## state is not consumed (this raises), so the next run
-                ## recomputes and re-commits from origin's head.
-                subprocess.run(['git', 'reset', '--hard', 'origin/' + br], capture_output=True)
+                ## later tick, so the branch never converges again. Scoped
+                ## to the commit we made (`before`), never to origin — the
+                ## operator's own work in this checkout is not ours to
+                ## discard. `--soft` keeps their files untouched; only the
+                ## commit pointer moves, and our state files stay on disk
+                ## (the run raises, so nothing is consumed and the next tick
+                ## recomputes from a fresh clone or re-commits here).
+                if before:
+                    subprocess.run(['git', 'reset', '--soft', before], capture_output=True)
                 raise SystemExit('vuln-watch: could not rebase onto origin/' + br +
                                  ' to retry the push -- aborting. git said: ' +
                                  (rebased.stderr or '')[-400:].strip())
