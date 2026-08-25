@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -229,7 +230,11 @@ func TestRefreshWorker_SecurityMintFailureSurfacesButKeepsRefresh(t *testing.T) 
 			return fakeRefresher{newAccess: "fresh-install-token", expiresAt: now.Add(time.Hour)}
 		},
 		SecurityMinter: func(context.Context, Connection) (string, error) {
-			return "", ErrPermissionsNotGranted
+			// TRANSIENT (a forge blip). The permanent class
+			// (ErrPermissionsNotGranted) has its own contract — recorded
+			// once and withdrawn, see
+			// TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws.
+			return "", errors.New("github: 502 bad gateway")
 		},
 	}
 	_, err := w.RunOnce(context.Background())
@@ -401,5 +406,52 @@ func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 	}
 	if _, ok, _ := findSecurityReadSecret(context.Background(), secStore, "t1"); ok {
 		t.Fatal("the stalled connection's entry must be withdrawn (map emptied → secret gone)")
+	}
+}
+
+func TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	conn := seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
+	if err := UpsertSecurityReadToken(context.Background(), secStore, sealer, &conn, "ghs_live", now); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	w := &RefreshWorker{
+		Connections: connStore, Secrets: tenantScopedSecretStore{secStore}, Sealer: sealer,
+		Now: func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			return fakeRefresher{newAccess: "fresh", expiresAt: now.Add(time.Hour)}
+		},
+		SecurityMinter: func(context.Context, Connection) (string, error) {
+			calls++
+			// The org revoked (or never approved) the alerts grant.
+			return "", ErrPermissionsNotGranted
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("a permanent mint failure must be RECORDED, not returned every tick: %v", err)
+	}
+	// The dying token is withdrawn: the map emptied, so the secret is gone.
+	if _, ok, _ := findSecurityReadSecret(context.Background(), secStore, "t1"); ok {
+		t.Fatal("the entry must be withdrawn — it dies within the hour and the bot would see an unexplained 401")
+	}
+	// The opt-in is switched off with an actionable reason, so the next tick
+	// does not re-hit the forge for a grant that cannot appear on its own.
+	got, _ := connStore.Get(context.Background(), "conn-gh")
+	if got.SecurityReadEnabled {
+		t.Fatal("security-read must be switched off after a permanent mint failure")
+	}
+	if !strings.Contains(got.StatusReason, "Dependabot alerts") {
+		t.Fatalf("StatusReason must name the remediation, got %q", got.StatusReason)
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("the minter ran %d times — a permanent failure must not be retried every tick", calls)
 	}
 }

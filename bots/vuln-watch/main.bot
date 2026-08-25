@@ -504,7 +504,16 @@ tool poll_dependabot:
         except ValueError:
             raise SystemExit('vuln-watch: state file ' + spath + ' is not valid JSON -- repair or remove it')
 
-    base_host = urlsplit(api_base).hostname or ''
+    ## The org token rides on this base as a bearer credential, so the
+    ## scheme is part of the guard: an http:// (or file://) base would send
+    ## it in clear, or somewhere it has no business going.
+    _base_parts = urlsplit(api_base)
+    if _base_parts.scheme != 'https' and not allow_private:
+        raise SystemExit('vuln-watch: github_api_base must be an https:// URL (got ' +
+                         repr(api_base) + ') -- the Dependabot token is sent to it as a bearer credential')
+    if _base_parts.scheme not in ('http', 'https'):
+        raise SystemExit('vuln-watch: github_api_base must be an http(s) URL, got ' + repr(api_base))
+    base_host = _base_parts.hostname or ''
     _validate_host(base_host)
 
     def get(url, token):
@@ -780,6 +789,19 @@ tool poll_advisories:
         return [entry_from(el) for el in root.findall('.//*') if local(el.tag) == 'item']
 
     CVE_RE = re.compile(r'CVE-\d{4}-\d{4,}')
+    ## Enrichment is one extra request PER new entry, with no natural bound
+    ## (a quiet feed catching up can hand back hundreds). Left uncapped it
+    ## blows the run's duration budget — and a dead run takes the Dependabot
+    ## and KEV lanes down with it, for a lane that is only an optimisation.
+    ## The DEADLINE is the real bound (it is what protects the run budget);
+    ## the count is only a backstop against a pathological feed. Set too
+    ## tight it silently degrades a catch-up tick to title-only matching —
+    ## measured: a 60-entry cap dropped the Metabase advisory out of an
+    ## 80-entry backlog, because its CVE ids live in the structured
+    ## document, not in the RSS title.
+    ENRICH_DEADLINE = time.monotonic() + max(30, timeout * 6)
+    ENRICH_MAX = 500
+    enriched_count = 0
     units, errors, ok = [], [], 0
     if not _behind_proxy:
         socket.getaddrinfo = _guarded_getaddrinfo
@@ -802,7 +824,15 @@ tool poll_advisories:
                 ## CERT-FR-style structured enrichment: <link>/json/ names
                 ## the CVEs and affected products. Best-effort — a feed
                 ## without it falls back to title+summary matching.
-                if d['url'].startswith(('http://', 'https://', 'file://')):
+                enrich_budget_left = enriched_count < ENRICH_MAX and time.monotonic() < ENRICH_DEADLINE
+                if d['url'].startswith(('http://', 'https://', 'file://')) and not enrich_budget_left:
+                    ## Out of budget, not broken: mark it like a failed
+                    ## enrichment so the entry is retried on a later tick
+                    ## (bounded) instead of being consumed with the weaker
+                    ## title-only match.
+                    unit['enrich_failed'] = True
+                if d['url'].startswith(('http://', 'https://', 'file://')) and enrich_budget_left:
+                    enriched_count += 1
                     try:
                         j = json.loads(fetch(d['url'].rstrip('/') + '/json/').decode('utf-8'))
                         unit['enriched'] = True
@@ -813,7 +843,12 @@ tool poll_advisories:
                             prods.append(' '.join(x for x in (
                                 (p.get('vendor') or {}).get('name') or '', p.get('name') or '',
                                 a.get('description') or '') if x))
-                        unit['match_text'] = ' '.join([j.get('title') or d['title']] + prods)
+                        ## ADD to the match text, never replace it: an
+                        ## advisory whose structured document carries no
+                        ## affected_systems would otherwise be matched on
+                        ## LESS text than an un-enriched one.
+                        unit['match_text'] = ' '.join(
+                            [unit['match_text'], j.get('title') or ''] + prods)
                         unit['title'] = j.get('title') or d['title']
                     except Exception:
                         ## The structured document is what carries the CVE
@@ -1111,7 +1146,7 @@ tool match_policy:
             ## advancing to the newest created_at would put every unscanned
             ## (older) alert behind the cursor forever. Hold the cursor —
             ## the re-scan is deduped by already_alerted.
-            dep_cursor_next[org] = cursors.get('dependabot', {}).get(org) or ''
+            dep_cursor_next[org] = (cursors.get('dependabot') or {}).get(org) or ''
         else:
             dep_cursor_next[org] = newest or dep_cursor_next.get(org) or now_iso
         units.extend(groups.values())
@@ -1275,10 +1310,12 @@ tool match_policy:
             return (st_units.get(u['id']) or {}).get('alerted_at') is not None
         if not all((st_cves.get(c) or {}).get('status') == 'alerted' for c in cves):
             return False
-        covered = set()
-        for c in cves:
-            covered.update((st_cves.get(c) or {}).get('alerted_for') or [])
-        return unit_scope(u) <= covered
+        ## PER CVE, never a union: CVE-1 alerted for project A and CVE-2 for
+        ## project B would otherwise cover a unit carrying both and scoped to
+        ## both — although A was never told about CVE-2, nor B about CVE-1.
+        ## Same question as the two sibling suppression sites.
+        scope = unit_scope(u)
+        return all(scope <= set((st_cves.get(c) or {}).get('alerted_for') or []) for c in cves)
 
     def render_fields(u, sig, refire_of=''):
         best_epss = max([s.get('score') or 0 for s in sig if s['type'] == 'epss'] + [0])
@@ -1320,24 +1357,24 @@ tool match_policy:
         for uid, u in list(st_units.items()):
             if u.get('alerted_at') is not None:
                 continue
-            ## The scope-aware predicate, not a global "any CVE alerted"
-            ## short-circuit: this is the THIRD suppression site (with
-            ## already_alerted and the intra-run dedup) and all three must
-            ## answer the same question — has every scope this unit would
-            ## name already been told? Otherwise one alerted CVE silences an
-            ## observed advisory for every other project, and a cap-deferred
-            ## unit is dropped on the tick that promised to deliver it.
-            if already_alerted(u):
-                continue
             sig = signals_for(u)
+            ## Coverage is checked AFTER the escalation test, not before: a
+            ## unit whose evidence just changed is news even for a scope that
+            ## heard about the CVE through another unit (an advisory alert
+            ## shows only its first few CVE ids, so "told" about the advisory
+            ## is not "told" about this one now being exploited). Order
+            ## matters — the other way round, the headline Metabase-style
+            ## escalation never posts.
+            escalated = sig and signal_key(sig) != (u.get('observed_signals') or '')
+            if not escalated and already_alerted(u):
+                continue
             ## Two ways back into the alert set: the exploitation signal
             ## CHANGED since we chose silence (the Metabase re-fire — it had
             ## none, KEV gave it one), or the per-run cap deferred the unit
             ## (which may carry no signal at all). A signal that was already
             ## there at observation time is not news: that is what keeps a
             ## newly-added org's backlog quiet instead of replaying it.
-            changed = sig and signal_key(sig) != (u.get('observed_signals') or '')
-            if (changed or u.get('deferred')) and alert_decision(u, sig):
+            if (escalated or u.get('deferred')) and alert_decision(u, sig):
                 refire.append(render_fields(u, sig,
                                             refire_of='' if u.get('deferred') else (u.get('first_seen') or '')))
         alerts.extend(refire)
@@ -1747,10 +1784,21 @@ tool notify:
         raise SystemExit('vuln-watch: all ' + str(len(payloads)) + ' webhook post(s) failed: ' + '; '.join(failures))
     consume = len(msgs_ok) == len(messages)
     summary = 'delivered ' + str(delivered) + '/' + str(len(payloads))
-    if not consume:
-        summary += ' -- ' + str(len(messages) - len(msgs_ok)) + ' message(s) reached NO sink; state NOT consumed (they replay next run)'
     if failures:
         summary += ' -- FAILED: ' + '; '.join(failures)
+    if not consume:
+        ## A tick that delivered SOME messages holds every cursor back (the
+        ## state is not consumed), so the same work replays hour after hour.
+        ## Exiting 0 would let that read as success forever — the silent-green
+        ## outcome this bot exists to end. The delivered messages are already
+        ## out; this failure is what makes the stuck half visible.
+        print(json.dumps({'posted': True, 'dry_run': False, 'messages': rendered,
+                          'delivered': delivered, 'consume': False,
+                          'targets': sorted(set(targets)), 'summary': summary},
+                         ensure_ascii=False), file=sys.stderr)
+        raise SystemExit('vuln-watch: ' + str(len(messages) - len(msgs_ok)) + '/' + str(len(messages)) +
+                         ' message(s) reached NO sink -- the state is NOT consumed, so this tick replays '
+                         'in full on the next run. ' + summary)
     out({'posted': True, 'dry_run': False, 'messages': rendered, 'delivered': delivered,
          'consume': consume, 'targets': sorted(set(targets)), 'summary': summary})
 

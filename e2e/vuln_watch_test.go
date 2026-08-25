@@ -202,6 +202,22 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	return h
 }
 
+// vwLabels is the default English label set, for tests that drive `notify`
+// directly instead of through a full tick.
+func vwLabels() map[string]any {
+	return map[string]any{
+		"exploited": "actively exploited vulnerability", "alert": "security alert",
+		"signal": "Signal", "severity": "severity", "fix": "Fix",
+		"no_fix": "none published yet", "fix_see_source": "see the advisory",
+		"projects": "Affected projects", "repos": "repo(s)",
+		"via_dependabot": "flagged by Dependabot in {n} repo(s)", "sources": "Sources",
+		"more": "more", "refire": "first observed {date} — alerted now: {signal}",
+		"overflow": "{n} more alert(s) exceeded the cap", "stale": "source silent: {source} {hours}h {last}",
+		"kev_signal": "CISA KEV {date}", "ale_signal": "alert-class advisory",
+		"epss_signal": "EPSS {pct}%", "sev_signal": "severity floor {sev}",
+	}
+}
+
 // setFloor switches the Dependabot severity floor (exploited | critical |
 // high) — the knob that decides whether a signal-less alert may post.
 func (h *vulnWatchHarness) setFloor(floor string) error {
@@ -1178,5 +1194,127 @@ func TestVulnWatch_RefusesADecompressionBomb(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "inflates beyond") {
 		t.Fatalf("expected a bounded-inflate refusal, got: %s", stderr)
+	}
+}
+
+// TestVulnWatch_EscalationOutranksCoverage pins the ORDER of the two re-fire
+// guards: a unit whose evidence just changed is news even for a scope that
+// heard about the CVE through another unit — an alert shows only its first
+// few CVE ids, so "told about the advisory" is not "told that THIS one is
+// now exploited".
+func TestVulnWatch_EscalationOutranksCoverage(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-seed-1", "CVE-2020-0002", "low", "testorg/domifa", "seed", "2026-08-01T00:00:00Z", "1.0.0"),
+	})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Tick 1: an observed Dependabot unit on a DOMIFA repo (no signal yet,
+	// floor=exploited so it stays quiet)…
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-quiet-1", "CVE-2026-3001", "high", "testorg/domifa", "libx", "2026-08-24T09:00:00Z", "4.0.0"),
+	})
+	// … and an alert-class advisory for Metabase (DOMIFA too) that lists the
+	// SAME CVE among others: it alerts, covering DOMIFA for that CVE.
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-950", Title: "Multiples vulnerabilites dans Metabase",
+		CVEs: []string{"CVE-2026-3001", "CVE-2026-3002"}, Products: []string{"Metabase"},
+	}})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("tick 1: the advisory should alert: %v", match["summary"])
+	}
+
+	// Tick 2: KEV picks up that CVE. DOMIFA was "covered" for it by the
+	// advisory, but the EVIDENCE is new — the escalation must post.
+	h.feedItems.Store([]vwFeedItem{})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-3001", "vendorProject": "libx", "product": "libx",
+			"vulnerabilityName": "libx exploited in the wild", "dateAdded": "2026-08-25"},
+	})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) < 1 {
+		t.Fatalf("a new exploitation signal must outrank prior coverage: %v", match["summary"])
+	}
+	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-3001") {
+		t.Fatalf("the escalated CVE must be named:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_PartialDeliveryFailsLoudly pins the anti-silent-green rule on
+// the delivery path: a tick that could not deliver every message holds every
+// cursor back, so exiting 0 would let an hourly schedule report success while
+// replaying the same work forever.
+func TestVulnWatch_PartialDeliveryFailsLoudly(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The first message lands, every later one is rate-limited.
+		if hits.Add(1) > 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	hooks := filepath.Join(t.TempDir(), "webhooks.json")
+	if err := os.WriteFile(hooks, []byte(`{"w1": "`+srv.URL+`/hook"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alerts := []map[string]any{}
+	for i := 0; i < 3; i++ {
+		alerts = append(alerts, map[string]any{
+			"id": fmt.Sprintf("kev:CVE-2026-70%02d", i), "kind": "kev",
+			"title": "exploited", "cves": []string{fmt.Sprintf("CVE-2026-70%02d", i)},
+			"signals": []map[string]any{{"type": "kev", "date": "2026-08-25"}},
+			"techs":   []string{"metabase"}, "tech_labels": []string{"Metabase"},
+			"projects": []string{"domifa"}, "project_names": []string{"DOMIFA"},
+			"project_label": map[string]any{"domifa": "DOMIFA"},
+		})
+	}
+	_, stderr, err := runPy(t, t.TempDir(), vwSub(t, vwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{},
+		"sinks":  []map[string]any{{"webhook": "w1", "channel": "#sec"}},
+		"labels": vwLabels(), "dry_run": false,
+	}, nil, map[string]string{"webhooks": hooks}))
+	if err == nil {
+		t.Fatal("a partially-delivered tick must FAIL, not exit 0")
+	}
+	if !strings.Contains(stderr, "reached NO sink") || !strings.Contains(stderr, "NOT consumed") {
+		t.Fatalf("the failure must name the stuck half, got: %s", stderr)
+	}
+}
+
+// TestVulnWatch_RefusesAPlaintextAPIBase pins the credential guard: the org
+// Dependabot token is sent to github_api_base as a bearer credential.
+func TestVulnWatch_RefusesAPlaintextAPIBase(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	tokens := filepath.Join(t.TempDir(), "tok.json")
+	if err := os.WriteFile(tokens, []byte(`{"acme":"ghs_secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runPy(t, t.TempDir(), vwSub(t, vwTool(t, wf, "poll_dependabot").Script, map[string]any{
+		"orgs": []string{"acme"}, "api_base": "http://api.example.com",
+		"timeout_secs": 5, "scratch_dir": t.TempDir(), "allow_private": false,
+		"workspace": t.TempDir(), "state_dir": ".vuln-watch",
+	}, nil, map[string]string{"dependabot_tokens": tokens}))
+	if err == nil {
+		t.Fatal("a plaintext api base must be refused — the token rides on it")
+	}
+	if !strings.Contains(stderr, "https://") {
+		t.Fatalf("the refusal must name the requirement, got: %s", stderr)
 	}
 }

@@ -193,6 +193,18 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// on the server side.
 	if conn.SecurityReadEnabled && conn.Kind == KindGitHubApp && w.SecurityMinter != nil {
 		secTok, err := w.SecurityMinter(ctx, conn)
+		if errors.Is(err, ErrPermissionsNotGranted) {
+			// PERMANENT (the org revoked, or never approved, the alerts
+			// grant): retrying can never self-heal, and the entry already in
+			// the map dies within the hour. Withdraw it so the consuming bot
+			// names the missing org instead of hitting an unexplained 401,
+			// and record the reason ONCE rather than erroring every tick —
+			// the same treatment the refresher's own permission failure gets.
+			if derr := w.dropSecurityReadEntry(ctx, conn); derr != nil {
+				return derr
+			}
+			return w.markSecurityReadDegraded(ctx, conn, err)
+		}
 		if err != nil {
 			return fmt.Errorf("forge: security-read mint for connection %s: %w", conn.ID, err)
 		}
@@ -201,6 +213,20 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 		}
 	}
 	return nil
+}
+
+// markSecurityReadDegraded turns the security-read opt-in back off on a
+// PERMANENT mint failure, stamping the actionable reason. The connection
+// itself stays usable (its forge token is unaffected) — only the alerts
+// lane is switched off, so an operator re-enables it after fixing the grant
+// instead of the worker re-hitting the forge every ten minutes.
+func (w *RefreshWorker) markSecurityReadDegraded(ctx context.Context, conn Connection, cause error) error {
+	conn.SecurityReadEnabled = false
+	conn.StatusReason = fmt.Sprintf(
+		"security-read disabled: %v — approve 'Dependabot alerts: read' on the installation, then re-enable it",
+		cause)
+	conn.UpdatedAt = w.now()
+	return w.Connections.Update(ctx, conn)
 }
 
 // dropSecurityReadEntry withdraws a connection's org entry from the
