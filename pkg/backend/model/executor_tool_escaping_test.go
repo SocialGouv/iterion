@@ -1,7 +1,9 @@
 package model
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,4 +60,29 @@ func TestRawRefsBypassEscapingByDesign(t *testing.T) {
 	if !strings.Contains(resolved, "BRANCH=x;id") {
 		t.Fatalf("raw ref was escaped after all — the catalog rule against it would be pointless: %s", resolved)
 	}
+}
+
+// The escaping holds for the BARE shape above — and cancels when the bot
+// author wraps the ref in quotes of their own: the substituted opening quote
+// closes the author's, and the value lands as shell SYNTAX. This is not
+// hypothetical prose; the sentinel below is created when it happens.
+//
+// The engine cannot fix it at substitution time without guessing the author's
+// quoting context, so the fix lives where the shape is written: diagnostic
+// C137 (ir.refInQuotes) flags it at compile, and the catalog carries none.
+func TestAuthorQuotedRefWouldExecute(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "pwned")
+	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"base_ref"}, Raw: "{{vars.base_ref}}"}
+	resolved := resolveCommandTemplate(`BASE_REF='{{vars.base_ref}}' true`, []*ir.Ref{ref}, nil,
+		map[string]any{"base_ref": "x;touch " + sentinel + ";#"})
+
+	_ = exec.Command("sh", "-c", resolved).Run()
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Skipf("author-quoted injection did not reproduce (%v) — if the runtime learned to detect the author's quotes, "+
+			"this test should become an assertion that it did, and C137 can be reconsidered", err)
+	}
+	// Reproduced: the hazard is real, so the compile-time diagnostic that
+	// refuses this shape must exist. This test documents WHY C137 is not
+	// cosmetic.
+	t.Logf("author-quoted ref executed as syntax, as expected: %s", resolved)
 }

@@ -499,7 +499,7 @@ prompt forge_report_user:
 ## scope_mode=full it emits an empty diff and the enumerator walks the
 ## whole tree.
 tool diff_scope:
-  command: `SCOPE_MODE='{{vars.scope_mode}}' BASE_REF='{{vars.base_ref}}' HEAD_REF='{{vars.head_ref}}' WORKSPACE_DIR='{{vars.workspace_dir}}' SKILLS_DIR='{{vars.workspace_dir}}/.claude/skills' python3 -c "
+  command: `SCOPE_MODE={{vars.scope_mode}} BASE_REF={{vars.base_ref}} HEAD_REF={{vars.head_ref}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
 import os, sys, json, re, fnmatch, subprocess
 scope = (os.environ.get('SCOPE_MODE') or 'diff').strip().lower()
 base  = (os.environ.get('BASE_REF') or '').strip()
@@ -697,7 +697,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## is new). js-x-ray output (jsxray.json) is read directly by the LLM
 ## reviewer + checked by coverage_gate, so it needs no parser here.
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS='{{input.ecosystems}}' SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:
@@ -867,7 +867,7 @@ print(json.dumps({'packages': packages, 'errors': errors}))
 ## absent (bare host) the node degrades to ran=false; coverage_gate then
 ## banners the gap rather than presenting the run as clean.
 tool run_jsxray:
-  command: `mkdir -p {{vars.scan_dir}} && ( command -v iterion-jsxray >/dev/null 2>&1 && SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} iterion-jsxray > {{vars.scan_dir}}/jsxray-run.log 2>&1 || true ); RAN=$( [ -f {{vars.scan_dir}}/jsxray.json ] && echo true || echo false ); printf '{"ran":%s,"output_path":"%s"}\n' "$RAN" "{{vars.scan_dir}}/jsxray.json"`
+  command: `mkdir -p {{vars.scan_dir}} && ( command -v iterion-jsxray >/dev/null 2>&1 && SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} iterion-jsxray > {{vars.scan_dir}}/jsxray-run.log 2>&1 || true ); RAN=$( [ -f {{vars.scan_dir}}/jsxray.json ] && echo true || echo false ); printf '{"ran":%s,"output_path":"%s"}\n' "$RAN" {{vars.scan_dir}}/jsxray.json`
   output: jsxray_output
 
 ## run_generic_heuristics — DETERMINISTIC always-on malware floor. Emits
@@ -994,7 +994,7 @@ compute heuristic_join:
 ## (e.g. js-x-ray absent for an npm change) without hard-failing, so a
 ## degraded run is still useful but never silently presented as clean.
 tool coverage_gate:
-  command: `ECOS='{{input.ecosystems}}' SCAN_DIR='{{input.scan_dir}}' python3 -c "
+  command: `ECOS={{input.ecosystems}} SCAN_DIR={{input.scan_dir}} python3 -c "
 import os, sys, json, re
 scan_dir = os.environ.get('SCAN_DIR', '.')
 raw = os.environ.get('ECOS', '[]') or '[]'
@@ -1179,7 +1179,7 @@ agent llm_review:
 ## flag, level mapped from severity, location = files_audited[0] or the
 ## package manifest path.
 tool sarif_gen:
-  command: `mkdir -p {{vars.sarif_dir}} && VERDICTS={{input.verdicts}} SARIF_PATH='{{input.sarif_path}}' python3 -c "
+  command: `mkdir -p {{vars.sarif_dir}} && VERDICTS={{input.verdicts}} SARIF_PATH={{input.sarif_path}} python3 -c "
 import os, sys, json
 verdicts = json.loads(os.environ.get('VERDICTS','') or '[]')
 out_path = os.environ['SARIF_PATH']

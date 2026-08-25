@@ -1100,6 +1100,7 @@ func (c *compiler) compileTools() {
 			} else {
 				cmdRefs = refs
 			}
+			c.checkQuotedCommandRefs(t.Name, t.Command)
 		}
 
 		var scriptRefs []*Ref
@@ -2063,5 +2064,66 @@ func computeLoopBodies(w *Workflow) {
 		}
 		loop.Body = body
 		loop.Entries = entries
+	}
+}
+
+// refInQuotes reports each template ref of a tool `command:` that sits inside
+// an author-written SINGLE-quoted span.
+//
+// Single quotes specifically, because that is the cancel: the runtime escapes
+// a ref by wrapping the value in single quotes, so an author single quote
+// closes it and the value becomes syntax (proven in
+// model.TestAuthorQuotedRefWouldExecute). Inside DOUBLE quotes the runtime's
+// single quotes are literal and the value stays contained — with one residue
+// a `"` in the value would still close the author's span, which is narrower,
+// unproven here, and ticketed (native:e5d50342) rather than guessed at.
+//
+// A scanner, not a regex: only a left-to-right walk can tell an OPENING quote
+// from a closing one, and a regex that cannot will happily match the text
+// BETWEEN two separate quoted words and report a hazard that is not there.
+// Single quotes are literal to the shell (nothing nests inside them); double
+// quotes end at the next unescaped double quote.
+func refInQuotes(command string) []string {
+	var hits []string
+	var quote byte // 0 = outside quotes
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case quote == 0 && (ch == '\'' || ch == '"'):
+			quote = ch // both are tracked; only single-quoted refs are reported
+		case quote != 0 && ch == quote:
+			quote = 0
+		case quote == '"' && ch == '\\' && i+1 < len(command):
+			i++ // an escaped byte inside double quotes closes nothing
+		case quote == '\'' && ch == '{' && i+1 < len(command) && command[i+1] == '{':
+			if end := strings.Index(command[i:], "}}"); end > 0 {
+				hits = append(hits, command[i:i+end+2])
+				i += end + 1
+			}
+		}
+	}
+	return hits
+}
+
+// checkQuotedCommandRefs flags a ref the author quoted, because the runtime
+// quotes it too — and the two quotings do not nest, they CANCEL.
+//
+// resolveCommandTemplate shell-escapes every ref by wrapping the value in
+// single quotes. Around an already-quoted ref the substituted opening quote
+// CLOSES the author's, so the value lands as bare shell syntax:
+// `BASE_REF='{{vars.base_ref}}'` with the value `x;id;#` resolves to
+// `BASE_REF=”x;id;#”` and the shell runs `id`. On a forge-controlled var
+// (a fork PR's branch name, a title) that is command execution; on a benign
+// value it merely works by accident, which is why the shape survives review.
+//
+// A warning rather than an error: the shape is inert for values without shell
+// metacharacters, so a repo full of them still compiles and runs while it is
+// being cleaned up. The fix is always the same — drop the author's quotes.
+func (c *compiler) checkQuotedCommandRefs(node, command string) {
+	for _, ref := range refInQuotes(command) {
+		c.warnf(DiagQuotedCommandRef,
+			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
+				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
+			node, ref)
 	}
 }

@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 )
 
 // rawRef matches the bang form `{{!vars.x}}` / `{{!input.x}}` / `{{!outputs…}}`,
@@ -54,6 +57,40 @@ func TestCatalogToolCommandsDoNotOptOutOfShellEscaping(t *testing.T) {
 					"A forge-controlled value (PR body, branch name, issue title) then reaches `sh -c` as SYNTAX.\n"+
 					"Use the ordinary %s form, or add %q to this test's allowlist with the reason.",
 					bot, hit, strings.Replace(hit, "!", "", 1), bot)
+			}
+		}
+	}
+}
+
+// C137 is a WARNING (a repo full of the shape still compiles while it is
+// cleaned up), so nothing stops it drifting back into the catalog. Here it is
+// an error: the catalog is the reference implementation, and the shape is a
+// command-execution hazard on any forge-controlled value.
+func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
+	paths, err := filepath.Glob("*/main.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no catalog bots found — the lint would pass vacuously")
+	}
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		pr := parser.Parse(path, string(src))
+		if pr.File == nil {
+			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)
+			continue
+		}
+		cr := ir.Compile(pr.File)
+		// C137 is emitted by the compiler; the parser's own diagnostics are a
+		// different type and a different concern.
+		for _, d := range cr.Diagnostics {
+			if d.Code == ir.DiagQuotedCommandRef {
+				t.Errorf("%s: %s\n(the runtime shell-quotes refs; author quotes CANCEL that and the value becomes shell syntax)",
+					path, d.Message)
 			}
 		}
 	}
