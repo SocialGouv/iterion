@@ -837,7 +837,10 @@ tool finalize:
         if isinstance(gates, str):
             gates = [gates]
         if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
-            return None, "unreadable exit_gate (%s)" % type(l.get("exit_gate")).__name__
+            shape = (type(l.get("exit_gate")).__name__ if not isinstance(gates, list)
+                     else "list holding %s" % type(next(
+                         g for g in gates if not isinstance(g, str))).__name__)
+            return None, "unreadable exit_gate (%s)" % shape
         # A command containing an INTERIOR newline is refused by modernize's
         # reader (its transport is newline-joined); accepting it here would
         # let this supervisor requalify a lot the executing bot cannot even

@@ -330,9 +330,12 @@ tool plan_read:
     # a gate nobody wrote. An unreadable gate is a contract that cannot be
     # read, not a lot with nothing to do.
     if not isinstance(gate, list) or not all(isinstance(c, str) for c in gate):
+        shape = (type(chosen.get("exit_gate")).__name__ if not isinstance(gate, list)
+                 else "list holding %s" % type(next(
+                     c for c in gate if not isinstance(c, str))).__name__)
         refuse("lot %s declares exit_gate in an unreadable shape (%s): write "
                "one command as a string, or a list of command strings."
-               % (chosen.get("id"), type(chosen.get("exit_gate")).__name__))
+               % (chosen.get("id"), shape))
     # One command, one line: the field travels to the verifier newline-joined
     # and is split back on newlines there, so a command CONTAINING a newline
     # (a `|` block scalar, a multi-line list item) would be torn apart into
