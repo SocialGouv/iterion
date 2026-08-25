@@ -434,12 +434,16 @@ and paints a failure onto a long-merged PR). The repair re-reads the live
 status before writing, so the redundant offer costs one API read.
 
 Telling "already answered" from "must escalate" is what makes the second offer
-safe. A synthetic failure deliberately does *not* stand the repair down — that
-is how a **second** death on one head (a relaunched run dying too) escalates
-instead of mistaking the first death's marker for an answer. But the same run
-re-offered every minute is already answered. The status's target URL names the
-run it speaks for, which separates the two with no bookkeeping a second replica
-would not share.
+safe. A synthetic failure deliberately does *not* stand the REPAIR down — that
+is how a **second** death on one head (a relaunched run dying too) still walks
+the relaunch/escalation tail instead of mistaking the first death's marker for
+an answer. But the STATUS WRITE stands down either way: one marker per head is
+enough, and re-posting from a run the marker does not speak for is a storm —
+two dead runs re-pointing the target URL at themselves on every sweep tick
+produced **116 status writes on one head in 15 minutes**
+(buildkit-operator#21, 2026-08-17). The status's target URL names the run it
+speaks for, which separates "mine" from "another's" with no bookkeeping a
+second replica would not share.
 
 The sweep is **not elected** — the repair is idempotent by re-reading the live
 status, so a leader would buy nothing. One consequence needs care: the
@@ -478,12 +482,20 @@ the synthetic failure when it completes.
 
 When the one relaunch is already spent and the gate dies AGAIN on the same
 head — or the relaunch cannot start at all — the problem graduates to the
-team's board: a card labelled `source:gate-reconcile` (deduped per PR+head)
-naming the dead runs, the failure reason, and the remedy. A required check
-dying repeatedly on one revision is a structural signal (a run budget too
-short for the workload, a recurring provider quota, a bot defect), which is a
-human's call, and the board is where Nexie and the operator will actually see
-it.
+team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
+(the relaunch stamps a `gate_relaunch_of` launch var so its own death can name
+the original), the failure reasons, and the remedy. The same escalation is
+ALSO posted as a **PR comment** through the connection's review client: the
+board is the operator's queue, but the PR is where the people waiting on the
+merge look — a card alone sat unseen in a team inbox for 7 days while a
+security PR stayed blocked. Card and comment are bounded to once per
+(PR, head) by a **deterministic card id** (UUIDv5 of team/repo/PR/head): the
+sweep runs unelected on every replica, and two replicas racing past a
+List-based dedup would each file the card AND each post the comment — the
+store's unique-id insert is what serialises them. A required check dying
+repeatedly on one revision is a structural signal (a run budget too short for
+the workload, a recurring provider quota, a bot defect), which is a human's
+call.
 
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is

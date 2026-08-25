@@ -7,6 +7,109 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-08-24 — end-to-end pipeline audit: every failure mode had no recovery, and each got one
+
+- Status: **validated** — a full audit of the auto-upgrade lane on BOTH repos
+  (buildkit-operator + iterion), 13 confirmed frictions, engine fixes shipped,
+  the flagship blocked PR merged by the loop itself. Vetty **2.7.6→2.7.7** ·
+  iterion **359668383 → PR #508/#509**.
+- Method: 6-agent read-only audit (runs, DLQ, integrations, GitHub state,
+  local design truth), then fixes + a 3-agent adversarial review round
+  (2 high + 1 medium + 3 low, all proven by executed scratch tests before
+  fixing), then live re-triggers on prod.
+- Headline results:
+  - **buildkit-operator#21** (go toolchain [security], 8 CVEs) had been
+    BLOCKED 7 days behind a synthetic `iterion/review` failure: both the
+    original Vetty run and its one auto-relaunch were killed on 2026-08-17
+    ~12:00 by a rollout (the chart then vendored, 3.21, did not render
+    `config.runner.drainMode` — inert since 2026-08-01; effective only with
+    the 3.53 bump on 2026-08-21). The board escalation card sat unseen in a
+    team inbox the whole week. One `/vetty` comment → session-limit park →
+    **armed usage-window retry resumed it alone at 09:08** → audit clean →
+    gate green → arm → **auto-merged 2026-08-24**. Runs 01a032c0 (+dead
+    01a00ddd/01a00f97).
+  - **iterion's Renovate lane never reached Vetty at all** (native:c19a8c74):
+    self-hosted under a user PAT, every dep PR was human-authored, routed to
+    Revi (no `arm_automerge`), and green PRs sat unmerged forever. Fixed by
+    switching to the **socialgouv-renovate App identity** (PR #509, bko's
+    proven setup: installation + `RENOVATE_APP_ID`/`RENOVATE_APP_PRIVATE_KEY`).
+    Dependabot retired in the same change (same 6 ecosystems, proven race:
+    its golang bump auto-closed 118 s after Renovate merged the same target).
+    The 9 PAT-authored PRs + 3 superseded Dependabot ones were closed with
+    branches deleted BEFORE the switch (Renovate skips branches "modified by
+    someone else"); the App's first run rebuilt the full dashboard (#512).
+- Engine fixes (PR #508), each with a red-first or mutation-tested guard:
+  - `ValidateBranchName` mirrors `git check-ref-format` — the old allowlist
+    rejected `renovate/npm-(non-major)`, making PR #504 permanently
+    unreviewable (2 DLQ entries). Leading `-`/`+` and `HEAD` stay refused.
+  - No re-post over ANOTHER dead run's synthetic gate failure — two dead runs
+    on one head re-pointed the status target at themselves every sweep tick:
+    **116 GitHub status writes in 15 min** observed on bko#21.
+  - The escalation names BOTH dead runs (`gate_relaunch_of` launch var; the
+    card used to cite one URL twice) and is ALSO posted as a **PR comment**;
+    card+comment are cross-replica deduped by a deterministic UUIDv5 card id
+    (found by the adversarial round: List-then-Create raced on the unelected
+    sweep).
+  - Truthful cancel reasons: the supersede lane records `superseded by a
+    newer delivery` (was `cancelled by user`), the prior error survives, the
+    engine's ctx-cancel write is a CAS so it can't overwrite a recorded
+    reason, and gate descriptions strip queue/runner wrappers so the
+    actionable cause fits 140 chars.
+  - `await_answers` doorbell armed BEFORE the store check — the check-then-arm
+    race made a slow pod time out an ANSWERED question, which is what held
+    four green Actions-pin bumps `hold_unstable` via Vetty's verify.
+- Vetty 2.7.7: verify-build skill §1c — **timeouts are a strictness axis**;
+  the sandbox runs 2-5× slower than CI, keep CI's explicit timeouts and RAISE
+  implicit ones (`go test -timeout 30m`). The e2e package itself measures
+  192 s locally; the 10-min panics were go's per-binary default on a starved
+  pod, not a slow test.
+- Ops: 9 stale `source:gate-reconcile` cards closed with resolution notes,
+  DLQ purged (8/8, causes all resolved or obsolete), 4 follow-up cards filed
+  (Vetty propose-mode on hold_security; relaunch-as-resume to preserve the
+  checkpointed audit; org-scoped escalation notification; runs list/GET skew).
+- Lessons:
+  - A recovery lane is only as good as its LAST hop's visibility: everything
+    upstream worked (synthetic status, relaunch, board card) and the pipeline
+    still lost 7 days because no human surface carried the escalation.
+  - `review_on_sync` × iterative pushes eats the 5h provider window fast — a
+    PR developed in 4 pushes cost 4 full reviews and parked the fleet twice
+    this session. The supersede-on-push guarantee is worth it; budget for it.
+  - An identity is routing: who AUTHORS a bot's PRs decides which lane audits
+    them. The shape-based routing (native:c19a8c74) remains the durable fix.
+- **The adversarial round found a [high] in MY OWN fix, and so did Revi** —
+  independently, on the same line. Widening `ValidateBranchName` to git's
+  rules removed a guard that was silently doing a SECOND job: git accepts
+  `;`, backticks and quotes, and the same forge-controlled branch name is
+  stamped into launch vars that bots interpolate into `bash -c`
+  (branch-improve-loop's `PUSH_BRANCH={{vars.push_branch}}`, UNQUOTED). A
+  fork PR from `x;id;#` was rejected at the runner BEFORE the widening and
+  cloned cleanly after it. Fixed with two distinct gates —
+  `ValidateBranchName` stays git-faithful (Renovate needs the parens),
+  `ValidateShellSafeRef` guards the runner's clone target, the choke point
+  every webhook-launched run passes. Parens stay ALLOWED on purpose: in an
+  unquoted assignment they are a bash syntax error (loud), never a second
+  command. Mutation-tested: neutralising the guard reddens 10 assertions.
+  Two mediums from the same review also landed — a markdown code span cannot
+  contain a newline (run errors are multi-line by construction), and the
+  escalation's `gate_relaunch_of` is a launch var an operator can pin, so
+  citing it needed an explicit tenant boundary. Residual class ticketed
+  (native:886c3a3f): the bots' own quoting.
+- **Operator arbitrage on the two legitimate holds — the long-term path.**
+  #4 (minio 14.7→17) and #440 (mongodb 16.5→19) were CLOSED rather than
+  fixed: Broadcom archived Bitnami, the free registry is purged (chart 17's
+  default-on console image is a literal 404), `bitnamilegacy` is frozen, and
+  chart 19 templates a mutable `tag: latest` resolving to an old build with
+  79 HIGH/CRITICAL CVEs. Bumping inside a dead ecosystem buys nothing, so the
+  decision is to EXIT both subcharts (board ticket native:6b40ca4c, with
+  candidate targets and a data-migration scope). PR #513 stops Renovate
+  re-proposing them meanwhile — and Revi caught that rule DEAD ON ARRIVAL
+  (`matchPackageNames` matches the OCI `packageName`, not the chart's
+  `depName`, since Renovate 44), which is exactly the class of silent
+  no-op this session kept finding.
+- Landed: **#508 merged `6bfe375bc`** through the queue (0 blocking findings
+  on the final head), **#509** (App identity + Dependabot retirement),
+  **#513** (Bitnami ignore rule).
+
 ## 2026-08-13 (backlog) — the lane was auditing half the traffic and looked like it audited all of it
 
 - Status: **validated, and one serious gap found.** Ran the pre-batch backlog —
