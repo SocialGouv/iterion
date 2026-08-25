@@ -128,8 +128,10 @@ run Path B for v7 → v8; use Path A.**
    bytes, which the vN+1 fleet rejects identically and re-parks: an
    operator replay loop that never succeeds. Recover those runs by
    **resuming** them instead (`POST /api/runs/{id}/resume`: the publisher
-   stamps the CURRENT `SchemaVersion` on the resume message), then discard
-   the stale parked copies with `DELETE /api/admin/dlq/$SEQ`.
+   stamps the CURRENT `SchemaVersion` and a resume-specific `Nats-Msg-Id`,
+   so JetStream cannot mistake it for the original launch inside its
+   five-minute deduplication window), then discard the stale parked copies
+   with `DELETE /api/admin/dlq/$SEQ`.
 
 ## Checklist: v7 → v8 (ModelOverrides)
 

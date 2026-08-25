@@ -2,8 +2,8 @@
 // cloud queue. It owns three concrete responsibilities:
 //
 //  1. Publisher — ensure the JetStream stream exists, then publish a
-//     queue.RunMessage onto `iterion.queue.runs` with `Nats-Msg-Id =
-//     run_id` so JetStream itself dedups republishes.
+//     queue.RunMessage onto `iterion.queue.runs` with a stable
+//     `Nats-Msg-Id`: run_id for launches, and a per-attempt salt for resumes.
 //  2. Consumer  — subscribe to the SHARED durable `iterion-runners`
 //     pull-consumer with AckWait=10min and MaxAckPending=DefaultMaxAckPending
 //     as a fleet-wide in-flight ceiling; each pod holds one in-flight run
@@ -285,9 +285,12 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 }
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
-// The Nats-Msg-Id header is set to RunID so that re-publishes within
-// the dedup window are silently absorbed by JetStream — that is what
-// makes the studio-side launch handler safely retryable.
+// Launches use RunID as Nats-Msg-Id so retries inside JetStream's dedup window
+// are absorbed. Resumes must use a distinct id: a schema-mismatch park can
+// happen before that window closes, and reusing bare RunID would make an
+// operator's successful resume response enqueue nothing. PublishedAtRFC is
+// stable when the same message object is retried, yet unique per resume
+// attempt created by SubmitResume.
 func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstream.PubAck, error) {
 	if err := msg.Validate(); err != nil {
 		return nil, fmt.Errorf("queue/nats: invalid RunMessage: %w", err)
@@ -313,7 +316,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	}
 
 	headers := nats.Header{}
-	headers.Set("Nats-Msg-Id", msg.RunID)
+	headers.Set("Nats-Msg-Id", runMessageID(msg))
 	headers.Set("iterion-schema-version", fmt.Sprintf("%d", msg.V))
 
 	// Plan §F (T-41): inject W3C traceparent + tracestate from the
@@ -344,6 +347,13 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 		Data:    body,
 		Header:  headers,
 	})
+}
+
+func runMessageID(msg *queue.RunMessage) string {
+	if msg.Resume != nil {
+		return fmt.Sprintf("%s|resume-%s", msg.RunID, msg.PublishedAtRFC)
+	}
+	return msg.RunID
 }
 
 // CancelRun fires the transient `iterion.cancel.<run_id>` Core NATS

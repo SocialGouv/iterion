@@ -8,6 +8,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/queue"
 )
 
 // NOTE on coverage scope. The bulk of pkg/queue/nats wraps the NATS
@@ -104,6 +105,20 @@ func TestRedeliveryWindowAccountsForSchemaMismatchDelay(t *testing.T) {
 				t.Errorf("RedeliveryWindow() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunMessageIDSeparatesLaunchAndResume(t *testing.T) {
+	launch := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:00:00Z"}
+	resume := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:01:00Z", Resume: &queue.ResumeSpec{}}
+	if got := runMessageID(launch); got != "run-1" {
+		t.Fatalf("launch message id = %q, want bare run id", got)
+	}
+	if got := runMessageID(resume); got != "run-1|resume-2026-08-25T08:01:00Z" {
+		t.Fatalf("resume message id = %q, want per-attempt salt", got)
+	}
+	if got := runMessageID(resume); got != runMessageID(resume) {
+		t.Fatalf("same resume message is not retry-stable: %q", got)
 	}
 }
 

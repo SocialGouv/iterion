@@ -459,4 +459,57 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		case <-time.After(150 * time.Millisecond):
 		}
 	})
+
+	t.Run("resume publication bypasses launch deduplication", func(t *testing.T) {
+		conn, _ := schemaRolloutConn(t, uri)
+		ctx := context.Background()
+		runID := fmt.Sprintf("run-resume-dedup-%d", time.Now().UnixNano())
+		base := queue.RunMessage{
+			V:              queue.SchemaVersion,
+			RunID:          runID,
+			WorkflowName:   "wf-resume-dedup",
+			IRCompiled:     json.RawMessage(`{}`),
+			TenantID:       "tenant-mixed",
+			PublishedAtRFC: "2026-08-25T08:00:00Z",
+		}
+		launchAck, err := conn.PublishRun(ctx, &base)
+		if err != nil {
+			t.Fatalf("publish launch: %v", err)
+		}
+		if launchAck.Duplicate {
+			t.Fatal("first launch publication was unexpectedly deduplicated")
+		}
+
+		resume := base
+		resume.Resume = &queue.ResumeSpec{}
+		resume.PublishedAtRFC = "2026-08-25T08:01:00Z"
+		resumeAck, err := conn.PublishRun(ctx, &resume)
+		if err != nil {
+			t.Fatalf("publish resume inside dedup window: %v", err)
+		}
+		if resumeAck.Duplicate {
+			t.Fatal("resume was silently swallowed by the launch's Nats-Msg-Id")
+		}
+
+		cons, err := conn.NewConsumer(ctx)
+		if err != nil {
+			t.Fatalf("consumer: %v", err)
+		}
+		for i, wantResume := range []bool{false, true} {
+			delivery, err := cons.Fetch(ctx, 5*time.Second)
+			if err != nil {
+				t.Fatalf("fetch publication %d: %v", i+1, err)
+			}
+			msg, err := delivery.Decode()
+			if err != nil {
+				t.Fatalf("decode publication %d: %v", i+1, err)
+			}
+			if gotResume := msg.Resume != nil; gotResume != wantResume {
+				t.Fatalf("publication %d resume=%t, want %t", i+1, gotResume, wantResume)
+			}
+			if err := delivery.Ack(); err != nil {
+				t.Fatalf("ack publication %d: %v", i+1, err)
+			}
+		}
+	})
 }
