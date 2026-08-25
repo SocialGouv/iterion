@@ -1132,6 +1132,10 @@ func (c *compiler) compileTools() {
 			} else {
 				postcondRefs = refs
 			}
+			// Same template machinery as `command:`, so the same cancel — and
+			// a postcondition is the deterministic truth oracle of a Verified
+			// Action, which makes a corrupted value worse here than anywhere.
+			c.checkQuotedCommandRefs(t.Name+" postcondition", t.Postcondition)
 		}
 		policy := t.Policy
 		if policy == "" && t.Postcondition != "" {
@@ -2068,21 +2072,25 @@ func computeLoopBodies(w *Workflow) {
 }
 
 // refInQuotes reports each template ref of a tool `command:` that sits inside
-// an author-written SINGLE-quoted span.
+// an author-written quoted span — single OR double.
 //
-// Single quotes specifically, because that is the cancel: the runtime escapes
-// a ref by wrapping the value in single quotes, so an author single quote
-// closes it and the value becomes syntax (proven in
-// model.TestAuthorQuotedRefWouldExecute). Inside DOUBLE quotes the runtime's
-// single quotes are literal and the value stays contained — with one residue
-// a `"` in the value would still close the author's span, which is narrower,
-// unproven here, and ticketed (native:e5d50342) rather than guessed at.
+// The runtime escapes a ref by wrapping the value in single quotes, and
+// neither kind of author quote survives that:
+//   - single: the substituted quote CLOSES the author's, and the value
+//     becomes bare shell syntax (`BASE_REF=”x;id;#”` runs `id`);
+//   - double: the runtime's quotes stay literal, so a benign value is
+//     CORRUPTED (`BASE_REF="{{ref}}"` with `main` hands the interpreter
+//     `'main'`), and a value carrying `"` closes the author's span and
+//     injects just the same.
 //
-// A scanner, not a regex: only a left-to-right walk can tell an OPENING quote
-// from a closing one, and a regex that cannot will happily match the text
-// BETWEEN two separate quoted words and report a hazard that is not there.
-// Single quotes are literal to the shell (nothing nests inside them); double
-// quotes end at the next unescaped double quote.
+// Both halves are reproduced against the real resolver in
+// model.TestAuthorQuotedRefsAreNotContained — an earlier version of this
+// check called the double-quoted shape "contained", which was wrong in both
+// directions and said so in three places.
+//
+// A scanner, not a regex: only a left-to-right walk tells an OPENING quote
+// from a closing one, and a regex that cannot will match the text BETWEEN two
+// quoted words and report a hazard that is not there.
 func refInQuotes(command string) []string {
 	var hits []string
 	var quote byte // 0 = outside quotes
@@ -2090,12 +2098,12 @@ func refInQuotes(command string) []string {
 		ch := command[i]
 		switch {
 		case quote == 0 && (ch == '\'' || ch == '"'):
-			quote = ch // both are tracked; only single-quoted refs are reported
+			quote = ch
 		case quote != 0 && ch == quote:
 			quote = 0
 		case quote == '"' && ch == '\\' && i+1 < len(command):
 			i++ // an escaped byte inside double quotes closes nothing
-		case quote == '\'' && ch == '{' && i+1 < len(command) && command[i+1] == '{':
+		case quote != 0 && ch == '{' && i+1 < len(command) && command[i+1] == '{':
 			if end := strings.Index(command[i:], "}}"); end > 0 {
 				hits = append(hits, command[i:i+end+2])
 				i += end + 1

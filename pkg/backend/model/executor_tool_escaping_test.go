@@ -62,27 +62,48 @@ func TestRawRefsBypassEscapingByDesign(t *testing.T) {
 	}
 }
 
-// The escaping holds for the BARE shape above — and cancels when the bot
-// author wraps the ref in quotes of their own: the substituted opening quote
-// closes the author's, and the value lands as shell SYNTAX. This is not
-// hypothetical prose; the sentinel below is created when it happens.
+// The escaping holds for the BARE shape above — and breaks BOTH ways when the
+// bot author wraps the ref in quotes of their own. Prose would not settle
+// which; the sentinel and the interpreter do.
 //
-// The engine cannot fix it at substitution time without guessing the author's
-// quoting context, so the fix lives where the shape is written: diagnostic
-// C137 (ir.refInQuotes) flags it at compile, and the catalog carries none.
-func TestAuthorQuotedRefWouldExecute(t *testing.T) {
-	sentinel := filepath.Join(t.TempDir(), "pwned")
+// The engine cannot fix this at substitution time without guessing the
+// author's quoting context, so the fix lives where the shape is written:
+// diagnostic C137 (ir.refInQuotes) flags it at compile, and the catalog
+// carries none.
+func TestAuthorQuotedRefsAreNotContained(t *testing.T) {
 	ref := &ir.Ref{Kind: ir.RefVars, Path: []string{"base_ref"}, Raw: "{{vars.base_ref}}"}
-	resolved := resolveCommandTemplate(`BASE_REF='{{vars.base_ref}}' true`, []*ir.Ref{ref}, nil,
-		map[string]any{"base_ref": "x;touch " + sentinel + ";#"})
 
-	_ = exec.Command("sh", "-c", resolved).Run()
-	if _, err := os.Stat(sentinel); err != nil {
-		t.Skipf("author-quoted injection did not reproduce (%v) — if the runtime learned to detect the author's quotes, "+
-			"this test should become an assertion that it did, and C137 can be reconsidered", err)
-	}
-	// Reproduced: the hazard is real, so the compile-time diagnostic that
-	// refuses this shape must exist. This test documents WHY C137 is not
-	// cosmetic.
-	t.Logf("author-quoted ref executed as syntax, as expected: %s", resolved)
+	t.Run("single quotes cancel — the value becomes syntax", func(t *testing.T) {
+		sentinel := filepath.Join(t.TempDir(), "pwned")
+		resolved := resolveCommandTemplate(`BASE_REF='{{vars.base_ref}}' true`, []*ir.Ref{ref}, nil,
+			map[string]any{"base_ref": "x;touch " + sentinel + ";#"})
+		_ = exec.Command("sh", "-c", resolved).Run()
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Errorf("no sentinel (%v) — if the runtime learned to see the author's quotes, C137 can be reconsidered; resolved: %s", err, resolved)
+		}
+	})
+
+	t.Run("double quotes corrupt a benign value", func(t *testing.T) {
+		resolved := resolveCommandTemplate(`BASE_REF="{{vars.base_ref}}" sh -c 'printf %s "$BASE_REF"'`,
+			[]*ir.Ref{ref}, nil, map[string]any{"base_ref": "main"})
+		out, err := exec.Command("sh", "-c", resolved).Output()
+		if err != nil {
+			t.Fatalf("resolved command failed (%v): %s", err, resolved)
+		}
+		if got := string(out); got == "main" {
+			t.Errorf("value arrived clean — the containment claim C137 was narrowed on would hold after all; resolved: %s", resolved)
+		} else {
+			t.Logf("value arrived as %q, not %q — the runtime's quotes survive as data", got, "main")
+		}
+	})
+
+	t.Run("double quotes inject when the value carries one", func(t *testing.T) {
+		sentinel := filepath.Join(t.TempDir(), "pwned")
+		resolved := resolveCommandTemplate(`BASE_REF="{{vars.base_ref}}" true`, []*ir.Ref{ref}, nil,
+			map[string]any{"base_ref": `a";touch ` + sentinel + `;"b`})
+		_ = exec.Command("sh", "-c", resolved).Run()
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Errorf("no sentinel (%v) — resolved: %s", err, resolved)
+		}
+	})
 }

@@ -34,45 +34,73 @@ func TestCatalogToolCommandsDoNotOptOutOfShellEscaping(t *testing.T) {
 	// Bot id → why its raw ref is safe. Empty today, deliberately.
 	allowed := map[string]string{}
 
-	roots, err := filepath.Glob("*/main.bot")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(roots) == 0 {
-		t.Fatal("no catalog bots found — the lint would pass vacuously")
-	}
-	for _, path := range roots {
-		bot := filepath.Dir(path)
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("%s: %v", path, err)
-		}
-		for _, cmd := range commandBackticks(string(src)) {
-			for _, hit := range rawRef.FindAllString(cmd, -1) {
-				if why, ok := allowed[bot]; ok {
-					t.Logf("%s: raw ref %s allowed (%s)", bot, hit, why)
-					continue
-				}
-				t.Errorf("%s: tool command uses the raw ref %s, which bypasses shell escaping.\n"+
-					"A forge-controlled value (PR body, branch name, issue title) then reaches `sh -c` as SYNTAX.\n"+
-					"Use the ordinary %s form, or add %q to this test's allowlist with the reason.",
-					bot, hit, strings.Replace(hit, "!", "", 1), bot)
-			}
-		}
-	}
-}
-
-// C137 is a WARNING (a repo full of the shape still compiles while it is
-// cleaned up), so nothing stops it drifting back into the catalog. Here it is
-// an error: the catalog is the reference implementation, and the shape is a
-// command-execution hazard on any forge-controlled value.
-func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
+	// Read the commands from the COMPILED tool nodes, not from the source
+	// text: `command:` has three spellings (backtick, double-quoted, block
+	// scalar) and a scan that knows only the first is blind to the other two —
+	// three catalog commands were never inspected.
 	paths, err := filepath.Glob("*/main.bot")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paths) == 0 {
 		t.Fatal("no catalog bots found — the lint would pass vacuously")
+	}
+	for _, path := range paths {
+		bot := filepath.Dir(path)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		pr := parser.Parse(path, string(src))
+		if pr.File == nil {
+			t.Logf("%s: not inspected (unparseable — the parse/compile test owns that)", path)
+			continue
+		}
+		cr := ir.Compile(pr.File)
+		if cr.Workflow == nil {
+			t.Logf("%s: not inspected (does not compile to a workflow)", path)
+			continue
+		}
+		for _, n := range cr.Workflow.Nodes {
+			tool, ok := n.(*ir.ToolNode)
+			if !ok {
+				continue
+			}
+			for _, body := range []string{tool.Command, tool.Postcondition} {
+				for _, hit := range rawRef.FindAllString(body, -1) {
+					if why, ok := allowed[bot]; ok {
+						t.Logf("%s: raw ref %s allowed (%s)", bot, hit, why)
+						continue
+					}
+					t.Errorf("%s: tool command uses the raw ref %s, which bypasses shell escaping.\n"+
+						"A forge-controlled value (PR body, branch name, issue title) then reaches `sh -c` as SYNTAX.\n"+
+						"Use the ordinary %s form, or add %q to this test's allowlist with the reason.",
+						bot, hit, strings.Replace(hit, "!", "", 1), bot)
+				}
+			}
+		}
+	}
+}
+
+func TestCatalogHasNoAuthorQuotedRefs(t *testing.T) {
+	// The catalog AND the shipped examples: an example is copied by whoever
+	// starts a bot, so an injectable shape there propagates further than one
+	// in a catalog bot.
+	paths, err := filepath.Glob("*/main.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples, err := filepath.Glob("../examples/*/*.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, err := filepath.Glob("../examples/*.bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths = append(append(paths, examples...), more...)
+	if len(paths) == 0 {
+		t.Fatal("no bots found — the lint would pass vacuously")
 	}
 	for _, path := range paths {
 		src, err := os.ReadFile(path)

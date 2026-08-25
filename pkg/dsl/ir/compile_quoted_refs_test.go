@@ -19,12 +19,14 @@ func TestRefInQuotes(t *testing.T) {
 		{"bare assignment is the safe shape", `BASE_REF={{vars.base_ref}} python3 -c "x"`, nil},
 		{"author single-quoted", `BASE_REF='{{vars.base_ref}}' python3 -c "x"`, []string{"{{vars.base_ref}}"}},
 		{
-			// Double quotes are NOT the cancel: the runtime's single quotes are
-			// literal inside them, so the value stays one word. Reporting it
-			// would be noise, and noise is where a real hazard hides.
-			"author double-quoted is contained",
+			// Double quotes are not a cancel but not containment either: the
+			// runtime's single quotes survive as DATA (`main` arrives as
+			// `'main'`), and a value carrying `"` closes the author's span and
+			// injects. Both reproduced in
+			// model.TestAuthorQuotedRefsAreNotContained.
+			"author double-quoted corrupts and injects",
 			`BASE_REF="{{vars.base_ref}}" true`,
-			nil,
+			[]string{"{{vars.base_ref}}"},
 		},
 		{"ref plus suffix inside quotes", `--out '{{input.run_dir}}/audit.err'`, []string{"{{input.run_dir}}"}},
 		{"ref inside a flag string", `STD='--standard {{input.standard}}'`, []string{"{{input.standard}}"}},
@@ -37,8 +39,9 @@ func TestRefInQuotes(t *testing.T) {
 			`cmd --in "$RUN/a.json" --lang {{input.report_lang}} > "$RUN/b.log"`,
 			nil,
 		},
-		{"multiple refs, only the single-quoted one", `A={{vars.a}} B='{{vars.b}}' C="{{vars.c}}"`, []string{"{{vars.b}}"}},
-		{"a ref in a python -c body is contained by the double quotes", `T={{vars.t}} python3 -c "limit = int({{vars.t}})"`, nil},
+		{"multiple refs, both quoted kinds", `A={{vars.a}} B='{{vars.b}}' C="{{vars.c}}"`, []string{"{{vars.b}}", "{{vars.c}}"}},
+		{"a ref inside a python -c body is quoted by its author too", `T={{vars.t}} python3 -c "limit = int({{vars.t}})"`, []string{"{{vars.t}}"}},
+		{"escaped quote inside double quotes does not close the span", `X="a\" {{vars.x}}"`, []string{"{{vars.x}}"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := refInQuotes(tc.command)
