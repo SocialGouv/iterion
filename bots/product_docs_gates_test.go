@@ -787,4 +787,31 @@ func TestProductDocsScopeCheck(t *testing.T) {
 			t.Fatalf("pre-existing changes were attributed to the run: %v", got.OutOfScope)
 		}
 	})
+
+	// The engine mirrors the bundle's skills into <workspace>/.claude/ at run
+	// start and again on every resume. Reading that as the campaign's work
+	// fails the gate on EVERY pass, and the campaign cannot fix it: the next
+	// pass re-creates the tree. Observed live on run 01a03a6a, where a clean
+	// 16-commit pass was reported as a scope violation on `.claude/`.
+	t.Run("the engine's own skill mirror is not the campaign's work", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		writeFile(t, ws, ".claude/skills/product-docs.md", "# skill mirrored by the engine\n")
+		writeFile(t, ws, "documentation_produits/demo/gestionnaire/deposer.md", "# Déposer\n")
+		prodyCommit(t, ws, "docs(demo): déposer")
+		got := run(t, ws, "documentation_produits/demo")
+		if !got.ScopeOK {
+			t.Fatalf("the engine's skill mirror was attributed to the campaign: %v — every pass would fail a gate the agent cannot satisfy", got.OutOfScope)
+		}
+	})
+
+	// The exclusion above must stay surgical: an untracked directory that is
+	// NOT the engine's mirror is still a violation.
+	t.Run("an untracked directory outside the product tree still fails", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		writeFile(t, ws, ".claude-notes/scratch.md", "# not the engine's tree\n")
+		got := run(t, ws, "documentation_produits/demo")
+		if got.ScopeOK {
+			t.Fatalf("an untracked tree outside the product dir passed the writeable-set gate")
+		}
+	})
 }

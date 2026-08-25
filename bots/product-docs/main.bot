@@ -1290,6 +1290,13 @@ for line in git(['status', '--porcelain']).splitlines():
     if line[:2].strip() == '??':
         changed.add(line[3:].strip())
 
+# iterion materialises the bundle's skills into <workspace>/.claude/ at run
+# start and again on every resume. That tree is the ENGINE's own artifact,
+# not the campaign's work: attributing it to the run would fail the gate on
+# every pass, and the campaign could not fix it — the next pass re-creates
+# it. Untracked directories arrive from git status as '.claude/'.
+changed = set(p for p in changed if p != '.claude' and not p.startswith('.claude/'))
+
 def allowed(p):
     if not p.endswith('.md'):
         return False
