@@ -119,10 +119,14 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	default:
 		sctx := store.WithIdentity(bg, env.TenantID, env.OwnerID)
 		changed, serr := r.cfg.Store.UpdateRunStatusIf(sctx, env.RunID, store.RunStatusFailedResumable, runErr,
-			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued})
+			[]store.RunStatus{store.RunStatusQueued})
 		if serr != nil {
 			logger.Warn("runner: schema-mismatch status flip for %s: %v", env.RunID, serr)
 		} else if changed {
+			// This delivery never acquired the run lease: a running row belongs
+			// to another pod (for example after an operator resumed while this
+			// stale message was still bouncing). Only the queued owner may emit
+			// the terminal-shaped outcome signals below.
 			// A schema park is a final disposition just like the generic DLQ
 			// path in processOne. Preserve its two user-facing side effects:
 			// completion callbacks and run-outcome events for notifications /

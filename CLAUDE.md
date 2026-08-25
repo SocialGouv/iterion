@@ -1693,15 +1693,18 @@ rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`. Full details + revert command:
+`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
+`nats-conformance` remains advisory until an admin adds it to ruleset
+18857412. Full details + revert command:
 [docs/merge-policy.md](docs/merge-policy.md).
 
-**Optional Revi merge gate.** Revi (`bots/review-pr`) can post a
+**Revi merge gate.** Revi (`bots/review-pr`) posts a
 deterministic `revi/review` commit status on a PR head — `success` when 0
 findings meet `gate_severity` (default `high`), else `failure`. Add that
-context to the required checks to make Revi's verdict block the merge (it is
-advisory until then). The verdict is a COUNT computed in the bot, never an LLM
-judgment; the review comments stay non-blocking advice. Pairs with the webhook
+context to another repository's required checks to make its verdict block the
+merge; it is already required here by ruleset 18857412. The verdict is a COUNT
+computed in the bot, never an LLM judgment; the review comments stay
+non-blocking advice. Pairs with the webhook
 `review_on_sync` opt-in (re-review each push so the status tracks the fixed
 head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
@@ -1714,7 +1717,7 @@ head sha, off by default so the developer keeps the choice.
 
 ## Conventions
 
-- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; CI `golangci` job (add to the branch-protection required checks to gate merges)
+- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; the CI `golangci` job is a required check.
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)

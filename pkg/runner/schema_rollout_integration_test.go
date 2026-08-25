@@ -381,4 +381,82 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			t.Fatalf("queue entry still present after exhausted delivery (fetch err = %v)", err)
 		}
 	})
+
+	t.Run("stale mismatch cannot clobber an active run", func(t *testing.T) {
+		conn, _ := schemaRolloutConn(t, uri)
+		ctx := context.Background()
+		runID := fmt.Sprintf("run-mixed-active-%d", time.Now().UnixNano())
+		tenantID := "tenant-mixed"
+		fs, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		now := time.Now().UTC()
+		if err := fs.SaveRun(ctx, &store.Run{
+			FormatVersion: store.RunFormatVersion,
+			ID:            runID,
+			WorkflowName:  "wf-mixed-fleet",
+			Status:        store.RunStatusQueued,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			TenantID:      tenantID,
+			OwnerID:       "owner-1",
+		}); err != nil {
+			t.Fatalf("save run: %v", err)
+		}
+		publishForeignVersion(t, conn, queue.SchemaVersion-1, runID, tenantID, false)
+		cons, err := conn.NewConsumer(ctx)
+		if err != nil {
+			t.Fatalf("consumer: %v", err)
+		}
+
+		events := eventbus.NewInProcBus(iterlog.Nop())
+		eventCh := make(chan trigger.Event, 1)
+		cancelEvents, err := events.Subscribe("schema-rollout-active-test", trigger.Matcher{}, func(_ context.Context, ev trigger.Event) error {
+			eventCh <- ev
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("subscribe outcome event: %v", err)
+		}
+		defer cancelEvents()
+
+		r := &Runner{cfg: Config{
+			NATS:                conn,
+			Events:              events,
+			Store:               fs,
+			Logger:              iterlog.Nop(),
+			SchemaMismatchDelay: schemaRolloutTestNakDelay,
+		}}
+		d1, err := cons.Fetch(ctx, 5*time.Second)
+		if err != nil {
+			t.Fatalf("first fetch: %v", err)
+		}
+		r.decodeOrTerm(d1)
+
+		// Simulate the documented reverse-direction recovery: the operator
+		// resumed the run at the current schema and another pod now owns it,
+		// while the stale message is still waiting for its final delivery.
+		if err := fs.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+			t.Fatalf("mark active run: %v", err)
+		}
+		d2, err := cons.Fetch(ctx, 5*time.Second)
+		if err != nil {
+			t.Fatalf("final stale fetch: %v", err)
+		}
+		r.decodeOrTerm(d2)
+
+		run, err := fs.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("load run: %v", err)
+		}
+		if run.Status != store.RunStatusRunning {
+			t.Fatalf("stale delivery changed active run to %q, want %q", run.Status, store.RunStatusRunning)
+		}
+		select {
+		case ev := <-eventCh:
+			t.Fatalf("stale delivery emitted phantom outcome event: kind=%q run=%q", ev.Kind, ev.Subject.ID)
+		case <-time.After(150 * time.Millisecond):
+		}
+	})
 }

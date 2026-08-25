@@ -276,14 +276,23 @@ jobs:
         run: |
           set -euo pipefail
           docker run -d --name nats-js -p 4222:4222 nats:2.14-alpine -js
+          ready=0
           for i in $(seq 1 30); do
-            if docker logs nats-js 2>&1 | grep -q "Server is ready"; then
+            logs="$(docker logs nats-js 2>&1)"
+            if grep -Fq "Server is ready" <<<"$logs"; then
               echo "nats ready"
+              ready=1
               break
             fi
             sleep 1
           done
-          docker logs nats-js 2>&1 | grep -q "JetStream" || { echo "JetStream not enabled"; exit 1; }
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-js
+            echo "NATS did not become ready"
+            exit 1
+          fi
+          logs="$(docker logs nats-js 2>&1)"
+          grep -Fq "JetStream" <<<"$logs" || { echo "JetStream not enabled"; exit 1; }
 
       - name: JetStream integration tests
         # Alongside pkg/runner's schema-rollout test, run EVERY suite
