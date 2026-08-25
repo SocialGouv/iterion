@@ -53,6 +53,43 @@ func TestChainSkipServesSkippedOutcome(t *testing.T) {
 	if out.Result.Tokens == 0 {
 		t.Errorf("failed primary's spend lost on the skip outcome: %+v", out.Result)
 	}
+	// The outcome must name the route that EXECUTED and spent — the
+	// runner's cost accumulator keys its claw double-count exclusion on
+	// that name, so an empty BackendName (→ the node's REQUESTED backend
+	// at the event layer) can erase a metered route's spend from the org
+	// cap and the credpool donor ledger.
+	if out.BackendName != delegate.BackendClaudeCode {
+		t.Errorf("skip outcome BackendName = %q, want the executed route's (%q)", out.BackendName, delegate.BackendClaudeCode)
+	}
+}
+
+// TestChainSkipNamesTheSpendingRoute: primary on one backend, a second
+// route on ANOTHER backend burns and fails, then skip — the outcome must
+// name the LAST executed route (the spend's origin), not the first.
+func TestChainSkipNamesTheSpendingRoute(t *testing.T) {
+	winErr := &delegate.ErrRateLimited{Provider: "x", Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)}
+	head := &backendScriptedBackend{name: delegate.BackendClaw, fail: winErr, tokens: 10}
+	second := &backendScriptedBackend{name: delegate.BackendPi, fail: winErr, tokens: 4242, costUSD: 3.5}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaw, head)
+	reg.Register(delegate.BackendPi, second)
+	e := newFallbackExecutor(reg, EventHooks{})
+	build := e.newElementBuilder("x", delegate.BackendClaw, head,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "x", Model: "m"}, nil
+		})
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "metered", Backend: delegate.BackendPi, Model: "m2", On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+		{Label: "give_up", Skip: true, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+	}
+	out, err := e.dispatchChain(context.Background(), "x", chain, "m", build)
+	if err != nil || !out.Skipped {
+		t.Fatalf("expected skip outcome, got err=%v out=%+v", err, out)
+	}
+	if out.BackendName != delegate.BackendPi {
+		t.Errorf("skip outcome BackendName = %q, want %q (the metered route that spent $3.50 — a claw label would erase it from RunTotals)", out.BackendName, delegate.BackendPi)
+	}
 }
 
 // TestChainSkipRespectsOnFilter: a skip route scoped to usage_window must

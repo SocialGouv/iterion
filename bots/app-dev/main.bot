@@ -1845,7 +1845,9 @@ workflow app_dev:
   ## convergence (draft_gate, not interactive) and an operator SHIP
   ## (derive_draft, is_ship). deploy_enabled=false skips straight to the
   ## PR tail — Appy stays platform-agnostic by default.
-  deploy_gate -> deploy when enabled
+  ## fail_log mapped explicitly empty: an unmapped input field is not ""
+  ## but the raw {{input.fail_log}} placeholder in the deploy prompt.
+  deploy_gate -> deploy when enabled with { fail_log: "" }
   deploy_gate -> mr_gate when not enabled
 
   deploy -> deploy_trace with { image_ref: "{{outputs.deploy.image_ref}}" }

@@ -115,7 +115,19 @@ execution) hardened the design; all folded in before first release:
 - **A filtered skip refuses UNCLASSIFIED failures** (bare CLI exits,
   flattened sandbox errors) on both the execute-failure and the
   build-error walks — converting an indescribable failure into a
-  zero-value success is a lie; `on: [any]` opts in explicitly.
+  zero-value success is a lie; `on: [any]` opts in explicitly. One
+  arbitrated nuance: a build error routes on the LAST execute failure's
+  category, so after a matching outage (say usage_window) an
+  unbuildable rescue route no longer disarms the skip — the trade-off
+  is that a mis-configured rescue is then absorbed into the skip
+  instead of surfacing; the `model_fallback` events still record both
+  hops.
+- **A skip outcome names the LAST executed route as its backend**
+  (`chainOutcome.BackendName`): the runner's cost accumulator keys its
+  claw double-count exclusion on that name, so an empty value (→ the
+  node's requested backend) would erase a metered route's real spend
+  from the org cap and the credpool donor ledger. Known limit: a chain
+  that burned on two backends keeps one label.
 - **Dual injection no longer writes `mono_family: ""`** — it violated
   the `[enum]` review-pr/evolve declare and killed the run at the launch
   enum gate (proven live; the local `--var review_mode=dual` path had

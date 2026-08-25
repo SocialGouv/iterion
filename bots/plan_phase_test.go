@@ -157,27 +157,32 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 				t.Errorf("%s: no loop back-edge into campaign found — the continuation loop is gone?", bot)
 			}
 
-			// Declaration-order invariant: plan_gate's `when skipped` edge
-			// contributes its blanks even when UNTRAVERSED (every edge whose
-			// source has output applies), so plan_revise's edge must be
-			// declared AFTER it or the blanks clobber the revised plan.
-			gateIdx, reviseIdx := -1, -1
+			// Declaration-order invariant: an UNTRAVERSED forward edge still
+			// contributes its mappings (every edge whose source has output
+			// applies, later declaration winning), so EVERY forward edge into
+			// campaign that maps a plan field — plan_topology's and
+			// plan_gate's blanks both qualify when the phase is on — must be
+			// declared BEFORE plan_revise's edge, or its blanks clobber the
+			// revised plan on pass 1.
+			planFields := map[string]bool{"plan": true, "plan_critique": true, "plan_responses": true}
+			reviseIdx := -1
 			for i, e := range wf.Edges {
-				if e.To != "campaign" {
-					continue
-				}
-				switch e.From {
-				case "plan_gate":
-					gateIdx = i
-				case "plan_revise":
+				if e.To == "campaign" && e.From == "plan_revise" {
 					reviseIdx = i
 				}
 			}
-			if gateIdx < 0 || reviseIdx < 0 {
-				t.Fatalf("%s: plan_gate/plan_revise edges into campaign missing (%d, %d)", bot, gateIdx, reviseIdx)
+			if reviseIdx < 0 {
+				t.Fatalf("%s: plan_revise -> campaign edge missing", bot)
 			}
-			if gateIdx > reviseIdx {
-				t.Errorf("%s: plan_gate -> campaign (idx %d) declared AFTER plan_revise -> campaign (idx %d) — its untraversed blanks would clobber the revised plan", bot, gateIdx, reviseIdx)
+			for i, e := range wf.Edges {
+				if e.To != "campaign" || e.From == "plan_revise" || e.IsBoundedIteration() {
+					continue
+				}
+				for _, m := range e.With {
+					if planFields[m.Key] && i > reviseIdx {
+						t.Errorf("%s: forward edge %s -> campaign (idx %d) maps %q but is declared AFTER plan_revise -> campaign (idx %d) — its untraversed contribution would clobber the revised plan", bot, e.From, i, m.Key, reviseIdx)
+					}
+				}
 			}
 		})
 	}

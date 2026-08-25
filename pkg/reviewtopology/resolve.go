@@ -324,10 +324,13 @@ func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams Fam
 		if env := strings.TrimSpace(os.Getenv(PlanReviewEnv)); env != "" {
 			// A brake must fail SAFE: any set-but-unrecognised value reads
 			// as OFF (the frugal direction), never as a silent fall-through
-			// to auto → on. Mirrors automemory.ParseMode's posture.
+			// to auto → on. "auto" is this dial's own neutral member and
+			// stays neutral (credential-based resolution).
 			switch strings.ToLower(env) {
 			case "on", "true", "1", "yes":
 				override = PlanReviewOn
+			case "auto":
+				// neutral: keep the credential-based resolution
 			default:
 				override = PlanReviewOff
 			}

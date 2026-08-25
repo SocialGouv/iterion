@@ -596,7 +596,20 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 	// served by an `action: skip` terminal route carries _fallback_used
 	// (+ _skipped) with NO _backend — nothing ran — and that most-degraded
 	// case is exactly what the run-header chip exists to surface.
-	if used, _ := output["_fallback_used"].(bool); used {
+	used, _ := output["_fallback_used"].(bool)
+	if !used && backend != "" {
+		// A clean pass on the primary route: a previous iteration's
+		// degradation (fallback-served or skipped) no longer holds — the
+		// chip is last-state-wins in BOTH directions. The event timeline
+		// keeps the history.
+		for i, u := range b.fallbacksUsed {
+			if u.NodeID == evt.NodeID {
+				b.fallbacksUsed = append(b.fallbacksUsed[:i], b.fallbacksUsed[i+1:]...)
+				break
+			}
+		}
+	}
+	if used {
 		servedBy, _ := output["_served_by"].(string)
 		skipped, _ := output["_skipped"].(bool)
 		// Dedupe by node: a declared loop re-emits node_finished per

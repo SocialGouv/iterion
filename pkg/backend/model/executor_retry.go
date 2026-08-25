@@ -705,6 +705,15 @@ func (e *ClawExecutor) dispatchChain(
 		// would otherwise disarm a usage_window-filtered skip and turn
 		// the operator's `skip` policy into `wait`.
 		lastCat = delegate.FallbackUnclassified
+		// lastBackend is the backend of the most recently EXECUTED route —
+		// the spend's origin. The skip outcome must carry it: an empty
+		// BackendName falls back to the node's REQUESTED backend at the
+		// event layer, and the runner's cost accumulator keys its claw
+		// double-count exclusion on that name — a metered route's real
+		// spend mislabelled "claw" is erased from the org cap and the
+		// credpool donor ledger. (Known limit: a chain that burned on TWO
+		// backends keeps one label — the last one.)
+		lastBackend string
 	)
 	effModel := func(el chainElement) string {
 		if el.Model != "" {
@@ -729,7 +738,9 @@ func (e *ClawExecutor) dispatchChain(
 		if el.Skip {
 			res := spent.applyTo(delegate.Result{Output: map[string]any{}})
 			return chainOutcome{
-				Result:      res,
+				Result: res,
+				// The route that EXECUTED and spent — see lastBackend.
+				BackendName: lastBackend,
 				ServedBy:    stepLabel(el),
 				FellThrough: true,
 				Skipped:     true,
@@ -784,6 +795,7 @@ func (e *ClawExecutor) dispatchChain(
 				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
 			}
 		}
+		lastBackend = backendName
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
