@@ -211,6 +211,11 @@ func (w *RefreshWorker) dropSecurityReadEntry(ctx context.Context, conn Connecti
 	if !conn.SecurityReadEnabled || conn.Kind != KindGitHubApp {
 		return nil
 	}
+	// RunOnce's ctx carries NO tenant (it sweeps every tenant), and the
+	// degraded early-return happens BEFORE refreshOne scopes it — so scope
+	// here too. Without it the tenant-scoped store refuses every read and
+	// the withdrawal could never land in cloud, re-erroring on every tick.
+	ctx = store.WithTenant(ctx, conn.TenantID)
 	if err := RemoveSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn); err != nil {
 		return fmt.Errorf("forge: withdraw security-read entry for stalled connection %s: %w", conn.ID, err)
 	}

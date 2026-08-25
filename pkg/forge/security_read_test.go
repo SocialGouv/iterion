@@ -375,6 +375,11 @@ func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 	if err := UpsertSecurityReadToken(context.Background(), secStore, sealer, &conn, "ghs_live", now); err != nil {
 		t.Fatal(err)
 	}
+	// The worker must scope the ctx itself: RunOnce sweeps every tenant with
+	// a tenant-less ctx, and the Mongo store REFUSES a tenant-less read.
+	// A plain memory store would hide that (it ignores the tenant), so the
+	// production contract is what this test runs against.
+	tenantScoped := tenantScopedSecretStore{secStore}
 	// The connection degrades (a permanent permission mismatch): it can no
 	// longer mint, and the map carries no expiry — leaving the entry means
 	// the hourly bot reads a dying token with no server-side trace.
@@ -383,7 +388,7 @@ func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &RefreshWorker{
-		Connections: connStore, Secrets: secStore, Sealer: sealer,
+		Connections: connStore, Secrets: tenantScoped, Sealer: sealer,
 		Now:          func() time.Time { return now },
 		RefresherFor: func(Connection) TokenRefresher { return fakeRefresher{newAccess: "x", expiresAt: now.Add(time.Hour)} },
 		SecurityMinter: func(context.Context, Connection) (string, error) {

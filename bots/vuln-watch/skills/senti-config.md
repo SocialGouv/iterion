@@ -59,6 +59,12 @@ inventory (default `inventory.json`, or the config's `inventory_path`).
   `{hours}`, `{last}`, `{pct}`, `{sev}`) are substituted verbatim.
 - `github_api_base` — override for GitHub Enterprise (default
   `https://api.github.com`).
+- `--var kev_max_age_days=` (default 90) — age belt on the KEV lane: an
+  entry catalogued longer ago than this is never treated as fresh,
+  whatever the state says. It bounds a lost/corrupted cursor, which
+  would otherwise replay the whole catalog in one tick (measured: 83
+  alerts from 1675 entries), while leaving a long outage room to catch
+  up.
 
 ## The alert policy (why your critical did not post)
 
@@ -218,6 +224,12 @@ iterion remote schedules create --data '{"bot_id":"vuln-watch",
   N observed` is the policy working (nothing exploited); `BOOTSTRAP`
   means the first tick just armed the cursors; `suppressed` counts
   dedup hits.
+- **A newly added org stays quiet on its first tick** — deliberate: an
+  org with no cursor hands back its whole OPEN backlog, which is
+  history, not news. Those units are observed and still re-fire the day
+  an exploitation signal appears. Same rule for any observed unit: the
+  re-fire needs a signal that CHANGED since the bot chose silence, not
+  one that was already there.
 - **Same alert twice** — expected when a delivery partially failed
   (the tick did not consume, so everything replays) or when the tier
   escalated (one re-fire per unit, by design).

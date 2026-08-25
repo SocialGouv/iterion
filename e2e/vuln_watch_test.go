@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -213,6 +214,13 @@ func (h *vulnWatchHarness) setKEV(entries []map[string]any) {
 // notify outputs.
 func (h *vulnWatchHarness) runWatch(t *testing.T, wf *ir.Workflow, dryRun bool) (match, notify map[string]any) {
 	t.Helper()
+	return h.runWatchOpts(t, wf, dryRun, nil)
+}
+
+// runWatchOpts is runWatch with per-run overrides of the match_policy inputs
+// (the knobs a deployment tunes).
+func (h *vulnWatchHarness) runWatchOpts(t *testing.T, wf *ir.Workflow, dryRun bool, overrides map[string]any) (match, notify map[string]any) {
+	t.Helper()
 	vars := map[string]any{
 		"workspace_dir": h.ws, "config_path": "vuln-watch.json",
 		"inventory_path": "inventory.json", "mode": "watch",
@@ -247,7 +255,7 @@ func (h *vulnWatchHarness) runWatch(t *testing.T, wf *ir.Workflow, dryRun bool) 
 		t.Fatalf("poll_exploit failed: %v\nstderr: %s", err, stderr)
 	}
 
-	match, stderr, err = runPy(t, h.ws, vwSub(t, vwTool(t, wf, "match_policy").Script, map[string]any{
+	matchInputs := map[string]any{
 		"alerts_file": dep["alerts_file"], "units_file": adv["units_file"],
 		"kev_file": kev["kev_file"], "dependabot_errors": dep["errors"],
 		"advisory_errors": adv["errors"], "kev_error": kev["error"],
@@ -258,8 +266,15 @@ func (h *vulnWatchHarness) runWatch(t *testing.T, wf *ir.Workflow, dryRun bool) 
 		"kev_url": plan["kev_url"], "inventory_path": plan["inventory_path"],
 		"workspace": h.ws, "state_dir": ".vuln-watch", "scratch_dir": h.scratch,
 		"timeout_secs": 5, "allow_private": true, "max_alerts": 20,
+		// Wide open in tests: the fixtures use fixed historical dates, and
+		// the age belt is exercised by its own test below.
+		"kev_max_age_days":    36500,
 		"observe_window_days": 60, "source_stale_hours": 24,
-	}, nil, nil))
+	}
+	for k, v := range overrides {
+		matchInputs[k] = v
+	}
+	match, stderr, err = runPy(t, h.ws, vwSub(t, vwTool(t, wf, "match_policy").Script, matchInputs, nil, nil))
 	if err != nil {
 		t.Fatalf("match_policy failed: %v\nstderr: %s", err, stderr)
 	}
@@ -676,5 +691,157 @@ func TestVulnWatch_UntrustedTitleCannotForgeAnAlert(t *testing.T) {
 	// silently), but it can no longer span lines.
 	if !strings.Contains(msg, "Vulnerabilite mineure dans Metabase") {
 		t.Fatalf("the real title must still be there:\n%s", msg)
+	}
+}
+
+// TestVulnWatch_IntraRunDedupIsScopeAware pins the same missed-alert class
+// as the cross-run test, on the INTRA-run path: an advisory and a KEV entry
+// sharing one CVE but naming DIFFERENT projects arrive in the same tick.
+// Collapsing them would leave the second project permanently untold — the
+// KEV id cursor advances past the entry, so it never comes back.
+func TestVulnWatch_IntraRunDedupIsScopeAware(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// Same tick: a Metabase advisory listing CVE-2026-7002, and a KEV entry
+	// for that very CVE naming Spring Boot (project ACCOLADE).
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-710", Title: "Multiples vulnerabilites dans Metabase",
+		CVEs: []string{"CVE-2026-7001", "CVE-2026-7002"}, Products: []string{"Metabase"},
+	}})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7002", "vendorProject": "VMware", "product": "Spring Boot",
+			"vulnerabilityName": "Spring Boot RCE", "dateAdded": "2026-08-24"},
+	})
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 2 {
+		t.Fatalf("both scopes must be told in the same tick: %v", match["summary"])
+	}
+	joined := strings.Join(h.sinkBodies, "\n")
+	if !strings.Contains(joined, "DOMIFA") || !strings.Contains(joined, "ACCOLADE") {
+		t.Fatalf("expected both projects named:\n%s", joined)
+	}
+
+	// A genuine same-scope duplicate still collapses to one.
+	h.feedItems.Store([]vwFeedItem{{
+		Ref: "CERTFR-2026-ALE-711", Title: "Vulnerabilite dans Metabase",
+		CVEs: []string{"CVE-2026-7100"}, Products: []string{"Metabase"},
+	}})
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7002", "vendorProject": "VMware", "product": "Spring Boot", "dateAdded": "2026-08-24"},
+		{"cveID": "CVE-2026-7100", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "Metabase RCE", "dateAdded": "2026-08-25"},
+	})
+	match, _ = h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 1 || match["suppressed_count"].(float64) != 1 {
+		t.Fatalf("same-scope duplicate must still collapse: %v", match["summary"])
+	}
+}
+
+// TestVulnWatch_NewOrgBacklogDoesNotFlood pins the per-org bootstrap: adding
+// a second GitHub org to an ALREADY-armed deployment must arm that org's
+// cursor without posting its whole open backlog — the day-one flood that
+// teaches everyone to mute the channel.
+func TestVulnWatch_NewOrgBacklogDoesNotFlood(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap: state armed, org "testorg" cursored
+
+	// The org's historical open alerts, all exploitation-signalled (so only
+	// the backlog rule can keep them quiet).
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2019-0001", "vendorProject": "Old", "product": "Old", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2024-5001", "vendorProject": "x", "product": "x", "dateAdded": "2026-01-02"},
+		{"cveID": "CVE-2024-5002", "vendorProject": "x", "product": "x", "dateAdded": "2026-01-02"},
+	})
+	h.depAlerts.Store([]map[string]any{
+		vwDepAlert("GHSA-old-0001", "CVE-2024-5001", "critical", "testorg/domifa", "pkg-a", "2024-01-01T00:00:00Z", "1.0.0"),
+		vwDepAlert("GHSA-old-0002", "CVE-2024-5002", "high", "testorg/accolade-env", "pkg-b", "2024-01-02T00:00:00Z", "2.0.0"),
+	})
+	// Simulate "org just added": drop its cursor from the armed state.
+	statePath := filepath.Join(h.ws, ".vuln-watch", "state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	cursors := st["cursors"].(map[string]any)
+	cursors["dependabot"] = map[string]any{}
+	out, _ := json.Marshal(st)
+	if err := os.WriteFile(statePath, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	match, _ := h.runWatch(t, wf, false)
+	if match["alert_count"].(float64) != 0 {
+		t.Fatalf("a newly-added org's open backlog must not be posted: %v", match["summary"])
+	}
+	if match["observed_count"].(float64) != 2 {
+		t.Fatalf("the backlog should be observed (re-fireable later), got: %v", match["summary"])
+	}
+}
+
+// TestVulnWatch_KEVAgeBeltBoundsAStateLoss pins the blast radius of a lost
+// or corrupted KEV cursor: without the belt the next tick replays the whole
+// catalog (measured: 83 alerts from 1675 entries on the real one), which is
+// the single failure that teaches a team to mute the channel.
+func TestVulnWatch_KEVAgeBeltBoundsAStateLoss(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setKEV([]map[string]any{{"cveID": "CVE-2019-0001", "vendorProject": "Old",
+		"product": "Old", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap
+
+	// A historical catalogue entry matching the inventory, plus a recent
+	// one. A wrecked cursor makes BOTH look unseen.
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2015-1000", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "ancient Metabase flaw", "dateAdded": "2015-06-01"},
+		{"cveID": "CVE-2026-1500", "vendorProject": "VMware", "product": "Spring Boot",
+			"vulnerabilityName": "recent Spring Boot flaw",
+			"dateAdded":         time.Now().UTC().AddDate(0, 0, -3).Format("2006-01-02")},
+	})
+	statePath := filepath.Join(h.ws, ".vuln-watch", "state.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st map[string]any
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	// Armed, but with a bogus id set — the state-loss shape.
+	st["cursors"].(map[string]any)["kev_seen"] = []string{"CVE-0000-0000"}
+	out, _ := json.Marshal(st)
+	if err := os.WriteFile(statePath, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default belt (90 days) — the harness override is dropped for this run.
+	match, _ := h.runWatchOpts(t, wf, false, map[string]any{"kev_max_age_days": 90})
+	if match["alert_count"].(float64) != 1 {
+		t.Fatalf("only the recent entry may fire: %v", match["summary"])
+	}
+	if msg := h.sinkBodies[len(h.sinkBodies)-1]; !strings.Contains(msg, "CVE-2026-1500") {
+		t.Fatalf("expected the recent KEV entry, got:\n%s", msg)
 	}
 }

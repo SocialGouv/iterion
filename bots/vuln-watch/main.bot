@@ -131,6 +131,12 @@ vars:
   ## against KEV/EPSS every run (the re-fire mechanism).
   observe_window_days: int = 60
 
+  ## Age belt on the KEV lane: a catalog entry older than this is never
+  ## treated as fresh, whatever the state says. Bounds the blast radius of
+  ## a lost/corrupted cursor (which would otherwise replay the whole
+  ## catalog) while leaving a long outage room to catch up.
+  kev_max_age_days: int = 90
+
   ## Hours without a successful poll of a configured source before the
   ## bot announces the silence on the sinks (at most once per window) —
   ## the "finished is not delivered" lesson. 0 disables.
@@ -232,6 +238,7 @@ schema match_input:
   timeout_secs: int
   allow_private: bool
   max_alerts: int
+  kev_max_age_days: int
   observe_window_days: int
   source_stale_hours: int
 
@@ -514,12 +521,28 @@ tool poll_dependabot:
                 with _opener.open(req, timeout=timeout) as r:
                     return json.loads(r.read(8 * 1024 * 1024).decode('utf-8')), (r.headers.get('Link') or '')
             except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
+                ## GitHub answers 403 for BOTH "you may not read this" and
+                ## "slow down" (secondary rate limit / abuse detection). Only
+                ## the first is a credential problem worth failing an hourly
+                ## run over; a rate limit is transient and must be retried,
+                ## then reported as a source error like any other blip.
+                body = ''
+                try:
+                    body = (e.read() or b'')[:500].decode('utf-8', 'replace').lower()
+                except Exception:
+                    pass
+                rate_limited = (e.code == 403 and (
+                    'rate limit' in body or 'abuse' in body or
+                    (e.headers or {}).get('Retry-After') is not None or
+                    (e.headers or {}).get('X-RateLimit-Remaining') == '0'))
+                if e.code == 401 or (e.code == 403 and not rate_limited):
                     raise SystemExit('vuln-watch: GitHub rejected the Dependabot token (HTTP ' + str(e.code) +
                                      ') on ' + url.split('?')[0] + ' -- the token lacks Dependabot-alerts read'
-                                     ' access or expired; rotate it (docs/forge-security-read.md)')
+                                     ' access, the org has Dependabot alerts disabled, or the token expired;'
+                                     ' check the connection health (docs/forge-security-read.md). GitHub said: ' +
+                                     body[:200])
                 last = e
-                if e.code < 500:
+                if e.code < 500 and not rate_limited:
                     raise
             except (TimeoutError, socket.timeout, urllib.error.URLError) as e:
                 last = e
@@ -934,6 +957,7 @@ tool match_policy:
     timeout = {{input.timeout_secs}}
     allow_private = {{input.allow_private}}
     max_alerts = int({{input.max_alerts}})
+    kev_max_age_days = int({{input.kev_max_age_days}})
     observe_days = int({{input.observe_window_days}})
     stale_hours = int({{input.source_stale_hours}})
     os.chdir(ws)
@@ -1005,7 +1029,15 @@ tool match_policy:
     ## feeds_seen.
     kev_seen = set(cursors.get('kev_seen') or [])
     kev_armed = bool(kev_seen)
-    kev_fresh = [v for v in kev_map.values() if kev_armed and (v.get('cveID') or '') not in kev_seen]
+    ## Age belt: an entry catalogued long ago is not news whatever the state
+    ## says. Without it a lost/corrupted kev_seen turns the next tick into a
+    ## flood of the whole catalog (measured: 83 alerts from 1675 entries) —
+    ## the one failure that teaches everyone to mute the channel. Generous
+    ## enough that a long outage still catches up (default 90 days).
+    kev_cutoff = (now - datetime.timedelta(days=max(1, kev_max_age_days))).date().isoformat()
+    kev_fresh = [v for v in kev_map.values()
+                 if kev_armed and (v.get('cveID') or '') not in kev_seen
+                 and (v.get('dateAdded') or '') >= kev_cutoff]
 
     ## ── build this run's candidate units ────────────────────────────
     units = []
@@ -1026,6 +1058,14 @@ tool match_policy:
                                         'severity': (adv.get('severity') or '').lower(),
                                         'cves': [], 'repos': [], 'fixes': [], 'org': org,
                                         'package': '', 'ecosystem': '',
+                                        ## An org with no cursor yet (freshly
+                                        ## added to the config) hands back its
+                                        ## whole OPEN backlog — history, not
+                                        ## news. Marked so the policy observes
+                                        ## it instead of alerting: it arms the
+                                        ## state and can still re-fire the day
+                                        ## an exploitation signal lights up.
+                                        'backlog': bool(blob.get('bootstrap')),
                                         'url': 'https://github.com/advisories/' + gid if gid.startswith('GHSA-') else ''})
             cve = adv.get('cve_id') or ''
             if cve and cve not in g['cves']:
@@ -1161,6 +1201,16 @@ tool match_policy:
                 sig.append({'type': 'epss', 'cve': c, 'score': s})
         return sig
 
+    def signal_key(sig):
+        ## A stable fingerprint of the exploitation evidence, so "the signal
+        ## LIT UP" can be told apart from "the signal was already there when
+        ## we chose to stay silent". Re-firing on the latter would replay a
+        ## whole backlog the moment it is first observed.
+        return ';'.join(sorted(
+            s['type'] + ':' + str(s.get('cve') or '') + ':' +
+            (s.get('date') or '') + ':' + ('%.4f' % (s.get('score') or 0))
+            for s in (sig or [])))
+
     def alert_decision(u, sig):
         if sig:
             return True
@@ -1222,13 +1272,14 @@ tool match_policy:
                 suppressed += 1
                 continue
             sig = signals_for(u)
-            if alert_decision(u, sig):
+            if alert_decision(u, sig) and not u.get('backlog'):
                 alerts.append(render_fields(u, sig))
             else:
                 observed_new += 1
                 for c in (u.get('cves') or []):
                     st_cves.setdefault(c, {'status': 'observed', 'first_seen': now_iso})
-                st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None))
+                st_units.setdefault(u['id'], dict(u, first_seen=now_iso, alerted_at=None,
+                                                 observed_signals=signal_key(sig)))
 
         ## Re-fire: an OBSERVED unit whose exploitation signal lit up since —
         ## the Metabase scenario. One alert, then it flips to alerted.
@@ -1239,10 +1290,14 @@ tool match_policy:
             if any((st_cves.get(c) or {}).get('status') == 'alerted' for c in (u.get('cves') or [])):
                 continue
             sig = signals_for(u)
-            ## Two ways back into the alert set: a NEW exploitation signal
-            ## (the Metabase re-fire), or a unit the per-run cap deferred
-            ## (which may have no signal at all — see above).
-            if (sig or u.get('deferred')) and alert_decision(u, sig):
+            ## Two ways back into the alert set: the exploitation signal
+            ## CHANGED since we chose silence (the Metabase re-fire — it had
+            ## none, KEV gave it one), or the per-run cap deferred the unit
+            ## (which may carry no signal at all). A signal that was already
+            ## there at observation time is not news: that is what keeps a
+            ## newly-added org's backlog quiet instead of replaying it.
+            changed = sig and signal_key(sig) != (u.get('observed_signals') or '')
+            if (changed or u.get('deferred')) and alert_decision(u, sig):
                 refire.append(render_fields(u, sig,
                                             refire_of='' if u.get('deferred') else (u.get('first_seen') or '')))
         alerts.extend(refire)
@@ -1265,16 +1320,25 @@ tool match_policy:
     ## one of them — observed live: Metabase posted twice). After the
     ## priority sort, drop any unit whose CVE set is fully covered by the
     ## units already kept this run.
-    covered = set()
+    covered = {}
     kept = []
     for a in alerts:
         cves = a.get('cves') or []
-        if cves and all(c in covered for c in cves):
+        ## Scope-aware, exactly like already_alerted: a unit is a duplicate
+        ## only when every one of its CVEs is ALREADY being alerted FOR
+        ## every scope this unit would name. A KEV entry naming ANOTHER
+        ## project must survive an advisory that merely shares the CVE —
+        ## otherwise that project is never told, and the KEV id cursor has
+        ## already advanced past the entry, so it never comes back.
+        scope = {p for p in (a.get('projects') or []) if p}
+        for r in (a.get('repos') or []):
+            p = repo_index.get(r.lower())
+            scope.add(p if p else 'repo:' + r.lower())
+        if cves and all(scope <= covered.get(c, set()) for c in cves):
             suppressed += 1
-            ## Its CVEs are being alerted through the covering unit — keep
-            ## the staged state consistent (alerted, not observed).
             continue
-        covered.update(cves)
+        for c in cves:
+            covered[c] = covered.get(c, set()) | scope
         kept.append(a)
     alerts = kept
     overflow = max(0, len(alerts) - max_alerts)
@@ -1294,6 +1358,7 @@ tool match_policy:
         ## owed: the overflow notice promises these fire next run, and that
         ## promise has to be true.
         rec['deferred'] = True
+        rec.setdefault('observed_signals', signal_key(a.get('signals')))
         st_units[a['id']] = rec
     ## Posted units flip to alerted (applied to the STAGED state; it only
     ## persists after delivery).
@@ -1799,6 +1864,7 @@ workflow vuln_watch:
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}",
     max_alerts: "{{vars.max_alerts_per_run}}",
+    kev_max_age_days: "{{vars.kev_max_age_days}}",
     observe_window_days: "{{vars.observe_window_days}}",
     source_stale_hours: "{{vars.source_stale_hours}}"
   }
