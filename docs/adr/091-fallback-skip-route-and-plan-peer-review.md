@@ -127,7 +127,11 @@ execution) hardened the design; all folded in before first release:
   claw double-count exclusion on that name, so an empty value (→ the
   node's requested backend) would erase a metered route's real spend
   from the org cap and the credpool donor ledger. Known limit: a chain
-  that burned on two backends keeps one label.
+  that burned on two backends keeps one label — the residual error is a
+  BOUNDED OVER-count (a claw share already priced per-step may be
+  counted again under the last route's label), never a disappearance;
+  a cap that closes early is conservative, one that cannot see spend is
+  not.
 - **Dual injection no longer writes `mono_family: ""`** — it violated
   the `[enum]` review-pr/evolve declare and killed the run at the launch
   enum gate (proven live; the local `--var review_mode=dual` path had

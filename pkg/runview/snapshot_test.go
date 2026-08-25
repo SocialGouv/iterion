@@ -1342,6 +1342,18 @@ func TestSnapshotReducer_FallbacksUsedLastStateWins(t *testing.T) {
 	if len(got) != 1 || !got[0].Skipped {
 		t.Fatalf("served→skip: %+v, want one entry skipped=true", got)
 	}
+
+	// A snapshot already handed out must not mutate when a later clean
+	// pass removes the entry from the builder (the removal shifts the
+	// backing array; an aliased slice would duplicate entries).
+	before := b.Snapshot().Run.FallbacksUsed
+	b.Apply(evt(5, store.EventNodeFinished, "", "implement", cleanOut))
+	if len(before) != 1 || !before[0].Skipped || before[0].NodeID != "implement" {
+		t.Fatalf("earlier snapshot mutated by a later Apply: %+v", before)
+	}
+	if after := b.Snapshot().Run.FallbacksUsed; len(after) != 0 {
+		t.Fatalf("clean pass must clear the entry in the NEW snapshot, got %+v", after)
+	}
 }
 
 func TestSnapshotReducer_RunRewoundResetsDroppedNodes(t *testing.T) {

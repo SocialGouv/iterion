@@ -545,7 +545,10 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	header := b.header
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
-	header.FallbacksUsed = b.fallbacksUsed
+	// Copied, not aliased: the clean-pass removal shifts the backing
+	// array in place, which would mutate (and duplicate entries in) a
+	// snapshot already handed out under the documented incremental usage.
+	header.FallbacksUsed = append([]FallbackUsage(nil), b.fallbacksUsed...)
 	header.Deployment = b.buildDeployment()
 	return &RunSnapshot{
 		Run:        header,
