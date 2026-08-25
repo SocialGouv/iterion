@@ -333,17 +333,13 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
-	// Resolve the mono/dual review topology for bi-model review-loop bots.
-	// No-op unless the workflow declares a review_mode var; then detect
-	// host provider credentials and inject the resolved review_mode +
-	// mono_family (the --review-mode flag / a --var override wins over
-	// auto-detection). See pkg/reviewtopology.
-	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(ctx), opts.ReviewMode); injected {
-		if family != "" {
-			logger.Info("review topology: %s (family %s)", mode, family)
-		} else {
-			logger.Info("review topology: %s", mode)
-		}
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families). No-op unless the workflow
+	// declares the matching var; then detect host provider credentials and
+	// inject the resolution (the --review-mode flag / a --var override wins
+	// over auto-detection). See pkg/reviewtopology.
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
+		logger.Info("%s", inj.Summary())
 	}
 
 	if opts.Timeout > 0 {

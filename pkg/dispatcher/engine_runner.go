@@ -392,20 +392,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)
 	}
 
-	// Resolve the mono/dual review topology for a fresh dispatch (no-op
-	// unless the workflow declares a review_mode var). A per-ticket
-	// bot_arg review_mode wins over auto-detection; no dispatcher-level
-	// flag override, so pass "". Mirrors the CLI and runview surfaces.
+	// Resolve the credential-derived topology vars for a fresh dispatch
+	// (no-op unless the workflow declares review_mode / plan_review /
+	// llm_families). A per-ticket bot_arg wins over auto-detection; no
+	// dispatcher-level flag override, so pass "". Mirrors the CLI and
+	// runview surfaces.
 	if spec.Vars == nil {
 		spec.Vars = map[string]any{}
 	}
-	if mode, family, injected := reviewtopology.InjectIfDeclared(r.workflow, spec.Vars, detect.Detect(ctx), ""); injected {
-		r.logger.Info("review topology: %s%s", mode, func() string {
-			if family != "" {
-				return " (family " + family + ")"
-			}
-			return ""
-		}())
+	if inj := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); inj.Summary() != "" {
+		r.logger.Info("%s", inj.Summary())
 	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
 }
