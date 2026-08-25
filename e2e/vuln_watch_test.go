@@ -954,6 +954,10 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	}
 	run(dir, "init", "--bare", "-b", "main", bare)
 	run(dir, "clone", bare, ws)
+	// The bot's own `git commit` runs with the ambient environment, and CI
+	// has no global identity — a real workspace does, so configure it here.
+	run(ws, "config", "user.email", "senti@example.test")
+	run(ws, "config", "user.name", "Senti Test")
 	if err := os.WriteFile(filepath.Join(ws, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -964,6 +968,8 @@ func TestVulnWatch_PushConflictKeepsOperatorWork(t *testing.T) {
 	// A second clone pushes a CONFLICTING change to the same log file.
 	other := filepath.Join(dir, "other")
 	run(dir, "clone", bare, other)
+	run(other, "config", "user.email", "other@example.test")
+	run(other, "config", "user.name", "Other Writer")
 	if err := os.MkdirAll(filepath.Join(other, ".vuln-watch"), 0o755); err != nil {
 		t.Fatal(err)
 	}

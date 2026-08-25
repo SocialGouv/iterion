@@ -1761,7 +1761,15 @@ tool commit_state:
         ## runs with `worktree: none`, i.e. directly in their checkout.
         before = subprocess.run(['git', 'rev-parse', 'HEAD'],
                                 capture_output=True, text=True).stdout.strip()
-        subprocess.run(['git', 'commit', '-m', msg], check=True, capture_output=True)
+        committed = subprocess.run(['git', 'commit', '-m', msg], capture_output=True, text=True)
+        if committed.returncode != 0:
+            ## Name the cause instead of dying on a CalledProcessError
+            ## traceback: the usual one is a runner with no git identity,
+            ## which is a one-line fix the message should hand over.
+            raise SystemExit('vuln-watch: git commit of the state dir failed -- ' +
+                             'if git reports an unknown identity, set user.email/user.name on the '
+                             'workspace clone (or in the runner image). git said: ' +
+                             ((committed.stderr or committed.stdout or '')[-400:]).strip())
         br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                             capture_output=True, text=True).stdout.strip() or 'HEAD'
         for _ in range(5):
