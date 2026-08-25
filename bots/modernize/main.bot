@@ -317,6 +317,14 @@ tool plan_read:
             emit("every lot in the contract is done.")
 
     gate = chosen.get("exit_gate") or []
+    # A YAML scalar declares one command, a sequence several — both are
+    # legitimate contract forms. Joining a bare string would iterate its
+    # CHARACTERS: the verifier then runs `t` (exit 127) instead of `test …`,
+    # and the lot can never converge. Mesure : premier lot d'une campagne de
+    # rejeu, gate `test -f …` declare en scalaire, verdict rouge sur la
+    # lettre `t`.
+    if isinstance(gate, str):
+        gate = [gate]
     if not gate:
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "
