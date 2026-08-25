@@ -101,6 +101,10 @@ type RunOptions struct {
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
 	// is on.
 	LoopBudgetGuard string
+	// Supervisors is the run-level override for spawning DSL-declared
+	// `supervisor NAME:` watchers ("", "on", "off"). "" inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string
 
 	// RepoDevbox is the run-level override deciding whether the TARGET
 	// REPO's devbox.json is installed for this run ("on"|"off"; empty
@@ -190,6 +194,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
 		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
+	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
 
 	if opts.BranchName != "" {
 		if err := git.ValidateBranchName(opts.BranchName); err != nil {
@@ -257,10 +264,16 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
 	// event hub onto the engine so each coordinator can observe this run
 	// live. Injection (store-direct) is set up after the store exists.
+	// The kill switch (--supervisors / ITERION_SUPERVISORS) skips the
+	// wiring loudly — a declared capability never disappears in silence.
 	var superviseHub *supervise.EventHub
 	if len(wf.Supervisors) > 0 {
-		superviseHub = supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		if enabled, source := supervise.DeclaredEnabled(opts.Supervisors); enabled {
+			superviseHub = supervise.NewEventHub()
+			engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		} else {
+			logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
+		}
 	}
 
 	runName := store.GenerateRunName(iterFile + ":" + runID)

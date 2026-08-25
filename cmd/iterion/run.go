@@ -32,6 +32,7 @@ var runOpts struct {
 	compress            string
 	autoMemory          string
 	loopBudgetGuard     string
+	supervisors         string
 	repoDevbox          string
 	permission          string
 	permissionAllow     []string
@@ -72,6 +73,7 @@ var runCmd = &cobra.Command{
 			Compress:            runOpts.compress,
 			AutoMemory:          runOpts.autoMemory,
 			LoopBudgetGuard:     runOpts.loopBudgetGuard,
+			Supervisors:         runOpts.supervisors,
 			RepoDevbox:          runOpts.repoDevbox,
 			Permission:          runOpts.permission,
 			PermissionAllow:     runOpts.permissionAllow,
@@ -125,6 +127,7 @@ func init() {
 	f.StringVar(&runOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md): \"on\" lets agent/judge nodes read and maintain a persistent MEMORY.md across runs of this bot on this project, \"off\" disables. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY; the default is off, so a run is hermetic unless it opts in. Honoured by claude_code, claw and pi. See docs/memory-and-knowledge.md.")
 	f.StringVar(&runOpts.repoDevbox, "repo-devbox", "", "install the TARGET repository's devbox.json for this run: \"on\" (default) | \"off\" to skip it when the run does not build that repo (a review, an audit) and would otherwise pay its whole Nix toolchain. The BOT's own devbox.json is unaffected. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX. See docs/dsl.md.")
 	f.StringVar(&runOpts.loopBudgetGuard, "loop-budget-guard", "", "refuse a loop iteration the budget cannot fund, so the run leaves through its own exit path (a PR tail, a report) with the work it banked instead of dying mid-iteration: \"on\" (default) | \"off\" to run at the cap head-on. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.")
+	f.StringVar(&runOpts.supervisors, "supervisors", "", "spawn the workflow's DSL-declared supervisor: watchers: \"on\" (default) | \"off\" to run unsupervised (cost control / isolating a suspect steering policy). Empty inherits ITERION_SUPERVISORS. See docs/supervisors.md.")
 	f.StringVar(&runOpts.permission, "permission", "", "tool-permission gate (anti-prompt-injection): \"ask\" pauses for human approval on any tool not allow-listed, \"deny\" hard-blocks it (headless), \"off\" disables. Empty inherits the workflow/node permission: DSL then ITERION_PERMISSION. See docs/permissions.md.")
 	f.StringArrayVar(&runOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), Claude-Code syntax e.g. 'Bash(go test:*)', 'Read(**)', 'Edit(pkg/**)'. Auto-approved without prompting. Additive to the workflow allow: list.")
 	f.StringArrayVar(&runOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls always pause for approval. Additive to the workflow ask: list.")

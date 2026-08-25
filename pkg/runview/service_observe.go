@@ -115,6 +115,13 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 	if wf == nil || len(wf.Supervisors) == 0 {
 		return func() {}
 	}
+	// Kill switch (ITERION_SUPERVISORS; the CLI adds a per-run
+	// --supervisors layer on its own path). Skipped loudly — a declared
+	// capability never disappears in silence.
+	if enabled, source := supervise.DeclaredEnabled(""); !enabled {
+		logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
+		return func() {}
+	}
 	var coords []*supervise.Coordinator
 	for _, sup := range wf.Supervisors {
 		spec := supervise.Spec{

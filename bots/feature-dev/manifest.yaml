@@ -1,7 +1,12 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.1.0
+version: 2.2.0
+## 2.2.0 — Persy, the perseverance-coach supervisor: a concurrent LLM
+## watcher on the campaign node (docs/supervisors.md) that pushes back on
+## premature "impossible", expedient shortcuts, and unbanked state under
+## budget pressure — plus a static PERSISTENCE clause in the campaign
+## contract. Skippable per run with --supervisors off.
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; gh/glab move to the bot's
 ## pinned devbox.json.

@@ -77,6 +77,51 @@ declared in the DSL — the supervisor bot registers the patterns it cares
 about at runtime; use the CLI `--monitor` flag to pre-seed them when
 attaching externally.
 
+### Disabling declared supervisors (kill switch)
+
+Declared supervisors spawn by default. The escape hatch, resolved
+run-level override → env → on:
+
+- `iterion run --supervisors off` (and `iterion resume --supervisors
+  off` — like the other run-level overrides it is NOT persisted on the
+  run, so a launch-time `off` must be re-stated on resume);
+- `ITERION_SUPERVISORS=off` machine-wide (also the switch for
+  studio/server-launched runs, which have no per-run flag yet).
+
+The skip is loud (a `supervisors: N declared supervisor(s) disabled by
+…` warning) — a declared capability never disappears in silence. Use it
+for cost control, or to isolate a supervisor suspected of steering a
+run astray.
+
+## The perseverance-coach pattern
+
+The first shipped use of the DSL block is **Persy**, feature-dev's
+perseverance coach ([bots/feature-dev/main.bot](../bots/feature-dev/main.bot)
+— `supervisor persy:` + `prompt persy_policy:`): a supervisor that
+reproduces, agent-side, the push a good operator supplies when watching
+a coding session live. Its policy is a reference for authoring similar
+coaches:
+
+- **monitors-first** — register `text_contains` monitors on give-up
+  markers ("impossible", "unsolvable", "give up", "workaround for
+  now"…), `tool_error` on Bash, and `budget_warning`; stay silent on
+  ordinary turn boundaries so evals stay cheap;
+- **four intervention classes** — premature impossibility (demand one
+  more *instrumented* attempt: debug output, smaller repro, bisect),
+  the expedient path (name the durable alternative), a failure loop
+  (change of approach, not another retry), and budget/context pressure
+  (bank now: commit what is green + a precise remaining-work note);
+- **an asymptote guard** — never contest an honest termination report,
+  never enlarge the scope, never re-raise an answered point. The coach
+  pushes toward *completion*, not perpetual motion, so it composes with
+  the convergence contract (ADR-058) instead of fighting it.
+
+This matches what the 2025–26 steering literature converged on
+(deterministic monitors + an advisor LLM consulted on detection;
+explicit anti-give-up prompting in production harnesses), and the
+failure mode it targets — an agent declaring a solvable problem
+impossible until pushed — is well documented in the wild.
+
 ## Attaching a supervisor to a running run (CLI)
 
 ```sh

@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // forceStaleStaleAfter is the minimum time since the last events.jsonl
@@ -67,6 +68,11 @@ type ResumeOptions struct {
 	// resume, for the same reason AutoMemory does: it is not persisted, so a
 	// resume that says nothing falls back to the workflow's value.
 	LoopBudgetGuard string
+	// Supervisors re-states the run-level supervisors override on resume
+	// ("", "on", "off"; "" inherits ITERION_SUPERVISORS then on). Like the
+	// other run-level overrides it is not persisted on the run, so a
+	// launch-time `off` must be repeated here.
+	Supervisors string
 
 	// RepoDevbox re-states the run-level repo_devbox override on resume;
 	// like LoopBudgetGuard it is not persisted on the run, so a launch-time
@@ -244,6 +250,21 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	resumeOpts := []runtime.EngineOption{}
+	// DSL-declared supervisors resume with the run: the resumed stretch is
+	// the same campaign the supervisor was declared to watch. Same wiring
+	// and kill switch as the run path (run.go).
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 {
+		if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+			return UserInputError(fmt.Errorf("--supervisors: %w", err))
+		}
+		if enabled, source := supervise.DeclaredEnabled(opts.Supervisors); enabled {
+			superviseHub = supervise.NewEventHub()
+			resumeOpts = append(resumeOpts, runtime.WithEventObserver(superviseHub.Publish))
+		} else {
+			logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", len(wf.Supervisors), source)
+		}
+	}
 	// Keep capturing across a resume: stopping here would leave a hole in
 	// the workspace history exactly where the operator is iterating.
 	if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
@@ -333,6 +354,11 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 		p.KV("Log Level", level.String())
 		p.Blank()
+	}
+
+	if superviseHub != nil {
+		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, logger)
+		defer stop()
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
