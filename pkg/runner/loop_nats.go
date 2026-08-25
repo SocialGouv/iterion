@@ -134,9 +134,9 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 			// stale message was still bouncing). Only the queued owner may emit
 			// the terminal-shaped outcome signals below.
 			// A schema park is a final disposition just like the generic DLQ
-			// path in processOne. Preserve its two user-facing side effects:
-			// completion callbacks and run-outcome events for notifications /
-			// trigger chaining. Only the successful CAS owner emits them.
+			// path in processOne. Preserve its terminal side effects: release
+			// the credential-pool lease, send the completion callback and emit
+			// the run-outcome event. Only the successful CAS owner does so.
 			outcomeMsg = &queue.RunMessage{RunID: env.RunID, TenantID: env.TenantID, OwnerID: env.OwnerID}
 		}
 	}
@@ -144,6 +144,10 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		logger.Warn("runner: term after schema-mismatch handling: %v", termErr)
 	}
 	if outcomeMsg != nil {
+		// This sealed bundle will never execute: a later explicit resume
+		// resolves credentials and acquires afresh. Leaving its lease open
+		// would strand the donor's concurrency slot until lease expiry.
+		r.cfg.CredPool.Release(context.Background(), outcomeMsg.RunID)
 		r.fireCompletionNotifier(outcomeMsg)
 		r.fireOutcomeEvent(outcomeMsg, decodeErr)
 	}

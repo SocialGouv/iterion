@@ -26,6 +26,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
@@ -137,6 +138,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			ctx := context.Background()
 			runID := fmt.Sprintf("run-mixed-%d-%d", dir.v, time.Now().UnixNano())
 			tenantID := "tenant-mixed"
+			pool := newPoolHarnessForRun(t, credpool.Limits{MaxConcurrentRuns: 1}, runID)
 			completionCh := make(chan notify.CompletionPayload, 1)
 			callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				defer req.Body.Close()
@@ -190,6 +192,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 				t.Fatalf("consumer: %v", err)
 			}
 			r := &Runner{cfg: Config{
+				CredPool:            pool.broker,
 				NATS:                conn,
 				Events:              events,
 				Store:               fs,
@@ -263,6 +266,13 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("schema park fired no run-outcome event")
+			}
+			leases, err := pool.leases.ListByDonor(ctx, "donor", 10)
+			if err != nil || len(leases) != 1 {
+				t.Fatalf("donor lease history = (%d, %v), want one lease", len(leases), err)
+			}
+			if !leases[0].Closed {
+				t.Fatal("schema park left credential-pool lease open")
 			}
 
 			// The payload is parked VERBATIM, headers explain why.
