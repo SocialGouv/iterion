@@ -285,6 +285,10 @@ func (e *ClawExecutor) dispatchWithObservability(
 		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 		di := delegateInfoFromResult(bn, out.Result)
 		di.DeclaredModel = baseModel
+		// A skip outcome finished nothing: keep BackendName (the spend's
+		// origin — the metrics claw-exclusion keys on it) but flag it so
+		// recordServed and the event do not claim a backend SERVED.
+		di.Skipped = out.Skipped
 		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil

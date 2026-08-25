@@ -446,6 +446,9 @@ export interface FallbackUsage {
   // backend / model are what actually ran, not what was requested.
   backend?: string;
   model?: string;
+  // skipped marks an `action: skip` terminal route: NOTHING served the
+  // node — it completed with a zero-value output (backend/model empty).
+  skipped?: boolean;
 }
 
 // RunLoopProgress reports a named loop's semantic progress: the current

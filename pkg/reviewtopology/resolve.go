@@ -269,6 +269,15 @@ func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams Famil
 		override = inputOverride(inputs, VarReviewMode)
 	}
 	mode, monoFamily = ResolveFamilies(fams, override)
+	// An operator's explicit --var mono_family wins over the resolver's
+	// preference when it names an AVAILABLE family (never silently replace
+	// an operator's explicit choice); an unavailable one keeps the
+	// resolver's pick — visible in the launch summary either way.
+	if mode == ModeMono {
+		if ov := strings.ToLower(inputOverride(inputs, VarMonoFamily)); ov != "" && fams[ov] {
+			monoFamily = ov
+		}
+	}
 	if inputs != nil {
 		inputs[VarReviewMode] = mode
 		// Never write an empty mono_family: it is meaningless in dual (and
@@ -311,9 +320,17 @@ func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams Fam
 		return "", false
 	}
 	override := inputOverride(inputs, VarPlanReview)
-	if override == "" || override == PlanReviewAuto {
+	if override == "" || strings.EqualFold(override, PlanReviewAuto) {
 		if env := strings.TrimSpace(os.Getenv(PlanReviewEnv)); env != "" {
-			override = env
+			// A brake must fail SAFE: any set-but-unrecognised value reads
+			// as OFF (the frugal direction), never as a silent fall-through
+			// to auto → on. Mirrors automemory.ParseMode's posture.
+			switch strings.ToLower(env) {
+			case "on", "true", "1", "yes":
+				override = PlanReviewOn
+			default:
+				override = PlanReviewOff
+			}
 		}
 	}
 	mode = ResolvePlanReview(fams, override)

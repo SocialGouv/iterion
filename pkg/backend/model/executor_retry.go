@@ -699,6 +699,12 @@ func (e *ClawExecutor) dispatchChain(
 		spent       chainSpend
 		causes      []error
 		nextAllowed int // first index the walk may execute (skip filter)
+		// lastCat is the most recent EXECUTE failure's classification. A
+		// later build error must route on it, not on Unclassified: a
+		// usage_window outage followed by an unbuildable rescue route
+		// would otherwise disarm a usage_window-filtered skip and turn
+		// the operator's `skip` policy into `wait`.
+		lastCat = delegate.FallbackUnclassified
 	)
 	effModel := func(el chainElement) string {
 		if el.Model != "" {
@@ -745,11 +751,13 @@ func (e *ClawExecutor) dispatchChain(
 			if !fallbackRemains {
 				break
 			}
-			// A build error is unclassifiable; route it through the same
-			// acceptance walk as an execute failure so a FILTERED skip is
-			// never reached by it (an unresolvable backend must not turn
-			// the node into a zero-value success).
-			j := firstAcceptingFrom(chain, i+1, delegate.FallbackUnclassified)
+			// A build error carries no classification of its own; route on
+			// the last EXECUTE failure's category (Unclassified when none
+			// yet) through the same acceptance walk as an execute failure —
+			// a FILTERED skip is never reached by an unclassified build
+			// error, and a usage_window-filtered skip still fires when the
+			// original outage WAS a usage window.
+			j := firstAcceptingFrom(chain, i+1, lastCat)
 			if j < 0 {
 				if e.logger != nil {
 					e.logger.Warn("[%s#%d/%s] %q failed to build; no remaining route accepts an unclassified failure — stopping the chain",
@@ -798,6 +806,7 @@ func (e *ClawExecutor) dispatchChain(
 			break
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
+		lastCat = cat
 		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
 		// A middle route that refuses the category is SKIPPED so a later
 		// route that accepts it (e.g. the shipped example's gpt route

@@ -77,6 +77,11 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		parsed, err := time.ParseDuration(ir.ExpandEnvWithDefault(b.MaxDuration))
 		if err == nil {
 			maxDur = parsed
+		} else if logger != nil {
+			// An unparseable max_duration must not silently ship a run
+			// with NO time budget — a "2h3Om" typo would otherwise
+			// disable the cap without a trace.
+			logger.Warn("budget: max_duration %q does not parse (%v) — the DURATION cap is DISABLED for this run", b.MaxDuration, err)
 		}
 	}
 

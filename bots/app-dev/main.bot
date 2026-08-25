@@ -391,9 +391,13 @@ prompt campaign_user:
   Feedback from the PREVIOUS pass (empty on the first pass). When
   present it is EITHER the deterministic gate's failure log — the
   tree was RED, fix exactly what it shows — OR review findings — fix
-  those — OR operator draft-review feedback prefixed
-  "OPERATOR DRAFT-REVIEW FEEDBACK" — address exactly that:
+  those:
   {{input.fail_log}}
+
+  OPERATOR DRAFT-REVIEW FEEDBACK (empty = none yet; may carry over from
+  an earlier round — address what is not already addressed, the gate
+  feedback above is always current):
+  {{input.draft_feedback}}
 
   PEER-REVIEWED BUILD PLAN (empty = no plan phase ran, plan in stride
   as usual; on continuation passes read `git log` instead). The plan is
@@ -775,6 +779,14 @@ schema chat_input:
 ## failure log, review findings, or operator draft-review feedback).
 schema campaign_input:
   fail_log: string
+  ## Operator draft-review feedback — its OWN key, never multiplexed onto
+  ## fail_log: both loop back-edges (gate + derive_draft) re-apply on
+  ## every re-entry and the later-declared one wins on a shared key, so a
+  ## shared fail_log let one draft round hijack the gate's failure log
+  ## for every subsequent pass. Standing guidance: it persists across
+  ## later passes by design (the operator's ask stays relevant until
+  ## shipped); the gate log is always the CURRENT truth.
+  draft_feedback: string
   ## Plan-phase hand-off (empty when the phase is off / skipped / on
   ## continuation passes — git is the durable state there).
   plan: string
@@ -1732,7 +1744,8 @@ workflow app_dev:
   ## field is not "" but the raw {{input.x}} placeholder leaking into
   ## the prompt (the engine keeps unresolved refs as-is).
   plan_topology -> campaign when not do_plan with {
-    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+    fail_log: "", draft_feedback: "",
+    plan: "", plan_critique: "", plan_responses: ""
   }
 
   plan -> plan_review with {
@@ -1755,11 +1768,12 @@ workflow app_dev:
     _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
   }
   plan_gate -> campaign when skipped with {
-    fail_log: "", plan: "{{outputs.plan.plan}}",
+    fail_log: "", draft_feedback: "", plan: "{{outputs.plan.plan}}",
     plan_critique: "", plan_responses: ""
   }
   plan_revise -> campaign with {
     fail_log:       "",
+    draft_feedback: "",
     plan:           "{{outputs.plan_revise.plan}}",
     plan_critique:  "{{outputs.plan_review.concerns}}",
     plan_responses: "{{outputs.plan_revise.review_responses}}"
@@ -1816,9 +1830,13 @@ workflow app_dev:
   ## operator's feedback (bounded); hold_for_later → done (unconditional
   ## fallthrough — commits stay banked where the run left them).
   derive_draft -> deploy_gate when is_ship
+  ## Maps ONLY draft_feedback — never fail_log (see campaign_input: a
+  ## shared key on two loop back-edges lets the later one hijack it on
+  ## every subsequent pass), and no blanking of the plan fields either
+  ## (the gate back-edge owns those; two loop edges must not collide on
+  ## any key — bots/plan_phase_test.go enforces it).
   derive_draft -> campaign when is_changes as draft_loop("{{vars.max_draft_loops}}") with {
-    fail_log: "OPERATOR DRAFT-REVIEW FEEDBACK (address exactly this, then re-report the termination contract):\n{{outputs.derive_draft.feedback}}",
-    plan: "", plan_critique: "", plan_responses: ""
+    draft_feedback: "{{outputs.derive_draft.feedback}}"
   }
   derive_draft -> done
 

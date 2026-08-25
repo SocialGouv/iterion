@@ -90,3 +90,95 @@ func TestPlanPhaseWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanPhaseCampaignEdgeMappings pins the two edge-merge invariants the
+// engine cannot check (buildNodeInputRS applies EVERY edge whose source
+// has output — forward edges first, then loop back-edges, later
+// declaration winning on a shared key):
+//
+//  1. every FORWARD edge into `campaign` maps every campaign_input field
+//     — an unmapped field is not "" but the raw {{input.x}} placeholder
+//     leaking into the prompt;
+//  2. no two LOOP back-edges into `campaign` map the same key — a shared
+//     key lets the later-declared loop hijack it on every subsequent
+//     pass (app-dev's draft_feedback/fail_log split exists because of
+//     exactly this).
+func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
+	for _, bot := range planPhaseBots {
+		t.Run(bot, func(t *testing.T) {
+			path := filepath.Join(bot, "main.bot")
+			src, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			cr := ir.Compile(parser.Parse(path, string(src)).File)
+			if cr.HasErrors() {
+				t.Fatalf("%s does not compile: %+v", path, cr.Diagnostics)
+			}
+			wf := cr.Workflow
+
+			schema, ok := wf.Schemas["campaign_input"]
+			if !ok {
+				t.Fatal("campaign_input schema missing")
+			}
+			var fields []string
+			for _, f := range schema.Fields {
+				fields = append(fields, f.Name)
+			}
+
+			loopKeyOwners := map[string]string{} // key -> "from(loop)"
+			for _, e := range wf.Edges {
+				if e.To != "campaign" {
+					continue
+				}
+				mapped := map[string]bool{}
+				for _, m := range e.With {
+					mapped[m.Key] = true
+				}
+				if e.IsBoundedIteration() {
+					for k := range mapped {
+						owner := e.From + "(" + e.LoopName + e.ForeachName + ")"
+						if prev, dup := loopKeyOwners[k]; dup {
+							t.Errorf("%s: loop back-edges %s and %s both map %q — the later-declared one hijacks it on every pass",
+								bot, prev, owner, k)
+						}
+						loopKeyOwners[k] = owner
+					}
+					continue
+				}
+				for _, f := range fields {
+					if !mapped[f] {
+						t.Errorf("%s: forward edge %s -> campaign does not map %q — the prompt renders a raw {{input.%s}} placeholder on that path",
+							bot, e.From, f, f)
+					}
+				}
+			}
+			if len(loopKeyOwners) == 0 {
+				t.Errorf("%s: no loop back-edge into campaign found — the continuation loop is gone?", bot)
+			}
+
+			// Declaration-order invariant: plan_gate's `when skipped` edge
+			// contributes its blanks even when UNTRAVERSED (every edge whose
+			// source has output applies), so plan_revise's edge must be
+			// declared AFTER it or the blanks clobber the revised plan.
+			gateIdx, reviseIdx := -1, -1
+			for i, e := range wf.Edges {
+				if e.To != "campaign" {
+					continue
+				}
+				switch e.From {
+				case "plan_gate":
+					gateIdx = i
+				case "plan_revise":
+					reviseIdx = i
+				}
+			}
+			if gateIdx < 0 || reviseIdx < 0 {
+				t.Fatalf("%s: plan_gate/plan_revise edges into campaign missing (%d, %d)", bot, gateIdx, reviseIdx)
+			}
+			if gateIdx > reviseIdx {
+				t.Errorf("%s: plan_gate -> campaign (idx %d) declared AFTER plan_revise -> campaign (idx %d) — its untraversed blanks would clobber the revised plan", bot, gateIdx, reviseIdx)
+			}
+		})
+	}
+}

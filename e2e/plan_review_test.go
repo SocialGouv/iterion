@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -87,8 +86,9 @@ func requireEmpty(t *testing.T, in map[string]any, field string) {
 		t.Errorf("campaign input lacks %q entirely — the prompt renders a raw {{input.%s}} placeholder", field, field)
 		return
 	}
-	if s, _ := v.(string); s != "" || strings.Contains(s, "{{") {
-		t.Errorf("campaign input %q = %v, want \"\"", field, v)
+	s, isStr := v.(string)
+	if !isStr || s != "" {
+		t.Errorf("campaign input %q = %v (%T), want the empty string", field, v, v)
 	}
 }
 

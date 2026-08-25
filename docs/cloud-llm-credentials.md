@@ -189,10 +189,15 @@ The next launch of a declaring bot logs
 with the usual smoke: a one-node `claw` + `openai/gpt-5.6-sol` bot via
 `iterion remote runs launch --follow`. To force or refuse per run:
 `--var plan_review=on|off`; deployment-wide brake:
-`ITERION_PLAN_REVIEW=off` on the server/runner env (it wins over auto,
-loses to an explicit `--var` — the surface for webhook/cron lanes that
-have no per-run form, since a platform-tier OpenAI credential flips
-`auto` on for every tenant). Mid-run peer-forfait exhaustion follows
+`ITERION_PLAN_REVIEW=off` on the **server** (studio/API) env — NOT the
+runner: the resolution happens at publish, the runner consumes
+already-resolved vars, so setting it on the runner Deployment is a
+no-op. It wins over auto, loses to an explicit `--var`; any
+set-but-unrecognised value reads `off` (a brake fails safe). This is
+the surface for webhook/cron lanes that have no per-run form, since a
+platform-tier OpenAI credential flips `auto` on for every tenant. (A
+run riding the runner's env-fallback credentials gets no injection at
+all — the bots' `auto` default then reads as off, fail-safe.) Mid-run peer-forfait exhaustion follows
 `--var plan_review_policy=wait|skip` (wait = the run parks
 failed_resumable and the usage-window retry resumes it when the window
 reopens; skip = continue without the review, loudly stamped). Gotcha:

@@ -123,7 +123,10 @@ execution) hardened the design; all folded in before first release:
   imported it).
 - **`ITERION_PLAN_REVIEW`** is the deployment-wide brake between `--var`
   and auto: platform-tier credentials can flip `auto` on for every
-  tenant, including webhook/cron lanes with no per-run surface.
+  tenant, including webhook/cron lanes with no per-run surface. Set it
+  on the **server** (studio/API) env — the runner consumes
+  already-resolved vars and never reads it; an unrecognised value reads
+  `off` (a brake fails safe).
 - **`when:` must reference declared vars** (C173): an absent var reads
   as false at dispatch and would silently disarm the route.
 - **Skip observability**: `model_fallback` carries `to_action: "skip"`

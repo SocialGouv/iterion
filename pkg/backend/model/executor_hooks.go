@@ -60,6 +60,13 @@ type DelegateInfo struct {
 	// not know the model, NOT a free call: observers must skip rather than
 	// record a $0 sample.
 	CostUSD float64
+	// Skipped marks a node completed by an `action: skip` terminal route:
+	// NOTHING served it. BackendName then names the route that FAILED and
+	// spent (deliberately — the runner's cost accumulator keys its claw
+	// double-count exclusion on that name), so consumers must not read it
+	// as "what served": recordServed is suppressed and the event carries
+	// skipped:true.
+	Skipped bool
 }
 
 // delegateInfoFromResult fills the result-derived fields of a DelegateInfo —

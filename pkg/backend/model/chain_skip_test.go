@@ -140,6 +140,34 @@ func TestChainSkipNotReachableViaBuildError(t *testing.T) {
 	}
 }
 
+// TestChainSkipBuildErrorKeepsOriginalCategory: a usage_window outage
+// followed by an UNBUILDABLE rescue route must still reach a
+// usage_window-filtered skip — the build error routes on the last
+// EXECUTE failure's category, not on Unclassified (which would disarm
+// the operator's skip policy and turn it into wait).
+func TestChainSkipBuildErrorKeepsOriginalCategory(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+	build := e.newElementBuilder("x", delegate.BackendClaudeCode, head,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "x", Model: "claude-opus-5"}, nil
+		})
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "rescue", Backend: "codex", Model: "gpt-5.5"}, // unregistered → build error
+		{Label: "give_up", Skip: true, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+	}
+	out, err := e.dispatchChain(context.Background(), "x", chain, "claude-opus-5", build)
+	if err != nil || !out.Skipped {
+		t.Fatalf("usage_window + unbuildable rescue must still reach the usage_window skip: err=%v out=%+v", err, out)
+	}
+}
+
 // TestResolveChain_SkipRouteAndWhenGate: the when: gate picks the route
 // set per run from vars, and a skip route survives dedupe despite its
 // empty backend/model.

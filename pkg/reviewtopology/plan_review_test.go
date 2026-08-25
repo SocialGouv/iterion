@@ -83,18 +83,47 @@ func TestInjectDualDoesNotWriteEmptyMonoFamily(t *testing.T) {
 
 // ITERION_PLAN_REVIEW is the deployment-wide brake for lanes with no
 // per-run surface (webhook/cron on a platform-credentialed cloud): it
-// wins over auto, loses to an explicit --var.
+// wins over auto, loses to an explicit --var — and it must FAIL SAFE:
+// a set-but-unrecognised value reads OFF, never silently auto → on.
 func TestInjectPlanReviewEnvDefault(t *testing.T) {
-	t.Setenv(PlanReviewEnv, "off")
-	inputs := map[string]any{}
-	mode, _ := InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude, FamilyGPT))
-	if mode != PlanReviewOff {
-		t.Fatalf("env off must beat auto-on: got %q", mode)
+	for env, want := range map[string]string{
+		"off": PlanReviewOff, "false": PlanReviewOff, "0": PlanReviewOff,
+		"garbage": PlanReviewOff,
+		"on":      PlanReviewOn, "true": PlanReviewOn, "1": PlanReviewOn,
+	} {
+		t.Setenv(PlanReviewEnv, env)
+		inputs := map[string]any{}
+		mode, _ := InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude, FamilyGPT))
+		if mode != want {
+			t.Errorf("env %q: got %q, want %q", env, mode, want)
+		}
 	}
-	inputs = map[string]any{VarPlanReview: "on"}
-	mode, _ = InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude))
-	if mode != PlanReviewOn {
+	// An explicit --var beats the env; a --var spelled "AUTO" is still
+	// auto (case-insensitive) and therefore still consults the env.
+	t.Setenv(PlanReviewEnv, "off")
+	inputs := map[string]any{VarPlanReview: "on"}
+	if mode, _ := InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude)); mode != PlanReviewOn {
 		t.Fatalf("an explicit --var on must beat the env: got %q", mode)
+	}
+	inputs = map[string]any{VarPlanReview: "AUTO"}
+	if mode, _ := InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude, FamilyGPT)); mode != PlanReviewOff {
+		t.Fatalf("--var AUTO must still consult the env brake: got %q", mode)
+	}
+}
+
+// An operator's explicit --var mono_family wins over the resolver's
+// preference when it names an available family; an unavailable one keeps
+// the resolver's pick.
+func TestInjectMonoFamilyOverrideHonored(t *testing.T) {
+	inputs := map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
+	_, family, _ := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "")
+	if family != FamilyGPT || inputs[VarMonoFamily] != FamilyGPT {
+		t.Fatalf("explicit mono_family=gpt silently replaced: family=%q inputs=%+v", family, inputs)
+	}
+	inputs = map[string]any{VarReviewMode: "mono", VarMonoFamily: "gpt"}
+	_, family, _ = InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude), "")
+	if family != FamilyClaude {
+		t.Fatalf("unavailable override must keep the resolver's pick: %q", family)
 	}
 }
 

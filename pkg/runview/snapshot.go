@@ -598,21 +598,25 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 	// case is exactly what the run-header chip exists to surface.
 	if used, _ := output["_fallback_used"].(bool); used {
 		servedBy, _ := output["_served_by"].(string)
+		skipped, _ := output["_skipped"].(bool)
 		// Dedupe by node: a declared loop re-emits node_finished per
 		// iteration, and appending once per pass produces N identical
 		// chips (and colliding React keys) in the run header (R546ddc).
-		// backends_used already keys on (backend, model) + a node set;
-		// keep the first-seen route per node so the header names the
-		// first fall-through that served it.
+		// One chip per node, LAST state wins: a node skipped on pass 1
+		// then served on pass 2 (or the reverse — the most degraded case)
+		// must show its latest outcome, not the first-seen one.
 		already := false
-		for _, u := range b.fallbacksUsed {
+		for i, u := range b.fallbacksUsed {
 			if u.NodeID == evt.NodeID {
+				b.fallbacksUsed[i] = FallbackUsage{
+					NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
+					Skipped: skipped,
+				}
 				already = true
 				break
 			}
 		}
 		if !already {
-			skipped, _ := output["_skipped"].(bool)
 			b.fallbacksUsed = append(b.fallbacksUsed, FallbackUsage{
 				NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
 				Skipped: skipped,
