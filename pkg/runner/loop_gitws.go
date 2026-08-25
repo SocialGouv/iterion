@@ -337,7 +337,7 @@ func seedRunScratchIgnore(dir string) {
 // validateRepoTarget gates the webhook-sourced clone URL and ref before
 // they reach git. It rejects remote-helper transports (`ext::`, `file://`)
 // via ValidateCloneSource and flag-shaped refs (leading `-`) via
-// ValidateShellSafeRef — the two ways an attacker-controlled RepoURL/RepoSHA
+// ValidateBranchName — the two ways an attacker-controlled RepoURL/RepoSHA
 // could turn `git clone`/`git fetch` into arbitrary command execution.
 // An empty ref is allowed (the caller only fetches when RepoSHA is non-blank).
 //
@@ -353,12 +353,7 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 		return nil, fmt.Errorf("runner: reject repo url: %w", err)
 	}
 	if ref := strings.TrimSpace(repoSHA); ref != "" {
-		// ValidateShellSafeRef, not ValidateBranchName: this ref is forge-
-		// controlled (a PR's source branch arrives here from the webhook) and
-		// the SAME value is stamped into launch vars that bots interpolate
-		// into `bash -c` commands. git's own rules accept `;`, backticks and
-		// quotes; a shell does not survive them.
-		if err := gitlib.ValidateShellSafeRef(ref); err != nil {
+		if err := gitlib.ValidateBranchName(ref); err != nil {
 			return nil, fmt.Errorf("runner: reject repo ref: %w", err)
 		}
 	}

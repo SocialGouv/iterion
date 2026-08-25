@@ -134,6 +134,7 @@ verdict in production:
   `go test`, and give `verify.sh` itself headroom over the suite's worst
   observed wall-clock. A longer timeout is LESS strict and therefore always
   legitimate; a tighter one manufactures reds CI would not show.
+- **Call the target; never transcribe its body.** When a task runner defines
   the step, `verify.sh` invokes `task <target>` — it does not copy what that
   target runs. A Taskfile/Makefile command is frequently a multi-line shell
   block, and a block does not survive being passed as one `sh -c` argument:

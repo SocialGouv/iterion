@@ -83,7 +83,8 @@ const (
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
 
 	// Compress output-compression mode diagnostics.
-	DiagInvalidCompress DiagCode = "C102" // compress: value not one of on|off|ultra (error)
+	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
+	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)
