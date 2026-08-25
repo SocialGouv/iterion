@@ -313,6 +313,26 @@ func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, fams Fa
 	return list, true
 }
 
+// FamiliesFromCredentialNames assembles a family set from bare credential
+// names: provider keys (anthropic/zai→claude, openai→gpt) and
+// backend-shaped OAuth credentials (claude_code→claude, codex→gpt).
+// The cloud publisher's counterpart of FamiliesFromReport — it knows what
+// sealed into a run's bundle, not what a host detection probe would see.
+func FamiliesFromCredentialNames(providers, backends []string) FamilySet {
+	fams := make(FamilySet, 2)
+	for _, p := range providers {
+		if f := familyOf(p); f != "" {
+			fams[f] = true
+		}
+	}
+	for _, b := range backends {
+		if f := familyOfBackend(b); f != "" {
+			fams[f] = true
+		}
+	}
+	return fams
+}
+
 // Injection summarises what InjectAll applied to a run's inputs. Zero-value
 // fields mean the workflow did not declare the matching var.
 type Injection struct {

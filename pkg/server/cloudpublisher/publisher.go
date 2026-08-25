@@ -27,6 +27,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -525,6 +527,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		p.fillFromPlatform(ctx, runID, &bundle)
 	}
 
+	// Record which review families the resolved credentials back — every
+	// tier included (BYOK, oauth-forfait, pool grant, platform). This is
+	// what lets SubmitLaunch resolve the credential-derived topology vars
+	// (review_mode / plan_review / llm_families) for a queued run, where
+	// no host detection report applies. Empty when nothing resolved: the
+	// runner's env fallback is unknowable here, and injecting "no family"
+	// facts about credentials we cannot see would be asserting a falsehood.
+	providers := make([]string, 0, len(bundle.APIKeys))
+	for prov := range bundle.APIKeys {
+		providers = append(providers, string(prov))
+	}
+	oauthKinds := make([]string, 0, len(bundle.OAuthCredentials))
+	for kind := range bundle.OAuthCredentials {
+		oauthKinds = append(oauthKinds, kind)
+	}
+	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
+
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
 		return res, nil
 	}
@@ -558,6 +577,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 type credResolution struct {
 	secretsRef string
 	grant      *credpool.Grant
+	// families is the set of review families the sealed credentials back
+	// (reviewtopology), so the launch can resolve the credential-derived
+	// topology vars for a queued run. Empty = nothing resolved (env
+	// fallback), in which case no injection happens.
+	families reviewtopology.FamilySet
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -780,6 +804,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
+	// One inputs map shared by the run doc and the RunMessage, so the
+	// credential-derived topology injection below reaches both carriers.
+	inputs := varsAsAny(spec.Vars)
 	r := &store.Run{
 		FormatVersion:   store.RunFormatVersion,
 		ID:              runID,
@@ -787,7 +814,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowHash:    hash,
 		FilePath:        spec.FilePath,
 		Status:          store.RunStatusQueued,
-		Inputs:          varsAsAny(spec.Vars),
+		Inputs:          inputs,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		QueuedAt:        &now,
@@ -866,6 +893,23 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// after the fact when the donor is already out of pocket.
 	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families) from what actually sealed
+	// into the run — the queued-run counterpart of the host-detection
+	// injection every in-process launch surface applies. Only when the
+	// bundle resolved at least one participating credential: an empty set
+	// means the run rides the runner's env fallback, which is unknowable
+	// here, and the bots' own "auto" defaults must survive untouched.
+	if len(creds.families) > 0 {
+		if inputs == nil {
+			inputs = map[string]any{}
+			r.Inputs = inputs
+		}
+		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
+		}
+	}
+
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
@@ -893,7 +937,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowName:    wf.Name,
 		WorkflowHash:    hash,
 		IRCompiled:      body,
-		Vars:            varsAsAny(spec.Vars),
+		Vars:            inputs,
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
