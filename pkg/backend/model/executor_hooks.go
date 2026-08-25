@@ -109,6 +109,11 @@ type ProviderFallbackInfo struct {
 	Reason   string
 	Attempts int   // retry attempts spent on the failed provider
 	Err      error // the hard failure that triggered the fall-through
+	// ToSkip marks a fall-through INTO an `action: skip` terminal route:
+	// nothing will serve the node — it completes with a zero-value output.
+	// Without this flag the event would read as a bascule to ToBackend,
+	// which for a skip is the backend that just failed.
+	ToSkip bool
 }
 
 // EventHooks allows the executor to emit observability events back to the caller.

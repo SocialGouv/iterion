@@ -345,21 +345,32 @@ node COMPLETES with a zero-value output (every schema field at its zero
 "continue and ignore" half of an optional-node policy — the "pause and
 retry" half is simply *not* declaring it: the failure then stays
 `failed_resumable` and the run-level usage-window retry parks the run
-until the window reopens. `on:` filters it like any route; the compiler
-(C173) refuses a skip route that also names a backend/model/provider,
-an unknown `action:`, and a skip that is not the LAST route (everything
-after a terminal is unreachable).
+until the window reopens. `on:` filters it like any route — with one
+deliberate asymmetry: an **unclassified** failure (a bare CLI exit, a
+flattened sandbox error) still routes to any *executable* route, but a
+filtered skip REFUSES it — routing an indescribable failure to another
+backend is a safety net, converting it into a zero-value success is a
+lie. `on: [any]` opts in explicitly. The compiler (C173) refuses a skip
+route that also names a backend/model/provider/metered, an unknown
+`action:`, and a skip that is not the LAST route (everything after a
+terminal is unreachable).
 
 `when:` gates any route on an expression over `vars` — evaluated at
 dispatch, so an ordinary `--var` picks the active route set per run
 (that is how ONE `plan_review` node expresses both `wait` and `skip`
-policies). The compiler checks the expression parses and reads only
-`vars.*` (a route has no input/outputs of its own); a route whose gate
-is false is simply absent from the chain.
+policies). The compiler checks the expression parses, reads only
+`vars.*` (a route has no input/outputs of its own), and references only
+**declared** vars — at run time an absent var reads as false and would
+silently disarm the route. String literals use single quotes
+(`vars.policy == 'skip'`); a route whose gate is false is simply absent
+from the chain.
 
 Downstream, a deterministic compute reads the stamp
 (`outputs.<node>._skipped == true`) and routes around whatever consumed
-the node's real output — never silently.
+the node's real output — never silently. Observability: the
+`model_fallback` event carries `to_action: "skip"` (with an empty
+`to_backend` — nothing serves), and the run header's fallbacks chip
+lists the node with `skipped: true` even though no backend ran.
 
 ### What a fall-through leaves behind
 

@@ -17,6 +17,7 @@
 package reviewtopology
 
 import (
+	"os"
 	"sort"
 	"strings"
 
@@ -198,10 +199,15 @@ func ResolveFamilies(fams FamilySet, override string) (mode string, monoFamily s
 //     credential instead of being silently skipped.
 //   - "off"      → always off.
 //   - "auto"/""  → on iff at least TWO distinct families are backed by a
-//     credential (family-agnostic: whichever family the campaign runs on,
-//     a peer from another family exists). Anything less means the pair
-//     review cannot be a cross-model check, so the bot keeps its
-//     plan-in-stride shape at zero extra cost.
+//     credential. With today's two participating families (claude, gpt)
+//     this is equivalent to "claude AND gpt" — which matches the shipped
+//     bots, whose peer node is PINNED to the gpt route
+//     (claw + openai/*). Adding a third family must revisit this
+//     resolution together with the bots' peer pinning, or a
+//     {claude, <new>} host would resolve "on" and the peer would chase
+//     an absent OpenAI credential. Anything less than two families means
+//     the pair review cannot be a cross-model check, so the bot keeps
+//     its plan-in-stride shape at zero extra cost.
 //
 // The returned mode is always concrete ("on" or "off"), never "auto".
 func ResolvePlanReview(fams FamilySet, override string) string {
@@ -265,25 +271,52 @@ func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams Famil
 	mode, monoFamily = ResolveFamilies(fams, override)
 	if inputs != nil {
 		inputs[VarReviewMode] = mode
-		inputs[VarMonoFamily] = monoFamily
+		// Never write an empty mono_family: it is meaningless in dual (and
+		// in mono on a credential-less host), and it violates the
+		// [enum: "claude","gpt"] the declaring bots put on the var — the
+		// launch enum gate then kills the run before its first node.
+		// Absent = the bot's own default applies.
+		if monoFamily != "" {
+			inputs[VarMonoFamily] = monoFamily
+		} else {
+			// A stale value from --var/preset would otherwise survive a
+			// dual resolution and contradict the injected mode.
+			delete(inputs, VarMonoFamily)
+		}
 	}
 	return mode, monoFamily, true
 }
+
+// PlanReviewEnv is the machine/deployment-wide default for the
+// plan-review switch, read when a run carries no explicit override. It
+// exists because auto-resolution can flip the phase ON for launches that
+// have no per-run surface at all (webhook / dispatcher / cron lanes on a
+// cloud instance whose platform tier credentials both families) — an
+// operator needs a brake that is not a per-run --var. Precedence:
+// --var plan_review → ITERION_PLAN_REVIEW → auto.
+const PlanReviewEnv = "ITERION_PLAN_REVIEW"
 
 // InjectPlanReviewIfDeclared resolves the cross-model plan-review switch and
 // writes plan_review into inputs, but ONLY when the workflow opts in by
 // declaring a plan_review var. Bots without a plan phase are left untouched.
 //
 // There is no dedicated CLI/API field: an operator override travels as an
-// ordinary --var plan_review=on|off already present in inputs; a bot's own
-// default of "auto" triggers credential-based resolution.
+// ordinary --var plan_review=on|off already present in inputs; the
+// ITERION_PLAN_REVIEW env is the deployment-wide default under it; a bot's
+// own default of "auto" triggers credential-based resolution.
 //
 // Returns the resolved mode and whether injection happened (for logging).
 func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams FamilySet) (mode string, injected bool) {
 	if !declaresVar(wf, VarPlanReview) {
 		return "", false
 	}
-	mode = ResolvePlanReview(fams, inputOverride(inputs, VarPlanReview))
+	override := inputOverride(inputs, VarPlanReview)
+	if override == "" || override == PlanReviewAuto {
+		if env := strings.TrimSpace(os.Getenv(PlanReviewEnv)); env != "" {
+			override = env
+		}
+	}
+	mode = ResolvePlanReview(fams, override)
 	if inputs != nil {
 		inputs[VarPlanReview] = mode
 	}

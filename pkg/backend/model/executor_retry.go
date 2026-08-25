@@ -322,7 +322,9 @@ func elementIsHintOnly(el chainElement) bool {
 	// declared a distinct route on purpose. Even one that only varies
 	// the model is meaningful on claw, which derives its provider from
 	// the model-spec prefix — so a named element is never collapsed away.
-	return el.Backend == "" && el.Label == ""
+	// A skip element is likewise never a credential hint, whatever its
+	// name — the AST-JSON path (studio saves) can produce a nameless one.
+	return !el.Skip && el.Backend == "" && el.Label == ""
 }
 
 // chainIsHintOnly reports whether every element is a pure provider-hint
@@ -377,7 +379,17 @@ func collapseHintOnlyChain(chain []chainElement, backendName string) []chainElem
 // string at the IPC boundary, and kimi/grok have no error channel at
 // all — turning a missing classifier into a dead end rather than a
 // fall-through.
+//
+// A SKIP element is the one exception: routing an indescribable failure
+// to another backend is a safety net, but CONVERTING it into a success
+// is a lie — a CLI exit 1 or a provider 400 would silently become a
+// zero-value verdict. A filtered skip therefore accepts only what its
+// `on:` names; the author who wants everything writes `on: [any]`
+// (which resolves to an empty filter).
 func elementAccepts(el chainElement, cat delegate.FallbackCategory) bool {
+	if el.Skip && cat == delegate.FallbackUnclassified {
+		return len(el.On) == 0
+	}
 	if len(el.On) == 0 || cat == delegate.FallbackUnclassified {
 		return true
 	}
@@ -733,12 +745,25 @@ func (e *ClawExecutor) dispatchChain(
 			if !fallbackRemains {
 				break
 			}
-			next := chain[i+1]
+			// A build error is unclassifiable; route it through the same
+			// acceptance walk as an execute failure so a FILTERED skip is
+			// never reached by it (an unresolvable backend must not turn
+			// the node into a zero-value success).
+			j := firstAcceptingFrom(chain, i+1, delegate.FallbackUnclassified)
+			if j < 0 {
+				if e.logger != nil {
+					e.logger.Warn("[%s#%d/%s] %q failed to build; no remaining route accepts an unclassified failure — stopping the chain",
+						nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el))
+				}
+				break
+			}
+			next := chain[j]
 			toModel := effModel(next)
 			if next.Skip {
 				toModel = ""
 			}
 			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), toModel, buildErr)
+			nextAllowed = j
 			continue
 		}
 		// Whether ANY remaining route would take a given failure — the
@@ -860,6 +885,11 @@ func (e *ClawExecutor) noteFallback(
 	if e.hooks.OnProviderFallback == nil {
 		return
 	}
+	if to.Skip {
+		// A skip route has no backend of its own; inheriting the failed
+		// one would report a bascule to the backend that just died.
+		toBackend = ""
+	}
 	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
 		BackendName: backendName,
 		From:        from.Provider,
@@ -871,6 +901,7 @@ func (e *ClawExecutor) noteFallback(
 		Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
 		Attempts:    e.retry.maxAttempts(),
 		Err:         err,
+		ToSkip:      to.Skip,
 	})
 }
 

@@ -59,6 +59,45 @@ func TestInjectPlanReviewIfDeclared(t *testing.T) {
 	}
 }
 
+// A dual resolution has no mono family; writing mono_family="" violates
+// the [enum: "claude","gpt"] review-pr/evolve declare and kills the run
+// at Engine.Run's validateVarEnums gate before its first node (proven
+// live: `iterion run bots/review-pr/main.bot --var review_mode=dual`).
+// Absent = the bot's own default, which is what dual must leave behind.
+func TestInjectDualDoesNotWriteEmptyMonoFamily(t *testing.T) {
+	inputs := map[string]any{}
+	mode, family, injected := InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(FamilyClaude, FamilyGPT), "dual")
+	if !injected || mode != ModeDual || family != "" {
+		t.Fatalf("unexpected resolution: mode=%q family=%q injected=%v", mode, family, injected)
+	}
+	if v, present := inputs[VarMonoFamily]; present && v == "" {
+		t.Fatalf("mono_family written as %q — violates the declared enum; must be left absent", v)
+	}
+	// Same hole via mono on a credential-less host: preferredFamily is "".
+	inputs = map[string]any{}
+	InjectIfDeclaredFamilies(wfWithVars(VarReviewMode), inputs, fams(), "mono")
+	if v, present := inputs[VarMonoFamily]; present && v == "" {
+		t.Fatalf("mono with no family wrote mono_family=%q — must fail on the missing credential, not the enum gate", v)
+	}
+}
+
+// ITERION_PLAN_REVIEW is the deployment-wide brake for lanes with no
+// per-run surface (webhook/cron on a platform-credentialed cloud): it
+// wins over auto, loses to an explicit --var.
+func TestInjectPlanReviewEnvDefault(t *testing.T) {
+	t.Setenv(PlanReviewEnv, "off")
+	inputs := map[string]any{}
+	mode, _ := InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude, FamilyGPT))
+	if mode != PlanReviewOff {
+		t.Fatalf("env off must beat auto-on: got %q", mode)
+	}
+	inputs = map[string]any{VarPlanReview: "on"}
+	mode, _ = InjectPlanReviewIfDeclared(wfWithVars(VarPlanReview), inputs, fams(FamilyClaude))
+	if mode != PlanReviewOn {
+		t.Fatalf("an explicit --var on must beat the env: got %q", mode)
+	}
+}
+
 func TestInjectLLMFamiliesIfDeclared(t *testing.T) {
 	inputs := map[string]any{}
 	if _, injected := InjectLLMFamiliesIfDeclared(wfWithVars(), inputs, fams(FamilyGPT)); injected {

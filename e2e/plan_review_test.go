@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -15,10 +16,18 @@ import (
 // (pkg/backend/model chain_skip_test.go); here the skipped case is
 // simulated by the peer emitting the `_skipped` stamp the plan_gate
 // reads — the same contract the executor synthesizes.
+//
+// The fixture's with{} bodies MIRROR the shipped bots', and the
+// assertions REQUIRE the hand-off fields to be present-and-empty — an
+// unmapped field is not "" but the raw "{{input.x}}" placeholder
+// leaking into the campaign prompt, which is exactly the defect these
+// tests exist to refuse.
 
-// planReviewStubs wires the phase's stub handlers and returns a pointer
-// to the input map the campaign was handed (the hand-off under test).
-func planReviewStubs(exec *scenarioExecutor, reviewSkipped bool, campaignInput *map[string]any) {
+// planReviewStubs wires the phase's stub handlers. campaignInputs
+// collects the input map of EVERY campaign pass (the hand-off under
+// test); the campaign converges on its second pass so the continuation
+// loop-back is exercised once.
+func planReviewStubs(exec *scenarioExecutor, reviewSkipped bool, campaignInputs *[]map[string]any) {
 	exec.on("plan", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"plan": "slice 1, slice 2", "_tokens": 10, "_cost_usd": 0.001}, nil
 	})
@@ -37,19 +46,21 @@ func planReviewStubs(exec *scenarioExecutor, reviewSkipped bool, campaignInput *
 			"_tokens": 10, "_cost_usd": 0.001}, nil
 	})
 	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
-		if campaignInput != nil {
-			*campaignInput = in
+		if campaignInputs != nil {
+			*campaignInputs = append(*campaignInputs, in)
 		}
-		return map[string]any{"done": true, "_tokens": 10, "_cost_usd": 0.001}, nil
+		// Converge on the second pass so the loop back-edge runs once.
+		done := campaignInputs != nil && len(*campaignInputs) >= 2
+		return map[string]any{"done": done, "_tokens": 10, "_cost_usd": 0.001}, nil
 	})
 }
 
-func runPlanReview(t *testing.T, runID string, inputs map[string]any, reviewSkipped bool) (*scenarioExecutor, map[string]any) {
+func runPlanReview(t *testing.T, runID string, inputs map[string]any, reviewSkipped bool) (*scenarioExecutor, []map[string]any) {
 	t.Helper()
 	wf := compileFixture(t, "plan_review_mini.bot")
 	exec := newScenarioExecutor()
-	var campaignIn map[string]any
-	planReviewStubs(exec, reviewSkipped, &campaignIn)
+	var campaignIns []map[string]any
+	planReviewStubs(exec, reviewSkipped, &campaignIns)
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
@@ -60,20 +71,39 @@ func runPlanReview(t *testing.T, runID string, inputs map[string]any, reviewSkip
 	if r.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want finished", r.Status)
 	}
-	return exec, campaignIn
+	if len(campaignIns) == 0 {
+		t.Fatal("campaign never ran")
+	}
+	return exec, campaignIns
+}
+
+// requireEmpty asserts a hand-off field is PRESENT and "": absence means
+// the edge did not map it, and the campaign prompt would render the raw
+// "{{input.<field>}}" placeholder instead of nothing.
+func requireEmpty(t *testing.T, in map[string]any, field string) {
+	t.Helper()
+	v, present := in[field]
+	if !present {
+		t.Errorf("campaign input lacks %q entirely — the prompt renders a raw {{input.%s}} placeholder", field, field)
+		return
+	}
+	if s, _ := v.(string); s != "" || strings.Contains(s, "{{") {
+		t.Errorf("campaign input %q = %v, want \"\"", field, v)
+	}
 }
 
 // plan_review off (creds-unresolved / operator off) → the whole phase is
-// bypassed: entry routes straight to the campaign, zero plan-phase cost.
+// bypassed and the campaign receives EMPTY hand-off fields, never
+// placeholders.
 func TestPlanReview_OffBypassesThePhase(t *testing.T) {
-	exec, _ := runPlanReview(t, "e2e-plan-off", map[string]any{"plan_review": "off"}, false)
+	exec, ins := runPlanReview(t, "e2e-plan-off", map[string]any{"plan_review": "off"}, false)
 	for _, id := range []string{"plan", "plan_review", "plan_revise"} {
 		if exec.wasCalled(id) {
 			t.Errorf("off: %s ran — the phase must be bypassed whole", id)
 		}
 	}
-	if !exec.wasCalled("campaign") {
-		t.Error("off: campaign never ran")
+	for _, f := range []string{"fail_log", "plan", "plan_critique", "plan_responses"} {
+		requireEmpty(t, ins[0], f)
 	}
 }
 
@@ -87,39 +117,55 @@ func TestPlanReview_AutoUnresolvedBehavesOff(t *testing.T) {
 }
 
 // plan_review on, peer serves → author → peer → author-revise → campaign,
-// with the revised plan + critique handed to the campaign.
+// with the revised plan + critique handed to the campaign on pass 1 and
+// BLANKED on pass 2 (the back-edge wins over the re-applied forward
+// mapping — passes 2+ read git log, not a stale plan).
 func TestPlanReview_OnRunsAuthorPeerRevise(t *testing.T) {
-	exec, in := runPlanReview(t, "e2e-plan-on", map[string]any{"plan_review": "on"}, false)
+	exec, ins := runPlanReview(t, "e2e-plan-on", map[string]any{"plan_review": "on"}, false)
 	for _, id := range []string{"plan", "plan_review", "plan_revise", "campaign"} {
 		if !exec.wasCalled(id) {
 			t.Errorf("on: %s never ran", id)
 		}
 	}
-	if in["plan"] != "slice 1 only" {
-		t.Errorf("campaign received plan %q, want the REVISED plan", in["plan"])
+	first := ins[0]
+	if first["plan"] != "slice 1 only" {
+		t.Errorf("pass 1 received plan %q, want the REVISED plan", first["plan"])
 	}
-	if in["plan_critique"] != "slice 2 duplicates a seam" {
-		t.Errorf("campaign received critique %q", in["plan_critique"])
+	if first["plan_critique"] != "slice 2 duplicates a seam" {
+		t.Errorf("pass 1 received critique %q", first["plan_critique"])
 	}
-	if in["plan_responses"] != "accepted: reuse the seam" {
-		t.Errorf("campaign received responses %q", in["plan_responses"])
+	if first["plan_responses"] != "accepted: reuse the seam" {
+		t.Errorf("pass 1 received responses %q", first["plan_responses"])
+	}
+	requireEmpty(t, first, "fail_log")
+
+	if len(ins) < 2 {
+		t.Fatal("continuation loop never re-entered the campaign")
+	}
+	second := ins[1]
+	for _, f := range []string{"plan", "plan_critique", "plan_responses"} {
+		requireEmpty(t, second, f)
+	}
+	if second["fail_log"] != "FAILLOG" {
+		t.Errorf("pass 2 fail_log = %v, want the gate's log", second["fail_log"])
 	}
 }
 
 // Peer skipped (the executor's `action: skip` route fired — simulated by
 // the _skipped stamp) → the revise turn is bypassed and the UNREVISED
-// plan reaches the campaign, with an empty critique.
+// plan reaches the campaign, with a present-and-empty critique.
 func TestPlanReview_SkippedRoutesAroundRevise(t *testing.T) {
-	exec, in := runPlanReview(t, "e2e-plan-skip", map[string]any{
+	exec, ins := runPlanReview(t, "e2e-plan-skip", map[string]any{
 		"plan_review": "on", "plan_review_policy": "skip",
 	}, true)
 	if exec.wasCalled("plan_revise") {
 		t.Error("skipped: plan_revise ran — a skipped review has nothing to challenge")
 	}
-	if in["plan"] != "slice 1, slice 2" {
-		t.Errorf("campaign received plan %q, want the AUTHOR's plan", in["plan"])
+	first := ins[0]
+	if first["plan"] != "slice 1, slice 2" {
+		t.Errorf("campaign received plan %q, want the AUTHOR's plan", first["plan"])
 	}
-	if c, ok := in["plan_critique"]; ok && c != "" {
-		t.Errorf("campaign received critique %q, want empty on a skipped review", c)
-	}
+	requireEmpty(t, first, "plan_critique")
+	requireEmpty(t, first, "plan_responses")
+	requireEmpty(t, first, "fail_log")
 }

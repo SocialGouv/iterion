@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -74,6 +75,68 @@ func TestChainSkipRespectsOnFilter(t *testing.T) {
 		skipChain([]delegate.FallbackCategory{delegate.FallbackUsageWindow}), "claude-opus-5", build)
 	if err == nil {
 		t.Fatal("expected the auth failure to surface — the skip route's on: filter must not swallow it")
+	}
+}
+
+// TestChainSkipRefusesUnclassifiedFailure: an indescribable failure (a
+// bare error — CLI exit 1, provider 400, flattened sandbox error) may
+// try another BACKEND, but it must never be CONVERTED INTO A SUCCESS by
+// a filtered skip route. Only an explicit `on: [any]` opts into that.
+func TestChainSkipRefusesUnclassifiedFailure(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: errors.New("claude_code: exit status 1: prompt too long"),
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+	build := e.newElementBuilder("plan_review", delegate.BackendClaudeCode, head,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "plan_review", Model: "claude-opus-5"}, nil
+		})
+
+	_, err := e.dispatchChain(context.Background(), "plan_review",
+		skipChain([]delegate.FallbackCategory{delegate.FallbackUsageWindow}), "claude-opus-5", build)
+	if err == nil {
+		t.Fatal("unclassified failure swallowed by a skip route scoped to usage_window — the node must fail, not fake success")
+	}
+
+	// The explicit escape hatch: on: [any] (resolved to an empty filter)
+	// does convert it — the author said so out loud.
+	out, err := e.dispatchChain(context.Background(), "plan_review",
+		skipChain(nil), "claude-opus-5", build)
+	if err != nil || !out.Skipped {
+		t.Fatalf("on:[any] skip should serve the unclassified failure, got err=%v out=%+v", err, out)
+	}
+}
+
+// TestChainSkipNotReachableViaBuildError: a BUILD failure on the
+// preceding route (unresolvable backend, uncredentialed element) must
+// not fall into a filtered skip either — the walk consults the same
+// on: acceptance as the execute-failure path.
+func TestChainSkipNotReachableViaBuildError(t *testing.T) {
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{Provider: delegate.BackendClaudeCode, Kind: delegate.RateLimitKindUsageWindow, ResetAt: time.Now().Add(time.Hour)},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+	build := e.newElementBuilder("x", delegate.BackendClaudeCode, head,
+		func(_ context.Context, bn string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "x", Model: "claude-opus-5"}, nil
+		})
+	chain := []chainElement{
+		{Label: "primary"},
+		// rescue names a backend the registry does not have → build error.
+		{Label: "rescue", Backend: "codex", Model: "gpt-5.5", On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+		// give_up accepts auth ONLY — neither the usage_window of the
+		// primary nor the rescue build error may land here.
+		{Label: "give_up", Skip: true, On: []delegate.FallbackCategory{delegate.FallbackAuth}},
+	}
+	_, err := e.dispatchChain(context.Background(), "x", chain, "claude-opus-5", build)
+	if err == nil {
+		t.Fatal("a build error on the previous route fell into a skip scoped to auth — the node must fail")
 	}
 }
 

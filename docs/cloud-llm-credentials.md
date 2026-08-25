@@ -188,7 +188,11 @@ The next launch of a declaring bot logs
 `plan review: on · llm families: claude,gpt` and runs the phase. Verify
 with the usual smoke: a one-node `claw` + `openai/gpt-5.6-sol` bot via
 `iterion remote runs launch --follow`. To force or refuse per run:
-`--var plan_review=on|off`; mid-run peer-forfait exhaustion follows
+`--var plan_review=on|off`; deployment-wide brake:
+`ITERION_PLAN_REVIEW=off` on the server/runner env (it wins over auto,
+loses to an explicit `--var` — the surface for webhook/cron lanes that
+have no per-run form, since a platform-tier OpenAI credential flips
+`auto` on for every tenant). Mid-run peer-forfait exhaustion follows
 `--var plan_review_policy=wait|skip` (wait = the run parks
 failed_resumable and the usage-window retry resumes it when the window
 reopens; skip = continue without the review, loudly stamped). Gotcha:

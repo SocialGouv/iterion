@@ -12,8 +12,15 @@ import (
 // (skip + backend), or gating on state that does not exist at dispatch
 // (`when:` reading outputs.*).
 
+// skipWorkflow prepends the vars block the when: gates reference — an
+// undeclared var in when: is a C173 error since the gate would silently
+// read false at run time.
+func skipWorkflow(nodeProps, fallbacks string) string {
+	return "vars:\n  policy: string = \"wait\"\n\n" + fallbackWorkflow(nodeProps, fallbacks)
+}
+
 func TestFallbackSkipRouteCompiles(t *testing.T) {
-	src := fallbackWorkflow("", `    give_up:
+	src := skipWorkflow("", `    give_up:
       action: skip
       when: "vars.policy == 'skip'"
       on: [usage_window, unavailable, auth]
@@ -63,15 +70,30 @@ func TestFallbackSkipNotLastIsAnError(t *testing.T) {
 }
 
 func TestFallbackWhenUnparseableIsAnError(t *testing.T) {
-	src := fallbackWorkflow("", "    give_up:\n      action: skip\n      when: \"vars.policy ==\"\n")
+	src := skipWorkflow("", "    give_up:\n      action: skip\n      when: \"vars.policy ==\"\n")
 	cr := compileFallbackSrc(t, src)
 	assertHasDiag(t, cr, DiagFallbackMalformed, "unparseable when:")
 }
 
 func TestFallbackWhenNonVarsRefIsAnError(t *testing.T) {
-	src := fallbackWorkflow("", "    give_up:\n      action: skip\n      when: \"outputs.gate.converged\"\n")
+	src := skipWorkflow("", "    give_up:\n      action: skip\n      when: \"outputs.gate.converged\"\n")
 	cr := compileFallbackSrc(t, src)
 	assertHasDiag(t, cr, DiagFallbackMalformed, "only vars.* resolves")
+}
+
+// A typo'd var in when: must be a compile error: at run time an absent
+// var reads as nil → false and silently disarms the route's policy.
+func TestFallbackWhenUndeclaredVarIsAnError(t *testing.T) {
+	src := skipWorkflow("", "    give_up:\n      action: skip\n      when: \"vars.polcy == 'skip'\"\n")
+	cr := compileFallbackSrc(t, src)
+	assertHasDiag(t, cr, DiagFallbackMalformed, "undeclared variable")
+}
+
+// metered on a skip route is dead config: the route spends nothing.
+func TestFallbackSkipWithMeteredIsAnError(t *testing.T) {
+	src := skipWorkflow("", "    give_up:\n      action: skip\n      metered: true\n")
+	cr := compileFallbackSrc(t, src)
+	assertHasDiag(t, cr, DiagFallbackMalformed, "metered")
 }
 
 // assertHasDiag fails unless the compile produced the given code with a

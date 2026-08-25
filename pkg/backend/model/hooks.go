@@ -954,6 +954,12 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 		"reason":        info.Reason,
 		"attempts":      info.Attempts,
 	}
+	if info.ToSkip {
+		// A terminal skip serves nothing: name the action instead of a
+		// misleading to_backend.
+		data["to_action"] = "skip"
+		data["to_backend"] = ""
+	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()
 	}

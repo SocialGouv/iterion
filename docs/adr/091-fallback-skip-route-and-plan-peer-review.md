@@ -107,6 +107,41 @@ defaults regardless of tenant credentials.
   author gets ONE challenge turn; residual disagreement rides to the
   campaign as context.
 
+## Amendments from the adversarial round (2026-08-25)
+
+The pre-merge adversarial review (3 agents, findings verified by
+execution) hardened the design; all folded in before first release:
+
+- **A filtered skip refuses UNCLASSIFIED failures** (bare CLI exits,
+  flattened sandbox errors) on both the execute-failure and the
+  build-error walks — converting an indescribable failure into a
+  zero-value success is a lie; `on: [any]` opts in explicitly.
+- **Dual injection no longer writes `mono_family: ""`** — it violated
+  the `[enum]` review-pr/evolve declare and killed the run at the launch
+  enum gate (proven live; the local `--var review_mode=dual` path had
+  been broken since the enums landed, and the cloud injection would have
+  imported it).
+- **`ITERION_PLAN_REVIEW`** is the deployment-wide brake between `--var`
+  and auto: platform-tier credentials can flip `auto` on for every
+  tenant, including webhook/cron lanes with no per-run surface.
+- **`when:` must reference declared vars** (C173): an absent var reads
+  as false at dispatch and would silently disarm the route.
+- **Skip observability**: `model_fallback` carries `to_action: "skip"`
+  (empty `to_backend`), and the run header's fallbacks chip lists
+  skipped nodes (`FallbackUsage.skipped`) despite the absent `_backend`.
+- **Every campaign_input field is explicitly mapped on every edge into
+  the campaign, and the loop back-edges blank the plan fields** — an
+  unmapped field is not `""` but the raw `{{input.x}}` placeholder
+  leaking into the prompt, and forward-edge mappings re-apply on every
+  loop re-entry (a stale pass-1 plan would re-anchor later passes).
+- **billy/willy budgets** gained the phase's headroom (+30m/+$15).
+- Known-and-accepted (board findings filed): `readonly:` is enforced on
+  codex/pi only — on claude_code it is intent, not a sandbox (a
+  pre-existing repo-wide posture, review-pr included); and a
+  `session: inherit_if_available` node resumed cross-pod can hold a
+  dead `_session_id` — the engine seam wanted is "resume failure under
+  inherit_if_available ⇒ fresh".
+
 ## Consequences
 
 - A judge served by the skip route emits a schema-valid, zero-value

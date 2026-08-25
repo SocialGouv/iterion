@@ -656,7 +656,9 @@ compute plan_topology:
     do_plan: "vars.plan_review == 'on'"
 
 ## plan — the AUTHOR. Same family/model as the campaign (the peer is the
-## cross-check); read-only so the plan phase cannot mutate the tree.
+## cross-check). readonly is enforced on codex/pi only — on claude_code
+## (bypassPermissions) it is intent, not a guarantee; the deterministic
+## verify gate + the campaign's own review remain the backstop.
 agent plan:
   description: "Author the sweep plan (read-only)"
   backend: "claude_code"
@@ -671,10 +673,11 @@ agent plan:
 ## plan_review — the PEER, pinned to the other family. claw because
 ## "openai/*" models only resolve there; both knobs env-overridable so a
 ## host without OpenAI quota can run the peer elsewhere. Read-only
-## toolset: it verifies claims in the repo but cannot edit it.
+## toolset (no write_file/file_edit tools — though bash can write; the
+## restriction is intent + review-pr's shipped posture, not a sandbox).
 judge plan_review:
   description: "Peer plan review (other model family)"
-  backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
+  backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
   model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
   input: plan_review_input
@@ -987,8 +990,10 @@ workflow whole_improve_loop:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 60
+    ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
+    ## plan_review resolves on, ~3 LLM calls run before the campaign.
+    max_duration: "2h30m"
+    max_cost_usd: 75
 
   compaction:
     threshold: 0.9
@@ -996,7 +1001,12 @@ workflow whole_improve_loop:
 
   ## Plan phase (skipped whole when plan_review resolved off).
   plan_topology -> plan when do_plan
-  plan_topology -> campaign when not do_plan
+  ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
+  ## field is not "" but the raw {{input.x}} placeholder leaking into
+  ## the prompt (the engine keeps unresolved refs as-is).
+  plan_topology -> campaign when not do_plan with {
+    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+  }
 
   plan -> plan_review with {
     plan:        "{{outputs.plan.plan}}",
@@ -1014,12 +1024,15 @@ workflow whole_improve_loop:
     concerns:    "{{outputs.plan_review.concerns}}",
     suggestions: "{{outputs.plan_review.suggestions}}",
     blocking:    "{{outputs.plan_review.blocking}}",
-    _session_id: "{{outputs.plan._session_id}}"
+    _session_id: "{{outputs.plan._session_id}}",
+    _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
   }
   plan_gate -> campaign when skipped with {
-    plan: "{{outputs.plan.plan}}"
+    fail_log: "", plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: ""
   }
   plan_revise -> campaign with {
+    fail_log:       "",
     plan:           "{{outputs.plan_revise.plan}}",
     plan_critique:  "{{outputs.plan_review.concerns}}",
     plan_responses: "{{outputs.plan_revise.review_responses}}"
@@ -1047,8 +1060,12 @@ workflow whole_improve_loop:
   ## (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
   ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
   ## output on its back-edge, which would read a loop-entry-frozen value).
+  ## The back-edge BLANKS the plan-phase fields: forward-edge mappings
+  ## re-apply on every re-entry (outputs persist), and a stale pass-1
+  ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
+    plan: "", plan_critique: "", plan_responses: ""
   }
   ## continuation_loop exhausted (max_passes hit while sites still remain) →
   ## ship what is banked anyway (every committed site is real, landed work).

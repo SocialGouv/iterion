@@ -591,10 +591,11 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 		return
 	}
 	backend, _ := output["_backend"].(string)
-	if backend == "" {
-		return
-	}
 	model, _ := output["_model"].(string)
+	// The fallback tally must NOT hide behind the _backend guard: a node
+	// served by an `action: skip` terminal route carries _fallback_used
+	// (+ _skipped) with NO _backend — nothing ran — and that most-degraded
+	// case is exactly what the run-header chip exists to surface.
 	if used, _ := output["_fallback_used"].(bool); used {
 		servedBy, _ := output["_served_by"].(string)
 		// Dedupe by node: a declared loop re-emits node_finished per
@@ -611,10 +612,17 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 			}
 		}
 		if !already {
+			skipped, _ := output["_skipped"].(bool)
 			b.fallbacksUsed = append(b.fallbacksUsed, FallbackUsage{
 				NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
+				Skipped: skipped,
 			})
 		}
+	}
+	if backend == "" {
+		// tool/compute/router terminals and skipped nodes contribute no
+		// (backend, model) usage.
+		return
 	}
 	key := backend + "\x00" + model
 	agg := b.backendUsage[key]
@@ -635,6 +643,9 @@ type FallbackUsage struct {
 	// Backend / Model are what actually ran, not what was requested.
 	Backend string `json:"backend,omitempty"`
 	Model   string `json:"model,omitempty"`
+	// Skipped marks an `action: skip` terminal route: nothing served the
+	// node — it completed with a zero-value output (Backend/Model empty).
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // buildBackendsUsed materialises the aggregated (backend, model) pairs

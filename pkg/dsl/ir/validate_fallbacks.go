@@ -130,7 +130,7 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		for i, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
 			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
-			c.checkFallbackWhen(kind, id, fb)
+			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
 			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
 		}
@@ -203,9 +203,9 @@ func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool
 			kind, id, fallbackLabel(fb), fb.Action, FallbackActionSkip)
 		return
 	}
-	if fb.Backend != "" || fb.Model != "" || fb.Provider != "" {
+	if fb.Backend != "" || fb.Model != "" || fb.Provider != "" || fb.Metered {
 		c.errorfAt(DiagFallbackMalformed, id, "",
-			"%s %q: fallback %s declares action: skip together with a backend/model/provider — a skip route executes nothing, so the route fields are dead config hiding what actually happens",
+			"%s %q: fallback %s declares action: skip together with a backend/model/provider/metered — a skip route executes and spends nothing, so the route fields are dead config hiding what actually happens",
 			kind, id, fallbackLabel(fb))
 	}
 	if !isLast {
@@ -215,17 +215,19 @@ func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool
 	}
 }
 
-// checkFallbackWhen validates that a route's `when:` gate parses and only
+// checkFallbackWhen validates that a route's `when:` gate parses, only
 // reads vars — the one namespace resolvable at dispatch time, where the
-// gate is evaluated (a route has no node input or outputs of its own).
-func (c *compiler) checkFallbackWhen(kind, id string, fb Fallback) {
+// gate is evaluated (a route has no node input or outputs of its own) —
+// and only DECLARED vars: at runtime an absent var evaluates to nil →
+// false, so a typo would silently disarm the policy the route encodes.
+func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) {
 	if fb.When == "" {
 		return
 	}
 	astExpr, err := expr.Parse(fb.When)
 	if err != nil {
 		c.errorfAt(DiagFallbackMalformed, id, "",
-			"%s %q: fallback %s has an unparseable when: expression: %v",
+			"%s %q: fallback %s has an unparseable when: expression (note: string literals use single quotes, e.g. vars.policy == 'skip'): %v",
 			kind, id, fallbackLabel(fb), err)
 		return
 	}
@@ -234,6 +236,14 @@ func (c *compiler) checkFallbackWhen(kind, id string, fb Fallback) {
 			c.errorfAt(DiagFallbackMalformed, id, "",
 				"%s %q: fallback %s when: references %s.%s — a route gate is evaluated at dispatch, where only vars.* resolves",
 				kind, id, fallbackLabel(fb), ref.Namespace, strings.Join(ref.Path, "."))
+			continue
+		}
+		if len(ref.Path) > 0 && w != nil {
+			if _, ok := w.Vars[ref.Path[0]]; !ok {
+				c.errorfAt(DiagFallbackMalformed, id, "",
+					"%s %q: fallback %s when: targets undeclared variable %q — at run time an absent var reads as false and silently disarms the route",
+					kind, id, fallbackLabel(fb), ref.Path[0])
+			}
 		}
 	}
 }
