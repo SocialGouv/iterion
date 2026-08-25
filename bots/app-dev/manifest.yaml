@@ -1,7 +1,7 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.1.1
+version: 0.2.0
 ## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block (image pin, ~/.claude mount, claude post_create gate) — isolation
 ## is the platform's job; gh/glab join crane in the pinned devbox.json.

@@ -117,6 +117,21 @@ vars:
   mr_base: string = ""
   source_issue_ref: string = ""
 
+  ## ─── Plan phase (cross-model pair review) ─────────────────────
+  ## Resolved at LAUNCH by pkg/reviewtopology from the run's credentials:
+  ## auto → "on" iff a SECOND model family is credentialed (host
+  ## detection locally, the sealed bundle on cloud), else "off" — the
+  ## v2 plan-in-stride shape, at zero extra cost. "on" forces the phase
+  ## (the peer reviewer then fails loudly on a missing credential).
+  plan_review: string = "auto"
+  ## What a MID-RUN peer failure (forfait window shut, provider down,
+  ## credential revoked) does: "wait" (default) parks the run
+  ## failed_resumable until the peer window reopens (run-level
+  ## usage-window retry; cloud durable, local --auto-resume); "skip"
+  ## arms the reviewer's `action: skip` fallback route — the plan
+  ## proceeds unreviewed, LOUDLY (_skipped stamped, plan_gate reads it).
+  plan_review_policy: string = "wait"
+
   ## ─── Deployment (opt-in, platform-agnostic) ───────────────────
   ## deploy_enabled=true adds a deploy phase AFTER the app converges
   ## (and, in interactive mode, after the operator SHIPS): the deploy
@@ -379,6 +394,19 @@ prompt campaign_user:
   those — OR operator draft-review feedback prefixed
   "OPERATOR DRAFT-REVIEW FEEDBACK" — address exactly that:
   {{input.fail_log}}
+
+  PEER-REVIEWED BUILD PLAN (empty = no plan phase ran, plan in stride
+  as usual; on continuation passes read `git log` instead). The plan is
+  a MAP, not a contract — reality wins; note where you diverge:
+  {{input.plan}}
+
+  Peer critique of that plan (cross-model reviewer; the plan author
+  already challenged it and integrated what held — weigh what remains
+  on its merits, empty = none or the review was skipped):
+  {{input.plan_critique}}
+
+  Plan author's responses to the critique (accepted/rejected and why):
+  {{input.plan_responses}}
 
   Ship the app one slice at a time — brownfield check, scaffold if
   bare, walking skeleton, then features with their tests — until a
@@ -747,6 +775,11 @@ schema chat_input:
 ## failure log, review findings, or operator draft-review feedback).
 schema campaign_input:
   fail_log: string
+  ## Plan-phase hand-off (empty when the phase is off / skipped / on
+  ## continuation passes — git is the durable state there).
+  plan: string
+  plan_critique: string
+  plan_responses: string
 
 ## campaign's TERMINATION CONTRACT (G2): machine-checkable output the
 ## engine keys convergence on. app_complete is the done-oracle;
@@ -952,6 +985,209 @@ human interview_chat:
   output: chat_output
   instructions: interview_chat_instructions
   interaction: human
+
+## ─── Plan phase (opt-in cross-model pair review) ────────────────────
+## Active only when `plan_review` resolved "on" at launch, between the
+## spec (route / interview) and the campaign. Shape: the plan AUTHOR
+## (claude family, read-only) maps the build → a peer from the OTHER
+## family (claw + gpt) critiques it against the actual workspace → the
+## SAME author session challenges the critique and integrates what
+## holds → the campaign implements. ONE revision turn, no loop — the
+## campaign stays the arbiter of reality (asymptote intact). When off,
+## the spec hands off straight to `campaign`: the v2 shape, unchanged.
+
+prompt plan_system:
+  You are the implementation planner for an app-building campaign. You
+  are READ-ONLY: explore the workspace and produce a PLAN — change
+  nothing.
+
+  If SPEC.md exists in the workspace, read it FIRST — it is the
+  authoritative spec. Explore what already exists (brownfield check):
+  the stack, the patterns to REUSE, the seams the app attaches to. Then
+  write the plan as a MAP, not a contract — the implementer may diverge
+  where reality disagrees.
+
+  Structured output:
+    - plan: the build plan — the slices in order (a slice = a coherent,
+      buildable, testable increment), each naming the files/seams it
+      touches, plus the scaffold choice when greenfield.
+    - assumptions: the load-bearing assumptions the plan rests on.
+    - risks: where the plan is most likely wrong, and what to check.
+
+prompt plan_user:
+  Workspace: {{vars.workspace_dir}}
+  Requested stack hint (empty = infer from the brief): {{vars.stack}}
+
+  SPEC HANDOFF: if {{vars.workspace_dir}}/SPEC.md exists, read it
+  FIRST — it is the authoritative spec (an operator interview produced
+  it). The APP PROMPT below is then only the original tagline.
+
+  THE APP PROMPT to plan:
+  {{vars.app_prompt}}
+
+prompt plan_review_system:
+  You are a peer reviewer from a DIFFERENT model family, adversarially
+  reviewing an app build plan against the actual workspace. Your value
+  is INDEPENDENT judgment: verify the plan's claims with your read-only
+  tools (including SPEC.md when present); do not extend the plan's own
+  reasoning.
+
+  Hunt for: a wrong or missing assumption about the workspace or spec;
+  a slice that rebuilds what exists instead of reusing it; a spec
+  requirement no slice covers; an integration or test gap; a materially
+  simpler shape; an understated risk.
+
+  Structured output:
+    - concerns: the defects you can GROUND in the workspace/spec (name
+      the file/requirement per claim). Empty when the plan holds — do
+      not manufacture concerns to look useful.
+    - suggestions: concrete improvements, most valuable first.
+    - blocking: true ONLY for a defect that would make the built app
+      wrong (not merely improvable).
+
+prompt plan_review_user:
+  Workspace: {{vars.workspace_dir}}
+  (Read {{vars.workspace_dir}}/SPEC.md first when it exists.)
+
+  THE APP PROMPT the plan implements:
+  {{vars.app_prompt}}
+
+  THE PLAN under review:
+  {{input.plan}}
+
+  Its stated assumptions:
+  {{input.assumptions}}
+
+  Its stated risks:
+  {{input.risks}}
+
+prompt plan_revise_system:
+  You authored the build plan earlier in this session. A peer reviewer
+  from another model family has critiqued it. CHALLENGE the critique:
+  verify each concern against the workspace and spec, integrate what
+  holds, refuse what does not — with a stated reason. You revise the
+  PLAN only; you change no code.
+
+  Structured output:
+    - plan: the final plan, revised where the critique held.
+    - review_responses: one line per concern — accepted (and how the
+      plan changed) or rejected (and why).
+
+prompt plan_revise_user:
+  Peer critique of your plan:
+  {{input.concerns}}
+
+  Peer suggestions:
+  {{input.suggestions}}
+
+  Blocking: {{input.blocking}}
+
+  Your plan as reviewed:
+  {{input.plan}}
+
+schema plan_topology_state:
+  do_plan: bool
+
+schema plan_output:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_input:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_output:
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_gate_state:
+  skipped: bool
+
+schema plan_revise_input:
+  plan: string
+  assumptions: string
+  risks: string
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_revised_output:
+  plan: string
+  review_responses: string
+
+## plan_topology lifts the launch-resolved plan_review var into a bool
+## so the hand-off edges use the C012-exhaustive simple form. No LLM.
+compute plan_topology:
+  description: "Plan phase gate (launch-resolved)"
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_review == 'on'"
+
+## plan — the AUTHOR. Same family/model as the campaign (the peer is the
+## cross-check); read-only so the plan phase cannot mutate the tree.
+agent plan:
+  description: "Author the build plan (read-only)"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+  readonly: true
+
+## plan_review — the PEER, pinned to the other family. claw because
+## "openai/*" models only resolve there; both knobs env-overridable so a
+## host without OpenAI quota can run the peer elsewhere. Read-only
+## toolset: it verifies claims in the workspace but cannot edit it.
+judge plan_review:
+  description: "Peer plan review (other model family)"
+  backend: "${ITERION_VIBE_BACKEND_GPT:-claw}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  input: plan_review_input
+  output: plan_review_output
+  system: plan_review_system
+  user: plan_review_user
+  session: fresh
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  fallbacks:
+    ## The plan_review_policy switch, expressed as a route gate:
+    ## policy "skip" arms this terminal route — a peer failure completes
+    ## the node with a zero-value critique stamped _skipped (plan_gate
+    ## routes around the revise turn). policy "wait" leaves NO active
+    ## route: the failure stays failed_resumable and the run-level
+    ## usage-window retry parks the run until the forfait reopens.
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      on: [usage_window, unavailable, auth]
+
+## plan_gate — did the peer actually serve, or did the skip route fire?
+## Deterministic: reads the _skipped stamp, never an LLM judgment.
+compute plan_gate:
+  description: "Peer review served or skipped?"
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+## plan_revise — the AUTHOR again, SAME session (the `_session_id`
+## carried on the edge), challenging the peer's critique. Read-only.
+agent plan_revise:
+  description: "Author challenges & integrates the critique"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: plan_revise_input
+  output: plan_revised_output
+  system: plan_revise_system
+  user: plan_revise_user
+  session: inherit_if_available
+  readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native
@@ -1459,7 +1695,7 @@ workflow app_dev:
   route -> interviewer when is_interview with {
     operator_message: "{{vars.app_prompt}}"
   }
-  route -> campaign when not is_interview with { fail_log: "" }
+  route -> plan_topology when not is_interview
 
   ## ── Interview loop (the Nexie shape) ────────────────────────────
   interviewer -> interview_gate with {
@@ -1468,9 +1704,10 @@ workflow app_dev:
     quick_replies: "{{outputs.interviewer.quick_replies}}"
   }
 
-  ## spec_ready → SPEC.md is committed on disk; hand off to the campaign.
+  ## spec_ready → SPEC.md is committed on disk; hand off through the
+  ## plan-phase gate (off → straight to the campaign, as before).
   ## Not ready → back to the chat pause for the operator's next answer.
-  interview_gate -> campaign when spec_ready with { fail_log: "" }
+  interview_gate -> plan_topology when spec_ready
   interview_gate -> interview_chat when not spec_ready with {
     reply:         "{{outputs.interview_gate.reply}}",
     quick_replies: "{{outputs.interview_gate.quick_replies}}"
@@ -1485,6 +1722,37 @@ workflow app_dev:
     _session_id:          "{{outputs.interviewer._session_id}}",
     _session_fingerprint: "{{outputs.interviewer._session_fingerprint}}"
   } as interview_loop("{{vars.max_interview_turns}}")
+
+  ## ── Plan phase (skipped whole when plan_review resolved off) ────
+  plan_topology -> plan when do_plan
+  plan_topology -> campaign when not do_plan with { fail_log: "" }
+
+  plan -> plan_review with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}"
+  }
+  plan_review -> plan_gate
+  ## Peer served → the plan AUTHOR (same session) challenges the
+  ## critique and integrates what holds; skipped (policy skip + peer
+  ## unavailable) → the unreviewed plan proceeds, loudly.
+  plan_gate -> plan_revise when not skipped with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}",
+    concerns:    "{{outputs.plan_review.concerns}}",
+    suggestions: "{{outputs.plan_review.suggestions}}",
+    blocking:    "{{outputs.plan_review.blocking}}",
+    _session_id: "{{outputs.plan._session_id}}"
+  }
+  plan_gate -> campaign when skipped with {
+    plan: "{{outputs.plan.plan}}"
+  }
+  plan_revise -> campaign with {
+    plan:           "{{outputs.plan_revise.plan}}",
+    plan_critique:  "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}"
+  }
 
   ## ── Campaign pass + deterministic gate (feature-dev v2 shape) ────
   campaign -> verify_probe

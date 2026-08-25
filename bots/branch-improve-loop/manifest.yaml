@@ -1,7 +1,7 @@
 name: branch-improve-loop
 display_name: Billy
 icon: 🌿
-version: 1.1.1
+version: 1.2.0
 ## 1.1.1 — an advisory block before the report (`Fit` / `Rot` / `Ratchet`,
 ## the shape whole-improve-loop already carries): the last of the three asks
 ## for the cheap deterministic check that would have caught the issue just

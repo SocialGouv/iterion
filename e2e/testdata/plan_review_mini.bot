@@ -1,0 +1,90 @@
+## Minimal fixture mirroring the plan phase of the campaign bots
+## (feature-dev / app-dev / branch-improve-loop / whole-improve-loop):
+## a launch-resolved `plan_review` gate, the plan AUTHOR, a cross-model
+## peer reviewer carrying the `action: skip` fallback route driven by
+## `plan_review_policy`, the deterministic `plan_gate` reading the
+## _skipped stamp, and the author's revise turn. Exercised by
+## plan_review_test.go with the scenario stub — no LLM, no tools.
+
+schema plan_topology_state:
+  do_plan: bool
+
+schema plan_output:
+  plan: string
+
+schema plan_review_output:
+  concerns: string
+  blocking: bool
+
+schema plan_gate_state:
+  skipped: bool
+
+schema plan_revised_output:
+  plan: string
+  review_responses: string
+
+schema campaign_input:
+  plan: string
+  plan_critique: string
+  plan_responses: string
+
+schema campaign_output:
+  done: bool
+
+vars:
+  plan_review: string = "auto"
+  plan_review_policy: string = "wait"
+
+compute plan_topology:
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_review == 'on'"
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: plan_output
+
+judge plan_review:
+  model: "claude-opus-4-7"
+  output: plan_review_output
+  fallbacks:
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      on: [usage_window, unavailable, auth]
+
+compute plan_gate:
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+agent plan_revise:
+  model: "claude-opus-4-7"
+  output: plan_revised_output
+
+agent campaign:
+  model: "claude-opus-4-7"
+  input: campaign_input
+  output: campaign_output
+
+workflow plan_review_mini:
+  entry: plan_topology
+
+  plan_topology -> plan when do_plan
+  plan_topology -> campaign when not do_plan
+
+  plan -> plan_review
+  plan_review -> plan_gate
+  plan_gate -> plan_revise when not skipped with {
+    plan: "{{outputs.plan.plan}}"
+  }
+  plan_gate -> campaign when skipped with {
+    plan: "{{outputs.plan.plan}}"
+  }
+  plan_revise -> campaign with {
+    plan:           "{{outputs.plan_revise.plan}}",
+    plan_critique:  "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}"
+  }
+
+  campaign -> done
