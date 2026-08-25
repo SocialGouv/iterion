@@ -223,3 +223,36 @@ func TestSecurityReadPatch_CollisionReadsTheOrgNotTheBotHandle(t *testing.T) {
 		t.Fatalf("same org on two hosts must be refused: code=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestSecurityReadPatch_DisableLeavesAnUnrelatedPATConnectionAlone pins the
+// asymmetry the enable branch already had: a pat/oauth connection can never
+// have minted anything, and its AccountLogin IS an org name — so withdrawing
+// on it would delete that org's entry from the operator's own hand-set map.
+func TestSecurityReadPatch_DisableLeavesAnUnrelatedPATConnectionAlone(t *testing.T) {
+	s := newForgeTestServer(t)
+	// An operator's hand-set map, exactly as the runbook describes it.
+	id := secrets.NewGenericSecretID()
+	body := `{"acme":"ghp_hand_set"}`
+	sealed, _ := secrets.SealGenericSecret(s.sealer, id, []byte(body))
+	if err := s.genericSecrets.Create(context.Background(), secrets.GenericSecret{
+		ID: id, TenantID: "t1", ScopeTeamID: "t1", Name: forge.SecurityReadSecretName,
+		SealedSecret: sealed, Fingerprint: secrets.FingerprintSHA256(body), CreatedBy: "u-operator",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated PAT connection whose account happens to be that org.
+	if err := s.forgeConnections.Create(context.Background(), forge.Connection{
+		ID: "p1", TenantID: "t1", Provider: forge.ProviderGitHub, Kind: forge.KindPAT,
+		Status: forge.StatusActive, AccountLogin: "acme",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if w := patchSecurityRead(t, s, "p1", false); w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	m, ok := securityReadMapFor(t, s)
+	if !ok || m["acme"] != "ghp_hand_set" {
+		t.Fatalf("the operator's hand-set entry must survive, got %v (present=%v)", m, ok)
+	}
+}

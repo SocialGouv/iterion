@@ -489,3 +489,52 @@ func TestSecurityReadOrgKey_RefusesTheAppBotHandle(t *testing.T) {
 		t.Fatalf("pat key = %q (err %v)", key, err)
 	}
 }
+
+func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	conn := seedGitHubAppConn(t, sealer, connStore, now.Add(2*time.Minute), true)
+	if err := UpsertSecurityReadToken(context.Background(), secStore, sealer, &conn, "ghs_live", now); err != nil {
+		t.Fatal(err)
+	}
+	// A moving clock: the connection only becomes due again once its freshly
+	// bumped expiry re-enters the lead window — the "~55 minutes later" that
+	// makes this bug invisible within a single tick.
+	clock := now
+	w := &RefreshWorker{
+		Connections: connStore, Secrets: tenantScopedSecretStore{secStore}, Sealer: sealer,
+		Now: func() time.Time { return clock },
+		RefresherFor: func(Connection) TokenRefresher {
+			return fakeRefresher{newAccess: "fresh", expiresAt: clock.Add(time.Hour)}
+		},
+		SecurityMinter: func(context.Context, Connection) (string, error) {
+			return "", ErrPermissionsNotGranted
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	got, _ := connStore.Get(context.Background(), "conn-gh")
+	if got.SecurityReadEnabled || !strings.Contains(got.StatusReason, "Dependabot alerts") {
+		t.Fatalf("degrade not recorded: enabled=%v reason=%q", got.SecurityReadEnabled, got.StatusReason)
+	}
+
+	// The forge token keeps refreshing fine (the two lanes are independent).
+	// That success must NOT erase the one explanation an operator has for an
+	// opt-in that is now silently off.
+	clock = clock.Add(58 * time.Minute)
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	got, _ = connStore.Get(context.Background(), "conn-gh")
+	// Guard the guard: without an actual second refresh this test proves
+	// nothing (the connection would simply not be due).
+	if got.LastRefreshedAt == nil || !got.LastRefreshedAt.Equal(clock) {
+		t.Fatalf("the second tick must have refreshed the connection (last=%v, clock=%v)", got.LastRefreshedAt, clock)
+	}
+	if !strings.Contains(got.StatusReason, "Dependabot alerts") {
+		t.Fatalf("the security-read reason was erased by an ordinary refresh: %q", got.StatusReason)
+	}
+}

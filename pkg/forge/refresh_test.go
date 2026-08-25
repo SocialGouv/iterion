@@ -46,6 +46,17 @@ func (s tenantScopedSecretStore) ListByTeam(ctx context.Context, teamID, userID 
 	return s.MemoryGenericSecretStore.ListByTeam(ctx, teamID, userID)
 }
 
+// UpdateIfFingerprint is the method guardedUpdate PREFERS whenever the store
+// implements it — which the embedded memory store now does. Without this
+// override the promoted method bypasses the very tenant assertion this
+// double exists to make.
+func (s tenantScopedSecretStore) UpdateIfFingerprint(ctx context.Context, rec secrets.GenericSecret, expected string) error {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return errNoTenant
+	}
+	return s.MemoryGenericSecretStore.UpdateIfFingerprint(ctx, rec, expected)
+}
+
 func (s tenantScopedSecretStore) Delete(ctx context.Context, id string) error {
 	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
 		return errNoTenant

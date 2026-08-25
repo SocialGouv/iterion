@@ -451,11 +451,17 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
 		}
-	} else {
-		// Unconditional: the stored flag and the secret map can disagree (a
-		// failed persist after a successful mint), and gating the withdrawal
-		// on the flag would answer 200 while leaving the org token in place.
-		// RemoveSecurityReadToken is idempotent on absence.
+	} else if conn.Kind == forge.KindGitHubApp {
+		// Unconditional for an App connection (the only kind that can hold a
+		// minted entry): the stored flag and the secret map can disagree —
+		// a failed persist after a successful mint — and gating the
+		// withdrawal on the flag would answer 200 while leaving the org
+		// token in place. RemoveSecurityReadToken is idempotent on absence.
+		//
+		// Scoped to that kind, though: a pat/oauth connection can never have
+		// minted anything, and its AccountLogin IS an org name — withdrawing
+		// on it would delete that org's entry from the operator's own
+		// hand-set map, which is the documented non-App path.
 		if err := forge.RemoveSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn); err != nil {
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
