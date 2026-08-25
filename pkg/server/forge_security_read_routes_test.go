@@ -185,3 +185,41 @@ var errUpdateRefused = &updateRefusedError{}
 type updateRefusedError struct{}
 
 func (*updateRefusedError) Error() string { return "store refused the update" }
+
+// TestSecurityReadPatch_CollisionReadsTheOrgNotTheBotHandle pins the same
+// root cause as the critical, on the collision guard: every connection
+// minted from ONE App carries the same AccountLogin (its bot handle), so
+// comparing that field invents collisions between different orgs and misses
+// the real cross-host one.
+func TestSecurityReadPatch_CollisionReadsTheOrgNotTheBotHandle(t *testing.T) {
+	s := newForgeTestServer(t)
+	// Two DIFFERENT orgs on two hosts, both connected through the same App —
+	// identical AccountLogin, unrelated installations. Enabling the second
+	// must be allowed.
+	seedAppConn(t, s, "c1", "orgA", "", true)
+	seedAppConn(t, s, "c2", "orgB", "https://ghe.corp.example", false)
+	minted := 0
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+		minted++
+		return "ghs_b", nil
+	}
+	if w := patchSecurityRead(t, s, "c2", true); w.Code != http.StatusOK {
+		t.Fatalf("distinct orgs must not collide: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if minted != 1 {
+		t.Fatalf("mint calls = %d, want 1", minted)
+	}
+
+	// And the genuine collision — the SAME org on two hosts — is still
+	// refused, whatever the bot handles are.
+	s2 := newForgeTestServer(t)
+	seedAppConn(t, s2, "d1", "acme", "", true)
+	seedAppConn(t, s2, "d2", "acme", "https://ghe.corp.example", false)
+	s2.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+		t.Fatal("a colliding org must not be minted")
+		return "", nil
+	}
+	if w := patchSecurityRead(t, s2, "d2", true); w.Code != http.StatusConflict {
+		t.Fatalf("same org on two hosts must be refused: code=%d body=%s", w.Code, w.Body.String())
+	}
+}

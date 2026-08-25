@@ -431,7 +431,7 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusInternalServerError, "%v", err)
 			return
 		} else if other != "" {
-			httpError(w, http.StatusConflict, "connection %s (host %s) already holds the security-read token for org %q; the token map is keyed by org, so both cannot be enabled — disable that one first", other, conn.Host(), conn.AccountLogin)
+			httpError(w, http.StatusConflict, "connection %s (host %s) already holds the security-read token for org %q; the token map is keyed by org, so both cannot be enabled — disable that one first", other, conn.Host(), securityReadOrgOf(conn))
 			return
 		}
 		mint := s.forgeSecurityMint
@@ -477,7 +477,7 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.auditTenant(r, teamID, "forge.connection.security_read", "forge_connection", conn.ID, map[string]any{
-		"enabled": enable, "account": conn.AccountLogin,
+		"enabled": enable, "account": securityReadOrgOf(conn),
 	})
 	writeJSON(w, conn)
 }
@@ -517,6 +517,18 @@ func (s *Server) handleListForgeRepos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, struct {
 		Repos []forge.RepoSummary `json:"repos"`
 	}{Repos: repos})
+}
+
+// securityReadOrgOf is the ORG a connection operates on, lowercased. For a
+// github_app connection that is the installation account — NOT AccountLogin,
+// which holds the App's own bot handle and is identical across every
+// connection minted from one App. Reading the wrong one both invents
+// collisions between different orgs and misses the real cross-host one.
+func securityReadOrgOf(c forge.Connection) string {
+	if c.Kind == forge.KindGitHubApp {
+		return strings.ToLower(strings.TrimSpace(c.InstallationAccount))
+	}
+	return strings.ToLower(strings.TrimSpace(c.AccountLogin))
 }
 
 // securityReadNameClash reports whether a USER-scoped secret named
@@ -560,7 +572,7 @@ func (s *Server) securityReadNameClash(ctx context.Context, teamID string) (stri
 // two replicas can both pass it; it narrows a misconfiguration, it is not
 // an invariant.
 func (s *Server) securityReadOrgCollision(ctx context.Context, conn forge.Connection) (string, error) {
-	org := strings.ToLower(strings.TrimSpace(conn.AccountLogin))
+	org := securityReadOrgOf(conn)
 	if org == "" || s.forgeConnections == nil {
 		return "", nil
 	}
@@ -572,7 +584,7 @@ func (s *Server) securityReadOrgCollision(ctx context.Context, conn forge.Connec
 		if other.ID == conn.ID || !other.SecurityReadEnabled {
 			continue
 		}
-		if strings.ToLower(strings.TrimSpace(other.AccountLogin)) == org && other.Host() != conn.Host() {
+		if securityReadOrgOf(other) == org && other.Host() != conn.Host() {
 			return other.ID, nil
 		}
 	}

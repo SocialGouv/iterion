@@ -410,8 +410,14 @@ func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connec
 	// classifies it as forge.ErrPermissionsNotGranted with GitHub's message.
 	if len(conn.GrantedPermissions) > 0 {
 		if _, ok := conn.GrantedPermissions["vulnerability_alerts"]; !ok {
+			// The ORG, not the App's bot handle: this string tells an
+			// operator where to click.
+			org := conn.InstallationAccount
+			if org == "" {
+				org = conn.AccountLogin
+			}
 			return "", fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
-				forge.ErrPermissionsNotGranted, conn.AccountLogin)
+				forge.ErrPermissionsNotGranted, org)
 		}
 	}
 	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
