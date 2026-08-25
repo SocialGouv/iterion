@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -123,9 +124,10 @@ func (c *Coordinator) Start(ctx context.Context) {
 	go c.run()
 }
 
-// Close stops the coordinator and waits for the worker to drain.
+// Close stops the coordinator and waits for the worker to drain. A
+// coordinator that was never Started has no worker to wait for.
 func (c *Coordinator) Close() {
-	if c == nil {
+	if c == nil || c.ctx == nil {
 		return
 	}
 	if c.cancel != nil {
@@ -254,6 +256,16 @@ func (c *Coordinator) run() {
 			if !c.armed() {
 				continue
 			}
+			// A deferred wake whose timer expired while the watched node
+			// was gone (end of a pass) re-arms when the node comes back:
+			// the give-up marker was emitted as the pass wrapped up, and
+			// the next pass is exactly who should hear about it.
+			if pendingWake != "" && pendingC == nil &&
+				evt.Type == store.EventNodeStarted && c.spec.watchesNode(evt.NodeID) {
+				reason := pendingWake
+				pendingWake = ""
+				armPending(reason)
+			}
 			if matched, registered := c.matchesMonitor(evt); matched {
 				if registered {
 					// Bot-chosen signal: evaluate immediately, bypassing
@@ -281,14 +293,17 @@ func (c *Coordinator) run() {
 			}
 		case <-pendingC:
 			pendingC = nil
-			reason := pendingWake
-			pendingWake = ""
 			if c.armed() && !c.finished {
+				reason := pendingWake
+				pendingWake = ""
 				if suppressed := c.evaluate(reason+" (deferred by cooldown)", false); suppressed {
 					// Another wake consumed the slot first — push again.
 					armPending(reason)
 				}
 			}
+			// Disarmed: keep pendingWake — a fresh watched node_started
+			// re-arms it (see the events case) instead of dropping the
+			// one-shot signal.
 		}
 	}
 }
@@ -409,6 +424,13 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed b
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
 	if err != nil {
+		// An eval in flight when the run tears down is cancelled with it
+		// — a normal shutdown, not a supervisor malfunction: no warn
+		// after the run's terminal summary, no failure counted.
+		if c.ctx != nil && c.ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			c.info("supervise[%s]: evaluation cancelled at run end (wake=%s)", c.spec.Name, reason)
+			return false
+		}
 		c.evalFailures++
 		c.warn("supervise[%s]: evaluation failed on run %s (wake=%s): %v", c.spec.Name, c.runID, reason, err)
 		if c.evalFailures >= maxEvalFailures {

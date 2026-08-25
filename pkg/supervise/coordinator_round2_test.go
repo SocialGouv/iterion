@@ -51,6 +51,51 @@ func TestSeededMatchInsideCooldownIsDeferredNotDropped(t *testing.T) {
 	}
 }
 
+// The deferred wake survives the watched node finishing before the
+// cooldown expires: the marker is typically emitted as a pass wraps up
+// (seconds before node_finished), and the next pass — a loop back-edge
+// re-entering the same node — must still hear about it.
+func TestDeferredWakeSurvivesNodeFinish(t *testing.T) {
+	obs := &fakeObserver{ch: make(chan *store.Event, 16)}
+	inj := &recordInjector{}
+	eval := &scriptedEval{decisions: []*Decision{{Intervene: false}}}
+	spec := Spec{
+		Watches:  []string{"campaign"},
+		Monitors: []Monitor{{EventType: "budget_warning"}, {TextContains: "impossible"}},
+		Cooldown: 500 * time.Millisecond,
+		MaxEvals: 10,
+	}
+	c := New(obs, inj, "r1", spec, eval, nil)
+	c.Start(context.Background())
+	defer c.Close()
+
+	obs.ch <- ev(1, store.EventNodeStarted, "campaign", nil)
+	obs.ch <- ev(2, store.EventBudgetWarning, "campaign", map[string]any{"used": 1.0})
+	waitFor(t, func() bool { return eval.calls() == 1 })
+
+	// Marker inside the cooldown, then the node finishes (end of pass).
+	obs.ch <- ev(3, store.EventAssistantText, "campaign", map[string]any{"text": "this is impossible, I stop"})
+	obs.ch <- ev(4, store.EventNodeFinished, "campaign", nil)
+
+	// Wait past the cooldown while disarmed: the pending wake must NOT
+	// fire (and must not be lost either).
+	time.Sleep(900 * time.Millisecond)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("disarmed pending wake fired: evals=%d", got)
+	}
+
+	// Next pass re-enters the watched node: the deferred marker is
+	// re-armed and evaluated.
+	obs.ch <- ev(5, store.EventNodeStarted, "campaign", nil)
+	waitFor(t, func() bool { return eval.calls() == 2 })
+	eval.mu.Lock()
+	wake := eval.inputs[1].WakeReason
+	eval.mu.Unlock()
+	if !strings.Contains(wake, "impossible") {
+		t.Fatalf("re-armed wake lost its trigger: %q", wake)
+	}
+}
+
 // A failed evaluation (transport/auth) must not consume the MaxEvals
 // budget; three consecutive failures park supervision loudly instead of
 // burning it on nothing.

@@ -88,11 +88,18 @@ Semantics that matter when choosing the set:
 - **Pre-seeded matches honour the `cooldown`** — a match inside the
   window is DEFERRED to the cooldown's expiry (the trigger event rides
   the wake reason, so it survives even if evicted from the recent
-  ring), never dropped. Only monitors the bot registers itself (via its
-  decision's `watch`) bypass the cooldown, and re-listing a seeded
+  ring), never dropped; if the watched node finishes first, the
+  deferred wake re-arms when the node comes back (the next pass of a
+  loop). One deferral slot: further suppressed matches in the same
+  window coalesce into it. Only monitors the bot registers itself (via
+  its decision's `watch`) bypass the cooldown, and re-listing a seeded
   pattern does not promote it. A seeded match also never resurrects a
   supervisor whose bot declared `done` — re-arming is the job of a
   bot-registered monitor or a fresh watched `node_started`.
+- **The coordinator is one goroutine**: an eval in flight blocks its
+  own wake processing (never the run — the hub drops rather than
+  stalls), so under a very short `cooldown` the supervisor lags the
+  run by up to one eval. Invisible at the shipped cooldowns.
 - **A failed evaluation does not consume `max_evals`** — but three
   consecutive failures (no reachable model, auth) park supervision with
   a logged warning instead of burning the budget on transport errors.
