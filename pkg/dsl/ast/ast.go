@@ -526,6 +526,8 @@ type FallbackDecl struct {
 	Provider string   // credential-routing hint ("" = auto)
 	On       []string // failure categories that may route here ("" = the package default)
 	Metered  bool     // author's acknowledgement that this route spends a metered credential
+	Action   string   // "" = route (execute backend+model); "skip" = terminal degrade: serve a zero-value output, loudly marked
+	When     string   // optional expr over vars gating this route ("" = always active); lets a --var pick the route set per run
 	Span     Span
 }
 

@@ -644,6 +644,11 @@ type chainOutcome struct {
 	// run would record why.
 	ServedBy    string
 	FellThrough bool
+	// Skipped reports that the chain ended on an `action: skip` terminal
+	// route: nothing served, and the caller must synthesize the node's
+	// zero-value output (only the caller knows the schema). Result carries
+	// the failed routes' accumulated spend, never content.
+	Skipped bool
 }
 
 // dispatchChain walks a node's fallback chain, building each element
@@ -698,6 +703,21 @@ func (e *ClawExecutor) dispatchChain(
 		rest := chain[i+1:]
 		fallbackRemains := len(rest) > 0
 
+		// An `action: skip` terminal route: the walk arrived here through a
+		// failure its `on:` filter accepted (a skip element is never first —
+		// chain[0] is always the node's own route, C173 pins skip last).
+		// Complete the node with a skip outcome carrying only the failed
+		// routes' spend; the caller synthesizes the zero-value output.
+		if el.Skip {
+			res := spent.applyTo(delegate.Result{Output: map[string]any{}})
+			return chainOutcome{
+				Result:      res,
+				ServedBy:    stepLabel(el),
+				FellThrough: true,
+				Skipped:     true,
+			}, nil
+		}
+
 		backendName, backend, task, buildErr := build(ctx, i, el)
 		if buildErr != nil {
 			// A build failure is this element's failure, not the node's:
@@ -714,7 +734,11 @@ func (e *ClawExecutor) dispatchChain(
 				break
 			}
 			next := chain[i+1]
-			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
+			toModel := effModel(next)
+			if next.Skip {
+				toModel = ""
+			}
+			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), toModel, buildErr)
 			continue
 		}
 		// Whether ANY remaining route would take a given failure — the
@@ -789,7 +813,13 @@ func (e *ClawExecutor) dispatchChain(
 			fromModel = effModel(el)
 		}
 		next := chain[j]
-		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, effModel(next), err)
+		toModel := effModel(next)
+		if next.Skip {
+			// A skip route runs no model; inheriting the baseline here
+			// would report a model that will never execute.
+			toModel = ""
+		}
+		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, toModel, err)
 		nextAllowed = j
 	}
 
