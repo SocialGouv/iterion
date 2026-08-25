@@ -108,6 +108,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
+| Prody | `product-docs` |
 | Revi (converse) | `revi-converse` |
 | Envy | `review-env` |
 | Revi | `review-pr` |
@@ -768,6 +769,68 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
+
+### `product-docs` — Prody
+
+Functional documentation bot — one capable agent writes and maintains
+the BUSINESS-AUDIENCE documentation of a product ("what it does for
+its users") inside a DEDICATED documentation repository, grounded in
+the source code of the N repositories a product catalog names.
+
+It resolves the product from a catalog YAML (`catalog_path` +
+`product_id`), shallow-clones every source repo out of the docs
+worktree, redacts secret-bearing files from those clones, then reads
+what the sources actually implement — user-facing templates, i18n
+catalogs, form and validation rules, routes, API contracts, any
+framework — and writes the product's pages: a hub per user role or
+journey, one sub-page per step. Every page lands as its own
+`docs(...)` commit carrying a `Bot: product-docs` trailer and a
+`Product-Docs-Sources: <repo>@<sha>` trailer recording exactly which
+source commits it was written against.
+
+Sourced facts or `[à confirmer]` — never an invented business rule.
+Human-validated prose is preserved and touched only where the code
+contradicts it. A repository it could not clone is declared as a hole
+in the report, never documented from inference.
+
+The determinism is TRUTH-only: a scope gate fails the run if anything
+outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
+it if a published page still carries working notes, and convergence
+is those two gates ∧ the campaign's honest `docs_aligned` contract —
+nothing else. A deterministic scan runs each pass as an ADVISORY
+hints producer (dead links, orphan pages, catalog surfaces no page
+covers): help the agent is free to contradict, never an obligation.
+
+EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
+skills in French (documentary model, GitBook blocks, glossary, tone),
+but when the docs repo publishes its own `.product-docs/*.md` those
+are authoritative and override the defaults. The product team owns
+its editorial line; the bot brings a default, not a house style.
+
+Opt-in delivery: open_mr=true pushes the page series and opens ONE
+pull request at the end of the run — as a DRAFT by default, because
+functional documentation is validated by the product owners on the
+forge and marking it ready is their act, not the bot's.
+
+- **Use when**:
+  Use to generate or maintain the FUNCTIONAL, non-technical
+  documentation of a product — what it does for its users, role by
+  role and journey by journey — when that documentation lives in its
+  OWN repository and the code lives in one or more OTHER repositories
+  named by a product catalog. Run it in the docs repo with
+  `catalog_path` + `product_id`. It writes `.md` under the product's
+  directory only, and never touches the source repositories.
+  
+  NOT for technical documentation living next to the code (that is
+  docs-refresh / Doki, which aligns a repo's own README / docs/ in
+  place), and NOT for a technical knowledge wiki (that is wiki-gen /
+  Wikky, which owns a `wiki/` tree in the code repo). The
+  distinguisher is the AUDIENCE first — a product's users, not its
+  developers — and the topology second: docs repo here, N source
+  repos there.
+- **Triggers**: product-docs, functional-docs, doc-produit
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
 
