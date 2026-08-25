@@ -835,6 +835,11 @@ tool finalize:
             gates = [gates]
         if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
             return None
+        # A command containing a newline is refused by modernize's reader
+        # (its transport is newline-joined); accepting it here would let this
+        # supervisor requalify a lot the executing bot cannot even read.
+        if any("\n" in g for g in gates):
+            return None
         return gates
 
     requal = {"head": head[:12], "commands": {}, "lots": {}}
@@ -853,6 +858,12 @@ tool finalize:
                 requal["lots"][l.get("id")] = {"verdict": "unreadable exit_gate "
                                                "(%s) — not requalifiable"
                                                % type(l.get("exit_gate")).__name__}
+                continue
+            if not gates:
+                # Zero commands ran; "every gate command green" over an empty
+                # set is the vacuous claim this report exists to refuse.
+                requal["lots"][l.get("id")] = {"verdict": "no exit_gate "
+                                               "declared — not requalifiable"}
                 continue
             reds = [g for g in gates if requal["commands"][g]["rc"] != 0]
             if reds:

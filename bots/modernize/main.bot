@@ -333,6 +333,15 @@ tool plan_read:
         refuse("lot %s declares exit_gate in an unreadable shape (%s): write "
                "one command as a string, or a list of command strings."
                % (chosen.get("id"), type(chosen.get("exit_gate")).__name__))
+    # One command, one line: the field travels to the verifier newline-joined
+    # and is split back on newlines there, so a command CONTAINING a newline
+    # (a `|` block scalar, a multi-line list item) would be torn apart into
+    # fragments nobody declared. Multi-line logic belongs in a script file
+    # the gate invokes.
+    if any("\n" in c for c in gate):
+        refuse("lot %s declares a multi-line exit_gate command. Each command "
+               "must be a single line; put multi-line logic in a script file "
+               "and invoke it." % chosen.get("id"))
     if not gate:
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "

@@ -66,7 +66,9 @@ is a bookmark, not evidence.
 
 A list of shell commands, run in order, in the repository root. **Every one must
 exit 0.** Write the list form; a bare string (one command) is accepted on read,
-anything else is refused as unreadable. They are the definition of the lot, so
+anything else is refused as unreadable. One command, one line — a command
+containing a newline (a `|` block scalar) is refused; put multi-line logic in
+a script file and invoke it. They are the definition of the lot, so
 write them to be:
 
 - **Deterministic** — the same command on the same tree gives the same verdict.

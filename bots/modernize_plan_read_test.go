@@ -128,6 +128,22 @@ lots:
 		}
 	})
 
+	t.Run("block-scalar gate is refused as multi-line", func(t *testing.T) {
+		res := run(t, `version: 1
+lots:
+  - id: T3
+    title: loop
+    exit_gate: |
+      for f in a b; do
+        test -f "$f"
+      done
+    status: todo
+`, 1)
+		if !strings.Contains(res.Notice, "multi-line") {
+			t.Fatalf("notice = %q, want a multi-line refusal", res.Notice)
+		}
+	})
+
 	t.Run("mapping gate is refused as unreadable", func(t *testing.T) {
 		res := run(t, `version: 1
 lots:
