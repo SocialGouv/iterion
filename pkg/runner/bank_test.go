@@ -240,7 +240,6 @@ func TestBankRepoWorkspaceRefShadowRecoversBySHA(t *testing.T) {
 	}
 }
 
-
 // The bank must push through the clone's `origin` remote — whose
 // credential the mid-run refresher keeps LIVE — never through a URL
 // carrying the claim-time token: a GitHub App installation token lives
