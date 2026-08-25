@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // LaunchResult is returned by Launch on success.
@@ -81,6 +82,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err := spec.Budget.Validate(); err != nil {
 			return nil, fmt.Errorf("budget: %w", err)
 		}
+	}
+	// Same pre-flight for the supervisors kill switch: a typo would read
+	// as "inherit" in-process while the detached runner's CLI rejects it
+	// — one input, one behaviour.
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 	runID := spec.RunID
 	if runID == "" {
@@ -344,6 +351,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
+	}
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything

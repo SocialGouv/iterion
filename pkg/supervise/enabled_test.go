@@ -16,7 +16,7 @@ func TestDeclaredEnabledPrecedence(t *testing.T) {
 		{"env on", "", "on", true, EnabledEnv},
 		{"override off wins over env on", "off", "on", false, "--supervisors"},
 		{"override on wins over env off", "on", "off", true, "--supervisors"},
-		{"unreadable env falls through to default", "", "banana", true, "default"},
+		{"unreadable env falls through to on, named", "", "banana", true, EnabledEnv + " unreadable (banana) — default on"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

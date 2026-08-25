@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ func (c *compiler) validateSupervisors(w *Workflow) {
 // text_contains, cost_gt). Kept in sync with that parser by
 // TestMonitorSpecGrammarInSync in the supervise package.
 func CheckMonitorSpec(spec string) error {
+	fields := 0
 	for _, kv := range strings.Split(spec, ",") {
 		kv = strings.TrimSpace(kv)
 		if kv == "" {
@@ -124,16 +126,27 @@ func CheckMonitorSpec(spec string) error {
 			return fmt.Errorf("malformed entry %q (want key=val)", kv)
 		}
 		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if v == "" {
+			return fmt.Errorf("empty value for key %q", k)
+		}
 		switch k {
 		case "event_type", "node_id", "tool_name", "text_contains":
-			// any string value
+			// any non-empty string value
 		case "cost_gt":
-			if _, err := strconv.ParseFloat(v, 64); err != nil {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
 				return fmt.Errorf("cost_gt %q is not a number", v)
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+				return fmt.Errorf("cost_gt %q must be a finite number > 0", v)
 			}
 		default:
 			return fmt.Errorf("unknown key %q", k)
 		}
+		fields++
+	}
+	if fields == 0 {
+		return fmt.Errorf("monitor sets no field")
 	}
 	return nil
 }

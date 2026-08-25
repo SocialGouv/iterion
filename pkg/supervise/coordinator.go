@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,16 +57,29 @@ type Coordinator struct {
 	done   chan struct{}
 
 	// --- owned by the run() goroutine; no locks ---
-	startedAt  time.Time
-	activeNode string
-	monitors   []Monitor
+	startedAt time.Time
+	// activeNodes tracks every currently-executing node (parallel
+	// branches run concurrently); a single "the active node" would be
+	// permanently cleared by an unrelated sibling finishing while the
+	// watched node still runs.
+	activeNodes map[string]struct{}
+	// lastWatchedActive is the most recently started watched node —
+	// the injection scope for a node-scoped supervisor.
+	lastWatchedActive string
+	monitors          []Monitor
+	// seedCount marks the prefix of monitors that came pre-seeded from
+	// the Spec (DSL `monitors:` / CLI --monitor). Seeded monitors are
+	// declarative and broad, so their matches honour the cooldown;
+	// bot-registered ones (the rest of the slice) were chosen by the
+	// bot for precision and bypass it.
+	seedCount  int
 	recent     []string
 	last       *Decision
 	evalCount  int
 	inTokens   int
 	outTokens  int
 	lastEvalAt time.Time
-	finished   bool // bot signalled Done; re-armed by a monitor match
+	finished   bool // bot signalled Done; re-armed by a bot-registered monitor match
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -81,14 +95,16 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		eval = NewLLMEvaluator()
 	}
 	return &Coordinator{
-		obs:      obs,
-		inj:      inj,
-		runID:    runID,
-		spec:     spec.withDefaults(),
-		eval:     eval,
-		logger:   logger,
-		monitors: append([]Monitor(nil), spec.Monitors...),
-		done:     make(chan struct{}),
+		obs:         obs,
+		inj:         inj,
+		runID:       runID,
+		spec:        spec.withDefaults(),
+		eval:        eval,
+		logger:      logger,
+		activeNodes: make(map[string]struct{}),
+		monitors:    append([]Monitor(nil), spec.Monitors...),
+		seedCount:   len(spec.Monitors),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -176,14 +192,30 @@ func (c *Coordinator) run() {
 			if evt.Timestamp.Before(c.startedAt) {
 				continue
 			}
+			// The inbox family echoes queued-message TEXT — including the
+			// supervisor's own steering — back onto the stream. Matching
+			// it would loop the coordinator on itself (one intervention →
+			// its own text re-fires the marker → another eval → …) until
+			// the eval budget is gone. Ingested above (it stays visible in
+			// `recent`), never matched or treated as a boundary.
+			if isInboxEvent(evt.Type) {
+				continue
+			}
 			if !c.armed() {
 				continue
 			}
-			if c.matchesMonitor(evt) {
-				// High-signal: evaluate immediately, bypassing cooldown,
-				// and re-arm if the bot had declared itself done.
-				c.finished = false
-				c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
+			if matched, registered := c.matchesMonitor(evt); matched {
+				if registered {
+					// Bot-chosen signal: evaluate immediately, bypassing
+					// cooldown, and re-arm a done supervisor.
+					c.finished = false
+					c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
+				} else if !c.finished {
+					// Pre-seeded (declarative) monitors are broad; their
+					// matches wake immediately but honour the cooldown so
+					// a chatty marker cannot drain the eval budget.
+					c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), false)
+				}
 			} else if !c.finished && IsTurnBoundary(evt) {
 				armDebounce()
 			}
@@ -196,19 +228,41 @@ func (c *Coordinator) run() {
 	}
 }
 
-// ingest folds an event into the coordinator's view: tracks the active
-// node and keeps a bounded ring of rendered recent events.
+// isInboxEvent reports whether evt belongs to the user-message inbox
+// family, whose Data carries queued-message text verbatim.
+func isInboxEvent(t store.EventType) bool {
+	switch t {
+	case store.EventUserMessageQueued, store.EventUserMessageDelivered,
+		store.EventUserMessageConsumed, store.EventUserMessageCancelled:
+		return true
+	}
+	return false
+}
+
+// ingest folds an event into the coordinator's view: tracks the set of
+// active nodes and keeps a bounded ring of rendered recent events.
 func (c *Coordinator) ingest(evt *store.Event) {
 	switch evt.Type {
 	case store.EventNodeStarted:
-		c.activeNode = evt.NodeID
+		if evt.NodeID != "" {
+			c.activeNodes[evt.NodeID] = struct{}{}
+		}
 		// A freshly-started watched node re-arms a done supervisor.
 		if c.spec.watchesNode(evt.NodeID) {
 			c.finished = false
+			c.lastWatchedActive = evt.NodeID
 		}
 	case store.EventNodeFinished:
-		if evt.NodeID == c.activeNode {
-			c.activeNode = ""
+		delete(c.activeNodes, evt.NodeID)
+		if evt.NodeID == c.lastWatchedActive {
+			c.lastWatchedActive = ""
+			// Another watched node may still be running.
+			for id := range c.activeNodes {
+				if c.spec.watchesNode(id) {
+					c.lastWatchedActive = id
+					break
+				}
+			}
 		}
 	}
 	c.recent = append(c.recent, RenderEvent(evt))
@@ -217,23 +271,33 @@ func (c *Coordinator) ingest(evt *store.Event) {
 	}
 }
 
-// armed reports whether the supervisor is currently watching the active
-// node. Whole-run supervisors (empty Watches) are always armed.
+// armed reports whether any currently-active node is watched. Whole-run
+// supervisors (empty Watches) are always armed.
 func (c *Coordinator) armed() bool {
 	if len(c.spec.Watches) == 0 {
 		return true
 	}
-	return c.activeNode != "" && c.spec.watchesNode(c.activeNode)
-}
-
-// matchesMonitor reports whether any registered monitor fires on evt.
-func (c *Coordinator) matchesMonitor(evt *store.Event) bool {
-	for _, m := range c.monitors {
-		if m.matches(evt) {
+	for id := range c.activeNodes {
+		if c.spec.watchesNode(id) {
 			return true
 		}
 	}
 	return false
+}
+
+// matchesMonitor reports whether any monitor fires on evt, and whether
+// at least one of the firing monitors was bot-registered (index past the
+// pre-seeded prefix) — the class whose matches bypass the cooldown.
+func (c *Coordinator) matchesMonitor(evt *store.Event) (matched, registered bool) {
+	for i, m := range c.monitors {
+		if m.matches(evt) {
+			matched = true
+			if i >= c.seedCount {
+				return true, true
+			}
+		}
+	}
+	return matched, false
 }
 
 // evaluate consults the bot and applies its decision. bypassCooldown is
@@ -256,7 +320,7 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 
 	in := EvalInput{
 		Spec:         c.spec,
-		ActiveNode:   c.activeNode,
+		ActiveNode:   c.lastWatchedActive,
 		WakeReason:   reason,
 		RecentEvents: append([]string(nil), c.recent...),
 		Monitors:     append([]Monitor(nil), c.monitors...),
@@ -287,12 +351,22 @@ func (c *Coordinator) applyDecision(dec *Decision) {
 		return
 	}
 	for _, m := range dec.Watch {
-		if !m.isEmpty() {
+		// Deduplicate: the eval prompt shows the current list and asks
+		// which patterns to KEEP watching, so a bot that re-emits them
+		// verbatim would otherwise grow the slice by its whole set every
+		// eval (observed: 4 seed → 24 after 5 evals).
+		if !m.isEmpty() && !slices.Contains(c.monitors, m) {
 			c.monitors = append(c.monitors, m)
 		}
 	}
-	if dec.Intervene && strings.TrimSpace(dec.Message) != "" {
-		c.inject(dec.Message)
+	if dec.Intervene {
+		if strings.TrimSpace(dec.Message) != "" {
+			c.inject(dec.Message)
+		} else {
+			// An intervention with no text is a malformed decision; say
+			// so instead of silently doing nothing.
+			c.warn("supervise[%s]: bot chose intervene with an empty message — dropped", c.spec.Name)
+		}
 	}
 	if dec.Done {
 		c.finished = true
@@ -305,7 +379,7 @@ func (c *Coordinator) applyDecision(dec *Decision) {
 func (c *Coordinator) inject(text string) {
 	scopeNode := ""
 	if len(c.spec.Watches) > 0 {
-		scopeNode = c.activeNode
+		scopeNode = c.lastWatchedActive
 	}
 	body := text
 	if c.spec.Name != "" {

@@ -25,6 +25,19 @@ func TestMonitorSpecGrammarInSync(t *testing.T) {
 		"cost_gt=abc",
 		"no-equals-sign",
 		"text_contains=a=b", // value containing '=' stays valid (Cut splits once)
+		// A cost_gt that parses as a float but cannot constrain must be
+		// refused on BOTH sides — NaN/negative used to slip through the
+		// matcher's `> 0` branch into a match-everything wildcard.
+		"cost_gt=NaN",
+		"cost_gt=-1",
+		"cost_gt=0",
+		"cost_gt=+Inf",
+		// Zero-field / empty-value specs arm a monitor that can never
+		// fire; both sides refuse them.
+		" ",
+		",,,",
+		"text_contains=",
+		"cost_gt=1e3",
 	}
 	for _, spec := range specs {
 		_, parseErr := ParseMonitorSpecs([]string{spec})

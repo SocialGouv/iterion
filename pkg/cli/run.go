@@ -261,17 +261,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
-	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
-	// event hub onto the engine so each coordinator can observe this run
-	// live. Injection (store-direct) is set up after the store exists.
-	// The shared gate resolves the kill switch (--supervisors →
-	// ITERION_SUPERVISORS → on) and logs the skip.
-	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
-		superviseHub = supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-	}
-
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
 	// Workspace versioning, on the same terms as a studio launch: a run
@@ -288,6 +277,18 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		// logger; WithLogger overwrites on each call, so appending is
 		// sufficient.
 		engineOpts = append(engineOpts, runtime.WithLogger(logger))
+	}
+
+	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
+	// event hub onto the engine so each coordinator can observe this run
+	// live. Injection (store-direct) is set up after the store exists.
+	// The shared gate resolves the kill switch (--supervisors →
+	// ITERION_SUPERVISORS → on) and logs the skip — AFTER the tee, so
+	// "why didn't the coach steer?" is answerable from run.log.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
 	}
 
 	s, err := store.New(storeDir, store.WithLogger(logger))

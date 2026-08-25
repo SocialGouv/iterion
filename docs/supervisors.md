@@ -70,13 +70,35 @@ prompt watchdog_policy:
   test fails twice in a row. Keep messages short and actionable.
 ```
 
-`monitors:` pre-seeds event patterns at coordinator construction, so
-they are armed from the run's very first event — the supervisor bot can
-still register more at runtime, but anything it registers only exists
-after its first eval (a measured blind window when the marker you care
-about appears early). Each entry uses the CLI `--monitor` grammar
-(`key=val,key=val`); a malformed entry gets a `C191` warning at
-validate and is dropped at spawn.
+`monitors:` pre-seeds event patterns at coordinator construction, armed
+as soon as a watched node becomes active (immediately, for a supervisor
+with no `watches:`) — the supervisor bot can still register more at
+runtime, but anything it registers only exists after its first eval (a
+measured blind window when the marker you care about appears early).
+Each entry uses the CLI `--monitor` grammar (`key=val,key=val`); a
+malformed entry gets a `C191` warning at validate and is dropped at
+spawn. A value cannot contain a comma — split into two monitors.
+
+Semantics that matter when choosing the set:
+- **Pin `text_contains` to an event type** (usually
+  `event_type=assistant_text`, the agent's own words). An unpinned
+  substring is matched against EVERY rendered event — tool inputs and
+  outputs included — so a `grep` hit in the repo or a Read of a file
+  mentioning the word wakes an eval.
+- **Pre-seeded matches honour the `cooldown`**; only monitors the bot
+  registers itself (via its decision's `watch`) bypass it. A seeded
+  match also never resurrects a supervisor whose bot declared `done` —
+  re-arming is the job of a bot-registered monitor or a fresh watched
+  `node_started`.
+- **Budget events are node-scoped like everything else**: a supervisor
+  watching `campaign` never sees a `budget_warning` raised while
+  another node (a verifier, a reviewer) is the active one.
+- The supervisor's own steering messages (the `user_message_*` event
+  family) are never matched — an intervention cannot re-trigger its
+  author.
+- On **resume**, the catch-up replay of pre-attach history is
+  observational: it reconstructs state but never fires monitors or
+  evals; supervision acts on activity after the attach.
 
 Launch the workflow normally (`iterion run`); the supervisor is
 auto-spawned, observes the run, and is torn down when the run ends. The
@@ -113,14 +135,17 @@ reproduces, agent-side, the push a good operator supplies when watching
 a coding session live. Its policy is a reference for authoring similar
 coaches:
 
-- **monitors-first, pre-seeded** — the give-up markers
-  (`text_contains=impossible`, `unsolvable`, `give up`, `workaround for
-  now`) and `budget_warning` are declared in the DSL `monitors:` list,
-  armed from the first event; a long `cooldown` (5m) keeps ordinary
-  turn-boundary evals sparse so the eval budget survives to the late,
+- **monitors-first, pre-seeded, pinned** — the give-up markers
+  (`impossible`, `unsolvable`, `infeasib…`, `giving/gave/give up`,
+  `workaround`) are declared in the DSL `monitors:` list, each pinned
+  `event_type=assistant_text` so they fire on the agent's own words,
+  never on tool output or prompt echoes (unpinned, 5 of 10 evals were
+  measured burned on echoes); `budget_warning` + `budget_exceeded`
+  cover the pressure lane. The 5m `cooldown` debounces both the seeded
+  matches and turn-boundary evals so the budget survives to the late,
   hard stretch of a campaign. Deliberately NO `tool_error` monitor: a
-  red test is routine in a build loop, and monitor wakes bypass the
-  cooldown — it would drain the budget on noise;
+  red test is routine in a build loop — the FAILURE LOOP class needs
+  repetition, which turn-boundary wakes surface via recent events;
 - **four intervention classes** — premature impossibility (demand one
   more *instrumented* attempt: debug output, smaller repro, bisect),
   the expedient path (name the durable alternative), a failure loop
@@ -231,8 +256,17 @@ main token-saver.
 
 - **Next turn, not now.** A message lands at the next tool/stop boundary
   of the supervised node; an in-flight LLM call is never interrupted.
-- **Local store / broker mode.** `ObserveRun` is wired for the local
-  broker path; cloud event-source mode is a follow-up.
+- **Local store / broker mode for `iterion supervise` attach.**
+  `ObserveRun` is wired for the local broker path; cloud event-source
+  mode is a follow-up. Declared (`supervisor NAME:`) supervisors are
+  unaffected: every launch surface — CLI run/resume, studio/runview,
+  the dispatcher's direct engine path, and the cloud runner pod —
+  spawns them in-process next to the engine.
+- **Subbot children are not supervised.** A child `.bot` declaring
+  `supervisor NAME:` is silently unsupervised on every surface today;
+  declare the supervisor in the parent (watching the subbot node's
+  activity is not equivalent, but the parent's own agent nodes are
+  coverable).
 
 ## Roadmap
 

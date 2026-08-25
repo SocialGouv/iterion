@@ -55,6 +55,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -1449,6 +1450,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	// DSL-declared supervisors run on the pod alongside the engine —
+	// this path builds its engine directly (no runview.Launch), so it
+	// wires the hub + coordinators itself, exactly like the CLI. No
+	// per-run override travels on the queue yet, so the pod's
+	// ITERION_SUPERVISORS decides; the skip is logged.
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(wf.Supervisors), r.cfg.Logger) {
+		hub := supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(hub.Publish))
+		stopSup := supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, supervise.SpecsFromWorkflow(wf, r.cfg.Logger), r.cfg.Logger)
+		defer stopSup()
+	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.

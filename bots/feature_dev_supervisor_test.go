@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestFeatureDevPerseveranceCoach guards feature-dev's supervisor (the
@@ -60,13 +61,34 @@ func TestFeatureDevPerseveranceCoach(t *testing.T) {
 	if len(sup.Monitors) == 0 {
 		t.Error("supervisor declares no pre-seeded monitors — the coach is blind until its first eval")
 	}
+	// The compiler cannot know the event-type vocabulary (ir must not
+	// import store), so a typo'd event_type compiles clean and disarms
+	// its lane silently. This bot's set is pinned here instead.
+	knownEventTypes := map[string]bool{
+		string(store.EventAssistantText):  true,
+		string(store.EventBudgetWarning):  true,
+		string(store.EventBudgetExceeded): true,
+		string(store.EventToolError):      true,
+	}
 	hasTextMarker := false
 	for _, spec := range sup.Monitors {
 		if err := ir.CheckMonitorSpec(spec); err != nil {
 			t.Errorf("supervisor monitor %q is malformed (C191 is only a warning): %v", spec, err)
 		}
-		if strings.Contains(spec, "text_contains=") {
+		hasText := strings.Contains(spec, "text_contains=")
+		if hasText {
 			hasTextMarker = true
+			// Unpinned text markers match rendered tool inputs/outputs
+			// and prompt echoes (measured: 5/10 evals burned on noise) —
+			// every marker must scope itself to the agent's own words.
+			if !strings.Contains(spec, "event_type=assistant_text") {
+				t.Errorf("text marker %q is not pinned to event_type=assistant_text — it will fire on tool output and prompt echoes", spec)
+			}
+		}
+		for _, kv := range strings.Split(spec, ",") {
+			if v, ok := strings.CutPrefix(strings.TrimSpace(kv), "event_type="); ok && !knownEventTypes[v] {
+				t.Errorf("monitor %q names event_type %q, which is not a known store event — the lane would never fire", spec, v)
+			}
 		}
 	}
 	if !hasTextMarker {

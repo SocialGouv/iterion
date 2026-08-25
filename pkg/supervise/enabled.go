@@ -24,8 +24,14 @@ func DeclaredEnabled(override string) (enabled bool, source string) {
 	if v, ok := parseOnOff(override); ok {
 		return v, "--supervisors"
 	}
-	if v, ok := parseOnOff(os.Getenv(EnabledEnv)); ok {
-		return v, EnabledEnv
+	if env := os.Getenv(EnabledEnv); env != "" {
+		if v, ok := parseOnOff(env); ok {
+			return v, EnabledEnv
+		}
+		// An unreadable env value falls through to the default — flag it
+		// rather than silently spawning what the operator meant to
+		// disable (the failure direction here spends LLM budget).
+		return true, EnabledEnv + " unreadable (" + env + ") — default on"
 	}
 	return true, "default"
 }

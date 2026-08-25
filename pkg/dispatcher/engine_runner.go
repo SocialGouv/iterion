@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // RunLauncher is the ADR-046 single-launch-authority seam. Given a
@@ -378,6 +379,19 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// limits.max_cost_per_day_usd. WithDailyCap(nil) is inert.
 	if spec.DailyCap != nil {
 		opts = append(opts, runtime.WithDailyCap(spec.DailyCap))
+	}
+	// DSL-declared supervisors: this direct-engine path bypasses
+	// runview.Launch, so it must wire the hub + coordinators itself —
+	// otherwise a dispatched bot's declared supervisor (feature-dev's
+	// coach, dispatched by default) is silently inert. Same gate and
+	// spawn helpers as the CLI; the per-run override has no dispatcher
+	// surface, so the env layer decides.
+	if len(r.workflow.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(r.workflow.Supervisors), runLogger) {
+		hub := supervise.NewEventHub()
+		opts = append(opts, runtime.WithEventObserver(hub.Publish))
+		stopSup := supervise.StartDeclared(ctx, hub, &supervise.StoreInjector{Store: s},
+			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
+		defer stopSup()
 	}
 	eng := runtime.New(r.workflow, s, exec, opts...)
 

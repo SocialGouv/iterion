@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -23,8 +24,12 @@ import (
 // spawn wiring on the result.
 func DeclaredEnabledOrWarn(override string, declared int, logger *iterlog.Logger) bool {
 	enabled, source := DeclaredEnabled(override)
-	if !enabled && logger != nil {
-		logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", declared, source)
+	if logger != nil {
+		if !enabled {
+			logger.Warn("supervisors: %d declared supervisor(s) disabled by %s", declared, source)
+		} else if strings.Contains(source, "unreadable") {
+			logger.Warn("supervisors: %s — spawning %d declared supervisor(s)", source, declared)
+		}
 	}
 	return enabled
 }
@@ -46,6 +51,9 @@ func ParseMonitorSpecs(specs []string) ([]Monitor, error) {
 				return nil, fmt.Errorf("supervise: malformed monitor %q (want key=val)", spec)
 			}
 			k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+			if v == "" {
+				return nil, fmt.Errorf("supervise: monitor %q: empty value for key %q", spec, k)
+			}
 			switch k {
 			case "event_type":
 				m.EventType = v
@@ -60,10 +68,22 @@ func ParseMonitorSpecs(specs []string) ([]Monitor, error) {
 				if err != nil {
 					return nil, fmt.Errorf("supervise: monitor cost_gt %q: %w", v, err)
 				}
+				// A NaN/negative/zero threshold either never fires or —
+				// worse — used to fall through Monitor.matches into a
+				// match-everything wildcard. Refuse it here so the class
+				// cannot arm.
+				if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+					return nil, fmt.Errorf("supervise: monitor cost_gt %q must be a finite number > 0", v)
+				}
 				m.CostGt = f
 			default:
 				return nil, fmt.Errorf("supervise: monitor unknown key %q", k)
 			}
+		}
+		// A spec that set no field would arm a monitor that can never
+		// fire (isEmpty ⇒ "never") — dead config, refuse it loudly.
+		if m.isEmpty() {
+			return nil, fmt.Errorf("supervise: monitor %q sets no field", spec)
 		}
 		out = append(out, m)
 	}

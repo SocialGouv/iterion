@@ -318,12 +318,19 @@ prompt campaign_user:
 ## the run's first event); see docs/supervisors.md for the knobs and the
 ## per-run kill switch.
 
+## Every text marker is pinned to `assistant_text` — the agent's own
+## words. Unpinned, the same substrings match rendered tool inputs and
+## outputs (a grep hit in the repo, a Read of a file mentioning the
+## word), which measured at 5 of 10 evals burned on echoes in a run
+## where the agent never gave up. Pinning also lets the marker set use
+## the same vocabulary as the contract without self-firing on the
+## prompt text.
 supervisor persy:
   watches: [campaign]
   system: persy_policy
   cooldown: "5m"
   max_evals: 10
-  monitors: ["text_contains=impossible", "text_contains=unsolvable", "text_contains=give up", "text_contains=workaround for now", "event_type=budget_warning"]
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
 
 prompt persy_policy:
   You are Persy, a perseverance coach watching a senior engineer agent
