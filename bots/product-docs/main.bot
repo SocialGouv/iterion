@@ -821,7 +821,7 @@ def load_catalog(path):
     try:
         p = subprocess.run(['yq', '-o=json', '.', path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
-        raise SystemExit('product-docs: cannot parse ' + path + ' -- no PyYAML and no yq on PATH (' + str(exc) + ')')
+        raise SystemExit('product-docs: cannot parse the YAML catalog ' + path + ' -- this interpreter has no PyYAML and yq is not on PATH (' + str(exc) + '). yq IS declared in the bot devbox.json, so its absence means the provisioning did not land: the run sandbox_devbox_provisioned event names why in its errors field. Otherwise write the catalog as .json, which needs no parser at all.')
     if p.returncode != 0:
         raise SystemExit('product-docs: yq failed to parse ' + path + ': ' + (p.stderr or '').strip())
     return json.loads(p.stdout)
