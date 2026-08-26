@@ -35,6 +35,35 @@ func (s tenantScopedSecretStore) Update(ctx context.Context, rec secrets.Generic
 	return s.MemoryGenericSecretStore.Update(ctx, rec)
 }
 
+// ListByTeam and Delete mirror the same Mongo contract
+// (withGenericSecretTenantFilter refuses a tenant-less ctx). Without them a
+// caller that forgets to scope its ctx passes here and fails in production
+// — which is exactly how the security-read withdrawal shipped broken.
+func (s tenantScopedSecretStore) ListByTeam(ctx context.Context, teamID, userID string) ([]secrets.GenericSecret, error) {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return nil, errNoTenant
+	}
+	return s.MemoryGenericSecretStore.ListByTeam(ctx, teamID, userID)
+}
+
+// UpdateIfFingerprint is the method guardedUpdate PREFERS whenever the store
+// implements it — which the embedded memory store now does. Without this
+// override the promoted method bypasses the very tenant assertion this
+// double exists to make.
+func (s tenantScopedSecretStore) UpdateIfFingerprint(ctx context.Context, rec secrets.GenericSecret, expected string) error {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return errNoTenant
+	}
+	return s.MemoryGenericSecretStore.UpdateIfFingerprint(ctx, rec, expected)
+}
+
+func (s tenantScopedSecretStore) Delete(ctx context.Context, id string) error {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return errNoTenant
+	}
+	return s.MemoryGenericSecretStore.Delete(ctx, id)
+}
+
 type fakeRefresher struct {
 	newAccess string
 	expiresAt time.Time

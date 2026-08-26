@@ -92,6 +92,10 @@ type LaunchSpec struct {
 	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
 	// ITERION_LOOP_BUDGET_GUARD.
 	LoopBudgetGuard string
+	// Supervisors is the run-level kill switch for DSL-declared
+	// `supervisor NAME:` watchers ("", "on", "off"). "" inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny") from the studio Launch toggle. ""
 	// inherits the workflow/node `permission:` DSL then
@@ -326,6 +330,9 @@ type ResumeSpec struct {
 	// LoopBudgetGuard re-states the run-level back-edge affordability
 	// override ("", "on", "off"), for the same reason AutoMemory does.
 	LoopBudgetGuard string
+	// Supervisors re-states the run-level supervisors kill switch
+	// ("", "on", "off"), for the same reason AutoMemory does.
+	Supervisors string
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

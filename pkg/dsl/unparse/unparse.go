@@ -183,6 +183,13 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 		if s.MaxEvals != 0 {
 			fmt.Fprintf(&w.b, "  max_evals: %d\n", s.MaxEvals)
 		}
+		if len(s.Monitors) > 0 {
+			quoted := make([]string, len(s.Monitors))
+			for i, m := range s.Monitors {
+				quoted[i] = fmt.Sprintf("%q", m)
+			}
+			fmt.Fprintf(&w.b, "  monitors: [%s]\n", strings.Join(quoted, ", "))
+		}
 	}
 }
 

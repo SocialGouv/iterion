@@ -1,7 +1,22 @@
 name: feature-dev
 display_name: Featurly
 icon: 🛠️
-version: 2.2.0
+version: 2.3.0
+## 2.3.0 — cross-model peer-reviewed plan phase (ADR-091): when a second
+## model family is credentialed (plan_review auto→on, resolved at launch
+## by pkg/reviewtopology), the plan is authored (claude, read-only),
+## critiqued by a peer (claw + openai/gpt-5.6-sol), and revised by the
+## SAME author session before the campaign implements. Off = the v2
+## plan-in-stride shape unchanged. plan_review_policy wait|skip governs
+## mid-run peer unavailability (wait = usage-window retry; skip = the
+## reviewer's `action: skip` fallback route, loudly stamped).
+## 2.2.0 — Persy, the perseverance-coach supervisor: a concurrent LLM
+## watcher on the campaign node (docs/supervisors.md) that pushes back on
+## premature infeasibility verdicts, expedient shortcuts, and unbanked
+## state under budget pressure — give-up markers pre-seeded via the DSL
+## `monitors:` list (armed from the first event) — plus a static
+## PERSISTENCE clause in the campaign contract. Skippable per run with
+## --supervisors off.
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; gh/glab move to the bot's
 ## pinned devbox.json.

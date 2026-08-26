@@ -363,9 +363,11 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	// would leave exactly the gap this closes.
 	// Best-effort: an unknown grant set falls back to the historical baseline.
 	var granted map[string]string
+	var installAccount string
 	if inst, ierr := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(base), cfg, installationID, now); ierr == nil {
 		granted = inst.Permissions
+		installAccount = inst.Login
 	} else if s.logger != nil {
 		s.logger.Warn("forge: read installation %d permissions at connect: %v", installationID, ierr)
 	}
@@ -392,8 +394,9 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
 		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
-		GrantedPermissions: granted,
-		Status:             forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
+		InstallationAccount: installAccount,
+		GrantedPermissions:  granted,
+		Status:              forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeConnections.Create(store.WithTenant(r.Context(), pending.TenantID), conn); err != nil {

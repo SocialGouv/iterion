@@ -1,0 +1,59 @@
+name: vuln-watch
+display_name: Senti
+icon: 🛡️
+version: 0.1.0
+description: |
+  Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). One
+  deterministic run mode over a git-versioned state in the target
+  workspace: poll the security sources, match them against the
+  workspace's technology inventory, and post an actionable alert to
+  chat (Mattermost/Slack incoming webhooks) within the hour — for
+  exactly the vulnerabilities that are EXPLOITED and that touch a
+  technology the inventory says you run.
+
+  Three detection lanes, all structured (no LLM anywhere — the
+  compiled workflow contains no agent/judge node, so a run can neither
+  spend a token nor show a project name to a model):
+  - GitHub org Dependabot alerts (library-level, per repo): new alerts
+    grouped by advisory, repos joined to inventory projects.
+  - Advisory feeds (CERT-FR-style): new publications matched
+    word-boundary against the inventory technologies; CERT-FR's
+    structured per-publication JSON (cves + affected systems) is used
+    when available.
+  - Exploitation signals: CISA KEV (diff + join) and EPSS scores — the
+    anti-noise core. The default policy alerts ONLY on an exploitation
+    signal (KEV entry, alert-class advisory, EPSS ≥ threshold); an
+    ordinary new critical stays silent, recorded in an observation
+    window, and RE-FIRES the day its exploitation signal lights up.
+
+  Dedup is deterministic (CVE/GHSA alias sets in a seen state), alerts
+  carry the affected projects/repos joined from the inventory, message
+  wording is label-templated (any language via config), and source
+  failures are explicit: a configured org without a usable token fails
+  the run, a source silent for too long is announced on the sinks.
+when_to_use: |
+  Use to watch published vulnerabilities (CVE/GHSA/CERT-style
+  advisories) against a maintained inventory of the technologies and
+  projects an organisation actually runs, with hourly deterministic
+  alerting to chat and exploitation-driven noise control. Requires the
+  target workspace to carry a vuln-watch.json config + an
+  inventory.json (see skills/senti-config.md). Not an editorial news
+  digest (use feed-watch), not a PR dependency gate (use
+  supply-shield-cve), not a code audit (use sec-audit-*); it never
+  edits code.
+author: SocialGouv (devthejo) — bots/vuln-watch/main.bot
+schema_version: 1
+
+invocations:
+  ## Hourly watch: poll sources, match inventory, alert, commit state.
+  - kind: schedule
+    mode: direct
+    context_vars: { mode: watch }
+    schedule: { suggested_cron: "17 * * * *" }
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [mode, dry_run]
+  hidden: [scratch_dir]

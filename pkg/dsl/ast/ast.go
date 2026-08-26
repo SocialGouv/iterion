@@ -445,6 +445,11 @@ type SupervisorDecl struct {
 	System   string   // prompt reference name (the supervision policy)
 	Cooldown string   // raw duration string ("30s"); parsed by the IR compiler
 	MaxEvals int      // hard cap on LLM evaluations (0 = default)
+	// Monitors are pre-seeded event patterns in the CLI --monitor grammar
+	// ("event_type=tool_error,tool_name=Bash"), armed from the run's very
+	// first event — the bot can register more at runtime, but anything it
+	// registers only exists after its first eval.
+	Monitors []string
 	Span     Span
 }
 

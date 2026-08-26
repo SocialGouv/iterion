@@ -1709,10 +1709,13 @@ type pauseInfo struct {
 }
 
 // drainOperatorMessagesForPause empties the run's operator-queued
-// chat-message inbox at pause time and returns the texts in FIFO
-// order. Used by the claude_code / codex pause path — those backends
-// can't accept mid-session stdin, so the operator's intent rides on
-// the resume system prompt. Each transition emits a
+// chat-message inbox at pause time — run-scoped messages plus the ones
+// scoped to the PAUSING node, never a message tagged for another node
+// (a supervisor's steering for `campaign` must not be folded into an
+// unrelated human node's resume prompt) — and returns the texts in
+// FIFO order. Used by the claude_code / codex pause path — those
+// backends can't accept mid-session stdin, so the operator's intent
+// rides on the resume system prompt. Each transition emits a
 // user_message_delivered event through the engine's event observer
 // so WS subscribers (the studio chatbox) update their badge.
 //
@@ -1722,8 +1725,8 @@ type pauseInfo struct {
 // the run. Mirror failures log at warn level but don't block the
 // drain (the agent will see the text without the skill in those
 // cases; the operator surfaces the gap via the catalog endpoint).
-func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string) []string {
-	msgs, _, _ := store.DrainPendingMessages(ctx, e.store, e.onEvent, runID)
+func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID, nodeID string) []string {
+	msgs, _, _ := store.DrainPendingMessagesForNode(ctx, e.store, e.onEvent, runID, nodeID)
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -1766,7 +1769,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	// stdin) still see the operator's intent. claw drains the same
 	// inbox between agent iterations (model.StoreInboxBinder), so on
 	// most runs the queue is already empty by the time we land here.
-	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID); len(queuedTexts) > 0 {
+	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID, nodeID); len(queuedTexts) > 0 {
 		if questions == nil {
 			questions = map[string]any{}
 		}

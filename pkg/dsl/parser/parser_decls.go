@@ -709,9 +709,9 @@ func (p *parser) parseCursorBands() []*ast.CursorBand {
 
 // parseSupervisorDecl parses a top-level `supervisor <name>:`
 // declaration: a concurrent node-watcher (see docs/supervisors.md).
-// Scalar fields plus a `watches:` ident list. Monitors are not declared
-// here — the supervisor bot registers them at runtime — keeping the
-// grammar small.
+// Scalar fields, a `watches:` ident list, and a `monitors:` string list
+// of pre-seeded event patterns (CLI --monitor grammar); the supervisor
+// bot can register more monitors at runtime.
 func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 	start, name, ok := p.parseDeclHeader("supervisor")
 	if !ok {
@@ -758,6 +758,10 @@ func (p *parser) parseSupervisorDecl() *ast.SupervisorDecl {
 		case "max_evals":
 			p.expect(TokenColon)
 			sd.MaxEvals = p.expectInt()
+			p.skipNewlines()
+		case "monitors":
+			p.expect(TokenColon)
+			sd.Monitors = p.parseStringList()
 			p.skipNewlines()
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown supervisor property '"+propName+"'")

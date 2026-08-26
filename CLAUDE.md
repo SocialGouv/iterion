@@ -210,6 +210,14 @@ the hours this one spent.
   (`ITERION_WORKTREE_POOL_MAX`, default 8), why it spares dirty and
   resumable checkouts, and the `iterion clean` invocation for the rest.
   Read it on "the disk is full", or before pointing `--store-dir` anywhere.
+- [docs/forge-security-read.md](docs/forge-security-read.md) — giving a bot
+  org-wide **Dependabot alerts** read access: the `dependabot_tokens` team
+  secret (JSON map org→token — the shape is the contract), the GitHub App
+  path (add "Dependabot alerts: Read-only" + org approval + per-connection
+  `security_read_enabled` PATCH, refresh worker keeps it minted) vs the
+  hand-set fine-grained-PAT path, and the health/422 diagnostics. Read it
+  when wiring vuln-watch (Senti) or when its run fails on "no Dependabot
+  token".
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -918,7 +926,21 @@ CLI/VSCode session — iterion tails its
 that runs the hidden `iterion __claude-hook-drain` to inject from an
 inbox under `~/.iterion/claude-sessions/<key>/`). The transcript tailer
 is an `Observer` and the inbox an `Injector`, so the same Coordinator/bot
-drive both managed and raw targets. Reference:
+drive both managed and raw targets. The block may pre-seed `monitors:`
+(CLI `--monitor` grammar, armed from the first event — the bot-registered
+kind only exists after its first eval). Declared supervisors spawn by
+default on every launch surface (CLI run/resume, studio/runview, the
+dispatcher's direct engine path, cloud runner pods), with the usual
+escape hatch: run-level `--supervisors on|off` / launch-API field →
+`ITERION_SUPERVISORS` → on (skip always logged; the resolution lives in
+`pkg/supervise`, shared by every spawn site) — and like `auto_memory:`
+the run-level override travels onto the cloud queue
+(`RunMessage.supervisors`, schema v8) so a pod never re-decides an
+operator's `off`. The supervisor hub rides BOTH event seams (engine
+observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
+(`assistant_text`, `tool_*`) never fire the engine seam, and text
+monitors are blind without the second wire. feature-dev's Persy
+(perseverance coach) is the shipped reference use. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 

@@ -381,6 +381,51 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	return tok, err
 }
 
+// forgeLogWarn is the orchestrator's non-blocking-anomaly seam, wired to the
+// server logger (the forge package stays logger-free).
+func (s *Server) forgeLogWarn(format string, args ...any) {
+	if s.logger != nil {
+		s.logger.Warn(format, args...)
+	}
+}
+
+// forgeSecurityTokenMinter mints a github_app connection's org-wide
+// security-read installation token (vulnerability_alerts:read + metadata) —
+// the RefreshWorker's SecurityMinter and the enable endpoint's immediate
+// mint. Unlike forgeAppMinter it is deliberately NOT repo-narrowed: the
+// org-level Dependabot alerts endpoint needs the whole installation, and the
+// permission subset is the least-privilege dimension here. Fails with an
+// explicit, actionable error when the installation never approved the grant.
+func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connection) (string, error) {
+	if conn.Kind != forge.KindGitHubApp {
+		return "", fmt.Errorf("forge: security-read tokens require a github_app connection")
+	}
+	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
+	if !ok {
+		return "", fmt.Errorf("forge: no github app available for this connection")
+	}
+	// A known-narrow grant fails BEFORE the mint with the remediation named,
+	// instead of surfacing GitHub's generic 422. An unknown grant set
+	// (pre-dates GrantedPermissions) still attempts the mint — the 422 path
+	// classifies it as forge.ErrPermissionsNotGranted with GitHub's message.
+	if len(conn.GrantedPermissions) > 0 {
+		if _, ok := conn.GrantedPermissions["vulnerability_alerts"]; !ok {
+			// The ORG, not the App's bot handle: this string tells an
+			// operator where to click.
+			org := conn.InstallationAccount
+			if org == "" {
+				org = conn.AccountLogin
+			}
+			return "", fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
+				forge.ErrPermissionsNotGranted, org)
+		}
+	}
+	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
+		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.SecurityReadInstallationPermissions()})
+	return tok, err
+}
+
 // forgeMintRepoNames is the repo-scope oracle for a github_app connection's
 // least-privilege token, shared by BOTH re-mint paths — the orchestrator's
 // provision-time GitHubAppMinter AND the refresh worker's AppRefresher — so

@@ -48,8 +48,9 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadGateway, "probe installation: %v", err)
 		return
 	}
-	// Re-sync the stored grant with the live one (the mint reads it).
-	s.syncGrantedPermissions(r.Context(), conn, inst.Permissions)
+	// Re-sync the stored grant AND the installation account with the live
+	// ones (the mint reads the first, the security-read key the second).
+	s.syncGrantedPermissions(r.Context(), conn, inst.Permissions, inst.Login)
 
 	out := forgeConnectionHealth{
 		Status:              string(conn.Status),

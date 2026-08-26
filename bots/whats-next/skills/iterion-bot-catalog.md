@@ -317,6 +317,7 @@ dispatcher routes on it), never the persona.
 | Vulny | `supply-shield-cve` |
 | Testy | `test-coverage` |
 | Ally | `ultra11y` |
+| Senti | `vuln-watch` |
 | Nexie | `whats-next` (this bot) |
 | Willy | `whole-improve-loop` |
 | Wikky | `wiki-gen` |
@@ -1306,6 +1307,50 @@ launched; nothing is fixed or committed.
 - **Vars**: `base_ref` (string), `engine_version` (string), `findings_cap` (int), `force_jsx` (bool), `post_to_board` (bool), `pr_url` (string), `prior_pushback` (string), `report_dir` (string), `report_lang` (string), `run_dir` (string), `scope_globs` (string), `scope_notes` (string), `standard` (string), `workspace_dir` (string)
 - **Capabilities**: board.create, board.label, board.read
 - **Path**: `bots/ultra11y/main.bot`
+
+### `vuln-watch` — Senti
+
+Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). One
+deterministic run mode over a git-versioned state in the target
+workspace: poll the security sources, match them against the
+workspace's technology inventory, and post an actionable alert to
+chat (Mattermost/Slack incoming webhooks) within the hour — for
+exactly the vulnerabilities that are EXPLOITED and that touch a
+technology the inventory says you run.
+
+Three detection lanes, all structured (no LLM anywhere — the
+compiled workflow contains no agent/judge node, so a run can neither
+spend a token nor show a project name to a model):
+- GitHub org Dependabot alerts (library-level, per repo): new alerts
+  grouped by advisory, repos joined to inventory projects.
+- Advisory feeds (CERT-FR-style): new publications matched
+  word-boundary against the inventory technologies; CERT-FR's
+  structured per-publication JSON (cves + affected systems) is used
+  when available.
+- Exploitation signals: CISA KEV (diff + join) and EPSS scores — the
+  anti-noise core. The default policy alerts ONLY on an exploitation
+  signal (KEV entry, alert-class advisory, EPSS ≥ threshold); an
+  ordinary new critical stays silent, recorded in an observation
+  window, and RE-FIRES the day its exploitation signal lights up.
+
+Dedup is deterministic (CVE/GHSA alias sets in a seen state), alerts
+carry the affected projects/repos joined from the inventory, message
+wording is label-templated (any language via config), and source
+failures are explicit: a configured org without a usable token fails
+the run, a source silent for too long is announced on the sinks.
+
+- **Use when**:
+  Use to watch published vulnerabilities (CVE/GHSA/CERT-style
+  advisories) against a maintained inventory of the technologies and
+  projects an organisation actually runs, with hourly deterministic
+  alerting to chat and exploitation-driven noise control. Requires the
+  target workspace to carry a vuln-watch.json config + an
+  inventory.json (see skills/senti-config.md). Not an editorial news
+  digest (use feed-watch), not a PR dependency gate (use
+  supply-shield-cve), not a code audit (use sec-audit-*); it never
+  edits code.
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/vuln-watch/main.bot`
 
 ### `whats-next` — Nexie
 

@@ -1,6 +1,10 @@
 package ir
 
 import (
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +28,12 @@ type Supervisor struct {
 	System   string // prompt reference name
 	Cooldown time.Duration
 	MaxEvals int
+	// Monitors are pre-seeded event patterns, kept in the CLI --monitor
+	// grammar ("key=val,key=val"); parsed into supervise.Monitor values
+	// at spawn time (supervise.ParseMonitorSpecs — the IR cannot import
+	// pkg/supervise, so validateSupervisors syntax-checks the same
+	// grammar here and the two are kept in sync).
+	Monitors []string
 }
 
 // compileSupervisors converts every top-level `supervisor NAME:`
@@ -50,6 +60,7 @@ func (c *compiler) compileSupervisors() []*Supervisor {
 			Model:    decl.Model,
 			System:   decl.System,
 			MaxEvals: decl.MaxEvals,
+			Monitors: decl.Monitors,
 		}
 		if decl.Cooldown != "" {
 			d, err := time.ParseDuration(decl.Cooldown)
@@ -89,5 +100,53 @@ func (c *compiler) validateSupervisors(w *Workflow) {
 					"supervisor %q references system prompt %q, which is not declared", sup.Name, sup.System)
 			}
 		}
+		for _, spec := range sup.Monitors {
+			if err := CheckMonitorSpec(spec); err != nil {
+				c.warnf(DiagMalformedSupervisor,
+					"supervisor %q: monitor %q: %v — it will be dropped at spawn", sup.Name, spec, err)
+			}
+		}
 	}
+}
+
+// CheckMonitorSpec syntax-checks one pre-seeded monitor spec against the
+// grammar pkg/supervise.ParseMonitorSpecs consumes at spawn time
+// ("key=val,key=val"; keys: event_type, node_id, tool_name,
+// text_contains, cost_gt). Kept in sync with that parser by
+// TestMonitorSpecGrammarInSync in the supervise package.
+func CheckMonitorSpec(spec string) error {
+	fields := 0
+	for _, kv := range strings.Split(spec, ",") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("malformed entry %q (want key=val)", kv)
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if v == "" {
+			return fmt.Errorf("empty value for key %q", k)
+		}
+		switch k {
+		case "event_type", "node_id", "tool_name", "text_contains":
+			// any non-empty string value
+		case "cost_gt":
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				return fmt.Errorf("cost_gt %q is not a number", v)
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) || f <= 0 {
+				return fmt.Errorf("cost_gt %q must be a finite number > 0", v)
+			}
+		default:
+			return fmt.Errorf("unknown key %q", k)
+		}
+		fields++
+	}
+	if fields == 0 {
+		return fmt.Errorf("monitor sets no field")
+	}
+	return nil
 }
