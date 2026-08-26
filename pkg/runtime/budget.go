@@ -592,7 +592,26 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
+// recordAndCheckBudget keeps the IMMEDIATE contract: an overrun fails the
+// run at this node. Used by every caller that does not return through
+// execLoopAfterExec (the LLM router, the resume paths) — those never
+// reach the node boundary that consumes a deferred overrun, and the
+// remaining path may be special-dispatch nodes that run no pre-exec
+// check at all, so deferring there would let a run finish with the cap
+// blown.
 func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, false)
+}
+
+// recordAndDeferBudget records usage and DEFERS a hard overrun to the
+// next node boundary — see the deferral rationale below. Only the
+// standard node path may use it: it is the one that computes a
+// successor to anchor the checkpoint on.
+func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, true)
+}
+
+func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -628,6 +647,9 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 	// event, but anchored on a NOT-YET-EXECUTED node — the doctrine the
 	// daily spend cap already follows two blocks above.
 	if exc := findExceeded(checks); exc != nil {
+		if !deferExceeded {
+			return e.failBudgetExceeded(rs, nodeID, exc)
+		}
 		rs.budget.noteExceeded(exc)
 	}
 
