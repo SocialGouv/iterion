@@ -77,8 +77,8 @@ Une étape = une page. Une page = une chose qu'on fait, du début à la fin.
 - **Une page = une intention.** Si vous écrivez « par ailleurs » ou « à
   noter », vérifiez que la suite ne mérite pas sa propre page.
 - **Chaque page est atteignable.** Toute page est liée depuis son hub, et tout
-  hub depuis l'accueil. Une page orpheline est une page invisible — la sonde
-  `orphan_page` la signale.
+  hub depuis l'accueil. Une page orpheline est une page invisible : la
+  relecture automatique la signale.
 - **Les liens sont relatifs** entre pages du produit, jamais absolus.
 - **Un titre décrit ce que le lecteur va faire**, pas la structure du produit.
 - **Pas de sommaire écrit à la main** dans une page : la navigation vit dans
@@ -93,4 +93,4 @@ clarifier », ni annexe « Correspondance technique ». Ces éléments sont des
 notes de travail : une porte d'entrée fonctionnelle ne montre pas les
 coulisses de sa fabrication. Une question ouverte s'écrit `[à confirmer]`
 dans la phrase concernée ; le reste va dans le message de commit ou dans le
-rapport de la campagne.
+compte rendu de rédaction.

@@ -67,7 +67,8 @@ authorise the bot to invent. See
 
 ```
 catalog_ingest ─▶ scan_hints ─▶ campaign ─▶ scope_check ─▶ page_lint ─▶ gate
-gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr ─▶ done
+gate ──(converged)──▶ mr_gate ─▶ forge_auth_probe ─▶ finalize_mr
+                                          ─▶ surface_pr_link ─▶ done
 gate ─────────────────▶ scan_hints          (continuation_loop, max_passes)
 ```
 
@@ -106,8 +107,8 @@ it actually ships.
 
 `catalog_path` is either a YAML/JSON **file** (one product, or a
 top-level `products:` map) or a **directory** holding one
-`<product_id>.yml` per product. Relative paths resolve inside the
-workspace.
+`<product_id>.yml` / `.yaml` / `.json` per product. Relative paths
+resolve inside the workspace.
 
 ```yaml
 id: demo
@@ -166,7 +167,7 @@ computed is **never** reported as an empty one.
 | `max_hints` | `120` | Cap on the advisory hints list (context bound) |
 | `dismissed_path` | `${PROJECT_SCRATCH_DIR}/product-docs/dismissed.json` | Dismissals ledger (cross-pass memory) |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/product-docs` | Out-of-tree scratch: the source clones + the promises ledger |
-| `max_passes` | `4` | Continuation-loop cap |
+| `max_passes` | `4` | Continuation-loop cap: the loop back to `scan_hints` is taken at most this many times, so a run makes up to `max_passes + 1` campaign passes |
 | `open_mr` | `false` | Push the page series + open ONE PR at the end |
 | `mr_draft` | `true` | Open that PR as a **draft** — human validation happens on the forge |
 | `mr_branch` / `mr_base` | `""` | PR branch (default `iterion/product-docs/<run-id>`) / base |
@@ -202,8 +203,10 @@ iterion run bots/product-docs/main.bot \
   --var scope_notes='Le nouvel espace gestionnaire n'"'"'est pas documenté'
 ```
 
-Add `--var open_mr=true` to open the (draft) pull request at the end, and
-`--var mode=incremental` for the scheduled weekly run.
+Add `--var open_mr=true` to open the (draft) pull request at the end.
+The weekly scheduled invocation already carries `mode: incremental`
+(`manifest.yaml`); pass `--var mode=incremental` by hand for an
+out-of-band incremental pass.
 
 Skills shipped: `product-docs` (the operating playbook, English) plus the
 French editorial defaults `modele-documentaire`, `blocs-gitbook`,

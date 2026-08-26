@@ -158,8 +158,11 @@ vars:
   ## read them. Comma-separated shell globs, matched against both the
   ## base name and the clone-relative path. The default covers the
   ## usual credential carriers; extend it per product rather than
-  ## trusting the source repos to be clean.
-  secret_globs: string = "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*credentials*,*.pem,*.key,*.p12,*.pfx,id_rsa*,id_ed25519*,.netrc,.npmrc,.pypirc,kubeconfig,*kubeconfig*"
+  ## trusting the source repos to be clean. Deleting a matched file
+  ## clears the clone's WORKTREE only — the same blob stays readable in
+  ## that clone's `.git`, which is why the history is dropped once the
+  ## source delta has been computed.
+  secret_globs: string = "*.env,.env,.env.*,*secret*,*secrets*,*credential*,*credentials*,*.pem,*.key,*.p12,*.pfx,id_rsa*,id_ed25519*,.netrc,.npmrc,.pypirc,kubeconfig,*kubeconfig*,values*.yaml,values*.yml,*.tfvars,*.tfstate,*.tfstate.backup,*.jks,*.keystore,.htpasswd"
 
   ## Editorial lint rules enforced on PUBLISHED pages (comma-separated,
   ## page_lint). Dropping a name disables that rule for this run;
@@ -169,7 +172,11 @@ vars:
   ##   sources_box      — no "Sources" hint box / section
   ##   clarify_section  — no "Points à clarifier" section
   ##   technical_annex  — no "Correspondance technique" annex
-  lint_rules: string = "html_comments,sources_box,clarify_section,technical_annex"
+  ##   secret_material  — no credential material (private-key block,
+  ##                      recognised token prefix, assigned opaque
+  ##                      password): the last deterministic gate
+  ##                      between a source clone and a published page
+  lint_rules: string = "html_comments,sources_box,clarify_section,technical_annex,secret_material"
 
   ## Extra heading titles (comma-separated, case-insensitive, matched
   ## as a prefix of the heading text) that must never appear in a
@@ -331,8 +338,11 @@ prompt campaign_system:
        The `Bot:` trailer is how the next run finds where alignment
        landed; the `Product-Docs-Sources:` trailer is how it knows
        which source commits the page was written against. Both are
-       REQUIRED on every commit. Stage everything including new files
-       (`git add -A`) before each commit.
+       REQUIRED on every commit. Stage BY PATH, never `git add -A`:
+       `git add -- <the page(s) you just wrote>` picks up new files
+       just as well, without sweeping in the engine's own `.claude/`
+       mirror or an operator's unrelated work — both of which the
+       writeable-set gate then charges to you.
     b. DISMISS + LEDGER — an advisory hint that is a false positive,
        or something genuinely not worth documenting for this
        audience: record it in the DISMISSALS LEDGER (below) with a
@@ -613,6 +623,9 @@ prompt finalize_mr_user:
 schema ingest_output:
   product_id: string
   product_dir: string
+  ## The docs repo HEAD as it stood before the campaign ran: the run
+  ## base scope_check diffs against.
+  base_sha: string
   surfaces: json
   inventory: json
   sources_stamp: string
@@ -685,6 +698,9 @@ schema campaign_output:
 ## because a tool command cannot read `{{outputs.*}}`).
 schema product_dir_input:
   product_dir: string
+  ## The run base recorded by catalog_ingest, before the campaign has
+  ## written anything. scope_check refuses to certify without it.
+  base_sha: string
 
 ## scope_check is the DETERMINISTIC writeable-set gate: every path
 ## changed since the RUN BASE must be a `.md` file under the product
@@ -867,11 +883,22 @@ if not isinstance(entry, dict):
     raise SystemExit('product-docs: catalog entry for ' + repr(product) + ' is not a mapping')
 
 docs_block = entry.get('docs') if isinstance(entry.get('docs'), dict) else {}
-product_dir = str(docs_block.get('product_dir') or entry.get('product_dir') or '').strip().strip('/')
+product_dir = str(docs_block.get('product_dir') or entry.get('product_dir') or '').strip()
 if not product_dir:
     raise SystemExit('product-docs: catalog entry for ' + repr(product) + ' declares no docs.product_dir -- the bot has no writeable set without it')
-if os.path.isabs(product_dir) or '..' in product_dir.split('/'):
-    raise SystemExit('product-docs: docs.product_dir ' + repr(product_dir) + ' must be a path INSIDE the docs repository')
+## Order matters: test absoluteness BEFORE stripping the leading
+## slash, or an absolute path is silently rewritten into a relative
+## one and the guard can never fire.
+if os.path.isabs(product_dir):
+    raise SystemExit('product-docs: docs.product_dir ' + repr(product_dir) + ' must be a path INSIDE the docs repository, not an absolute path')
+## normpath first: scope_check compares by literal prefix, so a
+## non-canonical form (./docs/x, docs//x) would pass this node and
+## then fail that gate on every pass, unfixably.
+product_dir = os.path.normpath(product_dir).strip('/')
+if '..' in product_dir.split('/') or product_dir in ('.', ''):
+    raise SystemExit('product-docs: docs.product_dir must be a path INSIDE the docs repository')
+if any(c in product_dir for c in '*?['):
+    raise SystemExit('product-docs: docs.product_dir ' + repr(product_dir) + ' must be a literal path, not a glob -- the writeable-set gate matches it as a prefix')
 surfaces = docs_block.get('surfaces') or []
 if not isinstance(surfaces, list):
     surfaces = []
@@ -911,6 +938,12 @@ def run_git(args, cwd=None, timeout=900):
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, '', str(exc)
 
+def strip_creds(u):
+    ## A url may carry inline credentials (https://user:token@host/...).
+    ## The inventory reaches the campaign prompt, the run events and the
+    ## PR body, so ONE helper covers every path that reports a url.
+    return re.sub(r'://[^/@]*@', '://', u or '')
+
 def redact(reason):
     ## Strip the token out of any git message before it reaches the
     ## inventory, the events or the report.
@@ -931,12 +964,17 @@ if rc == 0:
         if line.strip().startswith('Product-Docs-Sources:'):
             previous_stamp = line.split(':', 1)[1].strip()
             break
+## A stamp value is a commit sha and nothing else. It is read from a
+## commit MESSAGE -- anyone who can land a commit in the docs repo
+## writes it -- and it is handed to git as a REF, where a flag-shaped
+## value (--upload-pack=...) is an execution primitive.
+SHA_RE = re.compile(r'^[0-9a-fA-F]{7,40}$')
 prev_shas = {}
 for part in previous_stamp.split(','):
     part = part.strip()
     if '@' in part:
         k, v = part.rsplit('@', 1)
-        if k.strip() and v.strip():
+        if k.strip() and SHA_RE.match(v.strip()):
             prev_shas[k.strip()] = v.strip()
 
 repos = entry.get('repos') or []
@@ -955,10 +993,27 @@ for raw in repos:
     explicit = str(raw.get('url') or '').strip()
     rid = str(raw.get('id') or '').strip()
     if not rid:
-        base = explicit or github_repo or gitlab_path
-        rid = re.sub(r'[^A-Za-z0-9_.-]', '-', base.rstrip('/').split('/')[-1].replace('.git', '')) or 'repo'
+        rid = (explicit or github_repo or gitlab_path).rstrip('/').split('/')[-1].replace('.git', '')
+    ## The id becomes a filesystem destination that is rmtree'd and
+    ## cloned into. The catalog is operator input, so it is sanitised
+    ## on EVERY path -- an explicit id is not more trustworthy than a
+    ## derived one, and os.path.join('<root>', '/etc') is '/etc'.
+    rid = re.sub(r'[^A-Za-z0-9_.-]', '-', rid).strip('.-') or 'repo'
+    if rid in ('.', '..'):
+        rid = 'repo'
     ref = str(raw.get('ref') or raw.get('branch') or '').strip()
+    ## A catalog value handed to git must not be able to become an
+    ## OPTION (leading dash) instead of a repository or a branch.
+    if ref.startswith('-'):
+        inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'ref refused: an option-shaped ref is a git argument, not a branch'})
+        continue
     if explicit:
+        ## Same for the url, plus the remote-HELPER form (ext::<cmd>),
+        ## which git executes outright. Ordinary local paths stay
+        ## legal: an on-disk mirror is a legitimate source.
+        if explicit.startswith('-') or '::' in explicit:
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': '', 'changed_files': [], 'note': 'url refused: an option-shaped or remote-helper (ext::) url is an execution primitive, not a repository'})
+            continue
         url = explicit
     elif github_repo:
         url = 'https://github.com/' + github_repo + '.git'
@@ -993,7 +1048,7 @@ for raw in repos:
         rc, _, err = run_git(args)
         if rc != 0:
             shutil.rmtree(dest, ignore_errors=True)
-            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': url, 'changed_files': [], 'note': 'clone failed: ' + (redact(err) or 'unknown error') + (' (no push/read credential was available)' if not token else '')})
+            inventory.append({'id': rid, 'status': 'degraded', 'path': '', 'head': '', 'url': strip_creds(url), 'changed_files': [], 'note': 'clone failed: ' + (redact(err) or 'unknown error') + (' (no push/read credential was available)' if not token else '')})
             continue
         note = 'cloned'
     ## Redaction: a source repo may carry credential files the docs
@@ -1035,7 +1090,12 @@ for raw in repos:
         note = (note + '; ' if note else '') + 'unchanged since the previous run'
     if removed:
         note = (note + '; ' if note else '') + str(removed) + ' secret-bearing file(s) redacted from the clone'
-    inventory.append({'id': rid, 'status': 'ok', 'path': dest, 'head': head, 'url': url, 'changed_files': changed[:500], 'note': note})
+    ## The delta is computed; the clone's history has no further use --
+    ## and it still holds every blob the redaction removed from the
+    ## worktree, readable with one git show. Dropping it is what makes
+    ## the redaction true rather than cosmetic.
+    shutil.rmtree(os.path.join(dest, '.git'), ignore_errors=True)
+    inventory.append({'id': rid, 'status': 'ok', 'path': dest, 'head': head, 'url': strip_creds(url), 'changed_files': changed[:500], 'note': note})
 
 ok = [e for e in inventory if e['status'] == 'ok']
 degraded = [e for e in inventory if e['status'] != 'ok']
@@ -1049,7 +1109,13 @@ if degraded:
     parts.append('unreadable: ' + ', '.join(e['id'] for e in degraded))
 if not repos:
     parts.append('the catalog entry declares no repos[] -- nothing to ground the documentation in')
-print(json.dumps({'product_id': product, 'product_dir': product_dir, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'log': '; '.join(parts)}, ensure_ascii=False))
+## The RUN BASE, recorded before the campaign has written anything.
+## scope_check diffs against THIS -- never against a base re-derived
+## from the campaign's own commit messages, which would let an
+## un-trailered commit choose the window it is audited on.
+rc, out, _ = run_git(['rev-parse', 'HEAD'], cwd=ws, timeout=60)
+base_sha = out.strip() if rc == 0 else ''
+print(json.dumps({'product_id': product, 'product_dir': product_dir, 'base_sha': base_sha, 'surfaces': surfaces, 'inventory': inventory, 'sources_stamp': stamp, 'repo_count': len(inventory), 'ok_count': len(ok), 'degraded_count': len(degraded), 'redacted_count': redacted_total, 'previous_stamp': previous_stamp, 'delta_unavailable': delta_unavailable, 'log': '; '.join(parts)}, ensure_ascii=False))
 "`
   output: ingest_output
 
@@ -1264,10 +1330,12 @@ agent campaign:
 ## this flags.
 tool scope_check:
   input: product_dir_input
-  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} PRODUCT_DIR={{input.product_dir}} EDITORIAL_DIR={{vars.editorial_dir}} BASE_SHA={{input.base_sha}} python3 -c "
 import os, json, subprocess
 ws = os.environ.get('WS', '.')
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
+editorial_dir = (os.environ.get('EDITORIAL_DIR') or '').strip().strip('/')
+base = (os.environ.get('BASE_SHA') or '').strip()
 
 def git(args):
     try:
@@ -1276,28 +1344,50 @@ def git(args):
     except (OSError, subprocess.SubprocessError):
         return ''
 
-reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
-def is_own_commit(h):
-    body = git(['log', '-1', '--format=%B', h])
-    return any(l.strip() == 'Bot: product-docs' for l in body.splitlines())
-base = 'HEAD'
-for h in reflog:
-    if not is_own_commit(h):
-        base = h
-        break
-changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
+## The base is RECORDED by catalog_ingest before the campaign writes
+## anything. Re-deriving it from commit messages would hand the
+## audited party the choice of its own audit window: one commit
+## missing the trailer becomes the base and empties its own diff.
+if not base:
+    print(json.dumps({'scope_ok': False, 'out_of_scope': [], 'log': 'SCOPE GATE UNAVAILABLE: catalog_ingest recorded no run base (base_sha empty), so the writeable set cannot be computed. Refusing to certify it.'}, ensure_ascii=False))
+    raise SystemExit(0)
+
+## --no-renames: with rename detection ON git reports only a rename's
+## DESTINATION, so renaming a protected file onto an allowed .md path
+## would delete it behind a green gate.
+changed = set(l for l in git(['diff', '--no-renames', base, '--name-only']).splitlines() if l.strip())
+## Mode 120000 is a symlink: writing THROUGH one escapes the repo
+## entirely, and committing one publishes a host path in the docs.
+symlinks = set()
+for row in git(['diff', '--no-renames', '--raw', base]).splitlines():
+    if not row.startswith(':'):
+        continue
+    meta, _, path = row.partition(chr(9))
+    fields = meta.split()
+    if len(fields) >= 2 and '120000' in (fields[0].lstrip(':'), fields[1]):
+        p = path.split(chr(9))[-1].strip()
+        if p:
+            symlinks.add(p)
 for line in git(['status', '--porcelain']).splitlines():
     if line[:2].strip() == '??':
         changed.add(line[3:].strip())
 
 # iterion materialises the bundle's skills into <workspace>/.claude/ at run
-# start and again on every resume. That tree is the ENGINE's own artifact,
-# not the campaign's work: attributing it to the run would fail the gate on
+# start and again on every resume. That tree is the ENGINE's own artifact
+# while it stays UNTRACKED: attributing it to the run would fail the gate on
 # every pass, and the campaign could not fix it — the next pass re-creates
-# it. Untracked directories arrive from git status as '.claude/'.
-changed = set(p for p in changed if p != '.claude' and not p.startswith('.claude/'))
+# it. A TRACKED path under it is a different thing: the run committed the
+# agent's own notes into the docs repo, so it stays in scope.
+tracked_claude = set(l.strip() for l in git(['ls-files', '--', '.claude']).splitlines() if l.strip())
+changed = set(p for p in changed if p in tracked_claude or (p != '.claude' and not p.startswith('.claude/')))
 
 def allowed(p):
+    if p in symlinks or os.path.islink(os.path.join(ws, p)):
+        return False
+    ## The editorial charter is the product team's own: the bot reads
+    ## it, is governed by it, and never rewrites it.
+    if editorial_dir and (p == editorial_dir or p.startswith(editorial_dir + '/')):
+        return False
     if not p.endswith('.md'):
         return False
     if not product_dir:
@@ -1307,7 +1397,7 @@ def allowed(p):
 out_of_scope = sorted(p for p in changed if not allowed(p))
 log = ''
 if out_of_scope:
-    log = 'SCOPE VIOLATION: this run changed files outside the product writeable-set (.md under ' + (product_dir or '<product_dir>') + ' only). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
+    log = 'SCOPE VIOLATION: this run changed files outside the product writeable-set (.md under ' + (product_dir or '<product_dir>') + ' only, never a symlink, never the editorial charter ' + (editorial_dir or '<editorial_dir>') + '). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
 print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}, ensure_ascii=False))
 "`
   output: scope_check_output
@@ -1335,17 +1425,45 @@ os.chdir(ws)
 product_dir = (os.environ.get('PRODUCT_DIR') or '').strip().strip('/')
 rules = {r.strip() for r in (os.environ.get('LINT_RULES') or '').split(',') if r.strip()}
 extra = [h.strip() for h in (os.environ.get('EXTRA_HEADINGS') or '').split(',') if h.strip()]
-pages = sorted(p for p in glob.glob(os.path.join(product_dir, '**', '*.md'), recursive=True) if os.path.isfile(p)) if product_dir else []
+if not product_dir:
+    ## Fail CLOSED, like scope_check: an empty product directory lints
+    ## zero pages, and reporting that as clean would certify an
+    ## artifact nobody looked at.
+    print(json.dumps({'lint_ok': False, 'violations': [], 'violation_count': 0, 'pages_linted': 0, 'log': 'EDITORIAL LINT UNAVAILABLE: no product_dir was resolved, so no published page could be read. Refusing to certify the pages as clean.'}, ensure_ascii=False))
+    raise SystemExit(0)
+pages = sorted(p for p in glob.glob(os.path.join(product_dir, '**', '*.md'), recursive=True) if os.path.isfile(p))
 HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s+(.+?)\s*$')
 BOLD_LABEL_RE = re.compile(r'^\s{0,3}\*\*([^*]+?)\s*:?\s*\*\*')
-SOURCES_RE = re.compile(r'^sources?\b', re.IGNORECASE)
-CLARIFY_RE = re.compile(r'^points?\s+.{0,4}\s*clarifier\b', re.IGNORECASE)
+## Anchored on the WHOLE heading: a blocking gate that fires on
+## 'Sources de financement' or 'Points a clarifier avec votre
+## conseiller' orders the campaign to delete reader-facing content,
+## and the run never converges. Chrome is the bare title.
+SOURCES_RE = re.compile(r'^sources?\s*:?\s*$', re.IGNORECASE)
+## A BOLD label is prose furniture, not a section title: only the
+## plural box title is chrome. '**Source :** arrete du 3 mars' is a
+## citation the reader wants.
+SOURCES_BOLD_RE = re.compile(r'^sources\s*:?\s*$', re.IGNORECASE)
+CLARIFY_RE = re.compile(r'^points?\s+.{0,4}\s*clarifier\s*:?\s*$', re.IGNORECASE)
 ANNEX_RE = re.compile(r'^(annexe\s*:?\s*)?correspondance\s+technique\b', re.IGNORECASE)
-HINT_OPEN_RE = re.compile(r'^\s*\{%\s*hint\b')
-HINT_CLOSE_RE = re.compile(r'^\s*\{%\s*endhint\s*%\}')
+HINT_OPEN_RE = re.compile(r'\{%\s*hint\b')
+HINT_CLOSE_RE = re.compile(r'\{%\s*endhint\s*%\}')
+FENCE_RE = re.compile(r'^\s{0,3}(' + chr(96) * 3 + '+|~{3,})')
+KEY_BLOCK_RE = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')
+TOKEN_RE = re.compile(r'\b(ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|glpat-[A-Za-z0-9_-]{15,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,})')
+ASSIGN_RE = re.compile(r'(?:password|passwd|pwd|mot[_ ]de[_ ]passe|secret|token|api[_-]?key|access[_-]?key)\s*[:=]\s*(\S+)\s*$', re.IGNORECASE)
+## chr(36) is the dollar sign: written literally it would sit next to
+## an opening brace inside this double-quoted command and the SHELL
+## would expand it before python ever sees the pattern.
+PLACEHOLDER_RE = re.compile(r'^[<{(\[' + chr(36) + r']|[*x.]{3,}|^(votre|vos|your|mon|my|xxx|todo|redacted|confirmer)', re.IGNORECASE)
 violations = []
 def add(page, line, rule, excerpt):
     violations.append({'page': page, 'line': line, 'rule': rule, 'excerpt': ' '.join((excerpt or '').split())[:160]})
+def credential_value(v):
+    ## A credential is one opaque token. French prose ('8 caracteres
+    ## minimum', 'votre mot de passe personnel') never is.
+    if len(v) < 8 or PLACEHOLDER_RE.search(v):
+        return False
+    return bool(re.search(r'[0-9]', v)) or len(v) >= 16
 for page in pages:
     try:
         with open(page, encoding='utf-8', errors='replace') as fh:
@@ -1353,10 +1471,29 @@ for page in pages:
     except (OSError, IsADirectoryError):
         continue
     in_comment = False
+    in_fence = False
     in_hint = 0
     hint_start = 0
     hint_body = []
     for lineno, line in enumerate(lines, start=1):
+        ## Credential material is scanned EVERYWHERE, fenced code
+        ## included: a pasted secret is worse inside a block, not
+        ## exempt from the gate.
+        if 'secret_material' in rules:
+            if KEY_BLOCK_RE.search(line) or TOKEN_RE.search(line):
+                add(page, lineno, 'secret_material', line)
+            else:
+                am = ASSIGN_RE.search(line)
+                if am and credential_value(am.group(1)):
+                    add(page, lineno, 'secret_material', line)
+        ## Every other rule is about editorial chrome, which a fenced
+        ## sample legitimately contains: a page teaching users to paste
+        ## an HTML snippet must not be permanently red.
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if 'html_comments' in rules:
             if in_comment:
                 if '-->' in line:
@@ -1365,23 +1502,31 @@ for page in pages:
                 add(page, lineno, 'html_comments', line)
                 if '-->' not in line.split('<!--', 1)[1]:
                     in_comment = True
-        if HINT_OPEN_RE.match(line):
-            in_hint = 1
-            hint_start = lineno
+        ## A hint block is scanned for a Sources body, but it NEVER
+        ## suppresses the heading rules below: no document state may
+        ## disable a gate rule for the rest of a page (an unclosed or
+        ## single-line hint used to do exactly that).
+        if in_hint and HINT_CLOSE_RE.search(line):
+            if 'sources_box' in rules:
+                joined = ' '.join(hint_body)
+                if re.search(r'\bsources?\s*:', joined, re.IGNORECASE) or re.search(r'^\s*\*?\*?sources?\b', joined, re.IGNORECASE):
+                    add(page, hint_start, 'sources_box', joined)
+            in_hint = 0
             hint_body = []
-            continue
-        if in_hint:
-            if HINT_CLOSE_RE.match(line):
-                if 'sources_box' in rules:
-                    joined = ' '.join(hint_body)
-                    if re.search(r'\bsources?\s*:', joined, re.IGNORECASE) or re.search(r'^\s*\*?\*?sources?\b', joined, re.IGNORECASE):
-                        add(page, hint_start, 'sources_box', joined)
-                in_hint = 0
-                hint_body = []
-                continue
+        elif in_hint:
             hint_body.append(line.strip())
-            continue
+        elif HINT_OPEN_RE.search(line):
+            if HINT_CLOSE_RE.search(line):
+                if 'sources_box' in rules:
+                    body = HINT_OPEN_RE.split(line)[-1]
+                    if re.search(r'\bsources?\s*:', body, re.IGNORECASE):
+                        add(page, lineno, 'sources_box', line)
+            else:
+                in_hint = 1
+                hint_start = lineno
+                hint_body = []
         title = ''
+        from_bold = False
         hm = HEADING_RE.match(line)
         if hm:
             title = hm.group(1).strip()
@@ -1389,10 +1534,11 @@ for page in pages:
             bm = BOLD_LABEL_RE.match(line)
             if bm:
                 title = bm.group(1).strip()
+                from_bold = True
         if not title:
             continue
         plain = re.sub(r'[*_' + chr(96) + r']', '', title).strip()
-        if 'sources_box' in rules and SOURCES_RE.match(plain):
+        if 'sources_box' in rules and (SOURCES_BOLD_RE if from_bold else SOURCES_RE).match(plain):
             add(page, lineno, 'sources_box', line)
         if 'clarify_section' in rules and CLARIFY_RE.match(plain):
             add(page, lineno, 'clarify_section', line)
@@ -1401,6 +1547,12 @@ for page in pages:
         for h in extra:
             if plain.lower().startswith(h.lower()):
                 add(page, lineno, 'extra_forbidden_heading', line)
+    ## An unclosed hint still has a body: flush it at EOF rather than
+    ## letting a missing endhint drop the sources check.
+    if in_hint and 'sources_box' in rules:
+        joined = ' '.join(hint_body)
+        if re.search(r'\bsources?\s*:', joined, re.IGNORECASE) or re.search(r'^\s*\*?\*?sources?\b', joined, re.IGNORECASE):
+            add(page, hint_start, 'sources_box', joined)
 log = ''
 if violations:
     shown = ['- ' + v['page'] + ':' + str(v['line']) + ' [' + v['rule'] + '] ' + v['excerpt'] for v in violations[:40]]
@@ -1551,10 +1703,12 @@ workflow product_docs:
   ## there is no build gate — the lint is this bot's equivalent truth
   ## oracle on the artifact it actually ships.
   campaign -> scope_check with {
-    product_dir: "{{outputs.catalog_ingest.product_dir}}"
+    product_dir: "{{outputs.catalog_ingest.product_dir}}",
+    base_sha: "{{outputs.catalog_ingest.base_sha}}"
   }
   scope_check -> page_lint with {
-    product_dir: "{{outputs.catalog_ingest.product_dir}}"
+    product_dir: "{{outputs.catalog_ingest.product_dir}}",
+    base_sha: "{{outputs.catalog_ingest.base_sha}}"
   }
   page_lint -> gate
 

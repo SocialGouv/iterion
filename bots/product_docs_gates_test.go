@@ -146,6 +146,7 @@ type ingestOut struct {
 	OKCount     int              `json:"ok_count"`
 	Degraded    int              `json:"degraded_count"`
 	Redacted    int              `json:"redacted_count"`
+	BaseSHA     string           `json:"base_sha"`
 	PrevStamp   string           `json:"previous_stamp"`
 	DeltaUnavai bool             `json:"delta_unavailable"`
 	Log         string           `json:"log"`
@@ -271,6 +272,179 @@ func TestProductDocsCatalogIngest(t *testing.T) {
 	if got.PrevStamp != "" {
 		t.Fatalf("previous_stamp = %q on a repo with no prior product-docs commit, want empty", got.PrevStamp)
 	}
+	// Deleting a secret from the clone's WORKTREE leaves the same blob one
+	// `git show` away in its history. The campaign has a shell.
+	if _, err := os.Stat(filepath.Join(clonePath, ".git")); err == nil {
+		t.Fatal("the clone kept its .git: every redacted secret is still readable from the pack")
+	}
+}
+
+// TestProductDocsCatalogIngestRefusesHostilecatalog pins the front door
+// against the catalog itself. The catalog is operator input that reaches a
+// filesystem destination (rmtree + clone) and git argument lists — the two
+// places where a benign-looking value stops being data.
+func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
+	requireGitPython(t)
+
+	source := newSourceRepo(t)
+
+	newWS := func(t *testing.T) (string, string) {
+		t.Helper()
+		ws := t.TempDir()
+		scratch := t.TempDir()
+		gitIn(t, ws, "init", "-q", "-b", "main")
+		writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "seed")
+		return ws, scratch
+	}
+
+	// An id is a directory NAME. Left raw it is a path: os.path.join with an
+	// absolute id discards the scratch root, and the node rmtree's whatever it
+	// lands on before cloning over it.
+	t.Run("a path-shaped repo id cannot escape the scratch root", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		victim := t.TempDir()
+		writeFile(t, victim, "important/data.txt", "des données de l'hôte\n")
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+				"repos:\n  - id: "+victim+"\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+				`"repos":[{"id":"`+victim+`","url":"`+source+`"}]}`+"\n")
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if _, err := os.Stat(filepath.Join(victim, "important/data.txt")); err != nil {
+			t.Fatalf("a catalog id deleted a directory outside the scratch root: %v", err)
+		}
+		for _, e := range got.Inventory {
+			p, _ := e["path"].(string)
+			if p != "" && !strings.HasPrefix(p, scratch) {
+				t.Fatalf("clone destination %q escaped the scratch root %q", p, scratch)
+			}
+		}
+	})
+
+	// `..` as an id would rmtree the scratch root itself — every other clone
+	// and the ledgers with it.
+	t.Run("a dot-dot repo id cannot wipe the scratch root", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		sibling := filepath.Join(scratch, "sources", "autre-clone")
+		if err := os.MkdirAll(sibling, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+				"repos:\n  - id: '..'\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+				`"repos":[{"id":"..","url":"`+source+`"}]}`+"\n")
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if _, err := os.Stat(sibling); err != nil {
+			t.Fatalf("a '..' id wiped the scratch root, taking the other clones with it: %v", err)
+		}
+		_ = got
+	})
+
+	// A url or ref that starts with a dash is read by git as an OPTION;
+	// ext::<command> is executed outright.
+	t.Run("option-shaped and remote-helper sources are refused", func(t *testing.T) {
+		for _, hostile := range []string{"--upload-pack=touch /tmp/product-docs-pwned", "ext::sh -c touch% /tmp/product-docs-pwned"} {
+			ws, scratch := newWS(t)
+			catalogFixture(t, ws, "catalog/demo",
+				"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+					"repos:\n  - id: hostile\n    url: '"+hostile+"'\n",
+				`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+					`"repos":[{"id":"hostile","url":"`+hostile+`"}]}`+"\n")
+			var got ingestOut
+			runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+			if got.OKCount != 0 {
+				t.Fatalf("a git-option / remote-helper url was treated as a repository: %s", got.Log)
+			}
+			if _, err := os.Stat("/tmp/product-docs-pwned"); err == nil {
+				os.Remove("/tmp/product-docs-pwned")
+				t.Fatalf("the catalog url executed a command")
+			}
+		}
+	})
+
+	// The stamp is read from a commit MESSAGE in the docs repo — anyone who
+	// lands a commit writes it — and is handed to git as a REF.
+	t.Run("a stamp that is not a sha is never handed to git", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+				"repos:\n  - id: demo-src\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+				`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+		writeFile(t, ws, "documentation_produits/demo/page.md", "# Page\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m",
+			"docs(demo): page\n\nBot: product-docs\nProduct-Docs-Sources: demo-src@--upload-pack=touch /tmp/product-docs-stamp-pwned")
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if _, err := os.Stat("/tmp/product-docs-stamp-pwned"); err == nil {
+			os.Remove("/tmp/product-docs-stamp-pwned")
+			t.Fatal("a commit trailer executed a command through git")
+		}
+		if got.OKCount != 1 {
+			t.Fatalf("the run degraded on a hostile stamp instead of ignoring it: %s", got.Log)
+		}
+	})
+
+	// A url may carry inline credentials; the inventory reaches the campaign
+	// prompt, the run events and the PR body.
+	t.Run("inline credentials are stripped from the reported url", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		hostile := "https://x-access-token:ghp_INLINECREDENTIAL987654321@github.invalid/org/repo.git"
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+				"repos:\n  - id: privee\n    url: "+hostile+"\n",
+			`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+				`"repos":[{"id":"privee","url":"`+hostile+`"}]}`+"\n")
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if strings.Contains(got.Log, "ghp_INLINECREDENTIAL") {
+			t.Fatalf("the log echoed an inline credential: %s", got.Log)
+		}
+		for _, e := range got.Inventory {
+			for k, v := range e {
+				if s, ok := v.(string); ok && strings.Contains(s, "ghp_INLINECREDENTIAL") {
+					t.Fatalf("inventory[%q] echoed the inline credential verbatim: %s", k, s)
+				}
+			}
+		}
+	})
+
+	// docs.product_dir is compared as a literal prefix by scope_check: a
+	// non-canonical or glob-shaped value passes here and then makes every pass
+	// unfixably red.
+	t.Run("a product_dir that the scope gate cannot match is refused", func(t *testing.T) {
+		for _, bad := range []string{"/etc/passwd-docs", "*", "docs/../../etc"} {
+			ws, scratch := newWS(t)
+			catalogFixture(t, ws, "catalog/demo",
+				"id: demo\ndocs:\n  product_dir: '"+bad+"'\n"+
+					"repos:\n  - id: demo-src\n    url: "+source+"\n",
+				`{"id":"demo","docs":{"product_dir":"`+bad+`"},`+
+					`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+			runExpectingFailure(t, ingestCommand(t, ws, "catalog", "demo", scratch), "product-docs:")
+		}
+	})
+
+	// ...but a merely non-canonical form is CANONICALISED, not refused: an
+	// operator writing ./docs/produit means the same directory.
+	t.Run("a non-canonical product_dir is canonicalised", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: ./documentation_produits/demo/\n"+
+				"repos:\n  - id: demo-src\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"./documentation_produits/demo/"},`+
+				`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+		var got ingestOut
+		runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+		if got.ProductDir != "documentation_produits/demo" {
+			t.Fatalf("product_dir = %q, want the canonical form the scope gate matches", got.ProductDir)
+		}
+	})
 }
 
 // TestProductDocsCatalogIngestSourceDelta pins the git-native incremental
@@ -483,7 +657,7 @@ func lintCommand(t *testing.T, ws, productDir, rules, extra string) string {
 	})
 }
 
-const allLintRules = "html_comments,sources_box,clarify_section,technical_annex"
+const allLintRules = "html_comments,sources_box,clarify_section,technical_annex,secret_material"
 
 // TestProductDocsPageLint pins the EDITORIAL gate — the one truth oracle on
 // the artifact this bot actually ships. A published page is read by the
@@ -569,6 +743,75 @@ func TestProductDocsPageLint(t *testing.T) {
 		}
 	})
 
+	// This gate BLOCKS: a rule that fires on reader-facing prose orders the
+	// campaign to delete legitimate content, and the run never converges. Every
+	// line below is ordinary French product documentation.
+	t.Run("reader-facing prose is not chrome", func(t *testing.T) {
+		ws := t.TempDir()
+		writeFile(t, ws, "docs/demo/aides.md", ""+
+			"# Aides\n\n"+
+			"## Sources de financement\n\nLe barème est publié chaque année.\n\n"+
+			"**Source :** arrêté du 3 mars.\n\n"+
+			"## Points à clarifier avec votre conseiller\n\nPrenez rendez-vous.\n\n"+
+			"Exemple de gabarit :\n\n"+
+			"```html\n<!-- remplacez le nom du bénéficiaire -->\n```\n\n"+
+			"Mot de passe : 8 caractères minimum, dont un chiffre.\n")
+		var got lintOut
+		runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+		if !got.LintOK {
+			t.Fatalf("the editorial gate fired on reader-facing prose — the campaign would be told to delete it: %+v", got.Violations)
+		}
+	})
+
+	// No document state may switch a rule off for the rest of a page: a hint
+	// closed on its own line, or never closed, used to swallow every heading
+	// rule to EOF.
+	t.Run("a hint block cannot disarm the gate", func(t *testing.T) {
+		for _, hint := range []string{
+			"{% hint style=\"info\" %}Vérifiez vos pièces.{% endhint %}\n",
+			"{% hint style=\"info\" %}\nVérifiez vos pièces.\n",
+		} {
+			ws := t.TempDir()
+			writeFile(t, ws, "docs/demo/p.md", "# Déposer\n\n"+hint+"\n## Sources\n\n- app.ts\n\n## Points à clarifier\n\n- qui valide ?\n")
+			var got lintOut
+			runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+			if got.LintOK {
+				t.Fatalf("a hint block disarmed the editorial gate for the rest of the page (hint %q)", hint)
+			}
+			if got.Count < 2 {
+				t.Fatalf("violations = %d, want both forbidden sections after the hint: %+v", got.Count, got.Violations)
+			}
+		}
+	})
+
+	// The last deterministic gate between a source clone and a published page.
+	t.Run("credential material never reaches a published page", func(t *testing.T) {
+		for _, body := range []string{
+			"# Config\n\nDB_PASSWORD=SUPERSECRET_TOKEN_42\n",
+			"# Config\n\n```yaml\npostgres:\n  password: PLAINTEXT_PG_PW_99\n```\n",
+			"# Config\n\nJeton : ghp_" + strings.Repeat("a", 36) + "\n",
+			"# Clé\n\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n-----END RSA PRIVATE KEY-----\n",
+		} {
+			ws := t.TempDir()
+			writeFile(t, ws, "docs/demo/p.md", body)
+			var got lintOut
+			runJSON(t, lintCommand(t, ws, "docs/demo", allLintRules, ""), &got)
+			if got.LintOK {
+				t.Fatalf("credential material passed the publication gate: %q", body)
+			}
+		}
+	})
+
+	// A gate that read zero pages has certified nothing.
+	t.Run("no product dir fails closed", func(t *testing.T) {
+		ws := t.TempDir()
+		var got lintOut
+		runJSON(t, lintCommand(t, ws, "", allLintRules, ""), &got)
+		if got.LintOK {
+			t.Fatalf("the lint certified an artifact it never read")
+		}
+	})
+
 	t.Run("extra_forbidden_headings extends the gate", func(t *testing.T) {
 		ws := t.TempDir()
 		writeFile(t, ws, "docs/demo/p.md", "# Déposer\n\n## Notes internes\n\n- x\n")
@@ -622,6 +865,10 @@ func TestProductDocsDeterministicPassConverges(t *testing.T) {
 		t.Fatalf("ingest = %d ok / %d degraded, want 1/0: %s", ingest.OKCount, ingest.Degraded, ingest.Log)
 	}
 	productDir := ingest.ProductDir
+	// The run base catalog_ingest recorded, before the campaign wrote a line.
+	if ingest.BaseSHA == "" {
+		t.Fatal("catalog_ingest recorded no run base: scope_check would refuse to certify the pass")
+	}
 
 	// 2. The first scan is a BOOTSTRAP: no page exists yet.
 	var before hintsOut
@@ -655,7 +902,9 @@ func TestProductDocsDeterministicPassConverges(t *testing.T) {
 	var scope scopeOutPD
 	runJSON(t, resolveCommand(t, toolCommand(t, "product-docs/main.bot", "scope_check"), map[string]string{
 		"vars.workspace_dir": ws,
+		"vars.editorial_dir": ".product-docs",
 		"input.product_dir":  productDir,
+		"input.base_sha":     ingest.BaseSHA,
 	}), &scope)
 	if !scope.ScopeOK {
 		t.Fatalf("scope_check red after a well-behaved pass: %v — %s", scope.OutOfScope, scope.Log)
@@ -705,12 +954,18 @@ func TestProductDocsScopeCheck(t *testing.T) {
 	requireGitPython(t)
 
 	command := toolCommand(t, "product-docs/main.bot", "scope_check")
-	run := func(t *testing.T, ws, productDir string) scopeOutPD {
+	// The run base is what catalog_ingest recorded BEFORE the campaign wrote
+	// anything — never a base re-derived from the campaign's own commit
+	// messages, which would let an un-trailered commit pick the window it is
+	// audited on.
+	run := func(t *testing.T, ws, productDir, base string) scopeOutPD {
 		t.Helper()
 		var got scopeOutPD
 		runJSON(t, resolveCommand(t, command, map[string]string{
 			"vars.workspace_dir": ws,
+			"vars.editorial_dir": ".product-docs",
 			"input.product_dir":  productDir,
+			"input.base_sha":     base,
 		}), &got)
 		return got
 	}
@@ -725,6 +980,16 @@ func TestProductDocsScopeCheck(t *testing.T) {
 		gitIn(t, ws, "commit", "-q", "-m", "seed")
 		return ws
 	}
+	// headOf is the run base as catalog_ingest records it: the docs repo HEAD
+	// at the moment the run starts.
+	headOf := func(t *testing.T, ws string) string {
+		t.Helper()
+		out, err := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatalf("git rev-parse HEAD: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
 	prodyCommit := func(t *testing.T, ws, msg string) {
 		gitIn(t, ws, "add", "-A")
 		gitIn(t, ws, "commit", "-q", "-m", msg+"\n\nBot: product-docs\nProduct-Docs-Sources: demo-src@deadbeef")
@@ -732,9 +997,10 @@ func TestProductDocsScopeCheck(t *testing.T) {
 
 	t.Run("pages under the product dir are in scope", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
 		writeFile(t, ws, "documentation_produits/demo/gestionnaire/deposer.md", "# Déposer\n")
 		prodyCommit(t, ws, "docs(demo): déposer")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if !got.ScopeOK {
 			t.Fatalf("a page under the product dir was flagged out of scope: %v", got.OutOfScope)
 		}
@@ -742,9 +1008,10 @@ func TestProductDocsScopeCheck(t *testing.T) {
 
 	t.Run("another product's pages are out of scope", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
 		writeFile(t, ws, "documentation_produits/autre/README.md", "# Autre (touché à tort)\n")
 		prodyCommit(t, ws, "docs(autre): oops")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if got.ScopeOK {
 			t.Fatalf("a page belonging to ANOTHER product passed the writeable-set gate")
 		}
@@ -755,19 +1022,47 @@ func TestProductDocsScopeCheck(t *testing.T) {
 
 	t.Run("the docs repo's own editorial skills are out of scope", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
 		writeFile(t, ws, ".product-docs/modele.md", "# Modèle (réécrit par le bot)\n")
 		prodyCommit(t, ws, "docs: oops")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if got.ScopeOK {
 			t.Fatalf("the bot rewrote the product team's own editorial line and the gate approved it")
 		}
 	})
 
+	// A charter at the repo root is protected by the product-dir prefix rule
+	// alone. The guard that MATTERS is the one for a charter the operator
+	// puts INSIDE the product directory: a `.md` there passes every other
+	// rule, and only the editorial exclusion keeps the bot from rewriting the
+	// line it is governed by.
+	t.Run("an editorial charter inside the product dir is still out of scope", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		editorial := "documentation_produits/demo/.product-docs"
+		writeFile(t, ws, editorial+"/ton-et-style.md", "# Ton\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "chore: charte du produit")
+		base := headOf(t, ws)
+		writeFile(t, ws, editorial+"/ton-et-style.md", "# Ton (réécrit par le bot)\n")
+		prodyCommit(t, ws, "docs(demo): ton")
+		var got scopeOutPD
+		runJSON(t, resolveCommand(t, command, map[string]string{
+			"vars.workspace_dir": ws,
+			"vars.editorial_dir": editorial,
+			"input.product_dir":  "documentation_produits/demo",
+			"input.base_sha":     base,
+		}), &got)
+		if got.ScopeOK {
+			t.Fatalf("the bot rewrote the charter that governs it and the gate approved it")
+		}
+	})
+
 	t.Run("a non-markdown file under the product dir is out of scope", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
 		writeFile(t, ws, "documentation_produits/demo/script.sh", "#!/bin/sh\n")
 		prodyCommit(t, ws, "docs(demo): oops")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if got.ScopeOK {
 			t.Fatalf("a non-markdown file passed the writeable-set gate")
 		}
@@ -775,14 +1070,16 @@ func TestProductDocsScopeCheck(t *testing.T) {
 
 	t.Run("changes present before the run are not attributed to it", func(t *testing.T) {
 		ws := newDocsRepo(t)
-		// Someone else's code commit, landed BEFORE the run started.
+		// Someone else's code commit, landed BEFORE the run started — so it
+		// sits below the base catalog_ingest records at run start.
 		writeFile(t, ws, "tooling/build.sh", "#!/bin/sh\n")
 		gitIn(t, ws, "add", "-A")
 		gitIn(t, ws, "commit", "-q", "-m", "chore: not the bot's work")
+		base := headOf(t, ws)
 		// Then the run's own page commit.
 		writeFile(t, ws, "documentation_produits/demo/gestionnaire/deposer.md", "# Déposer\n")
 		prodyCommit(t, ws, "docs(demo): déposer")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if !got.ScopeOK {
 			t.Fatalf("pre-existing changes were attributed to the run: %v", got.OutOfScope)
 		}
@@ -795,10 +1092,14 @@ func TestProductDocsScopeCheck(t *testing.T) {
 	// 16-commit pass was reported as a scope violation on `.claude/`.
 	t.Run("the engine's own skill mirror is not the campaign's work", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		// The mirror is UNTRACKED — the engine materialises it, the campaign
+		// never commits it (it stages by path, not `git add -A`).
 		writeFile(t, ws, ".claude/skills/product-docs.md", "# skill mirrored by the engine\n")
 		writeFile(t, ws, "documentation_produits/demo/gestionnaire/deposer.md", "# Déposer\n")
-		prodyCommit(t, ws, "docs(demo): déposer")
-		got := run(t, ws, "documentation_produits/demo")
+		gitIn(t, ws, "add", "--", "documentation_produits/demo/gestionnaire/deposer.md")
+		gitIn(t, ws, "commit", "-q", "-m", "docs(demo): déposer\n\nBot: product-docs\nProduct-Docs-Sources: demo-src@deadbeef")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if !got.ScopeOK {
 			t.Fatalf("the engine's skill mirror was attributed to the campaign: %v — every pass would fail a gate the agent cannot satisfy", got.OutOfScope)
 		}
@@ -808,10 +1109,86 @@ func TestProductDocsScopeCheck(t *testing.T) {
 	// NOT the engine's mirror is still a violation.
 	t.Run("an untracked directory outside the product tree still fails", func(t *testing.T) {
 		ws := newDocsRepo(t)
+		base := headOf(t, ws)
 		writeFile(t, ws, ".claude-notes/scratch.md", "# not the engine's tree\n")
-		got := run(t, ws, "documentation_produits/demo")
+		got := run(t, ws, "documentation_produits/demo", base)
 		if got.ScopeOK {
 			t.Fatalf("an untracked tree outside the product dir passed the writeable-set gate")
+		}
+	})
+
+	// ...and once a path under .claude/ is TRACKED, the run committed the
+	// agent's own notes into the docs repo: they ship in the PR, so they are
+	// the campaign's work and in scope.
+	t.Run("a committed .claude path is the campaign's work", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		writeFile(t, ws, ".claude/notes-du-bot.md", "# raisonnement brut\n")
+		gitIn(t, ws, "add", "-f", ".claude/notes-du-bot.md")
+		prodyCommit(t, ws, "docs(demo): oops")
+		got := run(t, ws, "documentation_produits/demo", base)
+		if got.ScopeOK {
+			t.Fatalf("the run committed .claude/ into the docs repo and the gate approved it: the agent's raw notes would ship in the PR")
+		}
+	})
+
+	// The base is RECORDED before the campaign writes. Deriving it from commit
+	// messages let one un-trailered commit become the base and empty its own
+	// diff — the audited party choosing its audit window.
+	t.Run("an untrailered commit cannot redefine the run base", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		writeFile(t, ws, "src/app.py", "print('code touched by the bot')\n")
+		gitIn(t, ws, "add", "-A")
+		gitIn(t, ws, "commit", "-q", "-m", "docs(demo): page (no trailer)")
+		got := run(t, ws, "documentation_produits/demo", base)
+		if got.ScopeOK {
+			t.Fatalf("a commit that simply omitted the trailer disabled the writeable-set gate: %v", got.OutOfScope)
+		}
+	})
+
+	// Rename detection reports only a rename's DESTINATION, so moving a
+	// protected file onto an allowed .md path would delete it behind a green
+	// gate.
+	t.Run("renaming a protected file onto an allowed path is a violation", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		gitIn(t, ws, "mv", ".product-docs/modele.md", "documentation_produits/demo/modele.md")
+		prodyCommit(t, ws, "docs(demo): déplacement")
+		got := run(t, ws, "documentation_produits/demo", base)
+		if got.ScopeOK {
+			t.Fatalf("the editorial charter was deleted by a rename and the gate approved it: %v", got.OutOfScope)
+		}
+	})
+
+	// Writing THROUGH a symlink escapes the repository entirely, and
+	// committing one publishes a host path in the docs.
+	t.Run("a symlink under the product dir is out of scope", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		outside := filepath.Join(t.TempDir(), "cible-hors-depot.txt")
+		if err := os.WriteFile(outside, []byte("contenu privé\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(ws, "documentation_produits/demo/note.md")); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+		prodyCommit(t, ws, "docs(demo): note")
+		got := run(t, ws, "documentation_produits/demo", base)
+		if got.ScopeOK {
+			t.Fatalf("a symlink passed the writeable-set gate: the campaign can write outside the repository")
+		}
+	})
+
+	// A gate that cannot compute its own window must say so, not certify.
+	t.Run("no recorded base fails closed", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		got := run(t, ws, "documentation_produits/demo", "")
+		if got.ScopeOK {
+			t.Fatalf("the gate certified a writeable set it could not compute")
+		}
+		if !strings.Contains(got.Log, "SCOPE GATE UNAVAILABLE") {
+			t.Fatalf("the log does not name the missing base: %q", got.Log)
 		}
 	})
 }

@@ -102,7 +102,11 @@ invocations:
     command: { name: prody, aliases: [product-docs, doc-produit], scope: any, min_replier_role: developer }
   - kind: schedule
     mode: board
-    schedule: { suggested_cron: "0 5 * * 1" }
+    ## A weekly reconciliation is INCREMENTAL by construction: it aligns
+    ## the pages against the source commits landed since the last run,
+    ## not the whole corpus. Declared here so the scheduled run actually
+    ## carries it — a var only a human can pass is not a schedule.
+    schedule: { suggested_cron: "0 5 * * 1", default_vars: { mode: incremental } }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in

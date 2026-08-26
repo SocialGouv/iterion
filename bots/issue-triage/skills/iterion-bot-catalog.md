@@ -39,7 +39,8 @@ Walk top-to-bottom; first match wins.
 | "review this branch / PR AND fix AND commit" | `branch-improve-loop` |
 | "review this PR / branch and just REPORT the issues" — read-only, findings only | `review-pr` |
 | "upgrade dependencies", "patch CVEs", "bump versions" — MUTATING manifests/lockfiles | `secured-renovacy` |
-| "audit the docs", "code↔doc drift", "outdated README" | `docs-refresh` |
+| "document what the product does for its users", "doc produit", "the user guide is out of date" — NON-TECHNICAL audience, dedicated docs repo, sources named by a product catalog | `product-docs` |
+| "audit the docs", "code↔doc drift", "outdated README" — TECHNICAL docs living next to the code | `docs-refresh` |
 | "audit the source for vulns" — DETECTION (findings, not fixes) | `sec-audit-source` |
 | "audit dependencies for malware / typosquats / supply-chain" — DETECTION | `sec-audit-deps` |
 | architectural choice, prioritisation, alignment, meetings | no fit |

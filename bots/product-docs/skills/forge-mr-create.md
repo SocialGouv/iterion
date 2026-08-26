@@ -108,11 +108,11 @@ token file nor host auth is available, push/open nothing: return
 ## 3. Choose the branch and push
 
 Pick the branch name: use the `mr_branch` input if non-empty, else derive
-a stable one — `iterion/improve/<run-id-or-short-sha>`. Push the run's
+a stable one — `iterion/product-docs/<run-id-or-short-sha>`. Push the run's
 HEAD to it on origin:
 
 ```
-BRANCH="${mr_branch:-iterion/improve/$(git rev-parse --short HEAD)}"
+BRANCH="${mr_branch:-iterion/product-docs/$(git rev-parse --short HEAD)}"
 git push origin "HEAD:refs/heads/$BRANCH"
 ```
 

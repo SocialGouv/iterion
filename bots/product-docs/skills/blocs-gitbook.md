@@ -43,8 +43,8 @@ Une précision utile mais non bloquante.
   Presque jamais nécessaire.
 
 **Un encadré ne contient jamais de référence de source.** Un encadré
-« Sources : … » est une note de travail : la sonde éditoriale le refuse et
-fait échouer la passe.
+« Sources : … » est une note de travail : la relecture automatique la refuse
+et la page revient en correction.
 
 Deux encadrés qui se suivent sont un signe qu'il fallait un paragraphe.
 
@@ -97,9 +97,19 @@ dossier, adresse) ne doit jamais être publiée.
 - **Une annexe « Correspondance technique »** : le contenu technique n'a pas
   sa place dans ces pages.
 - Du HTML brut pour la mise en page, des styles inline, des balises `<br>`.
-- Un bloc de code, sauf s'il montre quelque chose que l'utilisateur final
-  saisit ou reçoit littéralement (un identifiant de dossier, un message
-  d'erreur affiché à l'écran).
+- Un bloc de code, sauf dans deux cas : il montre quelque chose que
+  l'utilisateur final saisit ou reçoit littéralement (un identifiant de
+  dossier, un message d'erreur affiché à l'écran), ou c'est un schéma
+  `mermaid` qui rend le parcours lisible d'un coup d'œil (GitBook le rend
+  comme un diagramme, pas comme du code) :
 
-Les quatre premiers points sont vérifiés par une sonde déterministe après
-chaque passe : une seule occurrence fait échouer la passe et vous revient.
+  ```mermaid
+  flowchart TD
+   A[Accueil] --> D[Dossier] --> T[Transmission]
+  ```
+
+  Un schéma remplace un paragraphe d'énumération ; il ne remplace jamais
+  l'explication des règles.
+
+Les quatre premiers points sont vérifiés automatiquement après chaque
+rédaction : une seule occurrence renvoie la page en correction.

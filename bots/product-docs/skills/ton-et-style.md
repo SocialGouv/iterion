@@ -78,7 +78,7 @@ toucher détruit du travail humain et ne produit rien.
 
 Quand la prose validée et le code se contredisent et que **c'est le code qui
 semble fautif**, ne réalignez pas la page sur le comportement du code :
-signalez-le (`is_product_bug`) et laissez la page en l'état.
+signalez-le au compte rendu de rédaction et laissez la page en l'état.
 
 ## Titres
 
@@ -92,5 +92,5 @@ signalez-le (`is_product_bug`) et laissez la page en l'état.
 Ni commentaire HTML, ni encadré « Sources », ni section « Points à
 clarifier », ni annexe « Correspondance technique ». Les notes de travail, les
 références de fichiers et les questions ouvertes appartiennent au message de
-commit, au registre des promesses ou au rapport de la campagne — jamais à la
+commit, au registre des promesses ou au compte rendu de rédaction — jamais à la
 page que lit l'utilisateur.

@@ -65,7 +65,7 @@ Comme toute affirmation de ces pages, une définition est **sourcée ou
 
 Quand deux sources se contredisent (un ancien libellé subsiste dans un
 gabarit), retenez celui que l'utilisateur voit aujourd'hui et signalez la
-contradiction dans le rapport de la campagne — pas dans la page.
+contradiction dans le compte rendu de rédaction — pas dans la page.
 
 Quand aucune source ne permet de trancher le sens d'un terme, écrivez la
 définition avec `[à confirmer]` dans la phrase concernée. N'inventez jamais
