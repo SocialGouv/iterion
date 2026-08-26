@@ -267,16 +267,13 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		inputs[k] = v
 	}
 
-	// Resolve the mono/dual review topology (no-op unless the workflow
-	// declares a review_mode var). Mirrors the CLI so studio/API/dispatcher
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families; no-op unless the workflow
+	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(parent), spec.ReviewMode); injected {
-		if family != "" {
-			runLogger.Info("review topology: %s (family %s)", mode, family)
-		} else {
-			runLogger.Info("review topology: %s", mode)
-		}
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+		runLogger.Info("%s", inj.Summary())
 	}
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)

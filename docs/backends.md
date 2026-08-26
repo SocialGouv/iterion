@@ -322,6 +322,61 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
+### Terminal degrade (`action: skip`) and the route gate (`when:`)
+
+Two route properties extend the chain beyond backend switches
+([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)):
+
+```yaml
+judge plan_review:
+  backend: "claw"
+  model: "openai/gpt-5.6-sol"
+  fallbacks:
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      ## unfiltered on purpose: "skip" here means the peer must NEVER
+      ## block — and under `sandbox: auto` a claw failure flattens to a
+      ## string at the IPC boundary and classifies UNCLASSIFIED, which a
+      ## FILTERED skip refuses (see below). Scope the filter only when
+      ## the node runs unsandboxed with typed errors intact.
+      on: [any]
+```
+
+`action: skip` is a **terminal degrade**: when the walk reaches it, the
+node COMPLETES with a zero-value output (every schema field at its zero
+— `""` / `false` / `0` / `[]`) stamped `_skipped: true` +
+`_fallback_used` + `_served_by`, instead of failing the run. It is the
+"continue and ignore" half of an optional-node policy — the "pause and
+retry" half is simply *not* declaring it: the failure then stays
+`failed_resumable` and the run-level usage-window retry parks the run
+until the window reopens. `on:` filters it like any route — with one
+deliberate asymmetry: an **unclassified** failure (a bare CLI exit, a
+flattened sandbox error) still routes to any *executable* route, but a
+filtered skip REFUSES it — routing an indescribable failure to another
+backend is a safety net, converting it into a zero-value success is a
+lie. `on: [any]` opts in explicitly. The compiler (C173) refuses a skip
+route that also names a backend/model/provider/metered, an unknown
+`action:`, and a skip that is not the LAST route (everything after a
+terminal is unreachable).
+
+`when:` gates any route on an expression over `vars` — evaluated at
+dispatch, so an ordinary `--var` picks the active route set per run
+(that is how ONE `plan_review` node expresses both `wait` and `skip`
+policies). The compiler checks the expression parses, reads only
+`vars.*` (a route has no input/outputs of its own), and references only
+**declared** vars — at run time an absent var reads as false and would
+silently disarm the route. String literals use single quotes
+(`vars.policy == 'skip'`); a route whose gate is false is simply absent
+from the chain.
+
+Downstream, a deterministic compute reads the stamp
+(`outputs.<node>._skipped == true`) and routes around whatever consumed
+the node's real output — never silently. Observability: the
+`model_fallback` event carries `to_action: "skip"` (with an empty
+`to_backend` — nothing serves), and the run header's fallbacks chip
+lists the node with `skipped: true` even though no backend ran.
+
 ### What a fall-through leaves behind
 
 Nothing about it is silent:

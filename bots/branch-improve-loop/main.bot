@@ -211,6 +211,21 @@ vars:
   forge_publish_url: string = ""
   forge_publish_token: string = ""
 
+  ## ─── Plan phase (cross-model pair review) ─────────────────────
+  ## Resolved at LAUNCH by pkg/reviewtopology from the run's credentials:
+  ## auto → "on" iff a SECOND model family is credentialed (host
+  ## detection locally, the sealed bundle on cloud), else "off" — the
+  ## v2 plan-in-stride shape, at zero extra cost. "on" forces the phase
+  ## (the peer reviewer then fails loudly on a missing credential).
+  plan_review: string = "auto"
+  ## What a MID-RUN peer failure (forfait window shut, provider down,
+  ## credential revoked) does: "wait" (default) parks the run
+  ## failed_resumable until the peer window reopens (run-level
+  ## usage-window retry; cloud durable, local --auto-resume); "skip"
+  ## arms the reviewer's `action: skip` fallback route — the plan
+  ## proceeds unreviewed, LOUDLY (_skipped stamped, plan_gate reads it).
+  plan_review_policy: string [enum: "wait", "skip"] = "wait"
+
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted as a
   ## read-only file the gh/glab CLI authenticates from; never read into a
@@ -415,6 +430,19 @@ prompt campaign_user:
   what this shows before continuing to review the diff):
   {{input.fail_log}}
 
+  PEER-REVIEWED TRIAGE PLAN (empty = no plan phase ran, plan in stride
+  as usual; on continuation passes read `git log` instead). The plan is
+  a MAP, not a contract — reality wins; note where you diverge:
+  {{input.plan}}
+
+  Peer critique of that plan (cross-model reviewer; the plan author
+  already challenged it and integrated what held — weigh what remains
+  on its merits, empty = none or the review was skipped):
+  {{input.plan_critique}}
+
+  Plan author's responses to the critique (accepted/rejected and why):
+  {{input.plan_responses}}
+
   Review the branch diff and improve it one issue at a time — locate →
   smallest fix → build → test → commit — until a fresh re-review finds no real
   issue remaining. Read `git log` first to see what earlier passes already
@@ -580,6 +608,11 @@ prompt finalize_mr_user:
 ## pass (empty on the first pass and on a green-but-more-work continuation).
 schema campaign_input:
   fail_log: string
+  ## Plan-phase hand-off (empty when the phase is off / skipped / on
+  ## continuation passes — git is the durable state there).
+  plan: string
+  plan_critique: string
+  plan_responses: string
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
 ## keys convergence on. branch_clean is the done-oracle (a fresh re-review of
@@ -708,6 +741,215 @@ schema finalize_mr_output:
   summary: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
+
+## ─── Plan phase (opt-in cross-model pair review) ────────────────────
+## Active only when `plan_review` resolved "on" at launch. Shape:
+## the plan AUTHOR (claude family, read-only) triages the branch diff →
+## a peer from the OTHER family (claw + gpt) critiques the triage
+## against the actual diff → the SAME author session challenges the
+## critique and integrates what holds → the campaign fixes. ONE revision
+## turn, no loop — the campaign stays the arbiter of reality (asymptote
+## intact). When off, entry routes straight to `campaign`: v2 unchanged.
+
+prompt plan_system:
+  You are the triage planner for a branch-review campaign. You are
+  READ-ONLY: read the branch diff and produce a PLAN — change nothing.
+
+  Read the diff first: `git add -N .` then
+  `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING
+  TREE). That diff is the scope — do NOT plan changes to pre-existing
+  code the branch didn't touch. Then write the plan as a MAP, not a
+  contract — the implementer may diverge where reality disagrees.
+
+  Structured output:
+    - plan: the triage — the issues you found in the diff worth fixing,
+      in fix order, each naming the file/hunk and the intended fix.
+    - assumptions: the load-bearing assumptions the triage rests on.
+    - risks: where the triage is most likely wrong, and what to check.
+
+prompt plan_user:
+  Repository: {{vars.workspace_dir}}
+
+  BRANCH BASE (triage the diff THIS branch introduces on top of it):
+  {{vars.base_ref}}
+
+  Extra context / notes (empty = the diff speaks for itself):
+  {{vars.scope_notes}}
+
+  PRIOR REVIEW to fold into the triage (empty = none; verify each
+  finding against the CURRENT diff rather than trusting it):
+  {{vars.prior_review}}
+
+prompt plan_review_system:
+  You are a peer reviewer from a DIFFERENT model family, adversarially
+  reviewing a branch-diff triage plan against the actual repository.
+  Your value is INDEPENDENT judgment: re-read the diff with your
+  read-only tools and verify the triage's claims; do not extend its own
+  reasoning.
+
+  Hunt for: a real defect in the diff the triage MISSED; a triaged
+  "issue" that is not one (false positive); a fix direction that would
+  be wrong or heavier than the diff warrants; an understated risk.
+
+  Structured output:
+    - concerns: the defects you can GROUND in the diff (name the
+      file/hunk per claim). Empty when the triage holds — do not
+      manufacture concerns to look useful.
+    - suggestions: concrete improvements, most valuable first.
+    - blocking: true ONLY for a defect that would make the fixed branch
+      wrong (not merely improvable).
+
+prompt plan_review_user:
+  Repository: {{vars.workspace_dir}}
+
+  BRANCH BASE: {{vars.base_ref}}
+  Read the diff yourself: `git add -N .` then
+  `git diff $(git merge-base {{vars.base_ref}} HEAD)`.
+
+  THE TRIAGE PLAN under review:
+  {{input.plan}}
+
+  Its stated assumptions:
+  {{input.assumptions}}
+
+  Its stated risks:
+  {{input.risks}}
+
+prompt plan_revise_system:
+  You authored the triage plan earlier in this session. A peer reviewer
+  from another model family has critiqued it. CHALLENGE the critique:
+  verify each concern against the diff, integrate what holds, refuse
+  what does not — with a stated reason. You revise the PLAN only; you
+  change no code.
+
+  Structured output:
+    - plan: the final triage plan, revised where the critique held.
+    - review_responses: one line per concern — accepted (and how the
+      plan changed) or rejected (and why).
+
+prompt plan_revise_user:
+  Peer critique of your plan:
+  {{input.concerns}}
+
+  Peer suggestions:
+  {{input.suggestions}}
+
+  Blocking: {{input.blocking}}
+
+  Your plan as reviewed:
+  {{input.plan}}
+
+schema plan_topology_state:
+  do_plan: bool
+
+schema plan_output:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_input:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_output:
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_gate_state:
+  skipped: bool
+
+schema plan_revise_input:
+  plan: string
+  assumptions: string
+  risks: string
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_revised_output:
+  plan: string
+  review_responses: string
+
+## plan_topology lifts the launch-resolved plan_review var into a bool
+## so the entry edges use the C012-exhaustive simple form. No LLM.
+compute plan_topology:
+  description: "Plan phase gate (launch-resolved)"
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_review == 'on'"
+
+## plan — the AUTHOR. Same family/model as the campaign (the peer is the
+## cross-check). readonly is enforced on codex/pi only — on claude_code
+## (bypassPermissions) it is intent, not a guarantee; the deterministic
+## verify gate + the campaign's own review remain the backstop.
+agent plan:
+  description: "Author the triage plan (read-only)"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+  readonly: true
+
+## plan_review — the PEER, pinned to the other family. claw because
+## "openai/*" models only resolve there; both knobs env-overridable so a
+## host without OpenAI quota can run the peer elsewhere. Read-only
+## toolset (no write_file/file_edit tools — though bash can write; the
+## restriction is intent + review-pr's shipped posture, not a sandbox).
+judge plan_review:
+  description: "Peer plan review (other model family)"
+  backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  input: plan_review_input
+  output: plan_review_output
+  system: plan_review_system
+  user: plan_review_user
+  session: fresh
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  fallbacks:
+    ## The plan_review_policy switch, expressed as a route gate:
+    ## policy "skip" arms this terminal route — a peer failure completes
+    ## the node with a zero-value critique stamped _skipped (plan_gate
+    ## routes around the revise turn). policy "wait" leaves NO active
+    ## route: the failure stays failed_resumable and the run-level
+    ## usage-window retry parks the run until the forfait reopens.
+    ## on: [any] — deliberately unfiltered: the operator's `skip` means
+    ## the peer must NEVER block the campaign, whatever killed it. It is
+    ## also load-bearing under the shipped `sandbox: auto`: a sandboxed
+    ## claw failure flattens to a string at the IPC boundary and
+    ## classifies UNCLASSIFIED, which a filtered skip refuses by design.
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      on: [any]
+
+## plan_gate — did the peer actually serve, or did the skip route fire?
+## Deterministic: reads the _skipped stamp, never an LLM judgment.
+compute plan_gate:
+  description: "Peer review served or skipped?"
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+## plan_revise — the AUTHOR again, SAME session (the `_session_id`
+## carried on the edge), challenging the peer's critique. Read-only.
+agent plan_revise:
+  description: "Author challenges & integrates the critique"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: plan_revise_input
+  output: plan_revised_output
+  system: plan_revise_system
+  user: plan_revise_user
+  session: inherit_if_available
+  readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
@@ -1240,11 +1482,13 @@ emit(True, note)
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow branch_improve_loop:
-  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
-  ## (no blocking upfront diff-chunk scan). A fresh dispatch reviews the
-  ## branch diff from a clean tree; a re-dispatch's campaign reads `git log`,
-  ## re-diffs the branch, and continues from the commits earlier passes banked.
-  entry: campaign
+  ## Entry is the plan-phase gate. When `plan_review` resolved OFF at
+  ## launch it routes STRAIGHT to the campaign — the mission starts
+  ## working immediately (no blocking upfront diff-chunk scan), exactly
+  ## the v2 shape. When ON, the diff triage is authored, peer-reviewed
+  ## cross-model, and author-revised first. A re-dispatch's campaign
+  ## reads `git log`, re-diffs the branch, and continues either way.
+  entry: plan_topology
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
   ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
@@ -1262,12 +1506,53 @@ workflow branch_improve_loop:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 60
+    ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
+    ## plan_review resolves on, ~3 LLM calls run before the campaign.
+    max_duration: "2h30m"
+    max_cost_usd: 75
 
   compaction:
     threshold: 0.9
     preserve_recent: 8
+
+  ## Plan phase (skipped whole when plan_review resolved off).
+  plan_topology -> plan when do_plan
+  ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
+  ## field is not "" but the raw {{input.x}} placeholder leaking into
+  ## the prompt (the engine keeps unresolved refs as-is).
+  plan_topology -> campaign when not do_plan with {
+    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+  }
+
+  plan -> plan_review with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}"
+  }
+  plan_review -> plan_gate
+  ## Peer served → the plan AUTHOR (same session) challenges the
+  ## critique and integrates what holds; skipped (policy skip + peer
+  ## unavailable) → the unreviewed plan proceeds, loudly.
+  plan_gate -> plan_revise when not skipped with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}",
+    concerns:    "{{outputs.plan_review.concerns}}",
+    suggestions: "{{outputs.plan_review.suggestions}}",
+    blocking:    "{{outputs.plan_review.blocking}}",
+    _session_id: "{{outputs.plan._session_id}}",
+    _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
+  }
+  plan_gate -> campaign when skipped with {
+    fail_log: "", plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: ""
+  }
+  plan_revise -> campaign with {
+    fail_log:       "",
+    plan:           "{{outputs.plan_revise.plan}}",
+    plan_critique:  "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}"
+  }
 
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.
@@ -1297,8 +1582,12 @@ workflow branch_improve_loop:
   ## loop (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
   ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
   ## output on its back-edge, which would read a loop-entry-frozen value).
+  ## The back-edge BLANKS the plan-phase fields: forward-edge mappings
+  ## re-apply on every re-entry (outputs persist), and a stale pass-1
+  ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
+    plan: "", plan_critique: "", plan_responses: ""
   }
   ## continuation_loop exhausted (max_passes hit while issues still remain) →
   ## ship what is banked anyway (every committed fix is real, landed work).

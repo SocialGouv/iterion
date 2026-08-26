@@ -282,8 +282,14 @@ func TestWholeImproveLoop_EventTrace(t *testing.T) {
 func TestWholeImproveLoop_Structural(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 
-	if wf.Entry != "campaign" {
-		t.Errorf("workflow entry = %q, want %q (the mission starts working immediately — no blocking upfront scan)", wf.Entry, "campaign")
+	// Entry is the plan-phase gate (ADR-091), whose off branch routes
+	// STRAIGHT to the campaign — the v2 "start working immediately" shape
+	// is preserved whenever plan_review resolves off.
+	if wf.Entry != "plan_topology" {
+		t.Errorf("workflow entry = %q, want %q (the plan-phase gate; its off branch is the v2 immediate-campaign shape)", wf.Entry, "plan_topology")
+	}
+	if _, ok := wf.Nodes["plan_topology"].(*ir.ComputeNode); !ok {
+		t.Errorf("plan_topology is %T, want *ir.ComputeNode (deterministic gate)", wf.Nodes["plan_topology"])
 	}
 	// Adaptive agents: campaign + verify_build.
 	for _, id := range []string{"campaign", "verify_build"} {

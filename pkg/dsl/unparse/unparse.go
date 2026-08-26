@@ -1275,6 +1275,12 @@ func writeFallbacksBlock(b *strings.Builder, fbs []*ast.FallbackDecl, indent str
 		if fb.Metered {
 			fmt.Fprintf(b, "%s    metered: true\n", indent)
 		}
+		if fb.Action != "" {
+			fmt.Fprintf(b, "%s    action: %s\n", indent, fb.Action)
+		}
+		if fb.When != "" {
+			fmt.Fprintf(b, "%s    when: %q\n", indent, fb.When)
+		}
 	}
 }
 

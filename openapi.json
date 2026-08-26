@@ -590,6 +590,9 @@
           },
           "served_by": {
             "type": "string"
+          },
+          "skipped": {
+            "type": "boolean"
           }
         },
         "required": [

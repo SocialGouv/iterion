@@ -1422,7 +1422,18 @@ type Fallback struct {
 	Provider string   // "" = auto
 	On       []string // failure categories that may route here; empty = the runtime default
 	Metered  bool     // the author's acknowledgement that this route spends a metered credential
+	Action   string   // "" = route; FallbackActionSkip = terminal degrade (zero-value output, loudly marked)
+	When     string   // optional expr over vars gating the route ("" = always active), evaluated at dispatch
 }
+
+// FallbackActionSkip is the `action: skip` terminal route: instead of
+// executing an alternative backend, the node completes with a zero-value
+// output stamped `_skipped` / `_fallback_used` so a downstream
+// deterministic gate can fail closed on the degraded result. The
+// "continue and ignore" half of a peer-node unavailability policy — the
+// "pause and retry" half is simply NOT declaring it (the failure stays a
+// failure and the run-level usage-window retry parks the run).
+const FallbackActionSkip = "skip"
 
 type CursorInvocation struct {
 	Enabled  bool

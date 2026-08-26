@@ -545,7 +545,10 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	header := b.header
 	header.Loops = b.buildLoopProgress()
 	header.BackendsUsed = b.buildBackendsUsed()
-	header.FallbacksUsed = b.fallbacksUsed
+	// Copied, not aliased: the clean-pass removal shifts the backing
+	// array in place, which would mutate (and duplicate entries in) a
+	// snapshot already handed out under the documented incremental usage.
+	header.FallbacksUsed = append([]FallbackUsage(nil), b.fallbacksUsed...)
 	header.Deployment = b.buildDeployment()
 	return &RunSnapshot{
 		Run:        header,
@@ -591,21 +594,40 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 		return
 	}
 	backend, _ := output["_backend"].(string)
-	if backend == "" {
-		return
-	}
 	model, _ := output["_model"].(string)
-	if used, _ := output["_fallback_used"].(bool); used {
+	// The fallback tally must NOT hide behind the _backend guard: a node
+	// served by an `action: skip` terminal route carries _fallback_used
+	// (+ _skipped) with NO _backend — nothing ran — and that most-degraded
+	// case is exactly what the run-header chip exists to surface.
+	used, _ := output["_fallback_used"].(bool)
+	if !used && backend != "" {
+		// A clean pass on the primary route: a previous iteration's
+		// degradation (fallback-served or skipped) no longer holds — the
+		// chip is last-state-wins in BOTH directions. The event timeline
+		// keeps the history.
+		for i, u := range b.fallbacksUsed {
+			if u.NodeID == evt.NodeID {
+				b.fallbacksUsed = append(b.fallbacksUsed[:i], b.fallbacksUsed[i+1:]...)
+				break
+			}
+		}
+	}
+	if used {
 		servedBy, _ := output["_served_by"].(string)
+		skipped, _ := output["_skipped"].(bool)
 		// Dedupe by node: a declared loop re-emits node_finished per
 		// iteration, and appending once per pass produces N identical
 		// chips (and colliding React keys) in the run header (R546ddc).
-		// backends_used already keys on (backend, model) + a node set;
-		// keep the first-seen route per node so the header names the
-		// first fall-through that served it.
+		// One chip per node, LAST state wins: a node skipped on pass 1
+		// then served on pass 2 (or the reverse — the most degraded case)
+		// must show its latest outcome, not the first-seen one.
 		already := false
-		for _, u := range b.fallbacksUsed {
+		for i, u := range b.fallbacksUsed {
 			if u.NodeID == evt.NodeID {
+				b.fallbacksUsed[i] = FallbackUsage{
+					NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
+					Skipped: skipped,
+				}
 				already = true
 				break
 			}
@@ -613,8 +635,14 @@ func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
 		if !already {
 			b.fallbacksUsed = append(b.fallbacksUsed, FallbackUsage{
 				NodeID: evt.NodeID, ServedBy: servedBy, Backend: backend, Model: model,
+				Skipped: skipped,
 			})
 		}
+	}
+	if backend == "" {
+		// tool/compute/router terminals and skipped nodes contribute no
+		// (backend, model) usage.
+		return
 	}
 	key := backend + "\x00" + model
 	agg := b.backendUsage[key]
@@ -635,6 +663,9 @@ type FallbackUsage struct {
 	// Backend / Model are what actually ran, not what was requested.
 	Backend string `json:"backend,omitempty"`
 	Model   string `json:"model,omitempty"`
+	// Skipped marks an `action: skip` terminal route: nothing served the
+	// node — it completed with a zero-value output (Backend/Model empty).
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // buildBackendsUsed materialises the aggregated (backend, model) pairs

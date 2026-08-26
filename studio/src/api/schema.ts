@@ -4982,6 +4982,7 @@ export interface components {
             model?: string;
             node_id: string;
             served_by?: string;
+            skipped?: boolean;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;

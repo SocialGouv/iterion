@@ -162,3 +162,15 @@ hits the `max_passes` cap (ships what is banked) or exhausts the budget.
 Because git is the state, a re-dispatch re-runs the campaign, which reads
 `git log` and continues banking committed sites. Raise `max_passes` (with the
 budget) to finish a larger axis in one run.
+
+## Plan phase (cross-model pair review, ADR-091)
+
+`plan_review: auto` resolves at launch from the run's credentials: when a
+SECOND model family is available, the sweep plan is authored (claude,
+read-only), critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default), and revised by the SAME author session
+before the campaign sweeps; otherwise the phase is bypassed whole (the
+v2 shape, unchanged). `plan_review_policy` picks the mid-run
+peer-unavailability behaviour: `wait` (default — the run parks
+failed_resumable, the usage-window retry resumes it) or `skip` (the
+reviewer's `action: skip` route — continue unreviewed, loudly stamped).
