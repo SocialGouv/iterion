@@ -415,6 +415,56 @@ func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 		}
 	})
 
+	// The whole python body lives inside a double-quoted `python3 -c "..."`
+	// string that sh parses FIRST: a literal dollar is expanded by the shell
+	// before python ever sees it. Here that erased both arguments of the
+	// askpass helper, leaving a shell syntax error on disk — so every
+	// credentialed clone failed and every private repo landed as `degraded`,
+	// silently.
+	t.Run("the credential helper survives the shell", func(t *testing.T) {
+		ws, scratch := newWS(t)
+		catalogFixture(t, ws, "catalog/demo",
+			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
+				"repos:\n  - id: demo-src\n    url: "+source+"\n",
+			`{"id":"demo","docs":{"product_dir":"documentation_produits/demo"},`+
+				`"repos":[{"id":"demo-src","url":"`+source+`"}]}`+"\n")
+		cmd := exec.Command("sh", "-c", ingestCommand(t, ws, "catalog", "demo", scratch))
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+			"GH_TOKEN=jeton-de-test-42",
+		)
+		if out, err := cmd.Output(); err != nil {
+			t.Fatalf("ingest failed with a token present: %v (%s)", err, out)
+		}
+		helper := filepath.Join(scratch, "git-askpass.sh")
+		body, err := os.ReadFile(helper)
+		if err != nil {
+			t.Fatalf("no askpass helper was written: %v", err)
+		}
+		if !strings.Contains(string(body), "case $1 in") || !strings.Contains(string(body), "$PRODUCT_DOCS_GIT_TOKEN") {
+			t.Fatalf("the shell ate the helper's arguments before python wrote it:\n%s", body)
+		}
+		// ...and it actually answers git's two prompts.
+		ask := exec.Command("sh", helper, "Username for 'https://forge':")
+		ask.Env = append(os.Environ(), "PRODUCT_DOCS_GIT_TOKEN=jeton-de-test-42")
+		userOut, err := ask.Output()
+		if err != nil {
+			t.Fatalf("the helper is not a runnable script: %v", err)
+		}
+		if strings.TrimSpace(string(userOut)) != "x-access-token" {
+			t.Fatalf("helper answered %q to a Username prompt", userOut)
+		}
+		ask = exec.Command("sh", helper, "Password for 'https://forge':")
+		ask.Env = append(os.Environ(), "PRODUCT_DOCS_GIT_TOKEN=jeton-de-test-42")
+		pwOut, err := ask.Output()
+		if err != nil {
+			t.Fatalf("the helper failed on a Password prompt: %v", err)
+		}
+		if strings.TrimSpace(string(pwOut)) != "jeton-de-test-42" {
+			t.Fatalf("helper answered %q to a Password prompt, want the token", pwOut)
+		}
+	})
+
 	// docs.product_dir is compared as a literal prefix by scope_check: a
 	// non-canonical or glob-shaped value passes here and then makes every pass
 	// unfixably red.
@@ -451,6 +501,67 @@ func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 // contract: the delta since the last run is recovered from the
 // `Product-Docs-Sources:` commit trailer in the DOCS repo, with no side-car
 // state file — so a crashed run or a wiped scratch dir loses nothing.
+// TestProductDocsSourceStampIsScopedToTheProduct pins the incremental base in
+// the shape the design actually has: ONE docs repo, SEVERAL products. The
+// `Product-Docs-Sources:` trailer carries no product identity, so an unscoped
+// history lookup reads whichever product ran last — and a stamp that matches
+// nothing yields an empty delta the campaign reads as "nothing changed", with
+// delta_unavailable false. The weekly incremental run then silently does
+// nothing and reports success.
+func TestProductDocsSourceStampIsScopedToTheProduct(t *testing.T) {
+	requireGitPython(t)
+
+	source := newSourceRepo(t)
+	ws := t.TempDir()
+	scratch := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	for _, id := range []string{"alpha", "beta"} {
+		catalogFixture(t, ws, "catalog/"+id,
+			"id: "+id+"\ndocs:\n  product_dir: documentation_produits/"+id+"\n"+
+				"repos:\n  - id: plateforme\n    url: "+source+"\n",
+			`{"id":"`+id+`","docs":{"product_dir":"documentation_produits/`+id+`"},`+
+				`"repos":[{"id":"plateforme","url":"`+source+`"}]}`+"\n")
+		writeFile(t, ws, "documentation_produits/"+id+"/README.md", "# "+id+"\n")
+	}
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	// alpha is documented against the source as it stands now.
+	var first ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "alpha", scratch), &first)
+	alphaStamp := first.Stamp
+	writeFile(t, ws, "documentation_produits/alpha/page.md", "# Page alpha\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(alpha): page\n\nBot: product-docs\nProduct-Docs-Sources: "+alphaStamp)
+
+	// The source then moves on, and BETA runs last — recording ITS stamp.
+	writeFile(t, source, "locales/fr.json", `{"submit":"Transmettre"}`+"\n")
+	gitIn(t, source, "add", "-A")
+	gitIn(t, source, "commit", "-q", "-m", "feat: renommer le bouton")
+	var betaIngest ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "beta", scratch), &betaIngest)
+	writeFile(t, ws, "documentation_produits/beta/page.md", "# Page beta\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(beta): page\n\nBot: product-docs\nProduct-Docs-Sources: "+betaIngest.Stamp)
+
+	// Re-running ALPHA must recover ALPHA's own base, not beta's.
+	var again ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "alpha", scratch), &again)
+	if again.PrevStamp != alphaStamp {
+		t.Fatalf("previous_stamp = %q, want alpha's own %q — a sibling product's stamp was read as this product's incremental base",
+			again.PrevStamp, alphaStamp)
+	}
+	var changed []any
+	for _, e := range again.Inventory {
+		if e["id"] == "plateforme" {
+			changed, _ = e["changed_files"].([]any)
+		}
+	}
+	if len(changed) == 0 && !again.DeltaUnavai {
+		t.Fatal("the source moved but the delta is empty AND not reported unavailable: the campaign reads that as 'nothing changed' and the incremental pass becomes a silent no-op")
+	}
+}
+
 func TestProductDocsCatalogIngestSourceDelta(t *testing.T) {
 	requireGitPython(t)
 
@@ -1177,6 +1288,20 @@ func TestProductDocsScopeCheck(t *testing.T) {
 		got := run(t, ws, "documentation_produits/demo", base)
 		if got.ScopeOK {
 			t.Fatalf("a symlink passed the writeable-set gate: the campaign can write outside the repository")
+		}
+	})
+
+	// git collapses an untracked DIRECTORY into a single entry that never
+	// ends in .md — so a brand-new journey folder (the bootstrap case, and
+	// every mid-page stop) used to red the gate on the very path the campaign
+	// must write.
+	t.Run("a new page in a new directory is in scope", func(t *testing.T) {
+		ws := newDocsRepo(t)
+		base := headOf(t, ws)
+		writeFile(t, ws, "documentation_produits/demo/gestionnaire/deposer.md", "# Déposer\n")
+		got := run(t, ws, "documentation_produits/demo", base)
+		if !got.ScopeOK {
+			t.Fatalf("an untracked page inside the product dir was flagged out of scope: %v", got.OutOfScope)
 		}
 	})
 

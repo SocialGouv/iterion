@@ -547,7 +547,7 @@ prompt finalize_mr_system:
 
   Preconditions:
     A. Commits to ship: HEAD must be ahead of the base
-       (`git rev-list --count <base>..HEAD` > 0). If not, set
+       (`git rev-list --count origin/<base>..HEAD` > 0). If not, set
        opened=false, skipped_reason "no commits ahead of base" — never
        push, never open an empty PR.
     B. Authenticate the matching forge CLI from the mounted
@@ -926,7 +926,12 @@ git_env['GIT_TERMINAL_PROMPT'] = '0'
 if token:
     helper = os.path.join(scratch, 'git-askpass.sh')
     with open(helper, 'w', encoding='utf-8') as fh:
-        fh.write('#!/bin/sh' + chr(10) + 'case $1 in' + chr(10) + 'Username*) echo x-access-token ;;' + chr(10) + '*) printf %s $PRODUCT_DOCS_GIT_TOKEN ;;' + chr(10) + 'esac' + chr(10))
+        ## chr(36) is the dollar sign: written literally, the SHELL
+        ## expands it while parsing this double-quoted command, and the
+        ## helper reaches disk with its two arguments erased -- a shell
+        ## syntax error, so every credentialed clone fails.
+        D = chr(36)
+        fh.write('#!/bin/sh' + chr(10) + 'case ' + D + '1 in' + chr(10) + 'Username*) echo x-access-token ;;' + chr(10) + '*) printf %s ' + D + 'PRODUCT_DOCS_GIT_TOKEN ;;' + chr(10) + 'esac' + chr(10))
     os.chmod(helper, 0o700)
     git_env['GIT_ASKPASS'] = helper
     git_env['PRODUCT_DOCS_GIT_TOKEN'] = token
@@ -958,7 +963,11 @@ gitlab_host = str(gitlab_block.get('host') or '').strip().rstrip('/')
 ## The previous run source stamp, read from the DOCS repo own history:
 ## git IS the state, so a wiped scratch or a crashed pod loses nothing.
 previous_stamp = ''
-rc, out, _ = run_git(['log', '-E', '--grep', '^Product-Docs-Sources:', '-n', '1', '--format=%B'], cwd=ws, timeout=120)
+## Path-limited to THIS product: the trailer carries no product
+## identity, and a docs repo holding several products is the design's
+## own shape -- an unscoped lookup reads a sibling product's stamp and
+## reports a confident 'nothing changed'.
+rc, out, _ = run_git(['log', '-E', '--grep', '^Product-Docs-Sources:', '-n', '1', '--format=%B', '--', product_dir], cwd=ws, timeout=120)
 if rc == 0:
     for line in out.splitlines():
         if line.strip().startswith('Product-Docs-Sources:'):
@@ -1368,7 +1377,10 @@ for row in git(['diff', '--no-renames', '--raw', base]).splitlines():
         p = path.split(chr(9))[-1].strip()
         if p:
             symlinks.add(p)
-for line in git(['status', '--porcelain']).splitlines():
+## -uall: without it git collapses an untracked directory into one
+## entry that never ends in .md, so a brand-new journey folder -- the
+## bootstrap case -- reds the gate on the very path it must write.
+for line in git(['status', '--porcelain', '-uall']).splitlines():
     if line[:2].strip() == '??':
         changed.add(line[3:].strip())
 
