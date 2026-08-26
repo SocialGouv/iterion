@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/botsource"
 )
 
 // BotRoles is the role→bot-id override record. Each field, when non-nil,
@@ -55,7 +57,12 @@ func (r BotRoles) Validate() error {
 		if v == nil {
 			continue
 		}
-		if err := validBotID(*v); err != nil {
+		if *v == "" {
+			return fmt.Errorf("platformcfg: %s: bot id must not be empty (clear the override instead)", name)
+		}
+		// The one slug grammar bots are actually stored under — a role value
+		// that could not name a stored/baked bot must fail at write time.
+		if err := botsource.ValidSlug(*v); err != nil {
 			return fmt.Errorf("platformcfg: %s: %w", name, err)
 		}
 	}
@@ -74,29 +81,21 @@ type Sandbox struct {
 	UpdatedBy string    `bson:"updated_by,omitempty" json:"updated_by,omitempty"`
 }
 
+// EffectiveImage resolves the override to its effective value: "" (inherit
+// the env default / built-in pin) when unset, the trimmed ref otherwise.
+// The ONE definition every consumer (server echo, publisher pin) shares.
+func (s *Sandbox) EffectiveImage() string {
+	if s == nil || s.DefaultImage == nil {
+		return ""
+	}
+	return strings.TrimSpace(*s.DefaultImage)
+}
+
 // Validate rejects a blank override (clearing is expressed by nil, never by
 // an empty string that would pin "no image" onto every RunMessage).
 func (s Sandbox) Validate() error {
 	if s.DefaultImage != nil && strings.TrimSpace(*s.DefaultImage) == "" {
 		return fmt.Errorf("platformcfg: default_image override must not be blank (clear it to fall back to the env default)")
-	}
-	return nil
-}
-
-// validBotID mirrors the bot-slug rule (botsource.ValidSlug) without the
-// import: lowercase alphanumerics plus '-' and '_'.
-func validBotID(id string) error {
-	if id == "" {
-		return fmt.Errorf("bot id must not be empty (clear the override instead)")
-	}
-	if len(id) > 64 {
-		return fmt.Errorf("bot id %q exceeds 64 characters", id)
-	}
-	for _, c := range id {
-		ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
-		if !ok {
-			return fmt.Errorf("bot id %q must be lowercase alphanumeric, '-' or '_'", id)
-		}
 	}
 	return nil
 }

@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Materialize writes a bundle file map under dir, creating it if needed.
@@ -37,6 +39,47 @@ func Materialize(dir string, files map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// ReadBundleDir is Materialize's inverse: it walks a bundle directory into
+// the path→content map the store persists. One definition of "what a
+// bundle dir contains" shared by the CLI push and the server-side
+// fork-from-catalog, so the two cannot drift: skips .git/ and Go test
+// files, refuses non-UTF-8 content explicitly (the store carries JSON
+// text — a binary file would be corrupted, not stored).
+func ReadBundleDir(dir string) (map[string]string, error) {
+	files := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, p)
+		if rerr != nil {
+			return rerr
+		}
+		b, berr := os.ReadFile(p)
+		if berr != nil {
+			return berr
+		}
+		if !utf8.Valid(b) {
+			return fmt.Errorf("botsource: %s is not UTF-8 text — binary files cannot be stored in a bot source (the baked bundle keeps serving it)", rel)
+		}
+		files[filepath.ToSlash(rel)] = string(b)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
 }
 
 // Digest returns the sha256 hex digest of the bundle content, computed

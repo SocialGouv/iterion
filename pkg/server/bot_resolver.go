@@ -2,15 +2,15 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -52,6 +52,17 @@ func (lb *launchBot) Stamp(spec *runview.LaunchSpec) {
 	spec.FilePath = lb.Path
 	spec.Source = lb.Source
 	spec.BotID = lb.BotID
+	lb.StampBundle(spec)
+}
+
+// StampBundle stamps only the stored-bundle fields (compile dir + runner
+// ref) — for callers that resolved path/source separately (the studio
+// launch derives an absolute path first). Nil-safe: a catalog/loose bot
+// stamps nothing.
+func (lb *launchBot) StampBundle(spec *runview.LaunchSpec) {
+	if lb == nil {
+		return
+	}
 	spec.BundleDir = lb.BundleDir
 	spec.BotBundle = lb.Ref
 }
@@ -78,21 +89,39 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 		return nil, nil
 	}
 	if s.botSources != nil {
+		// Only ErrNotFound falls through to the next tier: any other store
+		// error must surface, or a Mongo blip would silently launch the
+		// STALE BAKED bot — the exact façade the runner-side version check
+		// refuses (erreurs-explicites, both halves of the same contract).
 		if teamID != "" {
-			if bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, teamID), teamID, slug); err == nil {
+			bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, teamID), teamID, slug)
+			switch {
+			case err == nil:
 				return s.storedLaunchBot(bs, "team")
+			case !errors.Is(err, botsource.ErrNotFound):
+				return nil, fmt.Errorf("resolve bot %q (team tier): %w", slug, err)
 			}
 		}
 		pctx := store.WithTenant(ctx, botsource.PlatformTenantID)
-		if bs, err := s.botSources.GetBySlug(pctx, botsource.PlatformTenantID, slug); err == nil {
+		bs, err := s.botSources.GetBySlug(pctx, botsource.PlatformTenantID, slug)
+		switch {
+		case err == nil:
 			return s.storedLaunchBot(bs, "platform")
+		case !errors.Is(err, botsource.ErrNotFound):
+			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", slug, err)
 		}
 	}
-	path, source, err := s.catalogBotFS(slug)
+	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
 	if err != nil {
-		return nil, nil //nolint:nilerr // unresolvable id = not found here, the caller decides
+		return nil, nil //nolint:nilerr // unknown id = not found here, the caller decides
 	}
-	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: source}, nil
+	b, err := os.ReadFile(path)
+	if err != nil {
+		// The id RESOLVED but its source cannot be read — a real error, not
+		// an absence.
+		return nil, fmt.Errorf("read bot %q: %w", slug, err)
+	}
+	return &launchBot{BotID: slug, Origin: "catalog", Path: path, Source: string(b)}, nil
 }
 
 // storedLaunchBot materializes one stored row into a launch-ready bot.
@@ -119,19 +148,6 @@ func (s *Server) storedLaunchBot(bs botsource.BotSource, origin string) (*launch
 	}, nil
 }
 
-// catalogBotFS reads a baked catalog bot's workflow source off the pod FS.
-func (s *Server) catalogBotFS(botID string) (path, source string, err error) {
-	path, err = botregistry.ResolveBotPath(botID, s.effectivePaths())
-	if err != nil {
-		return "", "", err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", fmt.Errorf("read bot %q: %w", botID, err)
-	}
-	return path, string(b), nil
-}
-
 // resolveBotSource resolves a bot id for the tenant-context-free launch
 // surfaces (webhooks, schedules, board dispatch, triggers): platform store
 // first, then the baked catalog. Errors when the id resolves nowhere.
@@ -148,44 +164,44 @@ func (s *Server) resolveBotSource(ctx context.Context, botID string) (*launchBot
 
 // ---- catalog metadata overlay (entries + manifests) ----
 
-// platformBotsTTL bounds how long a replica serves a cached platform-bot
-// entry set. The mutating replica invalidates immediately; the others
-// converge within the TTL (the ADR-090 read-cache posture — Mongo is the
-// authority, the cache is availability).
-const platformBotsTTL = 30 * time.Second
-
-type platformBotsCache struct {
-	mu        sync.Mutex
-	entries   []botregistry.EntryWithSchema
-	fetchedAt time.Time
-}
-
 // platformBotEntries returns the platform overrides as schema-augmented
-// entries, cached per replica for platformBotsTTL. Nil without a bot-source
-// store (local mode) or when the platform tenant holds no rows.
+// entries, cached per replica behind a platformcfg.Resolver (30s TTL,
+// invalidate-on-own-write, serve-last-known on a store outage — one cache
+// mechanism, not a sibling with divergent semantics). Nil without a
+// bot-source store (local mode) or when the platform tenant holds no rows.
 func (s *Server) platformBotEntries() []botregistry.EntryWithSchema {
-	if s.botSources == nil {
+	if s.botSources == nil || s.platformBots == nil {
 		return nil
 	}
-	c := &s.platformBots
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.fetchedAt.IsZero() && time.Since(c.fetchedAt) < platformBotsTTL {
-		return c.entries
+	entries := s.platformBots.Get(context.Background())
+	if entries == nil {
+		return nil
 	}
-	c.entries = s.storedBotEntries(context.Background(), botsource.PlatformTenantID)
-	c.fetchedAt = time.Now()
-	return c.entries
+	return *entries
+}
+
+// newPlatformBotsResolver builds the entry-set cache. The fetch propagates
+// a ListByTenant failure so an outage serves the LAST-KNOWN entry set
+// instead of caching an empty one (platform metadata silently vanishing
+// from command discovery / hand-offs for a TTL window).
+func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[[]botregistry.EntryWithSchema] {
+	return platformcfg.NewResolverFunc(func(ctx context.Context) (*[]botregistry.EntryWithSchema, error) {
+		if s.botSources == nil {
+			return nil, nil
+		}
+		list, err := s.botSources.ListByTenant(store.WithTenant(ctx, botsource.PlatformTenantID), botsource.PlatformTenantID)
+		if err != nil {
+			return nil, err
+		}
+		entries := s.materializeBotEntries(list)
+		return &entries, nil
+	}, s.logger.Warn)
 }
 
 // invalidatePlatformBots forces the next read to re-list, so the replica
-// that served a platform-bot mutation reads its own write immediately. The
-// cached entries are kept as the last-known set (same posture as
-// platformcfg.Resolver.Invalidate).
+// that served a platform-bot mutation reads its own write immediately.
 func (s *Server) invalidatePlatformBots() {
-	s.platformBots.mu.Lock()
-	s.platformBots.fetchedAt = time.Time{}
-	s.platformBots.mu.Unlock()
+	s.platformBots.Invalidate()
 }
 
 // effectiveEntriesWithSchema returns the baked catalog overlaid with the
@@ -242,14 +258,22 @@ func (s *Server) platformBotManifest(slug string) *bundle.Manifest {
 	if err != nil {
 		return nil
 	}
-	for _, f := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
-		if body, ok := bs.Files[f]; ok {
-			if m, derr := bundle.DecodeManifest([]byte(body), f); derr == nil {
-				return m
-			}
+	return bs.Manifest()
+}
+
+// botExists reports whether a bot id resolves on this deployment (platform
+// override or baked catalog) WITHOUT materializing anything — the cheap
+// probe for callers that only route (e.g. the /revi converse gate). Team
+// bots are deliberately out of scope, matching launch resolution on the
+// tenant-context-free surfaces.
+func (s *Server) botExists(botID string) bool {
+	for _, e := range s.platformBotEntries() {
+		if e.Name == botID {
+			return true
 		}
 	}
-	return nil
+	_, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
+	return err == nil
 }
 
 // effectiveFindByName returns the effective (platform-overlaid) entry for an

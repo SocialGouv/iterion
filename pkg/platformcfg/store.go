@@ -95,49 +95,86 @@ func (m *MemoryStore[T]) Put(_ context.Context, rec T) error {
 	return nil
 }
 
+// fetchTimeout bounds one refresh read so a wedged store can never hang a
+// request-path Get longer than this (the usagecap resolver's discipline).
+const fetchTimeout = 3 * time.Second
+
+// funcStore adapts a fetch function to the Store interface (read side
+// only) so a Resolver can cache ANY derivable value, not just a settings
+// document — e.g. the server's materialized platform-bot entry set.
+type funcStore[T any] struct {
+	fetch func(ctx context.Context) (*T, error)
+}
+
+func (f funcStore[T]) Get(ctx context.Context) (*T, error) { return f.fetch(ctx) }
+func (f funcStore[T]) Put(context.Context, T) error {
+	return fmt.Errorf("platformcfg: func-backed resolver is read-only")
+}
+
 // Resolver is the TTL-bounded read cache over one family's store: the
 // per-replica availability layer of the ADR-090 posture. On a store
 // failure it serves the LAST successfully read value (logged by the
 // caller-supplied warn func) — freshness is best-effort, correctness never
 // depends on it, and the enforcement backstop stays wherever the family's
-// values are consumed.
+// values are consumed. A refresh runs OUTSIDE the mutex and only one runs
+// at a time: concurrent callers during a refresh (or an outage) are served
+// the stale value immediately instead of queueing behind the store read.
 type Resolver[T any] struct {
 	store Store[T]
 	ttl   time.Duration
 	warn  func(format string, args ...any)
+	now   func() time.Time // injectable for deterministic TTL tests
 
-	mu        sync.Mutex
-	cached    *T
-	fetchedAt time.Time
+	mu         sync.Mutex
+	cached     *T
+	fetchedAt  time.Time
+	refreshing bool
 }
 
 // NewResolver builds a resolver with DefaultTTL. warn may be nil.
 func NewResolver[T any](store Store[T], warn func(string, ...any)) *Resolver[T] {
-	return &Resolver[T]{store: store, ttl: DefaultTTL, warn: warn}
+	return &Resolver[T]{store: store, ttl: DefaultTTL, warn: warn, now: time.Now}
+}
+
+// NewResolverFunc is NewResolver over a plain fetch function.
+func NewResolverFunc[T any](fetch func(ctx context.Context) (*T, error), warn func(string, ...any)) *Resolver[T] {
+	return NewResolver[T](funcStore[T]{fetch: fetch}, warn)
 }
 
 // Get returns the family record, nil when none is stored (inherit
-// defaults). Never errors: a store failure serves the last-known value.
+// defaults). Never errors and never blocks behind another caller's
+// refresh: a store failure — or a refresh in flight — serves the
+// last-known value.
 func (r *Resolver[T]) Get(ctx context.Context) *T {
 	if r == nil || r.store == nil {
 		return nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.fetchedAt.IsZero() && time.Since(r.fetchedAt) < r.ttl {
-		return r.cached
+	if (!r.fetchedAt.IsZero() && r.now().Sub(r.fetchedAt) < r.ttl) || r.refreshing {
+		v := r.cached
+		r.mu.Unlock()
+		return v
 	}
-	rec, err := r.store.Get(ctx)
+	r.refreshing = true
+	r.mu.Unlock()
+
+	fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	rec, err := r.store.Get(fctx)
+	cancel()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshing = false
 	if err != nil {
 		if r.warn != nil {
 			r.warn("platformcfg: settings read failed — serving last-known values: %v", err)
 		}
 		// Re-arm the TTL so an outage doesn't hammer the store per request.
-		r.fetchedAt = time.Now()
+		r.fetchedAt = r.now()
 		return r.cached
 	}
 	r.cached = rec
-	r.fetchedAt = time.Now()
+	r.fetchedAt = r.now()
 	return r.cached
 }
 

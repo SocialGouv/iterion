@@ -536,12 +536,7 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 // <question>` deliveries, not on every note.
 func (s *Server) canRouteToConverseBot(cfg webhooks.Config) bool {
 	converse := s.roleBots().ReviConverse
-	if !cfg.AllowsBot(converse) {
-		return false
-	}
-	lb, err := s.resolveBotSource(context.Background(), converse)
-	lb.Cleanup() // existence probe only — drop the materialization immediately
-	return err == nil
+	return cfg.AllowsBot(converse) && s.botExists(converse)
 }
 
 // recordNoteDelivery inserts a terminal note-event audit row with a

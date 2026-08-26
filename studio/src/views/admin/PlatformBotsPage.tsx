@@ -83,14 +83,14 @@ export default function PlatformBotsPage() {
         {query.error != null && (
           <p className="text-sm text-danger">{errorMessage(query.error)}</p>
         )}
-        {query.isLoading ? (
-          <TableSkeleton rows={3} cols={6} />
-        ) : rows.length === 0 && query.error == null ? (
+        {query.isLoading && <TableSkeleton rows={3} cols={6} />}
+        {!query.isLoading && rows.length === 0 && query.error == null && (
           <EmptyState
             title="No overrides"
             message="Every bot serves from the baked catalog."
           />
-        ) : rows.length > 0 ? (
+        )}
+        {!query.isLoading && rows.length > 0 && (
           <Table caption="Platform bot overrides">
             <THead>
               <Th>Slug</Th>
@@ -124,7 +124,7 @@ export default function PlatformBotsPage() {
               ))}
             </TBody>
           </Table>
-        ) : null}
+        )}
       </div>
 
       <ConfirmDialog

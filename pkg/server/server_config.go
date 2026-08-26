@@ -236,6 +236,11 @@ type Config struct {
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
 	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
+	// SandboxResolver, when non-nil, is the SHARED TTL resolver over
+	// SandboxSettings, also handed to the cloud publisher — one instance,
+	// so the admin PUT's Invalidate reaches publish-time pinning on the
+	// same replica. Nil (tests/local) builds a private one.
+	SandboxResolver *platformcfg.Resolver[platformcfg.Sandbox]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

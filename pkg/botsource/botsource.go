@@ -22,6 +22,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
@@ -82,6 +83,20 @@ type BotSource struct {
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
 
+// Manifest decodes the bundle's manifest from the file map (manifest.yaml
+// or manifest.yml), or nil when absent/undecodable — the one place the
+// "which manifest file, decoded how" rule lives for stored bundles.
+func (s *BotSource) Manifest() *bundle.Manifest {
+	for _, f := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
+		if body, ok := s.Files[f]; ok {
+			if m, err := bundle.DecodeManifest([]byte(body), f); err == nil {
+				return m
+			}
+		}
+	}
+	return nil
+}
+
 // Store persists bot sources. Mongo-backed in cloud, memory in tests/local.
 type Store interface {
 	Create(ctx context.Context, s BotSource) (BotSource, error)
@@ -126,6 +141,13 @@ func (s *BotSource) Validate() error {
 	for key, content := range s.Files {
 		if err := safeBundlePath(key); err != nil {
 			return err
+		}
+		// The store carries JSON/BSON text: a non-UTF-8 file would be
+		// corrupted on the encoding round trip. Enforced HERE (the one
+		// chokepoint every write path crosses), not only in the friendlier
+		// walkers that feed push/fork.
+		if !utf8.ValidString(content) {
+			return fmt.Errorf("botsource: file %q is not UTF-8 text — binary files cannot be stored in a bot source", key)
 		}
 		total += len(key) + len(content)
 	}

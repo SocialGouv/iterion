@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,7 +177,7 @@ func TestAdminBots_SizeLimits(t *testing.T) {
 
 	files := map[string]string{botsource.MainBotFile: testBotMain}
 	for i := 0; i <= botsource.MaxBundleFiles; i++ {
-		files["skills/s"+strings.Repeat("x", 2)+string(rune('a'+i%26))+string(rune('a'+(i/26)%26))+string(rune('a'+(i/676)%26))+".md"] = "s"
+		files[fmt.Sprintf("skills/s%04d.md", i)] = "s"
 	}
 	body, _ = json.Marshal(botSourcePutReq{Files: files})
 	w = adminBotsPut(s, admin, "many", string(body))

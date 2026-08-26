@@ -325,6 +325,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Logger:  logger,
 	})
 
+	sandboxResolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -341,7 +342,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 		CredPool:         credBroker,
-		SandboxImage:     platformSandboxImageResolver(stores, logger),
+		// The SAME resolver instance the server's admin PUT invalidates —
+		// publish-time pinning sees a mutation immediately on this replica.
+		SandboxImage: func(ctx context.Context) string {
+			return sandboxResolver.Get(ctx).EffectiveImage()
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -509,6 +514,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		BotSources:             stores.botSources,
 		BotRolesSettings:       stores.botRoles,
 		SandboxSettings:        stores.sandboxCfg,
+		SandboxResolver:        sandboxResolver,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -1041,20 +1047,4 @@ func buildOIDCRegistry(cfg iterconfig.Config) *oidc.Registry {
 		registry.Register(oidc.NewGenericConnector(cfg.Auth.OIDC.Generic.IssuerURL, cfg.Auth.OIDC.Generic.ClientID, cfg.Auth.OIDC.Generic.ClientSecret, cfg.Auth.OIDC.Generic.DisplayName, cfg.Auth.OIDC.Generic.Scopes))
 	}
 	return registry
-}
-
-// platformSandboxImageResolver builds the publish-time resolver for the
-// platform sandbox default-image setting: a TTL-cached read of the
-// `sandbox` settings family, pinned onto each RunMessage so a redelivery
-// reruns in the same environment. Returns "" (inherit env/built-in) when
-// no override is stored.
-func platformSandboxImageResolver(stores *cloudStores, logger *iterlog.Logger) func(context.Context) string {
-	resolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
-	return func(ctx context.Context) string {
-		rec := resolver.Get(ctx)
-		if rec == nil || rec.DefaultImage == nil {
-			return ""
-		}
-		return strings.TrimSpace(*rec.DefaultImage)
-	}
 }

@@ -25,7 +25,6 @@ var resolverSweepAllowed = map[string]string{
 	"server_dsl.go":           "studio Home display walker over FS load names (cosmetic; /bots gallery is the covered surface)",
 	"catalog_regen.go":        "regenerates the FS catalog skill from the FS manifests by design",
 	"config_shares_routes.go": "botManifest's baked-FS FALLBACK, reached after platformBotManifest",
-	"trigger_launcher.go":     "nil-resolver fallback (tests only; production injects s.resolveBotSource)",
 }
 
 func TestBotResolutionSweep_NoRawRegistryReads(t *testing.T) {

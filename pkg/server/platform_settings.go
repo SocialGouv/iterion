@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 )
@@ -35,6 +34,8 @@ func (s *Server) roleBots() effectiveBotRoles {
 		Brancher:     branchImproveBotID,
 		Implementer:  featureDevBotID,
 	}
+	// The resolver's own fetchTimeout bounds the read; a request deadline
+	// would add nothing but ctx-threading through every webhook helper.
 	rec := s.botRoles.Get(context.Background())
 	if rec == nil {
 		return out
@@ -58,11 +59,7 @@ func (s *Server) roleBots() effectiveBotRoles {
 // override ("" = inherit env/built-in). Consumed by the cloud publisher,
 // which pins the value on the RunMessage so redelivery reruns identically.
 func (s *Server) effectiveSandboxImageSetting(ctx context.Context) string {
-	rec := s.sandboxCfg.Get(ctx)
-	if rec == nil || rec.DefaultImage == nil {
-		return ""
-	}
-	return strings.TrimSpace(*rec.DefaultImage)
+	return s.sandboxCfg.Get(ctx).EffectiveImage()
 }
 
 // registerAdminSettingsFamilyRoutes wires the bot_roles + sandbox families'

@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -174,15 +172,7 @@ func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) [
 	if !botsource.IsPlatform(tenantID) {
 		return nil
 	}
-	var m *bundle.Manifest
-	for _, f := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
-		if body, ok := bs.Files[f]; ok {
-			if dm, err := bundle.DecodeManifest([]byte(body), f); err == nil {
-				m = dm
-				break
-			}
-		}
-	}
+	m := bs.Manifest()
 	if m == nil {
 		return nil
 	}
@@ -415,7 +405,8 @@ func (s *Server) forkBotSourceFor(w http.ResponseWriter, r *http.Request, tenant
 // (an earlier version copied LayoutDirs only, silently dropping the bot's
 // pinned toolchain). Returns (nil, "", nil) when the bot id does not resolve;
 // an explicit error when the bundle contains a file the store cannot carry
-// (non-UTF-8 — the Files map is JSON text; encoding it would corrupt bytes).
+// (non-UTF-8 — botsource.ReadBundleDir is the one shared definition of
+// "what a bundle dir contains", also used by the CLI push).
 func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, error) {
 	botID = strings.TrimSpace(botID)
 	if botID == "" {
@@ -425,34 +416,9 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 	if err != nil {
 		return nil, "", nil //nolint:nilerr // unresolvable id = not found, not an error
 	}
-	dir := filepath.Dir(mainPath)
-	files := map[string]string{}
-	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return werr
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, rerr := filepath.Rel(dir, p)
-		if rerr != nil {
-			return rerr
-		}
-		b, brerr := os.ReadFile(p)
-		if brerr != nil {
-			return brerr
-		}
-		if !utf8.Valid(b) {
-			return fmt.Errorf("bundle file %q is not UTF-8 text — binary files cannot be stored in a bot source (the baked bundle keeps serving it)", rel)
-		}
-		files[filepath.ToSlash(rel)] = string(b)
-		return nil
-	})
-	if walkErr != nil {
-		return nil, "", fmt.Errorf("read catalog bundle %q: %w", botID, walkErr)
+	files, err := botsource.ReadBundleDir(filepath.Dir(mainPath))
+	if err != nil {
+		return nil, "", fmt.Errorf("read catalog bundle %q: %w", botID, err)
 	}
 	if strings.TrimSpace(files[botsource.MainBotFile]) == "" {
 		return nil, "", nil

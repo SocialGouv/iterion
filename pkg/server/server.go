@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
@@ -170,7 +171,7 @@ type Server struct {
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
-	platformBots   platformBotsCache
+	platformBots   *platformcfg.Resolver[[]botregistry.EntryWithSchema]
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -467,7 +468,19 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
 	// every consumer falls back to its hardcoded/env default.
 	s.botRoles = platformcfg.NewResolver(cfg.BotRolesSettings, logger.Warn)
-	s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
+	if cfg.SandboxResolver != nil {
+		// Shared with the cloud publisher (cmd wiring): ONE resolver
+		// instance, so the admin PUT's Invalidate reaches publish-time
+		// pinning too — the mutating replica's own publishes see the write
+		// immediately, not after the TTL.
+		s.sandboxCfg = cfg.SandboxResolver
+	} else {
+		s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
+	}
+	// Built unconditionally (the fetch no-ops without a bot-source store):
+	// tests wire s.botSources after New, and the resolver must already
+	// exist for them — same reason the roles/sandbox resolvers are.
+	s.platformBots = s.newPlatformBotsResolver()
 	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
 	// A malformed env policy leaves it nil — the health echo reports the
 	// invalid value (existing behaviour) instead of a resolver quietly

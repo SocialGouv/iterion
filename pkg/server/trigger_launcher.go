@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -22,7 +21,6 @@ import (
 // through NativeBoardEffect.Promote.
 type serviceLauncher struct {
 	runs   *runview.Service
-	paths  []string
 	logger *iterlog.Logger
 	// resolveRetry folds the plan's binding-level retry policy together
 	// with the bot manifest, the machine default and the platform ceiling.
@@ -30,13 +28,14 @@ type serviceLauncher struct {
 	// holds no *Server.
 	resolveRetry func(botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy
 	// resolveBot is the server's tiered bot resolution (platform override →
-	// baked catalog), injected for the same no-*Server reason. Nil (tests)
-	// falls back to a bare catalog path resolution.
+	// baked catalog), injected for the same no-*Server reason. REQUIRED: a
+	// second, override-blind resolution path here is exactly what the
+	// resolver sweep forbids.
 	resolveBot func(ctx context.Context, botID string) (*launchBot, error)
 }
 
-func newServiceLauncher(runs *runview.Service, paths []string, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy, resolveBot func(context.Context, string) (*launchBot, error)) *serviceLauncher {
-	return &serviceLauncher{runs: runs, paths: paths, logger: logger, resolveRetry: resolveRetry, resolveBot: resolveBot}
+func newServiceLauncher(runs *runview.Service, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy, resolveBot func(context.Context, string) (*launchBot, error)) *serviceLauncher {
+	return &serviceLauncher{runs: runs, logger: logger, resolveRetry: resolveRetry, resolveBot: resolveBot}
 }
 
 func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (string, error) {
@@ -53,21 +52,15 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(plan),
 	}
-	if l.resolveBot != nil {
-		lb, err := l.resolveBot(ctx, plan.BotID)
-		if err != nil {
-			return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
-		}
-		defer lb.Cleanup()
-		lb.Stamp(&spec)
-	} else {
-		path, err := botregistry.ResolveBotPath(plan.BotID, l.paths)
-		if err != nil {
-			return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
-		}
-		spec.FilePath = path
-		spec.BotID = plan.BotID
+	if l.resolveBot == nil {
+		return "", errors.New("trigger: no bot resolver wired for direct launch")
 	}
+	lb, err := l.resolveBot(ctx, plan.BotID)
+	if err != nil {
+		return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
+	}
+	defer lb.Cleanup()
+	lb.Stamp(&spec)
 	res, err := l.runs.Launch(ctx, spec)
 	if err != nil {
 		return "", err

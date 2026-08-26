@@ -1,6 +1,7 @@
 package botsource
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,15 +73,11 @@ func TestValidate_Limits(t *testing.T) {
 	}
 	many := BotSource{TenantID: "t1", Slug: "many", Files: map[string]string{MainBotFile: "workflow main:\n"}}
 	for i := 0; i <= MaxBundleFiles; i++ {
-		many.Files[fmtName(i)] = "s"
+		many.Files[fmt.Sprintf("skills/s%04d.md", i)] = "s"
 	}
 	if err := many.Validate(); err == nil || !strings.Contains(err.Error(), "file limit") {
 		t.Fatalf("too many files must fail naming the file limit, got %v", err)
 	}
-}
-
-func fmtName(i int) string {
-	return "skills/" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + string(rune('a'+(i/676)%26)) + ".md"
 }
 
 func TestIsPlatform(t *testing.T) {

@@ -73,9 +73,9 @@ func routeSchemas() map[string]routeOp {
 				BotSources []botSourceMetaView `json:"bot_sources"`
 			}{},
 		},
-		"GET /api/admin/bots/{slug}":    {response: botSourceView{}},
-		"PUT /api/admin/bots/{slug}":    {request: botSourcePutReq{}, response: botSourceView{}},
-		"DELETE /api/admin/bots/{slug}": {},
+		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
+		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
+		"DELETE /api/admin/bots/{slug}":    {},
 		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
 
 		// Forge integrations (connections + self-service OAuth/GitHub apps).

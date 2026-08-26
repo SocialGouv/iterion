@@ -53,7 +53,7 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 		}
 	}
 	add(catalog, false, "catalog")
-	add(s.storedBotEntries(ctx, botsource.PlatformTenantID), false, "platform")
+	add(s.platformBotEntries(), false, "platform")
 	if id, _ := auth.FromContext(ctx); id.TeamID != "" {
 		add(s.storedBotEntries(ctx, id.TeamID), true, "tenant")
 	}
@@ -73,18 +73,26 @@ func (s *Server) tenantBotEntries(ctx context.Context) []botregistry.EntryWithSc
 	return s.storedBotEntries(ctx, id.TeamID)
 }
 
-// storedBotEntries materializes one tenant's stored bot bundles (a team's, or
-// the platform sentinel's) to a temp tree and runs the same
-// botregistry.ListWithSchema discovery over them, so a stored bot's metadata +
-// vars schema are extracted identically to a catalog bot's — no parallel schema
-// code. Returns nil (never an error) when there is no store or nothing to
-// materialize: a broken stored bundle must not blank the whole gallery.
+// storedBotEntries materializes one tenant's stored bot bundles to entry
+// metadata. Returns nil (never an error) when there is no store or nothing
+// to materialize: a broken stored bundle must not blank the whole gallery.
 func (s *Server) storedBotEntries(ctx context.Context, tenantID string) []botregistry.EntryWithSchema {
 	if s.botSources == nil || tenantID == "" {
 		return nil
 	}
 	list, err := s.botSources.ListByTenant(store.WithTenant(ctx, tenantID), tenantID)
 	if err != nil || len(list) == 0 {
+		return nil
+	}
+	return s.materializeBotEntries(list)
+}
+
+// materializeBotEntries writes stored bundles to a temp tree and runs the
+// same botregistry.ListWithSchema discovery over them, so a stored bot's
+// metadata + vars schema are extracted identically to a catalog bot's — no
+// parallel schema code.
+func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry.EntryWithSchema {
+	if len(list) == 0 {
 		return nil
 	}
 	root, err := os.MkdirTemp("", "iterion-stored-bots-*")
@@ -97,7 +105,7 @@ func (s *Server) storedBotEntries(ctx context.Context, tenantID string) []botreg
 		if err := botsource.Materialize(filepath.Join(root, bs.Slug), bs.Files); err != nil {
 			// One broken bundle is skipped LOUDLY (Materialize removed its
 			// partial tree), never rendered half-materialized.
-			s.logger.Warn("bot source %s/%s: %v — omitted from listing", tenantID, bs.Slug, err)
+			s.logger.Warn("bot source %s/%s: %v — omitted from listing", bs.TenantID, bs.Slug, err)
 		}
 	}
 

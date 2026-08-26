@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -411,25 +412,25 @@ Changes propagate to every replica within the resolver TTL (no restart).`,
 		if args[0] != "set" {
 			return fmt.Errorf("unknown roles action %q (want set)", args[0])
 		}
-		fields := map[string]string{}
+		fields := map[string]any{}
 		for name, v := range remoteRoleFlags {
 			if cmd.Flags().Changed(strings.ReplaceAll(name, "_", "-")) {
-				fields[name] = fmt.Sprintf("%q", *v)
+				fields[name] = *v
 			}
 		}
 		for name, cleared := range remoteRoleClears {
 			if *cleared {
-				fields[name] = "null"
+				fields[name] = nil
 			}
 		}
 		if len(fields) == 0 {
 			return fmt.Errorf("usage: admin roles set --reviewer|--revi-converse|--brancher|--implementer <bot-id> (or the matching --clear-* flag)")
 		}
-		parts := make([]string, 0, len(fields))
-		for k, v := range fields {
-			parts = append(parts, fmt.Sprintf("%q:%s", k, v))
+		body, err := json.Marshal(fields)
+		if err != nil {
+			return err
 		}
-		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte("{"+strings.Join(parts, ",")+"}"))
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, body)
 	}),
 }
 
@@ -458,14 +459,20 @@ environment. Prefer an @sha256 digest ref in cloud.
 		if args[0] != "set" {
 			return fmt.Errorf("unknown sandbox action %q (want set)", args[0])
 		}
+		var image any
 		switch {
 		case remoteSandboxClearImage:
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(`{"default_image":null}`))
+			image = nil
 		case cmd.Flags().Changed("default-image"):
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(fmt.Sprintf(`{"default_image":%q}`, remoteSandboxImage)))
+			image = remoteSandboxImage
 		default:
 			return fmt.Errorf("usage: admin sandbox set --default-image <ref> (or --clear-default-image)")
 		}
+		body, err := json.Marshal(map[string]any{"default_image": image})
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, body)
 	}),
 }
 

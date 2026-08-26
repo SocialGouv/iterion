@@ -391,21 +391,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Stored-bot resolution (team/platform): the compile-time bundle dir and
-	// the runner-side ref ride the spec. Threaded from the SAME resolution
-	// that produced req.Source — never re-fetched, so a push racing this
-	// request cannot pair this launch's IR with newer resources.
-	var bundleDir string
-	var botBundle *runview.BotBundleRef
-	if launchLB != nil {
-		bundleDir, botBundle = launchLB.BundleDir, launchLB.Ref
-	}
-	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
+	spec := runview.LaunchSpec{
 		FilePath:          absPath,
 		Source:            req.Source,
 		BotID:             botID,
-		BundleDir:         bundleDir,
-		BotBundle:         botBundle,
 		RunID:             req.RunID,
 		Vars:              req.Vars,
 		Preset:            req.Preset,
@@ -442,7 +431,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		RepoRef:            req.RepoRef,
 		ProjectPath:        repoProjectPath,
 		SecretOverrides:    repoSecretOverrides,
-	})
+	}
+	// Stored-bot resolution (team/platform): the compile-time bundle dir and
+	// the runner-side ref ride the spec. Threaded from the SAME resolution
+	// that produced req.Source — never re-fetched, so a push racing this
+	// request cannot pair this launch's IR with newer resources.
+	launchLB.StampBundle(&spec)
+	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
