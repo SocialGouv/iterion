@@ -612,7 +612,9 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 			if edgeErr != nil || anchor == "" {
 				anchor = currentNodeID
 			}
-			return "", e.failBudgetExceeded(rs, anchor, exc)
+			if err := e.graceOrFailBudget(rs, anchor, exc); err != nil {
+				return "", err
+			}
 		}
 	}
 	if edgeErr != nil {

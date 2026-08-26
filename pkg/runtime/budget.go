@@ -398,6 +398,37 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 	return axes
 }
 
+// exitGraceRoom reports whether every enforced dimension is still under
+// (1 + ratio) x its limit — the bounded allowance a run may spend to
+// reach its own exit path once the cap is gone. It returns the FIRST
+// dimension already past its plain limit, so the caller can name what is
+// being graced; ok is false as soon as any dimension is past the graced
+// ceiling too, because a run that cannot afford its exit path is simply
+// over.
+func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	graced := ""
+	room := func(dimension string, used, limit float64) bool {
+		if limit <= 0 {
+			return true
+		}
+		if used >= limit*(1+ratio) {
+			return false
+		}
+		if used >= limit && graced == "" {
+			graced = dimension
+		}
+		return true
+	}
+	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations)) &&
+		room("tokens", float64(b.tokensUsed), float64(b.maxTokens)) &&
+		room("cost_usd", b.costUsed, b.maxCostUSD) &&
+		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	return graced, ok && graced != ""
+}
+
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	var results []budgetCheckResult
 
@@ -558,9 +589,11 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 	}
 	checks := rs.budget.Check()
 
-	// Hard exceeded (100%+).
+	// Hard exceeded (100%+) — unless this node is how the run DELIVERS
+	// what it already paid for. See budget_exit_grace.go: the allowance
+	// is bounded, offered only on the exit path, and loud.
 	if exc := findExceeded(checks); exc != nil {
-		return e.failBudgetExceeded(rs, nodeID, exc)
+		return e.graceOrFailBudget(rs, nodeID, exc)
 	}
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
@@ -654,6 +687,26 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 	}
 
 	return nil
+}
+
+// graceOrFailBudget decides what a hard overrun does at a node boundary:
+// let the run walk forward inside the bounded grace (see
+// budget_exit_grace.go), or end it. Both budget stop-paths go through
+// here — the pre-exec check and the deferred overrun taken after a node
+// that succeeded — so a run cannot be graced on one and killed on the
+// other.
+func (e *Engine) graceOrFailBudget(rs *runState, nodeID string, exc *budgetCheckResult) error {
+	if dim, ok := e.withinBudgetGrace(rs); ok {
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExitGrace, nodeID, map[string]any{
+			"dimension": dim,
+			"used":      exc.used,
+			"limit":     exc.limit,
+		})
+		e.logger.Warn("budget %s is spent (%.0f/%.0f) — %q runs anyway, within the %.0f%% grace: the run is spending past its declared cap to deliver work it has already paid for. No further ITERATION can start, the loop guard declines every back-edge on a spent budget.",
+			exc.dimension, exc.used, exc.limit, nodeID, budgetExitGraceRatio*100)
+		return nil
+	}
+	return e.failBudgetExceeded(rs, nodeID, exc)
 }
 
 // failBudgetExceeded emits a budget_exceeded event for a hard-exceeded

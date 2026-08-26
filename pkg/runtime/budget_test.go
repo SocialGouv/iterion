@@ -1633,3 +1633,90 @@ func TestBudgetOverrunSurvivesAnEdgeError(t *testing.T) {
 		t.Fatalf("run died on %v — the budget sentinel is gone, so the cloud runner would nak and redeliver onto the same spent budget", err)
 	}
 }
+
+// TestBudgetGraceDeliversBankedWork pins the bounded allowance: once the
+// cap is spent, a run may still walk forward to a terminal node, so the
+// work it has ALREADY paid for gets delivered — a PR opened, a report
+// written — instead of dying on disk. Observed: a docs campaign overran
+// its cap and left a finished corpus with no pull request.
+func TestBudgetGraceDeliversBankedWork(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_delivers",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true, "_cost_usd": 0.01}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-grace-delivers", nil); err != nil {
+		t.Fatalf("the run died instead of reaching its terminal node: %v", err)
+	}
+	if !tailRan {
+		t.Fatal("the delivery node never ran: the work the run paid for stays undelivered")
+	}
+}
+
+// TestBudgetGraceIsBounded pins the ceiling. The allowance is a fraction
+// of the declared cap, not a licence: a run far past it stops, however
+// close to the end it is — otherwise a costly tail would spend without
+// limit on a budget that is already gone.
+func TestBudgetGraceIsBounded(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_bounded",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		// Far past the graced ceiling (1.0 x 1.1).
+		return map[string]any{"ok": true, "_cost_usd": 5.0}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-bounded", nil)
+	if err == nil || !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("a run far past the graced ceiling must still fail on the budget, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node ran outside the bounded allowance")
+	}
+}
