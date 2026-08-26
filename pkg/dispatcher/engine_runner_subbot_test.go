@@ -143,13 +143,18 @@ func TestEngineRunner_DispatchRunsSubbot(t *testing.T) {
 
 // slowChildBot idles long enough for the test to probe the child's run lock
 // while its active pass is genuinely in flight.
+// The child BLOCKS mid-pass until the test releases it by touching
+// release-lock-probe in the shared workspace. A fixed sleep raced the
+// probe on loaded CI runners (-race spawn alone can eat many seconds):
+// the child finished before ever being observed, and the test failed at
+// its deadline having proven nothing.
 const slowSubbotChildBot = `
 schema child_out:
   validated: bool
   echoed: string
 
 tool work:
-  command: "sleep 1.5; cat marker.json"
+  command: "while [ ! -f release-lock-probe ]; do sleep 0.1; done; cat marker.json"
   output: child_out
 
 workflow subbot_child:
@@ -213,14 +218,16 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		})
 	}()
 
-	// Catch the child mid-pass and prove its lock is held. A free lock is only
-	// damning while the child is STILL running: the child writes its terminal
-	// status before releaseLock() runs, so a probe landing in that window would
-	// see "running, lock free" without any defect — hence the re-read before
-	// failing, and the requirement to have positively observed the lock held.
+	// Catch the child mid-pass and prove its lock is held. The child blocks
+	// until release-lock-probe exists, so there is no timing window to race —
+	// the deadline only bounds engine spawn on a loaded runner. Cleanup writes
+	// the release file even on a Fatal path, so the dispatch goroutine always
+	// drains instead of leaking a forever-polling child into the next test.
+	release := filepath.Join(workspace, "release-lock-probe")
+	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o644) })
 	childID := ""
 	held := false
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) && !held {
 		ids, lerr := probe.ListRuns(context.Background())
 		if lerr != nil {
@@ -260,11 +267,16 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 			time.Sleep(25 * time.Millisecond)
 		}
 	}
+	// Release the child BEFORE asserting: a Fatal below must not leave the
+	// dispatch goroutine blocked on a child that waits forever.
+	if err := os.WriteFile(release, []byte("go"), 0o644); err != nil {
+		t.Fatalf("write release file: %v", err)
+	}
 	if childID == "" {
 		t.Fatal("never observed a child run — the subbot node did not spawn one")
 	}
 	if !held {
-		t.Fatal("never caught the child mid-pass — its lock was never observed held; raise the child's sleep so the probe has a window")
+		t.Fatal("never caught the child mid-pass — its lock was never observed held while it was blocked on the release file")
 	}
 
 	if derr := <-done; derr != nil {
