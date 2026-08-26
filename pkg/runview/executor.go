@@ -178,6 +178,52 @@ type ExecutorSpec struct {
 // declaredSecretNames returns the names of the workflow's declared
 // `secrets:` block — the only names a `{{secrets.X}}` reference can legally
 // use (compile-checked). Nil-safe.
+// StampLocalCredentials resolves the workflow's declared `secrets:` names
+// from the local sealed store and returns a context carrying them — the
+// in-process equivalent of the cloud runner's injectCredentials. Returns
+// ctx unchanged when there is no local store, or when credentials are
+// already present (the cloud path's are never overwritten).
+//
+// It is EXPORTED because the context it returns has to reach further than
+// the executor: the engine mounts declared file secrets into the sandbox
+// at run start, reading them from the ctx passed to Run. A caller that
+// stamps only the executor's own context ships a sandbox with no secret
+// files at all — an optional one is skipped silently, and the bot simply
+// never finds its token (observed: a docs bot's PR tail reporting "no
+// forge_token secret" on a host whose store held exactly that secret).
+func StampLocalCredentials(
+	ctx context.Context,
+	wf *ir.Workflow,
+	localSecrets secrets.GenericSecretStore,
+	sealer secrets.Sealer,
+	logger *iterlog.Logger,
+) (context.Context, error) {
+	if localSecrets == nil || sealer == nil {
+		return ctx, nil
+	}
+	if _, already := secrets.CredentialsFromContext(ctx); already {
+		return ctx, nil
+	}
+	creds, err := secrets.ResolveLocalCredentials(ctx, localSecrets, sealer, declaredSecretNames(wf), logger)
+	if err != nil {
+		return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
+	}
+	// Required-secret launch gate (parity with the cloud publisher): a
+	// non-`optional` declared secret with no inline value MUST resolve to
+	// a non-empty value. If it resolves to nothing, fail the launch here
+	// rather than running the bot with the credential unset.
+	haveValue := make(map[string]bool, len(creds.Generic))
+	for name, v := range creds.Generic {
+		if v != "" {
+			haveValue[name] = true
+		}
+	}
+	if missing := secrets.UnresolvedRequired(requiredSecretNames(wf), haveValue); len(missing) > 0 {
+		return nil, secrets.RequiredSecretsError(missing, "this workspace")
+	}
+	return secrets.WithCredentials(ctx, creds), nil
+}
+
 func declaredSecretNames(wf *ir.Workflow) []string {
 	if wf == nil || len(wf.Secrets) == 0 {
 		return nil
@@ -249,29 +295,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// stamp them into ctx — the in-process equivalent of the cloud runner's
 	// injectCredentials. Skipped when the cloud path already put Credentials
 	// in ctx (never overwrite pre-resolved cloud credentials).
-	if spec.LocalSecrets != nil && spec.LocalSealer != nil {
-		if _, already := secrets.CredentialsFromContext(ctx); !already {
-			names := declaredSecretNames(spec.Workflow)
-			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names, spec.Logger)
-			if err != nil {
-				return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
-			}
-			// Required-secret launch gate (parity with the cloud publisher): a
-			// non-`optional` declared secret with no inline value MUST resolve to
-			// a non-empty value. If it resolves to nothing, fail the launch here
-			// rather than running the bot with the credential unset.
-			haveValue := make(map[string]bool, len(creds.Generic))
-			for name, v := range creds.Generic {
-				if v != "" {
-					haveValue[name] = true
-				}
-			}
-			if missing := secrets.UnresolvedRequired(requiredSecretNames(spec.Workflow), haveValue); len(missing) > 0 {
-				return nil, secrets.RequiredSecretsError(missing, "this workspace")
-			}
-			ctx = secrets.WithCredentials(ctx, creds)
-		}
+	stamped, err := StampLocalCredentials(ctx, spec.Workflow, spec.LocalSecrets, spec.LocalSealer, spec.Logger)
+	if err != nil {
+		return nil, err
 	}
+	ctx = stamped
 	// Build the per-run secret guard (Layer 0/1/2) from the resolved
 	// credentials in ctx + sensitive host env + declared workflow
 	// secrets, then thread it through the event hooks so every sink is
