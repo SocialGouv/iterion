@@ -245,3 +245,122 @@ func TestWatchOnly_ZeroMintExpiryStillDatesTheConnection(t *testing.T) {
 		t.Fatalf("AccessTokenExpiresAt = %v, want the one-hour default %v", exp, want)
 	}
 }
+
+// markRevoked does not clear the expiry, and this lane deliberately bypasses
+// the StatusDegraded early-exit that stops the runtime lane re-entering. So a
+// revoked watch-only connection that stays dated is re-minted against the forge
+// on every tick, forever, with no self-heal path. A single RunOnce cannot see
+// it — the sweep has to run more than once.
+func TestWatchOnly_RevokedConnectionLeavesTheSweepInsteadOfLooping(t *testing.T) {
+	mints := 0
+	h := newLifecycleHarness(t, true, nil)
+	h.worker.SecurityMinter = func(context.Context, Connection) (string, time.Time, error) {
+		mints++
+		return "", time.Time{}, fmt.Errorf("mint: %w", ErrUnauthorized)
+	}
+	for i := 0; i < 8; i++ {
+		_, _ = h.worker.RunOnce(context.Background())
+		h.now = h.now.Add(10 * time.Minute)
+	}
+	if mints > 1 {
+		t.Fatalf("mints = %d over eight ticks — a revoked connection is hammering the forge forever", mints)
+	}
+	if exp := h.conn(t).AccessTokenExpiresAt; exp != nil {
+		t.Fatalf("AccessTokenExpiresAt = %v, want nil — a revoked credential must leave the sweep", exp)
+	}
+}
+
+// The new expiry is written before the upsert. On a TRANSIENT upsert failure
+// the token never reached the map, so persisting that expiry would take the
+// connection out of the sweep for ~55 minutes while the map still advertises
+// the PREVIOUS token, which is expiring right now.
+func TestWatchOnly_TransientUpsertFailureKeepsTheConnectionDue(t *testing.T) {
+	h := newLifecycleHarness(t, true, func(context.Context, Connection) (string, time.Time, error) {
+		return "tok", time.Time{}, nil
+	})
+	before := h.conn(t).AccessTokenExpiresAt
+	h.worker.Secrets = failingSecretStore{GenericSecretStore: h.secrets, err: errors.New("mongo: connection reset")}
+
+	if _, err := h.worker.RunOnce(context.Background()); err == nil {
+		t.Fatal("a transient upsert failure must surface as an error")
+	}
+	got := h.conn(t).AccessTokenExpiresAt
+	if got == nil || !got.Equal(*before) {
+		t.Fatalf("expiry moved to %v (was %v) — the connection left the sweep with nothing in the map", got, before)
+	}
+	// Still due, so the next tick retries.
+	due, err := h.conns.ExpiringBefore(context.Background(), h.now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("due connections = %d, want 1 — nothing will retry", len(due))
+	}
+}
+
+// An UNWIRED feature says nothing about whether the token in the map is still
+// wanted. Treating a nil minter like "switched off" would let a partially-wired
+// replica strip live tokens from the tenant map.
+func TestWatchOnly_NilMinterSkipsInsteadOfWithdrawing(t *testing.T) {
+	h := newLifecycleHarness(t, true, nil) // minter left nil
+	conn := h.conn(t)
+	if err := UpsertSecurityReadToken(context.Background(), h.secrets, h.sealer, &conn, "live-token", h.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !h.mapHas(t, "socialgouv") {
+		t.Fatal("an unwired minter stripped a live token from the map")
+	}
+}
+
+// The realistic ordering is rename → refresh → remove, not rename → remove:
+// the health probe rewrites InstallationAccount from live truth, so the very
+// next refresh files under the new key. Without dropping the previously
+// recorded entry at that moment, both of RemoveSecurityReadToken's candidate
+// keys become the new one and the pre-rename entry is unreachable forever.
+func TestWatchOnly_RenameThenRefreshThenRemoveLeavesNothingStranded(t *testing.T) {
+	h := newLifecycleHarness(t, true, func(context.Context, Connection) (string, time.Time, error) {
+		return "tok-2", time.Time{}, nil
+	})
+	conn := h.conn(t)
+	if err := UpsertSecurityReadToken(context.Background(), h.secrets, h.sealer, &conn, "tok-1", h.now); err != nil {
+		t.Fatal(err)
+	}
+	// GitHub org renamed; the health probe syncs the new account onto the
+	// connection, and the worker refreshes before anyone disconnects.
+	conn.InstallationAccount = "SocialGouv-Renamed"
+	if err := h.conns.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if h.mapHas(t, "socialgouv") {
+		t.Fatal("the pre-rename entry survived the refresh — nothing can ever withdraw it")
+	}
+	if !h.mapHas(t, "socialgouv-renamed") {
+		t.Fatal("the refresh did not file the token under the new org")
+	}
+	// And the disconnect empties the map for real.
+	fresh := h.conn(t)
+	if err := RemoveSecurityReadToken(context.Background(), h.secrets, h.sealer, &fresh); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, ok, err := findSecurityReadSecret(context.Background(), h.secrets, "t1"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("the secret survived a disconnect — the map never emptied")
+	}
+}
+
+// failingSecretStore makes the UPSERT fail transiently while every read still
+// works, so the test exercises the upsert branch and nothing else.
+type failingSecretStore struct {
+	secrets.GenericSecretStore
+	err error
+}
+
+func (f failingSecretStore) Create(context.Context, secrets.GenericSecret) error { return f.err }
+func (f failingSecretStore) Update(context.Context, secrets.GenericSecret) error { return f.err }

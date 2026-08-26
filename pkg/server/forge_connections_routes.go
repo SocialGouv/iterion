@@ -462,11 +462,16 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
 			return
 		}
-		// Date the connection from the token we just minted. On a watch-only
-		// connection this IS the refresh clock — nothing else writes it — so
-		// dropping it here would leave the connection's next sweep resting on
-		// whatever stale expiry happened to be lying around.
-		if !mintedUntil.IsZero() {
+		// Date the connection from the token we just minted — but ONLY on a
+		// watch-only connection, where this field is the refresh clock and
+		// nothing else writes it. This endpoint serves ANY github_app
+		// connection, and on a runtime one the field is the clock of the
+		// RUNTIME token sealed in SealedPayload: a security token always
+		// expires an hour out, so writing it here would push the connection out
+		// of ExpiringBefore's window for ~55 minutes and let a runtime token
+		// that was near expiry die unrenewed — every bot on it 401ing, with
+		// nothing to explain it.
+		if !mintedUntil.IsZero() && conn.IsSecurityReadOnly() {
 			exp := mintedUntil
 			conn.AccessTokenExpiresAt = &exp
 		}

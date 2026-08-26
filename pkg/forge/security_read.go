@@ -165,6 +165,16 @@ func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore,
 				return err
 			}
 		}
+		// An org rename moves the derived key, and the health probe rewrites
+		// InstallationAccount from live truth — so the very NEXT refresh files
+		// under the new key. Drop the entry this connection filed last time
+		// before the recorded key is overwritten: otherwise both of
+		// RemoveSecurityReadToken's candidate keys become the new one and the
+		// pre-rename entry is unreachable by every withdrawal path, leaving a
+		// live token advertised under a stale org name until it dies.
+		if prev := strings.ToLower(strings.TrimSpace(conn.SecurityReadOrgKey)); prev != "" && prev != org {
+			delete(tokens, prev)
+		}
 		tokens[org] = token
 		// Remember where it landed, so withdrawal never has to guess (see
 		// Connection.SecurityReadOrgKey).

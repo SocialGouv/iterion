@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
@@ -69,5 +71,73 @@ func TestMissingDeliveryFor_SilentOnWatchOnlyLoudOnRuntime(t *testing.T) {
 	runtime := forge.Connection{Purpose: forge.PurposeRuntime}
 	if got := missingDeliveryFor(runtime, watchOnlyGrant); len(got) == 0 {
 		t.Fatal("a runtime connection missing its delivery grants reported nothing")
+	}
+}
+
+// The opt-in endpoint serves ANY github_app connection — the ordinary-App path
+// is the documented one. On a RUNTIME connection AccessTokenExpiresAt is the
+// clock of the runtime token sealed in the payload, and a security token always
+// expires an hour out: writing it there pushes the connection out of the
+// refresh sweep for ~55 minutes, letting a runtime token that was near expiry
+// die unrenewed while every bot on it 401s.
+func TestPatchSecurityRead_DoesNotMoveARuntimeConnectionsRefreshClock(t *testing.T) {
+	s := newForgeTestServer(t)
+	seedAppConn(t, s, "runtime-conn", "SocialGouv", "", false)
+
+	// A runtime token about to expire — the case that breaks.
+	conn, err := s.forgeConnections.Get(context.Background(), "runtime-conn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nearly := time.Now().UTC().Add(2 * time.Minute)
+	conn.AccessTokenExpiresAt = &nearly
+	if err := s.forgeConnections.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
+		return "ghs_minted", time.Now().UTC().Add(time.Hour), nil
+	}
+	if w := patchSecurityRead(t, s, "runtime-conn", true); w.Code != http.StatusOK {
+		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := s.forgeConnections.Get(context.Background(), "runtime-conn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessTokenExpiresAt == nil || !got.AccessTokenExpiresAt.Equal(nearly) {
+		t.Fatalf("runtime refresh clock moved to %v (was %v) — the runtime token will die unrenewed",
+			got.AccessTokenExpiresAt, nearly)
+	}
+}
+
+// On a watch-only connection the same field IS the refresh clock and nothing
+// else writes it, so the mint's expiry must land.
+func TestPatchSecurityRead_DatesAWatchOnlyConnectionFromTheMint(t *testing.T) {
+	s := newForgeTestServer(t)
+	seedAppConn(t, s, "watch-conn", "SocialGouv", "", false)
+	conn, err := s.forgeConnections.Get(context.Background(), "watch-conn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Purpose = forge.PurposeSecurityRead
+	if err := s.forgeConnections.Update(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+
+	until := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
+		return "ghs_minted", until, nil
+	}
+	if w := patchSecurityRead(t, s, "watch-conn", true); w.Code != http.StatusOK {
+		t.Fatalf("enable: code=%d body=%s", w.Code, w.Body.String())
+	}
+	got, err := s.forgeConnections.Get(context.Background(), "watch-conn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessTokenExpiresAt == nil || !got.AccessTokenExpiresAt.Equal(until) {
+		t.Fatalf("watch-only clock = %v, want the mint's expiry %v", got.AccessTokenExpiresAt, until)
 	}
 }

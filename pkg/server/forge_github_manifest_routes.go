@@ -129,7 +129,14 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	// watch-only label the created App does not actually carry: that label is
 	// what suppresses its missing-permission warnings and what convinces an org
 	// owner to install it on every repository.
-	if pending.SecurityReadOnly && !conv.IsSecurityReadOnly() {
+	// Only when GitHub actually TOLD us what it created. The App and its
+	// non-reissuable private key already exist by now, so refusing on an absent
+	// `permissions` field would destroy a credential over a response-shape
+	// surprise — and this flow has never run against the real endpoint. An
+	// absent field means "cannot verify", which falls back to trusting the
+	// manifest we sent, exactly as every other field does; a PRESENT and
+	// mismatched one is evidence of tampering and still refuses.
+	if pending.SecurityReadOnly && len(conv.Permissions) > 0 && !conv.IsSecurityReadOnly() {
 		httpError(w, http.StatusBadGateway,
 			"the GitHub App that was created carries %v, not the watch-only profile %v — it was NOT recorded; delete it at %s and retry",
 			conv.Permissions, forgegithub.SecurityReadInstallationPermissions(), manageURL)
