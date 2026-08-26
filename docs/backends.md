@@ -337,13 +337,98 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
+When a `usage_window` failure carries a provider reset instant, the executor
+also puts the effective `(backend, credential hint, model)` route on a reactive
+cooldown until that instant. The ledger is ready to do the same for a typed
+temporary `unavailable` failure with a reset instant, but no shipped backend
+produces that stage-3 condition yet. Later nodes in the same run enter the
+chain at the first route whose `on:` filter accepts the remembered category,
+without spawning the refused backend again. The skip remains visible as a
+`model_fallback` event with `attempts: 0`, `cooldown: true` and
+`cooldown_until`; it is an info line rather than another rate-limit warning.
+The route is remembered even when the node that hit the wall had nowhere to
+fall through to — a refusal belongs to the route, not to one node's chain —
+so the next node whose chain *does* accept the category skips a spawn the
+first one had to pay for.
+
+Cooldown is strictly fail-open: an absent/already-passed reset, a reset more
+than eight days out (the same implausibility ceiling as the durable retry's
+`max_wait` — a misparsed provider datetime must not keep a healthy route dark
+for a whole run), or no later route accepting the failure, all leave dispatch
+unchanged. Entries expire on read at their own reset instant (no sweeper), and
+the mid-call usage guard stays armed for parallel branches that were already
+in flight. Operators can set `ITERION_ROUTE_COOLDOWN=off` before launching a
+run to restore the historical probe-on-every-node behaviour. The switch is
+read once when that run's executor is created; unset, `on`, and unrecognised
+values keep the cooldown enabled.
+
+### Terminal degrade (`action: skip`) and the route gate (`when:`)
+
+Two route properties extend the chain beyond backend switches
+([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)):
+
+```yaml
+judge plan_review:
+  backend: "claw"
+  model: "openai/gpt-5.6-sol"
+  fallbacks:
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      ## unfiltered on purpose: "skip" here means the peer must NEVER
+      ## block — and under `sandbox: auto` a claw failure flattens to a
+      ## string at the IPC boundary and classifies UNCLASSIFIED, which a
+      ## FILTERED skip refuses (see below). Scope the filter only when
+      ## the node runs unsandboxed with typed errors intact.
+      on: [any]
+```
+
+`action: skip` is a **terminal degrade**: when the walk reaches it, the
+node COMPLETES with a zero-value output (every schema field at its zero
+— `""` / `false` / `0` / `[]`) stamped `_skipped: true` +
+`_fallback_used` + `_served_by`, instead of failing the run. It is the
+"continue and ignore" half of an optional-node policy — the "pause and
+retry" half is simply *not* declaring it: the failure then stays
+`failed_resumable` and the run-level usage-window retry parks the run
+until the window reopens. `on:` filters it like any route — with one
+deliberate asymmetry: an **unclassified** failure (a bare CLI exit, a
+flattened sandbox error) still routes to any *executable* route, but a
+filtered skip REFUSES it — routing an indescribable failure to another
+backend is a safety net, converting it into a zero-value success is a
+lie. `on: [any]` opts in explicitly. The compiler (C173) refuses a skip
+route that also names a backend/model/provider/metered, an unknown
+`action:`, and a skip that is not the LAST route (everything after a
+terminal is unreachable).
+
+`when:` gates any route on an expression over `vars` — evaluated at
+dispatch, so an ordinary `--var` picks the active route set per run
+(that is how ONE `plan_review` node expresses both `wait` and `skip`
+policies). The compiler checks the expression parses, reads only
+`vars.*` (a route has no input/outputs of its own), and references only
+**declared** vars — at run time an absent var reads as false and would
+silently disarm the route. String literals use single quotes
+(`vars.policy == 'skip'`); a route whose gate is false is simply absent
+from the chain.
+
+Downstream, a deterministic compute reads the stamp
+(`outputs.<node>._skipped == true`) and routes around whatever consumed
+the node's real output — never silently. Observability: the
+`model_fallback` event carries `to_action: "skip"` (with an empty
+`to_backend` — nothing serves), and the run header's fallbacks chip
+lists the node with `skipped: true` even though no backend ran.
+
 ### What a fall-through leaves behind
 
 Nothing about it is silent:
 
 - a `model_fallback` event in `events.jsonl` (from/to backend, model and
   provider, the classified reason, attempts spent) plus a `run.log`
-  warning;
+  warning for a fresh failure, or an info line for a cooldown skip;
+- a `model_drift` event when the provider-reported model is not the
+  one the node declared (proxy / `ANTHROPIC_MODEL` / a fallback that
+  also changed the model). `delegate_started` carries `declared_model`;
+  `delegate_finished` / `delegate_error` add `effective_model`;
+  `run.json` `nodes_served` is the last pair per node;
 - `_backend` / `_model` on the node output name the route that
   **served**, not the one requested;
 - `_fallback_used` and `_served_by` are stamped so a bot's deterministic
@@ -511,6 +596,18 @@ machine logged into Claude Code is detected even though it has no
 only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
+
+**MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
+only MCP servers a node gets are the ones iterion resolves and passes via
+`--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
+`.mcp.json` (workflow `autoload_project`, default on), and iterion's own
+ask_user/board servers. The operator's personal user-scope servers
+(`~/.claude.json`) do **not** boot inside bot nodes — inheriting them meant
+undeclared tools reaching the agent, an `npx`/server boot per node visit
+(a CPU spike per iteration on loop-heavy bots), and personal API keys on the
+subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
+restores host-config inheritance. Settings remain inherited independently
+(`--setting-sources`, above).
 
 ### `codex`
 

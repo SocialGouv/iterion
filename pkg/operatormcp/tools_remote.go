@@ -330,9 +330,9 @@ func handleRemoteStatus(ctx context.Context, _ *Server, _ json.RawMessage) (stri
 		"email":          me.User.Email,
 		"name":           me.User.Name,
 		"is_super_admin": me.User.IsSuperAdmin,
-		"active_org_id":  me.ActiveOrgID,
-		"active_team_id": me.ActiveTeamID,
-		"teams":          me.Teams,
+		"active_org_id":  me.ActiveOrg,
+		"active_team_id": me.ActiveTeam,
+		"orgs":           me.Orgs,
 	})
 	if err != nil {
 		return "", false, err

@@ -2178,7 +2178,7 @@ workflow test:
 }
 
 // ---------------------------------------------------------------------------
-// C034 — input ref field not in input schema
+// C034 — input ref field not in the validated namespace
 // ---------------------------------------------------------------------------
 
 func TestValidateRefInputFieldNotInSchema(t *testing.T) {
@@ -2256,6 +2256,345 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+}
+
+// C034 on an edge with-mapping validates {{input.x}} against the SOURCE
+// node's OUTPUT schema — the payload available when the edge fires — not
+// the source input schema and not run-level inputs / vars.
+
+const edgeInputRefSrc = `
+schema src_in:
+  only_in: string
+
+schema src_out:
+  produced: string
+
+schema dst_in:
+  from_out: string
+  from_in: string
+  from_run: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent src:
+  model: "m"
+  input: src_in
+  output: src_out
+  system: sys
+  user: usr
+
+agent dst:
+  model: "m"
+  input: dst_in
+  output: src_out
+  system: sys
+  user: usr
+
+vars:
+  reviewer: string
+
+workflow test:
+  entry: src
+  src -> dst with {
+    from_out: "{{input.produced}}",
+    from_in: "{{input.only_in}}",
+    from_run: "{{input.reviewer}}"
+  }
+  dst -> done
+`
+
+func TestValidateRefInputOnEdge_SourceOutputOK(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	for _, d := range r.Diagnostics {
+		if d.Code != DiagInputFieldNotInSchema {
+			continue
+		}
+		if strings.Contains(d.Message, `field "produced"`) {
+			t.Errorf("C034 on source-output field produced: %s", d.Message)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_SourceInputOnly_C034(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagInputFieldNotInSchema && strings.Contains(d.Message, `field "only_in"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C034 for {{input.only_in}} on the edge, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"output schema",
+		"source node",
+		"edge with-mappings",
+		"input schema, not its output",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C034 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_RunInputOnly_C034VarsHint(t *testing.T) {
+	r := compileFile(t, edgeInputRefSrc)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagInputFieldNotInSchema && strings.Contains(d.Message, `field "reviewer"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C034 for {{input.reviewer}} on the edge, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"output schema",
+		"source node",
+		"edge with-mappings",
+		"{{vars.reviewer}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C034 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_RouterPassThrough_NoSchemaSkip(t *testing.T) {
+	src := `
+schema payload:
+  data: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+router distribute:
+  mode: fan_out_all
+
+agent analyzer:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+  readonly: true
+
+workflow test:
+  entry: distribute
+  distribute -> analyzer with { data: "{{input.data}}" }
+  analyzer -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+func TestValidateRefInputOnEdge_MidGraphRouter_NoIncomingWith_C032(t *testing.T) {
+	src := `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+vars:
+  topic: string
+
+workflow test:
+  entry: seed
+  seed -> pick
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectDiag(t, r, DiagRefNodeNoSchema)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagRefNodeNoSchema && strings.Contains(d.Message, `field "topic"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C032 for mid-graph router {{input.topic}}, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"does not pass it through",
+		"incoming with-mapping",
+		"not run inputs",
+		"{{vars.topic}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C032 message missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestValidateRefInputOnEdge_MidGraphRouter_IncomingWith_OK(t *testing.T) {
+	src := `
+schema payload:
+  topic: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: payload
+  system: sys
+  user: usr
+
+router pick:
+  mode: condition
+
+agent show:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+
+workflow test:
+  entry: seed
+  seed -> pick with { topic: "{{outputs.seed.topic}}" }
+  pick -> show with { topic: "{{input.topic}}" }
+  show -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+func TestValidateRefInputOnEdge_FanOutEachItemAlias_OK(t *testing.T) {
+	src := `
+schema items_out:
+  items: json
+
+schema payload:
+  a: json
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  output: items_out
+  system: sys
+  user: usr
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.seed.items}}"
+  as: ep
+
+agent worker:
+  model: "m"
+  input: payload
+  output: payload
+  system: sys
+  user: usr
+  readonly: true
+
+workflow test:
+  entry: seed
+  seed -> dispatch
+  dispatch -> worker with { a: "{{input.item}}" }
+  worker -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectNoDiag(t, r, DiagRefNodeNoSchema)
+}
+
+func TestValidateRefInputOnEdge_SchemalessSource_C032Warn(t *testing.T) {
+	src := `
+schema dst_in:
+  reviewer: string
+
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent seed:
+  model: "m"
+  system: sys
+  user: usr
+
+agent dst:
+  model: "m"
+  input: dst_in
+  output: dst_in
+  system: sys
+  user: usr
+
+vars:
+  reviewer: string
+
+workflow test:
+  entry: seed
+  seed -> dst with { reviewer: "{{input.reviewer}}" }
+  dst -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInputFieldNotInSchema)
+	expectDiag(t, r, DiagRefNodeNoSchema)
+	var msg string
+	for _, d := range r.Diagnostics {
+		if d.Code == DiagRefNodeNoSchema && strings.Contains(d.Message, `field "reviewer"`) {
+			msg = d.Message
+			break
+		}
+	}
+	if msg == "" {
+		t.Fatalf("expected C032 for {{input.reviewer}} on a schemaless source, got: %v", r.Diagnostics)
+	}
+	for _, want := range []string{
+		"no output schema",
+		"not run inputs",
+		"{{vars.reviewer}}",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("C032 message missing %q: %s", want, msg)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

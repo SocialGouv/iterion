@@ -54,6 +54,7 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
@@ -64,6 +65,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("SubbotChildren", func(t *testing.T) { testSubbotChildren(t, factory(t)) })
+	t.Run("NodesServed", func(t *testing.T) { testNodesServed(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
@@ -73,6 +75,48 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {
+	t.Helper()
+	attempts := store.AsQueuedAttemptStore(s)
+	if attempts == nil {
+		t.Skip("backend does not implement QueuedAttemptStore")
+	}
+	ctx := testCtx()
+	const runID = "run-queued-attempt"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "retry"); err != nil {
+		t.Fatalf("mark resumable: %v", err)
+	}
+	changed, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("claim queued attempt = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.QueuedAt == nil {
+		t.Fatalf("LoadRun queued marker = (%v, %v), want non-nil", r, err)
+	}
+
+	// A delivery from before this requeue must not fail the new attempt.
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "stale", r.QueuedAt.Add(-time.Second))
+	if err != nil || changed {
+		t.Fatalf("stale attempt CAS = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got == nil || got.Status != store.RunStatusQueued {
+		t.Fatalf("stale attempt changed run to %+v, want queued", got)
+	}
+
+	// The delivery belonging to this attempt may perform the terminal flip.
+	changed, err = attempts.FailQueuedRunIfAttempt(ctx, runID, "schema mismatch", r.QueuedAt.Add(time.Second))
+	if err != nil || !changed {
+		t.Fatalf("current attempt CAS = (%t, %v), want (true, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got == nil || got.Status != store.RunStatusFailedResumable {
+		t.Fatalf("current attempt left run at %+v, want failed_resumable", got)
+	}
 }
 
 // testParentedRunCreator exercises the optional ParentedRunCreator surface
@@ -758,6 +802,63 @@ func testSubbotChildren(t *testing.T, s store.RunStore) {
 	}
 	if err := s.ClearSubbotChild(ctx, "run_subbot_parent", ""); err != nil {
 		t.Errorf("ClearSubbotChild empty key: %v", err)
+	}
+}
+
+func testNodesServed(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_served", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	first := store.NodeServed{
+		Backend:         "claude_code",
+		Model:           "glm-4.6",
+		DeclaredModel:   "anthropic/claude-opus-5",
+		ContextWindow:   200_000,
+		MaxOutputTokens: 8192,
+	}
+	if err := s.RecordNodeServed(ctx, "run_served", "implement", first); err != nil {
+		t.Fatalf("RecordNodeServed implement: %v", err)
+	}
+	second := store.NodeServed{Backend: "claw", Model: "openai/gpt-5.5"}
+	if err := s.RecordNodeServed(ctx, "run_served", "review", second); err != nil {
+		t.Fatalf("RecordNodeServed review: %v", err)
+	}
+
+	r, err := s.LoadRun(ctx, "run_served")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.NodesServed["implement"]; got != first {
+		t.Errorf("implement = %+v, want %+v", got, first)
+	}
+	if got := r.NodesServed["review"]; got != second {
+		t.Errorf("review = %+v, want %+v", got, second)
+	}
+
+	// Last write wins on the same node (a loop's last pass).
+	updated := store.NodeServed{Backend: "pi", Model: "kimi-k2"}
+	if err := s.RecordNodeServed(ctx, "run_served", "implement", updated); err != nil {
+		t.Fatalf("RecordNodeServed overwrite: %v", err)
+	}
+	r, err = s.LoadRun(ctx, "run_served")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.NodesServed["implement"]; got != updated {
+		t.Errorf("after overwrite implement = %+v, want %+v", got, updated)
+	}
+	if got := r.NodesServed["review"]; got != second {
+		t.Errorf("sibling review lost: %+v", got)
+	}
+
+	if err := s.RecordNodeServed(ctx, "run_served", "", first); err != nil {
+		t.Errorf("empty nodeID: %v", err)
+	}
+	if err := s.RecordNodeServed(ctx, "no-such-run", "n", first); err == nil {
+		t.Error("unknown run returned no error")
 	}
 }
 

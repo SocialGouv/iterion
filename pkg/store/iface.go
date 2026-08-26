@@ -83,6 +83,12 @@ type RunStore interface {
 	// the operator gave, not a steering knob an operator turned.
 	PatchRunPermissionGrants(ctx context.Context, runID string, grants map[string][]string) error
 
+	// RecordNodeServed persists the last (backend, model) that served
+	// nodeID onto Run.NodesServed. Last write wins per node, so parallel
+	// branches writing distinct keys do not clobber each other. Empty
+	// nodeID is a no-op. Missing run → ErrRunNotFound.
+	RecordNodeServed(ctx context.Context, runID, nodeID string, served NodeServed) error
+
 	// PruneDeletionMarkers reaps the durable tombstones DeleteRun
 	// leaves behind (the resurrection guard) once they are older than
 	// cutoff — the marker must outlive any plausible late writer, not
@@ -189,6 +195,29 @@ type RunStore interface {
 	// Capabilities — déclarées par chaque impl pour que les
 	// consommateurs (runview, server) puissent brancher le bon code.
 	Capabilities() Capabilities
+}
+
+// QueuedAttemptStore is the optional atomic guard used when a queue delivery
+// is about to terminally fail a run before the runner has claimed it. Status
+// alone is not enough to identify that delivery: an operator resume creates a
+// NEW queued attempt for the same run id, and a stale delivery must not fail
+// that newer attempt. Both production stores implement this capability.
+type QueuedAttemptStore interface {
+	// FailQueuedRunIfAttempt moves a queued run to failed_resumable only when
+	// its current QueuedAt is not newer than the delivery's PublishedAt. The
+	// comparison and status transition are one atomic store operation.
+	FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (changed bool, err error)
+}
+
+// AsQueuedAttemptStore returns the attempt-aware status capability, or nil
+// for third-party stores. Callers must fail safe when it is absent rather
+// than falling back to a status-only write that can clobber a newer attempt.
+func AsQueuedAttemptStore(s RunStore) QueuedAttemptStore {
+	if s == nil {
+		return nil
+	}
+	q, _ := s.(QueuedAttemptStore)
+	return q
 }
 
 // PIDStore is an optional interface implemented only by

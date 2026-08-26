@@ -163,7 +163,10 @@ the hours this one spent.
   `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs) — including
   the **platform tier**: the deployment's own DB-backed fallback keys/forfait
   (`iterion remote admin llm …`, studio Admin → LLM credentials), rotated
-  with one call instead of a k8s-secret edit + redeploy.
+  with one call instead of a k8s-secret edit + redeploy — and the
+  one-credential activation of the campaign bots' **cross-model plan
+  review** (provision the codex OAuth forfait → `plan_review` resolves
+  `on` at the next launch, nothing else to configure).
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising
@@ -178,8 +181,12 @@ the hours this one spent.
 - [docs/usage-caps.md](docs/usage-caps.md) — capping the LLM
   subscription below the provider's own wall (`ITERION_USAGE_CAP_*`:
   soft on the 5h window, hard on the weekly one), where the numbers
-  come from, and the KEDA emergency brake. Read it when bots are eating
-  the forfait an operator also works on.
+  come from, and the KEDA emergency brake. The percentages are also
+  **runtime-mutable without a restart** (`iterion remote admin caps set
+  --five-hour 80 --week 70`, super-admin; DB record over the env
+  defaults, ≤30s propagation to both deployments, `/healthz` echoes the
+  effective values — ADR-090). Read it when bots are eating the forfait
+  an operator also works on.
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).
@@ -203,6 +210,21 @@ the hours this one spent.
   (`ITERION_WORKTREE_POOL_MAX`, default 8), why it spares dirty and
   resumable checkouts, and the `iterion clean` invocation for the rest.
   Read it on "the disk is full", or before pointing `--store-dir` anywhere.
+- [docs/forge-security-read.md](docs/forge-security-read.md) — giving a bot
+  org-wide **Dependabot alerts** read access: the `dependabot_tokens` team
+  secret (JSON map org→token — the shape is the contract), the GitHub App
+  path (add "Dependabot alerts: Read-only" + org approval + per-connection
+  `security_read_enabled` PATCH, refresh worker keeps it minted) vs the
+  hand-set fine-grained-PAT path, and the health/422 diagnostics. Read it
+  when wiring vuln-watch (Senti) or when its run fails on "no Dependabot
+  token". Covers the **coverage trap** — the org-wide endpoint returns only
+  what the installation can see, so a `selected`-scope install is silently
+  near-blind — and the **watch-only App** (`security_read_only`, manifest
+  permissions REPLACED by `metadata`+`vulnerability_alerts` read) that makes
+  an All-repositories install safe. Its connection carries
+  `purpose: security_read`, which is what keeps the refresh worker from
+  minting it a runtime token (that mint would 422 → degrade → withdraw the
+  token it exists to supply) and keeps the publish resolver from picking it.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -314,7 +336,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052**) from detected credentials and injects it into a run's inputs, but only for bots that opt in by declaring a `review_mode` var (`InjectIfDeclared`). **`auto` resolves to mono** — dual doubles the reviewer spend on every run, so it is an explicit opt-in. Consumed by `review-pr` and `evolve`. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md)
+- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 4 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -512,8 +534,16 @@ conversation** (`session: inherit` / `inherit_if_available` / `fork` —
 cross-backend meaning. The third is why a node that must survive a
 fall-through WITHOUT losing its thread builds its ladder from different
 *providers* inside ONE backend rather than from different backends —
-Copi's claw ladder is the shipped example. See
+Copi's claw ladder is the shipped example. Two route properties extend the chain (ADR-091):
+`action: skip` is a TERMINAL degrade — the node completes with a
+zero-value output stamped `_skipped` instead of failing the run (the
+"continue and ignore" half of an optional-peer policy; "pause and
+retry" = don't declare it, the failure stays resumable for the
+usage-window retry) — and `when:` gates any route on an expr over vars,
+so one node expresses both policies picked per run by a `--var`. C173
+guards both. See
 [ADR-087](docs/adr/087-cross-backend-model-fallback-chain.md) +
+[ADR-091](docs/adr/091-fallback-skip-route-and-plan-peer-review.md) +
 [docs/backends.md](docs/backends.md).
 
 **Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw`; other CLI backends, including codex, are explicit opt-ins). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](docs/backends.md).
@@ -529,7 +559,12 @@ Code:
   read-before-edit/parallel-tool/`file:line`/refusal posture); appending
   keeps it as the base. iterion also emits `--setting-sources user,project`
   so the target repo's `CLAUDE.md`/settings are honoured (tunable via
-  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). Tool restriction: under the
+  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). MCP is the opposite —
+  `--strict-mcp-config` makes the node's resolved MCP set (`mcp_server:`/
+  `mcp:` blocks, repo `.mcp.json`, iterion's ask_user/board servers)
+  authoritative: the operator's personal `~/.claude.json` servers never
+  boot inside a bot node (`ITERION_CLAUDE_CODE_STRICT_MCP=0` restores
+  inheritance). Tool restriction: under the
   always-on `--permission-mode bypassPermissions`, `--allowedTools` does
   **not** gate the toolset — claude_code nodes always have the full native
   toolset (a node's lowercase `tools:` list is a no-op here; the real
@@ -916,7 +951,21 @@ CLI/VSCode session — iterion tails its
 that runs the hidden `iterion __claude-hook-drain` to inject from an
 inbox under `~/.iterion/claude-sessions/<key>/`). The transcript tailer
 is an `Observer` and the inbox an `Injector`, so the same Coordinator/bot
-drive both managed and raw targets. Reference:
+drive both managed and raw targets. The block may pre-seed `monitors:`
+(CLI `--monitor` grammar, armed from the first event — the bot-registered
+kind only exists after its first eval). Declared supervisors spawn by
+default on every launch surface (CLI run/resume, studio/runview, the
+dispatcher's direct engine path, cloud runner pods), with the usual
+escape hatch: run-level `--supervisors on|off` / launch-API field →
+`ITERION_SUPERVISORS` → on (skip always logged; the resolution lives in
+`pkg/supervise`, shared by every spawn site) — and like `auto_memory:`
+the run-level override travels onto the cloud queue
+(`RunMessage.supervisors`, schema v8) so a pod never re-decides an
+operator's `off`. The supervisor hub rides BOTH event seams (engine
+observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
+(`assistant_text`, `tool_*`) never fire the engine seam, and text
+monitors are blind without the second wire. feature-dev's Persy
+(perseverance coach) is the shipped reference use. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 
@@ -1698,15 +1747,18 @@ rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`. Full details + revert command:
+`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
+`nats-conformance` remains advisory until an admin adds it to ruleset
+18857412. Full details + revert command:
 [docs/merge-policy.md](docs/merge-policy.md).
 
-**Optional Revi merge gate.** Revi (`bots/review-pr`) can post a
+**Revi merge gate.** Revi (`bots/review-pr`) posts a
 deterministic `revi/review` commit status on a PR head — `success` when 0
 findings meet `gate_severity` (default `high`), else `failure`. Add that
-context to the required checks to make Revi's verdict block the merge (it is
-advisory until then). The verdict is a COUNT computed in the bot, never an LLM
-judgment; the review comments stay non-blocking advice. Pairs with the webhook
+context to another repository's required checks to make its verdict block the
+merge; it is already required here by ruleset 18857412. The verdict is a COUNT
+computed in the bot, never an LLM judgment; the review comments stay
+non-blocking advice. Pairs with the webhook
 `review_on_sync` opt-in (re-review each push so the status tracks the fixed
 head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
@@ -1719,7 +1771,7 @@ head sha, off by default so the developer keeps the choice.
 
 ## Conventions
 
-- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; CI `golangci` job (add to the branch-protection required checks to gate merges)
+- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; the CI `golangci` job is a required check.
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)

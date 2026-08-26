@@ -84,11 +84,14 @@ tool inspect_track:
   publish: track_report
   command: |
     set -eu
-    path='{{input.path}}'
-    printf 'file:   %s\n' '{{input.filename}}'
-    printf 'mime:   %s\n' '{{input.mime}}'
-    printf 'bytes:  %s\n' '{{input.size}}'
-    printf 'sha256: %s\n' '{{input.sha256}}'
+    ## No quotes around a reference: the runtime shell-quotes every one, and
+    ## an author quote does not nest with that — it cancels or corrupts the
+    ## value (diagnostic C137).
+    path={{input.path}}
+    printf 'file:   %s\n' {{input.filename}}
+    printf 'mime:   %s\n' {{input.mime}}
+    printf 'bytes:  %s\n' {{input.size}}
+    printf 'sha256: %s\n' {{input.sha256}}
     test -r "$path" || { echo "unreadable: $path" >&2; exit 1; }
     printf 'on-disk size: %s\n' "$(wc -c < "$path")"
 

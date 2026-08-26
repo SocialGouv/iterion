@@ -183,6 +183,13 @@ func (w *fileWriter) writeSupervisors(supervisors []*ast.SupervisorDecl) {
 		if s.MaxEvals != 0 {
 			fmt.Fprintf(&w.b, "  max_evals: %d\n", s.MaxEvals)
 		}
+		if len(s.Monitors) > 0 {
+			quoted := make([]string, len(s.Monitors))
+			for i, m := range s.Monitors {
+				quoted[i] = fmt.Sprintf("%q", m)
+			}
+			fmt.Fprintf(&w.b, "  monitors: [%s]\n", strings.Join(quoted, ", "))
+		}
 	}
 }
 
@@ -1267,6 +1274,12 @@ func writeFallbacksBlock(b *strings.Builder, fbs []*ast.FallbackDecl, indent str
 		}
 		if fb.Metered {
 			fmt.Fprintf(b, "%s    metered: true\n", indent)
+		}
+		if fb.Action != "" {
+			fmt.Fprintf(b, "%s    action: %s\n", indent, fb.Action)
+		}
+		if fb.When != "" {
+			fmt.Fprintf(b, "%s    when: %q\n", indent, fb.When)
 		}
 	}
 }

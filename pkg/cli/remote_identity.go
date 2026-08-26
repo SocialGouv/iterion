@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/server"
 )
 
 // --- Personal access tokens (/api/me/tokens) ---
@@ -84,19 +86,15 @@ func RemoteTokensRevoke(ctx context.Context, c *RemoteClient, p *Printer, tokenI
 
 // --- teams / orgs ---
 
-type remoteTeam struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Slug  string `json:"slug,omitempty"`
-	OrgID string `json:"org_id,omitempty"`
-}
-
 func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	if p.Format == OutputJSON {
 		return RemoteGetPrint(ctx, c, p, "/api/teams")
 	}
+	// Decode with the server's own membership view type (see RemoteMe):
+	// hand-mirrored tags here once rendered an all-empty table with every
+	// row starred as active.
 	var out struct {
-		Teams []remoteTeam `json:"teams"`
+		Teams []server.MembershipView `json:"teams"`
 	}
 	if _, err := c.Call(ctx, "GET", "/api/teams", nil, &out); err != nil {
 		return err
@@ -105,12 +103,16 @@ func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	rows := make([][]string, 0, len(out.Teams))
 	for _, t := range out.Teams {
 		mark := ""
-		if t.ID == active {
+		if t.TeamID != "" && t.TeamID == active {
 			mark = "*"
 		}
-		rows = append(rows, []string{mark, t.ID, t.Name, t.OrgID})
+		name := t.TeamName
+		if t.Personal {
+			name += " (personal)"
+		}
+		rows = append(rows, []string{mark, t.TeamID, name, t.Role})
 	}
-	p.Table([]string{"", "TEAM ID", "NAME", "ORG"}, rows)
+	p.Table([]string{"", "TEAM ID", "NAME", "ROLE"}, rows)
 	return nil
 }
 
@@ -120,34 +122,26 @@ func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 // CLI token (identified deterministically by its SHA-256 fingerprint;
 // an env-provided or unmatched token is left alone with a notice).
 func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID, tokenName string) error {
+	if strings.TrimSpace(teamID) == "" {
+		return fmt.Errorf("team id required (see `iterion remote teams list`)")
+	}
 	if os.Getenv("ITERION_REMOTE_URL") != "" {
 		return fmt.Errorf("teams switch mutates the stored credential and cannot run in ITERION_REMOTE_URL env mode — mint a team-pinned token instead: `iterion remote tokens create --team %s`", teamID)
 	}
-	// Validate membership before minting.
-	me, err := c.Me(ctx)
-	if err != nil {
-		return err
-	}
-	found := false
-	for _, t := range me.Teams {
-		if t.TeamID == teamID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("not a member of team %q (see `iterion remote teams list`)", teamID)
-	}
-
+	// No client-side membership pre-check: the mint endpoint's canViewTeam
+	// is the authority (it also grants org-admins and super-admins teams a
+	// plain membership listing may not carry). The server states the
+	// team’s org in the mint response — it owns that fact.
 	oldFingerprint := secrets.FingerprintSHA256(c.cfg.Token)
 
 	var minted struct {
 		PAT   remotePAT `json:"pat"`
 		Token string    `json:"token"`
+		OrgID string    `json:"org_id"`
 	}
 	req := map[string]any{"name": tokenName, "team_id": teamID, "expires_in_days": 0}
 	if _, err := c.Call(ctx, "POST", "/api/me/tokens", req, &minted); err != nil {
-		return err
+		return fmt.Errorf("%w (see `iterion remote teams list`)", err)
 	}
 	if minted.Token == "" {
 		return fmt.Errorf("token endpoint returned no token")
@@ -156,6 +150,11 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	cfg := c.cfg
 	cfg.Token = minted.Token
 	cfg.TeamID = teamID
+	// Follow the team into its org so org-scoped commands aim where the
+	// new token lives (empty from a pre-org_id server: scope unchanged).
+	if minted.OrgID != "" {
+		cfg.OrgID = minted.OrgID
+	}
 	if err := SaveRemoteConfig(cfg); err != nil {
 		return err
 	}
@@ -193,9 +192,9 @@ func RemoteOrgsSwitch(ctx context.Context, c *RemoteClient, p *Printer, orgID st
 	if err != nil {
 		return err
 	}
-	found := me.ActiveOrgID == orgID
-	for _, t := range me.Teams {
-		if t.OrgID == orgID {
+	found := me.ActiveOrg == orgID
+	for _, o := range me.Orgs {
+		if o.OrgID == orgID {
 			found = true
 			break
 		}
@@ -221,20 +220,24 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	seen := map[string]bool{}
 	type orgRow struct {
 		ID     string `json:"id"`
+		Name   string `json:"name,omitempty"`
+		Role   string `json:"role,omitempty"`
 		Active bool   `json:"active"`
 	}
 	var orgs []orgRow
-	add := func(id string) {
+	add := func(id, name, role string) {
 		if id == "" || seen[id] {
 			return
 		}
 		seen[id] = true
-		orgs = append(orgs, orgRow{ID: id, Active: id == me.ActiveOrgID})
+		orgs = append(orgs, orgRow{ID: id, Name: name, Role: role, Active: id == me.ActiveOrg})
 	}
-	add(me.ActiveOrgID)
-	for _, t := range me.Teams {
-		add(t.OrgID)
+	for _, o := range me.Orgs {
+		add(o.OrgID, o.OrgName, o.OrgRole)
 	}
+	// The active org is normally in the tree; keep it visible even if not
+	// (e.g. an org the account was removed from while its token lives on).
+	add(me.ActiveOrg, "", "")
 	if p.Format == OutputJSON {
 		p.JSON(map[string]any{"orgs": orgs})
 		return nil
@@ -245,8 +248,8 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 		if o.Active {
 			mark = "*"
 		}
-		rows = append(rows, []string{mark, o.ID})
+		rows = append(rows, []string{mark, o.ID, o.Name, o.Role})
 	}
-	p.Table([]string{"", "ORG ID"}, rows)
+	p.Table([]string{"", "ORG ID", "NAME", "ROLE"}, rows)
 	return nil
 }

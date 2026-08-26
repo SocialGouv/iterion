@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // LaunchResult is returned by Launch on success.
@@ -45,6 +46,11 @@ type LaunchPublisher interface {
 	// flips the Mongo doc to cancelled regardless of whether a runner
 	// is currently holding the lease.
 	CancelRun(ctx context.Context, runID string) error
+	// CancelRunWithReason is CancelRun with an explicit reason recorded
+	// on the run (run.Error). Automated cancellations — the webhook
+	// supersede lane — pass what actually happened; CancelRun stays the
+	// operator-click shape ("cancelled by user").
+	CancelRunWithReason(ctx context.Context, runID, reason string) error
 	// SubmitResume republishes a RunMessage with ResumeSpec set so
 	// the runner picks the run back up.
 	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error
@@ -76,6 +82,12 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		if err := spec.Budget.Validate(); err != nil {
 			return nil, fmt.Errorf("budget: %w", err)
 		}
+	}
+	// Same pre-flight for the supervisors kill switch: a typo would read
+	// as "inherit" in-process while the detached runner's CLI rejects it
+	// — one input, one behaviour.
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 	runID := spec.RunID
 	if runID == "" {
@@ -143,7 +155,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// reads the shared ledger and parks the run with a retry rather than
 	// refusing it — here the operator is present, so an immediate refusal
 	// is the honest answer.
-	if blocked, reason := LocalUsagePreflight(); blocked {
+	if blocked, reason := usagePreflightFrom(s.usageCapSource); blocked {
 		// …unless this workflow cannot call a model at all, in which case
 		// the cap guards nothing it could spend. The compile is paid ONLY
 		// on the blocked path, so the common case stays free.
@@ -208,10 +220,17 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow:       wf,
-		Vars:           spec.Vars,
-		Store:          s.store,
-		EventObservers: spec.ExtraObservers,
+		Workflow: wf,
+		Vars:     spec.Vars,
+		Store:    s.store,
+		// The broker rides the hook seam too: backend-hook events
+		// (assistant_text, tool_*, llm_*) never fire the engine's
+		// observer, so without this a declared supervisor observing via
+		// ObserveRun — and any live broker subscriber of an in-process
+		// run — is blind to the agent's own words. Subscribers dedup by
+		// Seq, and the two event sets are disjoint, so nothing arrives
+		// twice.
+		EventObservers: append(append([]func(store.Event){}, spec.ExtraObservers...), s.broker.Publish),
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -225,13 +244,14 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		// would then fall back to the workflow name — while a RESUME of that
 		// same run derives the id from the path and lands on a different
 		// memory space. Same rule on both sides, so the two cannot diverge.
-		BotID:         ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
-		BoardRegister: s.boardRegister,
-		Compress:      spec.Compress,
-		AutoMemory:    spec.AutoMemory,
-		Permission:    spec.Permission,
-		LocalSecrets:  s.localSecrets,
-		LocalSealer:   s.localSealer,
+		BotID:          ResolveBotID(spec.BotID, BundleNameForPath(spec.FilePath), spec.FilePath),
+		BoardRegister:  s.boardRegister,
+		Compress:       spec.Compress,
+		AutoMemory:     spec.AutoMemory,
+		Permission:     spec.Permission,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
+		UsageCapSource: s.usageCapSource,
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -270,16 +290,13 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		inputs[k] = v
 	}
 
-	// Resolve the mono/dual review topology (no-op unless the workflow
-	// declares a review_mode var). Mirrors the CLI so studio/API/dispatcher
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families; no-op unless the workflow
+	// declares the matching var). Mirrors the CLI so studio/API/dispatcher
 	// launches auto-detect providers too. The spec override (studio toggle)
 	// wins over a --var review_mode; both win over auto.
-	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(parent), spec.ReviewMode); injected {
-		if family != "" {
-			runLogger.Info("review topology: %s (family %s)", mode, family)
-		} else {
-			runLogger.Info("review topology: %s", mode)
-		}
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(parent)), spec.ReviewMode); inj.Summary() != "" {
+		runLogger.Info("%s", inj.Summary())
 	}
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
@@ -305,7 +322,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -361,6 +378,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	}
 	if spec.FilePath == "" {
 		return nil, errors.New("runview: file_path is required")
+	}
+	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
+		return nil, fmt.Errorf("supervisors: %w", err)
 	}
 
 	// Wait out a previous runner that is still tearing down, BEFORE anything
@@ -464,7 +484,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// r.ExtraSkills, re-read from the run record, is what makes an
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume"},
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume", supervisors: spec.Supervisors},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -495,16 +515,17 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 // applied to exactly the first turn and nothing after it.
 func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *iterlog.Logger, autoMemory string) ExecutorSpec {
 	spec := ExecutorSpec{
-		Workflow:      wf,
-		Store:         s.store,
-		Logger:        runLogger,
-		StoreDir:      s.storeDir,
-		Inbox:         s.inboxBinder(),
-		AsyncAsk:      s.asyncAskBinder(),
-		AutoMemory:    autoMemory,
-		BoardRegister: s.boardRegister,
-		LocalSecrets:  s.localSecrets,
-		LocalSealer:   s.localSealer,
+		Workflow:       wf,
+		Store:          s.store,
+		Logger:         runLogger,
+		StoreDir:       s.storeDir,
+		Inbox:          s.inboxBinder(),
+		AsyncAsk:       s.asyncAskBinder(),
+		AutoMemory:     autoMemory,
+		BoardRegister:  s.boardRegister,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
+		UsageCapSource: s.usageCapSource,
 		// Resolved, not read raw: only a cloud launch persists BotID, so a
 		// studio-launched bundle would otherwise fall back to the workflow
 		// name here and aim the resumed run at a different space than its own
@@ -720,7 +741,7 @@ func (s *Service) spawnRun(
 		// Spawn any DSL-declared supervisors for the lifetime of the run.
 		// They observe via the broker (in-process) and steer via
 		// QueueMessage; Close drains them before the goroutine exits.
-		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger)
+		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger, ex.supervisors)
 		defer stopSupervisors()
 
 		// Spawn the Session-board curation coordinator (opt-in via
@@ -836,6 +857,10 @@ type launchExtras struct {
 	// extraSkillsOrigin is "flag" | "env" | "flag+env" | "resume", reported
 	// on the skills_injected event so the run says where the list came from.
 	extraSkillsOrigin string
+	// supervisors mirrors LaunchSpec/ResumeSpec.Supervisors: the
+	// run-level kill switch for DSL-declared supervisor watchers,
+	// resolved above ITERION_SUPERVISORS.
+	supervisors string
 }
 
 // engineOptions builds the standard option set for both Launch and

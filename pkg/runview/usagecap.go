@@ -27,7 +27,8 @@ func processUsageStore() *usagecap.MemStore {
 
 // resolveUsageGuard returns the guard governing this run: the caller's when
 // it injected one (the cloud runner, which knows which credential the run
-// draws on), otherwise one built from the machine-wide policy.
+// draws on), else one over the caller's live PolicySource (the DB-backed
+// runtime settings), otherwise one built from the machine-wide env policy.
 //
 // A malformed policy is an error rather than an absent cap: every wrong
 // answer here fails open, and a guard silently disabled by a typo is the
@@ -36,6 +37,24 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 	if spec.UsageGuard != nil {
 		return spec.UsageGuard, nil
 	}
+	store := processUsageStore()
+	key := usagecap.Key("", usagecap.ScopeLocal)
+	sink := func(r usagecap.Reading) {
+		// Best effort: an unrecorded reading costs the NEXT run a
+		// pre-flight, never this one its correctness.
+		_ = store.Record(context.Background(), key, r)
+	}
+	if spec.UsageCapSource != nil {
+		// A live source gets a guard even when nothing is capped right
+		// now — the answer can change (the runtime settings record)
+		// before this run ends, and the guard re-reads per evaluation.
+		if spec.Logger != nil {
+			if pol := spec.UsageCapSource.Effective(context.Background()); pol.Enabled() {
+				spec.Logger.Info("usage cap armed: %s", pol)
+			}
+		}
+		return usagecap.NewGuardWithSource(spec.UsageCapSource, sink), nil
+	}
 	pol, err := usagecap.FromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("runview: usage cap: %w", err)
@@ -43,16 +62,10 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 	if !pol.Enabled() {
 		return nil, nil
 	}
-	store := processUsageStore()
-	key := usagecap.Key("", usagecap.ScopeLocal)
 	if spec.Logger != nil {
 		spec.Logger.Info("usage cap armed: %s", pol)
 	}
-	return usagecap.NewGuard(pol, func(r usagecap.Reading) {
-		// Best effort: an unrecorded reading costs the NEXT run a
-		// pre-flight, never this one its correctness.
-		_ = store.Record(context.Background(), key, r)
-	}), nil
+	return usagecap.NewGuard(pol, sink), nil
 }
 
 // LocalUsagePreflight reports whether the machine-wide cap currently blocks
@@ -60,8 +73,23 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 // means "go ahead" — including when no cap is configured, or when nothing
 // has been measured yet.
 func LocalUsagePreflight() (blocked bool, reason string) {
-	pol, err := usagecap.FromEnv()
-	if err != nil || !pol.Enabled() {
+	return usagePreflightFrom(nil)
+}
+
+// usagePreflightFrom is LocalUsagePreflight over an optional live policy
+// source; nil falls back to the env-resolved policy.
+func usagePreflightFrom(src usagecap.PolicySource) (blocked bool, reason string) {
+	var pol usagecap.Policy
+	if src != nil {
+		pol = src.Effective(context.Background())
+	} else {
+		p, err := usagecap.FromEnv()
+		if err != nil {
+			return false, ""
+		}
+		pol = p
+	}
+	if !pol.Enabled() {
 		return false, ""
 	}
 	readings, err := processUsageStore().Latest(context.Background(), usagecap.Key("", usagecap.ScopeLocal))

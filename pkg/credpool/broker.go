@@ -532,6 +532,42 @@ func (b *Broker) releaseReservation(ctx context.Context, pledgeID string, when t
 	}
 }
 
+// ReleaseGuard pins the exact lease that was open before a caller performed
+// an atomic state transition. A later attempt of the same run gets a new
+// lease id, so releasing through this guard can never close that successor.
+// Its fields stay private so callers cannot manufacture or retarget one.
+type ReleaseGuard struct {
+	lease Lease
+}
+
+// CaptureRelease snapshots the currently-open lease of runID. Callers that
+// may release after making a run resumable must capture BEFORE that state
+// transition; otherwise a concurrent resume could replace the open lease
+// before the lookup. A nil guard means there was nothing safe to release.
+func (b *Broker) CaptureRelease(ctx context.Context, runID string) *ReleaseGuard {
+	if b == nil || runID == "" {
+		return nil
+	}
+	lease, err := b.leases.GetOpenByRun(context.WithoutCancel(ctx), runID)
+	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			b.logger.Warn("credpool: could not capture the lease of run %s for release: %v", runID, err)
+		}
+		return nil
+	}
+	return &ReleaseGuard{lease: lease}
+}
+
+// ReleaseCaptured releases only the lease pinned by guard. If a new attempt
+// has already superseded it, Close loses its CAS and the new open lease is
+// left untouched.
+func (b *Broker) ReleaseCaptured(ctx context.Context, guard *ReleaseGuard) {
+	if b == nil || guard == nil {
+		return
+	}
+	b.releaseLease(context.WithoutCancel(ctx), guard.lease)
+}
+
 // Release undoes an acquisition whose run never started — a launch that
 // failed after the credential was granted (the run document could not be
 // saved, the queue publish failed).
@@ -544,20 +580,13 @@ func (b *Broker) releaseReservation(ctx context.Context, pledgeID string, when t
 // Idempotent and best-effort: it is called from error paths that must
 // surface their OWN error, not this one.
 func (b *Broker) Release(ctx context.Context, runID string) {
-	if b == nil || runID == "" {
-		return
-	}
-	ctx = context.WithoutCancel(ctx)
-	lease, err := b.leases.GetOpenByRun(ctx, runID)
-	if err != nil {
-		if !errors.Is(err, ErrNotFound) {
-			b.logger.Warn("credpool: could not look up the lease of abandoned run %s: %v", runID, err)
-		}
-		return
-	}
+	b.ReleaseCaptured(ctx, b.CaptureRelease(ctx, runID))
+}
+
+func (b *Broker) releaseLease(ctx context.Context, lease Lease) {
 	won, err := b.leases.Close(ctx, lease.ID, 0, OutcomeNotLaunched, b.now())
 	if err != nil {
-		b.logger.Warn("credpool: could not release the lease of abandoned run %s: %v", runID, err)
+		b.logger.Warn("credpool: could not release lease %s of abandoned run %s: %v", lease.ID, lease.RunID, err)
 		return
 	}
 	if !won {
@@ -569,7 +598,7 @@ func (b *Broker) Release(ctx context.Context, runID string) {
 	if lease.ConsumedRunUnit {
 		b.releaseReservation(ctx, lease.PledgeID, lease.AcquiredAt)
 	}
-	b.logger.Info("credpool: run %s never launched — returned donor %s's admission", runID, lease.DonorID)
+	b.logger.Info("credpool: run %s never launched — returned donor %s's admission", lease.RunID, lease.DonorID)
 }
 
 // Outcome is what a finished attempt reports back to the pool.

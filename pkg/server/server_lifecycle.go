@@ -132,11 +132,12 @@ func (s *Server) ListenAndServe() error {
 	// forge orchestrator isn't wired (local mode).
 	if s.forgeOrchestrator != nil {
 		worker := &forge.RefreshWorker{
-			Connections:  s.forgeConnections,
-			Secrets:      s.genericSecrets,
-			Sealer:       s.sealer,
-			RefresherFor: s.forgeRefresherFor,
-			Lead:         5 * time.Minute,
+			Connections:    s.forgeConnections,
+			Secrets:        s.genericSecrets,
+			Sealer:         s.sealer,
+			RefresherFor:   s.forgeRefresherFor,
+			SecurityMinter: s.forgeSecurityTokenMinter,
+			Lead:           5 * time.Minute,
 		}
 		go func() {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -331,6 +332,12 @@ func (s *Server) ListenAndServe() error {
 			// and clear the denormalized ⏸ badge when the sweep moves a card.
 			d.statusFor = s.boardRunStatus
 			d.clearBadge = func(tenant, id string) { s.setCardAwaitingInput(tenant, id, false) }
+			// Fork-adoption sweep wiring: full run record + the issue's runs
+			// (tenant-scoped) to resolve a finished fork, and the CloudBoardFor
+			// seam to adopt it onto the stranded card.
+			d.runFor = s.boardRun
+			d.issueRuns = s.boardIssueRuns
+			d.adoptRun = s.adoptCardRun
 			d.run(ctx)
 		}()
 	}

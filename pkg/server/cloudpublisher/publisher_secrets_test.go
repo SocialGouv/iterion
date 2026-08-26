@@ -301,9 +301,9 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 
 // TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus pins the
 // resume mirror of the launch gate: when the required secret vanished
-// between the failure and the resume, the gate must fire BEFORE the
-// queued flip — a stranded `queued` run is never claimed (nothing was
-// published) and no longer resumable from the studio.
+// between the failure and the resume, the atomic queue claim must be rolled
+// back to the prior resumable status. Nothing was published, so leaving the
+// run stranded in `queued` would make it impossible to resume from the studio.
 func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {

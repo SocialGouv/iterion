@@ -27,6 +27,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -525,6 +527,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		p.fillFromPlatform(ctx, runID, &bundle)
 	}
 
+	// Record which review families the resolved credentials back — every
+	// tier included (BYOK, oauth-forfait, pool grant, platform). This is
+	// what lets SubmitLaunch resolve the credential-derived topology vars
+	// (review_mode / plan_review / llm_families) for a queued run, where
+	// no host detection report applies. Empty when nothing resolved: the
+	// runner's env fallback is unknowable here, and injecting "no family"
+	// facts about credentials we cannot see would be asserting a falsehood.
+	providers := make([]string, 0, len(bundle.APIKeys))
+	for prov := range bundle.APIKeys {
+		providers = append(providers, string(prov))
+	}
+	oauthKinds := make([]string, 0, len(bundle.OAuthCredentials))
+	for kind := range bundle.OAuthCredentials {
+		oauthKinds = append(oauthKinds, kind)
+	}
+	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
+
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
 		return res, nil
 	}
@@ -558,6 +577,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 type credResolution struct {
 	secretsRef string
 	grant      *credpool.Grant
+	// families is the set of review families the sealed credentials back
+	// (reviewtopology), so the launch can resolve the credential-derived
+	// topology vars for a queued run. Empty = nothing resolved (env
+	// fallback), in which case no injection happens.
+	families reviewtopology.FamilySet
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -780,6 +804,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
+	// One inputs map shared by the run doc and the RunMessage, so the
+	// credential-derived topology injection below reaches both carriers.
+	inputs := varsAsAny(spec.Vars)
 	// Resolved once and used twice: on the queued doc (so the Overview shows
 	// what the run was launched with) and on the RunMessage (so the pod
 	// actually applies it). Splitting the two is how the choice used to reach
@@ -792,7 +819,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowHash:    hash,
 		FilePath:        spec.FilePath,
 		Status:          store.RunStatusQueued,
-		Inputs:          varsAsAny(spec.Vars),
+		Inputs:          inputs,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		QueuedAt:        &now,
@@ -868,6 +895,23 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// after the fact when the donor is already out of pocket.
 	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families) from what actually sealed
+	// into the run — the queued-run counterpart of the host-detection
+	// injection every in-process launch surface applies. Only when the
+	// bundle resolved at least one participating credential: an empty set
+	// means the run rides the runner's env fallback, which is unknowable
+	// here, and the bots' own "auto" defaults must survive untouched.
+	if len(creds.families) > 0 {
+		if inputs == nil {
+			inputs = map[string]any{}
+			r.Inputs = inputs
+		}
+		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
+		}
+	}
+
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
@@ -895,10 +939,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowName:    wf.Name,
 		WorkflowHash:    hash,
 		IRCompiled:      body,
-		Vars:            varsAsAny(spec.Vars),
+		Vars:            inputs,
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors:     spec.Supervisors,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:        tenantID,
@@ -919,10 +964,13 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// operator checkout). RepoRef carries a branch or sha. ProjectPath
 		// is NOT on the wire — the runner clones from RepoURL and the
 		// persisted run doc is the authoritative carrier of the slug.
-		RepoURL:        spec.RepoURL,
-		RepoSHA:        spec.RepoRef,
-		BotID:          spec.BotID,
-		Budget:         budget,
+		RepoURL: spec.RepoURL,
+		RepoSHA: spec.RepoRef,
+		BotID:   spec.BotID,
+		Budget:  budget,
+		// The operator's model/backend/effort pins must ride the wire: the
+		// runner pod builds its own executor, so a pin only persisted on
+		// the run doc is display-only.
 		ModelOverrides: modelOverridesForWire(modelOverrides),
 	}
 	if err := p.publish(ctx, msg); err != nil {
@@ -961,6 +1009,20 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 //
 // Idempotent: running CancelRun on an already-terminal run is a no-op.
 func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
+	return p.CancelRunWithReason(ctx, runID, "cancelled by user")
+}
+
+// CancelRunWithReason is CancelRun with an explicit reason. The reason lands
+// in run.Error — which the run list, the board cards and the merge-gate
+// synthetic status all read — so an AUTOMATED cancel must say what actually
+// happened instead of masquerading as an operator action: a webhook supersede
+// once overwrote a runner validation error with "cancelled by user", and the
+// PR's synthetic gate then blamed a human who had touched nothing.
+//
+// The prior error, when present, is carried forward (same rationale as
+// runview.CancelInactiveCtx): run.Error is the only record in run.json of WHY
+// the run was in its pre-cancel state, and cancelling must not erase it.
+func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason string) error {
 	// Cancel descends here with a NON-request context (runview.Service.Cancel
 	// takes no ctx), so the mongo tenant filter has no tenant and its
 	// tenant-scoped queries panic. The caller (handleCancelRun / the WS
@@ -989,7 +1051,13 @@ func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
 		store.RunStatusPausedWaitingHuman,
 		store.RunStatusFailedResumable,
 	}
-	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, "cancelled by user", cancellable)
+	if strings.TrimSpace(reason) == "" {
+		reason = "cancelled"
+	}
+	if prior := strings.TrimSpace(r.Error); prior != "" {
+		reason += " (was " + string(r.Status) + ": " + prior + ")"
+	}
+	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, reason, cancellable)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: flip status: %w", err)
 	}
@@ -1021,7 +1089,7 @@ func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
-func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) error {
+func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return err
@@ -1035,21 +1103,60 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	// Re-resolve credentials BEFORE flipping the status: a resolution
-	// failure (store error, or the required-secret gate — e.g. the secret
-	// was deleted between the failure and the resume) must leave the run
-	// in its prior RESUMABLE status. Flipping first would strand it in
-	// queued: never claimed (nothing published), and no longer resumable
-	// from the studio. Keys may have rotated between launch and resume;
-	// using the prior run's secrets ref blindly would inject stale
-	// plaintext. Preserve the launching BotID so bot-secret bindings
-	// remain durable across pause/failure/TTL republishes.
+	switch priorStatus {
+	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		// Valid resume source states. The runview layer validates first, but
+		// SubmitResume repeats the boundary check because another request may
+		// have changed the row since that read.
+	default:
+		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
+	}
+
+	// Claim this resume BEFORE resolving credentials. The status CAS is the
+	// serialization point for double-clicks/client retries: only one request
+	// may create the next queue attempt, so only that request may acquire a
+	// credential-pool lease or publish. Transitioning to queued also refreshes
+	// QueuedAt, the durable attempt marker used to reject stale deliveries.
+	claimed, claimErr := p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	if claimErr != nil {
+		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)
+	}
+	if !claimed {
+		current, _ := p.store.LoadRun(ctx, spec.RunID)
+		if current != nil {
+			return fmt.Errorf("cloudpublisher: resume raced for %s (status now %s)", spec.RunID, current.Status)
+		}
+		return fmt.Errorf("cloudpublisher: resume raced for %s", spec.RunID)
+	}
+
+	// Any failure before a successful publish restores the exact resumable
+	// source status. The rollback itself is a queued-only CAS, so a concurrent
+	// cancel/runner transition is never overwritten.
+	republished := false
+	defer func() {
+		if republished {
+			return
+		}
+		runErr := prior.Error
+		if retErr != nil {
+			runErr = fmt.Sprintf("queue resume: %v", retErr)
+		}
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer rollbackCancel()
+		if _, rbErr := p.store.UpdateRunStatusIf(rollbackCtx, spec.RunID, priorStatus, runErr,
+			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
+			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+		}
+	}()
+
+	// Keys may have rotated between launch and resume; using the prior run's
+	// secrets ref blindly would inject stale plaintext. Preserve BotID so bot-
+	// secret bindings remain durable across pause/failure/TTL republishes.
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
 	// Armed before the error check — see SubmitLaunch.
-	republished := false
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
@@ -1059,12 +1166,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	if secretsErr != nil {
 		return secretsErr
-	}
-	// Flip status to queued so the runner doesn't short-circuit on the
-	// cooperative-cancel check + so the studio's QueueDepthBar reflects
-	// the in-flight resume.
-	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
-		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
@@ -1087,6 +1188,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors: spec.Supervisors,
 		// Republish the model choice the run was launched with. The rows
 		// live on the prior doc; a resume that omits them hands the pod a
 		// message with no overrides, and pkg/runner/loop.go then builds an
@@ -1119,20 +1221,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		BotID:   prior.BotID,
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		// Revert to the prior resumable status — typically
-		// failed_resumable so the next user action is "Resume"
-		// again. Falling back to failed_resumable is conservative
-		// when the prior status wasn't itself resumable.
-		rollback := priorStatus
-		switch rollback {
-		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-			// keep as-is
-		default:
-			rollback = store.RunStatusFailedResumable
-		}
-		if rbErr := p.store.UpdateRunStatus(ctx, spec.RunID, rollback, fmt.Sprintf("queue republish: %v", err)); rbErr != nil {
-			p.logger.Error("cloudpublisher: rollback %s after publish failure: %v", spec.RunID, rbErr)
-		}
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
 	}
 	republished = true
@@ -1456,6 +1544,46 @@ func varsAsAny(in map[string]string) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// queueModelOverrides converts the launch entries into the wire form the
+// claiming runner applies to its executor. Nil in, nil out — an absent
+// field keeps older messages byte-identical.
+func queueModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
+	}
+	return out
+}
+
+// runModelOverrides converts the launch entries into the persisted run-doc
+// form (studio display + the resume path's replay source).
+func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
+	}
+	return out
+}
+
+// queueOverridesFromRun replays a run doc's persisted pins onto a resume
+// publication.
+func queueOverridesFromRun(entries []store.RunModelOverride) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 	}
 	return out
 }

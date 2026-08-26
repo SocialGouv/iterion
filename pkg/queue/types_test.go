@@ -172,8 +172,8 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=7 (2026-08-11) added LoopBudgetGuard for the same reason one layer
 	// down: dropped, the pod re-decides whether a loop stops early or dies at
 	// its ceiling, overruling the operator who said otherwise.
-	// v=8 (2026-08-22) added ModelOverrides so a launch-time model/backend/
-	// effort choice reaches the pod instead of being dropped at the queue.
+	// v=8 (2026-08-25) added Supervisors. ModelOverrides had already shipped
+	// inside v7 without a bump; types.go records that known historical debt.
 	if SchemaVersion != 8 {
 		t.Errorf("SchemaVersion = %d, want 8 (bump intentionally)", SchemaVersion)
 	}
@@ -263,5 +263,41 @@ func TestModelOverridesOmittedWhenEmpty(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte("model_overrides")) {
 		t.Errorf("empty overrides should be omitted, got %s", raw)
+	}
+}
+
+// TestRunMessage_SupervisorsSurvivesTheWire is the same composition for
+// the supervisors kill switch: a pod re-deciding it from its own env
+// would spawn LLM watchers the operator explicitly declined.
+func TestRunMessage_SupervisorsSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "on", ""} {
+		in := RunMessage{
+			V:              SchemaVersion,
+			RunID:          "r1",
+			WorkflowName:   "w",
+			WorkflowHash:   "h",
+			IRCompiled:     json.RawMessage(`{}`),
+			TenantID:       "t1",
+			PublishedAtRFC: "2026-08-25T00:00:00Z",
+
+			Supervisors: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if want == "" && bytes.Contains(blob, []byte("supervisors")) {
+			t.Error("an unset supervisors override was serialised — the receiver would read a choice nobody made")
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Supervisors != want {
+			t.Errorf("Supervisors = %q after the round trip, want %q", out.Supervisors, want)
+		}
+		if err := out.Validate(); err != nil {
+			t.Errorf("validate: %v", err)
+		}
 	}
 }

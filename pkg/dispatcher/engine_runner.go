@@ -20,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // RunLauncher is the ADR-046 single-launch-authority seam. Given a
@@ -269,6 +270,19 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// PostToolUse hook on the delegate). Without this the operator's
 	// message stays `queued` for the entire run because nothing binds a
 	// hook to the per-run queue.
+	// DSL-declared supervisors: this direct-engine path bypasses
+	// runview.Launch, so it must wire the hub + coordinators itself —
+	// otherwise a dispatched bot's declared supervisor (feature-dev's
+	// coach, dispatched by default) is silently inert. The hub is
+	// created BEFORE the executor so it also rides the backend-hook
+	// seam (the only one carrying assistant_text / tool events). The
+	// per-run override has no dispatcher surface, so the env layer
+	// decides.
+	var superviseHub *supervise.EventHub
+	if len(r.workflow.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn("", len(r.workflow.Supervisors), runLogger) {
+		superviseHub = supervise.NewEventHub()
+	}
+
 	execSpec := runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: r.workflow,
@@ -283,6 +297,9 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		// launch surface follows, so a bot dispatched here and the same bot run
 		// from the CLI or the studio share one memory instead of three.
 		BotID: runview.ResolveBotID("", r.bundleName(), r.workflowPath),
+	}
+	if superviseHub != nil {
+		execSpec.EventObservers = []func(store.Event){superviseHub.Publish}
 	}
 	// Local (self-hosted) secret injection: the dispatcher's in-process runner
 	// is only ever the local path (never a cloud runner pod), so resolve the
@@ -379,6 +396,12 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.DailyCap != nil {
 		opts = append(opts, runtime.WithDailyCap(spec.DailyCap))
 	}
+	if superviseHub != nil {
+		opts = append(opts, runtime.WithEventObserver(superviseHub.Publish))
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: s},
+			spec.RunID, supervise.SpecsFromWorkflow(r.workflow, runLogger), runLogger)
+		defer stopSup()
+	}
 	eng := runtime.New(r.workflow, s, exec, opts...)
 
 	// Resume the prior run iff the dispatcher's scheduleRetry tagged
@@ -392,20 +415,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)
 	}
 
-	// Resolve the mono/dual review topology for a fresh dispatch (no-op
-	// unless the workflow declares a review_mode var). A per-ticket
-	// bot_arg review_mode wins over auto-detection; no dispatcher-level
-	// flag override, so pass "". Mirrors the CLI and runview surfaces.
+	// Resolve the credential-derived topology vars for a fresh dispatch
+	// (no-op unless the workflow declares review_mode / plan_review /
+	// llm_families). A per-ticket bot_arg wins over auto-detection; no
+	// dispatcher-level flag override, so pass "". Mirrors the CLI and
+	// runview surfaces.
 	if spec.Vars == nil {
 		spec.Vars = map[string]any{}
 	}
-	if mode, family, injected := reviewtopology.InjectIfDeclared(r.workflow, spec.Vars, detect.Detect(ctx), ""); injected {
-		r.logger.Info("review topology: %s%s", mode, func() string {
-			if family != "" {
-				return " (family " + family + ")"
-			}
-			return ""
-		}())
+	if inj := reviewtopology.InjectAll(r.workflow, spec.Vars, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), ""); inj.Summary() != "" {
+		r.logger.Info("%s", inj.Summary())
 	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
 }

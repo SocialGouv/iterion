@@ -16,12 +16,21 @@ import type { FallbackUsage } from "@/api/runs";
 import { Tooltip } from "@/components/ui";
 
 function routeLabel(u: FallbackUsage): string {
+  // A skip route serves nothing: backend/model are empty on purpose.
+  if (u.skipped) return `${u.served_by ?? "skip"} (skipped)`;
   // A CLI backend that reports no effective model leaves `model` empty,
   // and a route the runtime could not name leaves `backend` empty too —
   // fall back to the entry name rather than rendering "undefined".
   const target = [u.backend, u.model].filter(Boolean).join(" · ");
   if (!target) return u.served_by ?? "fallback";
   return u.served_by ? `${u.served_by} (${target})` : target;
+}
+
+function chipTooltip(u: FallbackUsage): string {
+  if (u.skipped) {
+    return `Node "${u.node_id}" was SKIPPED by route ${u.served_by ?? "skip"} — zero-value output, nothing ran`;
+  }
+  return `Node "${u.node_id}" was served by ${routeLabel(u)} after its primary failed`;
 }
 
 export default function FallbacksUsedRow({
@@ -39,7 +48,7 @@ export default function FallbacksUsedRow({
       {fallbacks.map((u) => (
         <Tooltip
           key={`${u.node_id} ${u.served_by ?? ""}`}
-          content={`Node "${u.node_id}" was served by ${routeLabel(u)} after its primary failed`}
+          content={chipTooltip(u)}
         >
           <span className="inline-flex items-center gap-1 rounded border border-warning-soft bg-warning-soft px-1.5 py-0.5 font-mono text-micro font-medium text-warning-fg">
             <span>{u.node_id}</span>

@@ -17,6 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -73,6 +74,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		CredPoolLeases:    credpool.NewMemoryLeaseStore(),
 		CredPoolLedger:    credpool.NewMemoryLedger(),
 		Audit:             audit.NewMemoryStore(),
+		UsageCapSettings:  usagecap.NewMemorySettingsStore(),
 		Store:             runStore,
 	}
 

@@ -164,7 +164,12 @@ export default function RepoTargetSection({
     enabled: state.mode === "create" && !!teamID,
     staleTime: 30_000,
   });
-  const connections: ForgeConnection[] = connectionsQuery.data ?? EMPTY_CONNECTIONS;
+  // A watch-only connection (Dependabot alerts, read) cannot clone or push, so
+  // it is never a launch target. The server refuses it with a 422; not
+  // offering it is what keeps the operator from meeting that refusal at all.
+  const connections: ForgeConnection[] =
+    connectionsQuery.data?.filter((c) => c.purpose !== "security_read") ??
+    EMPTY_CONNECTIONS;
   const connectionsLoading = connectionsQuery.isLoading && repos.length === 0;
 
   const createConnOptions = useMemo(() => {

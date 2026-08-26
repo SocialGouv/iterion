@@ -18,6 +18,7 @@ var resumeOpts struct {
 
 	autoMemory      string
 	loopBudgetGuard string
+	supervisors     string
 	repoDevbox      string
 	permission      string
 	permissionAllow []string
@@ -52,6 +53,7 @@ var resumeCmd = &cobra.Command{
 
 			AutoMemory:      resumeOpts.autoMemory,
 			LoopBudgetGuard: resumeOpts.loopBudgetGuard,
+			Supervisors:     resumeOpts.supervisors,
 			RepoDevbox:      resumeOpts.repoDevbox,
 			Permission:      resumeOpts.permission,
 			PermissionAllow: resumeOpts.permissionAllow,
@@ -96,6 +98,7 @@ func init() {
 	f.StringVar(&resumeOpts.autoMemory, "auto-memory", "", "backend auto-memory (MEMORY.md) override on resume: on|off. Empty inherits the workflow/node auto_memory: DSL then ITERION_AUTO_MEMORY — NOT the original launch, which is not persisted, so re-state it to keep a hermetic run hermetic. See docs/memory-and-knowledge.md.")
 	f.StringVar(&resumeOpts.repoDevbox, "repo-devbox", "", "install the target repository's devbox.json on resume: on|off. Empty inherits the workflow repo_devbox: DSL then ITERION_REPO_DEVBOX — NOT the original launch, which is not persisted. See docs/dsl.md.")
 	f.StringVar(&resumeOpts.loopBudgetGuard, "loop-budget-guard", "", "loop back-edge affordability guard on resume: on|off. Empty inherits the workflow loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD — NOT the original launch, which is not persisted. See docs/dsl.md.")
+	f.StringVar(&resumeOpts.supervisors, "supervisors", "", "spawn DSL-declared supervisors on resume: on|off (not persisted from launch; empty inherits ITERION_SUPERVISORS). See docs/supervisors.md.")
 	f.StringVar(&resumeOpts.permission, "permission", "", "tool-permission gate override on resume: off|ask|deny (empty inherits the workflow/ITERION_PERMISSION). See docs/permissions.md.")
 	f.StringArrayVar(&resumeOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), e.g. 'Bash(go build:*)'. Authorize an action the run paused on, then it proceeds on resume.")
 	f.StringArrayVar(&resumeOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls pause for approval.")

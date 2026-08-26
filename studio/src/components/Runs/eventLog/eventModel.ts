@@ -24,6 +24,10 @@ export const EVENT_BADGE: Record<string, string> = {
   // A route change, not a failure — the run continues on another
   // model/backend. Warning-coloured because the primary route is gone.
   model_fallback: "bg-warning-soft text-warning-fg",
+  // Declared model ≠ what the backend actually ran (proxy, env
+  // override, fallback route). Same colour as fallback: the record
+  // is honest, the run is degraded.
+  model_drift: "bg-warning-soft text-warning-fg",
   llm_request: "bg-surface-2 text-fg-muted",
   llm_step_finished: "bg-surface-2 text-fg-muted",
   tool_called: "bg-surface-2 text-fg-muted",
@@ -78,16 +82,29 @@ export function previewData(data: Record<string, unknown> | undefined): string {
   const interesting = [
     "kind",
     "model",
+    "declared_model",
+    "effective_model",
     "tool",
     "tool_name",
     "version",
     "publish",
     "to",
-    // model_fallback: the route change and why it happened.
+    // model_fallback: the route change and why it happened. to_action
+    // ("skip") marks a terminal degrade — to_backend is then empty on
+    // purpose, nothing serves the node.
     "reason",
+    // A zero-attempt route change is a proactive cooldown skip, not a
+    // second provider refusal. Keep that distinction visible in the row
+    // preview without requiring operators to open the raw event payload.
+    "cooldown",
+    "cooldown_until",
+    "attempts",
     "from_backend",
+    "to_action",
     "to_backend",
     "to_model",
+    // delegate_finished on a skipped node: nothing served it.
+    "skipped",
     "loop",
     "iteration",
     "error",

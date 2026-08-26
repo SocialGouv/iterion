@@ -3,6 +3,8 @@ package ir
 import (
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // `fallbacks:` diagnostics (ADR-087).
@@ -125,8 +127,10 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 		}
 
 		seen := map[string]bool{}
-		for _, fb := range fbs {
+		for i, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
+			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
+			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
 			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
 		}
@@ -184,12 +188,72 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
+// checkFallbackAction validates the `action:` field. A skip route is
+// terminal by definition, so declaring anything after it is an authoring
+// mistake the run could never reach, and declaring a backend/model on it
+// contradicts what it does.
+func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool) {
+	switch fb.Action {
+	case "":
+		return
+	case FallbackActionSkip:
+	default:
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares unknown action %q; the only action is %q (a terminal degrade — omit action: for an ordinary route)",
+			kind, id, fallbackLabel(fb), fb.Action, FallbackActionSkip)
+		return
+	}
+	if fb.Backend != "" || fb.Model != "" || fb.Provider != "" || fb.Metered {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares action: skip together with a backend/model/provider/metered — a skip route executes and spends nothing, so the route fields are dead config hiding what actually happens",
+			kind, id, fallbackLabel(fb))
+	}
+	if !isLast {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares action: skip but is not the LAST route — skip is terminal, so every route after it is unreachable",
+			kind, id, fallbackLabel(fb))
+	}
+}
+
+// checkFallbackWhen validates that a route's `when:` gate parses, only
+// reads vars — the one namespace resolvable at dispatch time, where the
+// gate is evaluated (a route has no node input or outputs of its own) —
+// and only DECLARED vars: at runtime an absent var evaluates to nil →
+// false, so a typo would silently disarm the policy the route encodes.
+func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) {
+	if fb.When == "" {
+		return
+	}
+	astExpr, err := expr.Parse(fb.When)
+	if err != nil {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s has an unparseable when: expression (note: string literals use single quotes, e.g. vars.policy == 'skip'): %v",
+			kind, id, fallbackLabel(fb), err)
+		return
+	}
+	for _, ref := range astExpr.Refs() {
+		if ref.Namespace != "vars" {
+			c.errorfAt(DiagFallbackMalformed, id, "",
+				"%s %q: fallback %s when: references %s.%s — a route gate is evaluated at dispatch, where only vars.* resolves",
+				kind, id, fallbackLabel(fb), ref.Namespace, strings.Join(ref.Path, "."))
+			continue
+		}
+		if len(ref.Path) > 0 && w != nil {
+			if _, ok := w.Vars[ref.Path[0]]; !ok {
+				c.errorfAt(DiagFallbackMalformed, id, "",
+					"%s %q: fallback %s when: targets undeclared variable %q — at run time an absent var reads as false and silently disarms the route",
+					kind, id, fallbackLabel(fb), ref.Path[0])
+			}
+		}
+	}
+}
+
 // checkFallbackShape validates the route on its own terms.
 func (c *compiler) checkFallbackShape(kind, id string, fb Fallback, seen map[string]bool) {
 	label := fallbackLabel(fb)
-	if fb.Backend == "" && fb.Model == "" && fb.Provider == "" {
+	if fb.Backend == "" && fb.Model == "" && fb.Provider == "" && fb.Action == "" {
 		c.errorfAt(DiagFallbackMalformed, id, "",
-			"%s %q: fallback %s declares neither backend, model nor provider — it would re-issue the identical call that just failed",
+			"%s %q: fallback %s declares neither backend, model, provider nor action — it would re-issue the identical call that just failed",
 			kind, id, label)
 		return
 	}

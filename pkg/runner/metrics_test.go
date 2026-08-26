@@ -70,6 +70,50 @@ func TestMetricsEmitter_forwardsPlanWriter(t *testing.T) {
 	}
 }
 
+// TestMetricsEmitter_forwardsNodeServedRecorder locks in that the
+// metricsEmitter wrapper satisfies model.NodeServedRecorder and
+// delegates to the inner store; otherwise cloud runs drop NodesServed.
+func TestMetricsEmitter_forwardsNodeServedRecorder(t *testing.T) {
+	inner := &servedRecordingStore{}
+	m := newMetricsEmitter(inner, metrics.New())
+	rec, ok := model.EventEmitter(m).(model.NodeServedRecorder)
+	if !ok {
+		t.Fatal("metricsEmitter does not satisfy model.NodeServedRecorder — cloud runs would drop NodesServed")
+	}
+	want := store.NodeServed{Backend: "claude_code", Model: "glm-4.6"}
+	if err := rec.RecordNodeServed(context.Background(), "run-1", "n1", want); err != nil {
+		t.Fatalf("forwarded RecordNodeServed: %v", err)
+	}
+	if inner.got != want || inner.nodeID != "n1" {
+		t.Errorf("inner got node=%q served=%+v, want n1 %+v", inner.nodeID, inner.got, want)
+	}
+}
+
+// TestMetricsEmitter_nodeServedNoOpWhenInnerLacks locks in the benign
+// no-op: an inner store that is NOT a NodeServedRecorder yields nil,
+// matching today's nil-servedSink path, not a loud error.
+func TestMetricsEmitter_nodeServedNoOpWhenInnerLacks(t *testing.T) {
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	if err := m.RecordNodeServed(context.Background(), "run-1", "n", store.NodeServed{Backend: "x"}); err != nil {
+		t.Fatalf("no-op forward: unexpected error %v", err)
+	}
+}
+
+// servedRecordingStore also satisfies model.NodeServedRecorder, standing
+// in for the Mongo cloud store whose NodesServed capability the
+// metricsEmitter wrapper must forward rather than hide.
+type servedRecordingStore struct {
+	recordingEmitter
+	nodeID string
+	got    store.NodeServed
+}
+
+func (s *servedRecordingStore) RecordNodeServed(_ context.Context, _, nodeID string, served store.NodeServed) error {
+	s.nodeID = nodeID
+	s.got = served
+	return nil
+}
+
 // TestMetricsEmitter_planWriterNoOpWhenInnerLacks locks in the benign
 // no-op: an inner store that is NOT a PlanWriter yields (snap, false,
 // nil) — identical to today's nil-planSink path, not a loud error.

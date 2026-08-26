@@ -102,12 +102,22 @@ func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditTenant(r, id.TeamID, "pat.created", "token", t.ID, map[string]any{"name": t.Name, "team_pin": t.TeamID, "expires_at": expiresAt})
+	// A team-pinned token binds the caller's future org scope too — the
+	// server owns the team→org fact, so state it in the response instead
+	// of leaving clients to re-derive it from the org tree.
+	orgID := ""
+	if req.TeamID != "" {
+		if team, terr := s.authStore().GetTeam(r.Context(), req.TeamID); terr == nil {
+			orgID = team.OrgID
+		}
+	}
 	w.WriteHeader(http.StatusCreated)
 	// The plaintext is never recoverable after this response.
 	writeJSON(w, struct {
 		PAT   pat.Token `json:"pat"`
 		Token string    `json:"token"`
-	}{PAT: t, Token: plaintext})
+		OrgID string    `json:"org_id,omitempty"`
+	}{PAT: t, Token: plaintext, OrgID: orgID})
 }
 
 func (s *Server) handleRevokePAT(w http.ResponseWriter, r *http.Request) {

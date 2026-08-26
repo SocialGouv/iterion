@@ -189,12 +189,14 @@ prompt synthesize_system:
   5. Keep message_markdown under ~10000 characters. If
      input.overflow_count > 0, state that N older queued items were
      dropped unprocessed.
-  6. Date the digest for the window it COVERS, not for today. When
-     input.span_days > 1 the queue drained here accumulated over that
-     many days (a shut usage window, a paused schedule, a feed that came
-     back): title it as covering input.oldest_published → today, and do
-     not present items as breaking. When span_days <= 1 it is an ordinary
-     daily digest — title it with today's date as usual.
+  6. The headline/title names input.digest_title and the SEND date only
+     — input.digest_date, rendered in the digest's language — NEVER a
+     date range or period, whatever input.span_days says. The window the
+     queue covers still matters, in the BODY: when input.span_days > 1
+     (a shut usage window, a paused schedule, a feed serving late) open
+     the digest with one clause noting it covers the period since
+     input.oldest_published, and do not present older items as breaking.
+     When span_days <= 1 it is an ordinary daily digest — no window note.
 
   RULES:
   - Every entry must correspond to input items. NEVER invent an item,
@@ -218,8 +220,8 @@ prompt synthesize_system:
     (grouped same-story items each count).
 
 prompt synthesize_user:
-  Compose the "{{input.digest_title}}" digest — {{input.items_count}}
-  queued item(s) for category "{{input.category}}"
+  Compose the "{{input.digest_title}}" digest dated {{input.digest_date}}
+  — {{input.items_count}} queued item(s) for category "{{input.category}}"
   ({{input.overflow_count}} older queued item(s) overflowed and were
   dropped from this digest). This queue spans {{input.span_days}} day(s);
   its oldest item is dated {{input.oldest_published}}. Follow the editorial guidance and the system
@@ -308,6 +310,12 @@ schema pending_output:
   ## Queue items beyond max_items (dropped from this digest AND from
   ## the queue — the digest message states the count).
   overflow_count: int
+  ## Send date (UTC, YYYY-MM-DD): the headline names THIS date — the
+  ## window the queue spans (below) belongs in the body, never the title.
+  ## Captured when the queue is DRAINED and checkpointed with it: a run
+  ## resumed across midnight keeps the drain date, off by the resume lag
+  ## (hours in practice — the body's window note stays correct).
+  digest_date: string
   ## The window this queue actually spans: date of its oldest item
   ## (YYYY-MM-DD, "" when no item carries a parsable date) and its age in
   ## whole days. A digest drains a QUEUE, not a day — after a gap the
@@ -340,6 +348,8 @@ schema pending_output:
 schema synthesize_input:
   category: string
   digest_title: string
+  ## Send date (UTC, YYYY-MM-DD) — the headline names THIS date only.
+  digest_date: string
   items: json
   items_count: int
   overflow_count: int
@@ -838,7 +848,7 @@ tool load_pending:
   output: pending_output
   language: py
   script: |
-    import json, os, fcntl, email.utils, datetime
+    import json, os, fcntl, email.utils, datetime, sys
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     editorial = {{input.editorial}}
@@ -850,6 +860,7 @@ tool load_pending:
     os.chdir(ws)
     cdir = os.path.join(state_dir, category)
     os.makedirs(cdir, exist_ok=True)
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
     lock = open(os.path.join(state_dir, '.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)
     items = []
@@ -880,7 +891,7 @@ tool load_pending:
     # Deliberately STRICTER than fetch_feeds: no allow_private_feeds
     # bypass here, because resolution is optional (a private/on-prem item
     # url stays valid unresolved) while fetching the feed itself is not.
-    import concurrent.futures, ipaddress, socket, sys, urllib.request
+    import concurrent.futures, ipaddress, socket, urllib.request
     from urllib.parse import urlsplit
     _real_getaddrinfo = socket.getaddrinfo
     _behind_proxy = any(os.environ.get(k) for k in
@@ -966,7 +977,14 @@ tool load_pending:
     recent = []
     arch = os.path.join(cdir, 'digests.jsonl')
     if os.path.exists(arch):
-        digests = [json.loads(ln) for ln in open(arch, encoding='utf-8') if ln.strip()]
+        digests = []
+        for ln in open(arch, encoding='utf-8'):
+            if not ln.strip():
+                continue
+            try:
+                digests.append(json.loads(ln))
+            except ValueError:
+                print('feed-watch: skipping malformed digests.jsonl line', file=sys.stderr)
         for d in digests[-2:]:
             recent.append('## ' + (d.get('headline') or d.get('ts') or 'previous digest'))
             recent.append((d.get('message') or '')[:4000])
@@ -996,7 +1014,7 @@ tool load_pending:
     if _dts:
         oldest = min(_dts)
         oldest_published = oldest.date().isoformat()
-        span_days = max(0, (datetime.datetime.now(datetime.timezone.utc) - oldest).days)
+        span_days = max(0, (now_utc - oldest).days)
 
     # A digest that finds nothing exits here, posting nothing. Correct —
     # and indistinguishable from a healthy quiet week, run after run. So
@@ -1027,7 +1045,7 @@ tool load_pending:
                 then = datetime.datetime.fromisoformat(last_ts)
                 if then.tzinfo is None:
                     then = then.replace(tzinfo=datetime.timezone.utc)
-                silence_days = max(0, (datetime.datetime.now(datetime.timezone.utc) - then).days)
+                silence_days = max(0, (now_utc - then).days)
             except Exception:
                 silence_days = 0
         # Once per window, not once per run: a daily category would
@@ -1043,7 +1061,7 @@ tool load_pending:
                     at = datetime.datetime.fromisoformat(prev)
                     if at.tzinfo is None:
                         at = at.replace(tzinfo=datetime.timezone.utc)
-                    since_alert = (datetime.datetime.now(datetime.timezone.utc) - at).days
+                    since_alert = (now_utc - at).days
                 except Exception:
                     since_alert = alert_after
             silence_alert = since_alert >= alert_after
@@ -1052,8 +1070,10 @@ tool load_pending:
     editorial_fenced = ('<<<UNTRUSTED_EDITORIAL ' + nonce + '>>>' + chr(10) +
                         (editorial or '') + chr(10) +
                         '<<<END_UNTRUSTED_EDITORIAL ' + nonce + '>>>')
+    digest_date = now_utc.date().isoformat()
     print(json.dumps({'has_items': bool(items), 'category': category, 'items': items,
                       'items_count': len(items), 'overflow_count': overflow,
+                      'digest_date': digest_date,
                       'oldest_published': oldest_published, 'span_days': span_days,
                       'silence_days': silence_days, 'silence_alert': silence_alert,
                       'snapshot_ids': snapshot_ids, 'recent_topics': chr(10).join(recent),
@@ -1163,7 +1183,7 @@ tool notify:
   output: notify_output
   language: py
   script: |
-    import json, os, urllib.request
+    import json, os, sys, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     message = {{input.message_markdown}}
     sinks = {{input.sinks}} or []
@@ -1188,8 +1208,11 @@ tool notify:
                           'username': s.get('username') or 'Vigie',
                           'icon_emoji': s.get('icon_emoji') or ':telescope:'}))
     if dry_run:
+        ## stderr only: the engine parses this node's WHOLE stdout as one
+        ## JSON object — an extra stdout line breaks the output and the
+        ## `when posted` edges dead-end the run (NO_OUTGOING_EDGE).
         for name, p in payloads:
-            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + ' chars=' + str(len(text)))
+            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + ' chars=' + str(len(text)), file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _ in payloads],
              'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted'})
     whmap = {}
@@ -1231,7 +1254,7 @@ tool notify_silence:
   output: notify_output
   language: py
   script: |
-    import json, os, datetime, subprocess, urllib.request
+    import json, os, sys, datetime, subprocess, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     digest_title = {{input.digest_title}}
@@ -1272,7 +1295,7 @@ tool notify_silence:
                   'icon_emoji': ':warning:'}) for s in sinks]
     if dry_run:
         for name, p in payloads:
-            print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'])
+            print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'], file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0,
              'targets': [n for n, _ in payloads],
              'summary': 'dry-run: silence alert prepared for ' + category +
@@ -1324,7 +1347,7 @@ tool notify_silence:
                 # posted, and refusing to stamp costs one duplicate warning
                 # where committing someone else's staged work costs trust.
                 print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
-                      repr(state_dir) + ': ' + ', '.join(outside[:5]))
+                      repr(state_dir) + ': ' + ', '.join(outside[:5]), file=sys.stderr)
             elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
@@ -1337,14 +1360,14 @@ tool notify_silence:
                     if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
                                        'origin', br]).returncode != 0:
                         subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
-                        print('feed-watch: could not push silence.json (rebase conflict)')
+                        print('feed-watch: could not push silence.json (rebase conflict)', file=sys.stderr)
                         break
                 else:
-                    print('feed-watch: could not push silence.json after 5 attempts')
+                    print('feed-watch: could not push silence.json after 5 attempts', file=sys.stderr)
         except Exception as e:
             # Best effort: an unstamped window costs one duplicate alert,
             # never the alert itself.
-            print('feed-watch: could not persist silence.json: ' + str(e)[:200])
+            print('feed-watch: could not persist silence.json: ' + str(e)[:200], file=sys.stderr)
     # A warning that reached NOBODY is the very silent-green outcome this
     # node exists to end: the operator would see one more finished run and
     # learn nothing, for another window. Stamp first (retrying an
@@ -1560,6 +1583,7 @@ workflow feed_watch:
     items: "{{outputs.load_pending.items}}",
     items_count: "{{outputs.load_pending.items_count}}",
     overflow_count: "{{outputs.load_pending.overflow_count}}",
+    digest_date: "{{outputs.load_pending.digest_date}}",
     oldest_published: "{{outputs.load_pending.oldest_published}}",
     span_days: "{{outputs.load_pending.span_days}}",
     recent_topics: "{{outputs.load_pending.recent_topics}}",

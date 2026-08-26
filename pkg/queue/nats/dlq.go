@@ -39,15 +39,22 @@ func (c *Conn) MaxDeliver() int { return c.cfg.MaxDeliver }
 // PublishDLQ parks a copy of the delivery on the DLQ stream. The
 // payload is copied verbatim (so a replay re-publishes the exact
 // RunMessage); reason/run/tenant ride headers for cheap listing.
+//
+// The header identity comes from the version-agnostic Envelope, NOT from a
+// full validating Decode: a schema-mismatched message (the rolling-upgrade
+// case) is exactly the one that must be parkable, and it can never pass
+// Decode on this build (issue #481). The verbatim payload means a replay
+// re-publishes the original message untouched, ready for a runner that
+// speaks its version.
 func (c *Conn) PublishDLQ(ctx context.Context, d *Delivery, reason string) error {
-	msg, err := d.Decode()
+	env, err := d.Envelope()
 	if err != nil {
 		return fmt.Errorf("queue/nats: dlq decode: %w", err)
 	}
 	h := nats.Header{}
 	h.Set(dlqHeaderReason, reason)
-	h.Set(dlqHeaderRunID, msg.RunID)
-	h.Set(dlqHeaderTenant, msg.TenantID)
+	h.Set(dlqHeaderRunID, env.RunID)
+	h.Set(dlqHeaderTenant, env.TenantID)
 	h.Set(dlqHeaderDelivered, fmt.Sprintf("%d", d.NumDelivered()))
 	_, err = c.js.PublishMsg(ctx, &nats.Msg{
 		Subject: SubjectRunsDLQ,

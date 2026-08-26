@@ -176,6 +176,7 @@ func configToProcess(cfg *config) processConfig {
 		ForkSession:            cfg.forkSession,
 		ContinueConversation:   cfg.continueConversation,
 		NoSessionPersistence:   cfg.noSessionPersistence,
+		StrictMCPConfig:        cfg.strictMCPConfig,
 		OutputFormat:           cfg.outputFormat,
 		AddDirs:                cfg.addDirs,
 		SettingSources:         cfg.settingSources,

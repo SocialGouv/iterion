@@ -284,6 +284,10 @@ func (s *Server) routes() {
 	// (api-keys need the BYOK store, oauth the forfait store).
 	s.registerAdminLLMRoutes()
 
+	// Platform runtime settings (super-admin): the DB-backed form of the
+	// operational env vars — first family: the usage-cap percentages.
+	s.registerAdminSettingsRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban

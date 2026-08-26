@@ -32,8 +32,8 @@ type routeOp struct {
 func routeSchemas() map[string]routeOp {
 	return map[string]routeOp{
 		// Auth + identity.
-		"POST /api/auth/login": {request: loginReq{}, response: authResponse{}},
-		"GET /api/auth/me":     {response: authResponse{}},
+		"POST /api/auth/login": {request: loginReq{}, response: AuthMeResponse{}},
+		"GET /api/auth/me":     {response: AuthMeResponse{}},
 
 		// Personal access tokens (the CLI mints/lists these).
 		"POST /api/me/tokens": {

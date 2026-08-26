@@ -76,6 +76,35 @@ func DeliveryInstallationPermissions() map[string]string {
 	}
 }
 
+// SecurityReadInstallationPermissions is the grant set minted for the
+// security-read token (org-wide Dependabot alerts): the vulnerability_alerts
+// read permission plus the mandatory metadata baseline. It is a separate
+// opt-in profile — NEVER folded into the runtime baseline — because alert
+// data is sensitive (it names every vulnerable dependency of every repo) and
+// only bots that declare the dependabot_tokens secret should ever hold it.
+func SecurityReadInstallationPermissions() map[string]string {
+	return map[string]string{
+		"vulnerability_alerts": "read",
+		"metadata":             "read",
+	}
+}
+
+// MissingSecurityPermissions lists the security-read grants an installation
+// does NOT have, so the connection health view can name them before an
+// hourly vuln-watch run discovers the 422 in production. Empty when nothing
+// is missing (or when the grant set is unknown — absence of data is not
+// evidence of a gap).
+func MissingSecurityPermissions(granted map[string]string) []string {
+	if len(granted) == 0 {
+		return nil
+	}
+	var missing []string
+	if _, ok := granted["vulnerability_alerts"]; !ok {
+		missing = append(missing, "vulnerability_alerts")
+	}
+	return missing
+}
+
 // MissingDeliveryPermissions lists the delivery grants an installation does
 // NOT have, so the connection health view can name them BEFORE a run spends
 // hours discovering them at push time. Empty when nothing is missing (or when

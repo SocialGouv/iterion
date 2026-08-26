@@ -156,7 +156,11 @@ while keeping their data.
 When a run exhausts its NATS redelivery budget (default 8) the runner
 **parks** a copy on the DLQ stream and flips the run to
 `failed_resumable` ([pkg/runner/loop.go](../pkg/runner/loop.go), look
-for `parking on DLQ`). Triage:
+for `parking on DLQ`). The same park happens when a run's queue message
+is rejected for a **schema version mismatch** through the whole
+redelivery budget during a rolling upgrade — its reason header reads
+`queue: schema version: …` and the recovery procedure is
+[docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md). Triage:
 
 ```bash
 # List parked messages. cursor advances; next_cursor=0 means exhausted.

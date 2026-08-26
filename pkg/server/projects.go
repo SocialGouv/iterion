@@ -331,6 +331,9 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		if localSecretsEnabled {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
+		if s.usageCapSource != nil {
+			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
+		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
 			return fmt.Errorf("runview service: %w", svcErr)

@@ -33,12 +33,12 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	views := make([]userView, 0, len(users))
+	views := make([]UserView, 0, len(users))
 	for _, u := range users {
 		views = append(views, s.toUserView(u))
 	}
 	writeJSON(w, struct {
-		Users  []userView `json:"users"`
+		Users  []UserView `json:"users"`
 		Offset int        `json:"offset"`
 		Limit  int        `json:"limit"`
 	}{Users: views, Offset: offset, Limit: limit})

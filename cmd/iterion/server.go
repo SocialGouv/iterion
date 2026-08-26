@@ -53,6 +53,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	usernotifywebpush "github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -240,17 +241,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}()
 
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:           cfg.NATS.URL,
-		StreamName:    cfg.NATS.Stream,
-		DLQStream:     cfg.NATS.DLQStream,
-		KVBucket:      cfg.NATS.KVBucket,
-		MaxAckPending: cfg.NATS.MaxAckPending,
-		AckWait:       cfg.NATS.AckWait,
-		MaxDeliver:    cfg.NATS.MaxDeliver,
-		MaxAge:        cfg.NATS.MaxAge,
-		DLQMaxAge:     cfg.NATS.DLQMaxAge,
-		MaxPayload:    cfg.NATS.MaxPayload,
-		Logger:        logger,
+		URL:                 cfg.NATS.URL,
+		StreamName:          cfg.NATS.Stream,
+		DLQStream:           cfg.NATS.DLQStream,
+		KVBucket:            cfg.NATS.KVBucket,
+		MaxAckPending:       cfg.NATS.MaxAckPending,
+		AckWait:             cfg.NATS.AckWait,
+		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		MaxDeliver:          cfg.NATS.MaxDeliver,
+		MaxAge:              cfg.NATS.MaxAge,
+		DLQMaxAge:           cfg.NATS.DLQMaxAge,
+		MaxPayload:          cfg.NATS.MaxPayload,
+		Logger:              logger,
 	})
 	if err != nil {
 		return fmt.Errorf("server: connect NATS: %w", err)
@@ -525,6 +527,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CredPoolLeases:         stores.credLeases,
 		CredPoolLedger:         stores.credLedger,
 		Audit:                  stores.audit,
+		UsageCapSettings:       stores.usageCapSettings,
 		Marketplace:            stores.marketplace,
 		Redis:                  redisClient,
 		PATs:                   stores.pat,
@@ -612,6 +615,7 @@ type cloudStores struct {
 	credLeases       *credpool.MongoLeaseStore
 	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
+	usageCapSettings *usagecap.MongoSettingsStore
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -644,17 +648,18 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
 		// (an OIDC /start on pod A and /callback on pod B), which the per-process
 		// memory store can't guarantee in HA.
-		oidcState:      oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
-		desktopTickets: desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
-		wsTickets:      wsticket.NewMongoStore(st.DB(), time.Minute),
-		orgUsage:       orgusage.NewMongoCounter(st.DB()),
-		credPools:      credpool.NewMongoPoolStore(st.DB()),
-		credPledges:    credpool.NewMongoPledgeStore(st.DB()),
-		credLeases:     credpool.NewMongoLeaseStore(st.DB()),
-		credLedger:     credpool.NewMongoLedger(st.DB()).WithLogger(logger),
-		audit:          audit.NewMongoStore(st.DB()),
-		pat:            pat.NewMongoStore(st.DB()),
-		memory:         mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
+		oidcState:        oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
+		desktopTickets:   desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
+		wsTickets:        wsticket.NewMongoStore(st.DB(), time.Minute),
+		orgUsage:         orgusage.NewMongoCounter(st.DB()),
+		credPools:        credpool.NewMongoPoolStore(st.DB()),
+		credPledges:      credpool.NewMongoPledgeStore(st.DB()),
+		credLeases:       credpool.NewMongoLeaseStore(st.DB()),
+		credLedger:       credpool.NewMongoLedger(st.DB()).WithLogger(logger),
+		audit:            audit.NewMongoStore(st.DB()),
+		usageCapSettings: usagecap.NewMongoSettingsStore(st.DB()),
+		pat:              pat.NewMongoStore(st.DB()),
+		memory:           mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via

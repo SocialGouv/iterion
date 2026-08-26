@@ -208,7 +208,14 @@ const (
 	// runs during shutdown (SIGTERM, watchexec rebuild, etc). The companion
 	// run.json status flips to failed_resumable so the next boot can offer
 	// one-click resume — distinct from EventRunCancelled (user-initiated).
-	EventRunInterrupted   EventType = "run_interrupted"
+	EventRunInterrupted EventType = "run_interrupted"
+	// EventDelegateStarted / Finished / Error / Retry are the CLI-backend
+	// lifecycle. Unlike llm_request (claw-only), these fire for every
+	// delegate backend. Data always carries `backend`. Started also
+	// carries `declared_model` when the node asked for one. Finished /
+	// Error additionally carry `effective_model` (what the provider
+	// reported), `context_window`, `max_output_tokens`, `context_used`
+	// — omitted when unknown, so absence ≠ zero.
 	EventDelegateStarted  EventType = "delegate_started"
 	EventDelegateFinished EventType = "delegate_finished"
 	EventDelegateError    EventType = "delegate_error"
@@ -222,12 +229,28 @@ const (
 	// Data keys: from_backend, to_backend, from_model, to_model,
 	// from_provider, to_provider (the credential hints, "" = auto),
 	// reason (delegate.FallbackCategory), attempts (budget spent on the
-	// failed element), error.
+	// failed element), error. A reactive skip additionally carries cooldown
+	// (true) and cooldown_until, with attempts=0 and no error.
 	//
-	// This is the only record that a run was served by something other
-	// than what it asked for; without it a degraded run is
-	// indistinguishable from a clean one after the fact.
+	// This is the record that a fallback *chain* fired. Proxy / env
+	// overrides that rewrite the model without changing backend are
+	// EventModelDrift instead; a chain fall-through that also changes
+	// the model emits both.
 	EventModelFallback EventType = "model_fallback"
+
+	// EventModelDrift is emitted when a backend reports an effective
+	// model that is not the workflow-declared `model:` (ignoring a
+	// `provider/` routing prefix). The CLI backends already logged this
+	// as "requested X resolved to Y"; without a store event the drift
+	// was invisible in the studio and unrecoverable from events.jsonl.
+	//
+	// Distinct from EventModelFallback: drift is "what ran ≠ what was
+	// asked", whatever the cause (proxy, ANTHROPIC_MODEL, a fallback
+	// route, pi fuzzy-matching a typo). Fallback is specifically a
+	// chain fall-through.
+	//
+	// Data keys: backend, declared_model, effective_model.
+	EventModelDrift EventType = "model_drift"
 
 	// EventSandboxSkipped is emitted at run start when the workflow or a
 	// node requested an active sandbox mode (auto/inline) but the

@@ -303,6 +303,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/usage-caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/usage-caps */
+        get: operations["getAdminSettingsUsageCaps"];
+        /** PUT /api/admin/settings/usage-caps */
+        put: operations["putAdminSettingsUsageCaps"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/users": {
         parameters: {
             query?: never;
@@ -3316,7 +3334,8 @@ export interface paths {
         delete: operations["deleteTeamsByIdForgeConnectionsByConnId"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/teams/{id}/forge/connections/{conn_id} */
+        patch: operations["patchTeamsByIdForgeConnectionsByConnId"];
         trace?: never;
     };
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
@@ -4805,6 +4824,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthMeResponse: {
+            access_token?: string;
+            active_org_id?: string;
+            active_org_role?: string;
+            active_role?: string;
+            active_team_id?: string;
+            expires_at?: string;
+            orgs: components["schemas"]["OrgTreeView"][];
+            user: components["schemas"]["UserView"];
+        };
         BackendStatus: {
             auth: string;
             available: boolean;
@@ -4921,6 +4950,7 @@ export interface components {
                 [key: string]: string;
             };
             id: string;
+            installation_account?: string;
             installation_id?: number;
             kind: string;
             /** Format: date-time */
@@ -4928,7 +4958,9 @@ export interface components {
             namespace?: string;
             oauth_app_id?: string;
             provider: string;
+            purpose?: string;
             scopes?: string[];
+            security_read_enabled?: boolean;
             status: string;
             status_reason?: string;
             tenant_id: string;
@@ -5023,6 +5055,7 @@ export interface components {
             model?: string;
             node_id: string;
             served_by?: string;
+            skipped?: boolean;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;
@@ -5040,6 +5073,7 @@ export interface components {
             provider_app_id?: string;
             redirect_uri?: string;
             scopes?: string[];
+            security_read_only?: boolean;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
@@ -5085,12 +5119,34 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        MembershipView: {
+            personal?: boolean;
+            role: string;
+            team_id: string;
+            team_name: string;
+            team_slug: string;
+        };
+        NodeServed: {
+            backend: string;
+            context_window?: number;
+            declared_model?: string;
+            max_output_tokens?: number;
+            model?: string;
+        };
         NodeSessionSlot: {
             backend: string;
             conversation_ref?: string;
             fingerprint?: string;
             session_id?: string;
             state_ref?: string;
+        };
+        OrgTreeView: {
+            org_id: string;
+            org_name: string;
+            org_role: string;
+            org_slug: string;
+            personal?: boolean;
+            teams: components["schemas"]["MembershipView"][];
         };
         PipelineBoardAttempt: {
             /** Format: date-time */
@@ -5262,6 +5318,9 @@ export interface components {
             merged_into?: string;
             model_overrides?: components["schemas"]["RunModelOverride"][];
             name?: string;
+            nodes_served?: {
+                [key: string]: components["schemas"]["NodeServed"];
+            };
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
@@ -5365,6 +5424,14 @@ export interface components {
             token_last4: string;
             user_id: string;
         };
+        UserView: {
+            created_at?: string;
+            email: string;
+            id: string;
+            is_super_admin: boolean;
+            name?: string;
+            status: string;
+        };
         WireEdge: {
             condition?: string;
             expression?: string;
@@ -5409,16 +5476,6 @@ export interface components {
             provider: string;
             scope_user_id?: string;
         };
-        authResponse: {
-            access_token?: string;
-            active_org_id?: string;
-            active_org_role?: string;
-            active_role?: string;
-            active_team_id?: string;
-            expires_at?: string;
-            orgs: components["schemas"]["orgTreeView"][];
-            user: components["schemas"]["userView"];
-        };
         createApiKeyReq: {
             is_default?: boolean;
             name: string;
@@ -5462,8 +5519,10 @@ export interface components {
             live_error?: string;
             manage_install_url?: string;
             missing_permissions?: string[];
+            missing_security_permissions?: string[];
             provider: string;
             provisioned_repo_count: number;
+            security_read_enabled: boolean;
             status: string;
             status_reason?: string;
             token_missing_permissions?: string[];
@@ -5484,6 +5543,7 @@ export interface components {
             admin_token?: string;
             allow_app_delivery?: boolean;
             allow_repo_creation?: boolean;
+            allow_security_read?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;
@@ -5492,6 +5552,7 @@ export interface components {
             mode?: string;
             next?: string;
             provider: string;
+            security_read_only?: boolean;
         };
         forgeTeamRepo: {
             bot_ids: string[];
@@ -5508,13 +5569,6 @@ export interface components {
             email: string;
             password: string;
         };
-        membershipView: {
-            personal?: boolean;
-            role: string;
-            team_id: string;
-            team_name: string;
-            team_slug: string;
-        };
         modelPrefRequest: {
             backend?: string;
             effort?: string;
@@ -5527,14 +5581,6 @@ export interface components {
             key: string;
             model?: string;
             set: boolean;
-        };
-        orgTreeView: {
-            org_id: string;
-            org_name: string;
-            org_role: string;
-            org_slug: string;
-            personal?: boolean;
-            teams: components["schemas"]["membershipView"][];
         };
         orgView: {
             created_at?: string;
@@ -5627,14 +5673,6 @@ export interface components {
             monthly_run_quota?: number;
             name?: string;
             slug?: string;
-        };
-        userView: {
-            created_at?: string;
-            email: string;
-            id: string;
-            is_super_admin: boolean;
-            name?: string;
-            status: string;
         };
     };
     responses: never;
@@ -6095,6 +6133,42 @@ export interface operations {
             };
         };
     };
+    getAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAdminUsers: {
         parameters: {
             query?: never;
@@ -6226,7 +6300,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };
@@ -6264,7 +6338,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };
@@ -9937,6 +10011,27 @@ export interface operations {
         };
     };
     deleteTeamsByIdForgeConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdForgeConnectionsByConnId: {
         parameters: {
             query?: never;
             header?: never;

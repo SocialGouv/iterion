@@ -476,6 +476,71 @@ func TestInspect_SingleRun(t *testing.T) {
 	}
 }
 
+func TestInspect_ServedHidesAliasDeclared(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "store")
+	s, _ := store.New(storeDir)
+	_, _ = s.CreateRun(context.Background(), "run-served", "wf", nil)
+	ctx := context.Background()
+	if err := s.RecordNodeServed(ctx, "run-served", "campaign", store.NodeServed{
+		Backend:       "claude_code",
+		Model:         "claude-opus-5",
+		DeclaredModel: "anthropic/claude-opus-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordNodeServed(ctx, "run-served", "review", store.NodeServed{
+		Backend:       "pi",
+		Model:         "gpt-5.5-2026",
+		DeclaredModel: "openai/gpt-5.5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordNodeServed(ctx, "run-served", "fallback", store.NodeServed{
+		Backend:       "claude_code",
+		Model:         "glm-4.6",
+		DeclaredModel: "anthropic/claude-opus-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordNodeServed(ctx, "run-served", "claw", store.NodeServed{
+		Backend:       "claw",
+		DeclaredModel: "anthropic/claude-opus-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p, buf := newTestPrinter(cli.OutputHuman)
+	if err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-served"}, p); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Served") {
+		t.Fatalf("expected Served section, got:\n%s", out)
+	}
+	if !strings.Contains(out, "claude_code claude-opus-5") {
+		t.Errorf("campaign missing effective model, got:\n%s", out)
+	}
+	if strings.Contains(out, "claude_code claude-opus-5 (declared") {
+		t.Errorf("provider-prefix alias must not print as declared, got:\n%s", out)
+	}
+	if !strings.Contains(out, "pi gpt-5.5-2026") {
+		t.Errorf("review missing snapshot model, got:\n%s", out)
+	}
+	if strings.Contains(out, "gpt-5.5-2026 (declared") {
+		t.Errorf("snapshot suffix must not print as declared, got:\n%s", out)
+	}
+	if !strings.Contains(out, "glm-4.6 (declared anthropic/claude-opus-5)") {
+		t.Errorf("real rewrite must print declared, got:\n%s", out)
+	}
+	if !strings.Contains(out, "claw anthropic/claude-opus-5 (declared; backend reported none)") {
+		t.Errorf("empty Model must mark declared-only, got:\n%s", out)
+	}
+	if strings.Contains(out, "claw anthropic/claude-opus-5\n") {
+		t.Errorf("empty Model must not print as if it served, got:\n%s", out)
+	}
+}
+
 func TestInspect_SingleRunJSON(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")

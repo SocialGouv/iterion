@@ -16,7 +16,11 @@ green.
   runs the required checks on it, and squash-merges only if green. Grouping is
   `ALLGREEN` (a failing entry drops out; the rest still merge).
 - **Required checks** (the fast, reliable ones): `test`, `race`, `vendor-check`,
-  `mongo-conformance`. The slow container-image build is intentionally NOT
+  `mongo-conformance`, `golangci`, `revi/review` — and `nats-conformance` once
+  an admin adds it to ruleset 18857412 (a token with `repo` scope can read the
+  ruleset but gets a 404 on PUT). The `nats-conformance` job runs the JetStream
+  schema-rollout integration tests (#481); until it is required, a regression
+  there merges green. The slow container-image build is intentionally NOT
   required — it builds on merge to `main` and would stall the queue 12 min/PR.
 - No required human approval (`required_approving_review_count: 0`) — the bot
   factory's own adversarial review + the checks are the gate; a reviewer still

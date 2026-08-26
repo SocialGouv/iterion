@@ -1,6 +1,42 @@
 {
   "components": {
     "schemas": {
+      "AuthMeResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "active_org_id": {
+            "type": "string"
+          },
+          "active_org_role": {
+            "type": "string"
+          },
+          "active_role": {
+            "type": "string"
+          },
+          "active_team_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "orgs": {
+            "items": {
+              "$ref": "#/components/schemas/OrgTreeView"
+            },
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user",
+          "orgs"
+        ],
+        "type": "object"
+      },
       "BackendStatus": {
         "properties": {
           "auth": {
@@ -326,6 +362,9 @@
           "id": {
             "type": "string"
           },
+          "installation_account": {
+            "type": "string"
+          },
           "installation_id": {
             "type": "integer"
           },
@@ -345,11 +384,17 @@
           "provider": {
             "type": "string"
           },
+          "purpose": {
+            "type": "string"
+          },
           "scopes": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -694,6 +739,9 @@
           },
           "served_by": {
             "type": "string"
+          },
+          "skipped": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -748,6 +796,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "security_read_only": {
+            "type": "boolean"
           },
           "tenant_id": {
             "type": "string"
@@ -901,6 +952,55 @@
         ],
         "type": "object"
       },
+      "MembershipView": {
+        "properties": {
+          "personal": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "team_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "team_name",
+          "team_slug",
+          "role"
+        ],
+        "type": "object"
+      },
+      "NodeServed": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "declared_model": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend"
+        ],
+        "type": "object"
+      },
       "NodeSessionSlot": {
         "properties": {
           "backend": {
@@ -921,6 +1021,39 @@
         },
         "required": [
           "backend"
+        ],
+        "type": "object"
+      },
+      "OrgTreeView": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_role": {
+            "type": "string"
+          },
+          "org_slug": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "org_id",
+          "org_name",
+          "org_slug",
+          "org_role",
+          "teams"
         ],
         "type": "object"
       },
@@ -1498,6 +1631,12 @@
           "name": {
             "type": "string"
           },
+          "nodes_served": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeServed"
+            },
+            "type": "object"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -1825,6 +1964,35 @@
         ],
         "type": "object"
       },
+      "UserView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_super_admin": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "status",
+          "is_super_admin"
+        ],
+        "type": "object"
+      },
       "WireEdge": {
         "properties": {
           "condition": {
@@ -1995,42 +2163,6 @@
         ],
         "type": "object"
       },
-      "authResponse": {
-        "properties": {
-          "access_token": {
-            "type": "string"
-          },
-          "active_org_id": {
-            "type": "string"
-          },
-          "active_org_role": {
-            "type": "string"
-          },
-          "active_role": {
-            "type": "string"
-          },
-          "active_team_id": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "string"
-          },
-          "orgs": {
-            "items": {
-              "$ref": "#/components/schemas/orgTreeView"
-            },
-            "type": "array"
-          },
-          "user": {
-            "$ref": "#/components/schemas/userView"
-          }
-        },
-        "required": [
-          "user",
-          "orgs"
-        ],
-        "type": "object"
-      },
       "createApiKeyReq": {
         "properties": {
           "is_default": {
@@ -2172,11 +2304,20 @@
             },
             "type": "array"
           },
+          "missing_security_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "provider": {
             "type": "string"
           },
           "provisioned_repo_count": {
             "type": "integer"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -2201,7 +2342,8 @@
           "status",
           "provider",
           "kind",
-          "provisioned_repo_count"
+          "provisioned_repo_count",
+          "security_read_enabled"
         ],
         "type": "object"
       },
@@ -2246,6 +2388,9 @@
           "allow_repo_creation": {
             "type": "boolean"
           },
+          "allow_security_read": {
+            "type": "boolean"
+          },
           "client_id": {
             "type": "string"
           },
@@ -2269,6 +2414,9 @@
           },
           "provider": {
             "type": "string"
+          },
+          "security_read_only": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2334,32 +2482,6 @@
         ],
         "type": "object"
       },
-      "membershipView": {
-        "properties": {
-          "personal": {
-            "type": "boolean"
-          },
-          "role": {
-            "type": "string"
-          },
-          "team_id": {
-            "type": "string"
-          },
-          "team_name": {
-            "type": "string"
-          },
-          "team_slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "team_id",
-          "team_name",
-          "team_slug",
-          "role"
-        ],
-        "type": "object"
-      },
       "modelPrefRequest": {
         "properties": {
           "backend": {
@@ -2401,39 +2523,6 @@
         "required": [
           "key",
           "set"
-        ],
-        "type": "object"
-      },
-      "orgTreeView": {
-        "properties": {
-          "org_id": {
-            "type": "string"
-          },
-          "org_name": {
-            "type": "string"
-          },
-          "org_role": {
-            "type": "string"
-          },
-          "org_slug": {
-            "type": "string"
-          },
-          "personal": {
-            "type": "boolean"
-          },
-          "teams": {
-            "items": {
-              "$ref": "#/components/schemas/membershipView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "org_id",
-          "org_name",
-          "org_slug",
-          "org_role",
-          "teams"
         ],
         "type": "object"
       },
@@ -2747,35 +2836,6 @@
             "type": "string"
           }
         },
-        "type": "object"
-      },
-      "userView": {
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "is_super_admin": {
-            "type": "boolean"
-          },
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "email",
-          "status",
-          "is_super_admin"
-        ],
         "type": "object"
       }
     }
@@ -3323,6 +3383,32 @@
         }
       ]
     },
+    "/api/admin/settings/usage-caps": {
+      "get": {
+        "operationId": "getAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/users": {
       "get": {
         "operationId": "getAdminUsers",
@@ -3445,7 +3531,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
@@ -3480,7 +3566,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
@@ -7483,7 +7569,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdForgeConnectionsByConnId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
       "get": {

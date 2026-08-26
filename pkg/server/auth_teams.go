@@ -20,7 +20,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgs, _ := s.buildOrgTree(r.Context(), u.ID)
-	writeJSON(w, authResponse{
+	writeJSON(w, AuthMeResponse{
 		User:          s.toUserView(u),
 		Orgs:          orgs,
 		ActiveOrg:     id.OrgID,
@@ -83,13 +83,13 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	if err != nil && s.logger != nil {
 		s.logger.Warn("auth: bulk-load teams for user %s: %v", id.UserID, err)
 	}
-	views := make([]membershipView, 0, len(memberships))
+	views := make([]MembershipView, 0, len(memberships))
 	for _, m := range memberships {
 		t, ok := teamsByID[m.TeamID]
 		if !ok {
 			continue
 		}
-		views = append(views, membershipView{
+		views = append(views, MembershipView{
 			TeamID:   t.ID,
 			TeamName: t.Name,
 			TeamSlug: t.Slug,
@@ -98,7 +98,7 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, struct {
-		Teams []membershipView `json:"teams"`
+		Teams []MembershipView `json:"teams"`
 	}{Teams: views})
 }
 

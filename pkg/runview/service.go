@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/workspacetrack"
 )
 
@@ -91,6 +92,10 @@ type LaunchSpec struct {
 	// ("", "on", "off"). "" inherits the workflow `loop_budget_guard:` then
 	// ITERION_LOOP_BUDGET_GUARD.
 	LoopBudgetGuard string
+	// Supervisors is the run-level kill switch for DSL-declared
+	// `supervisor NAME:` watchers ("", "on", "off"). "" inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny") from the studio Launch toggle. ""
 	// inherits the workflow/node `permission:` DSL then
@@ -345,6 +350,9 @@ type ResumeSpec struct {
 	// LoopBudgetGuard re-states the run-level back-edge affordability
 	// override ("", "on", "off"), for the same reason AutoMemory does.
 	LoopBudgetGuard string
+	// Supervisors re-states the run-level supervisors kill switch
+	// ("", "on", "off"), for the same reason AutoMemory does.
+	Supervisors string
 }
 
 // RunSummary is the lightweight per-row shape returned by List.
@@ -499,6 +507,12 @@ type Service struct {
 	// in-process engine this service launches (see WithSandboxDefault).
 	// Empty = neutral (no default), the contract tests rely on.
 	sandboxDefault string
+
+	// usageCapSource, when non-nil, is the LIVE usage-cap policy source
+	// (the DB-backed runtime-settings resolver) consulted by the launch
+	// preflight and threaded into every in-process executor's guard —
+	// see WithUsageCapSource. Nil keeps the env-only resolution.
+	usageCapSource usagecap.PolicySource
 
 	// sbStore persists per-run Session-board specs (the LLM curation
 	// layer's output). Nil when no on-disk store dir is available (cloud
@@ -684,6 +698,15 @@ func WithSandboxDefault(mode string) ServiceOption {
 	return func(s *Service) {
 		s.sandboxDefault = mode
 	}
+}
+
+// WithUsageCapSource wires a LIVE usage-cap policy source (the DB-backed
+// runtime-settings resolver, pkg/usagecap.Resolver) into the service: the
+// launch-time preflight and every in-process executor's guard then read
+// the effective (db-or-env) policy per evaluation instead of the env
+// value frozen at process start. Nil keeps env-only resolution.
+func WithUsageCapSource(src usagecap.PolicySource) ServiceOption {
+	return func(s *Service) { s.usageCapSource = src }
 }
 
 // AlertSettings configures the run-health alert Manager the service

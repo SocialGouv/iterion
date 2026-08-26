@@ -387,7 +387,7 @@ mcp_server ultra11y:
 tool prepare:
   command: `export npm_config_update_notifier=false
 GOT=$(npx -y ultra11y@{{vars.engine_version}} --version 2>/dev/null | tail -1)
-WS='{{vars.workspace_dir}}' WANT='{{vars.engine_version}}' GOT=$GOT PR='{{vars.pr_url}}' BASE='{{vars.base_ref}}' GLOBS='{{vars.scope_globs}}' JSX='{{vars.force_jsx}}' python3 -c "
+WS={{vars.workspace_dir}} WANT={{vars.engine_version}} GOT=$GOT PR={{vars.pr_url}} BASE={{vars.base_ref}} GLOBS={{vars.scope_globs}} JSX={{vars.force_jsx}} python3 -c "
 import os, json, sys
 want = os.environ.get('WANT','').strip()
 got  = os.environ.get('GOT','').strip()
@@ -450,11 +450,11 @@ print(json.dumps({'engine_version': got, 'mode': mode, 'audit_args': args, 'list
 ## and the engine would report 0 files — see prepare_output.
 tool static_audit:
   command: `export npm_config_update_notifier=false
-mkdir -p '{{input.run_dir}}'
+mkdir -p {{input.run_dir}}
 set -f
-npx -y ultra11y@{{input.engine_version}} audit {{input.audit_args}} --out '{{input.run_dir}}' --json --lang '{{input.report_lang}}' > /dev/null 2>'{{input.run_dir}}/audit.err' || { cat '{{input.run_dir}}/audit.err' >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} audit {{input.audit_args}} --out {{input.run_dir}} --json --lang {{input.report_lang}} > /dev/null 2>{{input.run_dir}}/audit.err || { cat {{input.run_dir}}/audit.err >&2; exit 1; }
 set +f
-RUN='{{input.run_dir}}' python3 -c "
+RUN={{input.run_dir}} python3 -c "
 import os, json, sys
 run = os.environ['RUN']
 p = os.path.join(run, 'audit-latest.json')
@@ -480,16 +480,15 @@ print(json.dumps({'files': files, 'findings': findings, 'conformance_pct': int(a
 ## each verdict requires), so the agent needs nothing from this file.
 tool worklist:
   command: `export npm_config_update_notifier=false
-RUN='{{input.run_dir}}'
-STD=''
-if [ -n '{{input.standard}}' ]; then STD='--standard {{input.standard}}'; fi
+RUN={{input.run_dir}}
+STD_VAL={{input.standard}}
 ## report must not be silent: a failed write plus ls of a leftover
 ## ADJUDICATE.md (C locale sorts it before any dated report) is the
 ## empty-scope façade on the second run of the same project.
-npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$RUN" $STD --lang '{{input.report_lang}}' > "$RUN/draft.log" 2>&1 || { cat "$RUN/draft.log" >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$RUN" ${STD_VAL:+--standard "$STD_VAL"} --lang {{input.report_lang}} > "$RUN/draft.log" 2>&1 || { cat "$RUN/draft.log" >&2; exit 1; }
 REPORT=$(ls -1t "$RUN"/*.md 2>/dev/null | grep -v '/ADJUDICATE.md$' | head -1)
 if [ -z "$REPORT" ]; then echo 'the engine wrote no draft report to render a worklist from' >&2; exit 1; fi
-npx -y ultra11y@{{input.engine_version}} verify --report "$REPORT" --in "$RUN/audit-latest.json" --manual $STD --out "$RUN" --json > "$RUN/worklist.json" 2>"$RUN/worklist.err" || { cat "$RUN/worklist.err" >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} verify --report "$REPORT" --in "$RUN/audit-latest.json" --manual ${STD_VAL:+--standard "$STD_VAL"} --out "$RUN" --json > "$RUN/worklist.json" 2>"$RUN/worklist.err" || { cat "$RUN/worklist.err" >&2; exit 1; }
 RUN=$RUN python3 -c "
 import os, json, sys
 run = os.environ['RUN']
@@ -531,8 +530,8 @@ agent adjudicate:
 ## this never reaches a report.
 tool fold:
   command: `export npm_config_update_notifier=false
-RUN='{{input.run_dir}}'
-npx -y ultra11y@{{input.engine_version}} verify --apply '{{input.verdicts_path}}' --in "$RUN/audit-latest.json" --out "$RUN" --json > "$RUN/folded.json" 2>"$RUN/folded.err"
+RUN={{input.run_dir}}
+npx -y ultra11y@{{input.engine_version}} verify --apply {{input.verdicts_path}} --in "$RUN/audit-latest.json" --out "$RUN" --json > "$RUN/folded.json" 2>"$RUN/folded.err"
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
   echo 'the adjudication was REFUSED by the engine gate — no report will be produced from it:' >&2
@@ -571,17 +570,16 @@ print(json.dumps({'applied': int(f.get('applied') or 0), 'still_manual': int(f.g
 tool deliver:
   publish: a11y_findings
   command: `export npm_config_update_notifier=false
-RUN='{{input.run_dir}}'
-OUT='{{input.report_dir}}'
-STD=''
-if [ -n '{{input.standard}}' ]; then STD='--standard {{input.standard}}'; fi
+RUN={{input.run_dir}}
+OUT={{input.report_dir}}
+STD_VAL={{input.standard}}
 mkdir -p "$OUT"
-npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$OUT" $STD --lang '{{input.report_lang}}' > "$RUN/report.path" 2>"$RUN/report.err" || { cat "$RUN/report.err" >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} report --in "$RUN/audit-latest.json" --out "$OUT" ${STD_VAL:+--standard "$STD_VAL"} --lang {{input.report_lang}} > "$RUN/report.path" 2>"$RUN/report.err" || { cat "$RUN/report.err" >&2; exit 1; }
 REPORT=$(tail -1 "$RUN/report.path")
 if [ ! -f "$REPORT" ]; then echo "the report path the engine printed does not exist: $REPORT" >&2; exit 1; fi
-npx -y ultra11y@{{input.engine_version}} check --report "$REPORT" --in "$RUN/audit-latest.json" $STD --json > "$RUN/check.json" 2>"$RUN/check.err" || { echo 'REPORT INTEGRITY GATE FAILED — the report cites something that does not resolve:' >&2; cat "$RUN/check.json" "$RUN/check.err" 2>/dev/null >&2; exit 1; }
-npx -y ultra11y@{{input.engine_version}} prd --in "$RUN/audit-latest.json" --out "$RUN" $STD --issues-json --lang '{{input.report_lang}}' > /dev/null 2>"$RUN/prd.err" || { cat "$RUN/prd.err" >&2; exit 1; }
-RUN=$RUN REPORT=$REPORT CAP='{{input.cap}}' python3 -c "
+npx -y ultra11y@{{input.engine_version}} check --report "$REPORT" --in "$RUN/audit-latest.json" ${STD_VAL:+--standard "$STD_VAL"} --json > "$RUN/check.json" 2>"$RUN/check.err" || { echo 'REPORT INTEGRITY GATE FAILED — the report cites something that does not resolve:' >&2; cat "$RUN/check.json" "$RUN/check.err" 2>/dev/null >&2; exit 1; }
+npx -y ultra11y@{{input.engine_version}} prd --in "$RUN/audit-latest.json" --out "$RUN" ${STD_VAL:+--standard "$STD_VAL"} --issues-json --lang {{input.report_lang}} > /dev/null 2>"$RUN/prd.err" || { cat "$RUN/prd.err" >&2; exit 1; }
+RUN=$RUN REPORT=$REPORT CAP={{input.cap}} python3 -c "
 import os, json, glob, sys
 run = os.environ['RUN']
 try:

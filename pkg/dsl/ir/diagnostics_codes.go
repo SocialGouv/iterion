@@ -34,7 +34,7 @@ const (
 	DiagRefFieldNotInSchema      DiagCode = "C031" // outputs ref field not in output schema
 	DiagRefNodeNoSchema          DiagCode = "C032" // outputs ref field on node without output schema
 	DiagUndeclaredVar            DiagCode = "C033" // vars ref to undeclared variable
-	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in input schema
+	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in the namespace C034 validates (node input schema, or source output schema on an edge with-mapping)
 	DiagUnknownResourceInNeeds   DiagCode = "C195" // needs: references a resource not declared in resources:
 	DiagUnknownArtifact          DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable      DiagCode = "C036" // outputs ref to node not reachable before consumer
@@ -83,7 +83,8 @@ const (
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
 
 	// Compress output-compression mode diagnostics.
-	DiagInvalidCompress DiagCode = "C102" // compress: value not one of on|off|ultra (error)
+	DiagInvalidCompress  DiagCode = "C102" // compress: value not one of on|off|ultra (error)
+	DiagQuotedCommandRef DiagCode = "C137" // a tool command wraps a {{ref}} in quotes the runtime already adds (warning)
 
 	// Backend auto-memory (MEMORY.md) switch diagnostics.
 	DiagInvalidAutoMemory      DiagCode = "C131" // auto_memory: value not one of on|off (error)

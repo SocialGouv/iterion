@@ -89,6 +89,10 @@ type launchRunRequest struct {
 	// affordability guard ("on"|"off"). Empty inherits the workflow
 	// loop_budget_guard: DSL then ITERION_LOOP_BUDGET_GUARD. See docs/dsl.md.
 	LoopBudgetGuard string `json:"loop_budget_guard,omitempty"`
+	// Supervisors is the run-level kill switch for DSL-declared
+	// `supervisor NAME:` watchers ("on"|"off"). Empty inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string `json:"supervisors,omitempty"`
 	// Permission is the run-level tool-permission-gate mode override
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
@@ -100,7 +104,8 @@ type launchRunRequest struct {
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
-	// See runview.ModelOverrideEntry.
+	// See runview.ModelOverrideEntry. The current queue contract carries them
+	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
 	// Fallback is the operator's single run-level fallback route, taken
 	// when an agent node's primary fails. It applies only to agent nodes
@@ -305,6 +310,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.
 	var repoProjectPath string
@@ -326,6 +332,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			// Cross-team ids 404 (non-enumeration), like every forge route.
 			s.httpErrorFor(w, r, http.StatusNotFound, "connection not found")
 			span.SetStatus(codes.Error, "connection not found")
+			return
+		}
+		// A watch-only connection cannot clone or push. The orchestrator
+		// refuses it too, but only once the launch is under way — say it here,
+		// where the operator picked it, instead of failing in the pod.
+		if conn.IsSecurityReadOnly() {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity,
+				"connection %s is watch-only (Dependabot alerts only) — it cannot clone or push; pick the team's runtime connection", conn.ID)
+			span.SetStatus(codes.Error, "watch-only connection")
 			return
 		}
 		// The repo must live on the connection's forge host: the managed
@@ -401,6 +416,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Compress:          req.Compress,
 		AutoMemory:        req.AutoMemory,
 		LoopBudgetGuard:   req.LoopBudgetGuard,
+		Supervisors:       req.Supervisors,
 		Permission:        req.Permission,
 		ReviewMode:        req.ReviewMode,
 		// The manual path resolves the retry chain like every automated

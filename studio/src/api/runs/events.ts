@@ -417,6 +417,7 @@ export type PassthroughEventType =
   | "delegate_error"
   | "delegate_retry"
   | "model_fallback"
+  | "model_drift"
   | "sandbox_skipped"
   | "sandbox_started"
   | "sandbox_claw_routed_via_runner"

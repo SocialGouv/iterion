@@ -135,7 +135,11 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 		return "", fmt.Errorf("llm router %q: %w", routerNodeID, err)
 	}
 
-	rs.outputs[routerNodeID] = output
+	// Overlay the selection onto the payload the router received so
+	// {{input.x}} on an outgoing with-mapping sees the same pass-through
+	// namespace as every other router mode. Selection keys win on a
+	// clash. _route_candidates is executor-only, not payload.
+	rs.outputs[routerNodeID] = mergeRouterPassThrough(routerInput, output)
 
 	// Record budget usage and check limits.
 	if err := e.recordAndCheckBudget(rs, routerNodeID, output); err != nil {
@@ -147,6 +151,25 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 		return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
 	}
 	return e.execLLMRouterSingle(rs, routerNodeID, output, candidates)
+}
+
+// mergeRouterPassThrough overlays an llm router's selection onto the
+// input it received. Deterministic routers already store input as
+// output; without this merge, {{input.x}} on an llm-router edge
+// resolved only against {selected_route, reasoning} and was nil for
+// every payload field.
+func mergeRouterPassThrough(input, selection map[string]any) map[string]any {
+	out := make(map[string]any, len(input)+len(selection))
+	for k, v := range input {
+		if k == "_route_candidates" {
+			continue
+		}
+		out[k] = v
+	}
+	for k, v := range selection {
+		out[k] = v
+	}
+	return out
 }
 
 // execLLMRouterSingle handles single-route LLM selection.

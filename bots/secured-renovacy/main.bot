@@ -2215,7 +2215,14 @@ agent detect_stack:
 ## empty — and Phase 2's review nodes diff against an empty
 ## base, which silently degrades to "review the whole repo".
 tool capture_start_sha:
-  command: "printf '{\"sha\":\"%s\"}' \"$(git -C {{input.workspace_dir}} rev-parse HEAD)\""
+  ## The reference rides an env assignment and git is called with an argv
+  ## list: a quote written around a reference does not nest with the one the
+  ## runtime adds, it cancels or corrupts the value (diagnostic C137).
+  command: `WS={{input.workspace_dir}} python3 -c "
+import json, os, subprocess
+sha = subprocess.run(['git', '-C', os.environ['WS'], 'rev-parse', 'HEAD'], stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
+print(json.dumps({'sha': sha}))
+"`
   input: sha_input
   output: sha_output
 
