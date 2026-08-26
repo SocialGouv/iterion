@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,16 +47,29 @@ const defaultBudgetExitGraceRatio = 0.1
 // Values outside [0,1] and unparsable values fall back to the default
 // rather than silently inventing a policy.
 func budgetExitGraceRatio() float64 {
-	raw := os.Getenv("ITERION_BUDGET_EXIT_GRACE")
+	raw := strings.TrimSpace(os.Getenv("ITERION_BUDGET_EXIT_GRACE"))
 	if raw == "" {
 		return defaultBudgetExitGraceRatio
 	}
+	switch strings.ToLower(raw) {
+	case "off", "no", "false", "none":
+		return 0
+	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil || v < 0 || v > 1 {
-		return defaultBudgetExitGraceRatio
+		// Fail CLOSED on a spend control: an operator reaching for this
+		// variable wants a TIGHTER policy ("off", "10" meaning percent…);
+		// silently granting the permissive default instead would spend
+		// past the cap they asked to be absolute.
+		graceEnvWarnOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "iterion: ITERION_BUDGET_EXIT_GRACE=%q is not a ratio in [0,1] — treating the caps as ABSOLUTE (grace 0)\n", raw)
+		})
+		return 0
 	}
 	return v
 }
+
+var graceEnvWarnOnce sync.Once
 
 // withinBudgetGrace reports whether a node may run on a spent budget:
 // the run must still be inside the bounded allowance. It returns the
@@ -71,6 +87,12 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
 	if !e.loopBudgetGuardEnabled() {
+		return "", false
+	}
+	// An externally-imposed cap (platform ceiling, pool donor allowance —
+	// ir.Budget.CapImposed) is an absolute promise to a third party: no
+	// grace, the declared figure IS the wall.
+	if rs.budget.capIsImposed() {
 		return "", false
 	}
 	ratio := budgetExitGraceRatio()
@@ -93,4 +115,11 @@ func (b *SharedBudget) GracedRemainingDuration(ratio float64) (remaining time.Du
 	}
 	ceiling := time.Duration(float64(b.maxDuration) * (1 + ratio))
 	return ceiling - time.Since(b.startedAt), true
+}
+
+// capIsImposed reports whether any of this budget's limits was clamped
+// by an authority outside the run. Lock-free read of an immutable-after-
+// construction field.
+func (b *SharedBudget) capIsImposed() bool {
+	return b != nil && b.capImposed
 }

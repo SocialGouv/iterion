@@ -1770,7 +1770,7 @@ func TestBudgetGraceEdgeErrorStillDiesOnBudget(t *testing.T) {
 // grace that was never granted. Ratio raised via env so the test's
 // timing window is wide enough to be deterministic.
 func TestBudgetGraceCoversDuration(t *testing.T) {
-	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.5")
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.9")
 	wf := &ir.Workflow{
 		Name:  "budget_grace_duration",
 		Entry: "work",
@@ -2002,6 +2002,10 @@ func TestBudgetGraceCoversImmediateRecordPath(t *testing.T) {
 // second opinion, or refusing a node at 90% of axis B while permitting
 // 110% of axis A would defeat the grace exactly where it matters.
 func TestBudgetGraceSurvivesHardLimitOnAnotherAxis(t *testing.T) {
+	// Widened graced ceiling (3s for a 2s cap) so the wall-clock margin
+	// holds on a loaded CI runner; duration still sits in the 90%+
+	// hard-limit band when the tail is considered, which is the point.
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.5")
 	wf := &ir.Workflow{
 		Name:  "budget_grace_hard_limit_other_axis",
 		Entry: "work",
@@ -2039,5 +2043,121 @@ func TestBudgetGraceSurvivesHardLimitOnAnotherAxis(t *testing.T) {
 	}
 	if !tailRan {
 		t.Fatal("the delivery node never ran")
+	}
+}
+
+// TestBudgetGraceRefusedOnImposedCap pins the boundary that makes the
+// grace safe to default-on: a cap CLAMPED by an external authority
+// (platform ceiling, pool donor's remaining allowance —
+// ir.Budget.CapImposed) is an absolute promise to a third party. The
+// grace must never spend a donor's money past what they granted.
+func TestBudgetGraceRefusedOnImposedCap(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_imposed_cap",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0, CapImposed: true},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-imposed-cap", nil)
+	if err == nil || !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("an externally-imposed cap must be absolute, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node was graced past a cap imposed by a third party")
+	}
+}
+
+// TestBudgetGraceCoversFanOut pins the parallel path: the sequential
+// boundary graces a run past its cap, and the design deliberately allows
+// the graced walk to reach ANY forward node — including a fan-out. The
+// branch scheduler's own budget checks must consult the same grace, or
+// the run dies at the first router.
+func TestBudgetGraceCoversFanOut(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_fanout",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"branch_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_a"}},
+			"branch_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "branch_b"}},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}, AwaitMode: ir.AwaitBestEffort},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "work", To: "router"},
+			{From: "router", To: "branch_a"},
+			{From: "router", To: "branch_b"},
+			{From: "branch_a", To: "done"},
+			{From: "branch_b", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	var branches atomic.Int32
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	for _, b := range []string{"branch_a", "branch_b"} {
+		exec.on(b, func(_ map[string]any) (map[string]any, error) {
+			branches.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+	}
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-grace-fanout", nil); err != nil {
+		t.Fatalf("a graced run died at its fan-out: %v", err)
+	}
+	if got := branches.Load(); got != 2 {
+		t.Fatalf("expected both branches to run under the grace, got %d", got)
+	}
+}
+
+// TestBudgetGraceInvalidEnvFailsClosed pins the parse direction of the
+// override: an operator reaching for ITERION_BUDGET_EXIT_GRACE wants a
+// TIGHTER policy; a value the parser does not understand must land on
+// the absolute-cap side, never silently grant the permissive default.
+func TestBudgetGraceInvalidEnvFailsClosed(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "off")
+	if got := budgetExitGraceRatio(); got != 0 {
+		t.Fatalf("'off' must mean absolute caps, got ratio %v", got)
+	}
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "10")
+	if got := budgetExitGraceRatio(); got != 0 {
+		t.Fatalf("an out-of-range value must fail closed to 0, got %v", got)
+	}
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "banana")
+	if got := budgetExitGraceRatio(); got != 0 {
+		t.Fatalf("an unparsable value must fail closed to 0, got %v", got)
 	}
 }

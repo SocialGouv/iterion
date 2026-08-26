@@ -208,6 +208,7 @@ type BudgetOverrides struct {
 	MaxDuration         string  `json:"max_duration,omitempty"`
 	MaxIterations       int     `json:"max_iterations,omitempty"`
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+	CapImposed          bool    `json:"cap_imposed,omitempty"`
 }
 
 // ModelOverride is one launch-time selector→override directive (the wire

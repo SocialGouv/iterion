@@ -394,12 +394,20 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 			// running deadline-less — an unbounded stall is exactly
 			// what the deadline exists to terminate, grace or not.
 			rem, _ = rs.budget.GracedRemainingDuration(budgetExitGraceRatio())
+			if rem <= 0 {
+				// The sliver of graced room the gate saw was consumed
+				// between there and here (span start, template build):
+				// fail on the budget rather than run with NO deadline.
+				used, limit, _ := rs.budget.DurationStatus()
+				span.End()
+				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
+					exceeded: true, dimension: "duration", used: used, limit: limit,
+				})
+			}
 		}
-		if rem > 0 {
-			var cancel context.CancelFunc
-			spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
-			defer cancel()
-		}
+		var cancel context.CancelFunc
+		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
+		defer cancel()
 	}
 
 	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)

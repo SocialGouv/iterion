@@ -1487,6 +1487,10 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 		logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its donor's remaining allowance", runID, resolved.MaxCostUSD)
 	}
 	effective.MaxCostUSD = resolved.MaxCostUSD
+	// The donor's allowance is an ABSOLUTE promise: the exit grace must
+	// not spend past it, so the imposed-cap marker travels with the
+	// override (ir.Budget.CapImposed on the runner side).
+	effective.CapImposed = effective.CapImposed || resolved.CapImposed
 	return budgetForWire(&effective)
 }
 
@@ -1503,6 +1507,7 @@ func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
 		MaxDuration:         o.MaxDuration,
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
+		CapImposed:          o.CapImposed,
 	}
 }
 

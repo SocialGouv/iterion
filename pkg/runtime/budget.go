@@ -33,6 +33,10 @@ type SharedBudget struct {
 	// warnTokens is advisory-only: crossing it emits a single
 	// budget_warning (advisory=true) but never hard-limits the run.
 	warnTokens int
+	// capImposed mirrors ir.Budget.CapImposed: at least one limit was
+	// clamped by an external authority, so the exit grace is refused.
+	// Immutable after construction.
+	capImposed bool
 
 	// Consumed.
 	tokensUsed     int
@@ -103,6 +107,7 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
+		capImposed:      b.CapImposed,
 		startedAt:       time.Now(),
 		warningsEmitted: make(map[string]bool),
 	}

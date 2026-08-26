@@ -1587,6 +1587,7 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 		MaxDuration:         b.MaxDuration,
 		MaxIterations:       b.MaxIterations,
 		MaxParallelBranches: b.MaxParallelBranches,
+		CapImposed:          b.CapImposed,
 	}
 	if o.IsZero() {
 		return nil
