@@ -69,6 +69,8 @@ supervisor coach:
   monitors: ["event_type=budget_warning"]
 
 agent work:
+  backend: "claw"
+  model: "anthropic/claude-opus-5"
   system: sys
   output: out
 
