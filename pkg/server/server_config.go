@@ -27,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -228,6 +229,13 @@ type Config struct {
 	// (server_info.bot_editing_enabled); nil answers 501 there. The writable,
 	// tenant-scoped counterpart to the read-only catalog baked into the image.
 	BotSources botsource.Store
+
+	// BotRolesSettings / SandboxSettings are the platform runtime-settings
+	// family stores (pkg/platformcfg): role→bot-id overrides for the
+	// webhook lanes, and the runtime-mutable sandbox default image. Nil
+	// keeps the hardcoded/env defaults (local mode).
+	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
+	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

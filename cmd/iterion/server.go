@@ -42,6 +42,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -339,8 +340,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
-		BotSources:       stores.botSources,
 		CredPool:         credBroker,
+		SandboxImage:     platformSandboxImageResolver(stores, logger),
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -506,6 +507,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
 		BotSources:             stores.botSources,
+		BotRolesSettings:       stores.botRoles,
+		SandboxSettings:        stores.sandboxCfg,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -606,6 +609,8 @@ type cloudStores struct {
 	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
+	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -633,6 +638,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
+		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
@@ -1034,4 +1041,20 @@ func buildOIDCRegistry(cfg iterconfig.Config) *oidc.Registry {
 		registry.Register(oidc.NewGenericConnector(cfg.Auth.OIDC.Generic.IssuerURL, cfg.Auth.OIDC.Generic.ClientID, cfg.Auth.OIDC.Generic.ClientSecret, cfg.Auth.OIDC.Generic.DisplayName, cfg.Auth.OIDC.Generic.Scopes))
 	}
 	return registry
+}
+
+// platformSandboxImageResolver builds the publish-time resolver for the
+// platform sandbox default-image setting: a TTL-cached read of the
+// `sandbox` settings family, pinned onto each RunMessage so a redelivery
+// reruns in the same environment. Returns "" (inherit env/built-in) when
+// no override is stored.
+func platformSandboxImageResolver(stores *cloudStores, logger *iterlog.Logger) func(context.Context) string {
+	resolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
+	return func(ctx context.Context) string {
+		rec := resolver.Get(ctx)
+		if rec == nil || rec.DefaultImage == nil {
+			return ""
+		}
+		return strings.TrimSpace(*rec.DefaultImage)
+	}
 }

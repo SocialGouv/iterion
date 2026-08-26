@@ -1939,6 +1939,141 @@
         ],
         "type": "object"
       },
+      "botSourceForkReq": {
+        "properties": {
+          "from": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "type": "object"
+      },
+      "botSourceMetaView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "slug",
+          "files",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "botSourcePutReq": {
+        "properties": {
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "type": "object"
+      },
+      "botSourceView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "slug",
+          "files",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
       "createApiKeyReq": {
         "properties": {
           "is_default": {
@@ -2607,6 +2742,195 @@
         ]
       }
     },
+    "/api/admin/bots": {
+      "get": {
+        "operationId": "getAdminBots",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "bot_sources": {
+                      "items": {
+                        "$ref": "#/components/schemas/botSourceMetaView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "bot_sources"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/bots",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}": {
+      "delete": {
+        "operationId": "deleteAdminBotsBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "getAdminBotsBySlug",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminBotsBySlug",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourcePutReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}/files/{path}": {
+      "delete": {
+        "operationId": "deleteAdminBotsBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/bots/{slug}/files/{path...}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminBotsBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/bots/{slug}/files/{path...}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}/fork": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminBotsBySlugFork",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourceForkReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/admin/bots/{slug}/fork",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/llm/api-keys": {
       "get": {
         "operationId": "getAdminLlmApiKeys",
@@ -3114,6 +3438,58 @@
           }
         }
       ]
+    },
+    "/api/admin/settings/bot-roles": {
+      "get": {
+        "operationId": "getAdminSettingsBotRoles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/bot-roles",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBotRoles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/bot-roles",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/sandbox": {
+      "get": {
+        "operationId": "getAdminSettingsSandbox",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/sandbox",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsSandbox",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/sandbox",
+        "tags": [
+          "admin"
+        ]
+      }
     },
     "/api/admin/settings/usage-caps": {
       "get": {
@@ -6799,6 +7175,170 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/bot-sources": {
+      "get": {
+        "operationId": "getTeamsByIdBotSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bot-sources",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/bot-sources/{slug}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bot-sources/{slug}/files/{path}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotSourcesBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBotSourcesBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/bot-sources/{slug}/files/{path...}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bot-sources/{slug}/fork": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotSourcesBySlugFork",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bot-sources/{slug}/fork",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/bots/{bot_id}/bindings": {
       "get": {

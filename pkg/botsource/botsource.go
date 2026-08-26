@@ -30,6 +30,33 @@ import (
 // bundle.MainBotFile so a source cannot persist a bundle the loader would reject.
 const MainBotFile = bundle.MainBotFile
 
+// PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
+// bot overrides are stored — the DB-backed form of the catalog baked into
+// the server/runner images, so iterating on a native bot is one API/CLI
+// call instead of an image build + rollout. Platform overrides are ordinary
+// BotSource rows with TenantID = PlatformTenantID, written and read under
+// store.WithTenant(ctx, PlatformTenantID): same collection, same
+// validation, zero schema change — the botsource counterpart of
+// secrets.PlatformTenantID. The ':' suffix keeps the literal outside the
+// identity space of real team ids (mirrors the secrets sentinel family).
+//
+// Resolution precedence everywhere a bot id resolves: team botsource →
+// platform botsource → baked catalog FS. Super-admin only: a platform
+// override runs across ALL tenants, the same trust level as the image.
+const PlatformTenantID = "platform:"
+
+// Bundle size limits enforced by Validate. A BotSource is one Mongo
+// document; unbounded content would silently approach the 16 MB BSON cap
+// and start failing writes with an opaque driver error. The limits keep a
+// row an order of magnitude below that wall and are far above every
+// shipped catalog bundle (largest ≈ 700 KB).
+const (
+	// MaxBundleBytes caps the sum of all file paths + contents.
+	MaxBundleBytes = 6 << 20 // 6 MiB
+	// MaxBundleFiles caps the file-map entry count.
+	MaxBundleFiles = 512
+)
+
 // BotSource is a team-authored bot bundle held as a file map.
 type BotSource struct {
 	ID       string `bson:"_id" json:"id"`
@@ -89,13 +116,21 @@ func (s *BotSource) Validate() error {
 	if len(s.Files) == 0 {
 		return fmt.Errorf("botsource: files is empty (main.bot is required)")
 	}
+	if len(s.Files) > MaxBundleFiles {
+		return fmt.Errorf("botsource: bundle has %d files, over the %d-file limit", len(s.Files), MaxBundleFiles)
+	}
 	if strings.TrimSpace(s.Files[MainBotFile]) == "" {
 		return fmt.Errorf("botsource: %s is required and must not be empty", MainBotFile)
 	}
-	for key := range s.Files {
+	total := 0
+	for key, content := range s.Files {
 		if err := safeBundlePath(key); err != nil {
 			return err
 		}
+		total += len(key) + len(content)
+	}
+	if total > MaxBundleBytes {
+		return fmt.Errorf("botsource: bundle is %d bytes, over the %d-byte limit", total, MaxBundleBytes)
 	}
 	if body, ok := s.Files[bundle.ManifestFile]; ok {
 		if _, err := bundle.DecodeManifest([]byte(body), bundle.ManifestFile); err != nil {

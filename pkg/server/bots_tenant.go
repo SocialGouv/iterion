@@ -8,6 +8,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -20,15 +21,18 @@ type botEntryView struct {
 	// Editable is true for team-authored bots (persisted in the bot-source
 	// store), false for the read-only baked catalog.
 	Editable bool `json:"editable"`
-	// Origin is "tenant" for a team-authored bot, "catalog" for a baked one.
+	// Origin is "tenant" for a team-authored bot, "platform" for a
+	// deployment-wide override (super-admin-pushed, managed via
+	// /api/admin/bots), "catalog" for a baked one.
 	Origin string `json:"origin"`
 }
 
-// mergedBotEntries returns the catalog bots plus the caller's team-authored bots.
-// A team bot overrides a catalog bot of the same name (the override the tenant
-// store is designed to express). Catalog entries are marked read-only; team
-// entries editable. Outside cloud / without an active team it returns the
-// catalog alone, all read-only.
+// mergedBotEntries returns the catalog bots overlaid with the deployment's
+// platform overrides and the caller's team-authored bots — same-name precedence
+// team > platform > catalog, matching launch resolution. Catalog and platform
+// entries are read-only in the studio (platform bots are managed through the
+// admin API/CLI); team entries are editable. Outside cloud / without an active
+// team it returns catalog + platform, all read-only.
 func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 	var catalog []botregistry.EntryWithSchema
 	if len(s.effectivePaths()) > 0 {
@@ -40,17 +44,18 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 	}
 	byName := make(map[string]botEntryView, len(catalog))
 	order := make([]string, 0, len(catalog))
-	for _, e := range catalog {
-		if _, seen := byName[e.Name]; !seen {
-			order = append(order, e.Name)
+	add := func(entries []botregistry.EntryWithSchema, editable bool, origin string) {
+		for _, e := range entries {
+			if _, seen := byName[e.Name]; !seen {
+				order = append(order, e.Name)
+			}
+			byName[e.Name] = botEntryView{EntryWithSchema: e, Editable: editable, Origin: origin}
 		}
-		byName[e.Name] = botEntryView{EntryWithSchema: e, Editable: false, Origin: "catalog"}
 	}
-	for _, e := range s.tenantBotEntries(ctx) {
-		if _, seen := byName[e.Name]; !seen {
-			order = append(order, e.Name)
-		}
-		byName[e.Name] = botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"}
+	add(catalog, false, "catalog")
+	add(s.storedBotEntries(ctx, botsource.PlatformTenantID), false, "platform")
+	if id, _ := auth.FromContext(ctx); id.TeamID != "" {
+		add(s.storedBotEntries(ctx, id.TeamID), true, "tenant")
 	}
 	out := make([]botEntryView, 0, len(order))
 	for _, name := range order {
@@ -59,50 +64,40 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 	return out, nil
 }
 
-// tenantBotEntries materializes the caller team's authored bot bundles to a temp
-// tree and runs the same botregistry.ListWithSchema discovery over them, so a
-// tenant bot's metadata + vars schema are extracted identically to a catalog
-// bot's — no parallel schema code. Returns nil (never an error) when there is no
-// store, no active team, or nothing to materialize: a broken tenant bundle must
-// not blank the whole gallery.
+// tenantBotEntries returns the caller team's authored bot bundle entries.
 func (s *Server) tenantBotEntries(ctx context.Context) []botregistry.EntryWithSchema {
-	if s.botSources == nil {
-		return nil
-	}
 	id, _ := auth.FromContext(ctx)
 	if id.TeamID == "" {
 		return nil
 	}
-	list, err := s.botSources.ListByTenant(store.WithTenant(ctx, id.TeamID), id.TeamID)
+	return s.storedBotEntries(ctx, id.TeamID)
+}
+
+// storedBotEntries materializes one tenant's stored bot bundles (a team's, or
+// the platform sentinel's) to a temp tree and runs the same
+// botregistry.ListWithSchema discovery over them, so a stored bot's metadata +
+// vars schema are extracted identically to a catalog bot's — no parallel schema
+// code. Returns nil (never an error) when there is no store or nothing to
+// materialize: a broken stored bundle must not blank the whole gallery.
+func (s *Server) storedBotEntries(ctx context.Context, tenantID string) []botregistry.EntryWithSchema {
+	if s.botSources == nil || tenantID == "" {
+		return nil
+	}
+	list, err := s.botSources.ListByTenant(store.WithTenant(ctx, tenantID), tenantID)
 	if err != nil || len(list) == 0 {
 		return nil
 	}
-	root, err := os.MkdirTemp("", "iterion-tenant-bots-*")
+	root, err := os.MkdirTemp("", "iterion-stored-bots-*")
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 
 	for _, bs := range list {
-		botDir := filepath.Join(root, bs.Slug)
-		wrote := false
-		for rel, content := range bs.Files {
-			// The store already validated every key as a safe relative path;
-			// re-clean defensively so a materialization can never escape root.
-			clean := filepath.Clean(filepath.FromSlash(rel))
-			if clean == ".." || filepath.IsAbs(clean) || hasParentTraversal(clean) {
-				continue
-			}
-			dst := filepath.Join(botDir, clean)
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				continue
-			}
-			if err := os.WriteFile(dst, []byte(content), 0o644); err == nil {
-				wrote = true
-			}
-		}
-		if !wrote {
-			continue
+		if err := botsource.Materialize(filepath.Join(root, bs.Slug), bs.Files); err != nil {
+			// One broken bundle is skipped LOUDLY (Materialize removed its
+			// partial tree), never rendered half-materialized.
+			s.logger.Warn("bot source %s/%s: %v — omitted from listing", tenantID, bs.Slug, err)
 		}
 	}
 
@@ -110,7 +105,7 @@ func (s *Server) tenantBotEntries(ctx context.Context) []botregistry.EntryWithSc
 	if err != nil {
 		return nil
 	}
-	// A tenant bot's identity is its SLUG (the store key), not the workflow name
+	// A stored bot's identity is its SLUG (the store key), not the workflow name
 	// a loose main.bot would otherwise be discovered under. The slug is the dir
 	// directly under root — force it so list/get/launch key on the same name.
 	for i := range entries {
@@ -135,9 +130,4 @@ func slugFromMaterializedPath(root, botPath string) string {
 		return ""
 	}
 	return seg
-}
-
-func hasParentTraversal(clean string) bool {
-	return clean == ".." ||
-		len(clean) >= 3 && clean[:3] == ".."+string(filepath.Separator)
 }

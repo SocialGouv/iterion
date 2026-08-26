@@ -97,7 +97,7 @@ func mirrorPluginContributions(workDir string, inj *Contributions, logger *iterl
 				}
 				destPath := filepath.Join(destDir, f.Name)
 				markerPath := filepath.Join(markerDir, f.Name+".sha256")
-				outcome, rerr := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+				outcome, rerr := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
 				if rerr != nil {
 					return nil, fmt.Errorf("runtime/plugin: mirror %s %q from %q: %w", kind.Name, f.Name, p.Name(), rerr)
 				}

@@ -172,6 +172,18 @@ type LaunchSpec struct {
 	// The cloud publisher uses it to resolve bot-secret bindings during
 	// credential sealing. Empty for plain .bot launches.
 	BotID string
+	// BundleDir, when set, is the launch-materialized directory of a STORED
+	// bot bundle (a team-authored bot or a platform override): compile merges
+	// its prompts/ into the AST exactly like a baked bundle's, so they
+	// participate in IR validation and the workflow hash. Server-owned temp
+	// dir, cleaned up by the launch surface after Launch returns; never
+	// persisted.
+	BundleDir string
+	// BotBundle is the stored-bundle ref the cloud publisher stamps on the
+	// queue message so the runner rebuilds the SAME bundle from the store
+	// (skills/, devbox.json, attachments) instead of attaching the stale
+	// baked one. Nil for baked catalog bots and plain .bot launches.
+	BotBundle *BotBundleRef
 	// KeyOverrides pins a specific BYOK key per LLM provider for this run
 	// (provider name → api_key id), overriding the org/user default in
 	// secrets.Resolve. Set by webhook launches that carry per-webhook key
@@ -310,6 +322,19 @@ func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride 
 	return out
 }
 
+// BotBundleRef identifies a STORED bot bundle (pkg/botsource row) by its
+// tenant scope — a team id, or botsource.PlatformTenantID for a
+// deployment-wide override — plus slug and the row version resolved at
+// launch. The runner fetches the row, VERIFIES the version still matches
+// (a push racing the launch fails the run loudly instead of pairing this
+// launch's IR with newer resources), and materializes it as the run's
+// bundle.
+type BotBundleRef struct {
+	TenantID string `json:"tenant_id"`
+	Slug     string `json:"slug"`
+	Version  int    `json:"version"`
+}
+
 // ResumeSpec describes a resume request.
 type ResumeSpec struct {
 	RunID    string
@@ -317,10 +342,16 @@ type ResumeSpec struct {
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
-	Source  string
-	Answers map[string]any // answers for human nodes; ignored for failed_resumable
-	Force   bool           // skip workflow hash check
-	Timeout time.Duration  // 0 disables
+	Source string
+	// BundleDir / BotBundle mirror LaunchSpec's fields: a cloud resume of a
+	// stored bot re-resolves the bundle fresh (like credentials are
+	// re-sealed), so the compile merge and the runner-side materialization
+	// stay consistent with THIS resume's source.
+	BundleDir string
+	BotBundle *BotBundleRef
+	Answers   map[string]any // answers for human nodes; ignored for failed_resumable
+	Force     bool           // skip workflow hash check
+	Timeout   time.Duration  // 0 disables
 	// AutoMemory re-states the run-level auto-memory override ("", "on",
 	// "off"). It is not inherited from the original launch: overrides are not
 	// persisted on the run, so a resume that said nothing would silently fall

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
@@ -274,6 +275,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		UsageCapSource:      usageCapSource,
 		UsageCaps:           usageCapStore,
 		BotsPaths:           botsPaths,
+		BotSources:          botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's

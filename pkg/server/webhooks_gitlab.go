@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
@@ -339,7 +338,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		question = strings.TrimSpace(p.NoteBody)
 	}
 	if question != "" && converseEnabled {
-		botID = defaultWebhookBotReviConverse
+		botID = s.roleBots().ReviConverse
 		// Drop the re_review flag for the converse path — it's a question,
 		// not a fresh review — and pass the question explicitly. Other
 		// conversation vars (discussion_id, trigger_note, replier) are in vars.
@@ -428,7 +427,7 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	if surface == "issue" {
 		vars = applyWebhookVarLayers(buildGitLabIssueCommandVars(p, route, cmdArgs, nil), cfg)
 	} else {
-		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
+		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, p.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the MR head.
 		vars["head_sha"] = p.HeadSHA
@@ -536,10 +535,12 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 // botregistry.ResolveBotPath scan — but happens only on `/revi
 // <question>` deliveries, not on every note.
 func (s *Server) canRouteToConverseBot(cfg webhooks.Config) bool {
-	if !cfg.AllowsBot(defaultWebhookBotReviConverse) {
+	converse := s.roleBots().ReviConverse
+	if !cfg.AllowsBot(converse) {
 		return false
 	}
-	_, _, err := s.resolveBotSource(defaultWebhookBotReviConverse)
+	lb, err := s.resolveBotSource(context.Background(), converse)
+	lb.Cleanup() // existence probe only — drop the materialization immediately
 	return err == nil
 }
 
@@ -773,19 +774,6 @@ func (s *Server) updateWebhookDelivery(ctx context.Context, d webhooks.Delivery)
 	_ = s.webhookDeliveries.Update(ctx, d)
 }
 
-// resolveBotSource loads a bot's workflow source by bot id.
-func (s *Server) resolveBotSource(botID string) (path, source string, err error) {
-	path, err = botregistry.ResolveBotPath(botID, s.effectivePaths())
-	if err != nil {
-		return "", "", err
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", fmt.Errorf("read bot %q: %w", botID, err)
-	}
-	return path, string(b), nil
-}
-
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
 // run for its tenant through the run service (cloud → publisher). The tenant
 // identity is stamped on the ctx so the publisher seals credentials + scopes
@@ -801,15 +789,18 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		return errors.New("run service unavailable")
 	}
 	ctx = store.WithIdentity(ctx, sb.TenantID, "scheduler:"+sb.BotID)
-	path, source, err := s.resolveBotSource(sb.BotID)
+	lb, err := s.resolveBotSource(ctx, sb.BotID)
 	if err != nil {
 		return err
 	}
+	defer lb.Cleanup()
 	retry := s.resolveRunRetryPolicy(sb.BotID, retrypolicy.Layer{
 		Source: retrypolicy.SourceSchedule,
 		Policy: sb.RetryPolicy(),
 	})
-	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source, retry))
+	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry)
+	lb.Stamp(&spec)
+	_, err = s.runs.Launch(ctx, spec)
 	return err
 }
 
@@ -857,18 +848,16 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 	if s.runs == nil {
 		return "", errors.New("run service unavailable")
 	}
-	path, source, err := s.resolveBotSource(botID)
+	lb, err := s.resolveBotSource(ctx, botID)
 	if err != nil {
 		return "", err
 	}
-	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:        path,
-		Source:          source,
+	defer lb.Cleanup()
+	spec := runview.LaunchSpec{
 		Vars:            vars,
 		RepoURL:         repoURL,
 		RepoRef:         repoRef,
 		ProjectPath:     projectPath,
-		BotID:           botID,
 		KeyOverrides:    keyOverrides,
 		SecretOverrides: secretOverrides,
 		// A webhook-launched run is often the one an author is waiting on,
@@ -878,7 +867,9 @@ func (s *Server) launchWebhookBot(ctx context.Context, cfg webhooks.Config, botI
 			Source: retrypolicy.SourceWebhook,
 			Policy: cfg.RetryPolicy(),
 		}),
-	})
+	}
+	lb.Stamp(&spec)
+	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		return "", err
 	}

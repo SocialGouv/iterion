@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,8 +25,8 @@ func TestResolveResumeSourceFallsBackToPersistedLaunchSource(t *testing.T) {
 		t.Fatalf("test setup invalid: %q should escape WorkDir", outsidePath)
 	}
 
-	resolvedPath, resolvedSource, err := srv.resolveResumeSource(
-		outsidePath, "", persistedSource,
+	resolvedPath, resolvedSource, _, err := srv.resolveResumeSource(
+		context.Background(), outsidePath, "", persistedSource,
 	)
 	if err != nil {
 		t.Fatalf("resolveResumeSource() error = %v", err)
@@ -58,8 +59,8 @@ func TestResolveResumeSourceExplicitSourceWinsOverPersistedFallback(t *testing.T
 	explicitSource := "workflow edited:\n  entry: done\n"
 	persistedSource := "workflow original:\n  entry: done\n"
 
-	_, resolvedSource, err := srv.resolveResumeSource(
-		outsidePath, explicitSource, persistedSource,
+	_, resolvedSource, _, err := srv.resolveResumeSource(
+		context.Background(), outsidePath, explicitSource, persistedSource,
 	)
 	if err != nil {
 		t.Fatalf("resolveResumeSource() error = %v", err)

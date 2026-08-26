@@ -113,7 +113,7 @@ the staging step alone and prints the upload id.
 | `forge` | `connections · refresh · repo-bots · oauth-apps · integrations` |
 | `audit` / `usage` / `limits` | `audit team\|org\|admin` · org usage · cost limits |
 | `memory` | `usage · docs · doc get\|put\|delete · export · import` (`--name` space) |
-| `admin` | `orgs · users · dlq · llm · caps` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart)) |
+| `admin` | `orgs · users · dlq · llm · caps · bots · roles · sandbox` (super-admin; `llm api-keys`/`llm oauth` = the platform fallback credentials — rotate without a redeploy, see [cloud-llm-credentials.md](cloud-llm-credentials.md); `caps` = the runtime usage-cap percentages — retune without a restart, see [usage-caps.md](usage-caps.md#changing-the-caps-at-runtime-no-restart); `bots` = platform bot overrides — push any bot without an image rollout, `roles`/`sandbox` = runtime webhook role bindings + `sandbox: auto` image, see [platform-bots.md](platform-bots.md)) |
 | `sso` | `providers · domains` (org-scoped) |
 | `plugins` | `list · enable · disable · install · uninstall · config` |
 | `server` | `info · health` |

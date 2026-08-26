@@ -40,6 +40,13 @@ func (s *llmSpyKeyStore) Create(ctx context.Context, k secrets.ApiKey) error {
 // production auth middleware. Returns the store spy, the raw stores, the
 // audit store, the live server, and a super-admin + plain-member bearer.
 func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore, secrets.Sealer, audit.Store, *httptest.Server, string, string) {
+	return newAdminLLMServerWith(t)
+}
+
+// newAdminLLMServerWith is newAdminLLMServer plus optional Config mutators,
+// so sibling admin-surface tests (platform bots, settings families) reuse
+// the same production New()/routes()/middleware boot.
+func newAdminLLMServerWith(t *testing.T, mutate ...func(*Config)) (*llmSpyKeyStore, *secrets.MemoryOAuthStore, secrets.Sealer, audit.Store, *httptest.Server, string, string) {
 	t.Helper()
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -66,7 +73,7 @@ func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore
 	spy := &llmSpyKeyStore{ApiKeyStore: secrets.NewMemoryApiKeyStore()}
 	oauth := secrets.NewMemoryOAuthStore()
 	auditStore := audit.NewMemoryStore()
-	s := New(Config{
+	cfg := Config{
 		WorkDir:                 t.TempDir(),
 		SkipProjectRegistration: true,
 		AuthService:             svc,
@@ -75,7 +82,11 @@ func newAdminLLMServer(t *testing.T) (*llmSpyKeyStore, *secrets.MemoryOAuthStore
 		ApiKeys:                 spy,
 		OAuthForfait:            oauth,
 		Sealer:                  sealer,
-	}, iterlog.New(iterlog.LevelError, nil))
+	}
+	for _, m := range mutate {
+		m(&cfg)
+	}
+	s := New(cfg, iterlog.New(iterlog.LevelError, nil))
 
 	adminTok, _, err := signer.IssueAccess(auth.Identity{UserID: "root", IsSuperAdmin: true, TeamID: "team-root"})
 	if err != nil {

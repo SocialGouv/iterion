@@ -317,8 +317,18 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
 | `POST` | `/api/admin/dlq/{seq}/replay` | super-admin | Re-publish onto the live subject |
 | `DELETE` | `/api/admin/dlq/{seq}` | super-admin | Discard |
+| `GET` | `/api/admin/bots` | super-admin | List platform bot overrides (metadata + content digest) |
+| `GET` | `/api/admin/bots/{slug}` | super-admin | One override incl. its file map |
+| `PUT` | `/api/admin/bots/{slug}` | super-admin | Push/replace an override (`{files, version?}`; compiled before persisting; 413 over the body cap) |
+| `DELETE` | `/api/admin/bots/{slug}` | super-admin | Remove the override (baked catalog serves again) |
+| `PUT/DELETE` | `/api/admin/bots/{slug}/files/{path}` | super-admin | Single-file edit of an override |
+| `POST` | `/api/admin/bots/{slug}/fork` | super-admin | Seed the override from the baked bundle (`{from}`) |
+| `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
+| `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
 
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
+[pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
+[pkg/server/platform_settings.go](../pkg/server/platform_settings.go),
 [pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go).
 
 ## Server info + health

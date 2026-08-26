@@ -35,6 +35,36 @@ import (
 //     v0.1.0's skill files indefinitely).
 const bundleMirrorMarkerDir = ".iterion-managed"
 
+// skillTier identifies which mirror source owns a written skill, recorded
+// in the marker alongside the content hash. The refresh branch refuses a
+// LOWER-ranked source overwriting a higher-ranked incumbent — without it,
+// mirror ORDER decided the winner: bundle skills are written first, so a
+// same-named plugin/library skill mirrored later would match the fresh
+// marker and "refresh" the bundle's copy away, inverting the documented
+// bundle > plugin > library precedence.
+type skillTier string
+
+const (
+	skillTierBundle  skillTier = "bundle"
+	skillTierPlugin  skillTier = "plugin"
+	skillTierLibrary skillTier = "library"
+)
+
+// tierRank orders the tiers; the empty tier (a legacy hash-only marker)
+// ranks lowest so pre-tier markers keep their historical refresh behaviour.
+func tierRank(t skillTier) int {
+	switch t {
+	case skillTierBundle:
+		return 3
+	case skillTierPlugin:
+		return 2
+	case skillTierLibrary:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // skillReconcileOutcome enumerates the four collision-policy results
 // for a single file-skill mirror: what reconcileSkillFile observed
 // and acted upon. The caller logs aggregate counts.
@@ -53,7 +83,7 @@ const (
 // mirrorBundleSkills (called once per skill at run start) so the
 // rules stay in lockstep. The caller has already prepared
 // markerDir/dest and resolved srcPath.
-func reconcileSkillFile(srcPath, destPath, markerPath string, logger *iterlog.Logger) (skillReconcileOutcome, error) {
+func reconcileSkillFile(srcPath, destPath, markerPath string, tier skillTier, logger *iterlog.Logger) (skillReconcileOutcome, error) {
 	srcHash, err := hashFile(srcPath)
 	if err != nil {
 		return skillOutcomeShadowed, err
@@ -64,7 +94,7 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, logger *iterlog.Lo
 		if err := copyFile(srcPath, destPath); err != nil {
 			return skillOutcomeShadowed, err
 		}
-		if err := writeMarker(markerPath, srcHash); err != nil {
+		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
 		return skillOutcomeMirrored, nil
@@ -75,18 +105,33 @@ func reconcileSkillFile(srcPath, destPath, markerPath string, logger *iterlog.Lo
 	if err != nil {
 		return skillOutcomeShadowed, err
 	}
+	markerHash, markerTier := readMarker(markerPath)
 	if destHash == srcHash {
-		if err := writeMarker(markerPath, srcHash); err != nil {
+		// Same content: keep the HIGHEST-ranked owner on the marker, so a
+		// later lower-tier pass over identical bytes can't demote ownership.
+		if tierRank(markerTier) > tierRank(tier) {
+			tier = markerTier
+		}
+		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
 		return skillOutcomeUpToDate, nil
 	}
-	if markerHash := readMarker(markerPath); markerHash != "" && markerHash == destHash {
+	if markerHash != "" && markerHash == destHash {
+		if tierRank(markerTier) > tierRank(tier) {
+			// The incumbent was written by a HIGHER-priority source this
+			// run (bundle > plugin > library): the collision resolves to
+			// the incumbent, not to whoever mirrors last.
+			if logger != nil {
+				logger.Warn("skill %q: %s-tier copy kept over the %s-tier one (precedence, not mirror order)", filepath.Base(destPath), markerTier, tier)
+			}
+			return skillOutcomeShadowed, nil
+		}
 		_ = os.Chmod(destPath, destInfo.Mode().Perm())
 		if err := overwriteFile(srcPath, destPath); err != nil {
 			return skillOutcomeShadowed, err
 		}
-		if err := writeMarker(markerPath, srcHash); err != nil {
+		if err := writeMarker(markerPath, srcHash, tier); err != nil {
 			return skillOutcomeShadowed, err
 		}
 		return skillOutcomeRefreshed, nil
@@ -145,7 +190,7 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 	}
 	// File skill → directory form (native discovery) + flat alias (prompt
 	// Reads). Shared with mirrorBundleSkills via mirrorFileSkill.
-	_, err = mirrorFileSkill(dest, markerDir, srcPath, name, logger)
+	_, err = mirrorFileSkill(dest, markerDir, srcPath, name, skillTierBundle, logger)
 	return err
 }
 
@@ -184,7 +229,7 @@ func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, mark
 // discovery AND explicit Reads working. Each form goes through
 // reconcileSkillFile so the workspace-wins collision policy holds independently;
 // the returned outcome is the directory-form result (the one callers tally).
-func mirrorFileSkill(dest, markerDir, srcPath, name string, logger *iterlog.Logger) (skillReconcileOutcome, error) {
+func mirrorFileSkill(dest, markerDir, srcPath, name string, tier skillTier, logger *iterlog.Logger) (skillReconcileOutcome, error) {
 	skillDir, skillDest, markerPath, err := skillDestDirForm(dest, markerDir, name)
 	if err != nil {
 		return skillOutcomeShadowed, err
@@ -192,13 +237,13 @@ func mirrorFileSkill(dest, markerDir, srcPath, name string, logger *iterlog.Logg
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return skillOutcomeShadowed, fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
 	}
-	outcome, err := reconcileSkillFile(srcPath, skillDest, markerPath, logger)
+	outcome, err := reconcileSkillFile(srcPath, skillDest, markerPath, tier, logger)
 	if err != nil {
 		return outcome, err
 	}
 	flatDest := filepath.Join(dest, name)
 	flatMarker := filepath.Join(markerDir, name+".sha256")
-	if _, ferr := reconcileSkillFile(srcPath, flatDest, flatMarker, logger); ferr != nil {
+	if _, ferr := reconcileSkillFile(srcPath, flatDest, flatMarker, tier, logger); ferr != nil {
 		return outcome, ferr
 	}
 	return outcome, nil
@@ -295,7 +340,7 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 		// File skill → both the directory form (native Skill-tool discovery)
 		// and the flat <name>.md alias (prompt Reads). Shared with
 		// MirrorSingleSkill via mirrorFileSkill.
-		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, logger)
+		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, skillTierBundle, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -386,22 +431,28 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// readMarker returns the sha256 hex stored in path, or "" on any error
-// (missing file, unreadable, empty). Marker absence is a benign signal
-// — we treat the existing skill as user-owned and shadow.
-func readMarker(path string) string {
+// readMarker returns the sha256 hex + owning tier stored in path, or
+// ("", "") on any error (missing file, unreadable, empty). Marker absence
+// is a benign signal — we treat the existing skill as user-owned and
+// shadow. A legacy hash-only marker reads with an empty tier (lowest rank).
+func readMarker(path string) (hash string, tier skillTier) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return string(b)
+	h, t, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+	return h, skillTier(t)
 }
 
-// writeMarker records hash at path. Best-effort: failures don't abort
-// the mirror (we've already copied the content; missing marker just
+// writeMarker records "hash tier" at path. Best-effort: failures don't
+// abort the mirror (we've already copied the content; missing marker just
 // means the next run shadows instead of refreshes).
-func writeMarker(path, hash string) error {
-	if err := os.WriteFile(path, []byte(hash), 0o644); err != nil {
+func writeMarker(path, hash string, tier skillTier) error {
+	body := hash
+	if tier != "" {
+		body += " " + string(tier)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("runtime/bundle: write marker %s: %w", path, err)
 	}
 	return nil

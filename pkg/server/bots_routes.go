@@ -206,18 +206,11 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 	s.respondBot(w, r, name)
 }
 
-// findBot returns the schema-augmented entry for name (exact match).
+// findBot returns the schema-augmented entry for name (exact match), with
+// the platform overlay applied — a platform override's metadata is what
+// every tenant sees.
 func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error) {
-	entries, err := botregistry.ListWithSchema(s.botListOptions())
-	if err != nil {
-		return botregistry.EntryWithSchema{}, false, err
-	}
-	for _, e := range entries {
-		if e.Name == name {
-			return e, true, nil
-		}
-	}
-	return botregistry.EntryWithSchema{}, false, nil
+	return s.effectiveFindByName(name)
 }
 
 // respondBot re-resolves name (post-mutation) and writes it as JSON. It carries

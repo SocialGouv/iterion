@@ -35,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -504,6 +505,14 @@ type Config struct {
 	// without it, system prompts referencing `.claude/skills/<x>.md`
 	// point at nothing in cloud runs. Empty → no bundle resolution.
 	BotsPaths []string
+
+	// BotSources resolves STORED bot bundles (team-authored bots and
+	// platform overrides — pkg/botsource rows) when a RunMessage carries a
+	// BotBundle ref: the runner fetches the row, verifies the version, and
+	// materializes it as the run's bundle instead of the baked BotsPaths
+	// one. nil → a ref-carrying message fails explicitly (the runner must
+	// never silently substitute the stale baked bundle).
+	BotSources botsource.Store
 
 	// SandboxDefault / SandboxHostState carry the operator's
 	// ITERION_SANDBOX_DEFAULT / ITERION_SANDBOX_HOST_STATE (cfg.Sandbox.*) into
@@ -1395,6 +1404,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// dropped and a bot's `sandbox: auto` hard-errors on the kubernetes
 		// driver (host_state=auto has no host filesystem to bind).
 		runtime.WithSandboxDefault(r.cfg.SandboxDefault),
+		// The publish-time platform-resolved `sandbox: auto` fallback image
+		// (schema v9). Empty leaves the engine's own env/built-in resolution.
+		// Reading it from the MESSAGE, not a live setting, is what keeps a
+		// redelivery or checkpoint re-claim in the same environment.
+		runtime.WithSandboxDefaultImage(msg.SandboxImage),
 		runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
 		// CLI-strength override (ITERION_SANDBOX_OVERRIDE): "none" on a
 		// runner that is itself the isolation boundary beats a bot's inline
@@ -1431,10 +1445,27 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
 	// provisions the bot's devbox.json (host devbox provisioning — the
 	// runner pod is the isolation boundary, no sandbox starts here),
-	// exactly like a local `iterion run bots/<bot>` does. Best-effort:
-	// an unresolvable bot id or a loose .bot just skips the bundle with
-	// a warning — the run proceeds without skills or devbox tools.
-	if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
+	// exactly like a local `iterion run bots/<bot>` does.
+	//
+	// A STORED bot (BotBundle ref — team-authored or platform override) is
+	// rebuilt from the DB and REPLACES the baked lookup entirely: the baked
+	// bundle is by definition the code the override exists to supersede, and
+	// its skills would shadow the shipped ones by mirror precedence. That
+	// path is strict where the baked one is best-effort — a ref the runner
+	// cannot honor fails the attempt loudly (nak → redelivery → DLQ with an
+	// actionable status) rather than running the run against stale
+	// resources; a resume re-resolves the ref fresh and self-heals.
+	if msg.BotBundle != nil {
+		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
+		if berr != nil {
+			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
+		}
+		defer cleanupBundle()
+		engineOpts = append(engineOpts, runtime.WithBundle(b))
+	} else if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
+		// Best-effort: an unresolvable bot id or a loose .bot just skips the
+		// bundle with a warning — the run proceeds without skills or devbox
+		// tools.
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))

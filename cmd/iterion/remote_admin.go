@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
@@ -247,6 +248,80 @@ var remoteAdminLLMOAuthCmd = &cobra.Command{
 	}),
 }
 
+// --- platform bot overrides (DB-backed catalog) ---
+
+var (
+	remoteAdminBotSlug string
+	remoteAdminBotOut  string
+)
+
+var remoteAdminBotsCmd = &cobra.Command{
+	Use:   "bots [show|push|pull|rm|fork] [slug|dir]",
+	Short: "Platform bot overrides: iterate on any bot (incl. natives) without an image rollout",
+	Long: `Platform bot overrides — the DB-backed form of the baked bot catalog.
+A pushed bundle overrides the same-slug baked bot for EVERY tenant and
+every launch surface (studio, webhooks, schedules, board, triggers) from
+the next launch; deleting it reverts to the baked catalog.
+
+  iterion remote admin bots                       # list overrides (slug, version, digest)
+  iterion remote admin bots push bots/review-pr   # push a local bundle dir
+  iterion remote admin bots show review-pr        # stored files + metadata
+  iterion remote admin bots pull review-pr --out /tmp/review-pr
+  iterion remote admin bots fork review-pr        # seed the override from the baked bundle
+  iterion remote admin bots rm review-pr          # revert to the baked catalog
+
+An override is deployment-trusted code (the same trust as the image);
+every mutation lands on the platform audit log with a content digest.`,
+	Args: cobra.MaximumNArgs(2),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/bots")
+		}
+		action := args[0]
+		needArg := func(what string) (string, error) {
+			if len(args) < 2 {
+				return "", fmt.Errorf("usage: admin bots %s <%s>", action, what)
+			}
+			return args[1], nil
+		}
+		switch action {
+		case "push":
+			dir, err := needArg("bundle-dir")
+			if err != nil {
+				return err
+			}
+			return cli.RemoteAdminBotsPush(cmd.Context(), c, p, dir, remoteAdminBotSlug)
+		case "show":
+			slug, err := needArg("slug")
+			if err != nil {
+				return err
+			}
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/admin/bots/"+slug)
+		case "pull":
+			slug, err := needArg("slug")
+			if err != nil {
+				return err
+			}
+			return cli.RemoteAdminBotsPull(cmd.Context(), c, p, slug, remoteAdminBotOut)
+		case "rm":
+			slug, err := needArg("slug")
+			if err != nil {
+				return err
+			}
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/admin/bots/"+slug, nil)
+		case "fork":
+			slug, err := needArg("slug")
+			if err != nil {
+				return err
+			}
+			body := []byte(fmt.Sprintf(`{"from":%q}`, slug))
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/admin/bots/"+slug+"/fork", body)
+		default:
+			return fmt.Errorf("unknown bots action %q (want push|show|pull|rm|fork)", action)
+		}
+	}),
+}
+
 // --- platform runtime settings: usage caps (DB-backed env fallback) ---
 
 var (
@@ -306,6 +381,91 @@ advertised propagation bound (no restart). Enforcement postures
 		}
 		body += "}"
 		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(body))
+	}),
+}
+
+// --- platform settings: webhook role bots + sandbox image ---
+
+var (
+	remoteRoleFlags  = map[string]*string{}
+	remoteRoleClears = map[string]*bool{}
+)
+
+var remoteAdminRolesCmd = &cobra.Command{
+	Use:   "roles [set]",
+	Short: "Webhook role→bot bindings: show the effective set (default) or re-point a role without a rollout",
+	Long: `Platform bot roles — the runtime-settings form of the hardcoded
+webhook role constants (reviewer/revi_converse/brancher/implementer).
+
+  iterion remote admin roles                       # stored + effective + origin
+  iterion remote admin roles set --reviewer my-reviewer
+  iterion remote admin roles set --clear-reviewer  # back to the built-in default
+
+Changes propagate to every replica within the resolver TTL (no restart).`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/bot-roles"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		if args[0] != "set" {
+			return fmt.Errorf("unknown roles action %q (want set)", args[0])
+		}
+		fields := map[string]string{}
+		for name, v := range remoteRoleFlags {
+			if cmd.Flags().Changed(strings.ReplaceAll(name, "_", "-")) {
+				fields[name] = fmt.Sprintf("%q", *v)
+			}
+		}
+		for name, cleared := range remoteRoleClears {
+			if *cleared {
+				fields[name] = "null"
+			}
+		}
+		if len(fields) == 0 {
+			return fmt.Errorf("usage: admin roles set --reviewer|--revi-converse|--brancher|--implementer <bot-id> (or the matching --clear-* flag)")
+		}
+		parts := make([]string, 0, len(fields))
+		for k, v := range fields {
+			parts = append(parts, fmt.Sprintf("%q:%s", k, v))
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte("{"+strings.Join(parts, ",")+"}"))
+	}),
+}
+
+var (
+	remoteSandboxImage      string
+	remoteSandboxClearImage bool
+)
+
+var remoteAdminSandboxCmd = &cobra.Command{
+	Use:   "sandbox [set]",
+	Short: "Sandbox runtime settings: show (default) or retune the `sandbox: auto` fallback image without a rollout",
+	Long: `Platform sandbox settings — the runtime-settings form of
+ITERION_SANDBOX_DEFAULT_IMAGE. The effective image is resolved at PUBLISH
+time and pinned on each queued run, so a redelivery reruns in the same
+environment. Prefer an @sha256 digest ref in cloud.
+
+  iterion remote admin sandbox
+  iterion remote admin sandbox set --default-image ghcr.io/…/iterion-sandbox-slim@sha256:…
+  iterion remote admin sandbox set --clear-default-image`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/sandbox"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		if args[0] != "set" {
+			return fmt.Errorf("unknown sandbox action %q (want set)", args[0])
+		}
+		switch {
+		case remoteSandboxClearImage:
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(`{"default_image":null}`))
+		case cmd.Flags().Changed("default-image"):
+			return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, []byte(fmt.Sprintf(`{"default_image":%q}`, remoteSandboxImage)))
+		default:
+			return fmt.Errorf("usage: admin sandbox set --default-image <ref> (or --clear-default-image)")
+		}
 	}),
 }
 
@@ -426,7 +586,18 @@ func init() {
 	remoteAdminCapsCmd.Flags().BoolVar(&remoteCapsClearFive, "clear-five-hour", false, "Clear the five-hour override (fall back to the env default)")
 	remoteAdminCapsCmd.Flags().BoolVar(&remoteCapsClearWeek, "clear-week", false, "Clear the weekly override (fall back to the env default)")
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd)
+	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotSlug, "slug", "", "Override slug (push; default: bundle dir basename)")
+	remoteAdminBotsCmd.Flags().StringVar(&remoteAdminBotOut, "out", "", "Output directory (pull; default: ./<slug>)")
+
+	for _, role := range []string{"reviewer", "revi_converse", "brancher", "implementer"} {
+		flag := strings.ReplaceAll(role, "_", "-")
+		remoteRoleFlags[role] = remoteAdminRolesCmd.Flags().String(flag, "", "Bot id for the "+role+" role")
+		remoteRoleClears[role] = remoteAdminRolesCmd.Flags().Bool("clear-"+flag, false, "Clear the "+role+" override (fall back to the built-in default)")
+	}
+	remoteAdminSandboxCmd.Flags().StringVar(&remoteSandboxImage, "default-image", "", "`sandbox: auto` fallback image ref (prefer an @sha256 digest)")
+	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
+
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")

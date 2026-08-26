@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -38,7 +37,7 @@ func (s *Server) resolveGateContext(cfg webhooks.Config, botID string) string {
 
 // botVarDefault reads a bot's declared default for one workflow var.
 func (s *Server) botVarDefault(botID, name string) string {
-	entries, err := botregistry.ListWithSchema(s.botListOptions())
+	entries, err := s.effectiveEntriesWithSchema()
 	if err != nil {
 		return ""
 	}
@@ -91,8 +90,9 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 	// The review bot must be permitted on this webhook — same admission the
 	// normal command path applies before authorizing a /command.
-	if !cfg.AllowsBot(defaultWebhookBotReviewPR) {
-		filtered("bot " + defaultWebhookBotReviewPR + " not permitted by this webhook")
+	reviewer := s.roleBots().Reviewer
+	if !cfg.AllowsBot(reviewer) {
+		filtered("bot " + reviewer + " not permitted by this webhook")
 		return
 	}
 	// Authorize EXACTLY like every other PR-comment command (not the
@@ -101,7 +101,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	// AND rejects the review bot's own comment via a WhoAmI loop-guard so a
 	// status can't self-approve. A synthetic review-pr route carries the token
 	// binding + role threshold.
-	route := webhooks.CommandRoute{BotID: defaultWebhookBotReviewPR}
+	route := webhooks.CommandRoute{BotID: reviewer}
 	gate := s.webhookPRForgeCommandGate
 	if gate == nil {
 		gate = s.realWebhookPRForgeCommandGate
@@ -118,7 +118,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 	}
 
 	// Authorized: resolve the client to post the approval status.
-	token, terr := s.resolveForgeToken(ctx, cfg, defaultWebhookBotReviewPR)
+	token, terr := s.resolveForgeToken(ctx, cfg, reviewer)
 	if terr != nil || token == "" {
 		filtered("no forge token to post the approval status (configure a forge_token binding)")
 		return
@@ -144,7 +144,7 @@ func (s *Server) handlePRForgeReviewApprove(ctx context.Context, w http.Response
 		filtered("forge returned no head sha for the PR")
 		return
 	}
-	gateCtx := s.resolveGateContext(cfg, defaultWebhookBotReviewPR)
+	gateCtx := s.resolveGateContext(cfg, reviewer)
 	if gateCtx == "" {
 		filtered("no merge-gate context is pinned on this repo, so there is nothing to approve (pin gate_context on the integration — see docs/merge-gate.md)")
 		return

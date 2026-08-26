@@ -90,6 +90,11 @@ func (s *Server) shareURL(id, token string) string {
 // surface, …) resolving the bot id against the effective bot paths. Returns nil
 // when the bot isn't resolvable on this server (e.g. a loose .bot).
 func (s *Server) botManifest(botID string) *bundle.Manifest {
+	// Platform override first: an override's manifest (retry policy,
+	// config-share surface, persona) is what the deployment runs.
+	if m := s.platformBotManifest(botID); m != nil {
+		return m
+	}
 	mainFile, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
 	if err != nil {
 		return nil

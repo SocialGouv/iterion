@@ -210,14 +210,29 @@ func TestBotSource_GalleryMergeAndLaunchResolve(t *testing.T) {
 		t.Fatalf("tenant bot missing from gallery: %s", lw.Body.String())
 	}
 
-	// ---- launch resolver returns the tenant main.bot inline ----
-	src, slug, ok := s.tenantBotSource(edCtx, "reviewer", "")
-	if !ok || slug != "reviewer" || !strings.Contains(src, "printf ok") {
-		t.Fatalf("tenantBotSource = %q %q %v", src, slug, ok)
+	// ---- launch resolver returns the tenant main.bot inline, with the
+	// materialized bundle dir + the stored-bundle ref for the runner ----
+	lb, lbErr := s.resolveBotTiered(edCtx, "t1", "reviewer", "")
+	if lbErr != nil || lb == nil {
+		t.Fatalf("resolveBotTiered = %+v, %v", lb, lbErr)
 	}
-	// A team with no such bot resolves nothing (falls back to catalog).
-	if _, _, ok := s.tenantBotSource(edCtx, "nope", ""); ok {
-		t.Error("tenantBotSource should miss on an unknown slug")
+	defer lb.Cleanup()
+	if lb.Origin != "team" || lb.BotID != "reviewer" || !strings.Contains(lb.Source, "printf ok") {
+		t.Fatalf("resolved = %+v", lb)
+	}
+	if lb.Ref == nil || lb.Ref.TenantID != "t1" || lb.Ref.Slug != "reviewer" || lb.Ref.Version == 0 {
+		t.Fatalf("stored ref = %+v", lb.Ref)
+	}
+	if lb.BundleDir == "" {
+		t.Fatal("stored bot must materialize a bundle dir for the compile merge")
+	}
+	if _, err := os.Stat(filepath.Join(lb.BundleDir, "main.bot")); err != nil {
+		t.Fatalf("materialized main.bot missing: %v", err)
+	}
+	// A team with no such bot resolves nothing stored; an unknown slug with
+	// no catalog fallback resolves to nil.
+	if got, err := s.resolveBotTiered(edCtx, "t1", "nope", ""); err != nil || got != nil {
+		t.Errorf("unknown slug should resolve to nil, got %+v, %v", got, err)
 	}
 }
 

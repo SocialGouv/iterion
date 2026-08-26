@@ -3,11 +3,14 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -41,6 +44,9 @@ func (s *Server) registerBotSourceRoutes() {
 // team with many bots stays cheap to enumerate; get includes them.
 type botSourceView struct {
 	botsource.BotSource
+	// Warnings are non-fatal push-time notices (e.g. provisioned-projection
+	// drift for a platform override). Empty on reads.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // botSourceCtx authorises the request and returns a tenant-scoped context.
@@ -58,23 +64,40 @@ func (s *Server) botSourceCtx(w http.ResponseWriter, r *http.Request) (teamID st
 	return teamID, id, true
 }
 
+// maxBotSourceBody caps a bot-source write request body. Comfortably above
+// botsource.MaxBundleBytes (JSON escaping inflates content) while keeping an
+// unbounded upload from reaching the JSON decoder.
+const maxBotSourceBody = 16 << 20
+
 func (s *Server) handleListBotSources(w http.ResponseWriter, r *http.Request) {
 	teamID, _, ok := s.botSourceCtx(w, r)
 	if !ok {
 		return
 	}
-	list, err := s.botSources.ListByTenant(store.WithTenant(r.Context(), teamID), teamID)
+	s.listBotSourcesFor(w, r, teamID)
+}
+
+func (s *Server) listBotSourcesFor(w http.ResponseWriter, r *http.Request, tenantID string) {
+	list, err := s.botSources.ListByTenant(store.WithTenant(r.Context(), tenantID), tenantID)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
-	// Strip Files from the list payload — it is metadata only.
-	views := make([]botsource.BotSource, 0, len(list))
+	// Strip Files from the list payload — it is metadata only. Digest gives
+	// "what exactly is deployed" a comparable answer without the content.
+	views := make([]botSourceMetaView, 0, len(list))
 	for _, b := range list {
+		digest := botsource.Digest(b.Files)
 		b.Files = nil
-		views = append(views, b)
+		views = append(views, botSourceMetaView{BotSource: b, Digest: digest})
 	}
 	s.writeJSONFor(w, r, map[string]any{"bot_sources": views})
+}
+
+// botSourceMetaView is one list row: the metadata plus the content digest.
+type botSourceMetaView struct {
+	botsource.BotSource
+	Digest string `json:"digest,omitempty"`
 }
 
 func (s *Server) handleGetBotSource(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +105,11 @@ func (s *Server) handleGetBotSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), teamID), teamID, r.PathValue("slug"))
+	s.getBotSourceFor(w, r, teamID, r.PathValue("slug"))
+}
+
+func (s *Server) getBotSourceFor(w http.ResponseWriter, r *http.Request, tenantID, slug string) {
+	bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), tenantID), tenantID, slug)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -108,13 +135,23 @@ func (s *Server) handlePutBotSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	slug := strings.TrimSpace(r.PathValue("slug"))
+	s.putBotSourceFor(w, r, teamID, id.UserID, r.PathValue("slug"))
+}
+
+func (s *Server) putBotSourceFor(w http.ResponseWriter, r *http.Request, tenantID, userID, slug string) {
+	slug = strings.TrimSpace(slug)
 	var req botSourcePutReq
+	r.Body = http.MaxBytesReader(w, r.Body, maxBotSourceBody)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			s.httpErrorFor(w, r, http.StatusRequestEntityTooLarge, "bundle body exceeds %d bytes", tooBig.Limit)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	bs := botsource.BotSource{TenantID: teamID, Slug: slug, Files: req.Files, Version: req.Version}
+	bs := botsource.BotSource{TenantID: tenantID, Slug: slug, Files: req.Files, Version: req.Version}
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -123,7 +160,42 @@ func (s *Server) handlePutBotSource(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
-	s.writeBotSource(w, r, teamID, id, bs)
+	s.writeBotSource(w, r, tenantID, userID, bs, s.platformPushWarnings(tenantID, bs)...)
+}
+
+// platformPushWarnings surfaces the known gaps a platform push does NOT
+// close, so the operator learns them at push time rather than from a
+// silently unrouted webhook. Today: the provisioning-time CommandMap/
+// BotRules projections stored on forge integrations are built from the
+// manifest at PROVISION time and are not rebuilt on an override push — an
+// override that changes `invocations:` routes correctly through live
+// discovery but keeps the provisioned map stale until re-provisioning.
+func (s *Server) platformPushWarnings(tenantID string, bs botsource.BotSource) []string {
+	if !botsource.IsPlatform(tenantID) {
+		return nil
+	}
+	var m *bundle.Manifest
+	for _, f := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
+		if body, ok := bs.Files[f]; ok {
+			if dm, err := bundle.DecodeManifest([]byte(body), f); err == nil {
+				m = dm
+				break
+			}
+		}
+	}
+	if m == nil {
+		return nil
+	}
+	baked, ok, err := botregistry.FindByName(s.botListOptions(), bs.Slug)
+	if err != nil || !ok {
+		return nil // a new-slug platform bot has nothing provisioned to drift from
+	}
+	if reflect.DeepEqual(baked.Invocations, m.Invocations) {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"invocations differ from the baked %q manifest: provisioned webhook CommandMap/BotRules are built at provision time and will NOT pick this up until the repo integration is re-provisioned (live command discovery does)",
+		bs.Slug)}
 }
 
 // handlePutBotSourceFile writes one file into an existing bundle — the editor's
@@ -137,8 +209,12 @@ func (s *Server) handlePutBotSourceFile(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	ctx := store.WithTenant(r.Context(), teamID)
-	bs, err := s.botSources.GetBySlug(ctx, teamID, r.PathValue("slug"))
+	s.putBotSourceFileFor(w, r, teamID, id.UserID, r.PathValue("slug"))
+}
+
+func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, tenantID, userID, slug string) {
+	ctx := store.WithTenant(r.Context(), tenantID)
+	bs, err := s.botSources.GetBySlug(ctx, tenantID, slug)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -147,6 +223,7 @@ func (s *Server) handlePutBotSourceFile(w http.ResponseWriter, r *http.Request) 
 		Content string `json:"content"`
 		Version int    `json:"version,omitempty"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBotSourceBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
@@ -165,7 +242,7 @@ func (s *Server) handlePutBotSourceFile(w http.ResponseWriter, r *http.Request) 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "bot does not compile: %s", strings.Join(diags, "; "))
 		return
 	}
-	s.writeBotSource(w, r, teamID, id, bs)
+	s.writeBotSource(w, r, tenantID, userID, bs)
 }
 
 func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Request) {
@@ -176,8 +253,12 @@ func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	ctx := store.WithTenant(r.Context(), teamID)
-	bs, err := s.botSources.GetBySlug(ctx, teamID, r.PathValue("slug"))
+	s.deleteBotSourceFileFor(w, r, teamID, id.UserID, r.PathValue("slug"))
+}
+
+func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, tenantID, userID, slug string) {
+	ctx := store.WithTenant(r.Context(), tenantID)
+	bs, err := s.botSources.GetBySlug(ctx, tenantID, slug)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -193,32 +274,35 @@ func (s *Server) handleDeleteBotSourceFile(w http.ResponseWriter, r *http.Reques
 		s.botSourceError(w, r, err)
 		return
 	}
-	s.writeBotSource(w, r, teamID, id, bs)
+	s.writeBotSource(w, r, tenantID, userID, bs)
 }
 
 // writeBotSource persists a create-or-update: an existing slug updates in place
-// (preserving the id), a new slug creates.
-func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, teamID string, id auth.Identity, bs botsource.BotSource) {
-	ctx := store.WithTenant(r.Context(), teamID)
-	existing, err := s.botSources.GetBySlug(ctx, teamID, bs.Slug)
+// (preserving the id), a new slug creates. warnings ride the response so a
+// push learns its known gaps immediately (see platformPushWarnings).
+func (s *Server) writeBotSource(w http.ResponseWriter, r *http.Request, tenantID, userID string, bs botsource.BotSource, warnings ...string) {
+	ctx := store.WithTenant(r.Context(), tenantID)
+	existing, err := s.botSources.GetBySlug(ctx, tenantID, bs.Slug)
 	switch {
 	case err == nil:
 		bs.ID = existing.ID
-		bs.UpdatedBy = id.UserID
+		bs.UpdatedBy = userID
 		out, uerr := s.botSources.Update(ctx, bs)
 		if uerr != nil {
 			s.botSourceError(w, r, uerr)
 			return
 		}
-		s.writeJSONFor(w, r, botSourceView{BotSource: out})
+		s.auditBotSource(r, tenantID, "updated", out)
+		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
 	case errors.Is(err, botsource.ErrNotFound):
-		bs.CreatedBy = id.UserID
+		bs.CreatedBy = userID
 		out, cerr := s.botSources.Create(ctx, bs)
 		if cerr != nil {
 			s.botSourceError(w, r, cerr)
 			return
 		}
-		s.writeJSONFor(w, r, botSourceView{BotSource: out})
+		s.auditBotSource(r, tenantID, "created", out)
+		s.writeJSONFor(w, r, botSourceView{BotSource: out, Warnings: warnings})
 	default:
 		s.botSourceError(w, r, err)
 	}
@@ -232,8 +316,12 @@ func (s *Server) handleDeleteBotSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := store.WithTenant(r.Context(), teamID)
-	bs, err := s.botSources.GetBySlug(ctx, teamID, r.PathValue("slug"))
+	s.deleteBotSourceFor(w, r, teamID, r.PathValue("slug"))
+}
+
+func (s *Server) deleteBotSourceFor(w http.ResponseWriter, r *http.Request, tenantID, slug string) {
+	ctx := store.WithTenant(r.Context(), tenantID)
+	bs, err := s.botSources.GetBySlug(ctx, tenantID, slug)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
@@ -242,7 +330,28 @@ func (s *Server) handleDeleteBotSource(w http.ResponseWriter, r *http.Request) {
 		s.botSourceError(w, r, err)
 		return
 	}
+	s.auditBotSource(r, tenantID, "deleted", bs)
 	s.writeJSONFor(w, r, map[string]any{"deleted": true})
+}
+
+// auditBotSource records a bot-source mutation. Platform-tenant mutations are
+// deployment-wide code changes and land on the PLATFORM audit log with the
+// content digest — the provenance record for "what exactly is deployed";
+// team-scoped mutations land on the team's log.
+func (s *Server) auditBotSource(r *http.Request, tenantID, action string, bs botsource.BotSource) {
+	meta := map[string]any{
+		"slug":    bs.Slug,
+		"version": bs.Version,
+		"digest":  botsource.Digest(bs.Files),
+	}
+	if botsource.IsPlatform(tenantID) {
+		// The mutating replica reads its own write immediately; the others
+		// converge within the entry cache's TTL.
+		s.invalidatePlatformBots()
+		s.auditPlatform(r, "", "platform.bot."+action, "bot_source", bs.Slug, meta)
+		return
+	}
+	s.auditTenant(r, tenantID, "bot_source."+action, "bot_source", bs.Slug, meta)
 }
 
 type botSourceForkReq struct {
@@ -261,76 +370,94 @@ func (s *Server) handleForkBotSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	slug := strings.TrimSpace(r.PathValue("slug"))
+	s.forkBotSourceFor(w, r, teamID, id.UserID, r.PathValue("slug"))
+}
+
+func (s *Server) forkBotSourceFor(w http.ResponseWriter, r *http.Request, tenantID, userID, slug string) {
+	slug = strings.TrimSpace(slug)
 	var req botSourceForkReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return
 	}
-	files, resolvedID, found := s.catalogBundleFiles(req.From)
-	if !found {
+	files, resolvedID, err := s.catalogBundleFiles(req.From)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if files == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "catalog bot %q not found", req.From)
 		return
 	}
 	bs := botsource.BotSource{
-		TenantID:  teamID,
+		TenantID:  tenantID,
 		Slug:      slug,
 		Files:     files,
 		Origin:    "forked:" + resolvedID,
-		CreatedBy: id.UserID,
+		CreatedBy: userID,
 	}
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
-	out, err := s.botSources.Create(store.WithTenant(r.Context(), teamID), bs)
+	out, err := s.botSources.Create(store.WithTenant(r.Context(), tenantID), bs)
 	if err != nil {
 		s.botSourceError(w, r, err)
 		return
 	}
+	s.auditBotSource(r, tenantID, "forked", out)
 	s.writeJSONFor(w, r, botSourceView{BotSource: out})
 }
 
-// catalogBundleFiles reads a baked catalog bot's whole bundle tree off the pod
-// filesystem into a files map (the fork source). Returns the resolved bot id so
-// the fork can record its provenance.
-func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, bool) {
+// catalogBundleFiles reads a baked catalog bot's COMPLETE bundle tree off the
+// pod filesystem into a files map (the fork source) — every file, including
+// root runtime files like devbox.json/devbox.lock, not just the layout dirs
+// (an earlier version copied LayoutDirs only, silently dropping the bot's
+// pinned toolchain). Returns (nil, "", nil) when the bot id does not resolve;
+// an explicit error when the bundle contains a file the store cannot carry
+// (non-UTF-8 — the Files map is JSON text; encoding it would corrupt bytes).
+func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, error) {
 	botID = strings.TrimSpace(botID)
 	if botID == "" {
-		return nil, "", false
+		return nil, "", nil
 	}
 	mainPath, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
 	if err != nil {
-		return nil, "", false
-	}
-	main, err := os.ReadFile(mainPath)
-	if err != nil {
-		return nil, "", false
+		return nil, "", nil //nolint:nilerr // unresolvable id = not found, not an error
 	}
 	dir := filepath.Dir(mainPath)
-	files := map[string]string{botsource.MainBotFile: string(main)}
-	for _, mf := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
-		if b, rerr := os.ReadFile(filepath.Join(dir, mf)); rerr == nil {
-			files[mf] = string(b)
+	files := map[string]string{}
+	walkErr := filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
 		}
-	}
-	for _, ld := range bundle.LayoutDirs {
-		root := filepath.Join(dir, ld)
-		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
-			if werr != nil || d.IsDir() {
-				return nil //nolint:nilerr // a missing layout dir is simply absent
-			}
-			rel, rerr := filepath.Rel(dir, p)
-			if rerr != nil {
-				return nil
-			}
-			if b, brerr := os.ReadFile(p); brerr == nil {
-				files[filepath.ToSlash(rel)] = string(b)
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
 			}
 			return nil
-		})
+		}
+		rel, rerr := filepath.Rel(dir, p)
+		if rerr != nil {
+			return rerr
+		}
+		b, brerr := os.ReadFile(p)
+		if brerr != nil {
+			return brerr
+		}
+		if !utf8.Valid(b) {
+			return fmt.Errorf("bundle file %q is not UTF-8 text — binary files cannot be stored in a bot source (the baked bundle keeps serving it)", rel)
+		}
+		files[filepath.ToSlash(rel)] = string(b)
+		return nil
+	})
+	if walkErr != nil {
+		return nil, "", fmt.Errorf("read catalog bundle %q: %w", botID, walkErr)
 	}
-	return files, botID, true
+	if strings.TrimSpace(files[botsource.MainBotFile]) == "" {
+		return nil, "", nil
+	}
+	return files, botID, nil
 }
 
 // validateBundleCompile materializes a bundle to a temp dir and runs the same
@@ -345,14 +472,8 @@ func validateBundleCompile(files map[string]string) []string {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	for rel, content := range files {
-		dst := filepath.Join(dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return []string{"internal: " + err.Error()}
-		}
-		if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
-			return []string{"internal: " + err.Error()}
-		}
+	if err := botsource.Materialize(dir, files); err != nil {
+		return []string{err.Error()}
 	}
 
 	mainPath := filepath.Join(dir, botsource.MainBotFile)

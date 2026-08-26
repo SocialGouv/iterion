@@ -1,29 +1,43 @@
 package server
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // resolveResumeSource turns a run's persisted file path (plus any inline
 // source the caller already has) into the (absolute path, source) pair
-// runview.ResumeSpec needs. persistedSource is the trusted launch snapshot;
-// it is only used when an implicit local resume cannot safely resolve the
+// runview.ResumeSpec needs, plus — when the path names a STORED bot (a
+// platform override) — the freshly materialized launchBot whose BundleDir/Ref
+// the caller stamps on the ResumeSpec (and must Cleanup). A cloud resume
+// re-resolves the bot like credentials are re-sealed: the resumed run picks
+// up the CURRENT override, consistently across compile and runner
+// materialization. persistedSource is the trusted launch snapshot; it is
+// only used when an implicit local resume cannot safely resolve the
 // recorded path.
 //
 // Shared by the operator-initiated resume handler and the retry sweeper so
 // the cloud-mode rule lives in one place: a server pod has no operator
 // filesystem, so a resume must carry inline source UNLESS the path names a
-// catalog bundle baked into the image, which the pod can read itself.
+// bot the pod can resolve itself (platform store or baked catalog).
 // Duplicating that rule is how the automated path would quietly diverge
 // from the manual one.
-func (s *Server) resolveResumeSource(filePath, source, persistedSource string) (string, string, error) {
+func (s *Server) resolveResumeSource(ctx context.Context, filePath, source, persistedSource string) (string, string, *launchBot, error) {
 	if filePath == "" && source == "" {
-		return "", "", fmt.Errorf("file_path or source is required (run has no persisted FilePath)")
+		return "", "", nil, fmt.Errorf("file_path or source is required (run has no persisted FilePath)")
 	}
+	var lb *launchBot
 	if s.cfg.Mode == "cloud" && source == "" {
-		if src, _, _, ok := s.catalogBotSource("", filePath); ok {
-			source = src
-		} else {
-			return "", "", fmt.Errorf("cloud mode: source or a catalog bot is required (file_path is not portable across the server pod's filesystem)")
+		resolved, err := s.resolveBotTiered(ctx, "", "", filePath)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("resolve bot: %w", err)
 		}
+		if resolved == nil {
+			return "", "", nil, fmt.Errorf("cloud mode: source or a catalog bot is required (file_path is not portable across the server pod's filesystem)")
+		}
+		lb = resolved
+		source = lb.Source
+		filePath = lb.Path
 	}
 	absPath, err := s.resolveWorkflowPath(filePath, source)
 	// Dispatcher worktrees live under the managed store, outside the
@@ -36,11 +50,12 @@ func (s *Server) resolveResumeSource(filePath, source, persistedSource string) (
 	// resume of a path the Studio cannot safely resolve.
 	if err != nil && source == "" && persistedSource != "" {
 		if persistedPath, persistedErr := s.resolveWorkflowPath(filePath, persistedSource); persistedErr == nil {
-			return persistedPath, persistedSource, nil
+			return persistedPath, persistedSource, nil, nil
 		}
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("invalid file_path: %w", err)
+		lb.Cleanup()
+		return "", "", nil, fmt.Errorf("invalid file_path: %w", err)
 	}
-	return absPath, source, nil
+	return absPath, source, lb, nil
 }

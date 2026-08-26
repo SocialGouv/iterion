@@ -225,6 +225,16 @@ the hours this one spent.
   `purpose: security_read`, which is what keeps the refresh worker from
   minting it a runtime token (that mint would 422 → degrade → withdraw the
   token it exists to supply) and keeps the publish resolver from picking it.
+- [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
+  (incl. natives) on a cloud instance WITHOUT an image rollout: the
+  platform bot-override tier (`iterion remote admin bots push bots/<slug>`,
+  botsource rows under the `platform:` sentinel, resolution team →
+  platform → baked at every launch surface, the runner's by-ref rebuild +
+  version-drift guard, digest-audited), plus the runtime-mutable webhook
+  role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
+  image (`admin sandbox set --default-image …`, pinned per RunMessage).
+  Read it when a bot tweak seems to need a deploy, when a push must be
+  reverted, or when a run fails on "version drift".
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -380,7 +390,8 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/botregistry/` — Discovers bots on disk (single `.bot` files + `.botz` bundle dirs); the shared layer behind `iterion bots list`, the studio `GET /api/v1/bots`, and the dispatcher's per-ticket bot-override resolution. Also generates Nexie's bot-catalog skill from manifests (`iterion bots regen-catalog`, [pkg/botregistry/catalog.go](pkg/botregistry/catalog.go))
 - `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
 - `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
-- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md))
+- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md)) — and, under the reserved `platform:` sentinel tenant, the deployment-wide **platform bot overrides** (super-admin `/api/admin/bots` + `iterion remote admin bots push`): the DB-backed form of the baked catalog, resolved team → platform → baked at every launch surface via [pkg/server/bot_resolver.go](pkg/server/bot_resolver.go) and rebuilt runner-side from the queue message's versioned `bot_bundle` ref (see [docs/platform-bots.md](docs/platform-bots.md))
+- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
 - `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
 - `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
 - `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
@@ -1295,18 +1306,22 @@ the BOT, keyed on generic context the engine already provides:**
   naming the other bot. Adding a second reviewer or a second fixer is a bundle,
   not an engine PR. See [pkg/server/webhooks_handoff.go](pkg/server/webhooks_handoff.go).
 
-**Known debt (extract when touched, don't extend):** the webhook layer still
-hardcodes distinguished-role bot ids — `defaultWebhookBotReviewPR`
-("review-pr"), `branchImproveBotID`, `featureDevBotID`
-([pkg/server/webhooks_common.go](pkg/server/webhooks_common.go)), the
-`cmd == "revi"` special-casing ([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)),
-the Billy merge-queue auto-heal + its mission prompt
+**Known debt (extract when touched, don't extend):** the webhook role bot
+ids are no longer read as constants — they resolve through
+`Server.roleBots()` over the `bot_roles` platform-settings family
+([pkg/platformcfg](pkg/platformcfg/platformcfg.go), `iterion remote admin
+roles set --reviewer …`), the constants remaining only as the DEFAULTS
+(enforced by the symbol-sweep test in
+[bot_resolver_sweep_test.go](pkg/server/bot_resolver_sweep_test.go)). What
+remains hardcoded: the `cmd == "revi"` special-casing
+([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)), the
+Billy merge-queue auto-heal mission prompt
 ([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
-`botRosterOrder` list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
+`botRosterOrder` display list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
 and the dispatcher's `ImplementBotOrDefault → "feature-dev"`
-([pkg/dispatcher/config.go](pkg/dispatcher/config.go)). These are ROLES
-(reviewer / implementer / brancher) that should resolve from config/manifest,
-not baked ids. **Do not add to this list** — thread new behaviour through the
+([pkg/dispatcher/config.go](pkg/dispatcher/config.go), local-YAML
+configurable already). Full role-from-manifest extraction stays future
+work. **Do not add to this list** — thread new behaviour through the
 generic seams above. If you find a fresh instance, flag it.
 
 ## A bot that needs tools declares them in `devbox.json`

@@ -133,7 +133,7 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
-	filePath, source, err := s.resolveResumeSource(ref.FilePath, "", "")
+	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.FilePath, "", "")
 	if err != nil {
 		// A bot removed from the catalog will never resolve; re-arming
 		// would just re-fail every 15 minutes forever.
@@ -141,12 +141,17 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %v", err))
 		return
 	}
+	defer lb.Cleanup()
 
-	if _, err := resumer.Resume(runCtx, runview.ResumeSpec{
+	retrySpec := runview.ResumeSpec{
 		RunID:    ref.ID,
 		FilePath: filePath,
 		Source:   source,
-	}); err != nil {
+	}
+	if lb != nil {
+		retrySpec.BundleDir, retrySpec.BotBundle = lb.BundleDir, lb.Ref
+	}
+	if _, err := resumer.Resume(runCtx, retrySpec); err != nil {
 		// Could be transient (a publish blip) or permanent (the bot was
 		// redeployed and the workflow hash moved). We do NOT pass Force:
 		// resuming a checkpoint against a workflow that changed underneath

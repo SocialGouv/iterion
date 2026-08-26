@@ -31,6 +31,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -160,7 +161,16 @@ type Server struct {
 	// botSources holds team-authored bot bundles (pkg/botsource) — the writable,
 	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
 	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
-	botSources     botsource.Store
+	botSources botsource.Store
+	// botRoles / sandboxCfg are TTL resolvers over the platform settings
+	// families; the *Store fields are the write surfaces of the admin routes.
+	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
+	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
+	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
+	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	// platformBots caches the platform-override entry set per replica
+	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
+	platformBots   platformBotsCache
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -440,6 +450,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		forgeConnections:  cfg.ForgeConnections,
 		pluginSources:     cfg.PluginSources,
 		botSources:        cfg.BotSources,
+		botRolesStore:     cfg.BotRolesSettings,
+		sandboxCfgStore:   cfg.SandboxSettings,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,
@@ -451,6 +463,11 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
 	}
+	// Platform settings families (bot_roles + sandbox): TTL resolvers over
+	// the stores. A nil store keeps them nil-safe — Get returns nil and
+	// every consumer falls back to its hardcoded/env default.
+	s.botRoles = platformcfg.NewResolver(cfg.BotRolesSettings, logger.Warn)
+	s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
 	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
 	// A malformed env policy leaves it nil — the health echo reports the
 	// invalid value (existing behaviour) instead of a resolver quietly

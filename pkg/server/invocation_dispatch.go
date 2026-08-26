@@ -8,7 +8,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -23,7 +22,7 @@ import (
 type commandDiscovery struct{ s *Server }
 
 func (d commandDiscovery) LookupCommand(cmd string) (webhooks.CommandRoute, bool) {
-	entries, err := botregistry.List(botregistry.ListOptions{Paths: d.s.effectivePaths()})
+	entries, err := d.s.effectiveEntries()
 	if err != nil {
 		return webhooks.CommandRoute{}, false
 	}
@@ -81,7 +80,7 @@ func (s *Server) boardRouteForLabel(botID string) webhooks.CommandRoute {
 		ArgsVar: "feature_prompt",
 		OpensMR: true,
 	}
-	entries, err := botregistry.List(botregistry.ListOptions{Paths: s.effectivePaths()})
+	entries, err := s.effectiveEntries()
 	if err != nil {
 		return route
 	}

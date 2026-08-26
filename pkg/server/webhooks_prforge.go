@@ -119,7 +119,7 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	}
 	vars := applyWebhookVarLayers(buildPRForgeCommandVars(p, pr, route, cmdArgs, nil), cfg)
 	if pr != nil {
-		stampBranchImprovePushBack(vars, route.BotID, pr.SourceBranch, cfg.BranchImproveAsPR)
+		stampBranchImprovePushBack(vars, route.BotID, s.roleBots().Brancher, pr.SourceBranch, cfg.BranchImproveAsPR)
 		// The revision the command is about, so the shared launch tail can tell a
 		// consumer whether the review it is handed still matches the PR head.
 		vars["head_sha"] = pr.HeadSHA

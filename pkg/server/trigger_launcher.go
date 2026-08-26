@@ -29,23 +29,21 @@ type serviceLauncher struct {
 	// Injected rather than reached for, because the launcher deliberately
 	// holds no *Server.
 	resolveRetry func(botID string, higher ...retrypolicy.Layer) *store.RunRetryPolicy
+	// resolveBot is the server's tiered bot resolution (platform override →
+	// baked catalog), injected for the same no-*Server reason. Nil (tests)
+	// falls back to a bare catalog path resolution.
+	resolveBot func(ctx context.Context, botID string) (*launchBot, error)
 }
 
-func newServiceLauncher(runs *runview.Service, paths []string, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy) *serviceLauncher {
-	return &serviceLauncher{runs: runs, paths: paths, logger: logger, resolveRetry: resolveRetry}
+func newServiceLauncher(runs *runview.Service, paths []string, logger *iterlog.Logger, resolveRetry func(string, ...retrypolicy.Layer) *store.RunRetryPolicy, resolveBot func(context.Context, string) (*launchBot, error)) *serviceLauncher {
+	return &serviceLauncher{runs: runs, paths: paths, logger: logger, resolveRetry: resolveRetry, resolveBot: resolveBot}
 }
 
 func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (string, error) {
 	if l.runs == nil {
 		return "", errors.New("trigger: no run service wired for direct launch")
 	}
-	path, err := botregistry.ResolveBotPath(plan.BotID, l.paths)
-	if err != nil {
-		return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
-	}
-	res, err := l.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:        path,
-		BotID:           plan.BotID,
+	spec := runview.LaunchSpec{
 		Vars:            plan.Vars,
 		RepoURL:         plan.RepoURL,
 		RepoRef:         plan.RepoRef,
@@ -54,7 +52,23 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		SecretOverrides: plan.SecretOverrides,
 		SourceRef:       plan.SourceRef,
 		RetryPolicy:     l.retryPolicyFor(plan),
-	})
+	}
+	if l.resolveBot != nil {
+		lb, err := l.resolveBot(ctx, plan.BotID)
+		if err != nil {
+			return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
+		}
+		defer lb.Cleanup()
+		lb.Stamp(&spec)
+	} else {
+		path, err := botregistry.ResolveBotPath(plan.BotID, l.paths)
+		if err != nil {
+			return "", fmt.Errorf("trigger: resolve bot %q: %w", plan.BotID, err)
+		}
+		spec.FilePath = path
+		spec.BotID = plan.BotID
+	}
+	res, err := l.runs.Launch(ctx, spec)
 	if err != nil {
 		return "", err
 	}
