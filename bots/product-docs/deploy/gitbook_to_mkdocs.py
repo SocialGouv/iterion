@@ -33,8 +33,10 @@ ANY_TAG_RE = re.compile(r'\{%.*?%\}')
 FENCE_RE = re.compile(r'^\s{0,3}(```|~~~)')
 HEADING_RE = re.compile(r'^\s*#{1,6}\s+(.*\S)\s*$')
 
-# GitBook hint styles → Material admonition types (all four exist natively).
+# GitBook hint styles → Material admonition types (all four exist natively),
+# with French display titles (the corpus is end-user documentation in French).
 HINT_STYLES = {"info": "info", "warning": "warning", "danger": "danger", "success": "success"}
+HINT_TITLES = {"info": "Info", "warning": "Attention", "danger": "Danger", "success": "Bon à savoir", "note": "Note"}
 
 
 class ConvertError(Exception):
@@ -70,7 +72,7 @@ def convert_page(text, relpath):
         m = HINT_OPEN_RE.match(line)
         if m:
             style = HINT_STYLES.get(m.group(1) or "info", "note")
-            out.append(indent() + "!!! " + style)
+            out.append(indent() + '!!! %s "%s"' % (style, HINT_TITLES[style]))
             stack.append(("hint", indent()))
             continue
         if HINT_CLOSE_RE.match(line):

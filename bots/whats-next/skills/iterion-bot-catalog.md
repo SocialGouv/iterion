@@ -1073,7 +1073,7 @@ forge and marking it ready is their act, not the bot's.
   developers — and the topology second: docs repo here, N source
   repos there.
 - **Triggers**: product-docs, functional-docs, doc-produit
-- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_s3_bucket` (string), `publish_s3_prefix` (string), `publish_site` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
