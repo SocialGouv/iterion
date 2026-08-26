@@ -581,3 +581,36 @@ func TestResolveSandboxSpecDefaultTierUnusableDevcontainerFallsBack(t *testing.T
 		t.Fatal("explicit auto with unusable devcontainer must error")
 	}
 }
+
+// TestDefaultSandboxImageFallback pins the doctrine of the registry
+// fallback: the engine may retry ITS OWN version-pinned guess, never an
+// image an operator named. A binary built between releases pins a tag
+// nobody published, and the run used to die at startup on a raw
+// "manifest unknown" before any node ran.
+func TestDefaultSandboxImageFallback(t *testing.T) {
+	t.Run("the built-in default carries a fallback", func(t *testing.T) {
+		t.Setenv(EnvSandboxDefaultImage, "")
+		ref, fallback := resolveDefaultSandboxImageWithFallback("")
+		if !strings.HasPrefix(ref, builtInSandboxImageRepo+":") {
+			t.Fatalf("ref = %q, want the built-in repo", ref)
+		}
+		if fallback != builtInSandboxImageRepo+":latest" {
+			t.Fatalf("fallback = %q, want the repo's latest", fallback)
+		}
+	})
+
+	// An explicit request that silently runs a DIFFERENT image is worse
+	// than one that refuses to start: the operator would debug the wrong
+	// container.
+	t.Run("an operator-named image gets no fallback", func(t *testing.T) {
+		t.Setenv(EnvSandboxDefaultImage, "")
+		if _, fallback := resolveDefaultSandboxImageWithFallback("ghcr.io/acme/img:pinned"); fallback != "" {
+			t.Fatalf("flag-named image offered fallback %q", fallback)
+		}
+		t.Setenv(EnvSandboxDefaultImage, "ghcr.io/acme/env-img:pinned")
+		ref, fallback := resolveDefaultSandboxImageWithFallback("")
+		if ref != "ghcr.io/acme/env-img:pinned" || fallback != "" {
+			t.Fatalf("env-named image = %q with fallback %q, want the ref honoured exactly and no fallback", ref, fallback)
+		}
+	})
+}

@@ -300,7 +300,8 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return err
 	}
-	spec, source, skipReason, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
+	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
+	spec, source, skipReason, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -835,6 +836,16 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
+	return resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+}
+
+// resolveSandboxSpecWithFallback carries the registry fallback for a
+// version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
+// down to the spec the driver receives.
+func resolveSandboxSpecWithFallback(
+	wf *ir.Workflow,
+	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
+) (*sandbox.Spec, string, string, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
 		return nil, source, "", nil
@@ -866,6 +877,7 @@ func resolveSandboxSpec(
 					}
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
+					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + " (default image: " + defaultImage + ")", "", nil
 				}
@@ -887,6 +899,7 @@ func resolveSandboxSpec(
 					}
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
+					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
 				}
