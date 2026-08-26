@@ -314,6 +314,9 @@
           "provider": {
             "type": "string"
           },
+          "purpose": {
+            "type": "string"
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -647,6 +650,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "security_read_only": {
+            "type": "boolean"
           },
           "tenant_id": {
             "type": "string"
@@ -2184,6 +2190,9 @@
           },
           "provider": {
             "type": "string"
+          },
+          "security_read_only": {
+            "type": "boolean"
           }
         },
         "required": [

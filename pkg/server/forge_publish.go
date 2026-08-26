@@ -706,11 +706,22 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 // PR's forge host.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
 	matches := func(c forge.Connection) bool {
-		return c.TenantID == teamID && strings.EqualFold(hostOfURL(c.BaseURL()), host)
+		// A watch-only connection sits on the same host and would be picked by
+		// the "first connection on this host" fallback below — then every
+		// review comment and commit status posted through it would 403: its
+		// App holds no pull_requests/statuses grant, by design.
+		return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
+			strings.EqualFold(hostOfURL(c.BaseURL()), host)
 	}
 	if preferredConnID != "" {
 		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {
 			return c, true
+		} else if s.logger != nil {
+			// Falling through to another connection is the historical
+			// behaviour and stays — but an operator's explicit pin being
+			// replaced must never be silent, or the verdict is published under
+			// an identity nobody chose and nothing says so.
+			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
 	if s.forgeIntegrations != nil {

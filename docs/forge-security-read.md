@@ -73,6 +73,57 @@ deletes the secret when the map empties).
 Multiple orgs = one connection per org (a GitHub App is installed per
 org), each opted in; the worker merges them all into the one secret.
 
+### The coverage trap, and the watch-only App
+
+The org-wide alerts endpoint returns **only what the installation can
+see**. An App installed on *selected* repositories therefore yields
+alerts for those repositories alone — silently, with no error and no
+partial-coverage warning. Org-wide coverage means installing on **All
+repositories**.
+
+That is a problem for the ordinary forge App, which holds
+`contents:write` (and, when opted in, `administration:write`): widening
+it to every repository of an org to gain read access to alerts grants
+write on every repository as a side effect.
+
+The **watch-only App** exists for exactly this. It is built from a
+manifest that *replaces* the runtime baseline instead of adding to it —
+`metadata:read` + `vulnerability_alerts:read`, nothing else — so it is
+safe to install on All repositories:
+
+- Studio: Integrations → connect → *Create your GitHub App* → check
+  **"Watch-only App (Dependabot alerts, read)"**. The write-grant
+  checkboxes disappear; the App is named `iterion-watch-<id>` so its
+  shape is legible on the org's Apps list.
+- API: `POST /api/teams/{id}/forge/oauth-apps/github-manifest` with
+  `{"security_read_only": true}`.
+
+Its connection is stamped `purpose: "security_read"`
+([pkg/forge/types.go](../pkg/forge/types.go)), which is what keeps it
+out of every runtime path. Three consequences worth knowing, because
+each one would otherwise be a silent failure:
+
+- **The refresh worker never mints a runtime token for it.** That mint
+  would request permissions the App was deliberately never granted →
+  `422` → the connection is marked degraded → its security-read entry is
+  *withdrawn*. A watch-only connection would destroy the token it exists
+  to supply, about an hour after being wired. Its whole refresh is the
+  security mint, and it is re-armed from **that token's own expiry** —
+  there is no runtime token to date the sweep from.
+- **The publish resolver skips it.** `forgeConnectionForPR` otherwise
+  falls back to "the first team connection on this forge host", and a
+  review posted through a watch-only connection would `403`.
+- **Its health view does not report the absent delivery grants.** They
+  are the point, not a defect.
+
+The role is inherited from the App record, never inferred from the
+granted permissions: a runtime App an owner narrowed by mistake must
+read as broken (degraded, with a reason), not quietly re-label itself
+watch-only and stop doing its job.
+
+The per-connection opt-in still applies — creating a watch-only App does
+not by itself mint anything; PATCH `security_read_enabled` as above.
+
 ## Health and diagnostics
 
 - `GET /api/teams/{id}/forge/connections/{conn_id}/health` reports

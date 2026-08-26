@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -69,9 +70,9 @@ func TestSecurityReadPatch_EnableThenDisable(t *testing.T) {
 	s := newForgeTestServer(t)
 	seedAppConn(t, s, "c1", "SocialGouv", "", false)
 	minted := 0
-	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
 		minted++
-		return "ghs_minted", nil
+		return "ghs_minted", time.Time{}, nil
 	}
 
 	if w := patchSecurityRead(t, s, "c1", true); w.Code != http.StatusOK {
@@ -111,9 +112,9 @@ func TestSecurityReadPatch_EnableThenDisable(t *testing.T) {
 func TestSecurityReadPatch_RefusesAShadowingPersonalSecret(t *testing.T) {
 	s := newForgeTestServer(t)
 	seedAppConn(t, s, "c1", "SocialGouv", "", false)
-	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
 		t.Fatal("the mint must not run when the name is shadowed")
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	id := secrets.NewGenericSecretID()
 	sealed, _ := secrets.SealGenericSecret(s.sealer, id, []byte(`{"socialgouv":"ghp_member"}`))
@@ -139,9 +140,9 @@ func TestSecurityReadPatch_RefusesACrossHostOrgCollision(t *testing.T) {
 	s := newForgeTestServer(t)
 	seedAppConn(t, s, "c1", "acme", "", true)                          // github.com, already enabled
 	seedAppConn(t, s, "c2", "acme", "https://ghe.corp.example", false) // same org, other host
-	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
 		t.Fatal("the mint must not run on a colliding org")
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	w := patchSecurityRead(t, s, "c2", true)
 	if w.Code != http.StatusConflict {
@@ -158,8 +159,8 @@ func TestSecurityReadPatch_RefusesACrossHostOrgCollision(t *testing.T) {
 func TestSecurityReadPatch_RollsBackWhenThePersistFails(t *testing.T) {
 	s := newForgeTestServer(t)
 	seedAppConn(t, s, "c1", "SocialGouv", "", false)
-	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
-		return "ghs_minted", nil
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
+		return "ghs_minted", time.Time{}, nil
 	}
 	s.forgeConnections = failingUpdateConnStore{s.forgeConnections}
 
@@ -199,9 +200,9 @@ func TestSecurityReadPatch_CollisionReadsTheOrgNotTheBotHandle(t *testing.T) {
 	seedAppConn(t, s, "c1", "orgA", "", true)
 	seedAppConn(t, s, "c2", "orgB", "https://ghe.corp.example", false)
 	minted := 0
-	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+	s.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
 		minted++
-		return "ghs_b", nil
+		return "ghs_b", time.Time{}, nil
 	}
 	if w := patchSecurityRead(t, s, "c2", true); w.Code != http.StatusOK {
 		t.Fatalf("distinct orgs must not collide: code=%d body=%s", w.Code, w.Body.String())
@@ -215,9 +216,9 @@ func TestSecurityReadPatch_CollisionReadsTheOrgNotTheBotHandle(t *testing.T) {
 	s2 := newForgeTestServer(t)
 	seedAppConn(t, s2, "d1", "acme", "", true)
 	seedAppConn(t, s2, "d2", "acme", "https://ghe.corp.example", false)
-	s2.forgeSecurityMint = func(context.Context, forge.Connection) (string, error) {
+	s2.forgeSecurityMint = func(context.Context, forge.Connection) (string, time.Time, error) {
 		t.Fatal("a colliding org must not be minted")
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	if w := patchSecurityRead(t, s2, "d2", true); w.Code != http.StatusConflict {
 		t.Fatalf("same org on two hosts must be refused: code=%d body=%s", w.Code, w.Body.String())

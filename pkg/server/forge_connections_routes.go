@@ -180,6 +180,21 @@ func (s *Server) syncGrantedPermissions(ctx context.Context, conn forge.Connecti
 	}
 }
 
+// missingDeliveryFor is the ONE place that decides whether a connection's
+// absent delivery grants are a defect worth reporting. A watch-only connection
+// has none on purpose — naming them would tell an operator to "fix" the very
+// property that makes its App safe to install on every repository of an org.
+//
+// It exists as a helper because the health DTO is assembled at more than one
+// endpoint (the health view and the refresh route), and guarding only the site
+// in front of you leaves the other one contradicting it.
+func missingDeliveryFor(conn forge.Connection, granted map[string]string) []string {
+	if conn.IsSecurityReadOnly() {
+		return nil
+	}
+	return forgegithub.MissingDeliveryPermissions(granted)
+}
+
 func samePermissions(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false
@@ -230,7 +245,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				h.InstallationAccount = inst.Login
 				h.ManageInstallURL = inst.HTMLURL
 				h.GrantedPermissions = inst.Permissions
-				h.MissingPermissions = forgegithub.MissingDeliveryPermissions(inst.Permissions)
+				h.MissingPermissions = missingDeliveryFor(conn, inst.Permissions)
 				h.MissingSecurityPermissions = forgegithub.MissingSecurityPermissions(inst.Permissions)
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
@@ -245,7 +260,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 			// permissions so the pre-flight looks at the thing that acts.
 			if tokenPerms, ok := forgegithub.LastMintedPermissions(conn.InstallationID); ok {
 				h.TokenPermissions = tokenPerms
-				h.TokenMissingPermissions = forgegithub.MissingDeliveryPermissions(tokenPerms)
+				h.TokenMissingPermissions = missingDeliveryFor(conn, tokenPerms)
 			}
 		}
 		if admin, err := s.forgeAdminFor(r.Context(), conn); err == nil {
@@ -438,7 +453,7 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 		if mint == nil {
 			mint = s.forgeSecurityTokenMinter
 		}
-		tok, err := mint(ctx, conn)
+		tok, mintedUntil, err := mint(ctx, conn)
 		if err != nil {
 			if errors.Is(err, forge.ErrPermissionsNotGranted) {
 				httpError(w, http.StatusUnprocessableEntity, "%v", err)
@@ -446,6 +461,19 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 			}
 			httpError(w, http.StatusBadGateway, "security-read token mint: %v", err)
 			return
+		}
+		// Date the connection from the token we just minted — but ONLY on a
+		// watch-only connection, where this field is the refresh clock and
+		// nothing else writes it. This endpoint serves ANY github_app
+		// connection, and on a runtime one the field is the clock of the
+		// RUNTIME token sealed in SealedPayload: a security token always
+		// expires an hour out, so writing it here would push the connection out
+		// of ExpiringBefore's window for ~55 minutes and let a runtime token
+		// that was near expiry die unrenewed — every bot on it 401ing, with
+		// nothing to explain it.
+		if !mintedUntil.IsZero() && conn.IsSecurityReadOnly() {
+			exp := mintedUntil
+			conn.AccessTokenExpiresAt = &exp
 		}
 		if err := forge.UpsertSecurityReadToken(ctx, s.genericSecrets, s.sealer, &conn, tok, time.Now().UTC()); err != nil {
 			httpError(w, http.StatusInternalServerError, "%v", err)

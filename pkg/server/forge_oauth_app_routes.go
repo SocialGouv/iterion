@@ -44,6 +44,12 @@ type forgeOAuthAppReq struct {
 	// installed org-wide. Empty = the user's personal account (a private App is
 	// then installable only there — the cause of "only your personal account").
 	GitHubOrg string `json:"github_org,omitempty"`
+	// SecurityReadOnly (github-manifest): build a WATCH-ONLY App —
+	// metadata:read + vulnerability_alerts:read and nothing else — meant to be
+	// installed org-wide as the Dependabot-alerts source without granting
+	// write on every repository. Mutually exclusive with the Allow* options,
+	// which only add write grants.
+	SecurityReadOnly bool `json:"security_read_only,omitempty"`
 	// AllowRepoCreation (github-manifest): request administration:write on
 	// the App so iterion can CREATE repositories in the installed org
 	// (opt-in — the connect wizard surfaces it as a visible checkbox;
@@ -263,6 +269,10 @@ type githubAppFacts struct {
 	// OwnerLogin is the account the App belongs to — the discriminator once a
 	// tenant holds one App per org.
 	OwnerLogin string
+	// SecurityReadOnly marks the App as watch-only (see
+	// ForgeOAuthApp.SecurityReadOnly); every connection installed from it is
+	// stamped forge.PurposeSecurityRead.
+	SecurityReadOnly bool
 }
 
 // the latter pass the client_id/client_secret they got back from the forge.
@@ -291,7 +301,8 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
 		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
 		AppSlug: appSlug, SealedPrivateKey: sealedKey, OwnerLogin: gh.OwnerLogin,
-		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
+		SecurityReadOnly: gh.SecurityReadOnly,
+		CreatedBy:        userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {
 		return forge.ForgeOAuthApp{}, err

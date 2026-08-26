@@ -60,6 +60,16 @@ type AppManifestOptions struct {
 	// the dedicated security-read token (SecurityReadInstallationPermissions),
 	// never into the runtime forge token.
 	AllowSecurityRead bool
+	// SecurityReadOnly builds a WATCH-ONLY App: metadata:read plus
+	// vulnerability_alerts:read, and nothing else. It REPLACES the runtime
+	// baseline rather than adding to it, so the App can be installed org-wide
+	// (which the org-wide alerts endpoint requires — it returns only what the
+	// installation can see) without granting write on every repository.
+	//
+	// Its connection carries forge.PurposeSecurityRead and is excluded from
+	// all runtime paths. When set, the other options are ignored: they only
+	// add write grants, which is exactly what this shape exists to avoid.
+	SecurityReadOnly bool
 }
 
 // BuildAppManifest assembles the manifest for an iterion forge GitHub App. The
@@ -72,6 +82,14 @@ type AppManifestOptions struct {
 // require `repository_hooks:write`, not `administration` — and only joins the
 // grant when opts.AllowRepoCreation asks for the create-repo capability.
 func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOptions) AppManifest {
+	for _, o := range opts {
+		if o.SecurityReadOnly {
+			// Whole-set replacement, evaluated before anything can widen it:
+			// a watch-only App that also carried the runtime baseline would
+			// defeat its own purpose.
+			return newAppManifest(name, homeURL, redirectURL, SecurityReadInstallationPermissions())
+		}
+	}
 	perms := RuntimeInstallationPermissions()
 	// statuses:write lets Revi post its revi/review merge-gate commit status.
 	// Optional at runtime (the mint falls back without it — see AppClient.rest),
@@ -90,6 +108,14 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 			perms["vulnerability_alerts"] = "read"
 		}
 	}
+	return newAppManifest(name, homeURL, redirectURL, perms)
+}
+
+// newAppManifest assembles the manifest envelope around an already-decided
+// permission set. Every App iterion creates shares the same callback/setup
+// wiring; only DefaultPermissions differ between the runtime and the
+// watch-only shapes.
+func newAppManifest(name, homeURL, redirectURL string, perms map[string]string) AppManifest {
 	return AppManifest{
 		Name:        name,
 		URL:         homeURL,
@@ -108,7 +134,8 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 		// open + comment; metadata: baseline; repository_hooks: per-repo
 		// inbound webhook), plus administration:write ONLY when the
 		// create-repo capability was opted in — minted tokens always
-		// narrow to the subset a call needs.
+		// narrow to the subset a call needs. A SecurityReadOnly App instead
+		// carries metadata:read + vulnerability_alerts:read and nothing else.
 		DefaultPermissions: perms,
 		HookAttributes:     map[string]any{"url": homeURL, "active": false},
 	}
@@ -132,6 +159,28 @@ type ManifestConversion struct {
 		Login string `json:"login"`
 		Type  string `json:"type"` // "Organization" | "User"
 	} `json:"owner"`
+	// Permissions is what the App GitHub actually created carries. iterion
+	// POSTs the manifest through the operator's BROWSER, so what came back is
+	// the only evidence of what was registered — the request iterion built is
+	// not. A watch-only App is the one shape whose whole value rests on its
+	// permissions, and an org owner is asked to install it on every repository:
+	// the claim has to be confronted with this before it is recorded.
+	Permissions map[string]string `json:"permissions"`
+}
+
+// IsSecurityReadOnly reports whether the created App carries exactly the
+// watch-only permission profile and nothing else.
+func (c ManifestConversion) IsSecurityReadOnly() bool {
+	want := SecurityReadInstallationPermissions()
+	if len(c.Permissions) != len(want) {
+		return false
+	}
+	for name, level := range want {
+		if c.Permissions[name] != level {
+			return false
+		}
+	}
+	return true
 }
 
 // AppManageURL is the GitHub settings page (Advanced tab, with the Delete

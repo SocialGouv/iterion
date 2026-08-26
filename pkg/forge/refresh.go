@@ -49,7 +49,13 @@ type RefreshWorker struct {
 	// SecurityReadEnabled. The worker re-mints it alongside each connection
 	// refresh (both tokens live ~1h, so they rotate together) and merges it
 	// into the tenant's dependabot_tokens secret. Nil = feature unwired.
-	SecurityMinter func(ctx context.Context, conn Connection) (string, error)
+	//
+	// It returns the token's own expiry because a PurposeSecurityRead
+	// connection has no runtime token to date the sweep from: that expiry is
+	// the ONLY thing that puts the connection back on ExpiringBefore's list,
+	// and without it a watch-only connection would mint once and then go
+	// quiet forever.
+	SecurityMinter func(ctx context.Context, conn Connection) (string, time.Time, error)
 	// Lead is how far before expiry a token is refreshed (default 5m).
 	Lead time.Duration
 	Now  func() time.Time
@@ -97,6 +103,21 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 // generic secret SECOND, so a crash between them leaves a working-but-old
 // secret rather than a zero value.
 func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
+	// A watch-only connection holds an App with metadata:read +
+	// vulnerability_alerts:read and NOTHING else. Asking the ordinary
+	// refresher for a runtime token would request permissions it was
+	// deliberately never granted: GitHub answers 422, markDegraded fires, and
+	// dropSecurityReadEntry withdraws the very token this connection exists to
+	// supply. Its whole refresh IS the security mint.
+	//
+	// This is decided BEFORE RefresherFor is consulted, and that order is
+	// load-bearing: a resolver that returns nil for a connection with no
+	// runtime credential would otherwise take the "not refreshable" exit and
+	// the security token would never be re-minted — alerts stopping about an
+	// hour after wiring, with nothing in the logs.
+	if conn.IsSecurityReadOnly() {
+		return w.refreshSecurityOnly(store.WithTenant(ctx, conn.TenantID), conn)
+	}
 	if w.RefresherFor == nil {
 		return nil
 	}
@@ -199,7 +220,7 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// vuln-watch reading a dead token would otherwise fail with no trail
 	// on the server side.
 	if conn.SecurityReadEnabled && conn.Kind == KindGitHubApp && w.SecurityMinter != nil {
-		secTok, err := w.SecurityMinter(ctx, conn)
+		secTok, _, err := w.SecurityMinter(ctx, conn)
 		if errors.Is(err, ErrPermissionsNotGranted) {
 			// PERMANENT (the org revoked, or never approved, the alerts
 			// grant): retrying can never self-heal, and the entry already in
@@ -220,6 +241,127 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 		}
 	}
 	return nil
+}
+
+// refreshSecurityOnly is the whole refresh cycle of a PurposeSecurityRead
+// connection: mint the org-wide alerts token, merge it into the tenant's
+// dependabot_tokens map, and date the connection from the token's own expiry
+// so the next sweep picks it up. There is no runtime token, no managed secret
+// and no refresh-token grant involved.
+func (w *RefreshWorker) refreshSecurityOnly(ctx context.Context, conn Connection) error {
+	if w.SecurityMinter == nil {
+		// The feature is UNWIRED, which says nothing about whether the token in
+		// the map is still wanted. Withdrawing here would let a partially-wired
+		// replica strip live tokens from the tenant map — so skip, exactly as
+		// the runtime lane skips a connection it cannot refresh.
+		return nil
+	}
+	if !conn.SecurityReadEnabled {
+		// Opt-in switched off: the connection has no other job, so there is
+		// nothing to renew. Withdraw any entry it still owns —
+		// withdrawSecurityReadEntry, NOT dropSecurityReadEntry, whose
+		// `!SecurityReadEnabled` guard is the very condition that got us here
+		// and would make the withdrawal a no-op.
+		if err := w.withdrawSecurityReadEntry(ctx, conn); err != nil {
+			return err
+		}
+		// And stop being due. A connection that has nothing to renew but keeps
+		// a past expiry is swept on EVERY tick, forever — which is the state
+		// every watch-only connection is born in, since the opt-in starts off.
+		return w.parkSecurityOnly(ctx, conn)
+	}
+	secTok, expiresAt, err := w.SecurityMinter(ctx, conn)
+	switch {
+	case errors.Is(err, ErrPermissionsNotGranted):
+		if derr := w.withdrawSecurityReadEntry(ctx, conn); derr != nil {
+			return derr
+		}
+		return w.markSecurityReadDegraded(ctx, conn, err)
+	case errors.Is(err, ErrUnauthorized):
+		// The App's key was rotated, or the installation suspended. The
+		// runtime lane calls markRevoked here; without the same treatment the
+		// connection keeps reading "active" while the map holds a token that
+		// dies within the hour — a 401 in the bot with nothing to explain it.
+		//
+		// Clear the expiry FIRST. markRevoked does not touch it, and this lane
+		// deliberately bypasses the StatusDegraded early-exit that stops the
+		// runtime lane from re-entering — so a revoked connection that stays
+		// dated is re-minted against the forge on every tick, forever, with no
+		// self-heal path.
+		conn.AccessTokenExpiresAt = nil
+		return w.markRevoked(ctx, conn)
+	case err != nil:
+		// Transient (or at least unclassified): keep retrying, but do not let
+		// the map keep promising freshness it no longer has. The map carries
+		// no expiry of its own, so once the expiry we recorded has passed the
+		// token in it is dead by definition.
+		if conn.AccessTokenExpiresAt != nil && !conn.AccessTokenExpiresAt.After(w.now()) {
+			if derr := w.withdrawSecurityReadEntry(ctx, conn); derr != nil {
+				return derr
+			}
+		}
+		return fmt.Errorf("forge: security-read mint for connection %s: %w", conn.ID, err)
+	}
+	// Date the connection from the token before the upsert. The new expiry is
+	// persisted on success, and on a PERMANENT upsert failure (which leaves the
+	// sweep by being degraded) — but NOT on a transient one, which must stay
+	// due so the next tick retries.
+	now := w.now()
+	conn.Status = StatusActive
+	conn.StatusReason = "" // the security lane IS this connection: a good mint clears it
+	conn.LastRefreshedAt = &now
+	exp := expiresAt
+	if exp.IsZero() {
+		// Mirror the GitHub client's own default rather than leaving the
+		// connection undated (which reads as "never expires" to the sweep).
+		exp = now.Add(time.Hour)
+	}
+	conn.AccessTokenExpiresAt = &exp
+	conn.UpdatedAt = now
+
+	if upsertErr := UpsertSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn, secTok, now); upsertErr != nil {
+		if isPermanentSecurityReadErr(upsertErr) {
+			// Permanent by nature: retrying cannot fix a malformed map or a
+			// connection with no org to key on. Record it once instead of
+			// re-minting every ten minutes.
+			return w.markSecurityReadDegraded(ctx, conn, upsertErr)
+		}
+		// Transient (store blip, seal error, CAS retries exhausted): the token
+		// just minted never reached the map, so do NOT persist the fresh
+		// expiry. Persisting it would take the connection out of the sweep for
+		// ~55 minutes while the map still advertises the PREVIOUS token, which
+		// is expiring right now — the very thing the transient-mint branch
+		// above refuses to allow.
+		return fmt.Errorf("forge: security-read upsert for connection %s: %w", conn.ID, upsertErr)
+	}
+	// An operator may have switched the opt-in off while the mint was in
+	// flight (a few hundred ms, six times an hour). Blindly writing back the
+	// record we read at the top of the sweep would resurrect their choice —
+	// and we would have just re-uploaded the token they asked us to withdraw.
+	if fresh, ferr := w.Connections.Get(ctx, conn.ID); ferr == nil && !fresh.SecurityReadEnabled {
+		return w.withdrawSecurityReadEntry(ctx, fresh)
+	}
+	return w.Connections.Update(ctx, conn)
+}
+
+// isPermanentSecurityReadErr classifies an upsert failure that no retry can
+// fix: the map an operator hand-wrote is not a map, or the connection has no
+// org name to file its token under.
+func isPermanentSecurityReadErr(err error) bool {
+	return errors.Is(err, ErrSecurityReadMalformed) || errors.Is(err, ErrSecurityReadNoOrgKey)
+}
+
+// parkSecurityOnly takes an idle watch-only connection out of the refresh
+// sweep by clearing the expiry that keeps it due. It has no token to renew;
+// the enable endpoint re-dates it when the opt-in comes back on.
+func (w *RefreshWorker) parkSecurityOnly(ctx context.Context, conn Connection) error {
+	if conn.AccessTokenExpiresAt == nil {
+		return nil // already parked — do not rewrite the record on every tick
+	}
+	now := w.now()
+	conn.AccessTokenExpiresAt = nil
+	conn.UpdatedAt = now
+	return w.Connections.Update(ctx, conn)
 }
 
 // securityReadDegradePrefix marks a StatusReason that belongs to the
@@ -246,7 +388,18 @@ func (w *RefreshWorker) markSecurityReadDegraded(ctx context.Context, conn Conne
 // revoked): a token in that map is a promise of freshness, and a connection
 // that stopped refreshing must not leave a silently-dying one behind.
 func (w *RefreshWorker) dropSecurityReadEntry(ctx context.Context, conn Connection) error {
-	if !conn.SecurityReadEnabled || conn.Kind != KindGitHubApp {
+	if !conn.SecurityReadEnabled {
+		return nil
+	}
+	return w.withdrawSecurityReadEntry(ctx, conn)
+}
+
+// withdrawSecurityReadEntry removes the connection's org entry unconditionally
+// — the opt-in flag is NOT consulted. It is what the opt-out path needs:
+// "the flag is off" is precisely why an entry left behind must go, so a guard
+// on that same flag would turn the withdrawal into a no-op.
+func (w *RefreshWorker) withdrawSecurityReadEntry(ctx context.Context, conn Connection) error {
+	if conn.Kind != KindGitHubApp {
 		return nil
 	}
 	// RunOnce's ctx carries NO tenant (it sweeps every tenant), and the

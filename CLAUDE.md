@@ -217,7 +217,14 @@ the hours this one spent.
   `security_read_enabled` PATCH, refresh worker keeps it minted) vs the
   hand-set fine-grained-PAT path, and the health/422 diagnostics. Read it
   when wiring vuln-watch (Senti) or when its run fails on "no Dependabot
-  token".
+  token". Covers the **coverage trap** — the org-wide endpoint returns only
+  what the installation can see, so a `selected`-scope install is silently
+  near-blind — and the **watch-only App** (`security_read_only`, manifest
+  permissions REPLACED by `metadata`+`vulnerability_alerts` read) that makes
+  an All-repositories install safe. Its connection carries
+  `purpose: security_read`, which is what keeps the refresh worker from
+  minting it a runtime token (that mint would 422 → degrade → withdraw the
+  token it exists to supply) and keeps the publish resolver from picking it.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
