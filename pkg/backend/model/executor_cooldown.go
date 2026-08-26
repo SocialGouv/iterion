@@ -2,11 +2,17 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 )
+
+// routeCooldownModeEnv is the operator kill switch for reactive route
+// cooldowns. "off" restores the historical fail-open behaviour: every node
+// probes the primary route even when an earlier node observed a future reset.
+const routeCooldownModeEnv = "ITERION_ROUTE_COOLDOWN"
 
 // routeCooldownKey identifies the effective call rather than the authored
 // label. Provider is the credential-routing hint; backend and model keep two
@@ -49,11 +55,15 @@ const maxRouteCooldown = 8 * 24 * time.Hour
 // a healthy credential across runs. Entries expire when read; no sweeper is
 // needed.
 type routeCooldownLedger struct {
-	mu      sync.Mutex
-	entries map[routeCooldownKey]routeCooldown
+	mu       sync.Mutex
+	disabled bool
+	entries  map[routeCooldownKey]routeCooldown
 }
 
 func (l *routeCooldownLedger) active(key routeCooldownKey, now time.Time) (routeCooldown, bool) {
+	if l.disabled {
+		return routeCooldown{}, false
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	cd, ok := l.entries[key]
@@ -68,6 +78,9 @@ func (l *routeCooldownLedger) active(key routeCooldownKey, now time.Time) (route
 }
 
 func (l *routeCooldownLedger) record(key routeCooldownKey, cd routeCooldown, now time.Time) {
+	if l.disabled {
+		return
+	}
 	if cd.Until.IsZero() || !now.Before(cd.Until) {
 		return
 	}
@@ -86,6 +99,10 @@ func (l *routeCooldownLedger) record(key routeCooldownKey, cd routeCooldown, now
 		return
 	}
 	l.entries[key] = cd
+}
+
+func routeCooldownDisabled(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "off")
 }
 
 func (e *ClawExecutor) cooldownNow() time.Time {

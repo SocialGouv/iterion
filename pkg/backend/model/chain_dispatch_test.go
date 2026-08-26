@@ -232,6 +232,46 @@ func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
 	}
 }
 
+// ITERION_ROUTE_COOLDOWN=off is the operator escape hatch for an uncertain
+// provider reset. With the ledger disabled, dispatch deliberately pays the
+// historical refused spawn on every node instead of silently keeping a route
+// dark until the remembered instant.
+func TestChainCooldownCanBeDisabled(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendCodex}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendCodex, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.routeCooldowns.disabled = true
+	e.now = func() time.Time { return now }
+	chain := []chainElement{{Label: "primary"}, {Label: "codex", Backend: delegate.BackendCodex}}
+
+	for _, nodeID := range []string{"first", "second"} {
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		if _, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build); err != nil {
+			t.Fatalf("dispatch %s: %v", nodeID, err)
+		}
+	}
+	if got := len(head.tasks); got != 2 {
+		t.Errorf("primary spawned %d times, want once per node with cooldown disabled", got)
+	}
+	if got := len(tail.tasks); got != 2 {
+		t.Errorf("fallback spawned %d times, want once per node", got)
+	}
+}
+
 func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	tests := []struct {

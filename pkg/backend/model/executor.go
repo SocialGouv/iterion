@@ -699,9 +699,12 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCapabilities:       wf.Capabilities,
 		wfSkills:             wf.Skills,
 		botID:                wf.Name,
-		sessions:             newNodeSessionStore(),
-		vars:                 seed,
-		detector:             detect.NewCachedDetector(5 * time.Minute),
+		routeCooldowns: routeCooldownLedger{
+			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
+		},
+		sessions: newNodeSessionStore(),
+		vars:     seed,
+		detector: detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)

@@ -6,7 +6,42 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
+
+func TestNewClawExecutorReadsRouteCooldownKillSwitch(t *testing.T) {
+	for _, tt := range []struct {
+		mode     string
+		disabled bool
+	}{
+		{mode: "", disabled: false},
+		{mode: "on", disabled: false},
+		{mode: "off", disabled: true},
+		{mode: " OFF ", disabled: true},
+		{mode: "invalid", disabled: false},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			t.Setenv(routeCooldownModeEnv, tt.mode)
+			e := NewClawExecutor(NewRegistry(), &ir.Workflow{})
+			if e.routeCooldowns.disabled != tt.disabled {
+				t.Errorf("disabled = %v, want %v for %s=%q", e.routeCooldowns.disabled, tt.disabled, routeCooldownModeEnv, tt.mode)
+			}
+		})
+	}
+}
+
+func TestRouteCooldownLedgerDisabledIsFailOpen(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	key := routeCooldownKey{Backend: delegate.BackendClaudeCode}
+	l := routeCooldownLedger{disabled: true}
+	l.record(key, routeCooldown{Category: delegate.FallbackUsageWindow, Until: now.Add(time.Hour)}, now)
+	if _, ok := l.active(key, now); ok {
+		t.Fatal("disabled ledger returned a cooldown")
+	}
+	if len(l.entries) != 0 {
+		t.Fatalf("disabled ledger recorded entries: %v", l.entries)
+	}
+}
 
 // The ledger's later-reset-wins branch decides which of two observations of
 // the same route survives. Parallel branches reach it concurrently, so it is

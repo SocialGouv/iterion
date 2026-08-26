@@ -342,7 +342,10 @@ than eight days out (the same implausibility ceiling as the durable retry's
 for a whole run), or no later route accepting the failure, all leave dispatch
 unchanged. Entries expire on read at their own reset instant (no sweeper), and
 the mid-call usage guard stays armed for parallel branches that were already
-in flight.
+in flight. Operators can set `ITERION_ROUTE_COOLDOWN=off` before launching a
+run to restore the historical probe-on-every-node behaviour. The switch is
+read once when that run's executor is created; unset, `on`, and unrecognised
+values keep the cooldown enabled.
 
 ### Terminal degrade (`action: skip`) and the route gate (`when:`)
 
