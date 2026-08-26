@@ -178,68 +178,82 @@ describe("isSettledRunStatus", () => {
 });
 
 describe("resolveSelectedSubbotChild", () => {
-  const older = "2026-08-01T10:00:00Z";
-  const newer = "2026-08-01T11:00:00Z";
-  const newest = "2026-08-01T12:00:00Z";
-
   it("returns undefined for an empty list", () => {
     expect(resolveSelectedSubbotChild([])).toBeUndefined();
   });
 
-  it("defaults to the newer finished child over an older failed one", () => {
+  it("defaults to the later finished child over an earlier failed one (list order)", () => {
     const children = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "new-pass", status: "finished", created_at: newer }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(children)).toBe("new-pass");
   });
 
+  it("tie-breaks equal rank by later array position, not ISO string order", () => {
+    // Go encoding/json RFC3339Nano trims fractional zeros, so ".12Z" >
+    // ".125Z" lexicographically even though 120ms is older than 125ms.
+    const children = [
+      child({
+        id: "older",
+        status: "finished",
+        created_at: "2026-08-01T10:00:00.12Z",
+      }),
+      child({
+        id: "newer",
+        status: "finished",
+        created_at: "2026-08-01T10:00:00.125Z",
+      }),
+    ];
+    expect(resolveSelectedSubbotChild(children)).toBe("newer");
+  });
+
   it("prefers a running child over settled historical children", () => {
     const children = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "live", status: "running", created_at: newer }),
-      child({ id: "new-pass", status: "finished", created_at: newest }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "live", status: "running" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(children)).toBe("live");
   });
 
   it("prefers paused_waiting_human over settled children, but not over running", () => {
     const waiting = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "gate", status: "paused_waiting_human", created_at: newer }),
-      child({ id: "new-pass", status: "finished", created_at: newest }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "gate", status: "paused_waiting_human" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(waiting)).toBe("gate");
 
     const runningWins = [
-      child({ id: "gate", status: "paused_waiting_human", created_at: older }),
-      child({ id: "live", status: "running", created_at: newer }),
+      child({ id: "gate", status: "paused_waiting_human" }),
+      child({ id: "live", status: "running" }),
     ];
     expect(resolveSelectedSubbotChild(runningWins)).toBe("live");
   });
 
   it("prefers another unsettled child (queued / operator pause) over settled history", () => {
     const children = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "queued", status: "queued", created_at: newer }),
-      child({ id: "new-pass", status: "finished", created_at: newest }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "queued", status: "queued" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(children)).toBe("queued");
   });
 
   it("keeps a valid explicit user selection", () => {
     const children = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "live", status: "running", created_at: newer }),
-      child({ id: "new-pass", status: "finished", created_at: newest }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "live", status: "running" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(children, "old-fail")).toBe("old-fail");
   });
 
   it("drops a stale explicit selection and falls back to the live/latest child", () => {
     const children = [
-      child({ id: "old-fail", status: "failed", created_at: older }),
-      child({ id: "new-pass", status: "finished", created_at: newer }),
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "new-pass", status: "finished" }),
     ];
     expect(resolveSelectedSubbotChild(children, "gone")).toBe("new-pass");
   });
@@ -250,22 +264,72 @@ describe("resolveSelectedSubbotChild", () => {
       child({
         id: "batch-0-fail",
         status: "failed",
-        created_at: older,
         parent_node_id: "review_epic_acceptance",
       }),
       child({
         id: "batch-1-pass",
         status: "finished",
-        created_at: newer,
         parent_node_id: "review_epic_acceptance",
       }),
       child({
         id: "batch-2-pass",
         status: "finished",
-        created_at: newest,
         parent_node_id: "review_epic_acceptance",
       }),
     ];
     expect(resolveSelectedSubbotChild(children)).toBe("batch-2-pass");
+  });
+
+  it("keeps sticky when statuses change and length is unchanged", () => {
+    const first = [
+      child({ id: "a", status: "running" }),
+      child({ id: "b", status: "running" }),
+      child({ id: "c", status: "queued" }),
+    ];
+    expect(resolveSelectedSubbotChild(first)).toBe("b");
+    const after = [
+      child({ id: "a", status: "finished" }),
+      child({ id: "b", status: "finished" }),
+      child({ id: "c", status: "finished" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(after, undefined, { id: "b", count: 3 }),
+    ).toBe("b");
+  });
+
+  it("drops sticky when the list grows (new spawn, #525)", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed" }),
+      child({ id: "new-pass", status: "finished" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, undefined, {
+        id: "old-fail",
+        count: 1,
+      }),
+    ).toBe("new-pass");
+  });
+
+  it("drops sticky when that child disappears", () => {
+    const children = [
+      child({ id: "a", status: "failed" }),
+      child({ id: "b", status: "finished" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, undefined, {
+        id: "gone",
+        count: 2,
+      }),
+    ).toBe("b");
+  });
+
+  it("lets an explicit pick win over sticky", () => {
+    const children = [
+      child({ id: "a", status: "failed" }),
+      child({ id: "b", status: "running" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, "a", { id: "b", count: 2 }),
+    ).toBe("a");
   });
 });
