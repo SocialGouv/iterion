@@ -332,4 +332,43 @@ describe("resolveSelectedSubbotChild", () => {
       resolveSelectedSubbotChild(children, "a", { id: "b", count: 2 }),
     ).toBe("a");
   });
+
+  it("hops off a sticky child that failed while a sibling is still running", () => {
+    const children = [
+      child({ id: "sticky-fail", status: "failed" }),
+      child({ id: "live", status: "running" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, undefined, {
+        id: "sticky-fail",
+        count: 2,
+      }),
+    ).toBe("live");
+  });
+
+  it("hops from a sticky settled child to a sibling that later hits paused_waiting_human", () => {
+    const children = [
+      child({ id: "done", status: "finished" }),
+      child({ id: "gate", status: "paused_waiting_human" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, undefined, {
+        id: "done",
+        count: 2,
+      }),
+    ).toBe("gate");
+  });
+
+  it("keeps sticky among equal-rank running siblings (no hop)", () => {
+    const children = [
+      child({ id: "a", status: "running" }),
+      child({ id: "b", status: "running" }),
+    ];
+    expect(
+      resolveSelectedSubbotChild(children, undefined, {
+        id: "a",
+        count: 2,
+      }),
+    ).toBe("a");
+  });
 });

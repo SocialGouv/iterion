@@ -139,9 +139,10 @@ function subbotDefaultRank(status: RunStatus): number {
 
 // Last auto-shown child for a frame, plus the children.length observed
 // when it was shown. useSubbotLevel keeps one of these per frame so a
-// 3s poll does not hop between already-visible siblings as their
-// statuses flip. A new spawn (length grew) or a missing sticky id
-// re-resolves — that is the #525 path.
+// 3s poll does not hop between already-visible siblings of equal rank
+// as their statuses flip. A new spawn (length grew), a missing sticky
+// id, or a sibling with a strictly better rank (live over a sticky
+// failure) re-resolves — that is the #525 path.
 export interface SubbotSelectionSticky {
   id: string;
   count: number;
@@ -149,10 +150,11 @@ export interface SubbotSelectionSticky {
 
 // resolveSelectedSubbotChild picks which child run an inline subbot
 // frame displays. An explicit user pick is kept while that child still
-// exists. Else a still-present sticky id is kept while the list has not
-// grown (no later child spawned). Else prefer running, then
-// paused_waiting_human, then another unsettled child, then the latest
-// child by array position. Never defaults to children[0] (oldest) — a
+// exists. Else the rank+position default is computed, and a still-
+// present sticky id is kept only while the list has not grown AND its
+// rank is no worse than that default — so equal-rank siblings stay put,
+// but a sticky failure yields to a sibling that is still running (or a
+// later human gate). Never defaults to children[0] (oldest) — a
 // historical failure would paint the current pipeline red (issue #525).
 export function resolveSelectedSubbotChild(
   children: RunSummary[],
@@ -161,17 +163,19 @@ export function resolveSelectedSubbotChild(
 ): string | undefined {
   if (children.length === 0) return undefined;
   if (picked && children.some((c) => c.id === picked)) return picked;
-  if (
-    sticky &&
-    children.some((c) => c.id === sticky.id) &&
-    children.length <= sticky.count
-  ) {
-    return sticky.id;
-  }
   let best = children[0]!;
   for (let i = 1; i < children.length; i++) {
     const c = children[i]!;
     if (subbotDefaultRank(c.status) <= subbotDefaultRank(best.status)) best = c;
+  }
+  if (sticky && children.length <= sticky.count) {
+    const stuck = children.find((c) => c.id === sticky.id);
+    if (
+      stuck &&
+      subbotDefaultRank(stuck.status) <= subbotDefaultRank(best.status)
+    ) {
+      return stuck.id;
+    }
   }
   return best.id;
 }

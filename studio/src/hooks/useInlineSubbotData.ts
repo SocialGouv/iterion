@@ -75,8 +75,8 @@ function useSubbotLevel(
   pickedByFrame: Map<string, string>,
 ): LevelData {
   // Effective selection: the user's pick while that child still exists,
-  // else the last auto-shown child while the list has not grown, else
-  // the live/latest child (not children[0] — that is the oldest).
+  // else the last auto-shown child while the list has not grown and no
+  // sibling outranks it, else the live/latest child (not children[0]).
   const stickyByFrame = useRef(new Map<string, SubbotSelectionSticky>());
   const selected = useMemo(() => {
     const m = new Map<string, string>();
@@ -119,6 +119,10 @@ function useSubbotLevel(
         queryKey: ["run-workflow", id],
         queryFn: () => getRunWorkflow(id),
         staleTime: 5 * 60_000,
+        // Keep the last IR on screen while a new child key fetches —
+        // otherwise auto-reselect blanks expandWireSubbots until the
+        // request returns. Siblings share a source in normal execution.
+        placeholderData: (prev: WireWorkflow | undefined) => prev,
       };
     }),
     combine: combineWf,
