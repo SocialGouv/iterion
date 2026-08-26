@@ -63,6 +63,14 @@ type Spec struct {
 	// Phase 1.
 	Image string
 
+	// ImageFallback is a second image ref the driver may pull when
+	// Image cannot be resolved at the registry. It is set ONLY when the
+	// engine picked Image itself (the version-pinned built-in default),
+	// never when an operator named one: an explicit request must fail
+	// loudly rather than silently run something else. Empty = no
+	// fallback.
+	ImageFallback string
+
 	// Build, when non-nil, asks the driver to build an image from a
 	// Dockerfile at run start. Mutually exclusive with Image. Phase 2.
 	Build *Build
