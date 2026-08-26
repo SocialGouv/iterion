@@ -227,11 +227,14 @@ func TestIngest(t *testing.T) {
 		// A single-slot "active node" was permanently cleared by an
 		// unrelated sibling starting AND finishing while the watched
 		// node still ran — silently disarming every pre-seeded monitor
-		// for the rest of the run.
+		// for the rest of the run. Concurrent nodes only ever exist on
+		// parallel branches, and the engine stamps branch node events
+		// with distinct branch ids (emitBranch) — same-branch nodes are
+		// sequential, which is what the self-heal supersession relies on.
 		c := newBareCoordinator(t, Spec{Watches: []string{"campaign"}}, &stubEval{}, nil)
-		c.ingest(ev(1, store.EventNodeStarted, "campaign", nil))
-		c.ingest(ev(2, store.EventNodeStarted, "sibling", nil))
-		c.ingest(ev(3, store.EventNodeFinished, "sibling", nil))
+		c.ingest(evb(1, store.EventNodeStarted, "campaign", "b1"))
+		c.ingest(evb(2, store.EventNodeStarted, "sibling", "b2"))
+		c.ingest(evb(3, store.EventNodeFinished, "sibling", "b2"))
 		if !c.armed() {
 			t.Fatal("supervisor disarmed by an unrelated node's start+finish while the watched node is still active")
 		}

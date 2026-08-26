@@ -807,11 +807,6 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// One inputs map shared by the run doc and the RunMessage, so the
 	// credential-derived topology injection below reaches both carriers.
 	inputs := varsAsAny(spec.Vars)
-	// Resolved once and used twice: on the queued doc (so the Overview shows
-	// what the run was launched with) and on the RunMessage (so the pod
-	// actually applies it). Splitting the two is how the choice used to reach
-	// the UI and nothing else.
-	modelOverrides := runview.RunModelOverrides(spec.ModelOverrides)
 	r := &store.Run{
 		FormatVersion:   store.RunFormatVersion,
 		ID:              runID,
@@ -831,7 +826,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotID:           spec.BotID,
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
-		ModelOverrides:  modelOverrides,
+		// Same display parity a local launch gets from the engine: the
+		// studio Overview reads the pins from the run doc, and the resume
+		// path replays them onto its RunMessage from here.
+		ModelOverrides: runModelOverrides(spec.ModelOverrides),
 		// Cap. 3 sharding fields — propagate to the persisted Run so
 		// studio surfaces can render the parent/child relationship,
 		// and onto the published RunMessage below so the runner pod
@@ -968,10 +966,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
 		Budget:  budget,
-		// The operator's model/backend/effort pins must ride the wire: the
-		// runner pod builds its own executor, so a pin only persisted on
-		// the run doc is display-only.
-		ModelOverrides: modelOverridesForWire(modelOverrides),
+		// The operator's model/backend pins must ride the wire: the runner
+		// pod builds its own executor, so a pin only persisted on the run
+		// doc is display-only — the studio would show an override the
+		// delegates never honoured.
+		ModelOverrides: queueModelOverrides(spec.ModelOverrides),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -1189,13 +1188,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
-		// Republish the model choice the run was launched with. The rows
-		// live on the prior doc; a resume that omits them hands the pod a
-		// message with no overrides, and pkg/runner/loop.go then builds an
-		// executor off the .bot's own model — so in cloud the operator's
-		// choice would expire on the first resume (i.e. the second turn of
-		// any conversational run), invisibly.
-		ModelOverrides: modelOverridesForWire(prior.ModelOverrides),
+		// A resumed attempt must honour the SAME pins the launch declared —
+		// replayed from the run doc, the single source the launch stamped.
+		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
@@ -1493,30 +1488,6 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 	}
 	effective.MaxCostUSD = resolved.MaxCostUSD
 	return budgetForWire(&effective)
-}
-
-// modelOverridesForWire converts the persisted launch-time model/backend/
-// provider/effort rows into their queue mirror. Empty publishes as nil so a
-// launch without overrides keeps its payload byte-identical.
-//
-// The rows come from runview.RunModelOverrides, the same conversion that
-// stamps the run document — so what the studio Overview shows and what the
-// runner pod applies cannot drift apart.
-func modelOverridesForWire(rows []store.RunModelOverride) []queue.ModelOverride {
-	if len(rows) == 0 {
-		return nil
-	}
-	out := make([]queue.ModelOverride, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, queue.ModelOverride{
-			Selector: r.Selector,
-			Backend:  r.Backend,
-			Model:    r.Model,
-			Provider: r.Provider,
-			Effort:   r.Effort,
-		})
-	}
-	return out
 }
 
 // budgetForWire converts launch-time budget overrides to their queue wire

@@ -178,7 +178,23 @@ func (d *Driver) Prepare(ctx context.Context, spec sandbox.Spec) (sandbox.Prepar
 	if spec.Image != "" && !imageExists(ctx, d.rt, spec.Image) {
 		d.logger.Info("sandbox: pulling image %s via %s", spec.Image, d.rt)
 		if err := pullImage(ctx, d.rt, spec.Image); err != nil {
-			return nil, err
+			// The engine's version-pinned default can name a tag no
+			// release ever published (a binary built between releases,
+			// or a release whose sandbox image did not ship). Falling
+			// back is offered ONLY for that engine-chosen ref — an
+			// image the operator named is honoured exactly, and its
+			// failure is the answer.
+			if spec.ImageFallback == "" || spec.ImageFallback == spec.Image {
+				return nil, err
+			}
+			d.logger.Warn("sandbox: image %s is unavailable (%v) — falling back to %s. This build pins a sandbox tag that was never published; pass --sandbox-default-image to choose one yourself.",
+				spec.Image, err, spec.ImageFallback)
+			if !imageExists(ctx, d.rt, spec.ImageFallback) {
+				if ferr := pullImage(ctx, d.rt, spec.ImageFallback); ferr != nil {
+					return nil, fmt.Errorf("%w (fallback %s also failed: %v)", err, spec.ImageFallback, ferr)
+				}
+			}
+			spec.Image = spec.ImageFallback
 		}
 	}
 	return &Prepared{

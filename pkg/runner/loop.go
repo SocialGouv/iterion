@@ -1678,9 +1678,26 @@ func envPositiveFloat(key string) (float64, bool) {
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
 func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+	spec, usage, err := r.executorSpec(ctx, msg, wf, logger, hookObservers)
+	if err != nil {
+		return nil, nil, err
+	}
+	exec, err := runview.BuildExecutor(spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	return exec, usage, nil
+}
+
+// executorSpec assembles the pod's ExecutorSpec. Split from
+// buildExecutor so the wiring is assertable: a binder missing here is a
+// capability that silently dies on every cloud run (the supervisor-steer
+// and operator-chat inbox was exactly that).
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
-		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
+		return zero, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
 	}
 	// Wrap the emitter so LLM step + delegate events update the
 	// iterion_llm_tokens_total / iterion_llm_cost_usd_total counters
@@ -1690,9 +1707,9 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
 	vars, err := stringifyVars(msg.Vars)
 	if err != nil {
-		return nil, nil, err
+		return zero, nil, err
 	}
-	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+	spec := runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: wf,
 		Vars:     vars,
@@ -1723,11 +1740,16 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
-	})
-	if err != nil {
-		return nil, nil, err
+		// Inbox/AsyncAsk drain the run's queued messages into the agent's
+		// live turn — supervisor steering and operator chat both ride
+		// them. Every other launch surface binds these; without them the
+		// pod's supervisors evaluate and inject but nothing ever delivers
+		// (and ask_user_async has no store to post to). Publish stays nil
+		// on cloud: the Mongo change-stream surfaces the transitions.
+		Inbox:    &model.StoreInboxBinder{Store: r.cfg.Store},
+		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
 	}
-	return exec, usage, nil
+	return spec, usage, nil
 }
 
 // modelOverridesFromWire lifts the queue's override rows back into the

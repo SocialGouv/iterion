@@ -29,11 +29,27 @@ const builtInSandboxImageRepo = "ghcr.io/socialgouv/iterion-sandbox-slim"
 // can proceed by default. Operators who want explicit no-fallback
 // behaviour can declare an inline sandbox block in the workflow.
 func resolveDefaultSandboxImage(flagOverride string) string {
+	ref, _ := resolveDefaultSandboxImageWithFallback(flagOverride)
+	return ref
+}
+
+// resolveDefaultSandboxImageWithFallback additionally reports a fallback
+// ref for the case where the chosen image does not exist at the
+// registry. A binary built from a commit whose release never published
+// a sandbox image (or built between releases) pins a tag nobody pushed:
+// the pull then fails with a raw "manifest unknown" and the run dies at
+// startup, before any node.
+//
+// The fallback is offered ONLY for the version-pinned built-in. An
+// image the operator named — flag or env — is honoured exactly: a
+// sandbox that silently runs a different image than the one asked for
+// is worse than one that refuses to start.
+func resolveDefaultSandboxImageWithFallback(flagOverride string) (ref, fallback string) {
 	if v := strings.TrimSpace(flagOverride); v != "" {
-		return v
+		return v, ""
 	}
 	if v := strings.TrimSpace(os.Getenv(EnvSandboxDefaultImage)); v != "" {
-		return v
+		return v, ""
 	}
-	return builtInSandboxImageRepo + ":" + appinfo.SandboxImageTag()
+	return builtInSandboxImageRepo + ":" + appinfo.SandboxImageTag(), builtInSandboxImageRepo + ":latest"
 }
