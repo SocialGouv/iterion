@@ -59,12 +59,15 @@ import (
 // bot declaring `off` gets a run that can still strand its work at the cap.
 // The knob decides whether a loop stops early or dies at its ceiling, which
 // is exactly the kind of choice that must not be quietly re-made on the pod.
-// v=8 (2026-08-25): added ModelOverrides and Supervisors. A v7 runner would
-// silently ignore launch-time model/backend/provider pins and could execute a
-// different model than the operator selected. It would also re-decide an
-// explicit `--supervisors off` from its own environment and spawn LLM watchers
-// the operator declined. Both are intent-changing additive fields and ship
-// under the same breaking wire version (issues #481/#513/#522).
+// v=8 (2026-08-25): added Supervisors so a launch-time `--supervisors off`
+// reaches the runner. Same failure direction as v=6/v=7: dropping the field
+// makes the pod re-decide from its own env and spawn LLM watchers the operator
+// explicitly declined — spend outside the run's own budget.
+//
+// KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
+// version bump. A v7 runner built before that commit can silently ignore the
+// operator's model/backend pins. That historical gap cannot be repaired by a
+// later bump; the additive-intent rule above prevents repeating it.
 const SchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
@@ -321,17 +324,18 @@ func (m *RunMessage) Validate() error {
 }
 
 // Envelope carries the STABLE identity fields of a RunMessage, decodable
-// without validating the schema version. These four fields are part of the
+// without validating the schema version. These fields are part of the
 // wire contract's immutable core: their JSON names must never be renamed or
 // repurposed by any schema bump, because they are the only way a consumer
-// that rejects the version can still identify the run — to park the payload
-// on the DLQ and to flip the run document to an actionable status instead of
-// leaving it `queued` in silence (issue #481).
+// that rejects the version can still identify the run and queue attempt — to
+// park the payload on the DLQ and flip only that attempt to an actionable
+// status instead of leaving it `queued` in silence (issue #481).
 type Envelope struct {
-	V        int    `json:"v"`
-	RunID    string `json:"run_id"`
-	TenantID string `json:"tenant_id"`
-	OwnerID  string `json:"owner_id,omitempty"`
+	V              int    `json:"v"`
+	RunID          string `json:"run_id"`
+	TenantID       string `json:"tenant_id"`
+	OwnerID        string `json:"owner_id,omitempty"`
+	PublishedAtRFC string `json:"published_at"`
 }
 
 // PeekEnvelope extracts the identity envelope from a raw wire payload WITHOUT

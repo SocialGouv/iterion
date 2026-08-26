@@ -12,10 +12,11 @@ import (
 func TestPeekEnvelope(t *testing.T) {
 	for _, v := range []int{SchemaVersion - 1, SchemaVersion, SchemaVersion + 1} {
 		payload, err := json.Marshal(&RunMessage{
-			V:        v,
-			RunID:    "run-env",
-			TenantID: "team-a",
-			OwnerID:  "u1",
+			V:              v,
+			RunID:          "run-env",
+			TenantID:       "team-a",
+			OwnerID:        "u1",
+			PublishedAtRFC: "2026-08-26T08:00:00Z",
 		})
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -24,7 +25,7 @@ func TestPeekEnvelope(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v=%d: %v", v, err)
 		}
-		if env.V != v || env.RunID != "run-env" || env.TenantID != "team-a" || env.OwnerID != "u1" {
+		if env.V != v || env.RunID != "run-env" || env.TenantID != "team-a" || env.OwnerID != "u1" || env.PublishedAtRFC != "2026-08-26T08:00:00Z" {
 			t.Errorf("v=%d: envelope = %+v", v, env)
 		}
 	}

@@ -117,22 +117,33 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	case env.TenantID == "":
 		logger.Warn("runner: mismatched message for run %s has no tenant_id — run document not flipped", env.RunID)
 	default:
+		publishedAt, parseErr := time.Parse(time.RFC3339Nano, env.PublishedAtRFC)
+		attempts := store.AsQueuedAttemptStore(r.cfg.Store)
+		if parseErr != nil {
+			logger.Warn("runner: mismatched message for run %s has invalid published_at %q — run document not flipped: %v", env.RunID, env.PublishedAtRFC, parseErr)
+			break
+		}
+		if attempts == nil {
+			// Fail safe for a third-party store: a status-only fallback could
+			// clobber a newer resume while it passes through queued.
+			logger.Warn("runner: store cannot compare queue attempts for run %s — run document not flipped", env.RunID)
+			break
+		}
 		// PublishDLQ is bounded by its context alone and can consume the full
 		// park deadline during a broker outage. The status flip is the only
 		// actionable trail when that happens, so it needs an independent
 		// deadline rather than inheriting an already-expired parkCtx.
 		flipCtx, flipCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		sctx := store.WithIdentity(flipCtx, env.TenantID, env.OwnerID)
-		changed, serr := r.cfg.Store.UpdateRunStatusIf(sctx, env.RunID, store.RunStatusFailedResumable, runErr,
-			[]store.RunStatus{store.RunStatusQueued})
+		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt)
 		flipCancel()
 		if serr != nil {
 			logger.Warn("runner: schema-mismatch status flip for %s: %v", env.RunID, serr)
 		} else if changed {
-			// This delivery never acquired the run lease: a running row belongs
-			// to another pod (for example after an operator resumed while this
-			// stale message was still bouncing). Only the queued owner may emit
-			// the terminal-shaped outcome signals below.
+			// This delivery never acquired the run lease. Only the owner of this
+			// exact queued attempt may emit the terminal-shaped signals below;
+			// a later resume has a newer QueuedAt and makes the CAS a no-op even
+			// before its claiming pod transitions the row to running.
 			// A schema park is a final disposition just like the generic DLQ
 			// path in processOne. Preserve its terminal side effects: release
 			// the credential-pool lease, send the completion callback and emit

@@ -360,6 +360,30 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 	return true, nil
 }
 
+// FailQueuedRunIfAttempt atomically fails only the queue attempt represented
+// by publishedAt. A later resume refreshes QueuedAt before publishing, so an
+// older delivery cannot clobber that new attempt during its queued→running
+// hand-off window.
+func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store: fail queued attempt %s without published_at", id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	if r.Status != RunStatusQueued || (r.QueuedAt != nil && r.QueuedAt.After(publishedAt)) {
+		return false, nil
+	}
+	if err := s.applyStatusTransition(r, RunStatusFailedResumable, runErr); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // applyStatusTransition is the shared tail of UpdateRunStatus and
 // UpdateRunStatusIf: mutate r in-place (status, timestamps, terminal
 // finished_at / resume FinishedAt clear, checkpoint clear when leaving
@@ -372,6 +396,13 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 	case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable, RunStatusCancelled:
 		t := r.UpdatedAt
 		r.FinishedAt = &t
+	case RunStatusQueued:
+		// Every queue publication is a distinct attempt. Refresh the marker
+		// before publishing so a stale delivery can be rejected by identity,
+		// not merely by the shared `queued` status.
+		t := r.UpdatedAt
+		r.QueuedAt = &t
+		r.FinishedAt = nil
 	case RunStatusRunning, RunStatusPausedWaitingHuman:
 		// Resume paths (failed_resumable/cancelled → running) must clear
 		// FinishedAt — otherwise the studio's duration ticker uses the

@@ -104,8 +104,8 @@ type launchRunRequest struct {
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
-	// See runview.ModelOverrideEntry. Queue schema v8 carries them to cloud
-	// runners as well, where they are applied to the executor (issues #481/#513).
+	// See runview.ModelOverrideEntry. The current queue contract carries them
+	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
 	// Fallback is the operator's single run-level fallback route, taken
 	// when an agent node's primary fails. It applies only to agent nodes

@@ -23,10 +23,14 @@ ordering alone is not sufficient (issue #481).
   Such a field REQUIRES a schema bump. History: v4 `Budget`, v5
   `Contributions`, v6 `AutoMemory`, v7 `LoopBudgetGuard` — each exists
   because dropping it would quietly re-make the operator's choice on the pod.
+- **Known historical debt.** `ModelOverrides` was added during v7 without a
+  bump (commit `427a9f44e`), so an earlier v7 runner could accept and ignore
+  those pins. The later v8 bump cannot retroactively repair that window; this
+  rule records the lesson so the next intent-bearing field ships atomically.
 - **Until the bump ships, reject — never drop.** A launch that carries a
   field the current wire version cannot transport must fail loudly at publish
   time. Once the carrier and version bump ship together, the rejection can be
-  removed. Schema v8's `ModelOverrides` rollout is the reference transition.
+  removed. Schema v8's `Supervisors` kill switch is the reference transition.
 
 ## What a mixed fleet does to a mismatched message
 
@@ -120,8 +124,9 @@ run Path B for v7 → v8; use Path A.**
    ```bash
    curl -X POST "https://iterion.example.com/api/admin/dlq/$SEQ/replay"
    ```
-4. Verify each replayed run leaves `failed_resumable` (back to `queued` →
-   `running`) and the DLQ returns to its pre-rollout depth.
+4. Verify each replayed run leaves `failed_resumable`: the runner treats the
+   replayed launch payload as a resume and transitions it directly to
+   `running`. Confirm the DLQ returns to its pre-rollout depth.
 5. The reverse direction does **not** replay. If the queue still held vN
    messages when the vN+1 runners came up, they parked with reason
    `N unsupported (want N+1)` — and a replay re-publishes those exact
@@ -133,16 +138,18 @@ run Path B for v7 → v8; use Path A.**
    five-minute deduplication window), then discard the stale parked copies
    with `DELETE /api/admin/dlq/$SEQ`.
 
-## Checklist: v7 → v8 (ModelOverrides)
+## Checklist: v7 → v8 (Supervisors and #481 safety)
 
-Schema v8 carries launch-time `model_overrides` to the runner. The code-side
-preconditions for its rollout now ship together:
+The v8 bump belongs to the launch-time `Supervisors` kill switch. The v8 wire
+also carries `model_overrides`, but those had already entered v7 without a
+bump (the known debt above); do not read this transition as retroactively
+making every v7 build safe for model pins. The rollout preconditions are:
 
 - [x] Delayed mismatch Nak, final DLQ park and actionable status flip.
 - [x] `ModelOverrides` on `queue.RunMessage`, set by the publisher and
       applied by the runner executor; resumes preserve the same pins.
-- [x] `SchemaVersion = 8`, so a stale v7 runner rejects the payload instead
-      of silently ignoring the new field.
+- [x] `SchemaVersion = 8` for `Supervisors`, so a stale v7 runner rejects a v8
+      payload instead of re-deciding the operator's supervisor kill switch.
 - [x] The live-JetStream mixed-fleet integration test covers both version
       directions and the recovery paths.
 - [ ] Operators roll out per **Path A** (drained queue) — Path B is not an

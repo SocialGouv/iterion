@@ -117,8 +117,12 @@ func TestRunMessageIDSeparatesLaunchAndResume(t *testing.T) {
 	if got := runMessageID(resume); got != "run-1|resume-2026-08-25T08:01:00Z" {
 		t.Fatalf("resume message id = %q, want per-attempt salt", got)
 	}
-	if got := runMessageID(resume); got != runMessageID(resume) {
-		t.Fatalf("same resume message is not retry-stable: %q", got)
+	// PublishRun stamps PublishedAtRFC only when it is empty, so retrying the
+	// same object preserves this id. A genuinely new resume attempt carries a
+	// different durable timestamp and must get a different id.
+	second := &queue.RunMessage{RunID: "run-1", PublishedAtRFC: "2026-08-25T08:02:00Z", Resume: &queue.ResumeSpec{}}
+	if runMessageID(second) == runMessageID(resume) {
+		t.Fatalf("two distinct resume attempts share a message id: %q", runMessageID(second))
 	}
 }
 

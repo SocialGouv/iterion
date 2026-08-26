@@ -89,13 +89,15 @@ func schemaRolloutConn(t *testing.T, uri string) (*natsq.Conn, string) {
 // producer half of the contract).
 func publishForeignVersion(t *testing.T, conn *natsq.Conn, v int, runID, tenantID string, incompatibleShape bool) []byte {
 	t.Helper()
+	publishedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	var wire any = &queue.RunMessage{
-		V:            v,
-		RunID:        runID,
-		WorkflowName: "wf-mixed-fleet",
-		IRCompiled:   []byte("{}"),
-		TenantID:     tenantID,
-		OwnerID:      "owner-1",
+		V:              v,
+		RunID:          runID,
+		WorkflowName:   "wf-mixed-fleet",
+		IRCompiled:     []byte("{}"),
+		TenantID:       tenantID,
+		OwnerID:        "owner-1",
+		PublishedAtRFC: publishedAt,
 	}
 	if incompatibleShape {
 		// A real schema bump may change a field's JSON type. This payload
@@ -105,6 +107,7 @@ func publishForeignVersion(t *testing.T, conn *natsq.Conn, v int, runID, tenantI
 		wire = map[string]any{
 			"v": v, "run_id": runID, "workflow_name": "wf-mixed-fleet",
 			"ir_compiled": 42, "tenant_id": tenantID, "owner_id": "owner-1",
+			"published_at": publishedAt,
 		}
 	}
 	payload, err := json.Marshal(wire)
@@ -462,6 +465,99 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		}
 		if run.Status != store.RunStatusRunning {
 			t.Fatalf("stale delivery changed active run to %q, want %q", run.Status, store.RunStatusRunning)
+		}
+		select {
+		case ev := <-eventCh:
+			t.Fatalf("stale delivery emitted phantom outcome event: kind=%q run=%q", ev.Kind, ev.Subject.ID)
+		case <-time.After(150 * time.Millisecond):
+		}
+	})
+
+	t.Run("stale mismatch cannot clobber a newer queued resume", func(t *testing.T) {
+		conn, _ := schemaRolloutConn(t, uri)
+		ctx := context.Background()
+		runID := fmt.Sprintf("run-mixed-new-attempt-%d", time.Now().UnixNano())
+		tenantID := "tenant-mixed"
+		fs, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		now := time.Now().UTC()
+		if err := fs.SaveRun(ctx, &store.Run{
+			FormatVersion: store.RunFormatVersion,
+			ID:            runID,
+			WorkflowName:  "wf-mixed-fleet",
+			Status:        store.RunStatusQueued,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			QueuedAt:      &now,
+			TenantID:      tenantID,
+			OwnerID:       "owner-1",
+		}); err != nil {
+			t.Fatalf("save run: %v", err)
+		}
+		publishForeignVersion(t, conn, queue.SchemaVersion-1, runID, tenantID, false)
+		cons, err := conn.NewConsumer(ctx)
+		if err != nil {
+			t.Fatalf("consumer: %v", err)
+		}
+		d1, err := cons.Fetch(ctx, 5*time.Second)
+		if err != nil {
+			t.Fatalf("first fetch: %v", err)
+		}
+
+		events := eventbus.NewInProcBus(iterlog.Nop())
+		eventCh := make(chan trigger.Event, 1)
+		cancelEvents, err := events.Subscribe("schema-rollout-new-attempt-test", trigger.Matcher{}, func(_ context.Context, ev trigger.Event) error {
+			eventCh <- ev
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("subscribe outcome event: %v", err)
+		}
+		defer cancelEvents()
+
+		r := &Runner{cfg: Config{
+			NATS:                conn,
+			Events:              events,
+			Store:               fs,
+			Logger:              iterlog.Nop(),
+			SchemaMismatchDelay: schemaRolloutTestNakDelay,
+		}}
+		r.decodeOrTerm(d1)
+
+		// The operator starts a NEW resume attempt before the stale delivery's
+		// final bounce. Its queued transition refreshes QueuedAt, then it
+		// acquires a fresh pool lease while waiting for a runner claim.
+		if err := fs.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "old attempt parked"); err != nil {
+			t.Fatalf("mark resumable: %v", err)
+		}
+		changed, err := fs.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable})
+		if err != nil || !changed {
+			t.Fatalf("claim resume = (%t, %v), want (true, nil)", changed, err)
+		}
+		pool := newPoolHarnessForRun(t, credpool.Limits{MaxConcurrentRuns: 1}, runID)
+		r.cfg.CredPool = pool.broker
+
+		d2, err := cons.Fetch(ctx, 5*time.Second)
+		if err != nil {
+			t.Fatalf("final stale fetch: %v", err)
+		}
+		r.decodeOrTerm(d2)
+
+		run, err := fs.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("load run: %v", err)
+		}
+		if run.Status != store.RunStatusQueued {
+			t.Fatalf("stale delivery changed newer attempt to %q, want queued", run.Status)
+		}
+		leases, err := pool.leases.ListByDonor(ctx, "donor", 10)
+		if err != nil || len(leases) != 1 {
+			t.Fatalf("donor lease history = (%d, %v), want one lease", len(leases), err)
+		}
+		if leases[0].Closed {
+			t.Fatal("stale delivery released the newer resume's credential-pool lease")
 		}
 		select {
 		case ev := <-eventCh:
