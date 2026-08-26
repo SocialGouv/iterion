@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -111,6 +112,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	// tenant_id is logged, never written under an unfiltered (privileged)
 	// store context.
 	var outcomeMsg *queue.RunMessage
+	var poolRelease *credpool.ReleaseGuard
 	switch {
 	case envErr != nil:
 		// Already logged above.
@@ -135,6 +137,10 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		// deadline rather than inheriting an already-expired parkCtx.
 		flipCtx, flipCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		sctx := store.WithIdentity(flipCtx, env.TenantID, env.OwnerID)
+		// Capture the exact lease BEFORE making the run resumable. A new
+		// attempt may acquire another lease immediately after the CAS; a
+		// run-id lookup performed later could close that successor instead.
+		poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
 		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt)
 		flipCancel()
 		if serr != nil {
@@ -158,7 +164,7 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		// This sealed bundle will never execute: a later explicit resume
 		// resolves credentials and acquires afresh. Leaving its lease open
 		// would strand the donor's concurrency slot until lease expiry.
-		r.cfg.CredPool.Release(context.Background(), outcomeMsg.RunID)
+		r.cfg.CredPool.ReleaseCaptured(context.Background(), poolRelease)
 		r.fireCompletionNotifier(outcomeMsg)
 		r.fireOutcomeEvent(outcomeMsg, decodeErr)
 	}
