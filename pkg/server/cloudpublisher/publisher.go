@@ -1188,7 +1188,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
-		Supervisors: spec.Supervisors,
+		Supervisors:     spec.Supervisors,
 		// Republish the model choice the run was launched with. The rows
 		// live on the prior doc; a resume that omits them hands the pod a
 		// message with no overrides, and pkg/runner/loop.go then builds an

@@ -100,6 +100,18 @@ export function useSessionDiscovery(opts: {
       if (attached && !cancelled) onAttached(runIdToAttach);
     };
 
+    const teardown = () => {
+      cancelled = true;
+      controller.abort();
+      // Reset the gate so the strict-mode double-mount (and any
+      // legitimate re-mount triggered by deps changing) re-runs the
+      // discovery cleanly. Without this, mount #2's effect short-
+      // circuits, mount #1's aborted discovery never sets runId, and
+      // status stays "idle" → the launcher mistakenly shows even
+      // when a paused run is sitting on disk waiting to be resumed.
+      attachAttemptedRef.current = false;
+    };
+
     if (attachRunId) {
       attachAttemptedRef.current = true;
       void (async () => {
@@ -110,13 +122,13 @@ export function useSessionDiscovery(opts: {
           // conversation on its empty state rather than borrowing another's.
         }
       })();
-      return;
+      return teardown;
     }
     if (!discover) {
       // Not an error state: this conversation is meant to be empty until the
       // operator says something.
       attachAttemptedRef.current = true;
-      return;
+      return teardown;
     }
 
     const remembered = recallSessionRunId(bot.id, scopeKey);
@@ -179,17 +191,7 @@ export function useSessionDiscovery(opts: {
     })();
 
     void startup;
-    return () => {
-      cancelled = true;
-      controller.abort();
-      // Reset the gate so the strict-mode double-mount (and any
-      // legitimate re-mount triggered by deps changing) re-runs the
-      // discovery cleanly. Without this, mount #2's effect short-
-      // circuits, mount #1's aborted discovery never sets runId, and
-      // status stays "idle" → the launcher mistakenly shows even
-      // when a paused run is sitting on disk waiting to be resumed.
-      attachAttemptedRef.current = false;
-    };
+    return teardown;
     // scopeKey folds in (team, active repo) — a repo switch re-runs the
     // discovery for the new scope; discoveryNonce is the manual retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps

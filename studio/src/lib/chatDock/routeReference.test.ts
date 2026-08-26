@@ -367,6 +367,10 @@ describe("hrefForReference", () => {
     expect(hrefForReference("view/board")).toBe("/board");
   });
 
+  it("sends automations to /triggers, the route App registers", () => {
+    expect(hrefForReference("view/automations")).toBe("/triggers");
+  });
+
   it("refuses a kind with no page of its own", () => {
     expect(hrefForReference("node/run/step")).toBeNull();
     expect(hrefForReference("repo/o/n")).toBeNull();

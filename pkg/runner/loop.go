@@ -1723,10 +1723,6 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
-		// The operator's launch-time model/backend pins, replayed from the
-		// wire. Before this, the cloud path persisted them display-only:
-		// the studio showed an override the delegates never honoured.
-		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
 	})
 	if err != nil {
 		return nil, nil, err

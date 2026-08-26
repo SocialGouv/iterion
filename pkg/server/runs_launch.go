@@ -310,7 +310,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.
 	var repoProjectPath string

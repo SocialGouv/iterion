@@ -8,16 +8,22 @@
 //
 // These tests pin the correspondent per route. The dock's own list is pinned
 // in useChatRegistry.test.ts (resolveDockBot); this file is about the route.
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ASSISTANT_BOT_KEY } from "@/lib/chatDock/dockState";
+import {
+  readConversations,
+  writeActiveConversation,
+  writeConversations,
+} from "@/lib/chatDock/conversations";
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 import { AssistantProvider, useAssistantSession } from "./AssistantProvider";
 
-const { nexie, copi } = vi.hoisted(() => ({
+const { nexie, copi, sessionState } = vi.hoisted(() => ({
+  sessionState: { runId: null as string | null },
   nexie: {
     id: "whats-next",
     label: "Nexie",
@@ -50,7 +56,24 @@ vi.mock("@/hooks/useChatRegistry", () => ({
 }));
 
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
-  useWhatsNextSession: () => ({ status: "idle" }) as unknown as UseWhatsNextSession,
+  useWhatsNextSession: () =>
+    ({
+      status: "idle",
+      runId: sessionState.runId,
+      messages: [],
+      busyMessageId: null,
+      runStatus: null,
+      errorMessage: null,
+      lastVars: null,
+      discoveryError: null,
+      retryDiscovery: () => {},
+      sessionRepo: null,
+      launchRepo: null,
+      launch: async () => {},
+      submitHumanAnswer: async () => {},
+      newSession: () => {},
+      resume: async () => {},
+    }) as unknown as UseWhatsNextSession,
 }));
 
 function BotProbe() {
@@ -79,6 +102,7 @@ function renderAt(path: string, children: React.ReactNode) {
 
 beforeEach(() => {
   window.localStorage.clear();
+  sessionState.runId = null;
 });
 
 afterEach(() => {
@@ -117,5 +141,28 @@ describe("the assistant's correspondent per route", () => {
   it("does not offer Nexie in the dock's own switcher", () => {
     renderAt("/board", <DockListProbe />);
     expect(screen.getByTestId("dock-bots").textContent).toBe("Copi");
+  });
+
+  // Nexie on /whats-next has her own store. Claiming her launch onto the
+  // dock's active tab orphans that tab's run (and can cancel it on close).
+  it("does not claim Nexie's launch onto the dock conversation", async () => {
+    writeConversations([{ id: "dock-1", botId: "copilot", runId: "dock-run" }]);
+    writeActiveConversation("dock-1");
+    sessionState.runId = "nexie-run";
+    renderAt("/whats-next", <BotProbe />);
+    await waitFor(() => {
+      expect(screen.getByTestId("bot").textContent).toBe("Nexie");
+    });
+    expect(readConversations()[0]?.runId).toBe("dock-run");
+  });
+
+  it("does claim a launch onto the dock tab on an ordinary route", async () => {
+    writeConversations([{ id: "dock-1", botId: "copilot" }]);
+    writeActiveConversation("dock-1");
+    sessionState.runId = "copi-run";
+    renderAt("/board", <BotProbe />);
+    await waitFor(() => {
+      expect(readConversations()[0]?.runId).toBe("copi-run");
+    });
   });
 });

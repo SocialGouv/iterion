@@ -500,5 +500,5 @@ const VIEW_HREFS: Record<string, string> = {
   plugins: "/plugins",
   skills: "/skills",
   secrets: "/secrets",
-  automations: "/automations",
+  automations: "/triggers",
 };

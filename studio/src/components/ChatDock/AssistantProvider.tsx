@@ -412,7 +412,7 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
         store={activeStore}
         discover={onNexieRoute ? true : !active?.fresh && !active?.runId}
         attachRunId={onNexieRoute ? null : active?.runId ?? null}
-        onLaunched={markActiveLaunched}
+        onLaunched={onNexieRoute ? () => {} : markActiveLaunched}
       >
         {children}
       </ActiveConversation>
