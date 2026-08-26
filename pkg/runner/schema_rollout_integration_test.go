@@ -274,8 +274,8 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			if err != nil || len(leases) != 1 {
 				t.Fatalf("donor lease history = (%d, %v), want one lease", len(leases), err)
 			}
-			if !leases[0].Closed {
-				t.Fatal("schema park left credential-pool lease open")
+			if leases[0].Closed {
+				t.Fatal("replayable schema park closed the credential-pool lease")
 			}
 
 			// The payload is parked VERBATIM, headers explain why.
@@ -338,6 +338,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		ctx := context.Background()
 		runID := fmt.Sprintf("run-mixed-dlq-down-%d", time.Now().UnixNano())
 		tenantID := "tenant-mixed"
+		pool := newPoolHarnessForRun(t, credpool.Limits{MaxConcurrentRuns: 1}, runID)
 		fs, err := store.New(t.TempDir())
 		if err != nil {
 			t.Fatalf("store: %v", err)
@@ -361,6 +362,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 			t.Fatalf("consumer: %v", err)
 		}
 		r := &Runner{cfg: Config{
+			CredPool:            pool.broker,
 			NATS:                conn,
 			Store:               fs,
 			Logger:              iterlog.Nop(),
@@ -392,6 +394,13 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		}
 		if _, err := cons.Fetch(ctx, 300*time.Millisecond); !errors.Is(err, natsq.ErrNoMessage) {
 			t.Fatalf("queue entry still present after exhausted delivery (fetch err = %v)", err)
+		}
+		leases, err := pool.leases.ListByDonor(ctx, "donor", 10)
+		if err != nil || len(leases) != 1 {
+			t.Fatalf("donor lease history = (%d, %v), want one lease", len(leases), err)
+		}
+		if !leases[0].Closed {
+			t.Fatal("lost schema payload left its credential-pool lease open")
 		}
 	})
 

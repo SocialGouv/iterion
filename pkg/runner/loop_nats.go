@@ -104,7 +104,9 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 	// the parked message's version; in the other direction (or if nothing
 	// was parked) resuming/relaunching re-publishes at the CURRENT version.
 	runErr := fmt.Sprintf("schema version mismatch: %v (queue message v%d parked on DLQ — replay via /api/admin/dlq only once the runner fleet speaks schema v%d; otherwise resume this run, which re-publishes at the current schema version — see docs/cloud-queue-schema-rollout.md)", decodeErr, env.V, env.V)
+	payloadParked := true
 	if perr := r.cfg.NATS.PublishDLQ(parkCtx, delivery, decodeErr.Error()); perr != nil {
+		payloadParked = false
 		logger.Error("runner: DLQ park after version mismatch failed: %v — queue entry lost with the budget spent", perr)
 		runErr = fmt.Sprintf("schema version mismatch: %v (delivery budget exhausted and DLQ park failed: %v — no queue copy remains; relaunch this run)", decodeErr, perr)
 	}
@@ -137,10 +139,13 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		// deadline rather than inheriting an already-expired parkCtx.
 		flipCtx, flipCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		sctx := store.WithIdentity(flipCtx, env.TenantID, env.OwnerID)
-		// Capture the exact lease BEFORE making the run resumable. A new
-		// attempt may acquire another lease immediately after the CAS; a
-		// run-id lookup performed later could close that successor instead.
-		poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
+		if !payloadParked {
+			// With no replayable payload, this sealed bundle will never run.
+			// Capture the exact lease BEFORE making the run resumable: a new
+			// attempt may acquire immediately after the CAS, and a later run-id
+			// lookup could otherwise close that successor.
+			poolRelease = r.cfg.CredPool.CaptureRelease(flipCtx, env.RunID)
+		}
 		changed, serr := attempts.FailQueuedRunIfAttempt(sctx, env.RunID, runErr, publishedAt)
 		flipCancel()
 		if serr != nil {
@@ -151,9 +156,10 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 			// a later resume has a newer QueuedAt and makes the CAS a no-op even
 			// before its claiming pod transitions the row to running.
 			// A schema park is a final disposition just like the generic DLQ
-			// path in processOne. Preserve its terminal side effects: release
-			// the credential-pool lease, send the completion callback and emit
-			// the run-outcome event. Only the successful CAS owner does so.
+			// path in processOne. Preserve its terminal side effects: send the
+			// completion callback and emit the run-outcome event. When the DLQ
+			// park failed, also release the unusable credential-pool lease.
+			// Only the successful CAS owner does so.
 			outcomeMsg = &queue.RunMessage{RunID: env.RunID, TenantID: env.TenantID, OwnerID: env.OwnerID}
 		}
 	}
@@ -161,10 +167,12 @@ func (r *Runner) handleSchemaMismatch(delivery *natsq.Delivery, decodeErr error)
 		logger.Warn("runner: term after schema-mismatch handling: %v", termErr)
 	}
 	if outcomeMsg != nil {
-		// This sealed bundle will never execute: a later explicit resume
-		// resolves credentials and acquires afresh. Leaving its lease open
-		// would strand the donor's concurrency slot until lease expiry.
-		r.cfg.CredPool.ReleaseCaptured(context.Background(), poolRelease)
+		// A parked payload replays byte-for-byte with its original SecretsRef,
+		// so its lease must stay open for spend attribution. Release only when
+		// the DLQ failed and no replayable copy remains.
+		if !payloadParked {
+			r.cfg.CredPool.ReleaseCaptured(context.Background(), poolRelease)
+		}
 		r.fireCompletionNotifier(outcomeMsg)
 		r.fireOutcomeEvent(outcomeMsg, decodeErr)
 	}
