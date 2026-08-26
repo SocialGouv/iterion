@@ -813,6 +813,10 @@ func (e *ClawExecutor) dispatchChain(
 					// fingerprint, so a prior failed attempt's messages must not
 					// be replayed into the fallback element.
 					e.evictNodeSessionForFallback(ctx, nodeID)
+					// A remembered failure must route a later build error exactly
+					// like a fresh one. Otherwise a usage_window-filtered terminal
+					// skip becomes unreachable after an unbuildable rescue route.
+					lastCat = cd.Category
 					nextAllowed = j
 					continue
 				}
