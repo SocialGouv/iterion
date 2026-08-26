@@ -113,6 +113,9 @@ finished/failed transitions.
   "loop_previous_output": {},
   "loop_current_output": {},
   "artifact_versions": { "inspect": 3 },
+  "selected_incoming": {
+    "gate": [{ "from": "validate", "to": "gate" }]
+  },
   "vars": { "scope": "pkg/runtime" },
   "interaction_questions": { "approved": "Ship?" },
   "backend_session_id": "session-id",
@@ -139,8 +142,13 @@ finished/failed transitions.
 
 The loop snapshots preserve `loop.<name>.previous_output`; backend fields
 preserve mid-agent interaction; recovery counters keep retry ceilings honest;
-budget fields prevent resume from granting a fresh allowance. Missing fields
-on historical checkpoints take their zero-value compatibility behavior.
+budget fields prevent resume from granting a fresh allowance.
+`selected_incoming` is the set of incoming edges routing actually fired
+into each node for its current visit, so a resume of that node applies
+the same with-mappings (issue #484). Missing fields on historical
+checkpoints take their zero-value compatibility behavior — for
+`selected_incoming` that means the pre-#484 fallback of merging every
+incoming edge whose source has produced output.
 
 ## `events.jsonl`
 

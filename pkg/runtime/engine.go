@@ -310,6 +310,12 @@ type runState struct {
 	// resumed run keeps measuring across the pause.
 	loopBudgetMarks    map[string]loopBudgetMark
 	roundRobinCounters map[string]int
+	// selectedIncoming records, per destination node, the incoming edges
+	// routing actually selected for the current visit of that node. Fan-out
+	// branches keep a private copy on branchResult so concurrent writers
+	// cannot race this map; the trunk copies the join union at
+	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
+	selectedIncoming map[string][]store.IncomingEdge
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
@@ -519,6 +525,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		loopStaleness:      make(map[string]int),
 		loopBudgetMarks:    make(map[string]loopBudgetMark),
 		roundRobinCounters: make(map[string]int),
+		selectedIncoming:   make(map[string][]store.IncomingEdge),
 		artifactVersions:   make(map[string]int),
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
 		preMarked:          make(map[string]bool),

@@ -97,10 +97,11 @@ func TestPlanPhaseWiring(t *testing.T) {
 	}
 }
 
-// TestPlanPhaseCampaignEdgeMappings pins the two edge-merge invariants the
-// engine cannot check (buildNodeInputRS applies EVERY edge whose source
-// has output — forward edges first, then loop back-edges, later
-// declaration winning on a shared key):
+// TestPlanPhaseCampaignEdgeMappings pins two authoring invariants that
+// still matter after the engine applies only *selected* incoming edges
+// (#484). A selected forward edge that omits a field still leaks the
+// raw {{input.x}} placeholder, and two selected loop back-edges that
+// share a key still last-wins on that visit:
 //
 //  1. every FORWARD edge into `campaign` maps every campaign_input field
 //     — an unmapped field is not "" but the raw {{input.x}} placeholder

@@ -891,6 +891,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		e.logger.Warn("failed to emit edge_selected: %v", err)
 	}
 
+	rs.setIncoming(selected)
 	return selected.To, nil
 }
 

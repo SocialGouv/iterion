@@ -18,6 +18,7 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		LoopCurrentOutput:  rs.loopCurrentOutput,
 		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
 		ArtifactVersions:   rs.artifactVersions,
+		SelectedIncoming:   cloneIncoming(rs.selectedIncoming),
 		Vars:               rs.vars,
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
 		// Persist run-scoped accounting so resume continues from consumed
@@ -99,6 +100,18 @@ func restoreLoopSnapshots(rs *runState, cp *store.Checkpoint) {
 	if cp.LoopCurrentOutput != nil {
 		rs.loopCurrentOutput = cp.LoopCurrentOutput
 	}
+}
+
+// restoreSelectedIncoming rehydrates the per-node selected-incoming set
+// so a resumed execution of cp.NodeID applies the same with-mappings it
+// would have on the first attempt. A missing field (legacy checkpoint)
+// leaves the empty map newRunState allocated: incomingFor then reports
+// untracked and the resolver falls back to source-output presence.
+func restoreSelectedIncoming(rs *runState, cp *store.Checkpoint) {
+	if cp == nil || len(cp.SelectedIncoming) == 0 {
+		return
+	}
+	rs.selectedIncoming = cloneIncoming(cp.SelectedIncoming)
 }
 
 // restoreNodeAttempts is the inverse of serializeNodeAttempts: it rebuilds

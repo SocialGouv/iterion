@@ -584,6 +584,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	restoreSelectedIncoming(rs, cp)
 	// Do not EvictRun here: pause-resume must keep in-process claw
 	// message history (evictRunSessions already skips ErrRunPaused).
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
@@ -811,6 +812,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	restoreSelectedIncoming(rs, cp)
 	pinBackendRehydration(rs, cp)
 	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
 	if rs.nodeSessions == nil {
