@@ -716,6 +716,12 @@ func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConn
 	if preferredConnID != "" {
 		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {
 			return c, true
+		} else if s.logger != nil {
+			// Falling through to another connection is the historical
+			// behaviour and stays — but an operator's explicit pin being
+			// replaced must never be silent, or the verdict is published under
+			// an identity nobody chose and nothing says so.
+			s.logger.Warn("forge: pinned connection %s is not usable for %s on %s — resolving another", preferredConnID, repo, host)
 		}
 	}
 	if s.forgeIntegrations != nil {

@@ -159,6 +159,28 @@ type ManifestConversion struct {
 		Login string `json:"login"`
 		Type  string `json:"type"` // "Organization" | "User"
 	} `json:"owner"`
+	// Permissions is what the App GitHub actually created carries. iterion
+	// POSTs the manifest through the operator's BROWSER, so what came back is
+	// the only evidence of what was registered — the request iterion built is
+	// not. A watch-only App is the one shape whose whole value rests on its
+	// permissions, and an org owner is asked to install it on every repository:
+	// the claim has to be confronted with this before it is recorded.
+	Permissions map[string]string `json:"permissions"`
+}
+
+// IsSecurityReadOnly reports whether the created App carries exactly the
+// watch-only permission profile and nothing else.
+func (c ManifestConversion) IsSecurityReadOnly() bool {
+	want := SecurityReadInstallationPermissions()
+	if len(c.Permissions) != len(want) {
+		return false
+	}
+	for name, level := range want {
+		if c.Permissions[name] != level {
+			return false
+		}
+	}
+	return true
 }
 
 // AppManageURL is the GitHub settings page (Advanced tab, with the Delete

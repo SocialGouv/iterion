@@ -52,3 +52,22 @@ func TestForgeConnectionForPR_PreferredWatchOnlyIsRefused(t *testing.T) {
 		t.Fatalf("pinned watch-only connection %q was accepted", got.ID)
 	}
 }
+
+// The health DTO is assembled at TWO endpoints (the health view and the
+// refresh route) and rendered by the same card. Guarding only the site in
+// front of you leaves the other one telling the operator to "fix" the very
+// property that makes a watch-only App safe to install org-wide — which is
+// how this guard was shipped the first time.
+func TestMissingDeliveryFor_SilentOnWatchOnlyLoudOnRuntime(t *testing.T) {
+	watchOnlyGrant := map[string]string{"metadata": "read", "vulnerability_alerts": "read"}
+
+	watch := forge.Connection{Purpose: forge.PurposeSecurityRead}
+	if got := missingDeliveryFor(watch, watchOnlyGrant); len(got) != 0 {
+		t.Fatalf("watch-only reported missing delivery grants %v — they are the point, not a defect", got)
+	}
+	// The same grant on a RUNTIME connection is a genuine gap and must show.
+	runtime := forge.Connection{Purpose: forge.PurposeRuntime}
+	if got := missingDeliveryFor(runtime, watchOnlyGrant); len(got) == 0 {
+		t.Fatal("a runtime connection missing its delivery grants reported nothing")
+	}
+}

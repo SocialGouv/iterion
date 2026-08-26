@@ -63,7 +63,7 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		InstallationAccount: inst.Login,
 		ManageInstallURL:    inst.HTMLURL,
 		GrantedPermissions:  inst.Permissions,
-		MissingPermissions:  forgegithub.MissingDeliveryPermissions(inst.Permissions),
+		MissingPermissions:  missingDeliveryFor(conn, inst.Permissions),
 	}
 	// Force a fresh token mint so the observability reflects the new grants
 	// (forgeAdminFor builds a fresh client → rest() mints on first use).
@@ -74,7 +74,7 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 	}
 	if tokenPerms, ok := forgegithub.LastMintedPermissions(conn.InstallationID); ok {
 		out.TokenPermissions = tokenPerms
-		out.TokenMissingPermissions = forgegithub.MissingDeliveryPermissions(tokenPerms)
+		out.TokenMissingPermissions = missingDeliveryFor(conn, tokenPerms)
 	}
 	writeJSON(w, out)
 }

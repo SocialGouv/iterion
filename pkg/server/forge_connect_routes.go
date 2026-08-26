@@ -376,13 +376,21 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	// set rather than the runtime one. Without this the connect seals a
 	// metadata-only token — RuntimePermissionsFor narrows to the intersection
 	// — which reads as a working connection while being able to do nothing.
+	// FAIL CLOSED. The role is stamped once, here, and never recomputed: a
+	// connection born mislabelled `runtime` from a watch-only App neutralises
+	// every Purpose-based guard at once — it would be handed to bots as a
+	// runtime connection, and the refresh worker would ask GitHub for a
+	// runtime token it can never have. Refusing costs one click (the App
+	// still exists, the operator retries the install); guessing costs a
+	// connection that looks healthy and can do nothing.
 	watchOnly := false
 	if appRecordID != "" && s.forgeOAuthApps != nil {
-		if rec, aerr := s.forgeOAuthApps.Get(store.WithTenant(r.Context(), pending.TenantID), appRecordID); aerr == nil {
-			watchOnly = rec.SecurityReadOnly
-		} else if s.logger != nil {
-			s.logger.Warn("forge: read app record %s at install: %v", appRecordID, aerr)
+		rec, aerr := s.forgeOAuthApps.Get(store.WithTenant(r.Context(), pending.TenantID), appRecordID)
+		if aerr != nil {
+			httpError(w, http.StatusBadGateway, "could not read the app record %s: %v — retry the install", appRecordID, aerr)
+			return
 		}
+		watchOnly = rec.SecurityReadOnly
 	}
 	// No repositories scope yet — none provisioned; the refresh worker
 	// re-scopes to the provisioned repo set thereafter.

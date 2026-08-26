@@ -114,10 +114,20 @@ func firstAppOnInstance(apps []ForgeOAuthApp, err error) (ForgeOAuthApp, error) 
 	if err != nil {
 		return ForgeOAuthApp{}, err
 	}
-	if len(apps) == 0 {
-		return ForgeOAuthApp{}, ErrOAuthAppNotFound
+	for _, a := range apps {
+		// A watch-only App is never the IMPLICIT answer to "which app for this
+		// host". It is reachable only by explicit id (the install flow passes
+		// one). Otherwise a team that registered it first — the natural order
+		// for a security-first onboarding, since this listing is oldest-first —
+		// would have every default install AND every OAuth connect resolve to
+		// an App that holds no rights, producing a connection labelled runtime
+		// that can do nothing.
+		if a.SecurityReadOnly {
+			continue
+		}
+		return a, nil
 	}
-	return apps[0], nil
+	return ForgeOAuthApp{}, ErrOAuthAppNotFound
 }
 
 // ownerOrInstance labels an app in operator-facing errors by the account that
@@ -148,7 +158,13 @@ func (m *MemoryOAuthAppStore) Create(_ context.Context, a ForgeOAuthApp) error {
 	defer m.mu.Unlock()
 	for _, ex := range m.apps {
 		if ex.TenantID == a.TenantID && ex.Provider == a.Provider &&
-			ex.ForgeBaseURL == a.ForgeBaseURL && ex.OwnerLogin == a.OwnerLogin {
+			ex.ForgeBaseURL == a.ForgeBaseURL && ex.OwnerLogin == a.OwnerLogin &&
+			// The ROLE is part of the identity: one org legitimately hosts a
+			// runtime App and a watch-only App. Without this the second one
+			// collides, and the collision is only discovered at the manifest
+			// CALLBACK — after GitHub created the App and handed back the
+			// private key it never reissues, which iterion then drops.
+			ex.SecurityReadOnly == a.SecurityReadOnly {
 			return fmt.Errorf("%w for %s on %s", ErrOAuthAppExists, a.Provider, ownerOrInstance(a))
 		}
 	}
@@ -237,22 +253,33 @@ func NewMongoOAuthAppStore(db *mongo.Database) *MongoOAuthAppStore {
 // changes behaviour instead of silently keeping the old rule.
 const legacyOAuthAppInstanceIndex = "tenant_provider_baseurl_unique"
 
+// legacyOAuthAppOwnerIndex is the previous generation, superseded once the
+// ROLE joined the identity: one org may hold a runtime App and a watch-only
+// App at the same time.
+const legacyOAuthAppOwnerIndex = "tenant_provider_baseurl_owner_unique"
+
 func (s *MongoOAuthAppStore) EnsureSchema(ctx context.Context) error {
-	if err := s.coll.Indexes().DropOne(ctx, legacyOAuthAppInstanceIndex); err != nil {
-		// IndexNotFound (fresh install, or already migrated) is the expected
-		// steady state — anything else is a real failure worth surfacing.
-		if !mongoutil.IsIndexNotFound(err) {
-			return fmt.Errorf("forge: drop legacy oauth app index: %w", err)
+	for _, stale := range []string{legacyOAuthAppInstanceIndex, legacyOAuthAppOwnerIndex} {
+		if err := s.coll.Indexes().DropOne(ctx, stale); err != nil {
+			// IndexNotFound (fresh install, or already migrated) is the expected
+			// steady state — anything else is a real failure worth surfacing.
+			if !mongoutil.IsIndexNotFound(err) {
+				return fmt.Errorf("forge: drop legacy oauth app index %s: %w", stale, err)
+			}
 		}
 	}
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
-		// Uniqueness is per OWNING ACCOUNT, not per host: a tenant legitimately
-		// holds one app per GitHub org (a private App is only installable on its
-		// owner), so keying on the host alone made the second org impossible.
-		// Legacy rows carry no owner_login; they all collapse to owner_login:""
-		// and therefore remain bound by exactly the old one-per-host rule, which
-		// is what keeps this index creatable over existing data.
-		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "provider", Value: 1}, {Key: "forge_base_url", Value: 1}, {Key: "owner_login", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_provider_baseurl_owner_unique")},
+		// Uniqueness is per OWNING ACCOUNT **and per role**, not per host: a
+		// tenant legitimately holds one app per GitHub org (a private App is
+		// only installable on its owner), and one org legitimately hosts both a
+		// runtime App and a watch-only App — the second of which would
+		// otherwise collide only at the manifest callback, after GitHub minted
+		// the private key it never reissues.
+		// Legacy rows carry neither owner_login nor security_read_only; both
+		// collapse to the missing-field value, so those rows remain bound by
+		// exactly the old rule, which is what keeps this index creatable over
+		// existing data.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "provider", Value: 1}, {Key: "forge_base_url", Value: 1}, {Key: "owner_login", Value: 1}, {Key: "security_read_only", Value: 1}}, Options: options.Index().SetUnique(true).SetName("tenant_provider_baseurl_owner_role_unique")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("forge: ensure forge_oauth_apps indexes: %w", err)

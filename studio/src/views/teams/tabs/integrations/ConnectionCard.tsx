@@ -98,6 +98,14 @@ export function ConnectionCard({
           <div className="text-xs text-fg-muted">
             {conn.forge_base_url ?? conn.provider} · {connectionKindLabel(conn.kind)}
           </div>
+          {conn.purpose === "security_read" && (
+            // The one place the role must be VISIBLE rather than filtered out:
+            // this connection is absent from every target picker, and without
+            // saying why, that absence reads as a bug.
+            <Badge variant="neutral" size="sm" className="mt-1">
+              Watch-only · Dependabot alerts
+            </Badge>
+          )}
         </div>
         {canManage && (
           <Button

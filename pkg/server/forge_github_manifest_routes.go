@@ -124,13 +124,29 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	// Deep link to the App's settings/advanced page so the operator can delete
 	// it on GitHub when they remove the OAuth app here (GitHub has no app-delete API).
 	manageURL := forgegithub.AppManageURL(pending.ForgeBaseURL, conv.Owner.Login, conv.Owner.Type, conv.Slug)
+	// The manifest travels through the operator's browser, so the App that got
+	// created is not necessarily the one iterion asked for. Refuse to record a
+	// watch-only label the created App does not actually carry: that label is
+	// what suppresses its missing-permission warnings and what convinces an org
+	// owner to install it on every repository.
+	if pending.SecurityReadOnly && !conv.IsSecurityReadOnly() {
+		httpError(w, http.StatusBadGateway,
+			"the GitHub App that was created carries %v, not the watch-only profile %v — it was NOT recorded; delete it at %s and retry",
+			conv.Permissions, forgegithub.SecurityReadInstallationPermissions(), manageURL)
+		return
+	}
 	// Capture the App slug + private key (conv.PEM) so the App can be INSTALLED
 	// (least-privilege github_app), not only OAuth-authorized.
 	app, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest",
 		githubAppFacts{ManageURL: manageURL, Slug: conv.Slug, PrivateKeyPEM: conv.PEM, OwnerLogin: conv.Owner.Login,
 			SecurityReadOnly: pending.SecurityReadOnly})
 	if err != nil {
-		s.writeForgeOAuthAppError(w, err)
+		// The App EXISTS on GitHub by now, and its private key was returned
+		// once and is gone with this request. Name where to delete it, or the
+		// operator retries and leaves one more orphan behind each time.
+		httpError(w, http.StatusConflict,
+			"the GitHub App %q was created but could not be recorded: %v — delete it at %s, then retry",
+			conv.Slug, err, manageURL)
 		return
 	}
 	target := pending.NextURL

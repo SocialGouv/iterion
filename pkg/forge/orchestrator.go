@@ -746,6 +746,19 @@ func (o *Orchestrator) EnsureManagedSecret(ctx context.Context, conn *Connection
 // token, stamping its id onto the connection. Reused across every repo/bot
 // of the connection; the refresh worker rewrites its plaintext on rotation.
 func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection, actor string) (string, error) {
+	// A watch-only connection has no runtime token to hand a bot: its App
+	// holds neither contents nor hooks. Refusing HERE is what makes the guard
+	// exhaustive — this is the single chokepoint every runtime path funnels
+	// through (Provision, and the repo-targeted launch via
+	// EnsureManagedSecret), and it fires BEFORE Provision writes the bot
+	// bindings. That ordering matters more than the message: a binding is
+	// keyed (tenant, bot, secret_name) and therefore TEAM-GLOBAL, it is
+	// written before the first forge call, and nothing rolls it back — so a
+	// provision that fails later would leave every repo of that bot pointing
+	// at a token that cannot push.
+	if conn.IsSecurityReadOnly() {
+		return "", fmt.Errorf("forge: connection %s is watch-only (Dependabot alerts): it holds no contents/hooks grant and has no runtime token to hand a bot — use the team's runtime connection", conn.ID)
+	}
 	if conn.ManagedSecretID != "" {
 		return conn.ManagedSecretID, nil
 	}

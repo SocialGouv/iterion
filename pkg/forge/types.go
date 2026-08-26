@@ -177,6 +177,15 @@ type Connection struct {
 	//     defect — they are the point.
 	Purpose Purpose `bson:"purpose,omitempty" json:"purpose,omitempty"`
 
+	// SecurityReadOrgKey records the key this connection's token was actually
+	// FILED UNDER in the dependabot_tokens map. Withdrawal reads it instead of
+	// re-deriving the key from InstallationAccount, which the health probe
+	// rewrites from live truth: after a GitHub org rename the derived key no
+	// longer matches the deposited one, and the old entry becomes a dead token
+	// no withdrawal path can reach — the map never empties, so the secret is
+	// never deleted, and a disconnect leaves it readable by every bot.
+	SecurityReadOrgKey string `bson:"security_read_org_key,omitempty" json:"-"`
+
 	Status ConnectionStatus `bson:"status" json:"status"`
 
 	// StatusReason is a human-readable explanation for a non-active Status

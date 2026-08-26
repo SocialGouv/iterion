@@ -35,6 +35,12 @@ const securityReadCreatedBy = "forge-security-read"
 // from a store/seal failure matters: those leave a LIVE token behind.
 var ErrSecurityReadMalformed = errors.New("forge: malformed security-read secret")
 
+// ErrSecurityReadNoOrgKey marks a connection that cannot be filed in the map
+// because nothing names the org it operates on. Like a missing grant this is
+// permanent — retrying re-derives the same nothing — so the refresh worker
+// records it once instead of re-minting against the forge on every tick.
+var ErrSecurityReadNoOrgKey = errors.New("forge: connection has no org to key its security-read token by")
+
 // fingerprintGuardedStore is the optional CAS capability a GenericSecretStore
 // may implement. The dependabot_tokens map is the first generic secret SHARED
 // across connections and rewritten by every replica's refresh worker;
@@ -112,13 +118,13 @@ func securityReadOrgKey(conn *Connection) (string, error) {
 	if conn.Kind == KindGitHubApp {
 		org := strings.ToLower(strings.TrimSpace(conn.InstallationAccount))
 		if org == "" {
-			return "", fmt.Errorf("forge: connection %s has no installation account recorded — cannot key its security-read token by org (reconnect, or open the connection's health view to refresh it)", conn.ID)
+			return "", fmt.Errorf("%w: connection %s has no installation account recorded (reconnect, or open the connection's health view to refresh it)", ErrSecurityReadNoOrgKey, conn.ID)
 		}
 		return org, nil
 	}
 	org := strings.ToLower(strings.TrimSpace(conn.AccountLogin))
 	if org == "" {
-		return "", fmt.Errorf("forge: connection %s has no account login — cannot key its security-read token", conn.ID)
+		return "", fmt.Errorf("%w: connection %s has no account login", ErrSecurityReadNoOrgKey, conn.ID)
 	}
 	return org, nil
 }
@@ -160,6 +166,9 @@ func UpsertSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore,
 			}
 		}
 		tokens[org] = token
+		// Remember where it landed, so withdrawal never has to guess (see
+		// Connection.SecurityReadOrgKey).
+		conn.SecurityReadOrgKey = org
 		encoded, err := encodeSecurityReadTokens(tokens)
 		if err != nil {
 			return err
@@ -248,9 +257,22 @@ func unionHosts(a, b []string) []string {
 // No-op when the secret or the entry is absent. Same CAS discipline as the
 // upsert: a plain overwrite could resurrect a concurrent writer's entry.
 func RemoveSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore, sealer secrets.Sealer, conn *Connection) error {
+	// Both the key the token was FILED under and the one derivable now: an org
+	// rename makes them differ, and taking only the derived one strands a live
+	// token nothing can ever reach. A missing derived key is not fatal when a
+	// recorded one exists — withdrawal must work on exactly the connections
+	// whose key can no longer be computed.
+	keys := map[string]bool{}
+	if recorded := strings.ToLower(strings.TrimSpace(conn.SecurityReadOrgKey)); recorded != "" {
+		keys[recorded] = true
+	}
 	org, err := securityReadOrgKey(conn)
 	if err != nil {
-		return err
+		if len(keys) == 0 {
+			return err
+		}
+	} else {
+		keys[org] = true
 	}
 	for attempt := 0; ; attempt++ {
 		gs, ok, err := findSecurityReadSecret(ctx, st, conn.TenantID)
@@ -265,10 +287,16 @@ func RemoveSecurityReadToken(ctx context.Context, st secrets.GenericSecretStore,
 		if err != nil {
 			return err
 		}
-		if _, present := tokens[org]; !present {
+		removed := false
+		for k := range keys {
+			if _, present := tokens[k]; present {
+				delete(tokens, k)
+				removed = true
+			}
+		}
+		if !removed {
 			return nil
 		}
-		delete(tokens, org)
 		if len(tokens) == 0 && gs.CreatedBy == securityReadCreatedBy {
 			if err := st.Delete(ctx, gs.ID); err != nil {
 				return fmt.Errorf("forge: delete emptied %s secret: %w", SecurityReadSecretName, err)

@@ -324,6 +324,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "connection not found")
 			return
 		}
+		// A watch-only connection cannot clone or push. The orchestrator
+		// refuses it too, but only once the launch is under way — say it here,
+		// where the operator picked it, instead of failing in the pod.
+		if conn.IsSecurityReadOnly() {
+			s.httpErrorFor(w, r, http.StatusUnprocessableEntity,
+				"connection %s is watch-only (Dependabot alerts only) — it cannot clone or push; pick the team's runtime connection", conn.ID)
+			span.SetStatus(codes.Error, "watch-only connection")
+			return
+		}
 		// The repo must live on the connection's forge host: the managed
 		// token is only ever aimed at the host it belongs to.
 		base := strings.TrimSuffix(conn.BaseURL(), "/")

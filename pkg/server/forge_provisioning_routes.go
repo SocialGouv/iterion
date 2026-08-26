@@ -88,7 +88,16 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// Assert the connection belongs to this team before we provision.
-	if _, ok := s.forgeConnForTenant(w, r, teamID, req.ConnectionID); !ok {
+	conn, ok := s.forgeConnForTenant(w, r, teamID, req.ConnectionID)
+	if !ok {
+		return
+	}
+	// A watch-only connection cannot carry a webhook or a bot's forge token.
+	// The orchestrator refuses it as well; naming it here keeps the operator's
+	// mistake attached to the choice they just made.
+	if conn.IsSecurityReadOnly() {
+		httpError(w, http.StatusUnprocessableEntity,
+			"connection %s is watch-only (Dependabot alerts only) — it cannot host webhooks or hand a bot a forge token; pick the team's runtime connection", conn.ID)
 		return
 	}
 	ctx := store.WithTenant(r.Context(), teamID)

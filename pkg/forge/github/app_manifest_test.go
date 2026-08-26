@@ -152,3 +152,30 @@ func TestBuildAppManifest_SecurityReadOnlyOverridesWriteOptions(t *testing.T) {
 		}
 	}
 }
+
+// iterion POSTs the manifest through the operator's BROWSER, so the App GitHub
+// actually created is the only evidence of what was registered — the request
+// iterion built is not. A watch-only App is the one shape whose entire value
+// rests on its permissions, and an org owner is asked to install it on every
+// repository, so the claim has to be confronted with the response.
+func TestManifestConversion_IsSecurityReadOnly(t *testing.T) {
+	cases := []struct {
+		name  string
+		perms map[string]string
+		want  bool
+	}{
+		{"exact profile", map[string]string{"metadata": "read", "vulnerability_alerts": "read"}, true},
+		{"carries write too", map[string]string{"metadata": "read", "vulnerability_alerts": "read", "contents": "write"}, false},
+		{"missing the alerts grant", map[string]string{"metadata": "read"}, false},
+		{"right names, wrong level", map[string]string{"metadata": "read", "vulnerability_alerts": "write"}, false},
+		{"empty (GitHub said nothing)", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ManifestConversion{Permissions: tc.perms}
+			if got := c.IsSecurityReadOnly(); got != tc.want {
+				t.Fatalf("IsSecurityReadOnly(%v) = %v, want %v", tc.perms, got, tc.want)
+			}
+		})
+	}
+}
