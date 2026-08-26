@@ -785,6 +785,43 @@ func (e *ClawExecutor) dispatchChain(
 			nextAllowed = j
 			continue
 		}
+		key := cooldownKey(backendName, task)
+		if fallbackRemains {
+			if cd, cooled := e.routeCooldowns.active(key, e.cooldownNow()); cooled {
+				// A remembered failure obeys the same per-route `on:` filters
+				// as a fresh one. If nothing later accepts it, fail open by
+				// attempting this element normally — especially important for
+				// a node whose authored fallback does not cover this category.
+				j := firstAcceptingFrom(chain, i+1, cd.Category)
+				if j >= 0 {
+					next := chain[j]
+					toModel := effModel(next)
+					if next.Skip {
+						toModel = ""
+					}
+					e.noteCooldownFallback(ctx, nodeID, el, next, backendName,
+						effModel(el), toModel, cd)
+					// The call was skipped, but the condition that caused the
+					// skip is still active. Preserve its typed cause so a later
+					// fallback failure cannot hide a usage-window wall from the
+					// run-level durable retry or credential-pool donor rest.
+					if cd.Cause != nil {
+						causes = append(causes, cd.Cause)
+					}
+					// A route change drops the node's session even when no call
+					// was made on this dispatch. The store has no provider
+					// fingerprint, so a prior failed attempt's messages must not
+					// be replayed into the fallback element.
+					e.evictNodeSessionForFallback(ctx, nodeID)
+					// A remembered failure must route a later build error exactly
+					// like a fresh one. Otherwise a usage_window-filtered terminal
+					// skip becomes unreachable after an unbuildable rescue route.
+					lastCat = cd.Category
+					nextAllowed = j
+					continue
+				}
+			}
+		}
 		// Whether ANY remaining route would take a given failure — the
 		// carve-out must not strip a retry budget the chain will not
 		// compensate for. Scanning the whole rest (not just the next
@@ -814,11 +851,22 @@ func (e *ClawExecutor) dispatchChain(
 		if ctx.Err() != nil {
 			return chainOutcome{Result: result, BackendName: backendName}, err
 		}
+		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
+		lastCat = cat
+		// Remember only typed failures whose provider supplied a future
+		// reset. Missing or stale reset data deliberately leaves the route
+		// hot, so bookkeeping uncertainty cannot suppress a healthy call.
+		//
+		// Recorded BEFORE the chain-shape checks below, because what the
+		// provider refused is a property of the ROUTE, not of this node's
+		// fallback chain: a node with no fallback at all — or none whose
+		// `on:` accepts the category — still teaches the ledger, so the
+		// next node whose chain DOES have somewhere to go skips the spawn
+		// this one had to pay for.
+		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
 		if !fallbackRemains {
 			break
 		}
-		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
-		lastCat = cat
 		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
 		// A middle route that refuses the category is SKIPPED so a later
 		// route that accepts it (e.g. the shipped example's gpt route
@@ -880,6 +928,65 @@ func (e *ClawExecutor) dispatchChain(
 	return chainOutcome{Result: result}, err
 }
 
+// fallbackRouteEnds resolves the two ends of a route change for the event
+// layer: an element that pins no backend of its own inherits the node's, and
+// a terminal `action: skip` names NO backend — inheriting one would report a
+// bascule to a backend that will never run.
+//
+// Shared by both note* paths on purpose: a fresh refusal and a remembered
+// cooldown skip describe the same route change, so they must not be able to
+// describe it differently.
+func fallbackRouteEnds(from, to chainElement, backendName string) (fromBackend, toBackend string) {
+	fromBackend = from.Backend
+	if fromBackend == "" {
+		fromBackend = backendName
+	}
+	if to.Skip {
+		return fromBackend, ""
+	}
+	toBackend = to.Backend
+	if toBackend == "" {
+		toBackend = backendName
+	}
+	return fromBackend, toBackend
+}
+
+// noteCooldownFallback exposes a route change that cost no delegate attempt.
+// It remains a model_fallback timeline event, but attempts=0 and the cooldown
+// metadata distinguish it from the refusal that originally armed the entry.
+func (e *ClawExecutor) noteCooldownFallback(
+	ctx context.Context,
+	nodeID string,
+	from, to chainElement,
+	backendName string,
+	fromModel, toModel string,
+	cd routeCooldown,
+) {
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
+	if e.logger != nil {
+		e.logger.Info("[%s#%d/%s] skipping %q: %s cooldown active until %s; routing to %q",
+			nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(from),
+			cd.Category, cd.Until.UTC().Format(time.RFC3339), stepLabel(to))
+	}
+	if e.hooks.OnProviderFallback == nil {
+		return
+	}
+	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
+		BackendName:   backendName,
+		From:          from.Provider,
+		To:            to.Provider,
+		FromModel:     fromModel,
+		ToModel:       toModel,
+		FromBackend:   fromBackend,
+		ToBackend:     toBackend,
+		Reason:        string(cd.Category),
+		Attempts:      0,
+		Cooldown:      true,
+		CooldownUntil: cd.Until,
+		ToSkip:        to.Skip,
+	})
+}
+
 // noteFallback emits the one log line and the one hook that make a
 // route change visible.
 func (e *ClawExecutor) noteFallback(
@@ -890,14 +997,7 @@ func (e *ClawExecutor) noteFallback(
 	fromModel, toModel string,
 	err error,
 ) {
-	fromBackend := from.Backend
-	if fromBackend == "" {
-		fromBackend = backendName
-	}
-	toBackend := to.Backend
-	if toBackend == "" {
-		toBackend = backendName
-	}
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
 		e.logger.Warn("[%s#%d/%s] %q failed beyond retry budget; falling through to %q: %v",
 			nodeID, LoopIterationFromContext(ctx), backendName,
@@ -905,11 +1005,6 @@ func (e *ClawExecutor) noteFallback(
 	}
 	if e.hooks.OnProviderFallback == nil {
 		return
-	}
-	if to.Skip {
-		// A skip route has no backend of its own; inheriting the failed
-		// one would report a bascule to the backend that just died.
-		toBackend = ""
 	}
 	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
 		BackendName: backendName,

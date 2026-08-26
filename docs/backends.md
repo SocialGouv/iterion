@@ -322,6 +322,31 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
+When a `usage_window` failure carries a provider reset instant, the executor
+also puts the effective `(backend, credential hint, model)` route on a reactive
+cooldown until that instant. The ledger is ready to do the same for a typed
+temporary `unavailable` failure with a reset instant, but no shipped backend
+produces that stage-3 condition yet. Later nodes in the same run enter the
+chain at the first route whose `on:` filter accepts the remembered category,
+without spawning the refused backend again. The skip remains visible as a
+`model_fallback` event with `attempts: 0`, `cooldown: true` and
+`cooldown_until`; it is an info line rather than another rate-limit warning.
+The route is remembered even when the node that hit the wall had nowhere to
+fall through to — a refusal belongs to the route, not to one node's chain —
+so the next node whose chain *does* accept the category skips a spawn the
+first one had to pay for.
+
+Cooldown is strictly fail-open: an absent/already-passed reset, a reset more
+than eight days out (the same implausibility ceiling as the durable retry's
+`max_wait` — a misparsed provider datetime must not keep a healthy route dark
+for a whole run), or no later route accepting the failure, all leave dispatch
+unchanged. Entries expire on read at their own reset instant (no sweeper), and
+the mid-call usage guard stays armed for parallel branches that were already
+in flight. Operators can set `ITERION_ROUTE_COOLDOWN=off` before launching a
+run to restore the historical probe-on-every-node behaviour. The switch is
+read once when that run's executor is created; unset, `on`, and unrecognised
+values keep the cooldown enabled.
+
 ### Terminal degrade (`action: skip`) and the route gate (`when:`)
 
 Two route properties extend the chain beyond backend switches
@@ -383,7 +408,7 @@ Nothing about it is silent:
 
 - a `model_fallback` event in `events.jsonl` (from/to backend, model and
   provider, the classified reason, attempts spent) plus a `run.log`
-  warning;
+  warning for a fresh failure, or an info line for a cooldown skip;
 - a `model_drift` event when the provider-reported model is not the
   one the node declared (proxy / `ANTHROPIC_MODEL` / a fallback that
   also changed the model). `delegate_started` carries `declared_model`;

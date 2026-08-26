@@ -93,6 +93,12 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     // ("skip") marks a terminal degrade — to_backend is then empty on
     // purpose, nothing serves the node.
     "reason",
+    // A zero-attempt route change is a proactive cooldown skip, not a
+    // second provider refusal. Keep that distinction visible in the row
+    // preview without requiring operators to open the raw event payload.
+    "cooldown",
+    "cooldown_until",
+    "attempts",
     "from_backend",
     "to_action",
     "to_backend",

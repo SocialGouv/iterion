@@ -63,6 +63,100 @@ func TestChainSkipServesSkippedOutcome(t *testing.T) {
 	}
 }
 
+// TestChainCooldownFallsThroughToSkip composes ADR-087's reactive cooldown
+// with ADR-091's terminal degrade. The second node must neither spawn the
+// refused backend nor report that a backend will serve the skip route.
+func TestChainCooldownFallsThroughToSkip(t *testing.T) {
+	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  reset,
+		},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	rec := &fallbackRecorder{}
+	e := newFallbackExecutor(reg, rec.hook())
+	e.now = func() time.Time { return now }
+	chain := skipChain([]delegate.FallbackCategory{delegate.FallbackUsageWindow})
+
+	dispatch := func(nodeID string) chainOutcome {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, head,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		out, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		if err != nil || !out.Skipped {
+			t.Fatalf("dispatch %s: err=%v out=%+v", nodeID, err, out)
+		}
+		return out
+	}
+
+	dispatch("first")
+	dispatch("second")
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: the second node must use the cooldown", got)
+	}
+	if len(rec.events) != 2 {
+		t.Fatalf("fallback events = %d, want fresh refusal then cooldown skip", len(rec.events))
+	}
+	cooled := rec.events[1]
+	if !cooled.Cooldown || !cooled.ToSkip || cooled.Attempts != 0 {
+		t.Errorf("cooldown-to-skip event = %+v, want Cooldown, ToSkip, attempts=0", cooled)
+	}
+	if cooled.ToBackend != "" || cooled.ToModel != "" {
+		t.Errorf("cooldown-to-skip destination = backend %q model %q, want no serving route", cooled.ToBackend, cooled.ToModel)
+	}
+}
+
+// TestChainCooldownBuildErrorKeepsRememberedCategory is the cooldown form of
+// TestChainSkipBuildErrorKeepsOriginalCategory. A remembered usage window must
+// survive an unbuildable rescue route so the filtered terminal skip still
+// implements the operator's degrade policy on later nodes.
+func TestChainCooldownBuildErrorKeepsRememberedCategory(t *testing.T) {
+	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "rescue", Backend: delegate.BackendCodex, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+		{Label: "give_up", Skip: true, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+	}
+
+	dispatch := func(nodeID string) {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, head,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		out, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		if err != nil || !out.Skipped {
+			t.Fatalf("dispatch %s: remembered usage window did not reach filtered skip: err=%v out=%+v", nodeID, err, out)
+		}
+	}
+
+	dispatch("first")
+	dispatch("second")
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+}
+
 // TestChainSkipNamesTheSpendingRoute: primary on one backend, a second
 // route on ANOTHER backend burns and fails, then skip — the outcome must
 // name the LAST executed route (the spend's origin), not the first.

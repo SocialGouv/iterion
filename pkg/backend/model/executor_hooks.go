@@ -116,8 +116,12 @@ type ProviderFallbackInfo struct {
 	// report: "fell through because the forfait window shut" reads very
 	// differently from "fell through because the credential is dead".
 	Reason   string
-	Attempts int   // retry attempts spent on the failed provider
+	Attempts int   // retry attempts spent on the failed provider; 0 for a cooldown skip
 	Err      error // the hard failure that triggered the fall-through
+	// Cooldown is true when dispatch skipped an attempt using a refusal a
+	// previous node already observed. CooldownUntil is that refusal's reset.
+	Cooldown      bool
+	CooldownUntil time.Time
 	// ToSkip marks a fall-through INTO an `action: skip` terminal route:
 	// nothing will serve the node — it completes with a zero-value output.
 	// Without this flag the event would read as a bascule to ToBackend,

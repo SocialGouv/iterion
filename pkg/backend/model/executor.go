@@ -142,6 +142,15 @@ type ClawExecutor struct {
 	// the windows it watches are the credential's, not a node's.
 	usageGuard *usagecap.Guard
 
+	// routeCooldowns remembers fallback-chain elements that a provider has
+	// refused until a known reset instant. It is executor-local (therefore
+	// shared by every node in the run) and concurrency-safe for parallel
+	// branches. Unknown reset instants are never recorded: dispatch stays
+	// fail-open when the provider did not say when the route revives.
+	routeCooldowns routeCooldownLedger
+	// now is a test seam for cooldown expiry. Nil means time.Now.
+	now func() time.Time
+
 	// sandbox is the live [sandbox.Run] for the current iterion run,
 	// or nil when the workflow doesn't activate a sandbox. The engine
 	// calls SetSandbox after the run starts; backends and tool nodes
@@ -690,9 +699,12 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCapabilities:       wf.Capabilities,
 		wfSkills:             wf.Skills,
 		botID:                wf.Name,
-		sessions:             newNodeSessionStore(),
-		vars:                 seed,
-		detector:             detect.NewCachedDetector(5 * time.Minute),
+		routeCooldowns: routeCooldownLedger{
+			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
+		},
+		sessions: newNodeSessionStore(),
+		vars:     seed,
+		detector: detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)
