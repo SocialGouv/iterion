@@ -335,7 +335,12 @@ judge plan_review:
     give_up:
       action: skip
       when: "vars.plan_review_policy == 'skip'"
-      on: [usage_window, unavailable, auth]
+      ## unfiltered on purpose: "skip" here means the peer must NEVER
+      ## block — and under `sandbox: auto` a claw failure flattens to a
+      ## string at the IPC boundary and classifies UNCLASSIFIED, which a
+      ## FILTERED skip refuses (see below). Scope the filter only when
+      ## the node runs unsandboxed with typed errors intact.
+      on: [any]
 ```
 
 `action: skip` is a **terminal degrade**: when the walk reaches it, the

@@ -233,12 +233,15 @@ func fillZeroValues(output map[string]any, schema *ir.Schema) {
 		case ir.FieldTypeBool:
 			output[fld.Name] = false
 		case ir.FieldTypeInt:
-			output[fld.Name] = 0
+			// float64, not int: the JSON-shaped contract everywhere else
+			// (ValidateOutput's int case accepts ONLY float64, and a store
+			// round-trip would produce float64 anyway).
+			output[fld.Name] = float64(0)
 		case ir.FieldTypeFloat:
 			output[fld.Name] = 0.0
 		case ir.FieldTypeStringArray:
 			output[fld.Name] = []any{}
-		default: // json / file: an empty object is the least-surprising zero
+		default: // json: an empty object is the least-surprising zero
 			output[fld.Name] = map[string]any{}
 		}
 	}

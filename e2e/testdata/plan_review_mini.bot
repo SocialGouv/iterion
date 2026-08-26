@@ -52,10 +52,13 @@ judge plan_review:
   model: "claude-opus-4-7"
   output: plan_review_output
   fallbacks:
+    ## on: [any] mirrors the shipped bots: the operator's `skip` means the
+    ## peer must never block — and a sandboxed claw failure classifies
+    ## UNCLASSIFIED, which a filtered skip refuses by design.
     give_up:
       action: skip
       when: "vars.plan_review_policy == 'skip'"
-      on: [usage_window, unavailable, auth]
+      on: [any]
 
 compute plan_gate:
   output: plan_gate_state

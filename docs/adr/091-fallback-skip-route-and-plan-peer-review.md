@@ -161,6 +161,25 @@ execution) hardened the design; all folded in before first release:
   dead `_session_id` — the engine seam wanted is "resume failure under
   inherit_if_available ⇒ fresh".
 
+## Second amendment (2026-08-26, from Revi's pre-merge gate review)
+
+- **The shipped bots' skip route is `on: [any]`** (R1b58ea): under the
+  default `sandbox: auto` a claw failure flattens to a STRING at the
+  `__claw-runner` IPC boundary — no typed `ErrRateLimited` survives — so
+  it classifies UNCLASSIFIED, which a filtered skip refuses by design;
+  the operator's `skip` policy would silently become `wait`. The
+  operator's `skip` genuinely means "the peer must never block", so the
+  unfiltered opt-in is the honest semantics. The filtered-skip guard
+  stays for authors of unsandboxed nodes. The underlying class — typed
+  error classification lost across the claw sandbox IPC, which ALSO
+  blinds the run-level usage-window retry for sandboxed claw nodes — is
+  a pre-existing engine gap filed on the board (ADR-087 stage-3
+  territory: a typed error envelope on the wire).
+- `plan_review_policy` carries `[enum: "wait","skip"]` (a typo'd --var
+  now fails at launch instead of silently selecting wait), and
+  `fillZeroValues` emits `float64` for int fields (the JSON-shaped
+  contract ValidateOutput and a store round-trip expect).
+
 ## Consequences
 
 - A judge served by the skip route emits a schema-valid, zero-value

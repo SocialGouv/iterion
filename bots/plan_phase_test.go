@@ -80,12 +80,18 @@ func TestPlanPhaseWiring(t *testing.T) {
 			if !strings.Contains(skip.When, "plan_review_policy") {
 				t.Errorf("%s: skip route's when: %q is not gated on plan_review_policy", bot, skip.When)
 			}
-			wantOn := map[string]bool{"usage_window": true, "unavailable": true, "auth": true}
-			for _, on := range skip.On {
-				delete(wantOn, on)
+			// on: [any] is load-bearing: under the shipped sandbox:auto a
+			// claw failure flattens to a string at the IPC boundary and
+			// classifies UNCLASSIFIED, which a FILTERED skip refuses by
+			// design — the operator's `skip` policy would silently become
+			// `wait` (Revi finding R1b58ea).
+			if len(skip.On) != 1 || skip.On[0] != "any" {
+				t.Errorf("%s: skip route's on: = %v, want [any] (a filtered skip is refused unclassified failures — sandboxed claw errors classify unclassified)", bot, skip.On)
 			}
-			if len(wantOn) > 0 {
-				t.Errorf("%s: skip route's on: filter missing %v", bot, wantOn)
+			// And the policy var must be enum'd so a typo'd --var fails at
+			// launch instead of silently selecting wait (Rde458c).
+			if pol := wf.Vars["plan_review_policy"]; pol == nil || len(pol.EnumValues) != 2 {
+				t.Errorf("%s: plan_review_policy lacks its [enum: wait, skip]", bot)
 			}
 		})
 	}

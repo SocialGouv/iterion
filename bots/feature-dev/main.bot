@@ -150,7 +150,7 @@ vars:
   ##   skip — the reviewer's `action: skip` fallback route completes it
   ##     with a zero-value critique stamped _skipped; the plan proceeds
   ##     unreviewed, LOUDLY (plan_gate reads the stamp).
-  plan_review_policy: string = "wait"
+  plan_review_policy: string [enum: "wait", "skip"] = "wait"
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted
@@ -832,10 +832,15 @@ judge plan_review:
     ## routes around the revise turn). policy "wait" leaves NO active
     ## route: the failure stays failed_resumable and the run-level
     ## usage-window retry parks the run until the forfait reopens.
+    ## on: [any] — deliberately unfiltered: the operator's `skip` means
+    ## the peer must NEVER block the campaign, whatever killed it. It is
+    ## also load-bearing under the shipped `sandbox: auto`: a sandboxed
+    ## claw failure flattens to a string at the IPC boundary and
+    ## classifies UNCLASSIFIED, which a filtered skip refuses by design.
     give_up:
       action: skip
       when: "vars.plan_review_policy == 'skip'"
-      on: [usage_window, unavailable, auth]
+      on: [any]
 
 ## plan_gate — did the peer actually serve, or did the skip route fire?
 ## Deterministic: reads the _skipped stamp, never an LLM judgment.

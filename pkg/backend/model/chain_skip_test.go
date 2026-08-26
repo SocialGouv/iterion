@@ -244,7 +244,9 @@ func TestFillZeroValues(t *testing.T) {
 	if out["concerns"] != "kept" {
 		t.Errorf("existing key overwritten: %+v", out)
 	}
-	if out["blocking"] != false || out["count"] != 0 || out["score"] != 0.0 {
+	// int fields synthesize float64 — the JSON-shaped contract
+	// ValidateOutput and a store round-trip both expect.
+	if out["blocking"] != false || out["count"] != float64(0) || out["score"] != 0.0 {
 		t.Errorf("zero values wrong: %+v", out)
 	}
 	if arr, ok := out["items"].([]any); !ok || len(arr) != 0 {
