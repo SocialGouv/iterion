@@ -1495,3 +1495,64 @@ func TestSharedBudget_UnpricedSpend(t *testing.T) {
 		}
 	})
 }
+
+// TestBudgetOverrunCheckpointsTheNextNode pins where a run stops when a
+// node that SUCCEEDED took it past the cap. The node's output is already
+// stored, so anchoring the checkpoint on it would make a resume pay for
+// that node twice — for an agent pass, the entire cost again. The run
+// still fails (the cap was exceeded), but on the node that has NOT run.
+func TestBudgetOverrunCheckpointsTheNextNode(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_overrun_checkpoint",
+		Entry: "expensive",
+		Nodes: map[string]ir.Node{
+			"expensive": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "expensive"}},
+			"tail":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done":      &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":      &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "expensive", To: "tail"},
+			{From: "tail", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("expensive", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.4}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true, "_cost_usd": 0.1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-budget-overrun", nil)
+	if err == nil || !strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("an overrun must still fail the run, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node started after the budget was spent")
+	}
+
+	run, gerr := s.LoadRun(context.Background(), "run-budget-overrun")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if run.Checkpoint == nil {
+		t.Fatal("no checkpoint saved: the run is not resumable")
+	}
+	if run.Checkpoint.NodeID != "tail" {
+		t.Fatalf("checkpoint anchored on %q, want \"tail\" — resuming would re-execute the node whose output is already stored", run.Checkpoint.NodeID)
+	}
+	if _, ok := run.Checkpoint.Outputs["expensive"]; !ok {
+		t.Fatal("the completed node's output is missing from the checkpoint: the resume would have to recompute it")
+	}
+}

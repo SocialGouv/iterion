@@ -597,6 +597,21 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	if err != nil {
 		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
 	}
+
+	// A hard overrun measured after THIS node ends the run here, one edge
+	// later than the measurement — anchored on the node that has not run,
+	// so a resume with a raised cap continues from there instead of
+	// re-executing the node whose output is already stored. With no next
+	// node the run has nowhere left to go, so it stops where it stands.
+	if rs.budget != nil {
+		if exc := rs.budget.takeExceeded(); exc != nil {
+			anchor := nextNodeID
+			if anchor == "" {
+				anchor = currentNodeID
+			}
+			return "", e.failBudgetExceeded(rs, anchor, exc)
+		}
+	}
 	return nextNodeID, nil
 }
 
