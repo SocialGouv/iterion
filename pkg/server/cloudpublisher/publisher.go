@@ -823,6 +823,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoSHA:         spec.RepoRef,
 		ProjectPath:     spec.ProjectPath,
 		BotID:           spec.BotID,
+		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
 		// Cap. 3 sharding fields — propagate to the persisted Run so

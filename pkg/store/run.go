@@ -464,6 +464,15 @@ type Run struct {
 	// has been consumed or its sealed secrets bundle has expired. Empty
 	// for plain .bot launches and legacy runs.
 	BotID string `json:"bot_id,omitempty" bson:"bot_id,omitempty"`
+	// BotSourceTenant records WHICH stored-bot tier this run's bundle was
+	// resolved from at launch: the owning team id for a team-authored bot,
+	// botsource.PlatformTenantID for a platform override, empty for a baked
+	// catalog / loose bot. Resume re-resolves the SAME row (fresh version)
+	// instead of re-deriving the tier from a path string — without it, a
+	// team bot's resume silently picked up a same-slug platform override
+	// (or the baked bundle), and a unique-slug team bot could not resume
+	// at all.
+	BotSourceTenant string `json:"bot_source_tenant,omitempty" bson:"bot_source_tenant,omitempty"`
 	// KeyOverrides pins a BYOK key per LLM provider (provider → api_key id)
 	// for this run, persisted so cloud resume re-resolves with the same
 	// keys. Set by webhook launches carrying per-webhook key bindings;

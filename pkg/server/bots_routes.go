@@ -96,7 +96,7 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: "catalog"})
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
 }
 
 // botUpdateRequest is the wire body for PUT /api/v1/bots/{name}. Pointer
@@ -233,7 +233,7 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string)
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: "catalog"})
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
 }
 
 // regenCatalog refreshes the orchestrator-facing bot catalog after a

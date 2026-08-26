@@ -219,10 +219,16 @@ func (s *Server) putBotSourceFileFor(w http.ResponseWriter, r *http.Request, ten
 		return
 	}
 	path := strings.TrimSpace(r.PathValue("path"))
-	if bs.Files == nil {
-		bs.Files = map[string]string{}
+	// Clone before mutating: the store may hand out its live map (memory
+	// store), and a write that Validate then REJECTS must not have already
+	// poisoned the stored row — one rejected traversal key otherwise bricks
+	// the bot (unwritable and unlaunchable) and races concurrent launches.
+	files := make(map[string]string, len(bs.Files)+1)
+	for k, v := range bs.Files {
+		files[k] = v
 	}
-	bs.Files[path] = body.Content
+	files[path] = body.Content
+	bs.Files = files
 	bs.Version = body.Version
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
@@ -258,7 +264,14 @@ func (s *Server) deleteBotSourceFileFor(w http.ResponseWriter, r *http.Request, 
 		s.httpErrorFor(w, r, http.StatusBadRequest, "cannot delete %s (the bundle entry)", botsource.MainBotFile)
 		return
 	}
-	delete(bs.Files, path)
+	// Clone before mutating — same aliasing hazard as the file put above.
+	files := make(map[string]string, len(bs.Files))
+	for k, v := range bs.Files {
+		if k != path {
+			files[k] = v
+		}
+	}
+	bs.Files = files
 	bs.Version = 0 // no if-match on a delete
 	if err := bs.Validate(); err != nil {
 		s.botSourceError(w, r, err)
@@ -366,6 +379,9 @@ func (s *Server) handleForkBotSource(w http.ResponseWriter, r *http.Request) {
 func (s *Server) forkBotSourceFor(w http.ResponseWriter, r *http.Request, tenantID, userID, slug string) {
 	slug = strings.TrimSpace(slug)
 	var req botSourceForkReq
+	// The body is one {"from": "<slug>"} — cap it; a bare Decode buffers
+	// whatever a caller streams.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
 		return

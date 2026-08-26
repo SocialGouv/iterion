@@ -431,31 +431,73 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// readMarker returns the sha256 hex + owning tier stored in path, or
-// ("", "") on any error (missing file, unreadable, empty). Marker absence
-// is a benign signal — we treat the existing skill as user-owned and
-// shadow. A legacy hash-only marker reads with an empty tier (lowest rank).
+// tierSidecarSuffix is the per-skill sidecar recording which mirror TIER
+// wrote the marker. A SIDECAR, deliberately: the marker file itself stays a
+// bare sha256 hex so an OLDER binary (a rolled-back deploy) still reads it
+// and its refresh logic keeps working — encoding the tier into the marker's
+// own grammar was a one-way door that turned every mirrored skill into a
+// permanent shadow after a rollback.
+//
+// Sidecars are wiped at the START of each run's mirror pass
+// (ClearSkillTierMarkers): the tier arbitrates collisions WITHIN one pass
+// (bundle > plugin > library regardless of mirror order), never across
+// runs — a persisted tier would let a bundle that no longer ships a skill
+// lock a library skill of the same name out forever.
+const tierSidecarSuffix = ".tier"
+
+// readMarker returns the sha256 hex + owning tier for path, or ("", "") on
+// any error (missing file, unreadable, empty). Marker absence is a benign
+// signal — we treat the existing skill as user-owned and shadow. A marker
+// without a sidecar (legacy, or a pre-wipe run) reads with an empty tier
+// (lowest rank — the historical refresh behaviour).
 func readMarker(path string) (hash string, tier skillTier) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", ""
 	}
-	h, t, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
-	return h, skillTier(t)
+	// Cut tolerates a transitional "hash tier" single-file form; sha256 hex
+	// never contains a space, so a bare legacy marker passes through whole.
+	h, inline, _ := strings.Cut(strings.TrimSpace(string(b)), " ")
+	tier = skillTier(inline)
+	if tb, terr := os.ReadFile(path + tierSidecarSuffix); terr == nil {
+		tier = skillTier(strings.TrimSpace(string(tb)))
+	}
+	return h, tier
 }
 
-// writeMarker records "hash tier" at path. Best-effort: failures don't
-// abort the mirror (we've already copied the content; missing marker just
-// means the next run shadows instead of refreshes).
+// writeMarker records the bare hash at path and the owning tier in the
+// sidecar. Best-effort: failures don't abort the mirror (we've already
+// copied the content; a missing marker just means the next run shadows
+// instead of refreshes).
 func writeMarker(path, hash string, tier skillTier) error {
-	body := hash
-	if tier != "" {
-		body += " " + string(tier)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(hash), 0o644); err != nil {
 		return fmt.Errorf("runtime/bundle: write marker %s: %w", path, err)
 	}
+	if tier != "" {
+		if err := os.WriteFile(path+tierSidecarSuffix, []byte(tier), 0o644); err != nil {
+			return fmt.Errorf("runtime/bundle: write tier sidecar %s: %w", path, err)
+		}
+	} else {
+		_ = os.Remove(path + tierSidecarSuffix)
+	}
 	return nil
+}
+
+// ClearSkillTierMarkers removes every tier sidecar under the workspace's
+// skill marker dir — called once at the start of a run's mirror sequence so
+// tier precedence is scoped to THAT pass. Best-effort; a missing dir is
+// simply a workspace that was never mirrored.
+func ClearSkillTierMarkers(workDir string) {
+	markerDir := filepath.Join(workDir, ".claude", "skills", bundleMirrorMarkerDir)
+	entries, err := os.ReadDir(markerDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), tierSidecarSuffix) {
+			_ = os.Remove(filepath.Join(markerDir, e.Name()))
+		}
+	}
 }
 
 // overwriteFile replaces dst's content with src's content via a durable

@@ -54,7 +54,14 @@ func ReadBundleDir(dir string) (map[string]string, error) {
 			return werr
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			switch d.Name() {
+			// Generated / artifact trees that live INSIDE real bundle dirs:
+			// devbox regenerates .devbox/ next to a bot's devbox.json, and a
+			// dogfood run leaves .iterion/ run state — pushing either ships
+			// run inputs into the deployment-wide store (or fails on the
+			// first non-UTF-8 blob, naming a file the operator never meant
+			// to push).
+			case ".git", ".devbox", ".iterion", "node_modules", "__pycache__":
 				return filepath.SkipDir
 			}
 			return nil

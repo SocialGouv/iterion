@@ -169,12 +169,15 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 // RetryDueRef is one row of ListRunsDueForRetry: the run identity plus what
 // the sweeper needs to re-enqueue a resume without a second read.
 type RetryDueRef struct {
-	ID         string               `bson:"_id"`
-	TenantID   string               `bson:"tenant_id"`
-	OwnerID    string               `bson:"owner_id"`
-	BotID      string               `bson:"bot_id"`
-	FilePath   string               `bson:"file_path"`
-	RetryState *store.RunRetryState `bson:"retry_state"`
+	ID       string `bson:"_id"`
+	TenantID string `bson:"tenant_id"`
+	OwnerID  string `bson:"owner_id"`
+	BotID    string `bson:"bot_id"`
+	FilePath string `bson:"file_path"`
+	// BotSourceTenant mirrors Run.BotSourceTenant so the sweeper's resume
+	// re-resolves the same stored-bot tier the launch used.
+	BotSourceTenant string               `bson:"bot_source_tenant"`
+	RetryState      *store.RunRetryState `bson:"retry_state"`
 }
 
 // RetryAfter returns the armed instant, or the zero time when absent.
@@ -199,7 +202,7 @@ func (s *Store) ListRunsDueForRetry(ctx context.Context, before time.Time, limit
 			retryPath("retry_after"): bson.M{"$lte": before.UTC()},
 		}),
 		options.Find().
-			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "file_path": 1, retryStateField: 1}).
+			SetProjection(bson.M{"_id": 1, "tenant_id": 1, "owner_id": 1, "bot_id": 1, "bot_source_tenant": 1, "file_path": 1, retryStateField: 1}).
 			SetSort(bson.M{retryPath("retry_after"): 1}).
 			SetLimit(int64(limit)))
 	if err != nil {

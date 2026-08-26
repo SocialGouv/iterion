@@ -419,9 +419,13 @@ Changes propagate to every replica within the resolver TTL (no restart).`,
 			}
 		}
 		for name, cleared := range remoteRoleClears {
-			if *cleared {
-				fields[name] = nil
+			if !*cleared {
+				continue
 			}
+			if _, both := fields[name]; both {
+				return fmt.Errorf("--%s and --clear-%s are mutually exclusive", strings.ReplaceAll(name, "_", "-"), strings.ReplaceAll(name, "_", "-"))
+			}
+			fields[name] = nil
 		}
 		if len(fields) == 0 {
 			return fmt.Errorf("usage: admin roles set --reviewer|--revi-converse|--brancher|--implementer <bot-id> (or the matching --clear-* flag)")

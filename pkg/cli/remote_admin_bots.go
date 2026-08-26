@@ -38,6 +38,11 @@ func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, 
 	if slug == "" {
 		slug = filepath.Base(filepath.Clean(dir))
 	}
+	// Validate client-side so `push .` fails on "slug '.' is invalid" rather
+	// than on whatever the path-cleaned URL happens to hit.
+	if err := botsource.ValidSlug(slug); err != nil {
+		return fmt.Errorf("%w (pass --slug to name the override explicitly)", err)
+	}
 	files, err := botsource.ReadBundleDir(dir)
 	if err != nil {
 		return err

@@ -53,6 +53,7 @@ func (s *MongoStore[T]) Get(ctx context.Context) (*T, error) {
 }
 
 func (s *MongoStore[T]) Put(ctx context.Context, rec T) error {
+	stampUpdatedAt(&rec)
 	body, err := bson.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("platformcfg: encode %s: %w", s.docID, err)
@@ -89,10 +90,22 @@ func (m *MemoryStore[T]) Get(context.Context) (*T, error) {
 }
 
 func (m *MemoryStore[T]) Put(_ context.Context, rec T) error {
+	stampUpdatedAt(&rec)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rec = &rec
 	return nil
+}
+
+// stampUpdatedAt sets the family record's UpdatedAt on write — in the
+// stores (covering every writer, incl. the CLI) rather than per handler.
+func stampUpdatedAt[T any](rec *T) {
+	switch v := any(rec).(type) {
+	case *BotRoles:
+		v.UpdatedAt = time.Now().UTC()
+	case *Sandbox:
+		v.UpdatedAt = time.Now().UTC()
+	}
 }
 
 // fetchTimeout bounds one refresh read so a wedged store can never hang a
@@ -116,9 +129,22 @@ func (f funcStore[T]) Put(context.Context, T) error {
 // failure it serves the LAST successfully read value (logged by the
 // caller-supplied warn func) — freshness is best-effort, correctness never
 // depends on it, and the enforcement backstop stays wherever the family's
-// values are consumed. A refresh runs OUTSIDE the mutex and only one runs
-// at a time: concurrent callers during a refresh (or an outage) are served
-// the stale value immediately instead of queueing behind the store read.
+// values are consumed.
+//
+// Concurrency contract, each clause paid for by a live failure mode:
+//   - One refresh at a time, run OUTSIDE the mutex; once a value has EVER
+//     been resolved, concurrent callers are served the stale value instead
+//     of queueing behind the store read.
+//   - Before the FIRST successful read (process cold start), concurrent
+//     callers WAIT for the in-flight refresh (bounded by fetchTimeout)
+//     instead of silently resolving nil → "no overrides": a rolling deploy
+//     must not serve hardcoded defaults for its first request burst.
+//   - The refresh context is detached from the caller's cancellation
+//     (context.WithoutCancel): a shared cache fill must not fail — and
+//     re-arm the TTL — because ONE caller aborted.
+//   - Invalidate bumps a generation; a refresh that started before the
+//     bump discards its (pre-write) result instead of re-pinning it for a
+//     full TTL over the mutation.
 type Resolver[T any] struct {
 	store Store[T]
 	ttl   time.Duration
@@ -129,6 +155,9 @@ type Resolver[T any] struct {
 	cached     *T
 	fetchedAt  time.Time
 	refreshing bool
+	ready      bool          // a value has been successfully read at least once
+	gen        uint64        // bumped by Invalidate; stale refreshes discard
+	waiters    chan struct{} // closed when the in-flight refresh completes
 }
 
 // NewResolver builds a resolver with DefaultTTL. warn may be nil.
@@ -142,40 +171,72 @@ func NewResolverFunc[T any](fetch func(ctx context.Context) (*T, error), warn fu
 }
 
 // Get returns the family record, nil when none is stored (inherit
-// defaults). Never errors and never blocks behind another caller's
-// refresh: a store failure — or a refresh in flight — serves the
-// last-known value.
+// defaults). Never errors: a store failure serves the last-known value.
 func (r *Resolver[T]) Get(ctx context.Context) *T {
 	if r == nil || r.store == nil {
 		return nil
 	}
-	r.mu.Lock()
-	if (!r.fetchedAt.IsZero() && r.now().Sub(r.fetchedAt) < r.ttl) || r.refreshing {
+	for {
+		r.mu.Lock()
+		if !r.fetchedAt.IsZero() && r.now().Sub(r.fetchedAt) < r.ttl {
+			v := r.cached
+			r.mu.Unlock()
+			return v
+		}
+		if r.refreshing {
+			if r.ready {
+				// Serve stale rather than queue behind the refresh.
+				v := r.cached
+				r.mu.Unlock()
+				return v
+			}
+			// Cold start: no value has ever resolved — wait for the
+			// in-flight first read (it is bounded by fetchTimeout) rather
+			// than silently answering "no overrides".
+			ch := r.waiters
+			r.mu.Unlock()
+			select {
+			case <-ch:
+				continue // re-evaluate: the refresh committed (or failed)
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		r.refreshing = true
+		r.waiters = make(chan struct{})
+		gen := r.gen
+		r.mu.Unlock()
+
+		// Detached from the caller: one aborted request must not poison the
+		// shared cache for everyone behind it.
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+		rec, err := r.store.Get(fctx)
+		cancel()
+
+		r.mu.Lock()
+		r.refreshing = false
+		close(r.waiters)
+		switch {
+		case err != nil:
+			if r.warn != nil {
+				r.warn("platformcfg: settings read failed — serving last-known values: %v", err)
+			}
+			// Re-arm the TTL so an outage doesn't hammer the store per
+			// request. A cold-start failure stays not-ready, so the next
+			// window retries the first read.
+			r.fetchedAt = r.now()
+		case gen != r.gen:
+			// Invalidated mid-flight: this result predates the write —
+			// discard it and leave the TTL expired so the next Get refetches.
+		default:
+			r.cached = rec
+			r.fetchedAt = r.now()
+			r.ready = true
+		}
 		v := r.cached
 		r.mu.Unlock()
 		return v
 	}
-	r.refreshing = true
-	r.mu.Unlock()
-
-	fctx, cancel := context.WithTimeout(ctx, fetchTimeout)
-	rec, err := r.store.Get(fctx)
-	cancel()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.refreshing = false
-	if err != nil {
-		if r.warn != nil {
-			r.warn("platformcfg: settings read failed — serving last-known values: %v", err)
-		}
-		// Re-arm the TTL so an outage doesn't hammer the store per request.
-		r.fetchedAt = r.now()
-		return r.cached
-	}
-	r.cached = rec
-	r.fetchedAt = r.now()
-	return r.cached
 }
 
 // Invalidate forces the next Get to re-read the store, so the replica that
@@ -189,5 +250,8 @@ func (r *Resolver[T]) Invalidate() {
 	}
 	r.mu.Lock()
 	r.fetchedAt = time.Time{}
+	// A refresh already in flight read the PRE-write state; the generation
+	// bump makes it discard its result instead of re-pinning it for a TTL.
+	r.gen++
 	r.mu.Unlock()
 }

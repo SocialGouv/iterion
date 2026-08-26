@@ -85,7 +85,7 @@ func (s *Server) handleAdminGetBotRoles(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	origin := "default"
-	if rec != nil {
+	if rec != nil && (rec.Reviewer != nil || rec.ReviConverse != nil || rec.Brancher != nil || rec.Implementer != nil) {
 		origin = "db"
 	}
 	s.writeJSONFor(w, r, map[string]any{
@@ -105,6 +105,12 @@ func (s *Server) handleAdminPutBotRoles(w http.ResponseWriter, r *http.Request) 
 	var patch map[string]*string
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	if len(patch) == 0 {
+		// `null` / `{}` decode to an empty map; writing a record for them
+		// would flip origin to "db" and forge an audit row for a no-op.
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one field (reviewer|revi_converse|brancher|implementer, null to clear)")
 		return
 	}
 	rec, err := s.botRolesStore.Get(r.Context())
@@ -171,6 +177,10 @@ func (s *Server) handleAdminPutSandboxSettings(w http.ResponseWriter, r *http.Re
 	var patch map[string]*string
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	if len(patch) == 0 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name default_image (null to clear)")
 		return
 	}
 	rec, err := s.sandboxCfgStore.Get(r.Context())

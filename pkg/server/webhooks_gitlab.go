@@ -282,7 +282,10 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 	// identity, so it runs in the gate (which resolves the forge token). A
 	// non-command note with the converse bot disabled can't trigger anything.
 	cmd, cmdArgs := p.Command()
-	converseEnabled := s.canRouteToConverseBot(cfg)
+	// ONE role snapshot for this delivery: the enable-gate (AllowsBot +
+	// existence) and the launch below must name the SAME converse bot.
+	converseBot := s.roleBots().ReviConverse
+	converseEnabled := s.canRouteToConverseBot(cfg, converseBot)
 	// Generic slash-command routing: any command but "revi" (the Revi
 	// conversation pair below keeps its bespoke reply-in-thread + thread-
 	// context handling). A non-revi command resolves through the command
@@ -338,7 +341,7 @@ func (s *Server) handleGitLabNote(ctx context.Context, w http.ResponseWriter, r 
 		question = strings.TrimSpace(p.NoteBody)
 	}
 	if question != "" && converseEnabled {
-		botID = s.roleBots().ReviConverse
+		botID = converseBot
 		// Drop the re_review flag for the converse path — it's a question,
 		// not a fresh review — and pass the question explicitly. Other
 		// conversation vars (discussion_id, trigger_note, replier) are in vars.
@@ -528,15 +531,14 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 	return true, reason, nil
 }
 
-// canRouteToConverseBot reports whether the conversational bot can be
-// launched on this webhook: both permitted by the webhook scope AND
-// resolvable on disk (older deploys without the bundle gracefully
-// fall back to the re-review path). The check is cheap — a single
-// botregistry.ResolveBotPath scan — but happens only on `/revi
-// <question>` deliveries, not on every note.
-func (s *Server) canRouteToConverseBot(cfg webhooks.Config) bool {
-	converse := s.roleBots().ReviConverse
-	return cfg.AllowsBot(converse) && s.botExists(converse)
+// canRouteToConverseBot reports whether the given conversational bot id
+// (the caller's roleBots snapshot — passed in so the gate and the launch
+// agree on ONE bot) is allowed by this webhook config and resolvable on
+// this deployment. The existence probe is metadata-only (cached platform
+// entries + a baked-path stat) — it must never materialize a bundle just
+// to answer a boolean on the note hot path.
+func (s *Server) canRouteToConverseBot(cfg webhooks.Config, converseBot string) bool {
+	return cfg.AllowsBot(converseBot) && s.botExists(converseBot)
 }
 
 // recordNoteDelivery inserts a terminal note-event audit row with a
@@ -596,7 +598,7 @@ func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p
 	// needs it.
 	cmd, cmdArgs := p.Command()
 	var notes []gitlab.DiscussionNote
-	if berr == nil && p.DiscussionID != "" && (cmd != "revi" || (cmdArgs != "" && s.canRouteToConverseBot(cfg))) {
+	if berr == nil && p.DiscussionID != "" && (cmd != "revi" || (cmdArgs != "" && s.canRouteToConverseBot(cfg, s.roleBots().ReviConverse))) {
 		var derr error
 		notes, derr = api.Discussion(ctx, p.ProjectID, p.MRIID, p.DiscussionID)
 		if derr != nil {

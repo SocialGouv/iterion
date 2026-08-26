@@ -69,9 +69,11 @@ import (
 // publish so redelivery reruns in the same environment). Dropping either
 // silently serves STALE code/skills for an overridden bot — the exact façade
 // the platform-override feature exists to prevent. Consumers accept BOTH v8
-// and v9 (MinSchemaVersion): the change is purely additive, and dual-accept
-// closes the mixed-fleet window of a rolling deploy — an old queued v8
-// message stays consumable by a new runner, in any rollout order.
+// and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
+// consumes old queued v8 messages. (The reverse still holds the standard
+// policy: a pre-bump runner rejects v9, so the server-first ordering — or a
+// same-release roll of both — remains required; dual-accept removes only
+// the stranded-v8-message half of the window.)
 //
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the

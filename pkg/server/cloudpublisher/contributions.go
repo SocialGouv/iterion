@@ -169,6 +169,16 @@ func collectWorkflowSkillRefs(wf *ir.Workflow) []string {
 	return out
 }
 
+// botSourceTenantOf extracts the stored-bundle tenant persisted on the run
+// doc ("" for baked/loose bots) — what resume uses to re-resolve the SAME
+// tier instead of re-deriving it from a path.
+func botSourceTenantOf(ref *runview.BotBundleRef) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.TenantID
+}
+
 // queueBotBundleRef converts the launch-resolved stored-bundle ref to its
 // wire mirror. A stored bot's FULL bundle (skills, prompts, devbox,
 // attachments) is rebuilt runner-side from this ref — the successor of the

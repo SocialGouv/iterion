@@ -519,7 +519,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Shared with the retry sweeper so the automated resume resolves its
 	// source exactly like this one (see resolveResumeSource).
-	absPath, resolvedSource, resumeLB, pathErr := s.resolveResumeSource(r.Context(), filePath, req.Source, runMeta.WorkflowSource)
+	absPath, resolvedSource, resumeLB, pathErr := s.resolveResumeSource(r.Context(), runMeta.BotSourceTenant, filePath, req.Source, runMeta.WorkflowSource)
 	if pathErr != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
 		span.SetStatus(codes.Error, "resume source unresolvable")

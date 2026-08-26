@@ -410,3 +410,89 @@ func TestMirrorPluginContributionsReportsOwnedSkills(t *testing.T) {
 		t.Errorf("reported %q but it is not on disk: %v", owned[0], err)
 	}
 }
+
+// The marker file must stay a BARE hash: an older (rolled-back) binary
+// reads it verbatim and compares to the dest hash — any richer grammar
+// turns every mirrored skill into a permanent shadow after a rollback.
+func TestWriteMarker_BareHashPlusSidecar(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "x.sha256")
+	if err := writeMarker(marker, "abc123", skillTierBundle); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "abc123" {
+		t.Fatalf("marker body = %q — must stay a bare hash for rollback compatibility", raw)
+	}
+	hash, tier := readMarker(marker)
+	if hash != "abc123" || tier != skillTierBundle {
+		t.Fatalf("readMarker = (%q, %q)", hash, tier)
+	}
+	// Legacy: no sidecar → lowest rank (historical refresh behaviour).
+	_ = os.Remove(marker + tierSidecarSuffix)
+	if _, tier := readMarker(marker); tier != "" {
+		t.Fatalf("legacy marker tier = %q, want empty", tier)
+	}
+}
+
+// Tier precedence is scoped to ONE mirror pass: a bundle that owned a
+// skill in a previous run must not lock a library skill out of a later run
+// that ships no bundle at all.
+func TestTierScopedToMirrorPass(t *testing.T) {
+	workDir := t.TempDir()
+	dest := filepath.Join(workDir, ".claude", "skills")
+	markerDir := filepath.Join(dest, bundleMirrorMarkerDir)
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 1: a bundle-owned skill.
+	src1 := filepath.Join(t.TempDir(), "triage.md")
+	if err := os.WriteFile(src1, []byte("BUNDLE VERSION\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mirrorFileSkill(dest, markerDir, src1, "triage.md", skillTierBundle, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 2 begins: sidecars wiped, no bundle this time — a library skill
+	// of the same name must REFRESH (the historical behaviour), not be
+	// locked out by last run's tier stamp.
+	ClearSkillTierMarkers(workDir)
+	src2 := filepath.Join(t.TempDir(), "triage.md")
+	if err := os.WriteFile(src2, []byte("LIBRARY VERSION\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := mirrorFileSkill(dest, markerDir, src2, "triage.md", skillTierLibrary, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != skillOutcomeRefreshed {
+		t.Fatalf("outcome = %v, want refreshed — a stale bundle tier locked the library out across runs", outcome)
+	}
+	got, _ := os.ReadFile(filepath.Join(dest, "triage", "SKILL.md"))
+	if string(got) != "LIBRARY VERSION\n" {
+		t.Fatalf("dest = %q, want the library version", got)
+	}
+
+	// Within one pass the precedence still holds: bundle first, then a
+	// same-name library — the bundle's copy is kept.
+	ClearSkillTierMarkers(workDir)
+	if _, err := mirrorFileSkill(dest, markerDir, src1, "triage.md", skillTierBundle, nil); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = mirrorFileSkill(dest, markerDir, src2, "triage.md", skillTierLibrary, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != skillOutcomeShadowed {
+		t.Fatalf("same-pass outcome = %v, want shadowed (bundle > library)", outcome)
+	}
+	got, _ = os.ReadFile(filepath.Join(dest, "triage", "SKILL.md"))
+	if string(got) != "BUNDLE VERSION\n" {
+		t.Fatalf("dest = %q, want the bundle version kept", got)
+	}
+}

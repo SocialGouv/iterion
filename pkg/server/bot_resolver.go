@@ -89,6 +89,22 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 		return nil, nil
 	}
 	if s.botSources != nil {
+		// The catalog tier tolerates spelling variants (feature_dev /
+		// Feature-Dev / "feature dev" → feature-dev via NormalizeName), and
+		// board cards / trigger subscriptions rely on it. The stored tiers
+		// must tolerate the same set, or an override is silently BYPASSED
+		// for every non-canonical spelling — resolve the canonical slug via
+		// the cached platform entry names before the exact lookups.
+		if norm := botregistry.NormalizeName(slug); norm != slug {
+			for _, e := range s.platformBotEntries() {
+				if botregistry.NormalizeName(e.Name) == norm {
+					slug = e.Name
+					break
+				}
+			}
+		}
+	}
+	if s.botSources != nil {
 		// Only ErrNotFound falls through to the next tier: any other store
 		// error must surface, or a Mongo blip would silently launch the
 		// STALE BAKED bot — the exact façade the runner-side version check
@@ -259,6 +275,19 @@ func (s *Server) platformBotManifest(slug string) *bundle.Manifest {
 		return nil
 	}
 	return bs.Manifest()
+}
+
+// entryOrigin reports how a bot name currently resolves for display:
+// "platform" when a deployment override shadows it, else "catalog". Keeps
+// the detail/PUT responses consistent with the list's origin so the studio
+// badge doesn't flicker between surfaces.
+func (s *Server) entryOrigin(name string) string {
+	for _, e := range s.platformBotEntries() {
+		if e.Name == name {
+			return "platform"
+		}
+	}
+	return "catalog"
 }
 
 // botExists reports whether a bot id resolves on this deployment (platform

@@ -97,6 +97,13 @@ func (s *MongoStore) GetBySlug(ctx context.Context, tenantID, slug string) (BotS
 	if tenantID == "" {
 		return BotSource{}, ErrTenantMissing
 	}
+	// The ctx tenant marker and the argument must agree: the sentinel-
+	// scoping defense ("a platform route can never touch a team's row")
+	// leans on scoped contexts, so a read that silently ignored the ctx
+	// would erode it the day a caller passes mismatched values.
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q", ctxTenant, tenantID)
+	}
 	return s.findOne(ctx, bson.M{"tenant_id": tenantID, "slug": slug})
 }
 
@@ -176,6 +183,9 @@ func (s *MongoStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error) {
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return nil, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q", ctxTenant, tenantID)
+	}
 	if tenantID == "" {
 		return nil, ErrTenantMissing
 	}

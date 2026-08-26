@@ -116,10 +116,15 @@ func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry
 	// A stored bot's identity is its SLUG (the store key), not the workflow name
 	// a loose main.bot would otherwise be discovered under. The slug is the dir
 	// directly under root — force it so list/get/launch key on the same name.
+	// Then BLANK the path: it points into the temp root removed on return, and
+	// a consumer that path-resolves a stored bot (manifest write, dispatcher
+	// admission) must fail on an explicit empty path, not a dangling one —
+	// stored bots resolve through the store, never the filesystem.
 	for i := range entries {
 		if slug := slugFromMaterializedPath(root, entries[i].Path); slug != "" {
 			entries[i].Name = slug
 		}
+		entries[i].Path = ""
 	}
 	return entries
 }

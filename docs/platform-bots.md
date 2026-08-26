@@ -56,6 +56,16 @@ is CLI-first.
   loudly (`version drift: store has vN+1, launch resolved vN`) rather than
   pairing the launch's IR with newer resources; a resume re-resolves the
   current version end-to-end and self-heals. Same for a deleted row.
+- **Resume re-resolves by ORIGIN, not by path**: the launch persists which
+  tier served the run (`bot_source_tenant` on the run doc — the team, the
+  `platform:` sentinel, or empty for baked). A resume/auto-retry reloads
+  the SAME row at its current version; a row deleted mid-run fails the
+  resume explicitly (relaunch, or resume with inline source). A run
+  launched from the BAKED catalog picks up an override pushed since — the
+  "effective at the next launch" rule. The pinned `sandbox_image` is
+  likewise re-resolved per resume (attempt N and N+1 can differ if the
+  setting changed between them); only redelivery of one queued message is
+  guaranteed identical.
 - **Metadata**: listings (`/api/v1/bots`), webhook command discovery,
   hand-off producers/consumers, gate-var defaults and retry-policy
   manifest reads all consult the platform overlay (TTL-cached ≤30 s per
@@ -87,6 +97,9 @@ review the diff first (`admin bots pull` + `git diff` against the repo).
   filesystem manifests, so other bots' overridden metadata is not
   reflected in it (the bot's own bundle IS the override). A DB-aware
   regen seam is the follow-up.
+- `push` derives the slug from the bundle DIRECTORY name; listing/launch
+  key on the manifest `name:`. Keep them identical (every shipped bot
+  does) — a divergent pair would append a new entry instead of overriding.
 - The k8s sandbox driver drops host binds, so a bundle `devbox.json`
   staged via the host-bind path does not provision inside a k8s sandbox —
   a pre-existing gap shared with baked bundles.
@@ -94,9 +107,10 @@ review the diff first (`admin bots pull` + `git diff` against the repo).
 ## Rollout note (queue schema v9)
 
 v9 added `bot_bundle` + `sandbox_image` to the RunMessage. Runners accept
-**both v8 and v9** (the change is additive), so a rolling deploy has no
-ordering hazard and queued v8 messages stay consumable. Roll server and
-runner from the same release as usual.
+**both v8 and v9** (the change is additive), so queued v8 messages stay
+consumable by upgraded runners. The reverse direction keeps the standard
+policy: a pre-bump runner rejects v9, so roll server and runner from the
+same release (or runner first) as usual.
 
 ## Platform settings: bot roles + sandbox image
 

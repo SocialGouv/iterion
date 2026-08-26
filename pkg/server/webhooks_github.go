@@ -120,9 +120,13 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// (Billy's push advances the head, so a re-eject re-heals the NEW state,
 	// and Billy's own convergence + the author allowlist bound the loop).
 	if p.NeedsAutoHeal() {
+		// ONE role snapshot for the whole lane: the allowlist gate and the
+		// launch below must name the SAME bot — two roleBots() reads can
+		// straddle a settings refresh and authorize A while launching B.
+		brancher := s.roleBots().Brancher
 		if !webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
 			!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) ||
-			!cfg.AllowsBot(s.roleBots().Brancher) {
+			!cfg.AllowsBot(brancher) {
 			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "auto-heal not permitted (project/author/bot)")
 			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 			return
@@ -136,7 +140,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 				"Push so the PR can re-enter the merge queue.\n\n%s",
 			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
 		healVars := applyWebhookVarLayers(fixerPRVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, nil), cfg)
-		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, s.roleBots().Brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, brancher, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 		return
 	}
 

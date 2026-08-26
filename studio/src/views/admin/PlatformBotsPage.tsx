@@ -83,8 +83,8 @@ export default function PlatformBotsPage() {
         {query.error != null && (
           <p className="text-sm text-danger">{errorMessage(query.error)}</p>
         )}
-        {query.isLoading && <TableSkeleton rows={3} cols={6} />}
-        {!query.isLoading && rows.length === 0 && query.error == null && (
+        {(query.isLoading || serverInfo == null) && <TableSkeleton rows={3} cols={6} />}
+        {serverInfo != null && !query.isLoading && rows.length === 0 && query.error == null && (
           <EmptyState
             title="No overrides"
             message="Every bot serves from the baked catalog."

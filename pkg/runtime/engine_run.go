@@ -449,7 +449,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// bundle's skills/ entries into <workDir>/.claude/skills/ so both
 	// claude_code's native skill lookup and the claw `skill` tool
 	// discover them transparently. Workspace files always win on
-	// collision (see runtime/bundle.go for the rule).
+	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
+	// PREVIOUS run are wiped first: precedence arbitrates within this
+	// pass, never across runs.
+	ClearSkillTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
