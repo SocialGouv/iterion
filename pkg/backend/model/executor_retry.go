@@ -924,6 +924,29 @@ func (e *ClawExecutor) dispatchChain(
 	return chainOutcome{Result: result}, err
 }
 
+// fallbackRouteEnds resolves the two ends of a route change for the event
+// layer: an element that pins no backend of its own inherits the node's, and
+// a terminal `action: skip` names NO backend — inheriting one would report a
+// bascule to a backend that will never run.
+//
+// Shared by both note* paths on purpose: a fresh refusal and a remembered
+// cooldown skip describe the same route change, so they must not be able to
+// describe it differently.
+func fallbackRouteEnds(from, to chainElement, backendName string) (fromBackend, toBackend string) {
+	fromBackend = from.Backend
+	if fromBackend == "" {
+		fromBackend = backendName
+	}
+	if to.Skip {
+		return fromBackend, ""
+	}
+	toBackend = to.Backend
+	if toBackend == "" {
+		toBackend = backendName
+	}
+	return fromBackend, toBackend
+}
+
 // noteCooldownFallback exposes a route change that cost no delegate attempt.
 // It remains a model_fallback timeline event, but attempts=0 and the cooldown
 // metadata distinguish it from the refusal that originally armed the entry.
@@ -935,20 +958,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 	fromModel, toModel string,
 	cd routeCooldown,
 ) {
-	fromBackend := from.Backend
-	if fromBackend == "" {
-		fromBackend = backendName
-	}
-	toBackend := to.Backend
-	if toBackend == "" {
-		toBackend = backendName
-	}
-	if to.Skip {
-		// A terminal skip executes no backend, including when the route
-		// change was triggered by a remembered cooldown rather than a fresh
-		// refusal.
-		toBackend = ""
-	}
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
 		e.logger.Info("[%s#%d/%s] skipping %q: %s cooldown active until %s; routing to %q",
 			nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(from),
@@ -983,14 +993,7 @@ func (e *ClawExecutor) noteFallback(
 	fromModel, toModel string,
 	err error,
 ) {
-	fromBackend := from.Backend
-	if fromBackend == "" {
-		fromBackend = backendName
-	}
-	toBackend := to.Backend
-	if toBackend == "" {
-		toBackend = backendName
-	}
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
 		e.logger.Warn("[%s#%d/%s] %q failed beyond retry budget; falling through to %q: %v",
 			nodeID, LoopIterationFromContext(ctx), backendName,
@@ -998,11 +1001,6 @@ func (e *ClawExecutor) noteFallback(
 	}
 	if e.hooks.OnProviderFallback == nil {
 		return
-	}
-	if to.Skip {
-		// A skip route has no backend of its own; inheriting the failed
-		// one would report a bascule to the backend that just died.
-		toBackend = ""
 	}
 	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
 		BackendName: backendName,
