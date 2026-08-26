@@ -10,7 +10,11 @@ import {
   type RunSummary,
   type WireWorkflow,
 } from "@/api/runs";
-import { groupChildrenByNode, isSettledRunStatus } from "@/lib/subRuns";
+import {
+  groupChildrenByNode,
+  isSettledRunStatus,
+  resolveSelectedSubbotChild,
+} from "@/lib/subRuns";
 import { makeSubbotChildId } from "@/lib/subbotGraph";
 
 // Data feeds for the run canvas's INLINE subbot expansion
@@ -38,8 +42,8 @@ export interface InlineSubbotData {
   childWorkflowsByNode: Map<string, WireWorkflow>;
   // child run id -> its live executions (selected children only).
   childExecutionsByRun: Map<string, ExecutionState[]>;
-  // frameId -> the child run the frame displays (user pick, defaulted
-  // to the first child).
+  // frameId -> the child run the frame displays (user pick, else the
+  // live/latest child — see resolveSelectedSubbotChild).
   selectedChildByFrame: Map<string, string>;
 }
 
@@ -70,18 +74,15 @@ function useSubbotLevel(
   pickedByFrame: Map<string, string>,
 ): LevelData {
   // Effective selection: the user's pick while that child still exists,
-  // else the first child (created_at asc — stable).
+  // else the live/latest child (not children[0] — that is the oldest).
   const selected = useMemo(() => {
     const m = new Map<string, string>();
     for (const f of frames) {
-      if (f.children.length === 0) continue;
-      const picked = pickedByFrame.get(f.frameId);
-      m.set(
-        f.frameId,
-        picked && f.children.some((c) => c.id === picked)
-          ? picked
-          : f.children[0]!.id,
+      const id = resolveSelectedSubbotChild(
+        f.children,
+        pickedByFrame.get(f.frameId),
       );
+      if (id) m.set(f.frameId, id);
     }
     return m;
   }, [frames, pickedByFrame]);

@@ -5,6 +5,7 @@ import {
   childTabLabel,
   groupChildrenByNode,
   isSettledRunStatus,
+  resolveSelectedSubbotChild,
   statusDotClass,
 } from "./subRuns";
 
@@ -173,5 +174,98 @@ describe("isSettledRunStatus", () => {
     ];
     for (const s of settled) expect(isSettledRunStatus(s)).toBe(true);
     for (const s of open) expect(isSettledRunStatus(s)).toBe(false);
+  });
+});
+
+describe("resolveSelectedSubbotChild", () => {
+  const older = "2026-08-01T10:00:00Z";
+  const newer = "2026-08-01T11:00:00Z";
+  const newest = "2026-08-01T12:00:00Z";
+
+  it("returns undefined for an empty list", () => {
+    expect(resolveSelectedSubbotChild([])).toBeUndefined();
+  });
+
+  it("defaults to the newer finished child over an older failed one", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "new-pass", status: "finished", created_at: newer }),
+    ];
+    expect(resolveSelectedSubbotChild(children)).toBe("new-pass");
+  });
+
+  it("prefers a running child over settled historical children", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "live", status: "running", created_at: newer }),
+      child({ id: "new-pass", status: "finished", created_at: newest }),
+    ];
+    expect(resolveSelectedSubbotChild(children)).toBe("live");
+  });
+
+  it("prefers paused_waiting_human over settled children, but not over running", () => {
+    const waiting = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "gate", status: "paused_waiting_human", created_at: newer }),
+      child({ id: "new-pass", status: "finished", created_at: newest }),
+    ];
+    expect(resolveSelectedSubbotChild(waiting)).toBe("gate");
+
+    const runningWins = [
+      child({ id: "gate", status: "paused_waiting_human", created_at: older }),
+      child({ id: "live", status: "running", created_at: newer }),
+    ];
+    expect(resolveSelectedSubbotChild(runningWins)).toBe("live");
+  });
+
+  it("prefers another unsettled child (queued / operator pause) over settled history", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "queued", status: "queued", created_at: newer }),
+      child({ id: "new-pass", status: "finished", created_at: newest }),
+    ];
+    expect(resolveSelectedSubbotChild(children)).toBe("queued");
+  });
+
+  it("keeps a valid explicit user selection", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "live", status: "running", created_at: newer }),
+      child({ id: "new-pass", status: "finished", created_at: newest }),
+    ];
+    expect(resolveSelectedSubbotChild(children, "old-fail")).toBe("old-fail");
+  });
+
+  it("drops a stale explicit selection and falls back to the live/latest child", () => {
+    const children = [
+      child({ id: "old-fail", status: "failed", created_at: older }),
+      child({ id: "new-pass", status: "finished", created_at: newer }),
+    ];
+    expect(resolveSelectedSubbotChild(children, "gone")).toBe("new-pass");
+  });
+
+  it("does not let a historical fan-out failure paint the current pipeline", () => {
+    // fan_out_each × subbot: children arrive created_at asc, one per batch.
+    const children = [
+      child({
+        id: "batch-0-fail",
+        status: "failed",
+        created_at: older,
+        parent_node_id: "review_epic_acceptance",
+      }),
+      child({
+        id: "batch-1-pass",
+        status: "finished",
+        created_at: newer,
+        parent_node_id: "review_epic_acceptance",
+      }),
+      child({
+        id: "batch-2-pass",
+        status: "finished",
+        created_at: newest,
+        parent_node_id: "review_epic_acceptance",
+      }),
+    ];
+    expect(resolveSelectedSubbotChild(children)).toBe("batch-2-pass");
   });
 });

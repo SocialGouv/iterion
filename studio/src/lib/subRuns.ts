@@ -115,3 +115,47 @@ export function isSettledRunStatus(status: RunStatus): boolean {
     status === "cancelled"
   );
 }
+
+// Rank for the inline-frame default tab: live work first, then a
+// human gate, then any other unsettled child, then settled history.
+// Lower wins. Within a rank, created_at (ISO) descending is the
+// tie-break — children arrive created_at asc, so "latest" is last.
+function subbotDefaultRank(status: RunStatus): number {
+  switch (status) {
+    case "running":
+      return 0;
+    case "paused_waiting_human":
+      return 1;
+    case "queued":
+    case "paused_operator":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+// resolveSelectedSubbotChild picks which child run an inline subbot
+// frame displays. An explicit user pick is kept while that child still
+// exists; otherwise prefer running, then paused_waiting_human, then
+// another unsettled child, then the most recently created child. Never
+// defaults to children[0] (oldest) — a historical failure would paint
+// the current pipeline red (issue #525).
+export function resolveSelectedSubbotChild(
+  children: RunSummary[],
+  picked?: string | null,
+): string | undefined {
+  if (children.length === 0) return undefined;
+  if (picked && children.some((c) => c.id === picked)) return picked;
+  let best = children[0]!;
+  for (let i = 1; i < children.length; i++) {
+    const c = children[i]!;
+    const rankDiff = subbotDefaultRank(c.status) - subbotDefaultRank(best.status);
+    if (rankDiff < 0) {
+      best = c;
+      continue;
+    }
+    if (rankDiff > 0) continue;
+    if (c.created_at >= best.created_at) best = c;
+  }
+  return best.id;
+}
