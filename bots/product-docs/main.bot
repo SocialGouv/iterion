@@ -501,8 +501,9 @@ prompt campaign_user:
   corpus — plan it, then write exhaustively.
   INCREMENTAL: focus on what the source deltas above
   (`changed_files` per repo) and the docs delta since
-  {{input.incremental_base}} actually impact. Do NOT re-audit pages
-  untouched by those changes. If every `changed_files` is empty AND
+  {{input.incremental_base}} actually impact — the pages already
+  touched in that window: {{input.recently_changed_pages}}. Do NOT
+  re-audit pages untouched by those changes. If every `changed_files` is empty AND
   `delta_unavailable` is reported for the repos, the delta could NOT
   be computed — do NOT read that as "nothing changed": survey
   directly. In BOTH modes the structural hints below cover the whole
@@ -678,6 +679,7 @@ schema campaign_input:
   hints_note: string
   mode: string
   incremental_base: string
+  recently_changed_pages: string[]
   fail_log: string
 
 ## campaign's TERMINATION CONTRACT: a machine-checkable output the
@@ -1024,6 +1026,7 @@ if not isinstance(repos, list):
 inventory = []
 redacted_total = 0
 delta_unavailable = False
+seen_rids = {}
 for raw in repos:
     if isinstance(raw, str):
         raw = {'github_repo': raw}
@@ -1042,6 +1045,13 @@ for raw in repos:
     rid = re.sub(r'[^A-Za-z0-9_.-]', '-', rid).strip('.-') or 'repo'
     if rid in ('.', '..'):
         rid = 'repo'
+    ## Two ids colliding AFTER sanitisation would share one clone dir:
+    ## the second rmtree-and-reclones over the first, and the campaign
+    ## reads the wrong repository under the first id. A collision is a
+    ## catalog bug -- refuse it loudly instead of silently swapping code.
+    if rid in seen_rids:
+        raise SystemExit('product-docs: catalog ids ' + str(seen_rids[rid]) + ' and ' + str(raw.get('id') or '') + ' collide after sanitisation (both become ' + rid + ') -- rename one in the catalog')
+    seen_rids[rid] = str(raw.get('id') or rid)
     ref = str(raw.get('ref') or raw.get('branch') or '').strip()
     ## A catalog value handed to git must not be able to become an
     ## OPTION (leading dash) instead of a repository or a branch.
@@ -1140,7 +1150,11 @@ for raw in repos:
 
 ok = [e for e in inventory if e['status'] == 'ok']
 degraded = [e for e in inventory if e['status'] != 'ok']
-stamp = ','.join(e['id'] + '@' + (e['head'][:12] or 'unknown') for e in ok)
+## FULL sha: the next run's shallow-clone delta repair does
+## run_git(['fetch', '--depth', '1', 'origin', prev]) -- git can only
+## fetch a full object name, so an abbreviated stamp made the repair
+## permanently impossible and every incremental delta unavailable.
+stamp = ','.join(e['id'] + '@' + (e['head'] or 'unknown') for e in ok)
 parts = [str(len(ok)) + ' source repo(s) cloned', str(len(degraded)) + ' degraded']
 if redacted_total:
     parts.append(str(redacted_total) + ' secret-bearing file(s) redacted')
@@ -1764,6 +1778,7 @@ workflow product_docs:
     hints_note: "{{outputs.scan_hints.hints_note}}",
     mode: "{{outputs.scan_hints.mode}}",
     incremental_base: "{{outputs.scan_hints.incremental_base}}",
+    recently_changed_pages: "{{outputs.scan_hints.recently_changed_pages}}",
     fail_log: "{{outputs.gate.fail_log}}"
   }
 

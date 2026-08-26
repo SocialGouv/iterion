@@ -1529,3 +1529,56 @@ func TestProductDocsInventoryStripsInlineURLCredentials(t *testing.T) {
 		t.Fatalf("an inline url credential survived into the inventory: %s", blob)
 	}
 }
+
+// TestProductDocsCatalogIngestRefusesCollidingIDs pins the clone-dir
+// identity: two catalog ids that collide AFTER sanitisation (a/b and
+// a-b both become a-b) would share one destination — the second
+// rmtree-and-reclones over the first and the campaign reads the wrong
+// repository under the first id. A collision is a catalog bug: refuse
+// it loudly, never swap code silently.
+func TestProductDocsCatalogIngestRefusesCollidingIDs(t *testing.T) {
+	requireGitPython(t)
+
+	source := newSourceRepo(t)
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	scratch := t.TempDir()
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n"+
+			"  - id: a/b\n    url: "+source+"\n"+
+			"  - id: a-b\n    url: "+source+"\n",
+		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"a/b","url":"`+source+`"},{"id":"a-b","url":"`+source+`"}]}`)
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	runExpectingFailure(t, ingestCommand(t, ws, "catalog", "demo", scratch), "collide after sanitisation")
+}
+
+// TestProductDocsSourceStampRecordsFullSHA pins the stamp's fetchability:
+// the next incremental run repairs a shallow clone by fetching the
+// stamped sha (`git fetch --depth 1 origin <prev>`), and git can only
+// fetch a FULL object name. An abbreviated stamp made that repair
+// permanently impossible — every incremental delta came back
+// unavailable.
+func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
+	requireGitPython(t)
+
+	source := newSourceRepo(t)
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	scratch := t.TempDir()
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n  - id: demo-src\n    url: "+source+"\n",
+		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"demo-src","url":"`+source+`"}]}`)
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	parts := strings.SplitN(got.Stamp, "@", 2)
+	if len(parts) != 2 || len(parts[1]) != 40 {
+		t.Fatalf("sources_stamp %q does not record a full 40-char sha — the shallow-delta repair cannot fetch it", got.Stamp)
+	}
+}
