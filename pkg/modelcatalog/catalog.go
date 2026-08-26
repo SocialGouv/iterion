@@ -68,11 +68,19 @@ type Entry struct {
 	// a bare zero cannot.
 	PriceKnown bool `json:"price_known"`
 
-	// Usable is true when at least one detected backend can drive this spec
-	// with the credentials present on this host right now.
+	// Usable is true when at least one backend can drive this spec with the
+	// credentials the *run* would receive. Local studio evaluates the host
+	// process; cloud evaluates the tenant launch tiers. Unknown reachability
+	// stays false — the picker must not treat that as a hard "unreachable".
 	Usable bool `json:"usable"`
 	// UnusableReason explains a false Usable in operator language.
 	UnusableReason string `json:"unusable_reason,omitempty"`
+	// Reachability is how Usable was decided:
+	//   "local"   — host-process detect.Report (CLI / local studio)
+	//   "cloud"   — tenant launch tiers proved a credential the run will get
+	//   "unknown" — cloud, but no launch-tier proof (pool / runner env may
+	//               still serve). Never a blocking "unreachable".
+	Reachability string `json:"reachability"`
 	// Backends lists the detected backends that can drive this spec, in
 	// preference order. Empty when Usable is false.
 	Backends []string `json:"backends,omitempty"`
@@ -106,6 +114,10 @@ type Catalog struct {
 	// node's DSL default at once, and one bot pinning a malformed `model:`
 	// must not blank out the whole catalog for every other model on the host.
 	InvalidSpecs []InvalidSpec `json:"invalid_specs,omitempty"`
+	// Reachability is the credential surface this catalog evaluated:
+	// "local" (host process) or "cloud" (tenant launch tiers). Per-entry
+	// Reachability may be "unknown" when a cloud row could not be proven.
+	Reachability string `json:"reachability,omitempty"`
 }
 
 // InvalidSpec is one caller-supplied hint the catalog could not resolve.
@@ -128,16 +140,40 @@ type Options struct {
 	ExtraSpecs []string
 	// Refresh force-refetches the model-spec aggregator cache first.
 	Refresh bool
-	// Report is the host credential snapshot. When nil, Build calls
+	// Report is the credential snapshot. When nil, Build calls
 	// detect.Detect itself — pass a cached report on hot paths.
+	// Cloud callers must pass a report derived from the tenant launch
+	// surface (ReportFromCloudPresence), never the control-plane host.
 	Report *detect.Report
+	// Reachability stamped on the catalog and on proven entries. Empty
+	// defaults to ReachabilityLocal.
+	Reachability string
+	// UnprovenIsUnknown, when true, stamps a model the Report cannot
+	// drive as reachability "unknown" instead of a proven-unusable host
+	// gap. Cloud uses this: a missing launch-tier credential is not the
+	// same as "this host has no key" — the pool or runner env may still
+	// serve, and a control-plane env key must never fill the gap.
+	UnprovenIsUnknown bool
 }
+
+// Reachability values on Catalog / Entry. Keep these strings stable: the
+// studio picker and OpenAPI client key off them.
+const (
+	ReachabilityLocal   = "local"
+	ReachabilityCloud   = "cloud"
+	ReachabilityUnknown = "unknown"
+)
 
 // Build resolves the catalog. It returns an error only when a caller-supplied
 // spec is malformed; every other degradation (offline aggregator, no
 // credentials) is reported in the result rather than raised.
 func Build(ctx context.Context, opts Options) (Catalog, error) {
 	var cat Catalog
+	scope := opts.Reachability
+	if scope == "" {
+		scope = ReachabilityLocal
+	}
+	cat.Reachability = scope
 
 	if opts.Refresh {
 		cat.Refreshed = true
@@ -229,6 +265,14 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 		}
 		e.Backends, e.CredentialSource, e.UnusableReason = availability(*report, e.Provider, e.Model, e.CredentialProvider)
 		e.Usable = len(e.Backends) > 0
+		e.Reachability = scope
+		if opts.UnprovenIsUnknown && !e.Usable {
+			e.Reachability = ReachabilityUnknown
+			// Drop the host-probe phrasing ("no credential detected for
+			// provider X on this host") — that sentence is the defect:
+			// cloud absence is unproven, not a local gap.
+			e.UnusableReason = unknownCloudReason
+		}
 		cat.Models = append(cat.Models, e)
 	}
 

@@ -2,7 +2,7 @@
 
 Two questions this answers, both of which used to have no answer at all:
 
-1. **Which models can I actually use on this host?** — `iterion models`,
+1. **Which models can I actually use for a run from here?** — `iterion models`,
    `GET /api/models`, and the studio's model pickers, all off one code path.
 2. **Which model does the studio assistant run on, and how do I change it?**
    — the model picker on the session launcher / header, persisted per user.
@@ -19,7 +19,8 @@ A model entry crosses four sources that already existed separately:
 |---|---|
 | `model.KnownModelSpecs` | which specs the catalog ENUMERATES (curated list) |
 | the models.dev aggregator | fresher capabilities/prices for those specs |
-| [`pkg/backend/detect`](../pkg/backend/detect/detect.go) | what THIS host holds credentials for |
+| [`pkg/backend/detect`](../pkg/backend/detect/detect.go) | local: what THIS host holds credentials for |
+| tenant launch tiers (BYOK, OAuth-forfait, platform) | cloud: what a *run for this tenant* will receive |
 | `llmtypes.ModelCapabilities` | context window, tool-calling, reasoning, temperature |
 | [`pkg/backend/cost`](../pkg/backend/cost/cost.go) `EffectiveRate` | what a run is actually charged |
 
@@ -36,7 +37,10 @@ unreachable.
 
 [`pkg/modelcatalog`](../pkg/modelcatalog/catalog.go) is the crossing, and is
 the single code path behind both the CLI and the HTTP endpoint — the two
-cannot disagree about whether a model is reachable.
+cannot disagree about whether a model is reachable. In cloud the HTTP
+endpoint no longer feeds it the control-plane `detect.Report`: that is the
+host the *server* process sees, not the bundle `cloudpublisher` seals for
+the runner.
 
 ### From the CLI
 
@@ -70,6 +74,22 @@ launch form asks about a bot whose nodes pin models outside the curated set.
 
 Only capability values and credential **source names** (`ANTHROPIC_API_KEY`)
 cross the wire — never a credential value.
+
+Each row carries `reachability`:
+
+| value | meaning | picker |
+|---|---|---|
+| `local` | proven from the host process (CLI / local studio) | blocking if `usable=false` |
+| `cloud` | proven from the authenticated tenant's launch tiers (BYOK, user/org OAuth-forfait, platform) | listed as available for this team's runs |
+| `unknown` | cloud, but no launch-tier proof — a pool grant or runner-env fallback *may* still serve | warning, **not** a blocking "unreachable" |
+
+Cloud **never** treats a control-plane env key as tenant reachability, and
+**never** treats a tenant BYOK/OAuth that the server process lacks as
+unreachable. The pool is not probed (proving it would acquire a grant), so
+those models stay `unknown` rather than a false yes or a false no.
+
+The catalog envelope also stamps `reachability: "local"|"cloud"` for the
+surface that was evaluated.
 
 ### Two mappings that are easy to get wrong
 
@@ -119,7 +139,8 @@ letting it be discovered mid-run:
 
 | condition | level | why |
 |---|---|---|
-| no credential can reach the model | blocking | the run fails at its first node |
+| no credential can reach the model (`reachability` local or cloud) | blocking | the run fails at its first node |
+| cloud reachability is `unknown` | warning | launch-tier proof is missing; a pool grant or runner fallback may still serve |
 | the model has no tool-calling | blocking | the agent loses the board, skills and run introspection — broken, not degraded |
 | `ultracode` on anything but `claude-opus-4-8` | warning | it degrades silently to plain `xhigh` (diagnostic C089, [docs/ultracode.md](ultracode.md)) |
 

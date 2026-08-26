@@ -95,6 +95,9 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 // formatUsable renders reachability compactly: the backends that can drive the
 // model, or "no" when none can.
 func formatUsable(m modelcatalog.Entry) string {
+	if m.Reachability == modelcatalog.ReachabilityUnknown {
+		return "unknown"
+	}
 	if !m.Usable {
 		return "no"
 	}

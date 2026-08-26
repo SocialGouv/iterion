@@ -4834,6 +4834,7 @@ export interface components {
             backends?: components["schemas"]["BackendStatus"][];
             invalid_specs?: components["schemas"]["InvalidSpec"][];
             models: components["schemas"]["Entry"][];
+            reachability?: string;
             recommended_spec?: string;
             refresh_error?: string;
             refreshed?: boolean;
@@ -4982,6 +4983,7 @@ export interface components {
             output_cost_per_m?: number;
             price_known: boolean;
             provider: string;
+            reachability: string;
             reasoning: boolean;
             recommended?: boolean;
             source: string;
