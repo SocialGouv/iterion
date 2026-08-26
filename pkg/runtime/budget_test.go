@@ -1495,3 +1495,141 @@ func TestSharedBudget_UnpricedSpend(t *testing.T) {
 		}
 	})
 }
+
+// TestBudgetOverrunCheckpointsTheNextNode pins where a run stops when a
+// node that SUCCEEDED took it past the cap. The node's output is already
+// stored, so anchoring the checkpoint on it would make a resume pay for
+// that node twice — for an agent pass, the entire cost again. The run
+// still fails (the cap was exceeded), but on the node that has NOT run.
+func TestBudgetOverrunCheckpointsTheNextNode(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_overrun_checkpoint",
+		Entry: "expensive",
+		Nodes: map[string]ir.Node{
+			"expensive": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "expensive"}},
+			"tail":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done":      &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":      &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "expensive", To: "tail"},
+			{From: "tail", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("expensive", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.4}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true, "_cost_usd": 0.1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-budget-overrun", nil)
+	if err == nil || !strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("an overrun must still fail the run, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node started after the budget was spent")
+	}
+
+	run, gerr := s.LoadRun(context.Background(), "run-budget-overrun")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if run.Checkpoint == nil {
+		t.Fatal("no checkpoint saved: the run is not resumable")
+	}
+	if run.Checkpoint.NodeID != "tail" {
+		t.Fatalf("checkpoint anchored on %q, want \"tail\" — resuming would re-execute the node whose output is already stored", run.Checkpoint.NodeID)
+	}
+	if _, ok := run.Checkpoint.Outputs["expensive"]; !ok {
+		t.Fatal("the completed node's output is missing from the checkpoint: the resume would have to recompute it")
+	}
+}
+
+// TestBudgetOverrunOnRouterStillFails pins the guarantee against the
+// deferral: recordAndCheckBudget has callers that never return through
+// execLoopAfterExec (the LLM router, the resume paths). Deferring THEIR
+// overrun would leave it uncollected whenever the rest of the path is
+// special-dispatch nodes — none of which run the pre-exec check — and the
+// run would reach done and be persisted `finished` with the cap blown.
+// A budget is a load-bearing limit: a path that exceeds it and reports
+// success is a broken guarantee, not a degradation.
+func TestBudgetOverrunOnRouterStillFails(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_overrun_router",
+		Entry: "route",
+		Nodes: map[string]ir.Node{
+			"route": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "route"}, RouterMode: ir.RouterLLM},
+			"done":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":  &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "route", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	exec.on("route", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"next": "done", "_cost_usd": 5.0}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-budget-router", nil)
+	if err == nil || !strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("a router that blew the cap let the run finish: %v", err)
+	}
+}
+
+// TestBudgetOverrunSurvivesAnEdgeError pins WHICH error a run dies on when
+// the overrunning node also has no matching outgoing edge. BUDGET_EXCEEDED
+// carries the sentinel the cloud runner's terminal-ack matches; a naked
+// NO_OUTGOING_EDGE is nak'd back to the queue and redelivered onto the same
+// spent budget — the redelivery loop that carve-out exists to prevent.
+func TestBudgetOverrunSurvivesAnEdgeError(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_overrun_edge_error",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "a", To: "b", Condition: "go_on"}, {From: "b", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"go_on": false, "_cost_usd": 5.0}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-budget-edge-error", nil)
+	if err == nil {
+		t.Fatal("expected the run to fail")
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("run died on %v — the budget sentinel is gone, so the cloud runner would nak and redeliver onto the same spent budget", err)
+	}
+}

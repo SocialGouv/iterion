@@ -563,7 +563,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	}
 
 	// Record budget usage and check limits.
-	if err := e.recordAndCheckBudget(rs, currentNodeID, output); err != nil {
+	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
 		return "", err
 	}
 
@@ -593,9 +593,30 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// fork-rewind capability for THIS node).
 	e.snapshotAtNodeBoundary(rs, currentNodeID)
 
-	nextNodeID, err := e.selectEdgeRS(rs, currentNodeID, output)
-	if err != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
+	nextNodeID, edgeErr := e.selectEdgeRS(rs, currentNodeID, output)
+
+	// A hard overrun measured after THIS node ends the run here, one edge
+	// later than the measurement — anchored on the node that has NOT run,
+	// so a resume with a raised cap continues from there instead of
+	// re-executing the node whose output is already stored.
+	//
+	// Taken BEFORE any edge error is surfaced: a node that blew the cap
+	// and then found no matching edge must still die as BUDGET_EXCEEDED.
+	// That error is what the cloud runner's terminal-ack carve-out
+	// matches; a naked NO_OUTGOING_EDGE goes back to JetStream and is
+	// redelivered onto the same spent budget. With no successor the run
+	// has nowhere to go, so it stops where it stands.
+	if rs.budget != nil {
+		if exc := rs.budget.takeExceeded(); exc != nil {
+			anchor := nextNodeID
+			if edgeErr != nil || anchor == "" {
+				anchor = currentNodeID
+			}
+			return "", e.failBudgetExceeded(rs, anchor, exc)
+		}
+	}
+	if edgeErr != nil {
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, edgeErr)
 	}
 	return nextNodeID, nil
 }

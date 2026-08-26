@@ -48,6 +48,10 @@ type SharedBudget struct {
 	// the trigger for persisting the (absolute) caps on the run record.
 	everRaised bool
 
+	// exceeded holds an overrun measured AFTER a node completed, pending
+	// the next node boundary where the run stops on it. See noteExceeded.
+	exceeded *budgetCheckResult
+
 	// Unpriced spend — nodes that burned tokens while no price could be
 	// resolved for their model. Their cost is unknown, NOT zero, so it can
 	// never reach costUsed; tracked here so a declared max_cost_usd can say
@@ -243,6 +247,32 @@ type budgetCheckResult struct {
 // Because budget enforcement is soft (pre-check and post-record are not
 // atomic), concurrent branches may push usage past the limit. When overage
 // exceeds 20% of the limit, a warning is logged to aid debugging.
+// noteExceeded records that a completed node took the run past a hard
+// limit. The first overrun wins: it is the one that ends the run, and a
+// later dimension tripping in a parallel branch does not overwrite the
+// reason the operator is shown.
+func (b *SharedBudget) noteExceeded(exc *budgetCheckResult) {
+	if exc == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.exceeded == nil {
+		v := *exc
+		b.exceeded = &v
+	}
+}
+
+// takeExceeded returns and clears a pending overrun, so exactly one node
+// boundary acts on it.
+func (b *SharedBudget) takeExceeded() *budgetCheckResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	exc := b.exceeded
+	b.exceeded = nil
+	return exc
+}
+
 func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -562,7 +592,26 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
+// recordAndCheckBudget keeps the IMMEDIATE contract: an overrun fails the
+// run at this node. Used by every caller that does not return through
+// execLoopAfterExec (the LLM router, the resume paths) — those never
+// reach the node boundary that consumes a deferred overrun, and the
+// remaining path may be special-dispatch nodes that run no pre-exec
+// check at all, so deferring there would let a run finish with the cap
+// blown.
 func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, false)
+}
+
+// recordAndDeferBudget records usage and DEFERS a hard overrun to the
+// next node boundary — see the deferral rationale below. Only the
+// standard node path may use it: it is the one that computes a
+// successor to anchor the checkpoint on.
+func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, true)
+}
+
+func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -587,9 +636,21 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 
-	// Fail on exceeded.
+	// Exceeded by a node that ALREADY SUCCEEDED: note it and let the
+	// caller stop the run at the next node boundary. Failing right here
+	// anchors the checkpoint on the node that just produced a valid,
+	// stored output, so a resume re-executes it — for an agent node that
+	// means paying its entire cost again to reach a result the store
+	// already holds (observed: a campaign node overran 442/400, and its
+	// resume would have re-run the whole pass). Stopping one edge later
+	// keeps the run failing exactly as before, on the same error and
+	// event, but anchored on a NOT-YET-EXECUTED node — the doctrine the
+	// daily spend cap already follows two blocks above.
 	if exc := findExceeded(checks); exc != nil {
-		return e.failBudgetExceeded(rs, nodeID, exc)
+		if !deferExceeded {
+			return e.failBudgetExceeded(rs, nodeID, exc)
+		}
+		rs.budget.noteExceeded(exc)
 	}
 
 	return nil
