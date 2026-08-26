@@ -292,7 +292,7 @@ exists because the give-up's target and the board's own Close target are the
 same terminal state: without it, readers cannot tell a dispatcher that ran out
 of attempts from an operator who filed the ticket, and the /pipelines board
 buries the failure in Closed instead of raising it in **Needs attention**
-([native tracker](native-tracker.md#pipeline-board)). It is not stamped when
+([native tracker](native-tracker.md#pipeline-board-the-second-board)). It is not stamped when
 the terminal move was refused — a give-up that fell back to retrying has not
 given up.
 

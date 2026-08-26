@@ -1489,8 +1489,9 @@ iterion server [--port] [--store-dir]   # HTTP server (run console + studio), wi
 iterion version [--commit]              # Print version; --commit prints only the 12-char git SHA (errors when the build carries none)
 
 # Operational runner and hidden subprocess entry points:
-# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
+# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`, `iterion __permission-hook`
 # Only the double-underscore commands are hidden internal subprocess entry points.
+# `iterion migrate` is a visible-name but Hidden operator-only command (to-cloud, run-paths, orgs).
 ```
 
 Global flags: `--json` (machine output), `--help`

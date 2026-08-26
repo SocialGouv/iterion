@@ -74,14 +74,29 @@ Walk top-to-bottom; first match wins.
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
+| "build a new app from scratch", "greenfield from a prompt" — no existing codebase to extend | `app-dev` |
+| "finish the half-built thing", "close the gaps against the spec" — gap-driven completion, not a new feature | `feature-gap-fill` |
+| "add tests", "raise unit-test coverage", "the suite misses X" | `test-coverage` |
+| "we have no end-to-end tests for X", "keep the feature×coverage matrix honest" | `e2e-coverage` |
+| "wire error tracking / structured logs / tracing", "make it observable" — INSTRUMENTATION, a specific artefact, not a general improvement axis | `instrument` |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole-improve-loop` |
-| "focus on axis X" (observability / perf / DX / refactoring) ACROSS the codebase — improvement loop, not detection | `whole-improve-loop` (with `--var improvement_prompt=…`) |
+| "focus on axis X" (perf / DX / refactoring) ACROSS the codebase — improvement loop, not detection. For observability specifically, prefer `instrument` above | `whole-improve-loop` (with `--var improvement_prompt=…`) |
 | "review this branch", "review the PR", "fix the diff against main" — review AND fix AND commit | `branch-improve-loop` |
 | "review this PR / branch and just REPORT the issues" — read-only review, posts findings to the board, does NOT fix or commit | `review-pr` |
 | "upgrade dependencies", "patch CVEs", "bump versions", "renovate" — MUTATING (writes package.json / go.mod / lockfiles) | `secured-renovacy` |
 | "audit the docs", "find code↔doc drift", "doc/code alignment", "fix outdated README/CLAUDE.md" | `docs-refresh` |
 | "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "OWASP source scan" — DETECTION (writes findings, not fixes) | `sec-audit-source` |
 | "audit dependencies for malware / typosquats / install hooks", "supply-chain check", "post-`npm install` triage" — DETECTION across installed deps | `sec-audit-deps` |
+| "migrate the framework major", "modernise the legacy app", "the runtime moved and everything with it" — behaviour-preserving, gate to gate | `modernize` for ONE lot; `campaign` to supervise the whole programme |
+| "pin down what this app actually does before we touch it", "golden master", "non-regression net" — record behaviour and prove the net is not blind | `golden-master` |
+| "the modernisation is blocked on a judgement call" — a divergence the written doctrine must settle | `arbitrate` (needs the target repo's own arbitration doctrine) |
+| "accessibility audit", "WCAG / RGAA conformance" | `ultra11y` — but read the Ally vs Acci distinguisher below first |
+| "generate / refresh the project wiki", "a navigable knowledge base" | `wiki-gen` |
+| "map our ADRs", "which decisions were never written down?" | `adr-cartograph` |
+| "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
+| "set up a reproducible toolchain", "we need a devbox.json" | `devbox-setup` |
+| "watch these feeds / releases and digest them for us" — recurring veille | `feed-watch` |
+| "give me a live URL for this branch", "a real review environment" | `review-env` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
 | long-term theme (a quarter+ horizon) on a mature/stable project | `evolve` (it accumulates the vision + proposes evolutions) |

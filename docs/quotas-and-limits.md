@@ -115,10 +115,18 @@ Cost metering is "floor, not invoice":
   contributes its aggregate token total when the CLI reports usage. The cloud
   runner's delegate event has no input/output split, so that total is currently
   booked to `input_tokens`.
-- Delegate USD is **not** added to `org_usage.cost_usd`: this applies even to pi,
-  whose backend result carries a provider-computed cost for run/benchmark
-  telemetry. Consequently the monthly USD cap understates delegate-heavy bots;
-  use it as a trend signal, not a billing ledger.
+- A CLI delegate's `cost_usd` **is** added to `org_usage.cost_usd` — the
+  `delegate_finished` figure flows through `metricsEmitter.RunTotals` into
+  `recordOrgSpend`. `claw` is the one exclusion, and deliberately: being
+  in-process it emits *both* a priced `llm_step_finished` per step and a
+  delegation total, so counting both would charge every claw run twice and trip
+  an org's monthly cap at half its budget
+  ([pkg/runner/loop_metrics.go:240-260](../pkg/runner/loop_metrics.go),
+  [loop_spend.go](../pkg/runner/loop_spend.go)).
+- It is still a floor, not an invoice: a delegate that reports no cost
+  contributes none, and a subscription-billed run ("forfait") legitimately
+  reports `$0` because no per-call charge exists. Treat the monthly USD cap as
+  a trend signal rather than a billing ledger.
 
 ## Reading usage
 

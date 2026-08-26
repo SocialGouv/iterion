@@ -79,7 +79,7 @@ claims the event and admits the author. A bot that sets
 `author_scope: exclusive` claims its `author_allowlist` as MINE —
 provisioning adds those logins to every other co-enabled bot's denylist,
 so a general reviewer stops double-reviewing the dependency PRs the
-guard owns. See [Inbound webhooks § Per-bot routing](webhooks.md#per-bot-routing-—-co-enabling-several-bots-on-one-repo)
+guard owns. See [Inbound webhooks § Per-bot routing](webhooks.md#per-bot-routing--co-enabling-several-bots-on-one-repo)
 for the runtime fan-out, idempotency, and the suffix-wildcard author
 match (`*renovate[bot]`).
 

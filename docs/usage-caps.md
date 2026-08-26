@@ -3,7 +3,9 @@
 An LLM subscription ("forfait") meters two rolling windows, five hours and
 seven days, and refuses every call once one is exhausted. iterion already
 survives that refusal: the run parks and a durable retry resumes it when the
-window reopens ([scheduling.md](scheduling.md#retry)). What it could not do
+window reopens
+([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)).
+What it could not do
 was stop *before* the wall — and the wall is rarely where an operator wants
 to be, because the same subscription usually pays for their own interactive
 work. A fleet of bots that drives it to 100% takes the human down with it.
