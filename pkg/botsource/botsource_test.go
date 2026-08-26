@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 const miniBot = "workflow main:\n  start -> done\n\ndone finish:\n"
@@ -75,6 +77,12 @@ func TestMemoryStore_CRUD(t *testing.T) {
 	}
 	if _, err := st.GetBySlug(ctx, "team-3", "reviewer"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound for foreign tenant, got %v", err)
+	}
+	// A tenant-SCOPED ctx reading a foreign tenant's slug must see it as
+	// absent too (the Mongo conformance test pins the same agreement).
+	scoped := store.WithTenant(ctx, "team-1")
+	if _, err := st.GetBySlug(scoped, "team-3", "reviewer"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("want ErrNotFound for scoped foreign read, got %v", err)
 	}
 
 	// Update bumps version.

@@ -100,9 +100,12 @@ func (s *MongoStore) GetBySlug(ctx context.Context, tenantID, slug string) (BotS
 	// The ctx tenant marker and the argument must agree: the sentinel-
 	// scoping defense ("a platform route can never touch a team's row")
 	// leans on scoped contexts, so a read that silently ignored the ctx
-	// would erode it the day a caller passes mismatched values.
+	// would erode it the day a caller passes mismatched values. The error
+	// wraps ErrNotFound — a foreign row is INVISIBLE (the store contract
+	// both conformance tests pin), while the message still names the
+	// mismatch for logs.
 	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
-		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q", ctxTenant, tenantID)
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
 	}
 	return s.findOne(ctx, bson.M{"tenant_id": tenantID, "slug": slug})
 }
