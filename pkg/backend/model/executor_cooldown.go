@@ -27,6 +27,23 @@ type routeCooldown struct {
 	Cause error
 }
 
+// maxRouteCooldown bounds how far ahead a remembered reset may sit before
+// the ledger stops believing it. The longest real provider window is weekly,
+// so eight days covers it with room for timezone skew in the reset notice —
+// the same reasoning (and the same figure) as retrypolicy.DefaultMaxWait,
+// which caps the durable run-level wait built from this very instant.
+//
+// The ledger needs its own guard because it reads ResetAt from an
+// UNVALIDATED source: delegate.parseResetHint takes an absolute provider
+// datetime verbatim, "with no plausibility window", so one garbled notice
+// ("resets 9999-01-01 00:00" from a facade) would otherwise keep the primary
+// route dark for the whole run — every later node degrading to its fallback
+// and stamping `_fallback_used`, which fails a deterministic gate closed.
+// Where the runner CLAMPS an over-long wait, the ledger REFUSES the entry:
+// a clamp still hides the route for longer than any run lasts, whereas
+// declining to record costs one refused spawn and keeps dispatch fail-open.
+const maxRouteCooldown = 8 * 24 * time.Hour
+
 // routeCooldownLedger is deliberately process-memory only. A missed entry
 // costs one refused spawn, while persisting an uncertain entry could suppress
 // a healthy credential across runs. Entries expire when read; no sweeper is
@@ -52,6 +69,9 @@ func (l *routeCooldownLedger) active(key routeCooldownKey, now time.Time) (route
 
 func (l *routeCooldownLedger) record(key routeCooldownKey, cd routeCooldown, now time.Time) {
 	if cd.Until.IsZero() || !now.Before(cd.Until) {
+		return
+	}
+	if cd.Until.Sub(now) > maxRouteCooldown {
 		return
 	}
 	l.mu.Lock()

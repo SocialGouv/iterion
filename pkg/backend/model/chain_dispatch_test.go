@@ -362,6 +362,55 @@ func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
 	}
 }
 
+// delegate.parseResetHint trusts an absolute provider datetime verbatim, so a
+// garbled notice can carry an instant years out. Believing it would keep the
+// primary dark for the whole run and stamp every later node `_fallback_used`.
+// The ledger declines the entry instead and dispatch stays fail-open.
+func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name  string
+		reset time.Time
+		want  int
+	}{
+		{name: "plausible weekly window", reset: now.Add(6 * 24 * time.Hour), want: 1},
+		{name: "garbled far-future instant", reset: now.AddDate(100, 0, 0), want: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			head := &backendScriptedBackend{
+				name: delegate.BackendClaudeCode,
+				fail: &delegate.ErrRateLimited{
+					Provider: delegate.BackendClaudeCode,
+					Kind:     delegate.RateLimitKindUsageWindow,
+					ResetAt:  tt.reset,
+				},
+			}
+			tail := &backendScriptedBackend{name: delegate.BackendCodex}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, head)
+			reg.Register(delegate.BackendCodex, tail)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.now = func() time.Time { return now }
+			chain := []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex},
+			}
+			for _, nodeID := range []string{"first", "second"} {
+				build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+					func(_ context.Context, _ string) (*delegate.Task, error) {
+						return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+					})
+				if _, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build); err != nil {
+					t.Fatalf("dispatch %s: %v", nodeID, err)
+				}
+			}
+			if got := len(head.tasks); got != tt.want {
+				t.Errorf("primary spawned %d times, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{

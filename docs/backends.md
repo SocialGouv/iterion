@@ -336,10 +336,13 @@ fall through to — a refusal belongs to the route, not to one node's chain —
 so the next node whose chain *does* accept the category skips a spawn the
 first one had to pay for.
 
-Cooldown is strictly fail-open: an absent/already-passed reset, or no later
-route accepting the failure, leaves dispatch unchanged. Entries expire on
-read at their own reset instant (no sweeper), and the mid-call usage guard
-stays armed for parallel branches that were already in flight.
+Cooldown is strictly fail-open: an absent/already-passed reset, a reset more
+than eight days out (the same implausibility ceiling as the durable retry's
+`max_wait` — a misparsed provider datetime must not keep a healthy route dark
+for a whole run), or no later route accepting the failure, all leave dispatch
+unchanged. Entries expire on read at their own reset instant (no sweeper), and
+the mid-call usage guard stays armed for parallel branches that were already
+in flight.
 
 ### Terminal degrade (`action: skip`) and the route gate (`when:`)
 
