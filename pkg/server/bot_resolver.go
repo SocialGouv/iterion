@@ -88,17 +88,20 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 	if slug == "" {
 		return nil, nil
 	}
+	// The catalog tier tolerates spelling variants (feature_dev /
+	// Feature-Dev / "feature dev" → feature-dev; ResolveBotPath normalizes
+	// internally), and board cards / trigger subscriptions rely on it. The
+	// PLATFORM tier must tolerate the same set, or an override is silently
+	// bypassed for every non-canonical spelling. Resolved into its OWN
+	// variable: rewriting `slug` itself let a platform entry's canonical
+	// name miss the team row and hijack the team tier — team > platform
+	// must hold even across spellings.
+	platformSlug := slug
 	if s.botSources != nil {
-		// The catalog tier tolerates spelling variants (feature_dev /
-		// Feature-Dev / "feature dev" → feature-dev via NormalizeName), and
-		// board cards / trigger subscriptions rely on it. The stored tiers
-		// must tolerate the same set, or an override is silently BYPASSED
-		// for every non-canonical spelling — resolve the canonical slug via
-		// the cached platform entry names before the exact lookups.
 		if norm := botregistry.NormalizeName(slug); norm != slug {
 			for _, e := range s.platformBotEntries() {
 				if botregistry.NormalizeName(e.Name) == norm {
-					slug = e.Name
+					platformSlug = e.Name
 					break
 				}
 			}
@@ -119,12 +122,12 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 			}
 		}
 		pctx := store.WithTenant(ctx, botsource.PlatformTenantID)
-		bs, err := s.botSources.GetBySlug(pctx, botsource.PlatformTenantID, slug)
+		bs, err := s.botSources.GetBySlug(pctx, botsource.PlatformTenantID, platformSlug)
 		switch {
 		case err == nil:
 			return s.storedLaunchBot(bs, "platform")
 		case !errors.Is(err, botsource.ErrNotFound):
-			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", slug, err)
+			return nil, fmt.Errorf("resolve bot %q (platform tier): %w", platformSlug, err)
 		}
 	}
 	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())

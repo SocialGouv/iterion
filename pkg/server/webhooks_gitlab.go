@@ -598,6 +598,9 @@ func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p
 	// needs it.
 	cmd, cmdArgs := p.Command()
 	var notes []gitlab.DiscussionNote
+	// This roleBots read is ADVISORY only (fetch the transcript or not) —
+	// unlike the handler's gate/launch pair it never has to agree with a
+	// second read, so a mid-TTL change costs at most one un/fetched thread.
 	if berr == nil && p.DiscussionID != "" && (cmd != "revi" || (cmdArgs != "" && s.canRouteToConverseBot(cfg, s.roleBots().ReviConverse))) {
 		var derr error
 		notes, derr = api.Discussion(ctx, p.ProjectID, p.MRIID, p.DiscussionID)

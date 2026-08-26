@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,4 +146,90 @@ func TestResolveResumeSource_HonorsPersistedOrigin(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no longer exists") {
 		t.Fatalf("deleted-row resume: err = %v, want the explicit remedy", err)
 	}
+}
+
+// Team > platform must hold even across tolerated slug spellings: the
+// normalized lookup feeds ONLY the platform tier. (Round-1's version
+// rewrote the slug itself, letting a platform override named
+// "feature-dev" hijack a team's own "feature_dev" bot.)
+func TestResolveBotTiered_NormalizationNeverHijacksTeamTier(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	ctx := context.Background()
+	mk := func(tenant, slug, marker string) {
+		t.Helper()
+		if _, err := s.botSources.Create(store.WithTenant(ctx, tenant), botsource.BotSource{
+			TenantID: tenant, Slug: slug,
+			Files: map[string]string{botsource.MainBotFile: strings.Replace(testBotMain, "printf ok", marker, 1)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("t1", "feature_dev", "printf TEAM")
+	mk(botsource.PlatformTenantID, "feature-dev", "printf PLATFORM")
+	s.invalidatePlatformBots()
+
+	lb, err := s.resolveBotTiered(ctx, "t1", "feature_dev", "")
+	if err != nil || lb == nil {
+		t.Fatalf("resolve: %+v, %v", lb, err)
+	}
+	defer lb.Cleanup()
+	if lb.Origin != "team" || !strings.Contains(lb.Source, "printf TEAM") {
+		t.Fatalf("HIJACK: team's own bot resolved to origin=%q — the platform override won a tier it must never win", lb.Origin)
+	}
+
+	// And the normalization still serves its purpose: with NO team row, a
+	// tolerated spelling reaches the platform override.
+	plb, err := s.resolveBotTiered(ctx, "", "feature_dev", "")
+	if err != nil || plb == nil || plb.Origin != "platform" || !strings.Contains(plb.Source, "printf PLATFORM") {
+		t.Fatalf("normalized platform lookup broken: %+v, %v", plb, err)
+	}
+	plb.Cleanup()
+}
+
+// A resume that CARRIES INLINE SOURCE must survive the stored row's
+// deletion (WARN + proceed — the delete-reverts-to-baked semantics), and a
+// TRANSIENT store failure must be typed so the sweeper re-arms instead of
+// permanently abandoning a paid usage-window retry.
+func TestResolveResumeSource_InlineSourceDegradation(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	s.cfg.Mode = "cloud"
+	ctx := context.Background()
+
+	if _, err := s.botSources.Create(store.WithTenant(ctx, "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "shared",
+		Files: map[string]string{botsource.MainBotFile: testBotMain},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(testBotMain, "printf ok", "printf edited", 1)
+
+	// Row deleted: the caller's source still runs (no bundle ref — baked
+	// fallback), loudly, not a 400 telling them to do what they just did.
+	tctx := store.WithTenant(ctx, "t1")
+	row, _ := s.botSources.GetBySlug(tctx, "t1", "shared")
+	if err := s.botSources.Delete(tctx, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, src, lb, err := s.resolveResumeSource(ctx, "t1", "bots/shared/main.bot", edited, "")
+	if err != nil {
+		t.Fatalf("inline-source resume after delete must proceed, got %v", err)
+	}
+	lb.Cleanup()
+	if src != edited || lb != nil {
+		t.Fatalf("degraded resume: src==edited=%v lb=%+v (want caller source, no stale ref)", src == edited, lb)
+	}
+
+	// Transient store failure: typed, so the sweeper can re-arm.
+	s.botSources = resumeBlipStore{Store: s.botSources}
+	_, _, _, err = s.resolveResumeSource(ctx, "t1", "bots/shared/main.bot", edited, "")
+	if !errors.Is(err, errResumeResolveTransient) {
+		t.Fatalf("transient failure must be typed errResumeResolveTransient, got %v", err)
+	}
+}
+
+// resumeBlipStore fails every slug read with a non-NotFound error.
+type resumeBlipStore struct{ botsource.Store }
+
+func (resumeBlipStore) GetBySlug(context.Context, string, string) (botsource.BotSource, error) {
+	return botsource.BotSource{}, context.DeadlineExceeded
 }

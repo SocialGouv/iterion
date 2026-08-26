@@ -496,3 +496,36 @@ func TestTierScopedToMirrorPass(t *testing.T) {
 		t.Fatalf("dest = %q, want the bundle version kept", got)
 	}
 }
+
+// The tier-sidecar wipe must precede EVERY mirror sequence — engine_run's
+// launch pass AND both resume passes (grep-la-classe: round 1 wired only
+// the first, and a bundle upgrade that dropped a skill kept serving the
+// stale body on every resume). A source-level check, same spirit as the
+// server's resolver sweep: the class stays closed as call sites move.
+func TestClearSkillTierMarkers_PrecedesEveryMirrorPass(t *testing.T) {
+	for _, file := range []string{"engine_run.go", "resume.go"} {
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(body)
+		mirrors := strings.Count(src, "mirrorBundleSkills(")
+		wipes := strings.Count(src, "ClearSkillTierMarkers(")
+		if mirrors == 0 {
+			t.Fatalf("%s: expected at least one mirror sequence", file)
+		}
+		if wipes != mirrors {
+			t.Fatalf("%s: %d mirrorBundleSkills call(s) but %d ClearSkillTierMarkers — every mirror sequence must wipe last pass's tier stamps first", file, mirrors, wipes)
+		}
+		// And the wipe comes BEFORE the mirror in each pairing.
+		rest := src
+		for i := 0; i < mirrors; i++ {
+			m := strings.Index(rest, "mirrorBundleSkills(")
+			w := strings.Index(rest, "ClearSkillTierMarkers(")
+			if w == -1 || w > m {
+				t.Fatalf("%s: mirror pass %d is not preceded by a wipe", file, i+1)
+			}
+			rest = rest[m+len("mirrorBundleSkills("):]
+		}
+	}
+}

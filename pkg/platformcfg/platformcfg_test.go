@@ -220,3 +220,53 @@ func TestPut_StampsUpdatedAt(t *testing.T) {
 		t.Fatal("UpdatedAt not stamped on Put")
 	}
 }
+
+// panicStore panics once on Get — the shape of a malformed operator-pushed
+// bundle blowing up inside the platform-bots fetch (DSL/YAML parse).
+type panicStore struct {
+	mu       sync.Mutex
+	panicked bool
+	rec      *BotRoles
+}
+
+func (s *panicStore) Get(context.Context) (*BotRoles, error) {
+	s.mu.Lock()
+	first := !s.panicked
+	s.panicked = true
+	s.mu.Unlock()
+	if first {
+		panic("malformed bundle content")
+	}
+	cp := *s.rec
+	return &cp, nil
+}
+func (s *panicStore) Put(context.Context, BotRoles) error { return nil }
+
+// A panicking store read must not wedge the resolver: without the recover,
+// refreshing stays true and waiters never close — every later Get (all on
+// context.Background in production) blocks forever.
+func TestResolver_PanicInFetchDoesNotWedge(t *testing.T) {
+	st := &panicStore{rec: &BotRoles{Reviewer: strp("override")}}
+	warned := 0
+	r := NewResolver[BotRoles](st, func(string, ...any) { warned++ })
+	r.ttl = time.Millisecond
+
+	_ = r.Get(context.Background()) // panics inside; must return, not wedge
+
+	done := make(chan *BotRoles, 1)
+	go func() {
+		time.Sleep(5 * time.Millisecond) // let the TTL window pass
+		done <- r.Get(context.Background())
+	}()
+	select {
+	case got := <-done:
+		if got == nil || got.Reviewer == nil || *got.Reviewer != "override" {
+			t.Fatalf("post-panic Get = %+v, want the second (healthy) read", got)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("resolver WEDGED after a panicking store read")
+	}
+	if warned == 0 {
+		t.Error("the panic must be logged as a failed read")
+	}
+}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -135,9 +136,16 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 
 	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "")
 	if err != nil {
+		adm.rollback(s.logger)
+		if errors.Is(err, errResumeResolveTransient) {
+			// A store blip is not "the bot is gone" — re-arm within the
+			// attempt budget instead of permanently discarding a paid
+			// usage-window retry.
+			s.reArmRetry(runCtx, retryStore, ref, err)
+			return
+		}
 		// A bot removed from the catalog will never resolve; re-arming
 		// would just re-fail every 15 minutes forever.
-		adm.rollback(s.logger)
 		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %v", err))
 		return
 	}

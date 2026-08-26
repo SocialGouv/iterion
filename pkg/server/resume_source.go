@@ -9,6 +9,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// errResumeResolveTransient marks a stored-bot resolution failure that may
+// clear on its own (a store blip) — the retry sweeper re-arms on it instead
+// of abandoning the retry, and callers must not treat it as "bot deleted".
+var errResumeResolveTransient = errors.New("resume: stored-bot resolution transiently failed")
+
 // resolveResumeSource turns a run's persisted file path (plus any inline
 // source the caller already has) into the (absolute path, source) pair
 // runview.ResumeSpec needs, plus — when the run launched from a STORED bot
@@ -36,11 +41,20 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 	}
 	var lb *launchBot
 	if s.cfg.Mode == "cloud" {
-		resolved, err := s.resolveResumeBot(ctx, botSourceTenant, filePath)
-		if err != nil {
-			return "", "", nil, err
+		resolved, rerr := s.resolveResumeBot(ctx, botSourceTenant, filePath)
+		switch {
+		case rerr == nil:
+			lb = resolved
+		case source != "" && errors.Is(rerr, botsource.ErrNotFound):
+			// The stored row is gone but the caller brought its own source:
+			// let the resume run on it. The bundle ref is dropped — the
+			// runner falls back to the baked bundle if the slug names one,
+			// which is the documented delete-reverts-to-baked semantics.
+			// LOUD, never silent.
+			s.logger.Warn("resume: stored bot (tenant %s) for %s no longer exists — resuming on the caller's inline source with the baked bundle (if any): %v", botSourceTenant, filePath, rerr)
+		default:
+			return "", "", nil, rerr
 		}
-		lb = resolved
 		if lb != nil && source == "" {
 			source = lb.Source
 			filePath = lb.Path
@@ -87,9 +101,13 @@ func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath
 		bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, botSourceTenant), botSourceTenant, slug)
 		if err != nil {
 			if errors.Is(err, botsource.ErrNotFound) {
-				return nil, fmt.Errorf("the stored bot this run launched from (tenant %s, slug %s) no longer exists — it was deleted after the launch; relaunch the bot, or resume with inline source", botSourceTenant, slug)
+				// %w so the inline-source path above (and the sweeper) can
+				// tell "row deleted" from a transient store failure.
+				return nil, fmt.Errorf("the stored bot this run launched from (tenant %s, slug %s) no longer exists — it was deleted after the launch; relaunch the bot, or resume with inline source: %w", botSourceTenant, slug, err)
 			}
-			return nil, fmt.Errorf("resolve stored bot %s/%s: %w", botSourceTenant, slug, err)
+			// Transient (a store blip): typed so the retry sweeper RE-ARMS
+			// instead of permanently abandoning a paid usage-window retry.
+			return nil, fmt.Errorf("%w: resolve stored bot %s/%s: %v", errResumeResolveTransient, botSourceTenant, slug, err)
 		}
 		origin := "team"
 		if botsource.IsPlatform(botSourceTenant) {

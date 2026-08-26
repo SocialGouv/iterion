@@ -208,10 +208,23 @@ func (r *Resolver[T]) Get(ctx context.Context) *T {
 		r.mu.Unlock()
 
 		// Detached from the caller: one aborted request must not poison the
-		// shared cache for everyone behind it.
-		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
-		rec, err := r.store.Get(fctx)
-		cancel()
+		// shared cache for everyone behind it. The fetch runs inside a
+		// closure whose defer converts a panic into an error: leaving
+		// refreshing=true with waiters unclosed would wedge every later Get
+		// forever (production callers pass context.Background()), and the
+		// platform-bots fetch parses operator-pushed bundle content.
+		var rec *T
+		var err error
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					err = fmt.Errorf("platformcfg: store read panicked: %v", p)
+				}
+			}()
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+			defer cancel()
+			rec, err = r.store.Get(fctx)
+		}()
 
 		r.mu.Lock()
 		r.refreshing = false

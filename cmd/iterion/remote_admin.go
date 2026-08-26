@@ -465,6 +465,8 @@ environment. Prefer an @sha256 digest ref in cloud.
 		}
 		var image any
 		switch {
+		case remoteSandboxClearImage && cmd.Flags().Changed("default-image"):
+			return fmt.Errorf("--default-image and --clear-default-image are mutually exclusive")
 		case remoteSandboxClearImage:
 			image = nil
 		case cmd.Flags().Changed("default-image"):
