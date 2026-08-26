@@ -114,6 +114,49 @@ func TestChainCooldownFallsThroughToSkip(t *testing.T) {
 	}
 }
 
+// TestChainCooldownBuildErrorKeepsRememberedCategory is the cooldown form of
+// TestChainSkipBuildErrorKeepsOriginalCategory. A remembered usage window must
+// survive an unbuildable rescue route so the filtered terminal skip still
+// implements the operator's degrade policy on later nodes.
+func TestChainCooldownBuildErrorKeepsRememberedCategory(t *testing.T) {
+	now := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "rescue", Backend: delegate.BackendCodex, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+		{Label: "give_up", Skip: true, On: []delegate.FallbackCategory{delegate.FallbackUsageWindow}},
+	}
+
+	dispatch := func(nodeID string) {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, head,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		out, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		if err != nil || !out.Skipped {
+			t.Fatalf("dispatch %s: remembered usage window did not reach filtered skip: err=%v out=%+v", nodeID, err, out)
+		}
+	}
+
+	dispatch("first")
+	dispatch("second")
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+}
+
 // TestChainSkipNamesTheSpendingRoute: primary on one backend, a second
 // route on ANOTHER backend burns and fails, then skip — the outcome must
 // name the LAST executed route (the spend's origin), not the first.
