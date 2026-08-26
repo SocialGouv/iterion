@@ -4906,6 +4906,7 @@ export interface components {
             namespace?: string;
             oauth_app_id?: string;
             provider: string;
+            purpose?: string;
             scopes?: string[];
             security_read_enabled?: boolean;
             status: string;
@@ -5000,6 +5001,7 @@ export interface components {
             provider_app_id?: string;
             redirect_uri?: string;
             scopes?: string[];
+            security_read_only?: boolean;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
@@ -5460,6 +5462,7 @@ export interface components {
             mode?: string;
             next?: string;
             provider: string;
+            security_read_only?: boolean;
         };
         forgeTeamRepo: {
             bot_ids: string[];

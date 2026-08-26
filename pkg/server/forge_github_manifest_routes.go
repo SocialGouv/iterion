@@ -53,7 +53,8 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 	if err := s.forgeStates.put(forgePending{
 		State: state, Provider: forge.ProviderGitHub, ForgeBaseURL: baseURL,
 		TenantID: teamID, UserID: id.UserID, AgentBinding: binding,
-		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
+		NextURL: safeNext(req.Next), SecurityReadOnly: req.SecurityReadOnly,
+		IssuedAt: time.Now().UTC(),
 	}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge connect: %v", err)
@@ -65,9 +66,17 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 
 	home := strings.TrimRight(s.cfg.PublicURL, "/")
 	redirectURL := home + "/api/forge/github/app-manifest/callback"
-	name := "iterion-forge-" + uuid.NewString()[:8] // GitHub App names are globally unique
+	// GitHub App names are globally unique. The prefix also makes the shape
+	// readable on the org's Apps list, where a watch-only App sits next to
+	// write-capable ones and only its name distinguishes them at a glance.
+	prefix := "iterion-forge-"
+	if req.SecurityReadOnly {
+		prefix = "iterion-watch-"
+	}
+	name := prefix + uuid.NewString()[:8]
 	manifest := forgegithub.BuildAppManifest(name, home, redirectURL,
 		forgegithub.AppManifestOptions{
+			SecurityReadOnly:  req.SecurityReadOnly,
 			AllowRepoCreation: req.AllowRepoCreation,
 			AllowAppDelivery:  req.AllowAppDelivery,
 			AllowSecurityRead: req.AllowSecurityRead,
@@ -118,7 +127,8 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	// Capture the App slug + private key (conv.PEM) so the App can be INSTALLED
 	// (least-privilege github_app), not only OAuth-authorized.
 	app, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest",
-		githubAppFacts{ManageURL: manageURL, Slug: conv.Slug, PrivateKeyPEM: conv.PEM, OwnerLogin: conv.Owner.Login})
+		githubAppFacts{ManageURL: manageURL, Slug: conv.Slug, PrivateKeyPEM: conv.PEM, OwnerLogin: conv.Owner.Login,
+			SecurityReadOnly: pending.SecurityReadOnly})
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return

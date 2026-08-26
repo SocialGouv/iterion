@@ -49,7 +49,13 @@ type RefreshWorker struct {
 	// SecurityReadEnabled. The worker re-mints it alongside each connection
 	// refresh (both tokens live ~1h, so they rotate together) and merges it
 	// into the tenant's dependabot_tokens secret. Nil = feature unwired.
-	SecurityMinter func(ctx context.Context, conn Connection) (string, error)
+	//
+	// It returns the token's own expiry because a PurposeSecurityRead
+	// connection has no runtime token to date the sweep from: that expiry is
+	// the ONLY thing that puts the connection back on ExpiringBefore's list,
+	// and without it a watch-only connection would mint once and then go
+	// quiet forever.
+	SecurityMinter func(ctx context.Context, conn Connection) (string, time.Time, error)
 	// Lead is how far before expiry a token is refreshed (default 5m).
 	Lead time.Duration
 	Now  func() time.Time
@@ -97,6 +103,21 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) (int, error) {
 // generic secret SECOND, so a crash between them leaves a working-but-old
 // secret rather than a zero value.
 func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
+	// A watch-only connection holds an App with metadata:read +
+	// vulnerability_alerts:read and NOTHING else. Asking the ordinary
+	// refresher for a runtime token would request permissions it was
+	// deliberately never granted: GitHub answers 422, markDegraded fires, and
+	// dropSecurityReadEntry withdraws the very token this connection exists to
+	// supply. Its whole refresh IS the security mint.
+	//
+	// This is decided BEFORE RefresherFor is consulted, and that order is
+	// load-bearing: a resolver that returns nil for a connection with no
+	// runtime credential would otherwise take the "not refreshable" exit and
+	// the security token would never be re-minted — alerts stopping about an
+	// hour after wiring, with nothing in the logs.
+	if conn.IsSecurityReadOnly() {
+		return w.refreshSecurityOnly(store.WithTenant(ctx, conn.TenantID), conn)
+	}
 	if w.RefresherFor == nil {
 		return nil
 	}
@@ -199,7 +220,7 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	// vuln-watch reading a dead token would otherwise fail with no trail
 	// on the server side.
 	if conn.SecurityReadEnabled && conn.Kind == KindGitHubApp && w.SecurityMinter != nil {
-		secTok, err := w.SecurityMinter(ctx, conn)
+		secTok, _, err := w.SecurityMinter(ctx, conn)
 		if errors.Is(err, ErrPermissionsNotGranted) {
 			// PERMANENT (the org revoked, or never approved, the alerts
 			// grant): retrying can never self-heal, and the entry already in
@@ -220,6 +241,44 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 		}
 	}
 	return nil
+}
+
+// refreshSecurityOnly is the whole refresh cycle of a PurposeSecurityRead
+// connection: mint the org-wide alerts token, merge it into the tenant's
+// dependabot_tokens map, and date the connection from the token's own expiry
+// so the next sweep picks it up. There is no runtime token, no managed secret
+// and no refresh-token grant involved.
+func (w *RefreshWorker) refreshSecurityOnly(ctx context.Context, conn Connection) error {
+	if !conn.SecurityReadEnabled || w.SecurityMinter == nil {
+		// Opt-in switched off (or the feature is unwired): the connection has
+		// no other job, so there is nothing to renew. Withdraw any entry it
+		// still owns rather than letting a token the map promises to keep
+		// fresh quietly expire.
+		return w.dropSecurityReadEntry(ctx, conn)
+	}
+	secTok, expiresAt, err := w.SecurityMinter(ctx, conn)
+	if errors.Is(err, ErrPermissionsNotGranted) {
+		if derr := w.dropSecurityReadEntry(ctx, conn); derr != nil {
+			return derr
+		}
+		return w.markSecurityReadDegraded(ctx, conn, err)
+	}
+	if err != nil {
+		return fmt.Errorf("forge: security-read mint for connection %s: %w", conn.ID, err)
+	}
+	if err := UpsertSecurityReadToken(ctx, w.Secrets, w.Sealer, &conn, secTok, w.now()); err != nil {
+		return err
+	}
+	now := w.now()
+	conn.Status = StatusActive
+	conn.StatusReason = "" // the security lane IS this connection: a good mint clears it
+	conn.LastRefreshedAt = &now
+	if !expiresAt.IsZero() {
+		exp := expiresAt
+		conn.AccessTokenExpiresAt = &exp
+	}
+	conn.UpdatedAt = now
+	return w.Connections.Update(ctx, conn)
 }
 
 // securityReadDegradePrefix marks a StatusReason that belongs to the

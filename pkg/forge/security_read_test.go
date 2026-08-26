@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -168,12 +169,12 @@ func TestRefreshWorker_MintsSecurityReadTokenAlongsideRefresh(t *testing.T) {
 		RefresherFor: func(Connection) TokenRefresher {
 			return fakeRefresher{newAccess: "fresh-install-token", expiresAt: now.Add(time.Hour)}
 		},
-		SecurityMinter: func(_ context.Context, conn Connection) (string, error) {
+		SecurityMinter: func(_ context.Context, conn Connection) (string, time.Time, error) {
 			minted++
 			if conn.ID != "conn-gh" {
 				t.Fatalf("minter called for %s", conn.ID)
 			}
-			return "sec-read-token", nil
+			return "sec-read-token", time.Time{}, nil
 		},
 	}
 	if _, err := w.RunOnce(context.Background()); err != nil {
@@ -203,9 +204,9 @@ func TestRefreshWorker_SecurityMinterSkippedWhenNotOptedIn(t *testing.T) {
 		RefresherFor: func(Connection) TokenRefresher {
 			return fakeRefresher{newAccess: "fresh", expiresAt: now.Add(time.Hour)}
 		},
-		SecurityMinter: func(context.Context, Connection) (string, error) {
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
 			t.Fatal("security minter must not run for a connection that did not opt in")
-			return "", nil
+			return "", time.Time{}, nil
 		},
 	}
 	if _, err := w.RunOnce(context.Background()); err != nil {
@@ -231,12 +232,12 @@ func TestRefreshWorker_SecurityMintFailureSurfacesButKeepsRefresh(t *testing.T) 
 		RefresherFor: func(Connection) TokenRefresher {
 			return fakeRefresher{newAccess: "fresh-install-token", expiresAt: now.Add(time.Hour)}
 		},
-		SecurityMinter: func(context.Context, Connection) (string, error) {
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
 			// TRANSIENT (a forge blip). The permanent class
 			// (ErrPermissionsNotGranted) has its own contract — recorded
 			// once and withdrawn, see
 			// TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws.
-			return "", errors.New("github: 502 bad gateway")
+			return "", time.Time{}, errors.New("github: 502 bad gateway")
 		},
 	}
 	_, err := w.RunOnce(context.Background())
@@ -399,9 +400,9 @@ func TestRefreshWorker_WithdrawsEntryWhenConnectionCannotRefresh(t *testing.T) {
 		Connections: connStore, Secrets: tenantScoped, Sealer: sealer,
 		Now:          func() time.Time { return now },
 		RefresherFor: func(Connection) TokenRefresher { return fakeRefresher{newAccess: "x", expiresAt: now.Add(time.Hour)} },
-		SecurityMinter: func(context.Context, Connection) (string, error) {
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
 			t.Fatal("a degraded connection must not be re-minted")
-			return "", nil
+			return "", time.Time{}, nil
 		},
 	}
 	if _, err := w.RunOnce(context.Background()); err != nil {
@@ -429,10 +430,10 @@ func TestRefreshWorker_PermanentMintFailureDisablesAndWithdraws(t *testing.T) {
 		RefresherFor: func(Connection) TokenRefresher {
 			return fakeRefresher{newAccess: "fresh", expiresAt: now.Add(time.Hour)}
 		},
-		SecurityMinter: func(context.Context, Connection) (string, error) {
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
 			calls++
 			// The org revoked (or never approved) the alerts grant.
-			return "", ErrPermissionsNotGranted
+			return "", time.Time{}, ErrPermissionsNotGranted
 		},
 	}
 	if _, err := w.RunOnce(context.Background()); err != nil {
@@ -509,8 +510,8 @@ func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 		RefresherFor: func(Connection) TokenRefresher {
 			return fakeRefresher{newAccess: "fresh", expiresAt: clock.Add(time.Hour)}
 		},
-		SecurityMinter: func(context.Context, Connection) (string, error) {
-			return "", ErrPermissionsNotGranted
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
+			return "", time.Time{}, ErrPermissionsNotGranted
 		},
 	}
 	if _, err := w.RunOnce(context.Background()); err != nil {
@@ -536,5 +537,155 @@ func TestRefreshWorker_KeepsTheSecurityReadReasonAcrossRefreshes(t *testing.T) {
 	}
 	if !strings.Contains(got.StatusReason, "Dependabot alerts") {
 		t.Fatalf("the security-read reason was erased by an ordinary refresh: %q", got.StatusReason)
+	}
+}
+
+// seedWatchOnlyConn is a PurposeSecurityRead connection: an App holding
+// metadata + vulnerability_alerts and nothing else.
+func seedWatchOnlyConn(t *testing.T, sealer secrets.Sealer, connStore ConnectionStore, expiresAt time.Time, optedIn bool) Connection {
+	t.Helper()
+	c := seedGitHubAppConn(t, sealer, connStore, expiresAt, optedIn)
+	c.Purpose = PurposeSecurityRead
+	if err := connStore.Update(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// The whole point of the role: a watch-only connection must never ask for a
+// RUNTIME token. Its App was never granted contents/pull_requests, so the
+// mint would 422 → markDegraded → dropSecurityReadEntry, i.e. the connection
+// would destroy the one token it exists to provide, roughly an hour after
+// being wired. The runtime refresher here fails the test if it is consulted.
+func TestRefreshWorker_WatchOnlyNeverMintsRuntimeToken(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
+
+	w := &RefreshWorker{
+		Connections: connStore,
+		Secrets:     secStore,
+		Sealer:      sealer,
+		Now:         func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			t.Fatal("the runtime refresher must not run for a watch-only connection")
+			return nil
+		},
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
+			return "sec-read-token", now.Add(time.Hour), nil
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if m := securityReadMap(t, sealer, secStore, "t1"); m["socialgouv"] != "sec-read-token" {
+		t.Fatalf("map = %v, want socialgouv → sec-read-token", m)
+	}
+	got, err := connStore.Get(context.Background(), "conn-gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusActive {
+		t.Fatalf("status = %q (reason %q), want active", got.Status, got.StatusReason)
+	}
+}
+
+// A watch-only connection has no runtime token to date the sweep from, so the
+// SECURITY token's expiry is what puts it back on ExpiringBefore's list.
+// Without it the connection mints once and then goes quiet forever — the
+// failure mode is invisible until alerts silently stop an hour later.
+func TestRefreshWorker_WatchOnlyRearmsFromSecurityTokenExpiry(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
+
+	mintExpiry := now.Add(time.Hour)
+	w := &RefreshWorker{
+		Connections:  connStore,
+		Secrets:      secStore,
+		Sealer:       sealer,
+		Now:          func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher { return fakeRefresher{} },
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
+			return "sec-read-token", mintExpiry, nil
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	got, err := connStore.Get(context.Background(), "conn-gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessTokenExpiresAt == nil || !got.AccessTokenExpiresAt.Equal(mintExpiry) {
+		t.Fatalf("AccessTokenExpiresAt = %v, want the mint's own expiry %v", got.AccessTokenExpiresAt, mintExpiry)
+	}
+	// The real proof: a later sweep, positioned just before that expiry, finds
+	// the connection again and re-mints.
+	later := mintExpiry.Add(-2 * time.Minute)
+	minted := 0
+	w.Now = func() time.Time { return later }
+	w.SecurityMinter = func(context.Context, Connection) (string, time.Time, error) {
+		minted++
+		return "sec-read-token-2", later.Add(time.Hour), nil
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if minted != 1 {
+		t.Fatalf("re-mints on the next sweep = %d, want 1 — the connection fell out of the rotation", minted)
+	}
+}
+
+// A permanent grant failure on a watch-only connection follows the same
+// contract as on a runtime one: withdraw the entry (a token in the map is a
+// promise of freshness) and record the reason once.
+func TestRefreshWorker_WatchOnlyPermanentFailureWithdrawsAndRecords(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	conn := seedWatchOnlyConn(t, sealer, connStore, now.Add(2*time.Minute), true)
+	if err := UpsertSecurityReadToken(context.Background(), secStore, sealer, &conn, "stale-token", now); err != nil {
+		t.Fatal(err)
+	}
+
+	w := &RefreshWorker{
+		Connections:  connStore,
+		Secrets:      secStore,
+		Sealer:       sealer,
+		Now:          func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher { return fakeRefresher{} },
+		SecurityMinter: func(context.Context, Connection) (string, time.Time, error) {
+			return "", time.Time{}, fmt.Errorf("%w: the installation lacks 'Dependabot alerts: read'", ErrPermissionsNotGranted)
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// Withdrawing the only entry empties the map, which deletes the secret
+	// outright — so "gone" and "present without this org" are both correct
+	// withdrawals, and only a surviving entry is a failure.
+	if gs, ok, err := findSecurityReadSecret(context.Background(), secStore, "t1"); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		m := securityReadMap(t, sealer, secStore, "t1")
+		if m["socialgouv"] != "" {
+			t.Fatalf("stale entry survived a permanent failure: %v (secret %s)", m, gs.ID)
+		}
+	}
+	got, err := connStore.Get(context.Background(), "conn-gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SecurityReadEnabled {
+		t.Fatal("opt-in should be switched off after a permanent grant failure")
+	}
+	if !strings.HasPrefix(got.StatusReason, securityReadDegradePrefix) {
+		t.Fatalf("StatusReason = %q, want the security-read explanation", got.StatusReason)
 	}
 }

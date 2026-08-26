@@ -79,6 +79,24 @@ const (
 	StatusDegraded ConnectionStatus = "degraded"
 )
 
+// Purpose is the role a connection plays. It is deliberately NOT derived
+// from the granted permissions: a runtime App that an owner narrowed by
+// mistake must read as broken (degraded, with a reason), not silently
+// re-label itself a security-read connection and stop doing its job.
+type Purpose string
+
+const (
+	// PurposeRuntime is the zero value, so every connection that existed
+	// before this field keeps its behaviour with no migration.
+	PurposeRuntime Purpose = ""
+	// PurposeSecurityRead is a read-only alerts source. See Connection.Purpose.
+	PurposeSecurityRead Purpose = "security_read"
+)
+
+// IsSecurityReadOnly reports whether this connection exists only to mint the
+// org-wide Dependabot-alerts token and must never be used for runtime work.
+func (c Connection) IsSecurityReadOnly() bool { return c.Purpose == PurposeSecurityRead }
+
 // Connection is a team's authenticated link to one forge account. The
 // admin token material lives sealed on SealedPayload (AAD bound to ID);
 // the JSON encoder drops it so it never reaches the studio.
@@ -141,6 +159,23 @@ type Connection struct {
 	// secret the vuln-watch bot reads. Off by default: alert data is
 	// sensitive, so a team turns it on per connection, deliberately.
 	SecurityReadEnabled bool `bson:"security_read_enabled,omitempty" json:"security_read_enabled,omitempty"`
+
+	// Purpose is what this connection is FOR. Empty (PurposeRuntime) is the
+	// ordinary forge connection: it clones, pushes, opens PRs, carries
+	// webhooks. PurposeSecurityRead marks a connection whose App holds only
+	// metadata:read + vulnerability_alerts:read — it exists solely to mint the
+	// org-wide Dependabot-alerts token, and CANNOT do runtime work.
+	//
+	// The distinction is load-bearing in three places, and skipping any one of
+	// them breaks the connection rather than merely limiting it:
+	//   - the refresh worker must not mint a RUNTIME token for it (the mint
+	//     would 422 on permissions it deliberately lacks, marking it degraded
+	//     and withdrawing the very token it exists to supply);
+	//   - the auto-resolvers that pick "a connection on this host" must skip
+	//     it, or a review lands on a connection that cannot post;
+	//   - the health view must not report its absent delivery grants as a
+	//     defect — they are the point.
+	Purpose Purpose `bson:"purpose,omitempty" json:"purpose,omitempty"`
 
 	Status ConnectionStatus `bson:"status" json:"status"`
 

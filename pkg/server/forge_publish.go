@@ -706,7 +706,12 @@ func (s *Server) repoIntegrationFor(ctx context.Context, teamID, host, repo stri
 // PR's forge host.
 func (s *Server) forgeConnectionForPR(ctx context.Context, teamID, preferredConnID, host, repo string) (forge.Connection, bool) {
 	matches := func(c forge.Connection) bool {
-		return c.TenantID == teamID && strings.EqualFold(hostOfURL(c.BaseURL()), host)
+		// A watch-only connection sits on the same host and would be picked by
+		// the "first connection on this host" fallback below — then every
+		// review comment and commit status posted through it would 403: its
+		// App holds no pull_requests/statuses grant, by design.
+		return c.TenantID == teamID && !c.IsSecurityReadOnly() &&
+			strings.EqualFold(hostOfURL(c.BaseURL()), host)
 	}
 	if preferredConnID != "" {
 		if c, err := s.forgeConnections.Get(ctx, preferredConnID); err == nil && matches(c) {

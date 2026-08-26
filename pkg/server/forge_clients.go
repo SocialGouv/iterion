@@ -396,13 +396,13 @@ func (s *Server) forgeLogWarn(format string, args ...any) {
 // org-level Dependabot alerts endpoint needs the whole installation, and the
 // permission subset is the least-privilege dimension here. Fails with an
 // explicit, actionable error when the installation never approved the grant.
-func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connection) (string, error) {
+func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connection) (string, time.Time, error) {
 	if conn.Kind != forge.KindGitHubApp {
-		return "", fmt.Errorf("forge: security-read tokens require a github_app connection")
+		return "", time.Time{}, fmt.Errorf("forge: security-read tokens require a github_app connection")
 	}
 	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
 	if !ok {
-		return "", fmt.Errorf("forge: no github app available for this connection")
+		return "", time.Time{}, fmt.Errorf("forge: no github app available for this connection")
 	}
 	// A known-narrow grant fails BEFORE the mint with the remediation named,
 	// instead of surfacing GitHub's generic 422. An unknown grant set
@@ -416,14 +416,14 @@ func (s *Server) forgeSecurityTokenMinter(ctx context.Context, conn forge.Connec
 			if org == "" {
 				org = conn.AccountLogin
 			}
-			return "", fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
+			return "", time.Time{}, fmt.Errorf("%w: the installation for %q lacks 'Dependabot alerts: read' — add the permission on the GitHub App, have an org admin approve the pending request, then retry",
 				forge.ErrPermissionsNotGranted, org)
 		}
 	}
-	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
+	tok, expiresAt, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
 		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.SecurityReadInstallationPermissions()})
-	return tok, err
+	return tok, expiresAt, err
 }
 
 // forgeMintRepoNames is the repo-scope oracle for a github_app connection's

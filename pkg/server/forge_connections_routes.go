@@ -230,7 +230,12 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 				h.InstallationAccount = inst.Login
 				h.ManageInstallURL = inst.HTMLURL
 				h.GrantedPermissions = inst.Permissions
-				h.MissingPermissions = forgegithub.MissingDeliveryPermissions(inst.Permissions)
+				// A watch-only connection has NO delivery grants on purpose —
+				// reporting them as missing would tell an operator to "fix" the
+				// one property that makes this App safe to install org-wide.
+				if !conn.IsSecurityReadOnly() {
+					h.MissingPermissions = forgegithub.MissingDeliveryPermissions(inst.Permissions)
+				}
 				h.MissingSecurityPermissions = forgegithub.MissingSecurityPermissions(inst.Permissions)
 				// Keep the stored grant in step with the live one: the mint
 				// reads it, and an owner may approve (or revoke) a permission
@@ -438,7 +443,7 @@ func (s *Server) handlePatchForgeConnection(w http.ResponseWriter, r *http.Reque
 		if mint == nil {
 			mint = s.forgeSecurityTokenMinter
 		}
-		tok, err := mint(ctx, conn)
+		tok, _, err := mint(ctx, conn)
 		if err != nil {
 			if errors.Is(err, forge.ErrPermissionsNotGranted) {
 				httpError(w, http.StatusUnprocessableEntity, "%v", err)

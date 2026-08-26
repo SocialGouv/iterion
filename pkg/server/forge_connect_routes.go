@@ -371,9 +371,25 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	} else if s.logger != nil {
 		s.logger.Warn("forge: read installation %d permissions at connect: %v", installationID, ierr)
 	}
+	// A watch-only App (metadata + vulnerability_alerts, nothing else) has no
+	// runtime work to do, so its FIRST token is minted on the security-read
+	// set rather than the runtime one. Without this the connect seals a
+	// metadata-only token — RuntimePermissionsFor narrows to the intersection
+	// — which reads as a working connection while being able to do nothing.
+	watchOnly := false
+	if appRecordID != "" && s.forgeOAuthApps != nil {
+		if rec, aerr := s.forgeOAuthApps.Get(store.WithTenant(r.Context(), pending.TenantID), appRecordID); aerr == nil {
+			watchOnly = rec.SecurityReadOnly
+		} else if s.logger != nil {
+			s.logger.Warn("forge: read app record %s at install: %v", appRecordID, aerr)
+		}
+	}
 	// No repositories scope yet — none provisioned; the refresh worker
 	// re-scopes to the provisioned repo set thereafter.
 	runtimePerms := forgegithub.RuntimePermissionsFor(granted)
+	if watchOnly {
+		runtimePerms = forgegithub.SecurityReadInstallationPermissions()
+	}
 	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.forgeHTTPClient(), forgegithub.APIBaseFor(base), cfg, installationID, now,
 		&forgegithub.InstallationTokenOptions{Permissions: runtimePerms})
 	if err != nil {
@@ -396,7 +412,11 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
 		InstallationAccount: installAccount,
 		GrantedPermissions:  granted,
-		Status:              forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
+		// The role is inherited from the App, not inferred from the grant: a
+		// runtime App an owner narrowed by mistake must read as broken, never
+		// re-label itself watch-only and quietly stop doing its job.
+		Purpose: purposeForApp(watchOnly),
+		Status:  forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeConnections.Create(store.WithTenant(r.Context(), pending.TenantID), conn); err != nil {
@@ -409,4 +429,13 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		target = "/teams/" + pending.TenantID
 	}
 	http.Redirect(w, r, appendQueryParam(target, "connected", connID), http.StatusFound)
+}
+
+// purposeForApp maps a watch-only App to the connection role that keeps it out
+// of every runtime path.
+func purposeForApp(watchOnly bool) forge.Purpose {
+	if watchOnly {
+		return forge.PurposeSecurityRead
+	}
+	return forge.PurposeRuntime
 }

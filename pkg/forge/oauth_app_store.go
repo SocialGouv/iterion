@@ -69,6 +69,13 @@ type ForgeOAuthApp struct {
 	// "which org". Surfaced so the UI can label the picker by org rather than by
 	// opaque slug.
 	OwnerLogin string `bson:"owner_login,omitempty" json:"owner_login,omitempty"`
+	// SecurityReadOnly marks a WATCH-ONLY App: created from the manifest
+	// shape that requests metadata:read + vulnerability_alerts:read and
+	// nothing else. It travels here rather than in the connect flow's state
+	// because it is a property of the APP, not of one install: every
+	// connection born from this App is a PurposeSecurityRead connection, on
+	// the first org and on the tenth.
+	SecurityReadOnly bool `bson:"security_read_only,omitempty" json:"security_read_only,omitempty"`
 	// Installable is a computed view flag (never persisted): true when the App
 	// holds a private key, so the UI can offer the "Install" (github_app) action.
 	Installable bool `bson:"-" json:"installable,omitempty"`

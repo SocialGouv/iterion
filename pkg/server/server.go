@@ -178,7 +178,7 @@ type Server struct {
 	// A field rather than a direct method call so the enable endpoint can be
 	// driven without a live GitHub App (the mint is the one step that needs
 	// one, and the endpoint's guards/rollback are what matter).
-	forgeSecurityMint func(context.Context, forge.Connection) (string, error)
+	forgeSecurityMint func(context.Context, forge.Connection) (string, time.Time, error)
 	forgeOAuthApps    forge.OAuthAppStore
 	forgeGitHubApp    ForgeGitHubAppConfig
 	orgSSO            orgsso.Store
