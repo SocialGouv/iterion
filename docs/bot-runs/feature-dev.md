@@ -38,11 +38,24 @@
   model or a genuinely environment-blocked task. `warn_tokens` is the
   reliable recipe for waking Persy deterministically (advisory, never
   gates, fires post-node).
-- Engine hardening: none needed — the merged #522 behaviour matched
-  the design on every observed point. Friction (not a bug): the slim
+- Engine hardening: the CLOUD leg (Run C, `01a03d70` on the prod
+  runner, repo-targeted at iterion-sandbox) found the bug the four
+  local adversarial rounds could not: **`ast.MarshalFile` — the cloud
+  queue's wire format — did not serialize `supervisor` declarations**,
+  so every cloud run recompiled a Persy-less workflow on the pod, no
+  spawn and no skip log (the workflow_hash matched v2.2.0 exactly,
+  which is what pointed at the codec rather than the catalog). Fixed
+  in the same change with a red-first round-trip + queue-composition
+  test (`jsonenc_supervisor_test.go`). Sibling gap flagged, not fixed:
+  `Groups`/`Uses` are also absent from the codec (documented in
+  `rewind_auto.go`; loud compile failure on cloud, only
+  `examples/composition` uses them). Friction (not a bug): the slim
   sandbox ships no Go toolchain, so each campaign self-provisioned
   go1.22/1.24 (~2 min) and worked around `-buildvcs` / dubious-ownership
   on the mounted worktree; a target-repo `devbox.json` would erase both.
+  Also exercised for real on Run C: the ADR-090 usage cap (launch
+  rejected at 85% of the 5h window, `failed_resumable`, resumed clean
+  after the reset).
 - Lessons for next run: to provoke a hard intervention live, plant an
   environment-level wall (a gate the agent cannot green from inside the
   worktree) rather than a code-level one, or pin a weaker
