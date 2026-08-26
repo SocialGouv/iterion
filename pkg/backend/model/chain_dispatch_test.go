@@ -295,6 +295,73 @@ func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
 	}
 }
 
+// What a provider refused is a property of the ROUTE, not of the node that
+// happened to hit it first. A node with no fallback — or with one whose `on:`
+// refuses the category — cannot USE the cooldown, but it must still ARM it,
+// or the next node with a richer chain pays for the same refused spawn.
+func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	tests := []struct {
+		name    string
+		teacher []chainElement
+	}{
+		{
+			name:    "no fallback configured",
+			teacher: []chainElement{{Label: "primary"}},
+		},
+		{
+			name: "fallback refuses the category",
+			teacher: []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex, On: []delegate.FallbackCategory{delegate.FallbackUnavailable}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			head := &backendScriptedBackend{
+				name: delegate.BackendClaudeCode,
+				fail: &delegate.ErrRateLimited{
+					Provider: delegate.BackendClaudeCode,
+					Kind:     delegate.RateLimitKindUsageWindow,
+					ResetAt:  reset,
+				},
+			}
+			tail := &backendScriptedBackend{name: delegate.BackendCodex}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, head)
+			reg.Register(delegate.BackendCodex, tail)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.now = func() time.Time { return now }
+			dispatch := func(nodeID string, chain []chainElement) {
+				build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+					func(_ context.Context, _ string) (*delegate.Task, error) {
+						return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+					})
+				_, _ = e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+			}
+
+			dispatch("teacher", tt.teacher)
+			spentByTeacher := len(head.tasks)
+			if spentByTeacher == 0 {
+				t.Fatal("precondition: the teaching node never reached the primary")
+			}
+			dispatch("learner", []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex},
+			})
+			if got := len(head.tasks); got != spentByTeacher {
+				t.Errorf("primary spawned %d times, want %d: the learner must reuse the teacher's cooldown",
+					got, spentByTeacher)
+			}
+			if len(tail.tasks) != 1 {
+				t.Errorf("fallback served %d times, want 1", len(tail.tasks))
+			}
+		})
+	}
+}
+
 func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 	head := &backendScriptedBackend{

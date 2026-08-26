@@ -331,6 +331,10 @@ chain at the first route whose `on:` filter accepts the remembered category,
 without spawning the refused backend again. The skip remains visible as a
 `model_fallback` event with `attempts: 0`, `cooldown: true` and
 `cooldown_until`; it is an info line rather than another rate-limit warning.
+The route is remembered even when the node that hit the wall had nowhere to
+fall through to — a refusal belongs to the route, not to one node's chain —
+so the next node whose chain *does* accept the category skips a spawn the
+first one had to pay for.
 
 Cooldown is strictly fail-open: an absent/already-passed reset, or no later
 route accepting the failure, leaves dispatch unchanged. Entries expire on

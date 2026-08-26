@@ -847,11 +847,22 @@ func (e *ClawExecutor) dispatchChain(
 		if ctx.Err() != nil {
 			return chainOutcome{Result: result, BackendName: backendName}, err
 		}
+		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
+		lastCat = cat
+		// Remember only typed failures whose provider supplied a future
+		// reset. Missing or stale reset data deliberately leaves the route
+		// hot, so bookkeeping uncertainty cannot suppress a healthy call.
+		//
+		// Recorded BEFORE the chain-shape checks below, because what the
+		// provider refused is a property of the ROUTE, not of this node's
+		// fallback chain: a node with no fallback at all — or none whose
+		// `on:` accepts the category — still teaches the ledger, so the
+		// next node whose chain DOES have somewhere to go skips the spawn
+		// this one had to pay for.
+		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
 		if !fallbackRemains {
 			break
 		}
-		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
-		lastCat = cat
 		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
 		// A middle route that refuses the category is SKIPPED so a later
 		// route that accepts it (e.g. the shipped example's gpt route
@@ -867,10 +878,6 @@ func (e *ClawExecutor) dispatchChain(
 			// and the tail folds it with `spent.applyTo` (R5180a7).
 			break
 		}
-		// Remember only typed failures whose provider supplied a future
-		// reset. Missing or stale reset data deliberately leaves the route
-		// hot, so bookkeeping uncertainty cannot suppress a healthy call.
-		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
 		for k := i + 1; k < j; k++ {
 			if e.logger != nil {
 				e.logger.Warn("[%s#%d/%s] %q failed (%s); skipping %q (does not accept) — trying later routes",
