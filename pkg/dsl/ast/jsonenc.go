@@ -120,6 +120,7 @@ type jsonFile struct {
 	Prompts      []*jsonPromptDecl       `json:"prompts,omitempty"`
 	Schemas      []*jsonSchemaDecl       `json:"schemas,omitempty"`
 	Cursors      []*jsonCursorDecl       `json:"cursors,omitempty"`
+	Supervisors  []*jsonSupervisorDecl   `json:"supervisors,omitempty"`
 	Agents       []*jsonAgentDecl        `json:"agents,omitempty"`
 	Judges       []*jsonJudgeDecl        `json:"judges,omitempty"`
 	Routers      []*jsonRouterDecl       `json:"routers,omitempty"`
@@ -260,6 +261,20 @@ type jsonCursorEnumValue struct {
 type jsonCursorBand struct {
 	Range  string `json:"range,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
+}
+
+// jsonSupervisorDecl is the wire form of a top-level `supervisor <name>:`
+// declaration. The AST JSON codec is the cloud queue's wire format: a
+// declaration missing here compiles fine locally and silently vanishes on
+// every runner pod (the supervisor never spawns, no skip logged).
+type jsonSupervisorDecl struct {
+	Name     string   `json:"name,omitempty"`
+	Watches  []string `json:"watches,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	System   string   `json:"system,omitempty"`
+	Cooldown string   `json:"cooldown,omitempty"`
+	MaxEvals int      `json:"max_evals,omitempty"`
+	Monitors []string `json:"monitors,omitempty"`
 }
 
 // jsonFallbackDecl is the wire form of one `fallbacks:` route.
@@ -740,6 +755,17 @@ func toJSON(f *File) *jsonFile {
 	}
 	for _, c := range f.Cursors {
 		jf.Cursors = append(jf.Cursors, cursorDeclToJSON(c))
+	}
+	for _, s := range f.Supervisors {
+		jf.Supervisors = append(jf.Supervisors, &jsonSupervisorDecl{
+			Name:     s.Name,
+			Watches:  s.Watches,
+			Model:    s.Model,
+			System:   s.System,
+			Cooldown: s.Cooldown,
+			MaxEvals: s.MaxEvals,
+			Monitors: s.Monitors,
+		})
 	}
 	for _, a := range f.Agents {
 		jf.Agents = append(jf.Agents, agentToJSON(a))
@@ -1391,6 +1417,18 @@ func fromJSON(jf *jsonFile) (*File, error) {
 		if c := cursorDeclFromJSON(jc); c != nil {
 			f.Cursors = append(f.Cursors, c)
 		}
+	}
+
+	for _, js := range jf.Supervisors {
+		f.Supervisors = append(f.Supervisors, &SupervisorDecl{
+			Name:     js.Name,
+			Watches:  js.Watches,
+			Model:    js.Model,
+			System:   js.System,
+			Cooldown: js.Cooldown,
+			MaxEvals: js.MaxEvals,
+			Monitors: js.Monitors,
+		})
 	}
 
 	for _, ja := range jf.Agents {
