@@ -96,11 +96,7 @@ type varsSetter interface{ SetVars(map[string]any) }
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
 type Engine struct {
-	workflow *ir.Workflow
-	// exitPath caches the nodes a run can only traverse on its way out —
-	// the sole place the bounded budget grace applies. See
-	// budget_exit_grace.go.
-	exitPath                 map[string]bool
+	workflow                 *ir.Workflow
 	store                    store.RunStore
 	executor                 NodeExecutor
 	logger                   *iterlog.Logger
