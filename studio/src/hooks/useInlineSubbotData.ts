@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useQueries, type UseQueryResult } from "@tanstack/react-query";
 
 import {
@@ -10,7 +10,12 @@ import {
   type RunSummary,
   type WireWorkflow,
 } from "@/api/runs";
-import { groupChildrenByNode, isSettledRunStatus } from "@/lib/subRuns";
+import {
+  groupChildrenByNode,
+  isSettledRunStatus,
+  resolveSelectedSubbotChild,
+  type SubbotSelectionSticky,
+} from "@/lib/subRuns";
 import { makeSubbotChildId } from "@/lib/subbotGraph";
 
 // Data feeds for the run canvas's INLINE subbot expansion
@@ -21,11 +26,11 @@ import { makeSubbotChildId } from "@/lib/subbotGraph";
 // (matching lib/subbotGraph.MAX_SUBBOT_EXPANSION_DEPTH) keep the hook
 // order static; deeper subbots stay compact.
 //
-// Per level and frame: the child workflow shape (from the first child —
-// all children of one node share the source), the SELECTED child's
-// children (nested grouping + tab dots), and the SELECTED child's live
-// executions (REST-polled at 3s while unsettled; siblings poll nothing
-// until their tab is picked).
+// Per level and frame: the child workflow shape (from the displayed
+// child — siblings share a source in normal execution), the SELECTED
+// child's children (nested grouping + tab dots), and the SELECTED
+// child's live executions (REST-polled at 3s while unsettled; siblings
+// poll nothing until their tab is picked).
 const CHILD_POLL_MS = 3000;
 // Safety cap on frames tracked per level — beyond this the inline
 // frames still render for the first N, later ones stay compact.
@@ -38,8 +43,8 @@ export interface InlineSubbotData {
   childWorkflowsByNode: Map<string, WireWorkflow>;
   // child run id -> its live executions (selected children only).
   childExecutionsByRun: Map<string, ExecutionState[]>;
-  // frameId -> the child run the frame displays (user pick, defaulted
-  // to the first child).
+  // frameId -> the child run the frame displays (user pick, else the
+  // live/latest child — see resolveSelectedSubbotChild).
   selectedChildByFrame: Map<string, string>;
 }
 
@@ -70,19 +75,24 @@ function useSubbotLevel(
   pickedByFrame: Map<string, string>,
 ): LevelData {
   // Effective selection: the user's pick while that child still exists,
-  // else the first child (created_at asc — stable).
+  // else the last auto-shown child while the list has not grown and no
+  // sibling outranks it, else the live/latest child (not children[0]).
+  const stickyByFrame = useRef(new Map<string, SubbotSelectionSticky>());
   const selected = useMemo(() => {
     const m = new Map<string, string>();
+    const next = new Map<string, SubbotSelectionSticky>();
     for (const f of frames) {
-      if (f.children.length === 0) continue;
-      const picked = pickedByFrame.get(f.frameId);
-      m.set(
-        f.frameId,
-        picked && f.children.some((c) => c.id === picked)
-          ? picked
-          : f.children[0]!.id,
+      const id = resolveSelectedSubbotChild(
+        f.children,
+        pickedByFrame.get(f.frameId),
+        stickyByFrame.current.get(f.frameId),
       );
+      if (id) {
+        m.set(f.frameId, id);
+        next.set(f.frameId, { id, count: f.children.length });
+      }
     }
+    stickyByFrame.current = next;
     return m;
   }, [frames, pickedByFrame]);
 
@@ -103,11 +113,18 @@ function useSubbotLevel(
     [frames],
   );
   const wfByFrame = useQueries({
-    queries: frames.map((f) => ({
-      queryKey: ["run-workflow", f.children[0]!.id],
-      queryFn: () => getRunWorkflow(f.children[0]!.id),
-      staleTime: 5 * 60_000,
-    })),
+    queries: frames.map((f) => {
+      const id = selected.get(f.frameId) ?? f.children[0]!.id;
+      return {
+        queryKey: ["run-workflow", id],
+        queryFn: () => getRunWorkflow(id),
+        staleTime: 5 * 60_000,
+        // Keep the last IR on screen while a new child key fetches —
+        // otherwise auto-reselect blanks expandWireSubbots until the
+        // request returns. Siblings share a source in normal execution.
+        placeholderData: (prev: WireWorkflow | undefined) => prev,
+      };
+    }),
     combine: combineWf,
   });
 

@@ -115,3 +115,67 @@ export function isSettledRunStatus(status: RunStatus): boolean {
     status === "cancelled"
   );
 }
+
+// Rank for the inline-frame default tab: live work first, then a
+// human gate, then any other unsettled child, then settled history.
+// Lower wins. Within a rank, later array position is the tie-break —
+// both stores return children created_at asc, and groupChildrenByNode
+// preserves that order. Do not compare created_at strings: Go's
+// encoding/json RFC3339Nano trims fractional zeros, so ".12Z" > ".125Z"
+// lexicographically and would pick the older child (issue #525).
+function subbotDefaultRank(status: RunStatus): number {
+  switch (status) {
+    case "running":
+      return 0;
+    case "paused_waiting_human":
+      return 1;
+    case "queued":
+    case "paused_operator":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+// Last auto-shown child for a frame, plus the children.length observed
+// when it was shown. useSubbotLevel keeps one of these per frame so a
+// 3s poll does not hop between already-visible siblings of equal rank
+// as their statuses flip. A new spawn (length grew), a missing sticky
+// id, or a sibling with a strictly better rank (live over a sticky
+// failure) re-resolves — that is the #525 path.
+export interface SubbotSelectionSticky {
+  id: string;
+  count: number;
+}
+
+// resolveSelectedSubbotChild picks which child run an inline subbot
+// frame displays. An explicit user pick is kept while that child still
+// exists. Else the rank+position default is computed, and a still-
+// present sticky id is kept only while the list has not grown AND its
+// rank is no worse than that default — so equal-rank siblings stay put,
+// but a sticky failure yields to a sibling that is still running (or a
+// later human gate). Never defaults to children[0] (oldest) — a
+// historical failure would paint the current pipeline red (issue #525).
+export function resolveSelectedSubbotChild(
+  children: RunSummary[],
+  picked?: string | null,
+  sticky?: SubbotSelectionSticky | null,
+): string | undefined {
+  if (children.length === 0) return undefined;
+  if (picked && children.some((c) => c.id === picked)) return picked;
+  let best = children[0]!;
+  for (let i = 1; i < children.length; i++) {
+    const c = children[i]!;
+    if (subbotDefaultRank(c.status) <= subbotDefaultRank(best.status)) best = c;
+  }
+  if (sticky && children.length <= sticky.count) {
+    const stuck = children.find((c) => c.id === sticky.id);
+    if (
+      stuck &&
+      subbotDefaultRank(stuck.status) <= subbotDefaultRank(best.status)
+    ) {
+      return stuck.id;
+    }
+  }
+  return best.id;
+}
