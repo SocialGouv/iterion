@@ -314,6 +314,17 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err != nil {
 		return err
 	}
+	// The ENGINE's context needs the credentials too, not only the
+	// executor's: declared file secrets are mounted into the sandbox at
+	// run start, from the ctx handed to Run. Without this the mount is
+	// skipped and an optional secret silently never reaches the bot.
+	if localStore, localSealer, lsErr := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger); lsErr != nil {
+		return lsErr
+	} else if stamped, sErr := runview.StampLocalCredentials(ctx, wf, localStore, localSealer, logger); sErr != nil {
+		return sErr
+	} else {
+		ctx = stamped
+	}
 	if c, ok := executor.(io.Closer); ok {
 		defer func() {
 			if cerr := c.Close(); cerr != nil {
