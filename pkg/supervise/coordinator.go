@@ -59,11 +59,15 @@ type Coordinator struct {
 
 	// --- owned by the run() goroutine; no locks ---
 	startedAt time.Time
-	// activeNodes tracks every currently-executing node (parallel
-	// branches run concurrently); a single "the active node" would be
-	// permanently cleared by an unrelated sibling finishing while the
-	// watched node still runs.
-	activeNodes map[string]struct{}
+	// activeByBranch tracks the currently-executing node of each branch
+	// (parallel branches run concurrently; within one branch the engine
+	// executes nodes sequentially). Keying by branch is what makes the
+	// view self-healing: both observer transports drop events
+	// non-blockingly on a full buffer, so a node_finished can be lost
+	// while evaluate() blocks the run() goroutine — the branch's next
+	// node_started then supersedes the stale entry instead of leaving
+	// the watched node armed forever. The main path is branch "".
+	activeByBranch map[string]string
 	// lastWatchedActive is the most recently started watched node —
 	// the injection scope for a node-scoped supervisor.
 	lastWatchedActive string
@@ -100,16 +104,16 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		eval = NewLLMEvaluator()
 	}
 	return &Coordinator{
-		obs:         obs,
-		inj:         inj,
-		runID:       runID,
-		spec:        spec.withDefaults(),
-		eval:        eval,
-		logger:      logger,
-		activeNodes: make(map[string]struct{}),
-		monitors:    append([]Monitor(nil), spec.Monitors...),
-		seedCount:   len(spec.Monitors),
-		done:        make(chan struct{}),
+		obs:            obs,
+		inj:            inj,
+		runID:          runID,
+		spec:           spec.withDefaults(),
+		eval:           eval,
+		logger:         logger,
+		activeByBranch: make(map[string]string),
+		monitors:       append([]Monitor(nil), spec.Monitors...),
+		seedCount:      len(spec.Monitors),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -325,7 +329,14 @@ func (c *Coordinator) ingest(evt *store.Event) {
 	switch evt.Type {
 	case store.EventNodeStarted:
 		if evt.NodeID != "" {
-			c.activeNodes[evt.NodeID] = struct{}{}
+			// Overwrite: within a branch nodes are sequential, so this
+			// start supersedes the branch's previous node even if its
+			// node_finished was dropped (self-heal).
+			superseded := c.activeByBranch[evt.BranchID]
+			c.activeByBranch[evt.BranchID] = evt.NodeID
+			if superseded != "" && superseded == c.lastWatchedActive && superseded != evt.NodeID {
+				c.rescanLastWatchedActive()
+			}
 		}
 		// A freshly-started watched node re-arms a done supervisor.
 		if c.spec.watchesNode(evt.NodeID) {
@@ -333,21 +344,30 @@ func (c *Coordinator) ingest(evt *store.Event) {
 			c.lastWatchedActive = evt.NodeID
 		}
 	case store.EventNodeFinished:
-		delete(c.activeNodes, evt.NodeID)
+		// Guard against a stale finished for a node this branch already
+		// superseded: only the branch's CURRENT node clears the entry.
+		if c.activeByBranch[evt.BranchID] == evt.NodeID {
+			delete(c.activeByBranch, evt.BranchID)
+		}
 		if evt.NodeID == c.lastWatchedActive {
-			c.lastWatchedActive = ""
-			// Another watched node may still be running.
-			for id := range c.activeNodes {
-				if c.spec.watchesNode(id) {
-					c.lastWatchedActive = id
-					break
-				}
-			}
+			c.rescanLastWatchedActive()
 		}
 	}
 	c.recent = append(c.recent, RenderEvent(evt))
 	if len(c.recent) > recentEventsCap {
 		c.recent = c.recent[len(c.recent)-recentEventsCap:]
+	}
+}
+
+// rescanLastWatchedActive repoints lastWatchedActive at any still-active
+// watched node (another branch may run one), or clears it.
+func (c *Coordinator) rescanLastWatchedActive() {
+	c.lastWatchedActive = ""
+	for _, id := range c.activeByBranch {
+		if c.spec.watchesNode(id) {
+			c.lastWatchedActive = id
+			break
+		}
 	}
 }
 
@@ -357,7 +377,7 @@ func (c *Coordinator) armed() bool {
 	if len(c.spec.Watches) == 0 {
 		return true
 	}
-	for id := range c.activeNodes {
+	for _, id := range c.activeByBranch {
 		if c.spec.watchesNode(id) {
 			return true
 		}

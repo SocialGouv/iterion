@@ -166,6 +166,18 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	return s.startInProcess(parent, runID, spec, true)
 }
 
+// hookEventObservers builds ExecutorSpec.EventObservers for every
+// in-process execution (launch AND resume): the caller's extra observers
+// plus the broker. Backend-hook events (assistant_text, tool_*, llm_*)
+// never fire the engine's observer, so without the broker here a
+// declared supervisor observing via ObserveRun — and any live broker
+// subscriber of an in-process run — is blind to the agent's own words.
+// Subscribers dedup by Seq, and the two event sets are disjoint, so
+// nothing arrives twice.
+func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Event) {
+	return append(append([]func(store.Event){}, extra...), s.broker.Publish)
+}
+
 // startInProcess compiles + builds + spawns a run in this process. It is
 // the shared body of an immediate Launch and the scheduler's start of a
 // previously-queued root. precreate controls doc creation: true mints a
@@ -197,17 +209,10 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 	// via runtime.WithEventObserver (wired in engineOptions from
 	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow: wf,
-		Vars:     spec.Vars,
-		Store:    s.store,
-		// The broker rides the hook seam too: backend-hook events
-		// (assistant_text, tool_*, llm_*) never fire the engine's
-		// observer, so without this a declared supervisor observing via
-		// ObserveRun — and any live broker subscriber of an in-process
-		// run — is blind to the agent's own words. Subscribers dedup by
-		// Seq, and the two event sets are disjoint, so nothing arrives
-		// twice.
-		EventObservers: append(append([]func(store.Event){}, spec.ExtraObservers...), s.broker.Publish),
+		Workflow:       wf,
+		Vars:           spec.Vars,
+		Store:          s.store,
+		EventObservers: s.hookEventObservers(spec.ExtraObservers),
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -438,8 +443,12 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: s.storeDir,
-		Inbox:    s.inboxBinder(),
-		AsyncAsk: s.asyncAskBinder(),
+		// Same hook-seam wiring as a launch: a resume-spawned supervisor
+		// (or any live subscriber) is otherwise blind to assistant_text /
+		// tool_* events, which never fire the engine's observer.
+		EventObservers: s.hookEventObservers(nil),
+		Inbox:          s.inboxBinder(),
+		AsyncAsk:       s.asyncAskBinder(),
 		// Resolved, not read raw: only a cloud launch persists BotID, so a
 		// studio-launched bundle would otherwise fall back to the workflow
 		// name here and aim the resumed run at a different space than its own
