@@ -1183,7 +1183,7 @@ tool notify:
   output: notify_output
   language: py
   script: |
-    import json, os, urllib.request
+    import json, os, sys, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     message = {{input.message_markdown}}
     sinks = {{input.sinks}} or []
@@ -1208,8 +1208,11 @@ tool notify:
                           'username': s.get('username') or 'Vigie',
                           'icon_emoji': s.get('icon_emoji') or ':telescope:'}))
     if dry_run:
+        ## stderr only: the engine parses this node's WHOLE stdout as one
+        ## JSON object — an extra stdout line breaks the output and the
+        ## `when posted` edges dead-end the run (NO_OUTGOING_EDGE).
         for name, p in payloads:
-            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + ' chars=' + str(len(text)))
+            print('DRY-RUN -> webhook=' + name + ' channel=' + p['channel'] + ' chars=' + str(len(text)), file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0, 'targets': [n for n, _ in payloads],
              'summary': 'dry-run: ' + str(len(payloads)) + ' payload(s) prepared, nothing posted'})
     whmap = {}
@@ -1251,7 +1254,7 @@ tool notify_silence:
   output: notify_output
   language: py
   script: |
-    import json, os, datetime, subprocess, urllib.request
+    import json, os, sys, datetime, subprocess, urllib.request
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     category = {{input.category}}
     digest_title = {{input.digest_title}}
@@ -1292,7 +1295,7 @@ tool notify_silence:
                   'icon_emoji': ':warning:'}) for s in sinks]
     if dry_run:
         for name, p in payloads:
-            print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'])
+            print('DRY-RUN silence -> webhook=' + name + ' channel=' + p['channel'], file=sys.stderr)
         out({'posted': False, 'dry_run': True, 'delivered': 0,
              'targets': [n for n, _ in payloads],
              'summary': 'dry-run: silence alert prepared for ' + category +
@@ -1344,7 +1347,7 @@ tool notify_silence:
                 # posted, and refusing to stamp costs one duplicate warning
                 # where committing someone else's staged work costs trust.
                 print('feed-watch: not stamping silence.json -- staged path(s) outside ' +
-                      repr(state_dir) + ': ' + ', '.join(outside[:5]))
+                      repr(state_dir) + ': ' + ', '.join(outside[:5]), file=sys.stderr)
             elif subprocess.run(['git', '-C', ws, 'diff', '--cached', '--quiet']).returncode != 0:
                 subprocess.run(['git', '-C', ws, 'commit', '-m',
                                 'chore(feed-watch): silence alert ' + category +
@@ -1357,14 +1360,14 @@ tool notify_silence:
                     if subprocess.run(['git', '-C', ws, 'pull', '--rebase', '--autostash',
                                        'origin', br]).returncode != 0:
                         subprocess.run(['git', '-C', ws, 'rebase', '--abort'])
-                        print('feed-watch: could not push silence.json (rebase conflict)')
+                        print('feed-watch: could not push silence.json (rebase conflict)', file=sys.stderr)
                         break
                 else:
-                    print('feed-watch: could not push silence.json after 5 attempts')
+                    print('feed-watch: could not push silence.json after 5 attempts', file=sys.stderr)
         except Exception as e:
             # Best effort: an unstamped window costs one duplicate alert,
             # never the alert itself.
-            print('feed-watch: could not persist silence.json: ' + str(e)[:200])
+            print('feed-watch: could not persist silence.json: ' + str(e)[:200], file=sys.stderr)
     # A warning that reached NOBODY is the very silent-green outcome this
     # node exists to end: the operator would see one more finished run and
     # learn nothing, for another window. Stamp first (retrying an

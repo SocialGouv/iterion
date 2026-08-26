@@ -445,7 +445,7 @@ print(json.dumps({'deps': uniq, 'ecosystems': ecos,
 ## signals. Adding an ecosystem = drop a lang-<id>.md skill with a
 ## heuristics block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
-  command: `mkdir -p {{vars.scan_dir}} && ECOS='{{input.ecosystems}}' SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
+  command: `mkdir -p {{vars.scan_dir}} && ECOS={{input.ecosystems}} SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
 import os, sys, json, re, subprocess
 raw = os.environ.get('ECOS', '[]') or '[]'
 try:

@@ -23,8 +23,15 @@ compute side:
   expr:
     n: "outputs.prep.n"
 
+## Timeout is well ABOVE the 5s awaitAnswersPollInterval so the level-poll
+## fallback wins the select over the deadline even under timer starvation
+## on a loaded pod (a same-duration timeout races the poll ticker and, at
+## coincident firing times, `select` picks randomly — a 50/50 timeout on
+## an already-answered question). The in-process doorbell (rung by the
+## test's NotifyInteractionAnswered) still releases the branch within ms
+## on the happy path; this bound only matters as the belt-and-braces.
 await_answers gate:
-  timeout: "5s"
+  timeout: "30s"
 
 compute gather:
   await: wait_all

@@ -154,7 +154,13 @@ jobs:
           go-version-file: go.mod
 
       - name: Race tests (unit + e2e)
-        run: go test -race -mod=vendor -timeout 600s ./...
+        # 900s, not the plain job's 600s: -race runs the e2e package 2-3x
+        # slower (~170-200s plain → 400-600s under -race), so 600s left ZERO
+        # headroom and a loaded runner crossed it — a 10m panic dump naming
+        # whichever test happened to be in flight (seen on main 2026-08-25
+        # and on the pr-523 merge-group). The number bounds a HANG, not a
+        # slow machine; the 20-minute job budget still caps the whole run.
+        run: go test -race -mod=vendor -timeout 900s ./...
 
   mongo-conformance:
     # Runs the pkg/store/mongo conformance harness against a real Mongo
@@ -244,7 +250,8 @@ jobs:
             ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
             ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/... \
             ./pkg/secrets/... ./pkg/orgusage/... ./pkg/botsource/... \
-            ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/...
+            ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
+            ./pkg/usagecap/...
 
   cloud-e2e:
     # Builds the iterion image, spins kind + Helm-installs the cloud

@@ -58,6 +58,59 @@ a credential and the deployment that owns it, not a run — a bot able to lift
 the guard would not be a guard. `ITERION_USAGE_CAP=off` is the escape hatch,
 and it belongs to whoever runs the deployment.
 
+## Changing the caps at runtime (no restart)
+
+The env vars above are **defaults**. On a cloud deployment the two
+percentages are also a platform-scoped runtime-settings record (Mongo
+`platform_settings`, same tier as the platform LLM credentials), mutable
+through the super-admin API — so retuning a cap in production is one call,
+not a `kubectl set env` on two deployments plus a rolling restart:
+
+```sh
+iterion remote admin caps                       # record + env + EFFECTIVE + source
+iterion remote admin caps set --five-hour 80 --week 70
+iterion remote admin caps set --clear-week      # back to the env default
+```
+
+The raw surface is `GET/PUT /api/admin/settings/usage-caps` (super-admin,
+the same guard as the platform LLM-credential routes). The PUT has **merge
+semantics**: a field present with a number sets that override, present with
+`null` clears it, absent leaves it untouched — a call naming one window can
+never silently clear the other. Values must be integers 0–100 (0 = no cap);
+anything else — including an unknown field name — is rejected `400` with the
+reason. Every update lands in the platform audit log
+(`platform.settings.usage_caps.updated`) with old value, new value and the
+caller.
+
+**Propagation bound: ≤ 30 seconds.** Both enforcement points — the server's
+launch-time pre-flight and the runner's claim pre-flight + mid-run guard —
+resolve the effective policy through a TTL-cached lookup
+(`usagecap.Resolver`, 30s TTL), re-read **per evaluation**. One DB record is
+the single source of truth for every replica of both deployments, which ends
+the class of divergence where one deployment rolled with a new env value and
+the other did not. A run already in flight picks a tightened cap up at its
+next reading, within the same bound. The pod that served the update is
+coherent immediately (its cache is invalidated in the handler).
+
+Semantics that stay put:
+
+- **Env fallback.** No record (or a cleared field) → the env value applies.
+  A deployment that never touches the API behaves exactly as its env vars
+  say.
+- **Only the percentages are runtime-mutable.** The soft/hard **modes** and
+  the `ITERION_USAGE_CAP` kill switch stay env-only: they encode the
+  deployment's enforcement posture, and a posture change should be witnessed
+  by a deploy. In particular the kill switch **wins** — with
+  `ITERION_USAGE_CAP=off`, a DB percentage stays inert, so a runtime write
+  can never re-arm a guard the operator explicitly disarmed.
+- **Verification without DB access.** `/healthz` (and `/readyz`) echo the
+  EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
+  `db+env`) — curl it after a change and watch the new number appear within
+  the propagation bound.
+- **Settings reads fail toward the last-known value** (env defaults before
+  the first successful read), retried once per TTL window: a settings-store
+  blip changes nothing abruptly in either direction.
+
 ### Which windows a cap governs
 
 The provider reports six windows. `five_hour` is the 5h cap; `seven_day`,

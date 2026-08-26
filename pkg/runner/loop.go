@@ -55,6 +55,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -454,11 +455,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
-	// UsageCapPolicy is the operator's ceiling on the LLM subscription's
-	// own usage windows (pkg/usagecap), resolved machine-wide at startup.
-	// The zero value caps nothing, which leaves runs bounded only by the
-	// provider's wall — the historical behaviour.
-	UsageCapPolicy usagecap.Policy
+	// UsageCapSource answers the operator's ceiling on the LLM
+	// subscription's own usage windows (pkg/usagecap) — consulted per
+	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
+	// runtime cap change effective on live runs within its TTL. Wrap a
+	// fixed policy in usagecap.StaticPolicy for the env-only shape. nil
+	// caps nothing, which leaves runs bounded only by the provider's
+	// wall — the historical behaviour.
+	UsageCapSource usagecap.PolicySource
 	// UsageCaps is where readings of those windows are shared across
 	// replicas, so a pod can park a run before spending anything on
 	// rediscovering a ceiling another pod already hit. nil disables the
@@ -1346,7 +1350,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
+	// DSL-declared supervisors run on the pod alongside the engine —
+	// this path builds its engine directly (no runview.Launch), so it
+	// wires the hub + coordinators itself, exactly like the CLI. The hub
+	// is created BEFORE the executor so it also rides the backend-hook
+	// seam (the only one carrying assistant_text / tool events). The
+	// run-level override travels on the queue (msg.Supervisors); the
+	// pod's ITERION_SUPERVISORS is the layer below.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(msg.Supervisors, len(wf.Supervisors), runLogger) {
+		superviseHub = supervise.NewEventHub()
+	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger, hookObservers)
 	if err != nil {
 		return err
 	}
@@ -1446,6 +1465,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	if superviseHub != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
+		defer stopSup()
+	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
@@ -1645,7 +1670,7 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
@@ -1666,6 +1691,9 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		Vars:     vars,
 		Store:    usage,
 		RunID:    msg.RunID,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
+		// this seam — the declared-supervisor hub rides it.
+		EventObservers: hookObservers,
 		// The run-scoped logger (teed into the RunLogStore) — the executor
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would
@@ -1683,6 +1711,10 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
+		// The operator's launch-time model/backend pins, replayed from the
+		// wire. Before this, the cloud path persisted them display-only:
+		// the studio showed an override the delegates never honoured.
+		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -1726,4 +1758,24 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// modelOverridesFromMsg folds the wire pins into the executor's override
+// set — the runner-side twin of runview's launch-entry fold, so a cloud
+// run resolves per-node models exactly like a local launch with the same
+// flags.
+func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
+	var o model.ModelOverrides
+	for _, e := range entries {
+		if e.Backend != "" {
+			o.SetBackend(e.Selector, e.Backend)
+		}
+		if e.Model != "" {
+			o.SetModel(e.Selector, e.Model)
+		}
+		if e.Provider != "" {
+			o.SetProvider(e.Selector, e.Provider)
+		}
+	}
+	return o
 }

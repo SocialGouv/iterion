@@ -321,6 +321,11 @@ export interface FallbackDecl {
   provider?: string;
   on?: string[];
   metered?: boolean;
+  // "skip" = terminal degrade route (ADR-091): the node completes with a
+  // zero-value output stamped _skipped instead of executing a backend.
+  action?: string;
+  // Optional vars-only expr gating the route at dispatch (ADR-091).
+  when?: string;
 }
 
 export interface AgentDecl {

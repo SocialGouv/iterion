@@ -103,12 +103,16 @@ func TestGateSweep_WindowIsBoundedOnBothSides(t *testing.T) {
 	}
 }
 
-// The discrimination the repeated offer forced, in both directions. A
-// synthetic failure is not a verdict, so it does not stand the repair down in
-// general — that is what lets a SECOND death on the same head (a relaunched
-// run dying too) escalate instead of mistaking the first death's marker for an
-// answer. But the same run offered again is already answered. The target URL
-// names the run the failure speaks for, which separates the two without
+// The discrimination the repeated offer forced. A synthetic failure is not a
+// verdict, so it does not stand the REPAIR down in general — a SECOND death on
+// the same head (a relaunched run dying too) still walks the relaunch tail and
+// escalates (pinned end-to-end in TestGateRelaunch) instead of mistaking the
+// first death's marker for an answer. But the STATUS WRITE stands down either
+// way: one marker per head is enough, and re-posting from a run the marker
+// does not speak for is the storm — two dead runs re-pointing the target URL
+// at themselves every sweep tick, 116 writes on one head in 15 minutes
+// (buildkit-operator#21, 2026-08-17). The target URL names the run the
+// failure speaks for, which separates "mine" from "another's" without
 // bookkeeping a second replica would not share.
 func TestGateReconcile_SyntheticFailureStandsDownOnlyForItsOwnRun(t *testing.T) {
 	interruption := func(targetURL string) forge.CommitStatus {
@@ -132,7 +136,7 @@ func TestGateReconcile_SyntheticFailureStandsDownOnlyForItsOwnRun(t *testing.T) 
 			t.Fatalf("posted %d statuses, want 0 — every sweep pass would re-post and re-enter the recovery", gc.setCalls)
 		}
 	})
-	t.Run("another run's — the second death must still escalate", func(t *testing.T) {
+	t.Run("another run's — no re-post, the storm lives there", func(t *testing.T) {
 		gc := &listingGateClient{
 			fakeGateClient: fakeGateClient{headSHA: "deadbeef"},
 			statuses:       []forge.CommitStatus{interruption("https://iterion.test/runs/some-earlier-run")},
@@ -141,8 +145,8 @@ func TestGateReconcile_SyntheticFailureStandsDownOnlyForItsOwnRun(t *testing.T) 
 		if err := s.reconcileGateForRun(context.Background(), terminalEvent(runID)); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
-		if gc.setCalls != 1 {
-			t.Fatalf("posted %d statuses, want 1 — the repair goes silent exactly where the recovery runs out", gc.setCalls)
+		if gc.setCalls != 0 {
+			t.Fatalf("posted %d statuses, want 0 — re-posting over another run's marker is the status storm", gc.setCalls)
 		}
 	})
 }

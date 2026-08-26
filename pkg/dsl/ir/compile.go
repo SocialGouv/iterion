@@ -1100,6 +1100,7 @@ func (c *compiler) compileTools() {
 			} else {
 				cmdRefs = refs
 			}
+			c.checkQuotedCommandRefs(t.Name, t.Command)
 		}
 
 		var scriptRefs []*Ref
@@ -1131,6 +1132,10 @@ func (c *compiler) compileTools() {
 			} else {
 				postcondRefs = refs
 			}
+			// Same template machinery as `command:`, so the same cancel — and
+			// a postcondition is the deterministic truth oracle of a Verified
+			// Action, which makes a corrupted value worse here than anywhere.
+			c.checkQuotedCommandRefs(t.Name+" postcondition", t.Postcondition)
 		}
 		policy := t.Policy
 		if policy == "" && t.Postcondition != "" {
@@ -2063,5 +2068,70 @@ func computeLoopBodies(w *Workflow) {
 		}
 		loop.Body = body
 		loop.Entries = entries
+	}
+}
+
+// refInQuotes reports each template ref of a tool `command:` that sits inside
+// an author-written quoted span — single OR double.
+//
+// The runtime escapes a ref by wrapping the value in single quotes, and
+// neither kind of author quote survives that:
+//   - single: the substituted quote CLOSES the author's, and the value
+//     becomes bare shell syntax (`BASE_REF=”x;id;#”` runs `id`);
+//   - double: the runtime's quotes stay literal, so a benign value is
+//     CORRUPTED (`BASE_REF="{{ref}}"` with `main` hands the interpreter
+//     `'main'`), and a value carrying `"` closes the author's span and
+//     injects just the same.
+//
+// Both halves are reproduced against the real resolver in
+// model.TestAuthorQuotedRefsAreNotContained — an earlier version of this
+// check called the double-quoted shape "contained", which was wrong in both
+// directions and said so in three places.
+//
+// A scanner, not a regex: only a left-to-right walk tells an OPENING quote
+// from a closing one, and a regex that cannot will match the text BETWEEN two
+// quoted words and report a hazard that is not there.
+func refInQuotes(command string) []string {
+	var hits []string
+	var quote byte // 0 = outside quotes
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case quote == 0 && (ch == '\'' || ch == '"'):
+			quote = ch
+		case quote != 0 && ch == quote:
+			quote = 0
+		case quote == '"' && ch == '\\' && i+1 < len(command):
+			i++ // an escaped byte inside double quotes closes nothing
+		case quote != 0 && ch == '{' && i+1 < len(command) && command[i+1] == '{':
+			if end := strings.Index(command[i:], "}}"); end > 0 {
+				hits = append(hits, command[i:i+end+2])
+				i += end + 1
+			}
+		}
+	}
+	return hits
+}
+
+// checkQuotedCommandRefs flags a ref the author quoted, because the runtime
+// quotes it too — and the two quotings do not nest, they CANCEL.
+//
+// resolveCommandTemplate shell-escapes every ref by wrapping the value in
+// single quotes. Around an already-quoted ref the substituted opening quote
+// CLOSES the author's, so the value lands as bare shell syntax:
+// `BASE_REF='{{vars.base_ref}}'` with the value `x;id;#` resolves to
+// `BASE_REF=”x;id;#”` and the shell runs `id`. On a forge-controlled var
+// (a fork PR's branch name, a title) that is command execution; on a benign
+// value it merely works by accident, which is why the shape survives review.
+//
+// A warning rather than an error: the shape is inert for values without shell
+// metacharacters, so a repo full of them still compiles and runs while it is
+// being cleaned up. The fix is always the same — drop the author's quotes.
+func (c *compiler) checkQuotedCommandRefs(node, command string) {
+	for _, ref := range refInQuotes(command) {
+		c.warnf(DiagQuotedCommandRef,
+			"tool %q command: %s sits inside quotes you wrote — the runtime already shell-quotes a ref, and the two CANCEL "+
+				"(the value then lands as shell syntax; on a forge-controlled value that is command execution). Remove the surrounding quotes.",
+			node, ref)
 	}
 }

@@ -274,6 +274,8 @@ type jsonFallbackDecl struct {
 	Provider string   `json:"provider,omitempty"`
 	On       []string `json:"on,omitempty"`
 	Metered  bool     `json:"metered,omitempty"`
+	Action   string   `json:"action,omitempty"`
+	When     string   `json:"when,omitempty"`
 }
 
 type jsonCursorBlock struct {
@@ -952,6 +954,7 @@ func fallbacksToJSON(fbs []*FallbackDecl) []*jsonFallbackDecl {
 		out = append(out, &jsonFallbackDecl{
 			Name: f.Name, Backend: f.Backend, Model: f.Model,
 			Provider: f.Provider, On: f.On, Metered: f.Metered,
+			Action: f.Action, When: f.When,
 		})
 	}
 	return out
@@ -969,6 +972,7 @@ func fallbacksFromJSON(jfbs []*jsonFallbackDecl) []*FallbackDecl {
 		out = append(out, &FallbackDecl{
 			Name: jf.Name, Backend: jf.Backend, Model: jf.Model,
 			Provider: jf.Provider, On: jf.On, Metered: jf.Metered,
+			Action: jf.Action, When: jf.When,
 		})
 	}
 	return out

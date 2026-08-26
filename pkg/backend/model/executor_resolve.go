@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -91,6 +92,11 @@ type chainElement struct {
 	// package default; it is only ever non-nil for a `fallbacks:`
 	// element, since a legacy chain falls through on any error.
 	On []delegate.FallbackCategory
+	// Skip marks an `action: skip` terminal route (ir.FallbackActionSkip):
+	// reaching it completes the node with a zero-value output stamped
+	// `_skipped` instead of executing anything. Always last in the chain
+	// (compile-time C173).
+	Skip bool
 }
 
 // defaultFallbackTriggers is the `on:` set a `fallbacks:` route gets
@@ -129,11 +135,15 @@ var defaultFallbackTriggers = []delegate.FallbackCategory{
 func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 	chain := e.resolveProviderChain(node)
 	for _, fb := range nodeFallbacks(node) {
+		if !e.fallbackWhenActive(node.NodeID(), fb) {
+			continue
+		}
 		el := chainElement{
 			Label:    fb.Name,
 			Backend:  strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Backend)),
 			Provider: strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Provider)),
 			Model:    strings.TrimSpace(ir.ExpandEnvWithDefault(fb.Model)),
+			Skip:     fb.Action == ir.FallbackActionSkip,
 		}
 		if el.Provider == "auto" {
 			el.Provider = "" // explicit auto → process-env precedence
@@ -142,6 +152,47 @@ func (e *ClawExecutor) resolveChain(node ir.Node) []chainElement {
 		chain = append(chain, el)
 	}
 	return dedupeChain(chain, e.resolveBackendName(node), e.baselineModel(node))
+}
+
+// fallbackWhenActive evaluates a route's optional `when:` gate against the
+// run's vars. The compiler guarantees the expr parses and reads only
+// vars.* (C173), so a runtime failure here is exceptional; it deactivates
+// the route WITH a warning rather than failing the node — a broken gate on
+// a fallback must not take down the primary it exists to back up.
+func (e *ClawExecutor) fallbackWhenActive(nodeID string, fb ir.Fallback) bool {
+	if strings.TrimSpace(fb.When) == "" {
+		return true
+	}
+	ast, err := expr.Parse(fb.When)
+	if err == nil {
+		var active bool
+		active, err = ast.EvalBool(&expr.Context{
+			Vars: func(path []string) any { return lookupPath(e.vars, path) },
+		})
+		if err == nil {
+			return active
+		}
+	}
+	if e.logger != nil {
+		e.logger.Warn("[%s] fallback %q: when: %q failed to evaluate (%v) — route treated as inactive",
+			nodeID, fb.Name, fb.When, err)
+	}
+	return false
+}
+
+// lookupPath walks a dotted path into a nested map, returning nil when any
+// segment is absent — the same "absent path is nil" contract the expr
+// evaluator expects from its namespaces.
+func lookupPath(m map[string]any, path []string) any {
+	var cur any = m
+	for _, seg := range path {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = mm[seg]
+	}
+	return cur
 }
 
 // baselineModel is the model an element that pins none of its own runs:
@@ -195,7 +246,10 @@ func dedupeChain(chain []chainElement, nodeBackend, baseModel string) []chainEle
 	}
 	out := chain[:1]
 	for _, el := range chain[1:] {
-		if sameRoute(effective(out[len(out)-1]), effective(el)) {
+		// A skip element executes nothing, so it can never "re-issue the
+		// call its predecessor just made" — and its empty backend/model
+		// would otherwise compare equal to the node's own route.
+		if !el.Skip && !out[len(out)-1].Skip && sameRoute(effective(out[len(out)-1]), effective(el)) {
 			continue
 		}
 		out = append(out, el)

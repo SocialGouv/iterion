@@ -33,6 +33,7 @@
 package usagecap
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -284,29 +285,43 @@ func evaluate(r Reading, pol Policy) Decision {
 // reading per window, evaluates each new one against the policy, and
 // publishes what it learns so other processes can pre-flight against it.
 //
+// The policy is consulted through a PolicySource on EVERY evaluation, so a
+// runtime settings change (the DB-backed record) reaches a guard already
+// watching a long run within the source's TTL — no restart, no re-launch.
+//
 // Safe for concurrent use: readings arrive on a backend's stream goroutine
 // while the run executes elsewhere.
 type Guard struct {
-	pol   Policy
+	src   PolicySource
 	sink  func(Reading)
 	mu    sync.Mutex
 	seen  map[Window]Reading
 	fired bool
 }
 
-// NewGuard builds a guard. sink, when non-nil, receives every reading —
-// the seam the runner uses to publish into a shared Store. It is called
-// on the observing goroutine and must not block.
+// NewGuard builds a guard over a fixed policy. sink, when non-nil,
+// receives every reading — the seam the runner uses to publish into a
+// shared Store. It is called on the observing goroutine and must not
+// block.
 func NewGuard(pol Policy, sink func(Reading)) *Guard {
-	return &Guard{pol: pol, sink: sink, seen: map[Window]Reading{}}
+	return NewGuardWithSource(StaticPolicy(pol), sink)
 }
 
-// Policy returns the guard's configuration.
+// NewGuardWithSource builds a guard that re-reads its policy per
+// evaluation — the cloud runner passes the DB-backed Resolver here.
+func NewGuardWithSource(src PolicySource, sink func(Reading)) *Guard {
+	if src == nil {
+		src = StaticPolicy(Policy{})
+	}
+	return &Guard{src: src, sink: sink, seen: map[Window]Reading{}}
+}
+
+// Policy returns the guard's current effective configuration.
 func (g *Guard) Policy() Policy {
 	if g == nil {
 		return Policy{}
 	}
-	return g.pol
+	return g.src.Effective(context.Background())
 }
 
 // Observe records a reading and reports what the policy makes of it. A nil
@@ -329,7 +344,7 @@ func (g *Guard) Observe(r Reading) Decision {
 		g.sink(r)
 	}
 
-	d := evaluate(r, g.pol)
+	d := evaluate(r, g.src.Effective(context.Background()))
 	if d.Stop {
 		g.mu.Lock()
 		g.fired = true

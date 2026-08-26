@@ -13,6 +13,16 @@ func TestValidateBranchName(t *testing.T) {
 		"v1.2.3",
 		"hot-fix",
 		"a.b.c/d_e",
+		// git check-ref-format accepts all of these; the old allowlist
+		// refused them and made Renovate's grouped branches unreviewable.
+		"renovate/npm-(non-major)",
+		"renovate/major-(major)-updates",
+		"feat+plus",
+		"topic@2024",
+		"a=b",
+		"héllo-branche",
+		"_under",
+		"deps/bump#42",
 	}
 	for _, name := range valid {
 		if err := ValidateBranchName(name); err != nil {
@@ -27,9 +37,13 @@ func TestValidateBranchName(t *testing.T) {
 		{"", "empty"},
 		{"-force", "leading dash (flag injection)"},
 		{"--force", "looks like a long flag"},
+		{"+force", "leading plus (refspec force sigil at fetch call sites)"},
+		{"HEAD", "git check-ref-format --branch refuses it"},
 		{"/abs", "leading slash"},
 		{".hidden", "leading dot"},
-		{"_under", "leading underscore"},
+		{"x/.hidden", "component starting with dot"},
+		{"x.lock/y", "component ending with .lock"},
+		{"@", "the single character @"},
 		{"feat with space", "space"},
 		{"feat\ttab", "tab"},
 		{"feat:colon", "colon (git ref-format)"},

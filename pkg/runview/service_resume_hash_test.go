@@ -63,6 +63,10 @@ func (*resumeHashPublisher) CancelRun(context.Context, string) error {
 	return nil
 }
 
+func (*resumeHashPublisher) CancelRunWithReason(context.Context, string, string) error {
+	return nil
+}
+
 func (p *resumeHashPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
 	p.resumeCalls++
 	return nil

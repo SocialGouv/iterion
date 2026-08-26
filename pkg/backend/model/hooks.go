@@ -858,6 +858,12 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		"parse_fallback":       info.ParseFallback,
 		"formatting_pass_used": info.FormattingPassUsed,
 	}
+	if info.Skipped {
+		// `backend` above is the FAILED route's (the spend's origin, which
+		// the runner's cost accumulator keys on) — this key is what tells a
+		// reader nothing actually served the node.
+		data["skipped"] = true
+	}
 	putDelegateModelFields(data, info)
 	// Omitted when the price table did not know the model, so an observer
 	// can tell "no cost data" from a measured $0 by the key's absence.
@@ -868,6 +874,13 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 		data["stderr"] = iterlog.Truncate(info.Stderr, maxFieldSize)
 	}
 	h.emit(nodeID, store.EventDelegateFinished, data)
+	if info.Skipped {
+		// Nothing served: no served-model record, no drift claim. The
+		// spend stays on the event above for the runner's accumulators.
+		h.logger.Logf(iterlog.LevelWarn, "⏭️", "Delegation SKIPPED [%s]: no route served — zero-value output; spend from failed route(s): %d tokens",
+			nodeID, info.Tokens)
+		return
+	}
 	h.emitModelDrift(nodeID, info)
 	h.recordServed(nodeID, info)
 
@@ -960,6 +973,12 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 	if !info.CooldownUntil.IsZero() {
 		data["cooldown_until"] = info.CooldownUntil.UTC().Format(time.RFC3339)
 	}
+	if info.ToSkip {
+		// A terminal skip serves nothing: name the action instead of a
+		// misleading to_backend.
+		data["to_action"] = "skip"
+		data["to_backend"] = ""
+	}
 	if info.Err != nil {
 		data["error"] = info.Err.Error()
 	}
@@ -969,16 +988,22 @@ func (h *storeHooks) onProviderFallback(nodeID string, info ProviderFallbackInfo
 	if info.Err != nil {
 		errMsg = info.Err.Error()
 	}
+	toLabel := fallbackRouteLabel(info.ToBackend, info.To, info.ToModel)
+	if info.ToSkip {
+		// A skip route has no backend/model: rendering it through the
+		// route label would print "?". Name the action instead.
+		toLabel = "skip (no route serves — zero-value output)"
+	}
 	if info.Cooldown {
 		h.logger.Info("Model fallback [%s]: %s → %s (%s cooldown until %s)",
 			nodeID, fallbackRouteLabel(info.FromBackend, info.From, info.FromModel),
-			fallbackRouteLabel(info.ToBackend, info.To, info.ToModel), info.Reason,
+			toLabel, info.Reason,
 			info.CooldownUntil.UTC().Format(time.RFC3339))
 		return
 	}
 	h.logger.Warn("Model fallback [%s]: %s → %s (%s): %s",
 		nodeID, fallbackRouteLabel(info.FromBackend, info.From, info.FromModel),
-		fallbackRouteLabel(info.ToBackend, info.To, info.ToModel), info.Reason, errMsg)
+		toLabel, info.Reason, errMsg)
 }
 
 // fallbackRouteLabel renders one side of a fall-through for the log line

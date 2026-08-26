@@ -74,4 +74,43 @@ func TestBuildAppManifest(t *testing.T) {
 	if active, _ := m.HookAttributes["active"].(bool); active {
 		t.Fatal("hook attributes should disable the app-level webhook")
 	}
+	// Security-read is opt-in: the baseline must never request it.
+	if _, ok := m.DefaultPermissions["vulnerability_alerts"]; ok {
+		t.Fatalf("vulnerability_alerts must NOT be in the baseline: %+v", m.DefaultPermissions)
+	}
+}
+
+func TestBuildAppManifest_AllowSecurityRead(t *testing.T) {
+	m := BuildAppManifest("iterion-forge-x", "https://it", "https://it/cb", AppManifestOptions{AllowSecurityRead: true})
+	if m.DefaultPermissions["vulnerability_alerts"] != "read" {
+		t.Fatalf("vulnerability_alerts = %q, want read: %+v", m.DefaultPermissions["vulnerability_alerts"], m.DefaultPermissions)
+	}
+}
+
+func TestSecurityReadPermissions(t *testing.T) {
+	p := SecurityReadInstallationPermissions()
+	if p["vulnerability_alerts"] != "read" || p["metadata"] != "read" || len(p) != 2 {
+		t.Fatalf("security-read profile = %v", p)
+	}
+	// The profile stays disjoint from the runtime baseline — a run's forge
+	// token must never quietly gain alert access.
+	for name := range RuntimeInstallationPermissions() {
+		if name == "metadata" {
+			continue // shared mandatory baseline
+		}
+		if _, ok := p[name]; ok {
+			t.Fatalf("security-read profile leaks runtime permission %q", name)
+		}
+	}
+	if got := MissingSecurityPermissions(map[string]string{"contents": "write"}); len(got) != 1 || got[0] != "vulnerability_alerts" {
+		t.Fatalf("MissingSecurityPermissions = %v", got)
+	}
+	if got := MissingSecurityPermissions(map[string]string{"vulnerability_alerts": "read"}); got != nil {
+		t.Fatalf("MissingSecurityPermissions = %v, want nil", got)
+	}
+	// Unknown grant set (pre-dates the field): absence of data is not
+	// evidence of a gap.
+	if got := MissingSecurityPermissions(nil); got != nil {
+		t.Fatalf("MissingSecurityPermissions(nil) = %v, want nil", got)
+	}
 }

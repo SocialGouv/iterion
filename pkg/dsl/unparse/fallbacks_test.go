@@ -32,6 +32,10 @@ judge gate:
   fallbacks:
     second_opinion:
       model: "openai/gpt-5.5"
+    give_up:
+      action: skip
+      when: "vars.policy == 'skip'"
+      on: [usage_window, unavailable, auth]
 
 prompt work:
   Do the thing.
@@ -97,10 +101,20 @@ func TestFallbacksRoundtrip(t *testing.T) {
 		t.Fatalf("agent routes lost on re-parse: %+v", agents)
 	}
 	judges := pr2.File.Judges
-	if len(judges) != 1 || len(judges[0].Fallbacks) != 1 {
+	if len(judges) != 1 || len(judges[0].Fallbacks) != 2 {
 		t.Fatalf("judge routes lost on re-parse: %+v", judges)
 	}
 	if !agents[0].Fallbacks[1].Metered {
 		t.Error("metered: true lost in the round-trip — the author's spend acknowledgement must survive an editor save")
+	}
+	// The skip route's action + when gate must survive an editor save too:
+	// losing either silently turns "skip on usage_window when the operator
+	// chose skip" into an ordinary malformed route.
+	skip := judges[0].Fallbacks[1]
+	if skip.Action != "skip" {
+		t.Errorf("action: skip lost in the round-trip (got %q)", skip.Action)
+	}
+	if skip.When != "vars.policy == 'skip'" {
+		t.Errorf("when: gate lost in the round-trip (got %q)", skip.When)
 	}
 }

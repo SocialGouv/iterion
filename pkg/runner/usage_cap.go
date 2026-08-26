@@ -53,17 +53,25 @@ func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 	return usagecap.Key(delegate.BackendClaudeCode, scope)
 }
 
-// usageGuardFor builds the guard for one run: the machine-wide policy, with
-// every reading published to the shared store under the run's credential
-// key. Returns nil when no cap is configured, which keeps the whole feature
-// out of the way of a deployment that never asked for it.
+// usageGuardFor builds the guard for one run: the machine-wide policy
+// SOURCE, with every reading published to the shared store under the run's
+// credential key. The guard re-reads the source per evaluation, so a cap
+// tightened at runtime (the DB-backed settings record) bites a run already
+// in flight — which is also why a LIVE source that answers "nothing capped
+// right now" still gets a guard: the answer can change before the run
+// ends. Only when no cap could ever apply — no source at all, or a STATIC
+// policy with no cap — is the guard skipped, keeping the feature out of
+// the way of a deployment that never asked for it.
 func (r *Runner) usageGuardFor(ctx context.Context, msg *queue.RunMessage, logger *iterlog.Logger) *usagecap.Guard {
-	if !r.cfg.UsageCapPolicy.Enabled() {
+	if r.cfg.UsageCapSource == nil {
+		return nil
+	}
+	if pol, static := r.cfg.UsageCapSource.(usagecap.StaticPolicy); static && !usagecap.Policy(pol).Enabled() {
 		return nil
 	}
 	key := usageCapKey(ctx, msg)
 	store := r.cfg.UsageCaps
-	return usagecap.NewGuard(r.cfg.UsageCapPolicy, func(reading usagecap.Reading) {
+	return usagecap.NewGuardWithSource(r.cfg.UsageCapSource, func(reading usagecap.Reading) {
 		if store == nil {
 			return
 		}
@@ -94,8 +102,13 @@ const usageCapStoreTimeout = 5 * time.Second
 // the fleet when its bookkeeping is unavailable: the mid-run guard is still
 // armed behind it, so the worst case of failing open is one wasted call.
 func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *queue.RunMessage, logger *iterlog.Logger) error {
-	pol := r.cfg.UsageCapPolicy
-	if !pol.Enabled() || r.cfg.UsageCaps == nil {
+	if r.cfg.UsageCapSource == nil || r.cfg.UsageCaps == nil {
+		return nil
+	}
+	// The LIVE effective policy — env defaults + the runtime settings
+	// record, one TTL-bounded lookup per claimed run.
+	pol := r.cfg.UsageCapSource.Effective(ctx)
+	if !pol.Enabled() {
 		return nil
 	}
 	// Refuse in advance only what could not possibly avoid spending. A

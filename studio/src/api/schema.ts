@@ -303,6 +303,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/usage-caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/usage-caps */
+        get: operations["getAdminSettingsUsageCaps"];
+        /** PUT /api/admin/settings/usage-caps */
+        put: operations["putAdminSettingsUsageCaps"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/users": {
         parameters: {
             query?: never;
@@ -3299,7 +3317,8 @@ export interface paths {
         delete: operations["deleteTeamsByIdForgeConnectionsByConnId"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/teams/{id}/forge/connections/{conn_id} */
+        patch: operations["patchTeamsByIdForgeConnectionsByConnId"];
         trace?: never;
     };
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
@@ -4879,6 +4898,7 @@ export interface components {
                 [key: string]: string;
             };
             id: string;
+            installation_account?: string;
             installation_id?: number;
             kind: string;
             /** Format: date-time */
@@ -4887,6 +4907,7 @@ export interface components {
             oauth_app_id?: string;
             provider: string;
             scopes?: string[];
+            security_read_enabled?: boolean;
             status: string;
             status_reason?: string;
             tenant_id: string;
@@ -4961,6 +4982,7 @@ export interface components {
             model?: string;
             node_id: string;
             served_by?: string;
+            skipped?: boolean;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;
@@ -5405,8 +5427,10 @@ export interface components {
             live_error?: string;
             manage_install_url?: string;
             missing_permissions?: string[];
+            missing_security_permissions?: string[];
             provider: string;
             provisioned_repo_count: number;
+            security_read_enabled: boolean;
             status: string;
             status_reason?: string;
             token_missing_permissions?: string[];
@@ -5427,6 +5451,7 @@ export interface components {
             admin_token?: string;
             allow_app_delivery?: boolean;
             allow_repo_creation?: boolean;
+            allow_security_read?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;
@@ -5989,6 +6014,42 @@ export interface operations {
             path: {
                 id: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -9822,6 +9883,27 @@ export interface operations {
         };
     };
     deleteTeamsByIdForgeConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdForgeConnectionsByConnId: {
         parameters: {
             query?: never;
             header?: never;

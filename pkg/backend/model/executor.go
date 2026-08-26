@@ -570,7 +570,15 @@ func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
 	if hook == nil {
 		return nil
 	}
-	return func() []string { return hook.Drain(ctx) }
+	return func() []string {
+		// The previous batch reached the model on the turn in between —
+		// promote it delivered → consumed before draining the next, the
+		// same cadence claw's consumeAndDrainInbox keeps. Without this,
+		// claude_code/pi messages park at "delivered" forever and the
+		// studio chat never shows them consumed.
+		hook.Consume(ctx)
+		return hook.Drain(ctx)
+	}
 }
 
 // bindAsyncAsk threads the per-(run,node) async-question closures onto

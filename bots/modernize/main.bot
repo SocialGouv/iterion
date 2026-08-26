@@ -317,6 +317,38 @@ tool plan_read:
             emit("every lot in the contract is done.")
 
     gate = chosen.get("exit_gate") or []
+    # A YAML scalar declares one command, a sequence several — both are
+    # legitimate contract forms. Joining a bare string would iterate its
+    # CHARACTERS: the verifier then runs `t` (exit 127) instead of `test …`,
+    # and the lot can never converge. Mesure : premier lot d'une campagne de
+    # rejeu, gate `test -f …` declare en scalaire, verdict rouge sur la
+    # lettre `t`.
+    if isinstance(gate, str):
+        gate = [gate]
+    # Any other shape (a mapping, a list holding non-strings) would ALSO
+    # survive the join — a dict contributes its keys — and hand the verifier
+    # a gate nobody wrote. An unreadable gate is a contract that cannot be
+    # read, not a lot with nothing to do.
+    if not isinstance(gate, list) or not all(isinstance(c, str) for c in gate):
+        shape = (type(chosen.get("exit_gate")).__name__ if not isinstance(gate, list)
+                 else "list holding %s" % type(next(
+                     c for c in gate if not isinstance(c, str))).__name__)
+        refuse("lot %s declares exit_gate in an unreadable shape (%s): write "
+               "one command as a string, or a list of command strings."
+               % (chosen.get("id"), shape))
+    # One command, one line: the field travels to the verifier newline-joined
+    # and is split back on newlines there, so a command CONTAINING a newline
+    # (a `|` block scalar, a multi-line list item) would be torn apart into
+    # fragments nobody declared. Strip before judging — yq hands every block
+    # and folded scalar with a TRAILING newline, and a single-command block
+    # is legitimate; only an interior newline is the multi-line thing being
+    # refused. Multi-line logic belongs in a script file the gate invokes.
+    gate = [c.strip() for c in gate]
+    gate = [c for c in gate if c]
+    if any("\n" in c for c in gate):
+        refuse("lot %s declares a multi-line exit_gate command. Each command "
+               "must be a single line; put multi-line logic in a script file "
+               "and invoke it." % chosen.get("id"))
     if not gate:
         emit("lot %s declares no exit_gate. A lot with no gate cannot be "
              "verified, and an unverifiable lot is indistinguishable from one "

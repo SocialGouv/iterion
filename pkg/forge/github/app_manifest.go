@@ -53,6 +53,13 @@ type AppManifestOptions struct {
 	// because `workflows: write` lets the holder rewrite CI, i.e. run
 	// arbitrary code in it.
 	AllowAppDelivery bool
+	// AllowSecurityRead adds vulnerability_alerts:read so iterion can list
+	// the installation's Dependabot alerts org-wide (the vuln-watch bot's
+	// Lane A). Opt-in because alert data names every vulnerable dependency
+	// of every repo in the installation; at run time it is minted only into
+	// the dedicated security-read token (SecurityReadInstallationPermissions),
+	// never into the runtime forge token.
+	AllowSecurityRead bool
 }
 
 // BuildAppManifest assembles the manifest for an iterion forge GitHub App. The
@@ -78,6 +85,9 @@ func BuildAppManifest(name, homeURL, redirectURL string, opts ...AppManifestOpti
 			for name, level := range DeliveryInstallationPermissions() {
 				perms[name] = level
 			}
+		}
+		if o.AllowSecurityRead {
+			perms["vulnerability_alerts"] = "read"
 		}
 	}
 	return AppManifest{

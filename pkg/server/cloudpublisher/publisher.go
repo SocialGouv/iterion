@@ -27,6 +27,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
@@ -525,6 +527,23 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 		p.fillFromPlatform(ctx, runID, &bundle)
 	}
 
+	// Record which review families the resolved credentials back — every
+	// tier included (BYOK, oauth-forfait, pool grant, platform). This is
+	// what lets SubmitLaunch resolve the credential-derived topology vars
+	// (review_mode / plan_review / llm_families) for a queued run, where
+	// no host detection report applies. Empty when nothing resolved: the
+	// runner's env fallback is unknowable here, and injecting "no family"
+	// facts about credentials we cannot see would be asserting a falsehood.
+	providers := make([]string, 0, len(bundle.APIKeys))
+	for prov := range bundle.APIKeys {
+		providers = append(providers, string(prov))
+	}
+	oauthKinds := make([]string, 0, len(bundle.OAuthCredentials))
+	for kind := range bundle.OAuthCredentials {
+		oauthKinds = append(oauthKinds, kind)
+	}
+	res.families = reviewtopology.FamiliesFromCredentialNames(providers, oauthKinds)
+
 	if len(bundle.APIKeys) == 0 && len(bundle.GenericSecrets) == 0 && len(bundle.OAuthCredentials) == 0 {
 		return res, nil
 	}
@@ -558,6 +577,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 type credResolution struct {
 	secretsRef string
 	grant      *credpool.Grant
+	// families is the set of review families the sealed credentials back
+	// (reviewtopology), so the launch can resolve the credential-derived
+	// topology vars for a queued run. Empty = nothing resolved (env
+	// fallback), in which case no injection happens.
+	families reviewtopology.FamilySet
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -780,6 +804,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	now := time.Now().UTC()
 	tenantID, _ := store.TenantFromContext(ctx)
 	ownerID, _ := store.OwnerFromContext(ctx)
+	// One inputs map shared by the run doc and the RunMessage, so the
+	// credential-derived topology injection below reaches both carriers.
+	inputs := varsAsAny(spec.Vars)
 	r := &store.Run{
 		FormatVersion:   store.RunFormatVersion,
 		ID:              runID,
@@ -787,7 +814,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowHash:    hash,
 		FilePath:        spec.FilePath,
 		Status:          store.RunStatusQueued,
-		Inputs:          varsAsAny(spec.Vars),
+		Inputs:          inputs,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		QueuedAt:        &now,
@@ -810,6 +837,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackURL:        spec.CallbackURL,
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
+		// Same display parity a local launch gets from the engine: the
+		// studio Overview reads the pins from the run doc, and the resume
+		// path replays them onto its RunMessage from here.
+		ModelOverrides: runModelOverrides(spec.ModelOverrides),
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -862,6 +893,23 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// after the fact when the donor is already out of pocket.
 	budget := clampBudgetToGrant(spec.Budget, wf, creds.grant, 0, p.logger, runID)
 
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families) from what actually sealed
+	// into the run — the queued-run counterpart of the host-detection
+	// injection every in-process launch surface applies. Only when the
+	// bundle resolved at least one participating credential: an empty set
+	// means the run rides the runner's env fallback, which is unknowable
+	// here, and the bots' own "auto" defaults must survive untouched.
+	if len(creds.families) > 0 {
+		if inputs == nil {
+			inputs = map[string]any{}
+			r.Inputs = inputs
+		}
+		if inj := reviewtopology.InjectAll(wf, inputs, creds.families, spec.ReviewMode); inj.Summary() != "" {
+			p.logger.Info("cloudpublisher: run %s %s", runID, inj.Summary())
+		}
+	}
+
 	if err := p.store.SaveRun(ctx, r); err != nil {
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
@@ -889,10 +937,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		WorkflowName:    wf.Name,
 		WorkflowHash:    hash,
 		IRCompiled:      body,
-		Vars:            varsAsAny(spec.Vars),
+		Vars:            inputs,
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors:     spec.Supervisors,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:        tenantID,
@@ -917,6 +966,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
 		Budget:  budget,
+		// The operator's model/backend pins must ride the wire: the runner
+		// pod builds its own executor, so a pin only persisted on the run
+		// doc is display-only — the studio would show an override the
+		// delegates never honoured.
+		ModelOverrides: queueModelOverrides(spec.ModelOverrides),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -954,6 +1008,20 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 //
 // Idempotent: running CancelRun on an already-terminal run is a no-op.
 func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
+	return p.CancelRunWithReason(ctx, runID, "cancelled by user")
+}
+
+// CancelRunWithReason is CancelRun with an explicit reason. The reason lands
+// in run.Error — which the run list, the board cards and the merge-gate
+// synthetic status all read — so an AUTOMATED cancel must say what actually
+// happened instead of masquerading as an operator action: a webhook supersede
+// once overwrote a runner validation error with "cancelled by user", and the
+// PR's synthetic gate then blamed a human who had touched nothing.
+//
+// The prior error, when present, is carried forward (same rationale as
+// runview.CancelInactiveCtx): run.Error is the only record in run.json of WHY
+// the run was in its pre-cancel state, and cancelling must not erase it.
+func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason string) error {
 	// Cancel descends here with a NON-request context (runview.Service.Cancel
 	// takes no ctx), so the mongo tenant filter has no tenant and its
 	// tenant-scoped queries panic. The caller (handleCancelRun / the WS
@@ -982,7 +1050,13 @@ func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
 		store.RunStatusPausedWaitingHuman,
 		store.RunStatusFailedResumable,
 	}
-	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, "cancelled by user", cancellable)
+	if strings.TrimSpace(reason) == "" {
+		reason = "cancelled"
+	}
+	if prior := strings.TrimSpace(r.Error); prior != "" {
+		reason += " (was " + string(r.Status) + ": " + prior + ")"
+	}
+	changed, err := p.store.UpdateRunStatusIf(ctx, runID, store.RunStatusCancelled, reason, cancellable)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: flip status: %w", err)
 	}
@@ -1080,6 +1154,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		SecretsRef:      creds.secretsRef,
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
+		Supervisors:     spec.Supervisors,
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
@@ -1088,6 +1163,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
+		// A resumed attempt must honour the SAME pins the launch declared —
+		// replayed from the run doc, the single source the launch stamped.
+		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -1418,6 +1496,46 @@ func varsAsAny(in map[string]string) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// queueModelOverrides converts the launch entries into the wire form the
+// claiming runner applies to its executor. Nil in, nil out — an absent
+// field keeps older messages byte-identical.
+func queueModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+	}
+	return out
+}
+
+// runModelOverrides converts the launch entries into the persisted run-doc
+// form (studio display + the resume path's replay source).
+func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+	}
+	return out
+}
+
+// queueOverridesFromRun replays a run doc's persisted pins onto a resume
+// publication.
+func queueOverridesFromRun(entries []store.RunModelOverride) []queue.ModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]queue.ModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
 	}
 	return out
 }

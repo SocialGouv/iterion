@@ -17,6 +17,8 @@
 package reviewtopology
 
 import (
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -24,10 +26,19 @@ import (
 )
 
 // Var names injected into a run's inputs. A bot opts into topology
-// resolution by declaring VarReviewMode in its vars: block.
+// resolution by declaring VarReviewMode in its vars: block, and into
+// plan-review resolution by declaring VarPlanReview.
 const (
 	VarReviewMode = "review_mode"
 	VarMonoFamily = "mono_family"
+	VarPlanReview = "plan_review"
+	// VarLLMFamilies is the generic, role-free fact behind the two above: a
+	// bot declaring it receives the sorted comma-joined list of review
+	// families backed by a credential (e.g. "claude,gpt"). It exists so a
+	// bot can build its OWN policy in a compute node without the engine
+	// learning a new role var per pattern — the engine publishes the fact a
+	// bot cannot probe (host/run credentials), nothing more.
+	VarLLMFamilies = "llm_families"
 )
 
 // Topology modes. ModeAuto is the pre-resolution default a bot ships with;
@@ -36,6 +47,15 @@ const (
 	ModeAuto = "auto"
 	ModeMono = "mono"
 	ModeDual = "dual"
+)
+
+// Plan-review modes. PlanReviewAuto is the pre-resolution default a bot
+// ships with; ResolvePlanReview never returns it (it collapses auto →
+// on|off from the available families).
+const (
+	PlanReviewAuto = "auto"
+	PlanReviewOn   = "on"
+	PlanReviewOff  = "off"
 )
 
 // Review families. Decision (operator): {anthropic, zai} are the SAME
@@ -86,14 +106,21 @@ func familyOfBackend(backend string) string {
 // mono: prefer claude, then gpt. (Parameterisable later if needed.)
 var monoPreference = []string{FamilyClaude, FamilyGPT}
 
-// availableFamilies returns the set of distinct review families backed by
+// FamilySet is the set of distinct review families backed by an available
+// credential — the input every resolution reads. Built from a host
+// detection report (FamiliesFromReport) or assembled directly by a caller
+// that knows the run's credentials from another source (the cloud
+// publisher derives it from the sealed per-run bundle).
+type FamilySet map[string]bool
+
+// FamiliesFromReport returns the set of distinct review families backed by
 // an available credential in the detection report — either a participating
 // provider key (anthropic/zai→claude, openai→gpt) OR a usable backend whose
 // nodes run that family (claude_code→claude, codex→gpt). The union is what
 // makes a forfait-only host (claude_code OAuth, no anthropic key) resolve a
 // "claude" family, so mono picks claude and auto can go dual.
-func availableFamilies(rep detect.Report) map[string]bool {
-	fams := make(map[string]bool, 2)
+func FamiliesFromReport(rep detect.Report) FamilySet {
+	fams := make(FamilySet, 2)
 	for _, p := range rep.Providers {
 		if !p.Available {
 			continue
@@ -115,7 +142,7 @@ func availableFamilies(rep detect.Report) map[string]bool {
 
 // preferredFamily picks the mono family from the available set following
 // monoPreference. Returns "" when no participating family is available.
-func preferredFamily(fams map[string]bool) string {
+func preferredFamily(fams FamilySet) string {
 	for _, f := range monoPreference {
 		if fams[f] {
 			return f
@@ -144,7 +171,12 @@ func preferredFamily(fams map[string]bool) string {
 //
 // The returned mode is always concrete ("mono" or "dual"), never "auto".
 func Resolve(rep detect.Report, override string) (mode string, monoFamily string) {
-	fams := availableFamilies(rep)
+	return ResolveFamilies(FamiliesFromReport(rep), override)
+}
+
+// ResolveFamilies is Resolve on an already-assembled family set (see
+// FamilySet for who assembles one without a detection report).
+func ResolveFamilies(fams FamilySet, override string) (mode string, monoFamily string) {
 	switch strings.ToLower(strings.TrimSpace(override)) {
 	case ModeDual:
 		return ModeDual, ""
@@ -155,6 +187,46 @@ func Resolve(rep detect.Report, override string) (mode string, monoFamily string
 			return ModeMono, f
 		}
 		return ModeDual, ""
+	}
+}
+
+// ResolvePlanReview computes the effective cross-model plan-review switch
+// from the available families and an operator override.
+//
+// override is one of "on", "off", or "auto" (also "" / any unknown → auto):
+//   - "on"       → always on. Forcing it without a peer credential is
+//     honoured verbatim: the peer node then fails loudly on the missing
+//     credential instead of being silently skipped.
+//   - "off"      → always off.
+//   - "auto"/""  → on iff at least TWO distinct families are backed by a
+//     credential. With today's two participating families (claude, gpt)
+//     this is equivalent to "claude AND gpt" — which matches the shipped
+//     bots, whose peer node is PINNED to the gpt route
+//     (claw + openai/*). Adding a third family must revisit this
+//     resolution together with the bots' peer pinning, or a
+//     {claude, <new>} host would resolve "on" and the peer would chase
+//     an absent OpenAI credential. Anything less than two families means
+//     the pair review cannot be a cross-model check, so the bot keeps
+//     its plan-in-stride shape at zero extra cost.
+//
+// The returned mode is always concrete ("on" or "off"), never "auto".
+func ResolvePlanReview(fams FamilySet, override string) string {
+	switch strings.ToLower(strings.TrimSpace(override)) {
+	case PlanReviewOn:
+		return PlanReviewOn
+	case PlanReviewOff:
+		return PlanReviewOff
+	default: // auto / "" / unknown
+		n := 0
+		for _, ok := range fams {
+			if ok {
+				n++
+			}
+		}
+		if n >= 2 {
+			return PlanReviewOn
+		}
+		return PlanReviewOff
 	}
 }
 
@@ -182,21 +254,197 @@ func declaresVar(wf *ir.Workflow, name string) bool {
 // Returns the resolved (mode, monoFamily) and whether injection happened
 // (for logging by the caller).
 func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool) {
+	return InjectIfDeclaredFamilies(wf, inputs, FamiliesFromReport(rep), flagOverride)
+}
+
+// InjectIfDeclaredFamilies is InjectIfDeclared on an already-assembled
+// family set (the cloud publisher derives one from the run's sealed
+// credential bundle, where no host detection report applies).
+func InjectIfDeclaredFamilies(wf *ir.Workflow, inputs map[string]any, fams FamilySet, flagOverride string) (mode, monoFamily string, injected bool) {
 	if !declaresVar(wf, VarReviewMode) {
 		return "", "", false
 	}
 	override := strings.TrimSpace(flagOverride)
-	if override == "" && inputs != nil {
-		if v, ok := inputs[VarReviewMode]; ok {
-			if s, ok := v.(string); ok {
-				override = strings.TrimSpace(s)
+	if override == "" {
+		override = inputOverride(inputs, VarReviewMode)
+	}
+	mode, monoFamily = ResolveFamilies(fams, override)
+	// An operator's explicit --var mono_family wins over the resolver's
+	// preference when it names an AVAILABLE family (never silently replace
+	// an operator's explicit choice); an unavailable one keeps the
+	// resolver's pick — visible in the launch summary either way.
+	if mode == ModeMono {
+		if ov := strings.ToLower(inputOverride(inputs, VarMonoFamily)); ov != "" && fams[ov] {
+			monoFamily = ov
+		}
+	}
+	if inputs != nil {
+		inputs[VarReviewMode] = mode
+		// Never write an empty mono_family: it is meaningless in dual (and
+		// in mono on a credential-less host), and it violates the
+		// [enum: "claude","gpt"] the declaring bots put on the var — the
+		// launch enum gate then kills the run before its first node.
+		// Absent = the bot's own default applies.
+		if monoFamily != "" {
+			inputs[VarMonoFamily] = monoFamily
+		} else {
+			// A stale value from --var/preset would otherwise survive a
+			// dual resolution and contradict the injected mode.
+			delete(inputs, VarMonoFamily)
+		}
+	}
+	return mode, monoFamily, true
+}
+
+// PlanReviewEnv is the machine/deployment-wide default for the
+// plan-review switch, read when a run carries no explicit override. It
+// exists because auto-resolution can flip the phase ON for launches that
+// have no per-run surface at all (webhook / dispatcher / cron lanes on a
+// cloud instance whose platform tier credentials both families) — an
+// operator needs a brake that is not a per-run --var. Precedence:
+// --var plan_review → ITERION_PLAN_REVIEW → auto.
+const PlanReviewEnv = "ITERION_PLAN_REVIEW"
+
+// InjectPlanReviewIfDeclared resolves the cross-model plan-review switch and
+// writes plan_review into inputs, but ONLY when the workflow opts in by
+// declaring a plan_review var. Bots without a plan phase are left untouched.
+//
+// There is no dedicated CLI/API field: an operator override travels as an
+// ordinary --var plan_review=on|off already present in inputs; the
+// ITERION_PLAN_REVIEW env is the deployment-wide default under it; a bot's
+// own default of "auto" triggers credential-based resolution.
+//
+// Returns the resolved mode and whether injection happened (for logging).
+func InjectPlanReviewIfDeclared(wf *ir.Workflow, inputs map[string]any, fams FamilySet) (mode string, injected bool) {
+	if !declaresVar(wf, VarPlanReview) {
+		return "", false
+	}
+	override := inputOverride(inputs, VarPlanReview)
+	if override == "" || strings.EqualFold(override, PlanReviewAuto) {
+		if env := strings.TrimSpace(os.Getenv(PlanReviewEnv)); env != "" {
+			// A brake must fail SAFE: any set-but-unrecognised value reads
+			// as OFF (the frugal direction), never as a silent fall-through
+			// to auto → on. "auto" is this dial's own neutral member and
+			// stays neutral (credential-based resolution).
+			switch strings.ToLower(env) {
+			case "on", "true", "1", "yes":
+				override = PlanReviewOn
+			case "auto":
+				// neutral: keep the credential-based resolution
+			default:
+				override = PlanReviewOff
 			}
 		}
 	}
-	mode, monoFamily = Resolve(rep, override)
+	mode = ResolvePlanReview(fams, override)
 	if inputs != nil {
-		inputs[VarReviewMode] = mode
-		inputs[VarMonoFamily] = monoFamily
+		inputs[VarPlanReview] = mode
 	}
-	return mode, monoFamily, true
+	return mode, true
+}
+
+// InjectLLMFamiliesIfDeclared writes the sorted comma-joined available
+// family list into inputs, ONLY when the workflow opts in by declaring an
+// llm_families var. Unlike the role vars above there is nothing to resolve:
+// an operator has no reason to override a fact, so any pre-set value is
+// overwritten with the truth.
+func InjectLLMFamiliesIfDeclared(wf *ir.Workflow, inputs map[string]any, fams FamilySet) (list string, injected bool) {
+	if !declaresVar(wf, VarLLMFamilies) {
+		return "", false
+	}
+	names := make([]string, 0, len(fams))
+	for f, ok := range fams {
+		if ok {
+			names = append(names, f)
+		}
+	}
+	sort.Strings(names)
+	list = strings.Join(names, ",")
+	if inputs != nil {
+		inputs[VarLLMFamilies] = list
+	}
+	return list, true
+}
+
+// FamiliesFromCredentialNames assembles a family set from bare credential
+// names: provider keys (anthropic/zai→claude, openai→gpt) and
+// backend-shaped OAuth credentials (claude_code→claude, codex→gpt).
+// The cloud publisher's counterpart of FamiliesFromReport — it knows what
+// sealed into a run's bundle, not what a host detection probe would see.
+func FamiliesFromCredentialNames(providers, backends []string) FamilySet {
+	fams := make(FamilySet, 2)
+	for _, p := range providers {
+		if f := familyOf(p); f != "" {
+			fams[f] = true
+		}
+	}
+	for _, b := range backends {
+		if f := familyOfBackend(b); f != "" {
+			fams[f] = true
+		}
+	}
+	return fams
+}
+
+// Injection summarises what InjectAll applied to a run's inputs. Zero-value
+// fields mean the workflow did not declare the matching var.
+type Injection struct {
+	ReviewMode          string
+	MonoFamily          string
+	ReviewModeInjected  bool
+	PlanReview          string
+	PlanReviewInjected  bool
+	LLMFamilies         string
+	LLMFamiliesInjected bool
+}
+
+// InjectAll applies every opt-in injection this package owns (review_mode +
+// mono_family, plan_review, llm_families) from one family set, so a launch
+// surface calls one function and logs one summary. reviewModeOverride is
+// the surface-level review-mode override (CLI --review-mode / API field);
+// the other vars have no dedicated field and override via inputs only.
+func InjectAll(wf *ir.Workflow, inputs map[string]any, fams FamilySet, reviewModeOverride string) Injection {
+	var inj Injection
+	inj.ReviewMode, inj.MonoFamily, inj.ReviewModeInjected = InjectIfDeclaredFamilies(wf, inputs, fams, reviewModeOverride)
+	inj.PlanReview, inj.PlanReviewInjected = InjectPlanReviewIfDeclared(wf, inputs, fams)
+	inj.LLMFamilies, inj.LLMFamiliesInjected = InjectLLMFamiliesIfDeclared(wf, inputs, fams)
+	return inj
+}
+
+// Summary renders the applied injections for a launch log line, or "" when
+// the workflow declared none of the vars.
+func (i Injection) Summary() string {
+	parts := make([]string, 0, 3)
+	if i.ReviewModeInjected {
+		s := "review topology: " + i.ReviewMode
+		if i.MonoFamily != "" {
+			s += " (family " + i.MonoFamily + ")"
+		}
+		parts = append(parts, s)
+	}
+	if i.PlanReviewInjected {
+		parts = append(parts, "plan review: "+i.PlanReview)
+	}
+	if i.LLMFamiliesInjected {
+		list := i.LLMFamilies
+		if list == "" {
+			list = "(none)"
+		}
+		parts = append(parts, "llm families: "+list)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// inputOverride reads a string override already present in inputs (from
+// --var / a preset), or "" when absent or not a string.
+func inputOverride(inputs map[string]any, name string) string {
+	if inputs == nil {
+		return ""
+	}
+	if v, ok := inputs[name]; ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
 }

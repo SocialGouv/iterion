@@ -186,3 +186,15 @@ iterion run bots/branch-improve-loop/main.bot \
 ```
 
 See [main.bot](main.bot) for the full DSL.
+
+## Plan phase (cross-model pair review, ADR-091)
+
+`plan_review: auto` resolves at launch from the run's credentials: when a
+SECOND model family is available, the diff triage is authored (claude,
+read-only), critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default), and revised by the SAME author session
+before the campaign fixes; otherwise the phase is bypassed whole (the v2
+shape, unchanged). `plan_review_policy` picks the mid-run
+peer-unavailability behaviour: `wait` (default — the run parks
+failed_resumable, the usage-window retry resumes it) or `skip` (the
+reviewer's `action: skip` route — continue unreviewed, loudly stamped).

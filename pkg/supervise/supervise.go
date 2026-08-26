@@ -117,7 +117,17 @@ func (m Monitor) matches(evt *store.Event) bool {
 	if m.ToolName != "" && !strings.EqualFold(eventToolName(evt), m.ToolName) {
 		return false
 	}
-	if m.CostGt > 0 {
+	// Any non-zero CostGt engages the budget branch. Validation refuses
+	// non-positive values, but a value that slips through must constrain,
+	// never fall through to the final !isEmpty() — a NaN/negative that
+	// skipped this branch would turn the monitor into a match-everything
+	// wildcard that drains the eval budget on the first burst of events.
+	if m.CostGt != 0 {
+		// A threshold that is not a positive finite number cannot
+		// constrain anything — treat it as "never", not as satisfied.
+		if !(m.CostGt > 0) {
+			return false
+		}
 		if evt.Type != store.EventBudgetWarning {
 			return false
 		}
@@ -198,7 +208,11 @@ func RenderEvent(evt *store.Event) string {
 // duplicating it.
 func IsTurnBoundary(evt *store.Event) bool {
 	switch evt.Type {
-	case store.EventLLMStepFinished, store.EventNodeFinished, store.EventNodeStarted, store.EventRunPaused:
+	// assistant_text is the only per-turn signal a CLI-agent backend
+	// (claude_code) emits — without it a supervised claude_code node has
+	// no debounced wake between node_started and node_finished, and the
+	// cooldown governs nothing. claw emits both; the debounce coalesces.
+	case store.EventLLMStepFinished, store.EventAssistantText, store.EventNodeFinished, store.EventNodeStarted, store.EventRunPaused:
 		return true
 	default:
 		return false

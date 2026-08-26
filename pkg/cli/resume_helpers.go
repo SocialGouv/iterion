@@ -105,6 +105,7 @@ func buildResumeExecutor(
 	storeDir string,
 	logger *iterlog.Logger,
 	r *store.Run,
+	hookObservers []func(store.Event),
 ) (runtime.NodeExecutor, error) {
 	if opts.Executor != nil {
 		return opts.Executor, nil
@@ -122,12 +123,21 @@ func buildResumeExecutor(
 		return nil, err
 	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
-		Workflow:        wf,
-		Vars:            nil,
-		Store:           s,
-		RunID:           opts.RunID,
-		Logger:          logger,
-		StoreDir:        storeDir,
+		Workflow: wf,
+		Vars:     nil,
+		Store:    s,
+		RunID:    opts.RunID,
+		Logger:   logger,
+		StoreDir: storeDir,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
+		// this seam — the declared-supervisor hub rides it (run.go's
+		// executor does the same).
+		EventObservers: hookObservers,
+		// Mirror the run path's inbox wiring: without these binders a
+		// resumed CLI run never DRAINS queued messages, so supervisor
+		// steering (and operator chat) would sit `queued` forever.
+		Inbox:           &model.StoreInboxBinder{Store: s},
+		AsyncAsk:        &model.StoreAsyncAskBinder{Store: s},
 		Permission:      opts.Permission,
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,

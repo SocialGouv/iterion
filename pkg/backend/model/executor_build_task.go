@@ -211,6 +211,42 @@ func stampFallbackMeta(output map[string]any, out chainOutcome) {
 	}
 }
 
+// fillZeroValues writes the schema's zero value for every field absent
+// from output — the synthesized shape an `action: skip` route serves.
+// Zero values, not nulls: downstream computes and templates read the
+// fields positionally ("" / false / 0 / empty list), the same contract a
+// merge compute already applies to an absent branch via if() guards.
+func fillZeroValues(output map[string]any, schema *ir.Schema) {
+	if schema == nil {
+		return
+	}
+	for _, fld := range schema.Fields {
+		if fld == nil {
+			continue
+		}
+		if _, exists := output[fld.Name]; exists {
+			continue
+		}
+		switch fld.Type {
+		case ir.FieldTypeString:
+			output[fld.Name] = ""
+		case ir.FieldTypeBool:
+			output[fld.Name] = false
+		case ir.FieldTypeInt:
+			// float64, not int: the JSON-shaped contract everywhere else
+			// (ValidateOutput's int case accepts ONLY float64, and a store
+			// round-trip would produce float64 anyway).
+			output[fld.Name] = float64(0)
+		case ir.FieldTypeFloat:
+			output[fld.Name] = 0.0
+		case ir.FieldTypeStringArray:
+			output[fld.Name] = []any{}
+		default: // json: an empty object is the least-surprising zero
+			output[fld.Name] = map[string]any{}
+		}
+	}
+}
+
 // dispatchWithObservability wraps dispatchWithProviderFallback with the
 // 3-hook lifecycle every agent/judge/LLM-router call paid by hand:
 // OnDelegateStarted fires before dispatch; on error, OnDelegateError
@@ -252,6 +288,10 @@ func (e *ClawExecutor) dispatchWithObservability(
 		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 		di := delegateInfoFromResult(bn, out.Result)
 		di.DeclaredModel = baseModel
+		// A skip outcome finished nothing: keep BackendName (the spend's
+		// origin — the metrics claw-exclusion keys on it) but flag it so
+		// recordServed and the event do not claim a backend SERVED.
+		di.Skipped = out.Skipped
 		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil
@@ -403,6 +443,33 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
 		return nil, err
+	}
+	// An `action: skip` terminal route completed the node without serving
+	// it: synthesize the zero-value output here — the one place the schema
+	// is known — on top of the spend the failed routes accumulated, and
+	// stamp the degradation loudly. Schema validation is bypassed on
+	// purpose: the synthesized shape is conformant by construction, and
+	// there is no backend to retry against.
+	if out.Skipped {
+		output := out.Result.Output
+		if output == nil {
+			output = map[string]any{}
+		}
+		if f.outputSchema != "" {
+			if schema, ok := e.schemas[f.outputSchema]; ok {
+				fillZeroValues(output, schema)
+			}
+		}
+		output["_skipped"] = true
+		output["_fallback_used"] = true
+		if out.ServedBy != "" {
+			output["_served_by"] = out.ServedBy
+		}
+		if e.logger != nil {
+			e.logger.Warn("[%s#%d/%s] node SKIPPED by fallback route %q — zero-value output served, downstream gates should read _skipped",
+				f.id, task.Iteration, backendName, out.ServedBy)
+		}
+		return output, nil
 	}
 	// Everything below acts on the element that SERVED, which is the
 	// node's own backend unless the chain fell through.

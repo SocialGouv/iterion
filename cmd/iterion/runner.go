@@ -212,16 +212,26 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// five-hour / weekly windows. A malformed policy stops the runner
 	// here — every wrong answer downstream fails open, and a fleet that
 	// silently stopped honouring its cap is what this guards against.
-	usageCapPolicy, err := usagecap.FromEnv()
+	// The env values are the DEFAULTS; the platform runtime-settings
+	// record (mutable through the server's admin API) overrides the
+	// percentages live, TTL-cached, so both deployments enforce the same
+	// number without a restart.
+	usageCapEnvPolicy, err := usagecap.FromEnv()
 	if err != nil {
 		return fmt.Errorf("runner: %w", err)
 	}
 	usageCapStore := usagecap.NewMongoStore(st.DB())
-	if usageCapPolicy.Enabled() {
-		if err := usagecap.EnsureSchema(rootCtx, st.DB()); err != nil {
-			return fmt.Errorf("runner: ensure usage_windows schema: %w", err)
-		}
-		logger.Info("runner: usage cap armed — %s", usageCapPolicy)
+	usageCapSource := usagecap.NewResolver(
+		usagecap.NewMongoSettingsStore(st.DB()), usageCapEnvPolicy,
+		usagecap.WithWarnLogger(logger.Warn))
+	// The schema is ensured unconditionally: a cap disabled in env can be
+	// armed at runtime through the settings record, and the readings
+	// ledger must exist by then.
+	if err := usagecap.EnsureSchema(rootCtx, st.DB()); err != nil {
+		return fmt.Errorf("runner: ensure usage_windows schema: %w", err)
+	}
+	if effective := usageCapSource.Effective(rootCtx); effective.Enabled() {
+		logger.Info("runner: usage cap armed — %s", effective)
 	}
 
 	// Bots: where bot-qualified runs resolve their bundle so skills/
@@ -259,7 +269,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
 		CredPool:          credBroker,
-		UsageCapPolicy:    usageCapPolicy,
+		UsageCapSource:    usageCapSource,
 		UsageCaps:         usageCapStore,
 		BotsPaths:         botsPaths,
 		// Sandbox-by-default: the runner is a product entry point like

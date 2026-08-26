@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -230,14 +231,23 @@ func TestEdgeInputRef_RouterPassThrough(t *testing.T) {
 		t.Fatalf("router pass-through must not trip C034: %v", msgs)
 	}
 
+	// analyzer_a and analyzer_b run on CONCURRENT fan-out branches — the
+	// shared capture map needs the mutex or the race detector (rightly)
+	// flags the two handler writes. Reads happen after Run returns, past
+	// the engine's join, so they need no lock.
+	var gotMu sync.Mutex
 	got := map[string]any{}
 	exec := newStubExecutor()
 	exec.on("analyzer_a", func(in map[string]any) (map[string]any, error) {
+		gotMu.Lock()
 		got["a"] = in["data"]
+		gotMu.Unlock()
 		return map[string]any{"data": in["data"]}, nil
 	})
 	exec.on("analyzer_b", func(in map[string]any) (map[string]any, error) {
+		gotMu.Lock()
 		got["b"] = in["data"]
+		gotMu.Unlock()
 		return map[string]any{"data": in["data"]}, nil
 	})
 	exec.on("join", func(map[string]any) (map[string]any, error) {

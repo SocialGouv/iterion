@@ -89,7 +89,9 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "version",
     "publish",
     "to",
-    // model_fallback: the route change and why it happened.
+    // model_fallback: the route change and why it happened. to_action
+    // ("skip") marks a terminal degrade — to_backend is then empty on
+    // purpose, nothing serves the node.
     "reason",
     // A zero-attempt route change is a proactive cooldown skip, not a
     // second provider refusal. Keep that distinction visible in the row
@@ -98,8 +100,11 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "cooldown_until",
     "attempts",
     "from_backend",
+    "to_action",
     "to_backend",
     "to_model",
+    // delegate_finished on a skipped node: nothing served it.
+    "skipped",
     "loop",
     "iteration",
     "error",

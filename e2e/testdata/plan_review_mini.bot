@@ -1,0 +1,117 @@
+## Minimal fixture mirroring the plan phase of the campaign bots
+## (feature-dev / app-dev / branch-improve-loop / whole-improve-loop):
+## a launch-resolved `plan_review` gate, the plan AUTHOR, a cross-model
+## peer reviewer carrying the `action: skip` fallback route driven by
+## `plan_review_policy`, the deterministic `plan_gate` reading the
+## _skipped stamp, and the author's revise turn. Exercised by
+## plan_review_test.go with the scenario stub — no LLM, no tools.
+
+schema plan_topology_state:
+  do_plan: bool
+
+schema plan_output:
+  plan: string
+
+schema plan_review_output:
+  concerns: string
+  blocking: bool
+
+schema plan_gate_state:
+  skipped: bool
+
+schema plan_revised_output:
+  plan: string
+  review_responses: string
+
+schema campaign_input:
+  fail_log: string
+  plan: string
+  plan_critique: string
+  plan_responses: string
+
+schema campaign_output:
+  done: bool
+
+schema gate_state:
+  converged: bool
+
+vars:
+  plan_review: string = "auto"
+  plan_review_policy: string = "wait"
+
+compute plan_topology:
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_review == 'on'"
+
+agent plan:
+  model: "claude-opus-4-7"
+  output: plan_output
+
+judge plan_review:
+  model: "claude-opus-4-7"
+  output: plan_review_output
+  fallbacks:
+    ## on: [any] mirrors the shipped bots: the operator's `skip` means the
+    ## peer must never block — and a sandboxed claw failure classifies
+    ## UNCLASSIFIED, which a filtered skip refuses by design.
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      on: [any]
+
+compute plan_gate:
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+agent plan_revise:
+  model: "claude-opus-4-7"
+  output: plan_revised_output
+
+agent campaign:
+  model: "claude-opus-4-7"
+  input: campaign_input
+  output: campaign_output
+
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.campaign.done == true"
+
+workflow plan_review_mini:
+  entry: plan_topology
+
+  ## The with{} bodies MIRROR the shipped bots': every campaign_input
+  ## field explicitly mapped (an unmapped field is not "" but the raw
+  ## {{input.x}} placeholder leaking into the prompt), and the loop
+  ## back-edge BLANKS the plan fields (forward mappings re-apply on
+  ## every re-entry — a stale pass-1 plan would re-anchor later passes).
+  plan_topology -> plan when do_plan
+  plan_topology -> campaign when not do_plan with {
+    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+  }
+
+  plan -> plan_review
+  plan_review -> plan_gate
+  plan_gate -> plan_revise when not skipped with {
+    plan: "{{outputs.plan.plan}}"
+  }
+  plan_gate -> campaign when skipped with {
+    fail_log: "", plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: ""
+  }
+  plan_revise -> campaign with {
+    fail_log:       "",
+    plan:           "{{outputs.plan_revise.plan}}",
+    plan_critique:  "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}"
+  }
+
+  campaign -> gate
+  gate -> done when converged
+  gate -> campaign as continuation_loop(3) with {
+    fail_log: "FAILLOG",
+    plan: "", plan_critique: "", plan_responses: ""
+  }
+  gate -> done
