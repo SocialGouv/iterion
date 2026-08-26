@@ -423,6 +423,9 @@ func TestProductDocsCatalogIngestRefusesHostileCatalog(t *testing.T) {
 	// silently.
 	t.Run("the credential helper survives the shell", func(t *testing.T) {
 		ws, scratch := newWS(t)
+		// The helper is host-scoped to the docs repo's own origin: declare
+		// one so it exists, and probe it with that same host below.
+		gitIn(t, ws, "remote", "add", "origin", "https://forge/team/docs.git")
 		catalogFixture(t, ws, "catalog/demo",
 			"id: demo\ndocs:\n  product_dir: documentation_produits/demo\n"+
 				"repos:\n  - id: demo-src\n    url: "+source+"\n",
@@ -653,15 +656,16 @@ func TestProductDocsCatalogIngestFailsLoudly(t *testing.T) {
 }
 
 type hintsOut struct {
-	Pages          []string         `json:"pages"`
-	PageCount      int              `json:"page_count"`
-	Hints          []map[string]any `json:"hints"`
-	DeadLinkCount  int              `json:"dead_link_count"`
-	OrphanCount    int              `json:"orphan_count"`
-	UnmappedCount  int              `json:"unmapped_surface_count"`
-	HintsNote      string           `json:"hints_note"`
-	EditorialFiles []string         `json:"editorial_files"`
-	Mode           string           `json:"mode"`
+	Pages           []string         `json:"pages"`
+	PageCount       int              `json:"page_count"`
+	Hints           []map[string]any `json:"hints"`
+	DeadLinkCount   int              `json:"dead_link_count"`
+	OrphanCount     int              `json:"orphan_count"`
+	UnmappedCount   int              `json:"unmapped_surface_count"`
+	HintsNote       string           `json:"hints_note"`
+	EditorialFiles  []string         `json:"editorial_files"`
+	Mode            string           `json:"mode"`
+	IncrementalBase string           `json:"incremental_base"`
 }
 
 func hintsCommand(t *testing.T, ws, productDir, surfaces string) string {
@@ -1316,4 +1320,212 @@ func TestProductDocsScopeCheck(t *testing.T) {
 			t.Fatalf("the log does not name the missing base: %q", got.Log)
 		}
 	})
+}
+
+// TestProductDocsScopeCheckAcceptsAccentedPages pins core.quotePath: this
+// bot's pages are FRENCH and their filenames come from UI wording. With
+// git's default C-quoting, a committed "créer-un-dossier.md" comes back as
+// a quoted octal-escaped string that never ends in .md — a permanent,
+// unfixable scope violation on exactly the pages the bot exists to write.
+func TestProductDocsScopeCheckAcceptsAccentedPages(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "scope_check")
+
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	writeFile(t, ws, "documentation_produits/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+	baseOut, err := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse: %v", err)
+	}
+	base := strings.TrimSpace(string(baseOut))
+
+	// One accented page committed (the diff path), one still untracked
+	// (the status -uall path) — both must stay in scope.
+	writeFile(t, ws, "documentation_produits/demo/créer-un-dossier.md", "# Créer\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(demo): créer\n\nBot: product-docs")
+	writeFile(t, ws, "documentation_produits/demo/évolution.md", "# Évolution\n")
+
+	var got scopeOutPD
+	runJSON(t, resolveCommand(t, command, map[string]string{
+		"vars.workspace_dir": ws,
+		"vars.editorial_dir": ".product-docs",
+		"input.product_dir":  "documentation_produits/demo",
+		"input.base_sha":     base,
+	}), &got)
+	if !got.ScopeOK {
+		t.Fatalf("accented page names were flagged out of scope: %v", got.OutOfScope)
+	}
+}
+
+// TestProductDocsScopeCheckFailsClosedWhenGitFails pins the truth oracle's
+// failure mode: a workspace git cannot answer for (not a repository, git
+// missing, a timeout) must FAIL the gate with a reason — never certify
+// scope_ok:true over a tree it did not diff.
+func TestProductDocsScopeCheckFailsClosedWhenGitFails(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "scope_check")
+
+	ws := t.TempDir() // NOT a git repository
+	var got scopeOutPD
+	runJSON(t, resolveCommand(t, command, map[string]string{
+		"vars.workspace_dir": ws,
+		"vars.editorial_dir": ".product-docs",
+		"input.product_dir":  "documentation_produits/demo",
+		"input.base_sha":     "deadbeefdeadbeef",
+	}), &got)
+	if got.ScopeOK {
+		t.Fatal("the gate certified a workspace whose git calls all failed")
+	}
+	if !strings.Contains(got.Log, "SCOPE GATE UNAVAILABLE") {
+		t.Fatalf("the failure carries no reason: %q", got.Log)
+	}
+}
+
+// TestProductDocsScanHintsIncrementalBootstrapsToFull pins the promised
+// degradation: a FIRST incremental run has no alignment commit to diff
+// since, and relaying mode=incremental with an empty delta tells the
+// campaign "nothing changed" — the opposite of a bootstrap. The honest
+// answer is a full sweep, said out loud in the note.
+func TestProductDocsScanHintsIncrementalBootstrapsToFull(t *testing.T) {
+	requireGitPython(t)
+
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed") // no Bot: product-docs trailer anywhere
+
+	var got hintsOut
+	runJSON(t, resolveCommand(t, toolCommand(t, "product-docs/main.bot", "scan_hints"), map[string]string{
+		"vars.workspace_dir":  ws,
+		"input.product_dir":   "docs/demo",
+		"input.surfaces":      `[]`,
+		"vars.editorial_dir":  ".product-docs",
+		"vars.dismissed_path": "",
+		"vars.max_hints":      "120",
+		"vars.mode":           "incremental",
+		"vars.diff_since":     "",
+	}), &got)
+	if got.Mode != "full" {
+		t.Fatalf("a first incremental run relayed mode=%q with base %q — the campaign will read the empty delta as 'nothing changed'", got.Mode, got.IncrementalBase)
+	}
+	if !strings.Contains(got.HintsNote, "BOOTSTRAP") {
+		t.Fatalf("the degradation is silent: %q", got.HintsNote)
+	}
+}
+
+// TestProductDocsScanHintsIncrementalScopedToProduct pins the delta
+// window's product identity: in a multi-product docs repo, a SIBLING
+// product's newer alignment commit must not become this product's base —
+// that narrows the window and hides real drift.
+func TestProductDocsScanHintsIncrementalScopedToProduct(t *testing.T) {
+	requireGitPython(t)
+
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	writeFile(t, ws, "docs/autre/README.md", "# Autre\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+	// This product's alignment commit…
+	writeFile(t, ws, "docs/demo/page.md", "# Page\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(demo): align\n\nBot: product-docs")
+	demoOut, _ := exec.Command("git", "-C", ws, "rev-parse", "HEAD").Output()
+	demoSHA := strings.TrimSpace(string(demoOut))
+	// …then a SIBLING product's newer one, then drift on this product.
+	writeFile(t, ws, "docs/autre/page.md", "# Autre page\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(autre): align\n\nBot: product-docs")
+	writeFile(t, ws, "docs/demo/drift.md", "# Drift\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "docs(demo): drift (human)")
+
+	var got hintsOut
+	runJSON(t, resolveCommand(t, toolCommand(t, "product-docs/main.bot", "scan_hints"), map[string]string{
+		"vars.workspace_dir":  ws,
+		"input.product_dir":   "docs/demo",
+		"input.surfaces":      `[]`,
+		"vars.editorial_dir":  ".product-docs",
+		"vars.dismissed_path": "",
+		"vars.max_hints":      "120",
+		"vars.mode":           "incremental",
+		"vars.diff_since":     "",
+	}), &got)
+	if got.IncrementalBase != demoSHA {
+		t.Fatalf("the delta base is %q, not this product's own alignment %q — a sibling's commit narrowed the window", got.IncrementalBase, demoSHA)
+	}
+}
+
+// TestProductDocsAskpassIsHostScoped pins the credential boundary: the
+// forge token belongs to the docs repo's own origin, and the catalog is
+// repo content — hostile-grade. The generated askpass helper must answer
+// ONLY prompts naming the origin host; any other host (including a
+// lookalike suffix domain) gets nothing and the clone fails loudly.
+func TestProductDocsAskpassIsHostScoped(t *testing.T) {
+	requireGitPython(t)
+
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	gitIn(t, ws, "remote", "add", "origin", "https://forge.example/team/docs.git")
+	scratch := t.TempDir()
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n  - id: src\n    url: https://evil.invalid/src.git\n",
+		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"src","url":"https://evil.invalid/src.git"}]}`)
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	cmd := exec.Command("sh", "-c", ingestCommand(t, ws, "catalog", "demo", scratch))
+	cmd.Env = append(os.Environ(), "GH_TOKEN=sekret-token-value",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	_, _ = cmd.Output() // the evil clone fails; the helper file is what we assert on
+
+	helper := filepath.Join(scratch, "git-askpass.sh")
+	if _, err := os.Stat(helper); err != nil {
+		t.Fatalf("askpass helper was not written: %v", err)
+	}
+	run := func(prompt string) (string, error) {
+		out, err := exec.Command("sh", helper, prompt).Output()
+		return string(out), err
+	}
+	if out, err := run("Username for 'https://forge.example': "); err != nil || strings.TrimSpace(out) != "x-access-token" {
+		t.Fatalf("the helper refused its own forge (out %q err %v)", out, err)
+	}
+	if out, err := run("Username for 'https://evil.invalid': "); err == nil {
+		t.Fatalf("the helper answered a foreign host: %q", out)
+	}
+	if out, err := run("Password for 'https://x-access-token@evilforge.example': "); err == nil {
+		t.Fatalf("the helper answered a lookalike suffix domain: %q", out)
+	}
+}
+
+// TestProductDocsInventoryStripsInlineURLCredentials pins the one leak
+// path strip_creds did not cover: git echoes the CATALOG's own inline
+// credential (https://user:pass@host/…) verbatim in its clone errors, and
+// that note reaches the campaign prompt, the events and the PR body.
+func TestProductDocsInventoryStripsInlineURLCredentials(t *testing.T) {
+	requireGitPython(t)
+
+	ws := t.TempDir()
+	gitIn(t, ws, "init", "-q", "-b", "main")
+	gitIn(t, ws, "remote", "add", "origin", "https://forge.example/team/docs.git")
+	scratch := t.TempDir()
+	catalogFixture(t, ws, "catalog/demo",
+		"id: demo\nname: Demo\nproduct_dir: docs/demo\nrepos:\n  - id: src\n    url: https://leaky:hunter2@evil.invalid/src.git\n",
+		`{"id":"demo","name":"Demo","product_dir":"docs/demo","repos":[{"id":"src","url":"https://leaky:hunter2@evil.invalid/src.git"}]}`)
+	writeFile(t, ws, "docs/demo/README.md", "# Demo\n")
+	gitIn(t, ws, "add", "-A")
+	gitIn(t, ws, "commit", "-q", "-m", "seed")
+
+	var got ingestOut
+	runJSON(t, ingestCommand(t, ws, "catalog", "demo", scratch), &got)
+	blob, _ := json.Marshal(got.Inventory)
+	if strings.Contains(string(blob), "hunter2") || strings.Contains(string(blob), "leaky:") {
+		t.Fatalf("an inline url credential survived into the inventory: %s", blob)
+	}
 }

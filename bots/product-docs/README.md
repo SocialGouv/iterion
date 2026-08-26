@@ -61,7 +61,7 @@ What stays non-overridable is integrity, not taste: sourced facts or
 `[à confirmer]`, preserved human prose, declared holes, and the four
 `page_lint` rules. A docs repo may restyle every page; it may not
 authorise the bot to invent. See
-[ADR-091](../../docs/adr/091-product-docs-editorial-sovereignty-and-git-native-source-deltas.md).
+[ADR-092](../../docs/adr/092-product-docs-editorial-sovereignty-and-git-native-source-deltas.md).
 
 ## Shape
 

@@ -38,7 +38,7 @@ first.
     `.product-docs/modele.md` demanded that hub pages open with
     `## À qui s'adresse cette page`, and both hubs do — while the product home
     (not a hub, per the bundle's own taxonomy) correctly does not. Editorial
-    sovereignty (ADR-091) works end to end.
+    sovereignty (ADR-092) works end to end.
   - It found a genuine **source** defect and said so instead of documenting a
     promise the code does not keep: `instruction.js` comments that accepting
     "notifies the applicant", no mailer call exists, and `fr.json` has no

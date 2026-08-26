@@ -1,4 +1,4 @@
-# ADR-091 — Editorial sovereignty in the target repo, and git-native cross-repo source deltas
+# ADR-092 — Editorial sovereignty in the target repo, and git-native cross-repo source deltas
 
 - **Status**: Accepted
 - **Date**: 2026-08-25

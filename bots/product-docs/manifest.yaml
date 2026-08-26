@@ -17,7 +17,7 @@ version: 1.0.0
 ##     "Points à clarifier", no "Correspondance technique" annex);
 ##   - EDITORIAL SOVEREIGNTY: the docs repo's own `.product-docs/*.md`
 ##     override the bundle's default editorial skills wherever the two
-##     disagree (ADR-091).
+##     disagree (ADR-092).
 ## Source deltas are git-native: every commit carries a
 ## `Product-Docs-Sources: <repo>@<sha>,…` trailer, so "what changed in
 ## the sources since we last documented them" survives a crashed run
