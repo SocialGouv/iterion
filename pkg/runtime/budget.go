@@ -681,7 +681,12 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 	// daily spend cap already follows two blocks above.
 	if exc := findExceeded(checks); exc != nil {
 		if !deferExceeded {
-			return e.failBudgetExceeded(rs, nodeID, exc)
+			// Non-deferrable callers (LLM router, resume re-entry) must
+			// still honour the grace: their PRE-exec check graces the
+			// node into starting, so killing it here right after it has
+			// spent converts "stop without spending" into "spend, then
+			// stop anyway" — the exact waste the grace exists to avoid.
+			return e.graceOrFailBudget(rs, nodeID, exc)
 		}
 		rs.budget.noteExceeded(exc)
 	}
@@ -696,14 +701,23 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 // that succeeded — so a run cannot be graced on one and killed on the
 // other.
 func (e *Engine) graceOrFailBudget(rs *runState, nodeID string, exc *budgetCheckResult) error {
-	if dim, ok := e.withinBudgetGrace(rs); ok {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExitGrace, nodeID, map[string]any{
-			"dimension": dim,
-			"used":      exc.used,
-			"limit":     exc.limit,
-		})
-		e.logger.Warn("budget %s is spent (%.0f/%.0f) — %q runs anyway, within the %.0f%% grace: the run is spending past its declared cap to deliver work it has already paid for. No further ITERATION can start, the loop guard declines every back-edge on a spent budget.",
-			exc.dimension, exc.used, exc.limit, nodeID, budgetExitGraceRatio*100)
+	if _, ok := e.withinBudgetGrace(rs); ok {
+		// The event names the axis whose used/limit pair it publishes —
+		// exc's own — never the axis withinBudgetGrace happened to see
+		// first: consumption is monotonic, so another axis can cross its
+		// cap between the two reads, and a mixed triple would put one
+		// dimension's ratio under another dimension's name in the sole
+		// audit record of a deliberate overspend.
+		if rs.lastGraceNode != nodeID || rs.lastGraceDim != exc.dimension {
+			rs.lastGraceNode, rs.lastGraceDim = nodeID, exc.dimension
+			_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExitGrace, nodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			})
+			e.logger.Warn("budget %s is spent (%.0f/%.0f) — %q runs anyway, within the %.0f%% grace: the run is spending past its declared cap to deliver work it has already paid for. No further ITERATION can start, the loop guard declines every back-edge on a spent budget.",
+				exc.dimension, exc.used, exc.limit, nodeID, budgetExitGraceRatio()*100)
+		}
 		return nil
 	}
 	return e.failBudgetExceeded(rs, nodeID, exc)

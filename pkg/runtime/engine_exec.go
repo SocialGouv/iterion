@@ -316,10 +316,19 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 	defer releaseResources()
 	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+		// Same grace as every other axis: checkBudgetBeforeExec above
+		// already graced (or failed) a pre-existing duration overrun,
+		// and this re-check only exists for time spent WAITING on a
+		// busy resource slot. Killing here unconditionally made the
+		// grace inert on the one axis a long campaign trips most — the
+		// run emitted budget_exit_grace and then died on the very next
+		// statement. graceOrFailBudget dedupes the event.
 		used, limit, _ := rs.budget.DurationStatus()
-		return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
+		if err := e.graceOrFailBudget(rs, currentNodeID, &budgetCheckResult{
 			exceeded: true, dimension: "duration", used: used, limit: limit,
-		})
+		}); err != nil {
+			return nil, false, err
+		}
 	}
 	if len(leases) > 0 {
 		nodeInput[leaseInputKey] = leases // surface leased instance ids to the node
@@ -378,10 +387,19 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// a resumable BUDGET_EXCEEDED(duration) failure. Recompute after resource
 	// acquisition so time spent waiting for a busy slot cannot exhaust the
 	// run's max_duration and then start execution with no deadline.
-	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem > 0 {
-		var cancel context.CancelFunc
-		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
-		defer cancel()
+	if rem, bounded := rs.budget.RemainingDuration(); bounded {
+		if rem <= 0 {
+			// Inside the duration grace (the gate above let this node
+			// through): bound it by the GRACED ceiling instead of
+			// running deadline-less — an unbounded stall is exactly
+			// what the deadline exists to terminate, grace or not.
+			rem, _ = rs.budget.GracedRemainingDuration(budgetExitGraceRatio())
+		}
+		if rem > 0 {
+			var cancel context.CancelFunc
+			spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
+			defer cancel()
+		}
 	}
 
 	output, execErr := e.executor.Execute(spanCtx, node, nodeInput)
@@ -611,6 +629,15 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 			anchor := nextNodeID
 			if edgeErr != nil || anchor == "" {
 				anchor = currentNodeID
+			}
+			// An edge error leaves no successor to walk to: the grace
+			// has nothing to deliver, and letting it swallow the
+			// overrun would surface the edge error naked below — a
+			// NO_OUTGOING_EDGE carries neither ErrBudgetExceeded nor
+			// its code, so the cloud runner naks the message back onto
+			// the same spent budget instead of acking it terminal.
+			if edgeErr != nil {
+				return "", e.failBudgetExceeded(rs, anchor, exc)
 			}
 			if err := e.graceOrFailBudget(rs, anchor, exc); err != nil {
 				return "", err

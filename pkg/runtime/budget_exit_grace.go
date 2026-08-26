@@ -1,10 +1,16 @@
 package runtime
 
-// budgetExitGraceRatio is the fraction of the declared cap a run may
-// spend BEYOND it, once the cap is gone, to finish the path it is on.
-// 10% mirrors the margin the loop guard already reserves for the same
-// purpose: it declines a back-edge whose next iteration would land past
-// budgetHardThreshold, precisely so the tail still fits.
+import (
+	"os"
+	"strconv"
+	"time"
+)
+
+// defaultBudgetExitGraceRatio is the fraction of the declared cap a run
+// may spend BEYOND it, once the cap is gone, to finish the path it is
+// on. 10% mirrors the margin the loop guard already reserves for the
+// same purpose: it declines a back-edge whose next iteration would land
+// past budgetHardThreshold, precisely so the tail still fits.
 //
 // That guard covers overruns caused by iteration COUNT. It cannot cover
 // a single node that overshoots the cap on its own — and when that
@@ -19,7 +25,9 @@ package runtime
 //     grace, and a run far past it stops regardless;
 //   - no further ITERATION can start: with the budget spent, the loop
 //     guard declines every back-edge it is asked to fund, so a graced
-//     run can only walk forward to a terminal node.
+//     run can only walk forward to a terminal node. Because that half of
+//     the argument is the loop guard's, withinBudgetGrace refuses the
+//     grace outright when the guard is disabled.
 //
 // An earlier draft restricted grace to nodes that cannot reach a loop
 // back-edge. It was dropped after measuring it against a real workflow:
@@ -27,7 +35,25 @@ package runtime
 // (scope_check → page_lint → gate → mr_gate) all sit upstream of a
 // back-edge, so the restriction excluded exactly the nodes the grace
 // exists to let through.
-const budgetExitGraceRatio = 0.1
+const defaultBudgetExitGraceRatio = 0.1
+
+// budgetExitGraceRatio resolves the grace allowance:
+// ITERION_BUDGET_EXIT_GRACE → 0.1. `0` means the declared caps are
+// absolute (no grace) — the escape hatch for deployments where a cap
+// must be a hard invoice ceiling (shared instances, pooled credentials).
+// Values outside [0,1] and unparsable values fall back to the default
+// rather than silently inventing a policy.
+func budgetExitGraceRatio() float64 {
+	raw := os.Getenv("ITERION_BUDGET_EXIT_GRACE")
+	if raw == "" {
+		return defaultBudgetExitGraceRatio
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < 0 || v > 1 {
+		return defaultBudgetExitGraceRatio
+	}
+	return v
+}
 
 // withinBudgetGrace reports whether a node may run on a spent budget:
 // the run must still be inside the bounded allowance. It returns the
@@ -38,5 +64,33 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	if rs == nil || rs.budget == nil {
 		return "", false
 	}
-	return rs.budget.exitGraceRoom(budgetExitGraceRatio)
+	// The "no further ITERATION can start" half of the safety argument
+	// is the loop guard's, not the grace's — and that guard is an
+	// operator escape hatch (`loop_budget_guard: off`,
+	// ITERION_LOOP_BUDGET_GUARD). With it lifted a graced run can take a
+	// back-edge and keep looping on a spent budget, so the grace must
+	// not be offered.
+	if !e.loopBudgetGuardEnabled() {
+		return "", false
+	}
+	ratio := budgetExitGraceRatio()
+	if ratio <= 0 {
+		return "", false
+	}
+	return rs.budget.exitGraceRoom(ratio)
+}
+
+// GracedRemainingDuration is the wall-clock room left before the GRACED
+// duration ceiling (maxDuration × (1+ratio)). It bounds a node that runs
+// under a duration grace: the plain RemainingDuration is already ≤ 0
+// there, and running deadline-less would un-bound exactly the axis the
+// grace promises to keep proportional.
+func (b *SharedBudget) GracedRemainingDuration(ratio float64) (remaining time.Duration, bounded bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.maxDuration <= 0 {
+		return 0, false
+	}
+	ceiling := time.Duration(float64(b.maxDuration) * (1 + ratio))
+	return ceiling - time.Since(b.startedAt), true
 }

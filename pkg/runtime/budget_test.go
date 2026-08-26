@@ -1720,3 +1720,324 @@ func TestBudgetGraceIsBounded(t *testing.T) {
 		t.Fatal("a node ran outside the bounded allowance")
 	}
 }
+
+// TestBudgetGraceEdgeErrorStillDiesOnBudget pins the interaction of the
+// grace with the terminal-ack carve-out: a node that overran INSIDE the
+// graced window and then matched no outgoing edge has no successor the
+// grace could deliver anything through — the run must die as
+// BUDGET_EXCEEDED (the sentinel the cloud runner acks terminal), never
+// as a naked NO_OUTGOING_EDGE (nak'd, redelivered onto the same spent
+// budget). Same fixture as TestBudgetOverrunSurvivesAnEdgeError with the
+// overrun moved inside the grace: 1.02 on a 1.00 cap.
+func TestBudgetGraceEdgeErrorStillDiesOnBudget(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_edge_error",
+		Entry: "a",
+		Nodes: map[string]ir.Node{
+			"a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "a", To: "b", Condition: "go_on"}, {From: "b", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"go_on": false, "_cost_usd": 1.02}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-edge-error", nil)
+	if err == nil {
+		t.Fatal("expected the run to fail: no outgoing edge matched")
+	}
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("run died on %v — inside the grace the edge error leaked through naked, so the cloud runner would nak and redeliver onto the same spent budget", err)
+	}
+}
+
+// TestBudgetGraceCoversDuration pins the grace on the duration axis —
+// the axis a long campaign is most likely to trip. Before the fix, the
+// unconditional RemainingDuration gate killed the run right after
+// graceOrFailBudget had forgiven the same overrun: the events recorded a
+// grace that was never granted. Ratio raised via env so the test's
+// timing window is wide enough to be deterministic.
+func TestBudgetGraceCoversDuration(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.5")
+	wf := &ir.Workflow{
+		Name:  "budget_grace_duration",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxDuration: "300ms"},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		time.Sleep(350 * time.Millisecond) // past the 300ms cap, inside the 450ms graced ceiling
+		return map[string]any{"ok": true}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-grace-duration", nil); err != nil {
+		t.Fatalf("a duration overrun inside the grace still killed the run: %v", err)
+	}
+	if !tailRan {
+		t.Fatal("the delivery node never ran under a duration grace")
+	}
+}
+
+// TestBudgetGraceRefusedWhenLoopGuardOff pins half the grace's safety
+// argument: "no further iteration can start" is the LOOP GUARD's
+// property, and the guard is an operator escape hatch. With it lifted a
+// graced run could take back-edges and loop indefinitely on a spent
+// budget — so the grace must not be offered at all.
+func TestBudgetGraceRefusedWhenLoopGuardOff(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_guard_off",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:           []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas:         map[string]*ir.Schema{},
+		Prompts:         map[string]*ir.Prompt{},
+		Vars:            map[string]*ir.Var{},
+		Loops:           map[string]*ir.Loop{},
+		Budget:          &ir.Budget{MaxCostUSD: 1.0},
+		LoopBudgetGuard: "off",
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-guard-off", nil)
+	if err == nil || !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("with the loop guard off the grace must be refused, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node was graced while the loop guard was disabled")
+	}
+}
+
+// TestBudgetGraceAbsoluteWhenZero pins the escape hatch: a deployment
+// that needs declared caps to be hard invoice ceilings (shared instance,
+// pooled credential) sets ITERION_BUDGET_EXIT_GRACE=0 and gets exactly
+// the pre-grace behaviour back.
+func TestBudgetGraceAbsoluteWhenZero(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0")
+	wf := &ir.Workflow{
+		Name:  "budget_grace_zero",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	err := eng.Run(context.Background(), "run-grace-zero", nil)
+	if err == nil || !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("grace=0 must make the cap absolute, got: %v", err)
+	}
+	if tailRan {
+		t.Fatal("a node ran past an absolute cap")
+	}
+}
+
+// TestBudgetGraceEventIsCoherentAndSingular pins the audit record's
+// shape: exactly ONE budget_exit_grace event per (node, dimension), and
+// its dimension/used/limit triple is self-consistent (the exceeded
+// axis's own figures — never one axis's ratio under another's name).
+func TestBudgetGraceEventIsCoherentAndSingular(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_event_shape",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+
+	exec := newStubExecutor()
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-grace-event-shape", nil); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	events, err := s.LoadEvents(context.Background(), "run-grace-event-shape")
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	seen := map[string]bool{}
+	count := 0
+	for _, evt := range events {
+		if evt.Type != store.EventBudgetExitGrace {
+			continue
+		}
+		count++
+		g := evt.Data
+		if g["dimension"] != "cost_usd" {
+			t.Fatalf("event names dimension %v for a cost overrun", g["dimension"])
+		}
+		used, _ := g["used"].(float64)
+		limit, _ := g["limit"].(float64)
+		if limit != 1.0 || used < 1.01 || used > 1.04 {
+			t.Fatalf("event used/limit pair (%v/%v) is not the exceeded axis's own figures", g["used"], g["limit"])
+		}
+		key := evt.NodeID + "/cost_usd"
+		if seen[key] {
+			t.Fatalf("duplicate budget_exit_grace for %s — one boundary emitted the same grant twice", key)
+		}
+		seen[key] = true
+	}
+	if count == 0 {
+		t.Fatal("no budget_exit_grace event: the deliberate overspend left no audit record")
+	}
+}
+
+// TestBudgetGraceCoversImmediateRecordPath pins the non-deferred
+// recording path (LLM router, resume re-entry): its PRE-exec check
+// graces the node into starting, so the post-exec record must honour the
+// same grace — otherwise the node is allowed to spend and then killed
+// anyway, which is strictly worse than failing before it ran.
+func TestBudgetGraceCoversImmediateRecordPath(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:    "budget_grace_immediate",
+		Entry:   "work",
+		Nodes:   map[string]ir.Node{"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}}, "done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}}, "fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}}},
+		Edges:   []*ir.Edge{{From: "work", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		Budget:  &ir.Budget{MaxCostUSD: 1.0},
+	}
+	s := tmpStore(t)
+	eng := New(wf, s, newStubExecutor())
+
+	rs := &runState{ctx: context.Background(), runID: "run-grace-immediate", budget: newSharedBudget(wf.Budget, nil)}
+	if err := eng.recordAndCheckBudget(rs, "work", map[string]any{"_cost_usd": 1.02}); err != nil {
+		t.Fatalf("an overrun inside the grace on the immediate record path killed the node that just spent: %v", err)
+	}
+	if err := eng.recordAndCheckBudget(rs, "work", map[string]any{"_cost_usd": 1.0}); err == nil {
+		t.Fatal("past the graced ceiling the immediate record path must still fail")
+	}
+}
+
+// TestBudgetGraceSurvivesHardLimitOnAnotherAxis pins the pre-exec
+// ordering that makes the grace usable on multi-axis budgets: when one
+// axis is exceeded-but-graced and ANOTHER sits past the 90% hard limit
+// (the common max_cost_usd + max_duration pairing late in a long run),
+// the grace decides and returns — the hard-limit branch must not get a
+// second opinion, or refusing a node at 90% of axis B while permitting
+// 110% of axis A would defeat the grace exactly where it matters.
+func TestBudgetGraceSurvivesHardLimitOnAnotherAxis(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "budget_grace_hard_limit_other_axis",
+		Entry: "work",
+		Nodes: map[string]ir.Node{
+			"work": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"tail": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "tail"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:   []*ir.Edge{{From: "work", To: "tail"}, {From: "tail", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+		// Cost will be exceeded inside the grace; duration will sit in
+		// the 90%+ hard-limit band when the tail is considered.
+		Budget: &ir.Budget{MaxCostUSD: 1.0, MaxDuration: "2s"},
+	}
+
+	exec := newStubExecutor()
+	tailRan := false
+	exec.on("work", func(_ map[string]any) (map[string]any, error) {
+		time.Sleep(1850 * time.Millisecond) // ~92% of max_duration
+		return map[string]any{"ok": true, "_cost_usd": 1.02}, nil
+	})
+	exec.on("tail", func(_ map[string]any) (map[string]any, error) {
+		tailRan = true
+		return map[string]any{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-grace-hard-limit-other-axis", nil); err != nil {
+		t.Fatalf("the hard limit on a second axis defeated a granted grace: %v", err)
+	}
+	if !tailRan {
+		t.Fatal("the delivery node never ran")
+	}
+}

@@ -531,6 +531,20 @@ environment cannot quietly replace what the operator asked for. It is not
 persisted on the run, so `iterion resume --loop-budget-guard` must
 re-state it.
 
+**Exit grace.** Once a cap is *spent* (100%+), the run may still walk
+**forward** — never around a loop — spending up to **10% beyond the
+declared cap** to reach a terminal node, so work it has already paid for
+gets delivered (the PR opened, the report written) instead of dying on
+disk. Every graced node is recorded as a `budget_exit_grace` event naming
+the exceeded axis and its own used/limit pair. The allowance is
+proportional and bounded: past `cap × 1.1` the run fails as
+`BUDGET_EXCEEDED`, exactly as before. `ITERION_BUDGET_EXIT_GRACE`
+overrides the ratio; `0` makes every declared cap **absolute** — the
+setting for deployments where a cap must be a hard invoice ceiling
+(shared instances, pooled credentials). Because the "no further
+iteration" half of the safety argument belongs to the loop guard, the
+grace is **refused entirely when the guard is off**.
+
 ```iter
 workflow campaign:
   entry: work
