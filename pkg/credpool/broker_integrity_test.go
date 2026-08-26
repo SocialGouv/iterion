@@ -418,6 +418,50 @@ func TestRelease_doesNotRefundARenewedAdmission(t *testing.T) {
 	}
 }
 
+// A schema park captures its lease before flipping the run to resumable, but
+// performs terminal side effects after that CAS. If a resume acquires in the
+// middle, the delayed release must target the captured lease rather than the
+// new attempt returned by GetOpenByRun.
+func TestReleaseCaptured_doesNotCloseANewerAttempt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.donor(t, "alice", Limits{MaxConcurrentRuns: 2, MaxRunsPerDay: 2})
+
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	old, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("old open lease: %v", err)
+	}
+	guard := h.broker.CaptureRelease(ctx, "run-1")
+	if guard == nil {
+		t.Fatal("CaptureRelease returned nil for an open lease")
+	}
+
+	// A newer resume supersedes old and creates its own open lease before the
+	// old handler reaches its release side effect.
+	if _, err := h.broker.Acquire(ctx, h.request("run-1")); err != nil {
+		t.Fatalf("resume Acquire: %v", err)
+	}
+	newer, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("new open lease: %v", err)
+	}
+	if newer.ID == old.ID {
+		t.Fatalf("resume reused lease %s, want a distinct attempt", newer.ID)
+	}
+
+	h.broker.ReleaseCaptured(ctx, guard)
+	stillOpen, err := h.leases.GetOpenByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("open lease after captured release: %v", err)
+	}
+	if stillOpen.ID != newer.ID {
+		t.Fatalf("captured release left lease %s open, want newer %s", stillOpen.ID, newer.ID)
+	}
+}
+
 // A run whose attempts keep being abandoned (crash-looping pod) must be
 // charged as new each time, not renew forever against a record that never
 // learned what it spent.

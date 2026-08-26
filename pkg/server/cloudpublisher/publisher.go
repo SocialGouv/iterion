@@ -1088,7 +1088,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
 // pattern in SubmitLaunch.
-func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) error {
+func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, hash string) (retErr error) {
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return err
@@ -1102,21 +1102,60 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	// Re-resolve credentials BEFORE flipping the status: a resolution
-	// failure (store error, or the required-secret gate — e.g. the secret
-	// was deleted between the failure and the resume) must leave the run
-	// in its prior RESUMABLE status. Flipping first would strand it in
-	// queued: never claimed (nothing published), and no longer resumable
-	// from the studio. Keys may have rotated between launch and resume;
-	// using the prior run's secrets ref blindly would inject stale
-	// plaintext. Preserve the launching BotID so bot-secret bindings
-	// remain durable across pause/failure/TTL republishes.
+	switch priorStatus {
+	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
+		// Valid resume source states. The runview layer validates first, but
+		// SubmitResume repeats the boundary check because another request may
+		// have changed the row since that read.
+	default:
+		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
+	}
+
+	// Claim this resume BEFORE resolving credentials. The status CAS is the
+	// serialization point for double-clicks/client retries: only one request
+	// may create the next queue attempt, so only that request may acquire a
+	// credential-pool lease or publish. Transitioning to queued also refreshes
+	// QueuedAt, the durable attempt marker used to reject stale deliveries.
+	claimed, claimErr := p.store.UpdateRunStatusIf(ctx, spec.RunID, store.RunStatusQueued, "", []store.RunStatus{priorStatus})
+	if claimErr != nil {
+		return fmt.Errorf("cloudpublisher: claim resume %s: %w", spec.RunID, claimErr)
+	}
+	if !claimed {
+		current, _ := p.store.LoadRun(ctx, spec.RunID)
+		if current != nil {
+			return fmt.Errorf("cloudpublisher: resume raced for %s (status now %s)", spec.RunID, current.Status)
+		}
+		return fmt.Errorf("cloudpublisher: resume raced for %s", spec.RunID)
+	}
+
+	// Any failure before a successful publish restores the exact resumable
+	// source status. The rollback itself is a queued-only CAS, so a concurrent
+	// cancel/runner transition is never overwritten.
+	republished := false
+	defer func() {
+		if republished {
+			return
+		}
+		runErr := prior.Error
+		if retErr != nil {
+			runErr = fmt.Sprintf("queue resume: %v", retErr)
+		}
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer rollbackCancel()
+		if _, rbErr := p.store.UpdateRunStatusIf(rollbackCtx, spec.RunID, priorStatus, runErr,
+			[]store.RunStatus{store.RunStatusQueued}); rbErr != nil {
+			p.logger.Error("cloudpublisher: rollback %s after resume failure: %v", spec.RunID, rbErr)
+		}
+	}()
+
+	// Keys may have rotated between launch and resume; using the prior run's
+	// secrets ref blindly would inject stale plaintext. Preserve BotID so bot-
+	// secret bindings remain durable across pause/failure/TTL republishes.
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	priorOrgID := p.orgIDForTeam(ctx, prior.TenantID)
 	creds, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, priorOrgID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
 	// Armed before the error check — see SubmitLaunch.
-	republished := false
 	if creds.grant != nil {
 		defer func() {
 			if !republished {
@@ -1126,12 +1165,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	if secretsErr != nil {
 		return secretsErr
-	}
-	// Flip status to queued so the runner doesn't short-circuit on the
-	// cooperative-cancel check + so the studio's QueueDepthBar reflects
-	// the in-flight resume.
-	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
-		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
@@ -1183,20 +1216,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		BotID:   prior.BotID,
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		// Revert to the prior resumable status — typically
-		// failed_resumable so the next user action is "Resume"
-		// again. Falling back to failed_resumable is conservative
-		// when the prior status wasn't itself resumable.
-		rollback := priorStatus
-		switch rollback {
-		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-			// keep as-is
-		default:
-			rollback = store.RunStatusFailedResumable
-		}
-		if rbErr := p.store.UpdateRunStatus(ctx, spec.RunID, rollback, fmt.Sprintf("queue republish: %v", err)); rbErr != nil {
-			p.logger.Error("cloudpublisher: rollback %s after publish failure: %v", spec.RunID, rbErr)
-		}
 		return fmt.Errorf("cloudpublisher: republish: %w", err)
 	}
 	republished = true

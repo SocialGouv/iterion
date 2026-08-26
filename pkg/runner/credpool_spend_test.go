@@ -32,6 +32,11 @@ type poolHarness struct {
 
 func newPoolHarness(t *testing.T, limits credpool.Limits) *poolHarness {
 	t.Helper()
+	return newPoolHarnessForRun(t, limits, "run-1")
+}
+
+func newPoolHarnessForRun(t *testing.T, limits credpool.Limits, runID string) *poolHarness {
+	t.Helper()
 	ctx := context.Background()
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
@@ -72,7 +77,7 @@ func newPoolHarness(t *testing.T, limits credpool.Limits) *poolHarness {
 	}
 	// The run is already served — exactly the state the runner reports on.
 	if _, err := broker.Acquire(ctx, credpool.Request{
-		RunID: "run-1", OrgID: "org-1", TenantID: "team-1", UserID: "requester",
+		RunID: runID, OrgID: "org-1", TenantID: "team-1", UserID: "requester",
 		Wants: []credpool.Credential{{Source: credpool.SourceOAuth, Ref: string(secrets.OAuthKindClaudeCode)}},
 	}); err != nil {
 		t.Fatalf("seed lease: %v", err)

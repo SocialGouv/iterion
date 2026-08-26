@@ -415,6 +415,13 @@ type Config struct {
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
 	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
 	FetchWait         time.Duration // long-poll wait per fetch
+	// SchemaMismatchDelay is the redelivery delay applied when this runner
+	// rejects a delivery whose schema version it does not recognise (mixed
+	// fleet during a rolling schema bump). Must be long enough that the
+	// MaxDeliver budget stretches over the duration of a rolling restart —
+	// an immediate Nak burns it in seconds (issue #481). 0 →
+	// natsq.SchemaMismatchNakDelay.
+	SchemaMismatchDelay time.Duration
 	// DrainMode governs SIGTERM handling. "complete" (default, the
 	// lame-duck posture): stop fetching new runs but let the in-flight run
 	// finish naturally before exiting — a rolling deploy interrupts

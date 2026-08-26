@@ -290,6 +290,11 @@ them:
 - **node turnover** — a drain, an upgrade, a spot reclaim.
 - **a deploy** — a rolling restart of the runner Deployment.
 
+> **Schema bump?** If the deploy changes the queue wire version
+> (`pkg/queue/types.go` `SchemaVersion`), pod turnover is the *easy* half —
+> the mixed-version window also needs the drained-queue-or-DLQ-replay
+> procedure in [docs/cloud-queue-schema-rollout.md](cloud-queue-schema-rollout.md).
+
 All three arrive as the same signal, SIGTERM, so one mechanism covers them
 all. What happens to a run a runner is executing is governed by
 **`config.runner.drainMode`**:

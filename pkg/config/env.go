@@ -78,6 +78,9 @@ func loadEnv(cfg *Config) error {
 	if err := lookupDuration("ITERION_RUNNER_DRAIN_TIMEOUT", &cfg.Runner.DrainTimeout); err != nil {
 		return err
 	}
+	if err := lookupDuration("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", &cfg.Runner.SchemaMismatchDelay); err != nil {
+		return err
+	}
 
 	delay, err := ShutdownDelayFromEnv(cfg.Server.ShutdownDelay)
 	if err != nil {

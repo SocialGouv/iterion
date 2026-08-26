@@ -238,6 +238,12 @@ config:
     # runner.terminationGracePeriodSeconds >= it + checkpoint margin.
     drainMode: complete
     drainTimeout: 8h
+    # Redelivery delay when a runner rejects a queue message whose schema
+    # version it does not speak (mixed fleet during a rolling schema bump).
+    # Must cover a rolling restart of this Deployment — with drainMode:
+    # complete that can exceed the 30s default, so raise it (e.g. 2m) on
+    # fleets with long in-flight runs. See docs/cloud-queue-schema-rollout.md.
+    schemaMismatchDelay: 30s
   # --- Valkey/Redis (distributed ephemeral state) ------------------
   # Required for multi-replica servers: shares forge OAuth/CSRF state,
   # board-MCP run tokens and auth rate-limit across pods. Empty (the

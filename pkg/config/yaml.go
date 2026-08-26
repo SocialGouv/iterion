@@ -128,12 +128,13 @@ type yamlS3Config struct {
 }
 
 type yamlRunnerConfig struct {
-	WorkDir      *string `yaml:"workdir"`
-	Concurrency  *int    `yaml:"concurrency"`
-	Heartbeat    *string `yaml:"heartbeat"`
-	LockTTL      *string `yaml:"lock_ttl"`
-	DrainMode    *string `yaml:"drain_mode"`
-	DrainTimeout *string `yaml:"drain_timeout"`
+	WorkDir             *string `yaml:"workdir"`
+	Concurrency         *int    `yaml:"concurrency"`
+	Heartbeat           *string `yaml:"heartbeat"`
+	LockTTL             *string `yaml:"lock_ttl"`
+	DrainMode           *string `yaml:"drain_mode"`
+	DrainTimeout        *string `yaml:"drain_timeout"`
+	SchemaMismatchDelay *string `yaml:"schema_mismatch_delay"`
 }
 
 type yamlServerConfig struct {
@@ -223,6 +224,13 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 				return fmt.Errorf("runner.drain_timeout: %w", err)
 			}
 			cfg.Runner.DrainTimeout = d
+		}
+		if y.Runner.SchemaMismatchDelay != nil {
+			d, err := time.ParseDuration(*y.Runner.SchemaMismatchDelay)
+			if err != nil {
+				return fmt.Errorf("runner.schema_mismatch_delay: %w", err)
+			}
+			cfg.Runner.SchemaMismatchDelay = d
 		}
 	}
 	if y.Server != nil {

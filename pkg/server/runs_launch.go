@@ -104,7 +104,8 @@ type launchRunRequest struct {
 	// ModelOverrides are launch-time per-node/-group backend+model overrides
 	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
-	// See runview.ModelOverrideEntry.
+	// See runview.ModelOverrideEntry. The current queue contract carries them
+	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
 	// Fallback is the operator's single run-level fallback route, taken
 	// when an agent node's primary fails. It applies only to agent nodes
@@ -300,7 +301,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
 	// Repo-targeted launch (the "Target repository" section): resolve the
 	// forge context on the request ctx (auth identity) BEFORE detaching.
 	var repoProjectPath string

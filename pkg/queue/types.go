@@ -22,6 +22,18 @@ import (
 // rolling-upgrade always upgrades the server first (which then never
 // emits an unsupported version).
 //
+// Wire compatibility policy (enforced — see docs/cloud-queue-schema-rollout.md):
+//   - Deploy the server (producer) first, then the runners. A mismatch in
+//     either direction is TRANSIENT, never terminal: the consumer holds the
+//     message with a delayed Nak and, once MaxDeliver is exhausted, parks it
+//     on the DLQ with the run document flipped to an actionable status —
+//     never dropped, never left `queued` in silence.
+//   - Any ADDITIVE field whose omission changes operator intent (a knob the
+//     caller explicitly set, that a stale runner would silently fall back
+//     from) is a BREAKING change: bump SchemaVersion. The publisher must
+//     reject a launch carrying such a field until both the wire carrier and
+//     its version bump ship; it must never silently drop the field.
+//
 // v=3 (2026-06-10): added BotID so cloud runners can qualify structured bot memory.
 // v=4 (2026-07-11): added Budget so launch-time budget overrides reach the
 // runner instead of being rejected at publish time. The version bump makes a
@@ -49,9 +61,13 @@ import (
 // is exactly the kind of choice that must not be quietly re-made on the pod.
 // v=8 (2026-08-25): added Supervisors so a launch-time `--supervisors off`
 // reaches the runner. Same failure direction as v=6/v=7: dropping the field
-// makes the pod re-decide from its own env and spawn LLM watchers the
-// operator explicitly declined — spend outside the run's own budget, the one
-// thing the kill switch exists to prevent.
+// makes the pod re-decide from its own env and spawn LLM watchers the operator
+// explicitly declined — spend outside the run's own budget.
+//
+// KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
+// version bump. A v7 runner built before that commit can silently ignore the
+// operator's model/backend pins. That historical gap cannot be repaired by a
+// later bump; the additive-intent rule above prevents repeating it.
 const SchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
@@ -305,4 +321,35 @@ func (m *RunMessage) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Envelope carries the STABLE identity fields of a RunMessage, decodable
+// without validating the schema version. These fields are part of the
+// wire contract's immutable core: their JSON names must never be renamed or
+// repurposed by any schema bump, because they are the only way a consumer
+// that rejects the version can still identify the run and queue attempt — to
+// park the payload on the DLQ and flip only that attempt to an actionable
+// status instead of leaving it `queued` in silence (issue #481).
+type Envelope struct {
+	V              int    `json:"v"`
+	RunID          string `json:"run_id"`
+	TenantID       string `json:"tenant_id"`
+	OwnerID        string `json:"owner_id,omitempty"`
+	PublishedAtRFC string `json:"published_at"`
+}
+
+// PeekEnvelope extracts the identity envelope from a raw wire payload WITHOUT
+// validating it. Unlike Delivery.Decode it succeeds on any schema version —
+// that is precisely its use case: a version this build rejects must still be
+// recoverable. A payload so malformed that even the envelope won't decode is
+// reported as an error (callers fall back to Term-and-log).
+func PeekEnvelope(data []byte) (Envelope, error) {
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return Envelope{}, fmt.Errorf("queue: envelope decode: %w", err)
+	}
+	if env.RunID == "" {
+		return Envelope{}, fmt.Errorf("queue: envelope decode: run_id missing")
+	}
+	return env, nil
 }

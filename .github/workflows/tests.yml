@@ -253,6 +253,57 @@ jobs:
             ./pkg/runview/runstream/... ./pkg/cloud/orgsweep/... \
             ./pkg/usagecap/...
 
+  nats-conformance:
+    # Runs the JetStream integration tests (mixed-version schema rollout,
+    # issue #481) against a real broker. Gated on ITERION_TEST_NATS_URI
+    # in-tree so a developer's plain `go test ./...` skips them; CI
+    # provides the URI explicitly so the contract stays enforced.
+    # Mirror of the mongo-conformance job above.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Start NATS with JetStream
+        # No services: block — it cannot pass `-js` to the container
+        # command. Same docker-run pattern as the mongo replica-set step.
+        run: |
+          set -euo pipefail
+          docker run -d --name nats-js -p 4222:4222 nats:2.14-alpine -js
+          ready=0
+          for i in $(seq 1 30); do
+            logs="$(docker logs nats-js 2>&1)"
+            if grep -Fq "Server is ready" <<<"$logs"; then
+              echo "nats ready"
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs nats-js
+            echo "NATS did not become ready"
+            exit 1
+          fi
+          logs="$(docker logs nats-js 2>&1)"
+          grep -Fq "JetStream" <<<"$logs" || { echo "JetStream not enabled"; exit 1; }
+
+      - name: JetStream integration tests
+        # Alongside pkg/runner's schema-rollout test, run EVERY suite
+        # gated on this URI — a NATS-only test that no job runs is a
+        # test that cannot fail. Keep in sync with:
+        #   grep -rl ITERION_TEST_NATS_URI --include='*_test.go' pkg/
+        env:
+          ITERION_TEST_NATS_URI: nats://localhost:4222
+        run: |
+          go test -mod=vendor -v -timeout 5m ./pkg/runner/... ./pkg/queue/...
+
   cloud-e2e:
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with bundled Mongo + NATS + MinIO (values-dev.yaml), then

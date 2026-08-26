@@ -58,6 +58,9 @@ data:
   {{- with .Values.config.runner.drainTimeout }}
   ITERION_RUNNER_DRAIN_TIMEOUT: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.runner.schemaMismatchDelay }}
+  ITERION_RUNNER_SCHEMA_MISMATCH_DELAY: {{ . | quote }}
+  {{- end }}
   {{- if .Values.runner.sandbox.enabled }}
   # The kubernetes sandbox driver has no host filesystem to bind, so the
   # default host_state=auto hard-errors ("no host filesystem to bind").
