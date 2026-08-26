@@ -33,6 +33,10 @@ type SharedBudget struct {
 	// warnTokens is advisory-only: crossing it emits a single
 	// budget_warning (advisory=true) but never hard-limits the run.
 	warnTokens int
+	// capImposed mirrors ir.Budget.CapImposed: at least one limit was
+	// clamped by an external authority, so the exit grace is refused.
+	// Immutable after construction.
+	capImposed bool
 
 	// Consumed.
 	tokensUsed     int
@@ -103,6 +107,7 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
+		capImposed:      b.CapImposed,
 		startedAt:       time.Now(),
 		warningsEmitted: make(map[string]bool),
 	}
@@ -398,6 +403,37 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 	return axes
 }
 
+// exitGraceRoom reports whether every enforced dimension is still under
+// (1 + ratio) x its limit — the bounded allowance a run may spend to
+// reach its own exit path once the cap is gone. It returns the FIRST
+// dimension already past its plain limit, so the caller can name what is
+// being graced; ok is false as soon as any dimension is past the graced
+// ceiling too, because a run that cannot afford its exit path is simply
+// over.
+func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	graced := ""
+	room := func(dimension string, used, limit float64) bool {
+		if limit <= 0 {
+			return true
+		}
+		if used >= limit*(1+ratio) {
+			return false
+		}
+		if used >= limit && graced == "" {
+			graced = dimension
+		}
+		return true
+	}
+	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations)) &&
+		room("tokens", float64(b.tokensUsed), float64(b.maxTokens)) &&
+		room("cost_usd", b.costUsed, b.maxCostUSD) &&
+		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	return graced, ok && graced != ""
+}
+
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	var results []budgetCheckResult
 
@@ -558,9 +594,11 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 	}
 	checks := rs.budget.Check()
 
-	// Hard exceeded (100%+).
+	// Hard exceeded (100%+) — unless this node is how the run DELIVERS
+	// what it already paid for. See budget_exit_grace.go: the allowance
+	// is bounded, offered only on the exit path, and loud.
 	if exc := findExceeded(checks); exc != nil {
-		return e.failBudgetExceeded(rs, nodeID, exc)
+		return e.graceOrFailBudget(rs, nodeID, exc)
 	}
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
@@ -648,12 +686,46 @@ func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any
 	// daily spend cap already follows two blocks above.
 	if exc := findExceeded(checks); exc != nil {
 		if !deferExceeded {
-			return e.failBudgetExceeded(rs, nodeID, exc)
+			// Non-deferrable callers (LLM router, resume re-entry) must
+			// still honour the grace: their PRE-exec check graces the
+			// node into starting, so killing it here right after it has
+			// spent converts "stop without spending" into "spend, then
+			// stop anyway" — the exact waste the grace exists to avoid.
+			return e.graceOrFailBudget(rs, nodeID, exc)
 		}
 		rs.budget.noteExceeded(exc)
 	}
 
 	return nil
+}
+
+// graceOrFailBudget decides what a hard overrun does at a node boundary:
+// let the run walk forward inside the bounded grace (see
+// budget_exit_grace.go), or end it. Both budget stop-paths go through
+// here — the pre-exec check and the deferred overrun taken after a node
+// that succeeded — so a run cannot be graced on one and killed on the
+// other.
+func (e *Engine) graceOrFailBudget(rs *runState, nodeID string, exc *budgetCheckResult) error {
+	if _, ok := e.withinBudgetGrace(rs); ok {
+		// The event names the axis whose used/limit pair it publishes —
+		// exc's own — never the axis withinBudgetGrace happened to see
+		// first: consumption is monotonic, so another axis can cross its
+		// cap between the two reads, and a mixed triple would put one
+		// dimension's ratio under another dimension's name in the sole
+		// audit record of a deliberate overspend.
+		if rs.lastGraceNode != nodeID || rs.lastGraceDim != exc.dimension {
+			rs.lastGraceNode, rs.lastGraceDim = nodeID, exc.dimension
+			_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExitGrace, nodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			})
+			e.logger.Warn("budget %s is spent (%.0f/%.0f) — %q runs anyway, within the %.0f%% grace: the run is spending past its declared cap to deliver work it has already paid for. No further ITERATION can start, the loop guard declines every back-edge on a spent budget.",
+				exc.dimension, exc.used, exc.limit, nodeID, budgetExitGraceRatio()*100)
+		}
+		return nil
+	}
+	return e.failBudgetExceeded(rs, nodeID, exc)
 }
 
 // failBudgetExceeded emits a budget_exceeded event for a hard-exceeded

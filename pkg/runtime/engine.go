@@ -317,6 +317,13 @@ type runState struct {
 	artifactVersions map[string]int
 	nodeSessions     map[string]store.NodeSessionSlot
 	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	// lastGraceNode/lastGraceDim dedupe the budget_exit_grace event: the
+	// pre-exec check and the post-resource-wait duration gate can route
+	// the SAME overrun through graceOrFailBudget at one node boundary,
+	// and the audit trail must record one deliberate grace per
+	// (node, dimension), not one per checkpoint that happened to look.
+	lastGraceNode string
+	lastGraceDim  string
 	// gateAnchors memoises the review-gate anchor of each (node, iter), so
 	// the companion and the human are handed the SAME range: the companion
 	// runs before the pause, and re-capturing at pause time would move the

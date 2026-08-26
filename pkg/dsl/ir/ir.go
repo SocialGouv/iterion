@@ -1293,6 +1293,12 @@ type Budget struct {
 	// (advisory) but never blocks execution. 0 = disabled.
 	WarnTokens    int
 	MaxIterations int
+	// CapImposed marks a budget at least one of whose limits was CLAMPED
+	// by an authority outside the run — the platform ceiling, a credential
+	// pool donor's remaining allowance. Set by ClampToCeiling when it
+	// actually changes something. An imposed cap is an absolute promise to
+	// a third party: the runtime's exit grace must not spend past it.
+	CapImposed bool
 }
 
 // ClampToCeiling lowers each numeric limit so it never EXCEEDS the
@@ -1309,6 +1315,15 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 	if b == nil || ceiling == nil {
 		return
 	}
+	before := *b
+	defer func() {
+		// One choke point marks every externally-imposed cap: both the
+		// platform ceiling and the pool-grant clamp go through here.
+		before.CapImposed = b.CapImposed
+		if *b != before {
+			b.CapImposed = true
+		}
+	}()
 	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
 	b.MaxTokens = clampToCeiling(b.MaxTokens, ceiling.MaxTokens)
 	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
