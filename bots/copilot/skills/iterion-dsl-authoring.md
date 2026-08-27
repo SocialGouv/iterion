@@ -185,7 +185,6 @@ change that only *adds* files is invisible.
 | Code | Meaning |
 |---|---|
 | C016 | node unreachable from entry (often a *cascade* from a parse error) |
-| C030 | node uses the deprecated `codex` backend |
 | C031/C032 | reference to a field absent from a schema |
 | C080/C081 | unknown / malformed `capabilities:` entry |
 | C083–C086 | cursor declaration problems |

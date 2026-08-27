@@ -67,7 +67,18 @@ export function newConversationId(): string {
 function isConversation(v: unknown): v is Conversation {
   if (!v || typeof v !== "object") return false;
   const c = v as Partial<Conversation>;
-  return typeof c.id === "string" && c.id !== "" && typeof c.botId === "string";
+  const optionalString = (value: unknown) =>
+    value === undefined || typeof value === "string";
+  return (
+    typeof c.id === "string" &&
+    c.id !== "" &&
+    typeof c.botId === "string" &&
+    c.botId !== "" &&
+    optionalString(c.origin) &&
+    optionalString(c.originLabel) &&
+    optionalString(c.runId) &&
+    (c.fresh === undefined || typeof c.fresh === "boolean")
+  );
 }
 
 /**

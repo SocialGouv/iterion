@@ -48,6 +48,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -132,6 +133,8 @@ func TestCopilot_PermissionPolicy_Behaviour(t *testing.T) {
 		{"cred/relative-iterion", "Read", ".iterion/secrets.json", permission.Deny, ""},
 		{"cred/relative-netrc", "Read", ".netrc", permission.Deny, ""},
 		{"cred/relative-git", "Read", ".git-credentials", permission.Deny, ""},
+		{"cred/grep", "Grep", "/home/op/.ssh/id_rsa", permission.Deny,
+			"Grep matches its pattern rather than its path, so only a bare tool deny keeps credential contents out of reach"},
 
 		// --- and the product must still work ---
 		{"src/token-go", "Read", repo + "/pkg/dsl/parser/token.go", permission.Allow,
@@ -153,6 +156,9 @@ func TestCopilot_PermissionPolicy_Behaviour(t *testing.T) {
 			switch tc.tool {
 			case "Bash":
 				input["command"] = tc.arg
+			case "Grep":
+				input["pattern"] = "."
+				input["path"] = tc.arg
 			case "Task":
 				// no scoped argument
 			default:
@@ -205,6 +211,9 @@ func TestCopilot_GraphContract(t *testing.T) {
 		if rule == "Bash" || strings.HasPrefix(rule, "Bash(") {
 			t.Errorf("allow rule %q re-opens the shell: a `Bash(<prefix>:*)` rule is an unanchored prefix, so it grants arbitrary trailing commands (`git status; cat ~/.ssh/id_rsa` matches). With sandbox: none that shell runs on the operator's host", rule)
 		}
+	}
+	if !slices.Contains(wf.PermissionDeny, "Grep") {
+		t.Error("bare Grep is not denied — its matcher sees the pattern before the path, so credential path denies cannot contain it")
 	}
 
 	copi, ok := wf.Nodes["copi"].(*ir.AgentNode)
@@ -337,24 +346,29 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if copi.Publish == "" {
 		t.Error("copi does not publish its structured output — validate_draft would have no draft artifact to read")
 	}
-	// The draft is LLM-authored text with quotes, backticks and newlines in
-	// it. A tool command is a shell string with {{...}} substitution, so
-	// splicing the draft in would be both broken and a command-injection
-	// surface; it is read off the run's own artifact on disk instead.
-	if strings.Contains(validate.Command, "{{input.draft_bot}}") ||
-		strings.Contains(validate.Command, "{{outputs.copi.draft_bot}}") {
-		t.Error("validate_draft interpolates the draft into its shell command — an LLM-authored .bot spliced into `sh -c` is a command-injection surface; read it from the run artifact instead")
+	// The source arrives through a typed edge and the engine's shell-escaped
+	// command-ref seam. The validator then writes it into the run-files area,
+	// which exists on both filesystem and Mongo stores; it must never derive a
+	// filesystem-store-only artifacts/ path.
+	if !strings.Contains(validate.Command, "DRAFT_BOT={{input.draft_bot}}") {
+		t.Error("validate_draft does not consume the typed draft input through the shell-escaped command-ref seam")
+	}
+	if !strings.Contains(validate.Command, "ITERION_ARTIFACT_FILES_DIR") || strings.Contains(validate.Command, "'artifacts'") {
+		t.Error("validate_draft must materialise its input in the store-agnostic run-files directory, not inspect filesystem-store artifacts")
 	}
 
 	draftEdge := findEdge(t, wf, "copi", "validate_draft")
 	if draftEdge.Condition == "" {
 		t.Error("copi -> validate_draft must be guarded, so an ordinary question costs no subprocess")
 	}
+	if got := edgeMappings(draftEdge)["draft_bot"]; got != "{{outputs.copi.draft_bot}}" {
+		t.Errorf("copi -> validate_draft draft mapping = %q, want the exact published source", got)
+	}
 	// The verdict has to REACH the operator. A validator whose result stops
 	// at the tool node is the same façade as no validator at all.
 	gateEdge := findEdge(t, wf, "validate_draft", "gate")
 	gateMappings := edgeMappings(gateEdge)
-	for _, key := range []string{"validated", "validate_report"} {
+	for _, key := range []string{"verified", "validated", "validate_report"} {
 		if _, ok := gateMappings[key]; !ok {
 			t.Errorf("validate_draft -> gate drops %q — the operator would never see the verdict", key)
 		}
@@ -780,21 +794,31 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
+		verified   bool
 		validated  bool
 		report     string
 		wantSuffix string
 	}{
 		{
 			name:       "valid",
+			verified:   true,
 			validated:  true,
 			report:     "draft.bot: valid",
 			wantSuffix: "✅ `iterion validate` passed on this draft.",
 		},
 		{
 			name:       "invalid",
+			verified:   true,
 			validated:  false,
 			report:     "C034 unknown input field",
 			wantSuffix: "⚠️ `iterion validate` did NOT pass on this draft:",
+		},
+		{
+			name:       "not-verified",
+			verified:   false,
+			validated:  false,
+			report:     "iterion is not on PATH here",
+			wantSuffix: "⚠️ This draft was NOT verified:",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -826,6 +850,7 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 			})
 			exec.on("validate_draft", func(map[string]any) (map[string]any, error) {
 				return map[string]any{
+					"verified":        tc.verified,
 					"validated":       tc.validated,
 					"validate_report": tc.report,
 				}, nil
@@ -905,49 +930,31 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 	}
 }
 
-// TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact executes the
-// authored shell/Python command rather than replacing validate_draft with the
-// scenario executor. It pins the on-disk Artifact shape and numeric version
-// selection — both are invisible to graph-only tests.
-func TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact(t *testing.T) {
+// TestCopilot_DraftValidatorCommand_UsesRunFiles executes the authored
+// shell/Python command rather than replacing validate_draft with the scenario
+// executor. It pins the store-agnostic materialisation path used in cloud.
+func TestCopilot_DraftValidatorCommand_UsesRunFiles(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is not installed on this test host")
 	}
 	wf := compileFixture(t, "copilot/main.bot")
 	validate := wf.Nodes["validate_draft"].(*ir.ToolNode)
 
-	runDir := t.TempDir()
-	filesDir := filepath.Join(runDir, "artifact_files")
-	artifactDir := filepath.Join(runDir, "artifacts", "copi")
+	filesDir := t.TempDir()
 	if err := os.MkdirAll(filesDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for version, draft := range map[int]string{
-		9:  "old draft that must not be selected",
-		10: "workflow latest { entry: done }",
-	} {
-		body, err := json.Marshal(map[string]any{
-			"version": version,
-			"data":    map[string]any{"draft_bot": draft},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(artifactDir, fmt.Sprintf("%d.json", version)), body, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	const draft = "workflow latest { entry: done }"
 
 	binDir := t.TempDir()
 	fakeIterion := filepath.Join(binDir, "iterion")
-	seenDraftPath := filepath.Join(runDir, "seen-draft-path")
+	seenDraftPath := filepath.Join(t.TempDir(), "seen-draft-path")
 	if err := os.WriteFile(fakeIterion, []byte("#!/bin/sh\nprintf '%s' \"$2\" > \"$SEEN_DRAFT_PATH\"\ntest \"$1\" = validate && grep -q 'workflow latest' \"$2\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", "-c", validate.Command)
+	quotedDraft := "'" + strings.ReplaceAll(draft, "'", "'\"'\"'") + "'"
+	resolved := strings.Replace(validate.Command, "{{input.draft_bot}}", quotedDraft, 1)
+	cmd := exec.Command("sh", "-c", resolved)
 	cmd.Env = append(os.Environ(),
 		"ITERION_ARTIFACT_FILES_DIR="+filesDir,
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -958,20 +965,24 @@ func TestCopilot_DraftValidatorCommand_ReadsLatestPublishedArtifact(t *testing.T
 		t.Fatalf("validate_draft command: %v\n%s", err, out)
 	}
 	var got struct {
+		Verified       bool   `json:"verified"`
 		Validated      bool   `json:"validated"`
 		ValidateReport string `json:"validate_report"`
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("decode validator output %q: %v", out, err)
 	}
-	if !got.Validated || got.ValidateReport != "" {
+	if !got.Verified || !got.Validated || got.ValidateReport != "" {
 		t.Fatalf("validator result = %+v, want validated with empty report", got)
 	}
 	seen, err := os.ReadFile(seenDraftPath)
 	if err != nil {
 		t.Fatalf("read captured draft path: %v", err)
 	}
-	if _, err := os.Stat(filepath.Dir(string(seen))); !os.IsNotExist(err) {
-		t.Fatalf("validator temp dir %q still exists after the turn (stat err=%v)", filepath.Dir(string(seen)), err)
+	if filepath.Dir(string(seen)) != filesDir {
+		t.Fatalf("validator wrote draft under %q, want run-files dir %q", filepath.Dir(string(seen)), filesDir)
+	}
+	if _, err := os.Stat(string(seen)); !os.IsNotExist(err) {
+		t.Fatalf("validator temp file %q survived the turn (stat err=%v)", string(seen), err)
 	}
 }

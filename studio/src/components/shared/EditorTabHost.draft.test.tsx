@@ -15,7 +15,7 @@
 // The refresh is INVALIDATION-driven, not a clock: the draft is a node output
 // written when the turn ends, so the conversation is what knows there is
 // something new. These tests drive that the way the dock does.
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -158,5 +158,22 @@ describe("an open draft tab follows its conversation", () => {
     // tab to look again, not a clock.
     await settle(10000);
     expect(findDraftBotSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a failed draft lookup", async () => {
+    findDraftBotSource
+      .mockRejectedValueOnce(new Error("temporary outage"))
+      .mockResolvedValueOnce("v1");
+    const id = useTabsStore
+      .getState()
+      .openTab("editor", { draft: "run-retry" }, "Draft");
+    mount(id, "run-retry");
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await settle();
+
+    expect(findDraftBotSource).toHaveBeenCalledTimes(2);
+    expect(sourceOf(id)).toBe("v1");
   });
 });

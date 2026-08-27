@@ -482,6 +482,7 @@ export function hrefForReference(reference: string): string | null {
       return id ? `/editor?file=${encodeURIComponent(id)}` : null;
     case "view":
       // The view kinds the dock mints, and only those.
+      if (!Object.prototype.hasOwnProperty.call(VIEW_HREFS, id)) return null;
       return VIEW_HREFS[id] ?? null;
     default:
       // `node/…` and `repo/…` have no page of their own to return to.

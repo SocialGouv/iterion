@@ -11,7 +11,7 @@ event and no `file:line` is a guess.
 ## Where the evidence is
 
 You have **no shell**. You do not need one: everything a run persists is
-a file, and you have `Read`, `Glob` and `Grep`.
+a file, and you have `Read` and `Glob`.
 
 ```
 <store-dir>/runs/<run-id>/

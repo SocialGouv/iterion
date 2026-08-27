@@ -195,9 +195,8 @@ export async function lookupDraft(
   const ordered = [...summaries].sort((a, b) =>
     (b.written_at ?? "").localeCompare(a.written_at ?? ""),
   );
-  let designing = false;
   for (const s of ordered) {
-    if (opts?.signal?.aborted) return { source: null, designing };
+    if (opts?.signal?.aborted) return { source: null, designing: false };
     let art: Artifact;
     try {
       art = await getArtifact(runId, s.node_id, s.version, opts);
@@ -206,15 +205,28 @@ export async function lookupDraft(
       // node — keep looking rather than failing the whole lookup.
       continue;
     }
-    // The NEWEST posture wins, so read it from the first artifact that
-    // declares one rather than letting an older turn's mode linger.
-    if (!designing && art.data?.[MODE_FIELD] === DESIGN_MODE) designing = true;
     const value = art.data?.[DRAFT_BOT_FIELD];
+    // The first artifact that DECLARES a posture is the newest turn boundary.
+    // An `info` turn retires an older design and its draft; a fresh design
+    // cannot inherit a prior turn's draft when it has not produced one yet.
+    if (
+      art.data &&
+      Object.prototype.hasOwnProperty.call(art.data, MODE_FIELD)
+    ) {
+      const designing = art.data[MODE_FIELD] === DESIGN_MODE;
+      const source =
+        designing && typeof value === "string" && value.trim() !== ""
+          ? value
+          : null;
+      return { source, designing };
+    }
     if (typeof value === "string" && value.trim() !== "") {
+      // Backward compatibility for bots that publish a draft but predate
+      // `mode`: a non-empty draft itself implies the design posture.
       return { source: value, designing: true };
     }
   }
-  return { source: null, designing };
+  return { source: null, designing: false };
 }
 
 /** Back-compat shorthand for callers that only want the source. */

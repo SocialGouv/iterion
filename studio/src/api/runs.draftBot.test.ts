@@ -145,4 +145,21 @@ describe("lookupDraft — designing vs draft-ready", () => {
       designing: false,
     });
   });
+
+  it("lets the newest info posture retire an older design and draft", async () => {
+    stubApi(
+      [
+        { node_id: "older", version: 1, written_at: "2026-08-23T10:00:00Z" },
+        { node_id: "newer", version: 1, written_at: "2026-08-23T12:00:00Z" },
+      ],
+      {
+        "older/1": { mode: "design", draft_bot: "STALE" },
+        "newer/1": { mode: "info", reply: "we are done designing" },
+      },
+    );
+    await expect(lookupDraft("run1")).resolves.toEqual({
+      source: null,
+      designing: false,
+    });
+  });
 });
