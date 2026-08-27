@@ -227,6 +227,32 @@ func EnsureNameFree(opts ListOptions, name string) error {
 	if found {
 		return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
 	}
+	// A malformed bundle produces no entry, but its directory still HOLDS
+	// the name: creating a second bot under it would shadow the first the
+	// day its manifest is fixed (discovery's dedupe keeps the first
+	// occurrence). Declare the name taken, with the cause attached.
+	_, diags, err := ListWithDiagnostics(opts)
+	if err != nil {
+		return err
+	}
+	if d := diagForName(diags, name); d != nil {
+		return fmt.Errorf("%w: %q matches a bundle that failed to load at %s (%s) — fix or remove it first", ErrNameTaken, name, d.Path, d.Error)
+	}
+	return nil
+}
+
+// diagForName matches a requested bot name against the discovery
+// diagnostics. A malformed bundle has no parseable name, so the only
+// handle is its directory / file base (normalized the way
+// ResolveBotPath resolves).
+func diagForName(diags []DiscoveryError, name string) *DiscoveryError {
+	nn := NormalizeName(name)
+	for i := range diags {
+		base := strings.TrimSuffix(filepath.Base(diags[i].Path), filepath.Ext(diags[i].Path))
+		if NormalizeName(base) == nn {
+			return &diags[i]
+		}
+	}
 	return nil
 }
 
@@ -338,11 +364,8 @@ func ResolveBotPath(name string, paths []string) (string, error) {
 	// A malformed bundle has no parseable name, so it can only match by
 	// its directory / file base — enough to turn "bot not found" into the
 	// actual cause on the launch/dispatch path.
-	for _, d := range diags {
-		base := strings.TrimSuffix(filepath.Base(d.Path), filepath.Ext(d.Path))
-		if NormalizeName(base) == nn {
-			return "", fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
-		}
+	if d := diagForName(diags, name); d != nil {
+		return "", fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
 	}
 	return "", fmt.Errorf("bot %q not found in %v: %w", name, paths, os.ErrNotExist)
 }

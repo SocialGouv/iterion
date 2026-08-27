@@ -443,3 +443,29 @@ chat:
 		t.Fatalf("err = %v, want os.ErrNotExist for an unknown bot", err)
 	}
 }
+
+func TestEnsureNameFree_MalformedBundleHoldsItsName(t *testing.T) {
+	// A malformed bundle produces no entry, but its directory still holds
+	// the name: creating a second bot under it would shadow the first the
+	// day the manifest is fixed.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "broken-chat")
+	if !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("err = %v, want ErrNameTaken for the malformed bundle's name", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") {
+		t.Errorf("err = %v, want the load diagnostic attached", err)
+	}
+	// A genuinely free name stays free.
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "other-bot"); err != nil {
+		t.Fatalf("err = %v, want nil for a free name", err)
+	}
+}
