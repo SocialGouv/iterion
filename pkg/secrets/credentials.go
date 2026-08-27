@@ -53,12 +53,16 @@ type Credentials struct {
 	// deployment's own credential, not the tenant's.
 	PlatformSourced map[string]bool
 	// Fingerprints maps a credential slot (a Provider name or an OAuth
-	// kind) to the short audit fingerprint of the plaintext that filled
-	// it. Not sensitive (8 hash bytes) and deliberately NOT zeroed by
-	// cleanup: it says WHICH credential a run drew on. The usage-cap
-	// meter key composes it, so a rotated credential opens a fresh
-	// ledger instead of inheriting the readings of the account it
-	// replaced.
+	// kind) to the short audit identity of what filled it: for an API key
+	// the hash of the key itself (static, so it identifies itself); for an
+	// OAuth slot the SUBSCRIPTION identity stamped on the record
+	// (OAuthIdentityFingerprint) — an OAuth payload is rewritten every few
+	// hours by the refresh worker for the same account, so its bytes are
+	// not an identity. Present only for a slot the run can actually spend.
+	// Not sensitive (8 hash bytes) and deliberately NOT zeroed by cleanup:
+	// it says WHICH credential a run drew on. The usage-cap meter key
+	// composes it, so a rotated credential opens a fresh ledger instead of
+	// inheriting the readings of the account it replaced.
 	Fingerprints map[string]string
 }
 
