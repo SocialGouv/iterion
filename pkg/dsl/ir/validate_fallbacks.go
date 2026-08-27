@@ -402,6 +402,22 @@ func toolsInversionReason(nodeBackend, routeBackend string, tools []string) stri
 	return "crosses the claw⇄CLI boundary on a node with no tools: list — an empty list means NO tools on claw but the full unrestricted toolset on a CLI backend, so the route silently changes what this node can do; declare an explicit tools: list"
 }
 
+// ToolRestrictionLossReason reports the non-security capability drift the
+// Studio must disclose when an explicit launch override moves a claw node to
+// a CLI backend. Claw enforces the lowercase tools: list; CLI backends running
+// under their native permission mode do not, so the shared permission gate
+// may remain intact while this independent restriction layer disappears.
+//
+// Fallback validation uses the stricter toolsInversionReason because a
+// fallback is automatic. A launch picker may still offer this deliberate
+// crossing, but must never present it as capability-neutral.
+func ToolRestrictionLossReason(nodeBackend, routeBackend string, tools []string) string {
+	if nodeBackend != clawBackendName || routeBackend == clawBackendName || len(tools) == 0 {
+		return ""
+	}
+	return "this claw node's tools: restriction is not enforced by the selected CLI backend; the permission gate remains active, but the backend's full native toolset becomes available"
+}
+
 // sessionContinuityCrossingReason refuses inherit / inherit_if_available /
 // fork / persist when a fallback changes backend (ADR-087 + ADR-089).
 func sessionContinuityCrossingReason(session SessionMode, nodeBackend, routeBackend string) string {

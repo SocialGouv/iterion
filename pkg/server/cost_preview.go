@@ -10,8 +10,11 @@ import (
 )
 
 type previewCostRequest struct {
-	FilePath string `json:"file_path,omitempty"`
-	Source   string `json:"source,omitempty"`
+	FilePath     string   `json:"file_path,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	Permission   string   `json:"permission,omitempty"`
+	Backend      string   `json:"backend,omitempty"`
+	BackendNames []string `json:"backend_names,omitempty"`
 }
 
 // CostMin == 0 with CostMax == 0 signals "no pricing data" so the
@@ -43,6 +46,16 @@ type previewCostResponse struct {
 	// The client layers its own override on top (it owns the selects,
 	// so "run_override" never appears here).
 	Effective *previewEffectiveSettings `json:"effective,omitempty"`
+	// BackendOptions is keyed by node id, then by the backend names the
+	// Studio is actually offering. The server computes the exact launch-time
+	// permission precedence and capability crossing so the picker cannot
+	// drift from runtime admission.
+	BackendOptions map[string]map[string]previewBackendOption `json:"backend_options,omitempty"`
+}
+
+type previewBackendOption struct {
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	Warning           string `json:"warning,omitempty"`
 }
 
 // previewEffectiveKnob is one knob's provenance below run-override.
@@ -51,8 +64,9 @@ type previewEffectiveKnob struct {
 	Effective string `json:"effective"`
 	// Source: "workflow" | "env" | "default".
 	Source string `json:"source"`
-	// NodePinned is true when at least one node sets its OWN value —
-	// a run override will not affect those nodes.
+	// NodePinned is true when at least one node sets its own value. Whether a
+	// run setting wins that pin is knob-specific (permission/compress/memory
+	// do; the default-backend setting does not).
 	NodePinned bool `json:"node_pinned,omitempty"`
 }
 
@@ -138,7 +152,15 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := previewCostResponse{Effective: buildEffectiveSettings(cr.Workflow)}
+	resp := previewCostResponse{
+		Effective: buildEffectiveSettings(cr.Workflow),
+		BackendOptions: buildBackendOverrideOptions(
+			cr.Workflow,
+			req.Permission,
+			req.Backend,
+			req.BackendNames,
+		),
+	}
 	hasPricing := false
 	for _, node := range cr.Workflow.Nodes {
 		var model, effort string

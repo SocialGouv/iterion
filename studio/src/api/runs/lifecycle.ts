@@ -48,6 +48,9 @@ export async function createRun(req: CreateRunRequest): Promise<CreateRunRespons
 export async function previewRunCost(req: {
   file_path?: string;
   source?: string;
+  permission?: string;
+  backend?: string;
+  backend_names?: string[];
 }): Promise<PreviewCostResponse> {
   return request("/runs/preview-cost", {
     method: "POST",

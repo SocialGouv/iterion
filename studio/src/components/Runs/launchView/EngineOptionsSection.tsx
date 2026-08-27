@@ -70,6 +70,9 @@ export default function EngineOptionsSection({
         nodes={llmNodes}
         overrides={overrides.modelOverrides}
         backendReport={backendReport}
+        backendOptions={overrides.nodeBackendOptions}
+        backendOptionsReady={overrides.nodeBackendOptionsReady}
+        backendOptionsError={overrides.nodeBackendOptionsError}
         onChange={(name, patch) =>
           overrides.setModelOverrides((prev) => ({
             ...prev,
