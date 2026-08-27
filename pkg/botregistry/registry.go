@@ -220,21 +220,22 @@ func FindByName(opts ListOptions, name string) (Entry, bool, error) {
 // duplicate name there is what makes `iterion run <name>` and dispatcher
 // routing ambiguous.
 func EnsureNameFree(opts ListOptions, name string) error {
-	existing, found, err := FindByName(opts, name)
+	// ONE discovery walk: the entries and the diagnostics must come from
+	// the same filesystem snapshot, or a bundle repaired between two
+	// walks is neither found nor reported.
+	entries, diags, err := ListWithDiagnostics(opts)
 	if err != nil {
 		return err
 	}
-	if found {
-		return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+	for _, existing := range entries {
+		if existing.Name == name {
+			return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
+		}
 	}
 	// A malformed bundle produces no entry, but its directory still HOLDS
 	// the name: creating a second bot under it would shadow the first the
 	// day its manifest is fixed (discovery's dedupe keeps the first
 	// occurrence). Declare the name taken, with the cause attached.
-	_, diags, err := ListWithDiagnostics(opts)
-	if err != nil {
-		return err
-	}
 	if d := diagForName(diags, name); d != nil {
 		return fmt.Errorf("%w: %q matches a bundle that failed to load at %s (%s) — fix or remove it first", ErrNameTaken, name, d.Path, d.Error)
 	}
@@ -242,15 +243,25 @@ func EnsureNameFree(opts ListOptions, name string) error {
 }
 
 // diagForName matches a requested bot name against the discovery
-// diagnostics. A malformed bundle has no parseable name, so the only
-// handle is its directory / file base (normalized the way
-// ResolveBotPath resolves).
+// diagnostics. Only bot-source diagnostics (a bundle dir or a loose
+// file that failed to load) are considered — an unreadable plain
+// directory never claimed a bot name. The only handle a malformed
+// source offers is its directory / file base (normalized the way
+// ResolveBotPath resolves); the extension trim applies to files only,
+// so a bundle dir with a dot in its name keeps it.
 func diagForName(diags []DiscoveryError, name string) *DiscoveryError {
 	nn := NormalizeName(name)
 	for i := range diags {
-		base := strings.TrimSuffix(filepath.Base(diags[i].Path), filepath.Ext(diags[i].Path))
+		d := &diags[i]
+		if d.Kind != DiscoveryErrorBundle && d.Kind != DiscoveryErrorFile {
+			continue
+		}
+		base := filepath.Base(d.Path)
+		if d.Kind == DiscoveryErrorFile {
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+		}
 		if NormalizeName(base) == nn {
-			return &diags[i]
+			return d
 		}
 	}
 	return nil
@@ -267,6 +278,23 @@ func List(opts ListOptions) ([]Entry, error) {
 	return entries, err
 }
 
+// DiscoveryErrorKind identifies what kind of source a DiscoveryError is
+// about — recorded at skip time so consumers (name resolution, the
+// catalog-regen guard) don't have to re-stat the path to guess.
+type DiscoveryErrorKind string
+
+const (
+	// DiscoveryErrorBundle is a bundle directory whose manifest failed to
+	// load (parse or validation error).
+	DiscoveryErrorBundle DiscoveryErrorKind = "bundle"
+	// DiscoveryErrorFile is a loose .bot file that failed to read.
+	DiscoveryErrorFile DiscoveryErrorKind = "file"
+	// DiscoveryErrorWalk is a path the filesystem walk itself could not
+	// read (e.g. a permission-denied directory). It may or may not hold a
+	// bot source — the contents are unknown.
+	DiscoveryErrorWalk DiscoveryErrorKind = "walk"
+)
+
 // DiscoveryError is one skipped bot source: the bundle directory or bot
 // file at Path failed to load, so it produced no Entry. Discovery is
 // per-entry fault-tolerant — one malformed manifest (e.g. an invalid
@@ -279,6 +307,10 @@ type DiscoveryError struct {
 	Path string `json:"path" yaml:"path"`
 	// Error is the load diagnostic (parse or validation failure).
 	Error string `json:"error" yaml:"error"`
+	// Kind is what the skipped source is known to be. Only "bundle" and
+	// "file" name an actual bot source; "walk" is an unreadable path
+	// whose contents are unknown.
+	Kind DiscoveryErrorKind `json:"kind" yaml:"kind"`
 }
 
 // ListWithDiagnostics is List plus the per-entry discovery errors: one
@@ -421,12 +453,12 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	// explicit "." beside "./bots") would otherwise report the same
 	// malformed bundle once per root that reaches it.
 	seenDiag := map[string]bool{}
-	recordDiag := func(path string, err error) {
+	recordDiag := func(path string, kind DiscoveryErrorKind, err error) {
 		if seenDiag[path] {
 			return
 		}
 		seenDiag[path] = true
-		diags = append(diags, DiscoveryError{Path: path, Error: err.Error()})
+		diags = append(diags, DiscoveryError{Path: path, Error: err.Error(), Kind: kind})
 	}
 
 	for _, root := range roots {
@@ -443,7 +475,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			}
 			e, err := parseBotFile(root)
 			if err != nil {
-				recordDiag(root, err)
+				recordDiag(root, DiscoveryErrorFile, err)
 				continue
 			}
 			if e != nil && !seen[e.Path] {
@@ -458,7 +490,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				// same failure shape as a malformed bundle — one bad branch
 				// must not blank the rest of the workspace. Record and
 				// carry on (for a directory, WalkDir skips its contents).
-				recordDiag(path, walkErr)
+				recordDiag(path, DiscoveryErrorWalk, walkErr)
 				return nil
 			}
 			if d.IsDir() {
@@ -467,7 +499,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				if fileExists(manifest) && fileExists(mainBot) {
 					e, err := parseBundle(path)
 					if err != nil {
-						recordDiag(path, err)
+						recordDiag(path, DiscoveryErrorBundle, err)
 						// SkipDir either way: a malformed bundle must not
 						// leak its main.bot back in as a loose bot file.
 						return filepath.SkipDir
@@ -486,7 +518,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			}
 			e, err := parseBotFile(path)
 			if err != nil {
-				recordDiag(path, err)
+				recordDiag(path, DiscoveryErrorFile, err)
 				return nil
 			}
 			if e != nil && !seen[e.Path] {

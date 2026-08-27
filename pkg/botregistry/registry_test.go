@@ -469,3 +469,36 @@ chat:
 		t.Fatalf("err = %v, want nil for a free name", err)
 	}
 }
+
+func TestDiagForName_OnlyBotSourcesClaimNames(t *testing.T) {
+	dir := t.TempDir()
+	// A malformed bundle whose DIRECTORY NAME carries a dot: the
+	// extension trim must not strip ".review" off it, and the bare prefix
+	// "v2" must stay free.
+	writeFile(t, filepath.Join(dir, "v2.review", "manifest.yaml"), "name: v2.review\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "v2.review", "main.bot"), "agent x:\n  model: \"test\"\n")
+	// A permission-denied PLAIN directory is a walk diagnostic, not a bot
+	// source: it must not claim the name "sealed".
+	writeFile(t, filepath.Join(dir, "sealed", "notes.txt"), "not a bot\n")
+	sealed := filepath.Join(dir, "sealed")
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+	if _, err := os.ReadDir(sealed); err == nil {
+		t.Skip("elevated privileges can still read the sealed dir")
+	}
+
+	if _, err := ResolveBotPath("v2.review", []string{dir}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Errorf("ResolveBotPath(v2.review) = %v, want the load diagnostic", err)
+	}
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "v2"); err != nil {
+		t.Errorf("EnsureNameFree(v2) = %v, want nil — the dot is part of the dir name", err)
+	}
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "sealed"); err != nil {
+		t.Errorf("EnsureNameFree(sealed) = %v, want nil — an unreadable plain dir holds no bot name", err)
+	}
+	if _, err := ResolveBotPath("sealed", []string{dir}); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ResolveBotPath(sealed) = %v, want not-found, not a phantom bundle", err)
+	}
+}

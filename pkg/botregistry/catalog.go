@@ -169,17 +169,16 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 	// the malformed bundle is fixed or removed — the file stays untouched,
 	// exactly as when discovery used to fail hard.
 	//
-	// Only DIRECTORY-sourced diagnostics block: a skipped bundle dir (parse
-	// failure) or an unreadable dir (contents unknown — conservative). A
-	// skipped LOOSE .bot file never contributes a card (they are excluded
-	// below), so a broken demo under examples/ must not freeze the catalog.
+	// Only diagnostics that could change the catalog's CONTENT block: a
+	// skipped bundle dir, or an unreadable walk path whose contents are
+	// unknown (conservative). A skipped LOOSE .bot file never contributes
+	// a card (they are excluded below), so a broken demo under examples/
+	// must not freeze the catalog. The kind recorded at skip time decides
+	// — re-stat'ing the path here would silently downgrade to
+	// non-blocking whenever the stat itself fails.
 	var blocking []DiscoveryError
 	for _, d := range diags {
-		p := d.Path
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(abs, filepath.FromSlash(p))
-		}
-		if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
+		if d.Kind != DiscoveryErrorFile {
 			blocking = append(blocking, d)
 		}
 	}

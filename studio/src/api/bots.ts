@@ -275,6 +275,10 @@ export interface BotEntryWithSchema extends BotEntry {
 export interface BotDiscoveryError {
   path: string;
   error: string;
+  /** What the skipped source is known to be. Only "bundle" and "file"
+   *  name an actual bot source; "walk" is an unreadable path whose
+   *  contents are unknown. Optional on older servers. */
+  kind?: "bundle" | "file" | "walk";
 }
 
 interface ListResponse {
