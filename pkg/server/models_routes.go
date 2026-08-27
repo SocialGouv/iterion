@@ -4,19 +4,21 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 )
 
 // handleModels serves the model registry: every model iterion knows about,
-// crossed with the credentials THIS host holds, the capabilities each model
-// has, and what it costs.
+// crossed with the credentials a *run from this request* would receive, the
+// capabilities each model has, and what it costs.
 //
-// It exists because the studio's model field was free text with a datalist of
-// hints — an operator could not see what they had access to, what it cost, or
-// whether it could even call tools. The answer is host state, not a hardcoded
-// list, so it is computed per request off the same cached detect.Report that
-// backs /api/backends/detect.
+// Local studio evaluates the host process (the same cached detect.Report
+// that backs /api/backends/detect). Cloud evaluates the authenticated
+// tenant's launch tiers — BYOK, user/org OAuth-forfait, platform — never
+// the control-plane env. A control-plane key the run will not get must
+// not make a model look reachable; a tenant key absent from that env
+// must not make it look unreachable.
 //
 // Query params:
 //
@@ -26,31 +28,45 @@ import (
 //	                     models already in use, which is the one list from
 //	                     which no new choice can be made)
 //	refresh=1            re-probe host credentials AND re-fetch the model-spec
-//	                     aggregator before answering
+//	                     aggregator before answering (local only: cloud
+//	                     presence is read from the stores each request)
 //
 // Read-only, and reveals only capability + credential SOURCE names
 // (e.g. "ANTHROPIC_API_KEY") — never a credential value.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	s.detectorOnce.Do(func() {
-		s.detector = detect.NewCachedDetector(backendDetectTTL)
-	})
-
 	refresh := r.URL.Query().Get("refresh") == "1"
-	if refresh {
-		// Same ordering as handleBackendsDetect: the hook may (un)set env
-		// vars, so it has to fire before the cache is dropped.
-		if s.OnForceRefresh != nil {
-			s.OnForceRefresh()
-		}
-		s.detector.Invalidate()
-	}
-	report := s.detector.Get(r.Context())
-
-	cat, err := modelcatalog.Build(r.Context(), modelcatalog.Options{
+	opts := modelcatalog.Options{
 		ExtraSpecs: dedupeSpecs(r.URL.Query()["spec"]),
 		Refresh:    refresh,
-		Report:     &report,
-	})
+	}
+
+	if s.cfg.Mode == "cloud" {
+		opts.Reachability = modelcatalog.ReachabilityCloud
+		opts.UnprovenIsUnknown = true
+		var presence modelcatalog.CloudPresence
+		if id, ok := auth.FromContext(r.Context()); ok {
+			presence = s.probeCloudRunPresence(r.Context(), id)
+		}
+		report := modelcatalog.ReportFromCloudPresence(presence)
+		opts.Report = &report
+	} else {
+		s.detectorOnce.Do(func() {
+			s.detector = detect.NewCachedDetector(backendDetectTTL)
+		})
+		if refresh {
+			// Same ordering as handleBackendsDetect: the hook may (un)set env
+			// vars, so it has to fire before the cache is dropped.
+			if s.OnForceRefresh != nil {
+				s.OnForceRefresh()
+			}
+			s.detector.Invalidate()
+		}
+		report := s.detector.Get(r.Context())
+		opts.Reachability = modelcatalog.ReachabilityLocal
+		opts.Report = &report
+	}
+
+	cat, err := modelcatalog.Build(r.Context(), opts)
 	if err != nil {
 		// Defensive: the handler only ever passes ExtraSpecs, which Build
 		// degrades into cat.InvalidSpecs rather than raising. A malformed

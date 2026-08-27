@@ -43,6 +43,9 @@ export interface ModelEntry {
 
   usable: boolean;
   unusable_reason?: string;
+  // How usable was decided. "unknown" is cloud-unproven (pool / runner
+  // env may still serve) and must not be treated as a blocking unreachable.
+  reachability?: "local" | "cloud" | "unknown" | string;
   // Backends that can drive this spec right now, in host preference order.
   backends?: string[] | null;
   // The credential that would be used, by NAME (e.g. "ANTHROPIC_API_KEY").
@@ -53,6 +56,8 @@ export interface ModelEntry {
 export interface ModelCatalog {
   models: ModelEntry[];
   recommended_spec?: string;
+  // Credential surface this catalog evaluated: host process vs tenant launch.
+  reachability?: "local" | "cloud" | string;
   resolved_default_backend?: string;
   backends?:
     | {
@@ -161,7 +166,7 @@ export function modelCapabilityWarning(
   opts: { wantsUltracode?: boolean } = {},
 ): { level: "blocking" | "warning"; message: string } | null {
   if (!m) return null;
-  if (!m.usable) {
+  if (!m.usable && m.reachability !== "unknown") {
     return {
       level: "blocking",
       message:
@@ -174,6 +179,14 @@ export function modelCapabilityWarning(
       level: "blocking",
       message:
         "this model cannot call tools — the agent loses the board, skills and run introspection",
+    };
+  }
+  if (m.reachability === "unknown") {
+    return {
+      level: "warning",
+      message:
+        m.unusable_reason ||
+        "cloud run credentials are not proven for this model — a pool grant or runner fallback may still serve it",
     };
   }
   if (opts.wantsUltracode && !m.ultracode_capable) {

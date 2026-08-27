@@ -157,6 +157,9 @@
             },
             "type": "array"
           },
+          "reachability": {
+            "type": "string"
+          },
           "recommended_spec": {
             "type": "string"
           },
@@ -594,6 +597,9 @@
           "provider": {
             "type": "string"
           },
+          "reachability": {
+            "type": "string"
+          },
           "reasoning": {
             "type": "boolean"
           },
@@ -634,7 +640,8 @@
           "temperature",
           "ultracode_capable",
           "price_known",
-          "usable"
+          "usable",
+          "reachability"
         ],
         "type": "object"
       },
