@@ -8,6 +8,12 @@ This page is **curated, not exhaustive**: it covers the cloud- and
 team-facing surface, and leaves out the local-studio-only routes
 (`/api/local/*`, `/api/files`, `/api/projects`, `/api/examples`,
 `/api/filesystem/*`) along with much of the run-console read surface.
+A few team-facing families have their own reference instead of a table
+here: `/api/admin/llm/*` ([cloud-llm-credentials.md](cloud-llm-credentials.md)),
+`/api/admin/settings/usage-caps` ([usage-caps.md](usage-caps.md)),
+the notification routes ([notifications.md](notifications.md)), the
+config-share routes ([config-share.md](config-share.md)), and
+`/api/teams/{id}/plugin-sources*` ([plugins.md](plugins.md)).
 For the complete inventory of the build you are actually running, use
 the generated spec — every route is recorded by the server's
 `recordingMux`, so it cannot drift:
@@ -245,11 +251,69 @@ Full reference: [webhooks.md](webhooks.md).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/me/oauth/connections` | member | List configured forfait kinds + expiry |
+| `POST` | `/api/me/oauth/{kind}/authorize/start` | member | Begin the browser authorize handshake — the primary way a user connects |
+| `POST` | `/api/me/oauth/{kind}/authorize/complete` | member | Finish that handshake |
 | `POST` | `/api/me/oauth/{kind}/credentials` | member | Upload pasted `credentials.json` / `auth.json` |
 | `POST` | `/api/me/oauth/{kind}/refresh` | member | Refresh stored access token against the IdP |
 | `DELETE` | `/api/me/oauth/{kind}` | member | Disconnect |
 
-Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go).
+Every route above has a team-scoped mirror at
+`/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
+`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`, and
+`DELETE {kind}`) for a forfait the whole team draws on rather than one
+operator.
+
+Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
+[pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).
+
+## Credential pool
+
+Lending your own subscription or personal metered key to the shared
+pool — full model in [credential-pool.md](credential-pool.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/me/pool` | member | Your pledges and what they have served |
+| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
+| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
+| `GET` | `/api/me/pool/history` | member | The runs your quota served |
+| `GET` | `/api/teams/{id}/pool` | team member | The pool's policy and its donors |
+| `PUT` | `/api/teams/{id}/pool` | team admin | Set the audience policy deciding who may draw |
+
+Source: [pkg/server/credpool_routes.go](../pkg/server/credpool_routes.go).
+
+## Cloud schedules
+
+Recurring bots, the cloud counterpart of `iterion schedule` —
+[scheduling.md](scheduling.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/schedules` | team member | List the team's cron-scheduled bots |
+| `POST` | `/api/teams/{id}/schedules` | team admin | Create a schedule |
+| `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
+| `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
+
+Source: [pkg/server/schedules_routes.go](../pkg/server/schedules_routes.go).
+
+## Triggers (event-driven runs)
+
+The subscription registry binding (event filter) → (bot launch), gated
+on `server_info.triggers_enabled` —
+[ADR-046](adr/046-event-driven-runs-trigger-spine.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/v1/triggers` | member | List subscriptions (team-scoped in cloud) |
+| `POST` | `/api/v1/triggers` | member | Create one |
+| `GET` | `/api/v1/triggers/{id}` | member | Read one |
+| `PUT` | `/api/v1/triggers/{id}` | member | Replace one |
+| `DELETE` | `/api/v1/triggers/{id}` | member | Remove one |
+| `POST` | `/api/v1/triggers/emit` | member | Publish a custom event onto the bus |
+| `GET` | `/api/v1/triggers/health` | member | Evaluator + bus health |
+| `POST` | `/api/v1/bots/{name}/triggers/from-invocation` | member | Generate a subscription from a bot manifest's `invocations:` block |
+
+Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 ## Personal access tokens (PATs)
 
