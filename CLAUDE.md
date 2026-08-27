@@ -335,8 +335,9 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `tool/` — Tool registry, policies, adapters
   - `mcp/` — MCP server lifecycle, configuration, health checks
   - `recipe/` — Recipe handling for tool adapters and execution policies
-  - `cost/` — Cost estimation and budgeting
-  - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities`)
+  - `cost/` — Cost estimation and budgeting. Prices a call from three sources in order: claw's live registry, the spec aggregator's published pair (`modelspecs`, taken only when BOTH rates are positive — a half-published pair would price the other half at zero), then the committed static table. Zero is always *unknown*, never *free*: `Annotate` omits `_cost_usd` rather than emit a 0
+  - `modelspecs/` — The dynamic model-spec registry of **ADR-042**, extracted to a LEAF package (only iterion dep: `pkg/store`) so `cost/` can read published pricing without inverting the import graph — `cost/` is a leaf precisely *because* `model/` imports it (**ADR-093**). Serves a consensus-filtered `Spec` (context window, max output, prices, three flags) per `provider/model` and per bare `model`; a field the publishers disagree on is zeroed, i.e. UNKNOWN, so the caller keeps its curated value. Supplies but does not decide — merging over the curated table stays in `model/` (`mergeSpec`). `Default()` is built lazily from the env (not at init, which would make a test's `ITERION_MODEL_SPECS_CACHE` too late); `SetDefault`/`NewSeeded` are the cross-package test seam that keeps a price assertion off the host's `~/.iterion` cache
+  - `llmtypes/` — LLM SDK abstraction (`LLMTool`, `FatalToolError`, `ModelCapabilities` — carrying `ContextWindow` / `MaxOutputTokens` / `InputCostPerM` / `OutputCostPerM`, every one zero-means-unknown)
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
