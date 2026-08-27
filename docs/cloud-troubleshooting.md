@@ -10,7 +10,10 @@ For deployment / install instructions see [cloud-deployment.md](cloud-deployment
 # Server-side health
 curl -fsS http://<server-host>:4891/healthz
 curl -fsS http://<server-host>:4891/readyz
-curl -fsS http://<server-host>:4891/metrics | head -20
+
+# Metrics live on their OWN listener, not the API port: asking :4891 for
+# /metrics falls through to the SPA handler and returns HTML with a 200.
+curl -fsS http://<server-host>:9090/metrics | head -20   # ITERION_METRICS_PORT
 
 # The server Deployment is named after the Helm release (`deploy/iterion`
 # for a release named `iterion`); target it by that name or by the
