@@ -1,7 +1,13 @@
 name: app-dev
 display_name: Appy
 icon: 🏗️
-version: 0.2.0
+version: 0.2.1
+## 0.2.1 — plan_review_policy defaults to "skip": the cross-model plan peer
+## is an optional enrichment, and the primary family alone must always
+## suffice. A dead/parked peer credential (401, shut forfait window,
+## provider outage) completes plan_review with the `_skipped` stamp and
+## the campaign proceeds, instead of parking the run. "wait" remains the
+## per-run opt-in for the deliberate-spend posture.
 ## 0.1.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block (image pin, ~/.claude mount, claude post_create gate) — isolation
 ## is the platform's job; gh/glab join crane in the pinned devbox.json.
