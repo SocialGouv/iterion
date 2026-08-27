@@ -2,8 +2,8 @@
 
 Operational `ITERION_*` environment variables read directly by the engine
 and its backends. These are tuning dials and escape hatches — most runs need
-none of them. For the three launch knobs (compression, permission gate,
-backend) and their five-level precedence chain, see
+none of them. For the four launch knobs (compression, auto-memory,
+permission gate, backend) and their five-level precedence chain, see
 [settings-precedence.md](settings-precedence.md).
 
 Values are read at the point of use; an unset, empty, or unparseable value
