@@ -17,6 +17,7 @@
 
 import type { BackendDetectReport } from "@/api/backends";
 
+import { ModelCapsCaption } from "@/components/ModelCapsCaption";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
@@ -89,6 +90,7 @@ export default function FallbackSection({
           ))}
         </datalist>
       </div>
+      {backend !== "" && <ModelCapsCaption override={model} />}
       {backend !== "" && model.trim() === "" && (
         <p className="text-xs text-warning-fg">
           A route that changes backend needs its own model — model specs are not

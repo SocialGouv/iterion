@@ -13,6 +13,7 @@ import { useState } from "react";
 
 import type { BackendDetectReport } from "@/api/backends";
 
+import { ModelCapsCaption } from "@/components/ModelCapsCaption";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
@@ -88,6 +89,7 @@ function NodeRow({
           value={override.model ?? ""}
           onChange={(e) => onChange({ model: e.currentTarget.value })}
         />
+        <ModelCapsCaption override={override.model} authored={node.model} />
       </div>
       <div>
         <Select

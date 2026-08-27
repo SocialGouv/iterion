@@ -76,6 +76,27 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
   await expect(page.getByText("Sandbox: none")).toBeVisible();
 });
 
+// The model-capability caption reads the node's OWN model on the inherit
+// path — the input is empty and the model lives only in the placeholder, which
+// is most launches. Offline the spec aggregator contributes nothing, so the
+// assertion is on the curated context window and on the source that says the
+// answer can still improve; the published price needs a fetched table.
+test("the per-node model picker captions its model's capabilities", async ({
+  page,
+}) => {
+  await page.goto(LAUNCH);
+
+  await page.getByRole("button", { name: /^Engine options/ }).click();
+  await page.getByRole("button", { name: /Model & backend per node/ }).click();
+
+  const caption = page.getByTestId("model-caps-caption").first();
+  await expect(caption).toBeVisible();
+  await expect(caption).toContainText("1M context");
+  await expect(caption).toContainText("curated");
+  // Zero is unknown, never free — the caption must never print a $0 rate.
+  await expect(caption).not.toContainText("$0.00");
+});
+
 // A workflow with NO agent/judge node must still be launchable: the
 // cost-preview endpoint answers `{"nodes": null, "notes": ["no_llm_nodes"]}`
 // for it, and CostPreviewChip must tolerate the null and simply hide (the
