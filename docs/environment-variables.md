@@ -35,7 +35,7 @@ falls back to the listed default.
 | `ITERION_PI_AGENT_DIR` | Pins `PI_CODING_AGENT_DIR` for `pi`. Gives a reproducible pi config (and the only print-mode lever to disable pi's own retry loop), but **hides the operator's `~/.pi/agent/auth.json`** — and with it the OAuth provider breadth that motivates the backend. | unset (pi's own dir) |
 | `ITERION_PI_OFFLINE` | `0` re-enables pi's model-catalogue refresh inside a sandbox. Off by default there because a network egress policy would stall startup on the refresh. | off under sandbox |
 | `ITERION_PI_TRUST_PROJECT` | `1` trusts the **target repository's** `.pi/` extensions, skills and settings. pi executes project-local extensions as TypeScript inside the agent process, so this turns prompt injection into code execution — only for a repo you control. | refused |
-| `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` | How long one MCP server gets to handshake and list its tools before the `pi` extension gives up on it. Servers connect in parallel during pi's session start — which iterion's own 30s RPC handshake is waiting on — so this bounds what an unreachable server can cost: its own tools, never the run. | `10000` |
+| `ITERION_PI_MCP_CONNECT_TIMEOUT_MS` | How long one MCP server gets to handshake and list its tools before the `pi` extension gives up on it. Servers connect in parallel during pi's session start — which iterion's own RPC handshake is waiting on, bounded by `ITERION_PI_STREAM_COLD_TIMEOUT` (90s) — so this bounds what an unreachable server can cost: its own tools, never the run. | `10000` |
 | `ITERION_PI_NO_CONTEXT_FILES` | `1` stops pi injecting the repo's `AGENTS.md` / `CLAUDE.md` into every call. On by default for `claude_code` parity, but it is the dominant per-call cost: measured at **26,933 vs 448 input tokens** on iterion's own tree (103 KB `CLAUDE.md`) for a one-word prompt. | context files loaded |
 | `ITERION_FORBID_SUBSCRIPTION_OAUTH` | `1` refuses to spend a Claude Pro/Max subscription OAuth token on the `pi` and `claw` backends, which reach the API directly rather than through the vendor's CLI. Permitted by default — Anthropic accepts it, billing against a **separate extra-usage balance** rather than your plan limits, and iterion warns on each such node. Set this on a shared or cloud instance, where spending an operator's extra-usage balance is a cost decision taken for everyone. `claude_code` / `codex` are unaffected. | permitted, with a warning |
 | `ITERION_CLAUDE_CODE_SETTING_SOURCES` | Comma-separated `--setting-sources` for `claude_code` nodes (`user`, `project`, `local`). The default loads the operator's user-level settings **and** the target repo's project `CLAUDE.md` / `.claude/settings.json`, so a node honours the same conventions native Claude Code would. `local` is left out on purpose: `.claude/settings.local.json` is machine-specific and can carry absolute paths that do not resolve in a sandbox. `""` or `none` disables it, restoring the CLI's headless no-settings default. | `user,project` |
@@ -52,8 +52,9 @@ Backend selection and provider routing use `ITERION_DEFAULT_BACKEND`,
 | `ITERION_SANDBOX_PULL_TIMEOUT` | Caps `<runtime> pull` for the docker driver (Go duration, e.g. `20m`) so a stalled registry or blocked DNS cannot pend a run indefinitely. | `10m` |
 
 The sandbox on/off default, cloud override, host-state mounts, and the
-default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`, and
-`ITERION_SANDBOX_HOST_STATE` — documented in [sandbox.md](sandbox.md).
+default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`,
+`ITERION_SANDBOX_HOST_STATE`, and `ITERION_SANDBOX_DEFAULT_IMAGE` —
+documented in [sandbox.md](sandbox.md).
 
 ## Runtime and runner
 
@@ -78,6 +79,23 @@ default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`, and
 | `ITERION_LOOP_BUDGET_GUARD` | Env level of the `loop_budget_guard:` chain (`--loop-budget-guard` → workflow → this → default). Declines a loop back-edge the remaining budget cannot fund, so the run leaves through its own exit path instead of dying mid-pass on `BUDGET_EXCEEDED` — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `on` |
 | `ITERION_BUDGET_EXIT_GRACE` | How far past a *spent* cap a run may walk **forward** to reach a terminal node, as a fraction of the declared cap — so work already paid for gets delivered instead of dying on disk. Accepts a ratio in `[0,1]`; `off`/`no`/`false`/`none`/`0` make every declared cap **absolute** (the setting for shared instances and pooled credentials). Fails **closed**: an out-of-range or unparsable value is treated as `0` with a one-time stderr warning, never as the permissive default. The grace is refused outright when the loop budget guard is off, and on a cap clamped by an outside authority (platform ceiling, credential-pool donor allowance). Each graced node emits a `budget_exit_grace` event — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `0.1` (10%) |
 | `ITERION_REPO_DEVBOX` | Env level of the `repo_devbox:` chain (`--repo-devbox` → workflow → this → default). `off` skips the **target repo's** `devbox.json`; the bot's own is always installed. Worth turning off for a run that reads a repo without building it — see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox). | `on` |
+
+## Run alerts
+
+The run observer (`pkg/alert`) watches runtime events plus a per-run
+liveness heartbeat and fires on stall, budget warning/exceeded, and
+failure. These variables configure where those alerts go; they are read
+by both `iterion studio` and the cloud server. Distinct from the
+user-addressed web-push notifications of
+[notifications.md](notifications.md), which are per-recipient rather
+than per-deployment.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_ALERTS_WEBHOOK_URL` | Generic incoming webhook (Slack / Discord) the alert sink posts to. Empty disables the sink. It is an **operator-set** destination posted to with a plain 15s-timeout client — unlike the operator-*supplied* completion webhooks of `pkg/notify`, it carries no SSRF guard, so point it only at a URL you control. | unset (no webhook sink) |
+| `ITERION_ALERTS_STALL_TIMEOUT` | No-activity window after which a non-terminal run is flagged **stalled** (Go duration). An unparseable value keeps the default rather than disabling the check. | `5m` |
+| `ITERION_ALERTS_BASE_URL` | Origin used to build clickable `/runs/<id>` deep links in webhook payloads. When unset it is derived from the bind address + port; with an OS-assigned (`0`) port the absolute base is left empty, since a wrong link is worse than none. | derived from bind + port |
+| `ITERION_ALERTS_DESKTOP_ENABLED` | `true` turns on the native desktop-notification sink. Parsed strictly — anything unparseable is `false`. | `false` |
 
 ## Platform budget ceiling (cloud)
 
@@ -120,7 +138,7 @@ variables — see [quotas-and-limits.md](quotas-and-limits.md).
 - [settings-precedence.md](settings-precedence.md) — compression / permission / backend precedence.
 - [backends.md](backends.md) — backend, provider, and OAuth-forfait variables.
 - [sandbox.md](sandbox.md) — sandbox default, override, and host-state variables.
-- [notifications.md](notifications.md) — `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY`.
+- [notifications.md](notifications.md) — `ITERION_WEBPUSH_VAPID_{PUBLIC,PRIVATE}_KEY`; the user-addressed counterpart to the deployment-wide `ITERION_ALERTS_*` above.
 - [worktree-pool.md](worktree-pool.md) — the worktree pool bound and `ITERION_WORKTREE_POOL_MAX`.
 - [usage-caps.md](usage-caps.md) — `ITERION_USAGE_CAP`, `ITERION_USAGE_CAP_5H_{MODE,PCT}`, `ITERION_USAGE_CAP_WEEK_{MODE,PCT}`.
 - [scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) — the retry policy's machine defaults (`ITERION_RETRY_*`) and the platform ceiling (`ITERION_CLOUD_RETRY_*`).
