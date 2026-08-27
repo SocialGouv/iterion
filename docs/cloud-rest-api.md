@@ -18,9 +18,12 @@ curl .../api/openapi.json       # the same, from a live instance
 curl .../api/routes             # just the method+pattern inventory
 ```
 
-(The `/api/v1/native`, `/api/v1/dispatcher` and `/api/v1/mcp/board`
-sub-trees are served on a separate mux and are deliberately absent from
-that spec.)
+(The `/api/v1/native`, `/api/v1/dispatcher` and `/api/v1/mcp/board` CRUD
+sub-trees register on the *same* mux but bypass the route recorder — they
+are handed the bare `ServeMux` rather than the recording wrapper — so
+they are deliberately absent from that spec. The exception worth knowing:
+the forge-facing `/api/v1/native/issues/*` routes and the dependency
+graph go through the recorded path and therefore **do** appear.)
 
 Authentication. Most routes accept any of:
 
@@ -283,7 +286,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/runs` | member (tenant-scoped) | List runs |
-| `GET` | `/api/runs/global-active` | super-admin | All active runs platform-wide |
+| `GET` | `/api/runs/global-active` | member | Active runs across the **local** stores on this machine — a desktop-daemon affordance walking `$HOME/.iterion/**`. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
 | `POST` | `/api/runs` | member | Launch a workflow |
 | `POST` | `/api/runs/preview-cost` | member | Estimate cost before launch |
 | `POST` | `/api/runs/uploads` | member | Upload an attachment |
@@ -319,7 +322,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 | `GET` | `/api/ws/runs/{id}` | member (via `?t=`) | Live run-console WebSocket |
 | `GET` | `/api/v1/runs/stats` | member | Rolling stats (for the studio) |
 | `GET` | `/api/v1/limits/cost` | member | Cost-cap status |
-| `POST` | `/api/v1/limits/cost/override` | super-admin | Temporary cost-cap override |
+| `POST` | `/api/v1/limits/cost/override` | member | Grant or revoke the day's cost-cap override. **Any authenticated member** — the handler performs no role check and records the audit actor as `operator`. |
 
 Source: [pkg/server/runs.go](../pkg/server/runs.go).
 
