@@ -640,6 +640,39 @@ SDK and uses the CLI's own authentication and native tool loop.
 Same logic as claude_code: only OAuth flips it to "available" for
 auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 
+#### Native Web search (`tools: [web_search]`)
+
+A Codex node receives OpenAI's hosted native Web search only when it declares
+the canonical DSL tool:
+
+```iter
+agent researcher:
+  backend: "codex"
+  model: "gpt-5.6-terra"
+  tools: [web_search]
+  readonly: true
+```
+
+Iterion sends the pinned SDK configuration `web_search="live"` for that node
+and `web_search="disabled"` for every Codex node that omits it. This avoids
+Codex's normal cached-search default silently widening the DSL tool contract.
+It does not use claw's `web_search` implementation, an MCP server, or shell
+network access. Hosted search remains available with Codex's `read-only`
+sandbox, so `full_access: true` is neither needed nor implied.
+
+The backend verifies the Codex CLI version before starting any Codex task,
+because every run sends an explicit `web_search` mode (`live` or `disabled`).
+A CLI older than the capability-specific minimum fails with an actionable
+error naming the missing mode and required version. Operators can set
+`CODEX_CLI_SKIP_VERSION_CHECK=1` to bypass the probe when a compatible wrapper
+does not expose a conventional version string; doing so assumes responsibility
+for support of the top-level `web_search` mode.
+Search calls are emitted as `WebSearch` tool lifecycle events; `Bash` remains
+separate. The SDK currently provides a count and best-effort action/source
+payload, but no per-call monetary amount, so Iterion's `_cost_usd` does not
+include an invented search fee. See [Web search & fetch](web-search.md) for the
+backend comparison and cost boundary.
+
 #### Sandbox and `full_access`
 
 A codex node runs under codex's own sandbox. `readonly: true` always selects
@@ -652,11 +685,12 @@ names and Claude-style names are recognised). Unknown/custom names conservativel
 select `workspace-write`; use `readonly: true` for an explicit lock-down.
 
 With Codex's default configuration neither `read-only` nor `workspace-write`
-allows **network egress** — so a codex agent cannot reach an external API (e.g.
-codex's built-in `imagegen`, or any HTTP call). A user-level Codex config can
-override workspace-write network policy; Iterion does not currently rewrite that
-file, so operators who require a hard network boundary should use an Iterion
-Docker/Kubernetes sandbox with a backend that supports it.
+allows **shell network egress** — so a codex shell cannot reach an external
+API (e.g. image generation through a local HTTP call). This restriction is
+separate from provider-hosted Web search described above. A user-level Codex
+config can override workspace-write network policy; Iterion does not currently
+rewrite that file, so operators who require a hard network boundary should use
+an Iterion Docker/Kubernetes sandbox with a backend that supports it.
 
 To grant network access, the pipeline author sets `full_access: true` on the
 node. It lifts the sandbox to `danger-full-access` (unrestricted network +

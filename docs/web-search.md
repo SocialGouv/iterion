@@ -1,10 +1,10 @@
 # Web search & fetch
 
-How agents discover and read the web in iterion, as a **capability ladder**
-you climb only as far as your needs (and your sovereignty constraints)
-require. Search stays **one tool** (`web_search`) whose backend is resolved
-from the environment; scraping is either the built-in `web_fetch` or, at the
-top tier, Firecrawl over MCP.
+How agents discover and read the web in iterion. The DSL capability stays one
+tool (`web_search`), but its implementation depends on the selected backend:
+client-side search resolved from the environment on `claw`, or OpenAI's hosted
+native Web search on `codex`. Scraping is either claw's built-in `web_fetch`
+or, at the top sovereign tier, Firecrawl over MCP.
 
 | Tier | Infra to run | Search backend | Scrape / crawl |
 |------|--------------|----------------|----------------|
@@ -108,12 +108,22 @@ iterion just connects to Firecrawl; Firecrawl uses SearXNG internally. So a
 single SearXNG instance can serve both claw's `web_search` (tier 2) and
 Firecrawl's `search` (tier 3).
 
-## Backend note: claude_code, claw, and pi
+## Backend note: claude_code, claw, codex, and pi
 
 - **claude_code** has its own native `WebSearch` / `WebFetch` (Claude Code
   CLI). A `claude_code` node that leaves `tools:` unset inherits them for
   free. If it restricts `tools:`, list `WebSearch` / `WebFetch` explicitly.
   Pi has no native web-search tool; use an MCP server there.
+- **codex** maps DSL `tools: [web_search]` to Codex's hosted native Web
+  search with `web_search="live"`. When the declaration is absent Iterion
+  forces `web_search="disabled"`, overriding Codex's cached-search default;
+  the capability is therefore explicit instead of ambient. This is the same
+  hosted tool as Codex `--search`, not a shell command and not claw's
+  SearXNG/Brave/DDG implementation. `readonly: true` remains compatible:
+  the Codex shell stays in its `read-only` sandbox while hosted search can
+  access the Web. Codex CLI versions older than the pinned SDK minimum are
+  rejected before the work process starts with an actionable `web_search`
+  capability error.
 - **External MCP servers (Firecrawl, custom SearXNG MCP) reach all three
   MCP-capable backends.** `claw` resolves them into tools in-process;
   `claude_code` forwards the active `mcp_server` / plugin configs via
@@ -126,6 +136,19 @@ Firecrawl's `search` (tier 3).
   server for sandboxed runs; a self-hosted Firecrawl MCP over HTTP is reachable
   from inside the container.
 
-`web_fetch` (claw) and the tier resolution above are unrelated to Anthropic's
-server-side `web_search_*` / `web_fetch_*` tool types — claw does not pass
-those through; all web work is client-side.
+`web_fetch` (claw) and the tier resolution above are unrelated to the native
+hosted tools from Anthropic or OpenAI. Claw web work is client-side; Codex Web
+search is provider-hosted.
+
+### Codex observability and cost
+
+Each Codex native search appears as a distinct `WebSearch`
+`tool_started`/`tool_called` pair in the run timeline and increments
+`iterion_tool_call_total`; shell activity remains named `Bash`. The completion
+payload is retained when the SDK supplies action/results/source detail.
+
+The current Codex SDK stream does not expose a per-search billed amount.
+Iterion therefore reports the call count and the node's normal token/model
+cost, but does not invent a search surcharge. OpenAI may bill hosted search
+per tool call; consult the current [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
+for the credential/account used by Codex.

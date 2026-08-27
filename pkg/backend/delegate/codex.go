@@ -52,6 +52,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			return Result{}, err
 		}
 	}
+	// Every invocation receives an explicit web_search mode, including
+	// disabled. Validate both sides of that capability contract and pin the SDK
+	// to the exact binary that was probed.
+	codexCLIPath, err := validateCodexWebSearchCapability(ctx, b.Command)
+	if err != nil {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, err
+	}
 
 	var opts []codexsdk.Option
 
@@ -79,10 +86,12 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	sandboxMode := codexSandboxForTask(task)
 	opts = append(opts, codexsdk.WithSandbox(sandboxMode))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
+	// Codex defaults Web search to cached mode, which would silently expose it
+	// to nodes that did not declare the DSL tool. Force the native capability
+	// on only for tools: [web_search], and request live (not cached) retrieval.
+	opts = append(opts, codexWebSearchOption(task))
 
-	if b.Command != "" {
-		opts = append(opts, codexsdk.WithCliPath(b.Command))
-	}
+	opts = append(opts, codexsdk.WithCliPath(codexCLIPath))
 
 	// Structured output always uses a dedicated formatting pass via session
 	// resume. Codex's native tools cannot currently be disabled by Iterion: even
@@ -176,7 +185,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 			b.Logger.Debug("codex [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, resultMsg.SessionID)
-			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID)
+			fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID, codexCLIPath)
 			result.Duration += fmtDuration
 			if fmtErr != nil {
 				if attempt < maxFmtAttempts {
@@ -239,6 +248,7 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 		startTime := time.Now()
 		var resultMsg *codexsdk.ResultMessage
 		var queryErr error
+		inFlightTools := make(map[string]string)
 
 		for msg, err := range codexsdk.Query(ctx, content, opts...) {
 			if err != nil {
@@ -247,6 +257,7 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 			}
 			switch m := msg.(type) {
 			case *codexsdk.AssistantMessage:
+				emitCodexToolHooks(task.Hooks, m, inFlightTools)
 				b.logAssistantActivity(task.NodeID, task.Iteration, m)
 			case *codexsdk.ResultMessage:
 				resultMsg = m
@@ -336,13 +347,16 @@ func codexQueryContent(prompt string, images []string) codexsdk.UserMessageConte
 // formatOutput performs a second pass: resumes the work-pass session with
 // WithOutputSchema and a tight formatting prompt. Sandbox is forced to
 // read-only so the pass cannot mutate state while rendering the final JSON.
-func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*codexsdk.ResultMessage, time.Duration, error) {
+func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID, codexCLIPath string) (*codexsdk.ResultMessage, time.Duration, error) {
 	var stderrCapture codexStderrCapture
 	opts := []codexsdk.Option{
 		codexsdk.WithResume(sessionID),
 		codexsdk.WithOutputSchema(string(task.OutputSchema)),
 		codexsdk.WithSandbox("read-only"),
 		codexsdk.WithPermissionMode("bypassPermissions"),
+		// Formatting is intentionally tool-free work. Do not inherit Codex's
+		// cached-search default (or the work pass's live-search capability).
+		codexsdk.WithConfig(map[string]string{"web_search": codexWebSearchModeDisabled}),
 		codexsdk.WithStderr(func(line string) {
 			stderrCapture.AppendLine(line)
 			if line != "" {
@@ -356,9 +370,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID st
 	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
 		opts = append(opts, codexsdk.WithModel(model))
 	}
-	if b.Command != "" {
-		opts = append(opts, codexsdk.WithCliPath(b.Command))
-	}
+	opts = append(opts, codexsdk.WithCliPath(codexCLIPath))
 	if task.ReasoningEffort != "" {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
@@ -740,6 +752,9 @@ func hasNonEmptyStructuredOutput(value any) bool {
 // with the node-level `full_access: true`, not by listing a mutating tool.
 func codexSandboxForAllowedTools(allowed []string) string {
 	for _, t := range allowed {
+		if isCodexWebSearchTool(t) {
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(t)) {
 		case "read", "read_file", "readfile", "cat", "glob", "grep", "ls":
 			continue
