@@ -308,6 +308,45 @@ func providerFallbackEligible(backendName string) bool {
 	return backendName == delegate.BackendClaudeCode
 }
 
+// sessionResumeBackends are the backends that actually CONSUME
+// Task.SessionID to resume a conversation. Membership is a property of
+// the code, verified per backend, not a guess:
+//
+//	claude_code — claudesdk.WithResume(task.SessionID)
+//	codex       — codexsdk.WithResume(task.SessionID)
+//	pi          — `--session-id` / `--fork <id>`
+//
+// Everyone else only ever REPORTS a session id and never resumes one:
+// claw never mentions Task.SessionID at all (its conversation lives in
+// the host's (runID, nodeID) store and is replayed independently), and
+// the generic CLI-agent path behind kimi/grok parses an id out of the
+// CLI's output without ever passing one back in.
+//
+// Deliberately its own set rather than a reuse of
+// providerFallbackEligible: that one answers "does this backend honour
+// the provider HINT", a different question with a different answer.
+var sessionResumeBackends = map[string]bool{
+	delegate.BackendClaudeCode: true,
+	delegate.BackendCodex:      true,
+	delegate.BackendPi:         true,
+}
+
+// sessionResumeEligible reports whether dropping Task.SessionID can
+// plausibly change the outcome of a retry on this backend.
+//
+// It gates the optional-session degrade for the same reason
+// collapseHintOnlyChain trims a hint-only chain: on a backend that
+// ignores the id, the "fresh" retry is a byte-identical call that will
+// fail identically, so the degrade would be a whole wasted agentic turn
+// — and it would evict the node's accumulated conversation on the way,
+// destroying real state for a failure the session had no part in. Under
+// the shipped `sandbox: auto` that is not a corner case: a sandboxed
+// claw failure flattens to a string at the __claw-runner IPC boundary
+// and classifies UNCLASSIFIED, so EVERY such failure would qualify.
+func sessionResumeEligible(backendName string) bool {
+	return sessionResumeBackends[backendName]
+}
+
 // chainIsHintOnly reports whether every element defers to the node's
 // resolved backend — i.e. the chain can only swap a credential, never
 // re-shape the task. That is exactly the legacy `provider:` chain
@@ -865,7 +904,8 @@ func (e *ClawExecutor) dispatchChain(
 		// a provider outage and silently discard continuity for an
 		// unrelated cause (R1486ff).
 		sessionDegraded := false
-		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" {
+		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" &&
+			sessionResumeEligible(backendName) {
 			switch cat := delegate.ClassifyFallback(err, isDelegateRetryable(err)); cat {
 			case delegate.FallbackUnclassified:
 				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)

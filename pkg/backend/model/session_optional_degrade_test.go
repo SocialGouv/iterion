@@ -285,3 +285,65 @@ func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
 		t.Errorf("the abandoned attempt's tokens were dropped on cancel: %d", out.Result.Tokens)
 	}
 }
+
+// TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID: claw never
+// mentions Task.SessionID (its conversation lives in the host's
+// (runID, nodeID) store and is replayed independently), and the generic
+// CLI-agent path behind kimi/grok only ever REPORTS an id. On those,
+// dropping the id produces a byte-identical call — so the degrade would
+// be a whole wasted agentic turn AND would evict the node's accumulated
+// conversation for a failure the session had no part in. Under the
+// shipped `sandbox: auto` that is not a corner case: a sandboxed claw
+// failure flattens to a string at the IPC boundary and classifies
+// UNCLASSIFIED, so every one of them would qualify.
+func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
+	for _, backendName := range []string{delegate.BackendClaw, delegate.BackendKimi, delegate.BackendGrok} {
+		t.Run(backendName, func(t *testing.T) {
+			const runID, nodeID = "run-1", "plan_revise"
+			sessions := newNodeSessionStore()
+			if err := sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`)); err != nil {
+				t.Fatalf("seed snapshot: %v", err)
+			}
+			ctx := withRuntimeContext(context.Background(), runID, sessions)
+
+			be := &sessionPickyBackend{
+				name: backendName,
+				fail: errors.New("claw runner: flattened failure"),
+			}
+			reg := delegate.NewRegistry()
+			reg.Register(backendName, be)
+			e := newFallbackExecutor(reg, EventHooks{})
+			build := e.newElementBuilder(nodeID, backendName, nil, sessionDegradeBuilder(e, true))
+
+			if _, err := e.dispatchChain(ctx, nodeID, []chainElement{{Label: "primary"}}, "some-model", build); err == nil {
+				t.Fatal("a backend that ignores the session id cannot be rescued by dropping it")
+			}
+			if len(be.tasks) != 1 {
+				t.Errorf("want 1 attempt (no pointless fresh retry), got %d", len(be.tasks))
+			}
+			if sessions.LoadSnapshot(runID, nodeID) == nil {
+				t.Error("the node's accumulated conversation was evicted for a failure the session had no part in")
+			}
+		})
+	}
+}
+
+// The eligible backends are exactly the three that call resume with it.
+func TestSessionResumeEligible(t *testing.T) {
+	want := map[string]bool{
+		delegate.BackendClaudeCode: true, // claudesdk.WithResume(task.SessionID)
+		delegate.BackendCodex:      true, // codexsdk.WithResume(task.SessionID)
+		delegate.BackendPi:         true, // --session-id / --fork <id>
+		delegate.BackendClaw:       false,
+		delegate.BackendKimi:       false,
+		delegate.BackendGrok:       false,
+	}
+	for name, eligible := range want {
+		if got := sessionResumeEligible(name); got != eligible {
+			t.Errorf("sessionResumeEligible(%q) = %v, want %v", name, got, eligible)
+		}
+	}
+	if sessionResumeEligible("some-future-backend") {
+		t.Error("an unknown backend must default to ineligible — opting in is a per-backend decision")
+	}
+}
