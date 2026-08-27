@@ -75,6 +75,42 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 	}
 }
 
+// BareModelSpec is everything that can be resolved for a model id carrying NO
+// provider — the shape a `.bot` may pin (`model: "claude-opus-5"`) and the one
+// a studio picker holds mid-typing.
+//
+// It deliberately carries no capability flags. Those resolve through a curated
+// per-provider branch (curatedCapabilities), and without a provider there is no
+// branch to take; inventing one would report another vendor's answer as this
+// model's. The aggregator's bare index is consensus-filtered across publishers,
+// so the numbers below are the fields it can honestly supply.
+type BareModelSpec struct {
+	Model           string `json:"model"`
+	Found           bool   `json:"found"`
+	ContextWindow   int    `json:"context_window"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
+	InputCostPerM   float64
+	OutputCostPerM  float64
+}
+
+// ResolveBareModel resolves an unqualified model id against the aggregator's
+// bare index. Found is false when the aggregator has no entry — the caller
+// then has nothing to show, which is the honest answer rather than a curated
+// guess made under an invented provider.
+func ResolveBareModel(modelID string) BareModelSpec {
+	out := BareModelSpec{Model: modelID}
+	spec, ok := modelspecs.Default().LookupBare(modelID)
+	if !ok {
+		return out
+	}
+	out.Found = true
+	out.ContextWindow = spec.ContextWindow
+	out.MaxOutputTokens = spec.MaxOutputTokens
+	out.InputCostPerM = spec.InputCostPerM
+	out.OutputCostPerM = spec.OutputCostPerM
+	return out
+}
+
 // ResolveSpec resolves a "provider/model-id" spec string. It returns an error
 // (suitable for surfacing as a user-input error) when the spec is malformed.
 func ResolveSpec(spec string) (ResolvedCapabilities, error) {
