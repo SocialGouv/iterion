@@ -116,6 +116,17 @@ vars:
   ## be the reason an hourly tick hangs or hammers the forge.
   max_version_lookups: int = 40
 
+  ## ...and a COUNT of lookups is not a wall-clock bound. At the defaults, 40
+  ## sequential requests x a 20s per-request timeout is 800s against a 900s
+  ## max_duration — before DNS, body reads, and the three polling lanes that
+  ## run first. confirm_versions sits upstream of BOTH notify and
+  ## commit_state, so overrunning the workflow budget means no message
+  ## delivered and no state consumed: the bot goes silent for exactly as long
+  ## as GitHub is slow, which is plausibly when it matters most. This deadline
+  ## is what makes the "never the reason a tick hangs" contract above true.
+  ## 0 disables it (the lookup ceiling then bounds the node on its own).
+  max_version_seconds: int = 120
+
   ## Per-request HTTP timeout (feeds, APIs).
   fetch_timeout_secs: int = 20
 
@@ -276,6 +287,9 @@ schema confirm_input:
   ## Hard ceiling on advisory+alert lookups for one run: the confirmation
   ## is a nicety, never a reason for the tick to hang or to hammer the API.
   max_lookups: int
+  ## ...and the wall-clock half of that promise, which the count alone
+  ## cannot make (a slow API turns 40 lookups into 800s). 0 disables.
+  max_seconds: int
 
 schema confirm_output:
   alerts: json
@@ -1744,8 +1758,8 @@ tool confirm_versions:
   output: confirm_output
   language: py
   script: |
-    import json, os, re, socket, ipaddress
-    import urllib.request, urllib.error
+    import json, os, socket, time, ipaddress
+    import urllib.request
     from urllib.parse import urlsplit, quote
     null = None; true = True; false = False  # JSON-literal shim for missing refs
     alerts = {{input.alerts}} or []
@@ -1754,6 +1768,10 @@ tool confirm_versions:
     timeout = int({{input.timeout_secs}} or 20)
     allow_private = {{input.allow_private}}
     max_lookups = int({{input.max_lookups}} or 40)
+    max_seconds = int({{input.max_seconds}} or 0)
+    ## MONOTONIC, not wall time: a clock step must not extend or collapse the
+    ## window this node is allowed to spend.
+    deadline = (time.monotonic() + max_seconds) if max_seconds > 0 else None
     tokens_file = {{secrets.dependabot_tokens.path}}
 
     tokens = {}
@@ -1825,7 +1843,10 @@ tool confirm_versions:
             'User-Agent': 'iterion-vuln-watch'})
         if token:
             req.add_header('Authorization', 'Bearer ' + token)
-        with _opener.open(req, timeout=timeout) as r:
+        ## Clamp the per-request timeout to what is left of the node's window,
+        ## so one hung read cannot overshoot the deadline by a whole timeout.
+        t = timeout if deadline is None else max(1, min(timeout, int(deadline - time.monotonic())))
+        with _opener.open(req, timeout=t) as r:
             ## Bounded like the sibling lane's read: a hostile or broken
             ## endpoint must not be able to stream this node out of memory.
             return json.loads(r.read(8 * 1024 * 1024).decode('utf-8') or '[]')
@@ -1833,8 +1854,21 @@ tool confirm_versions:
     lookups = [0]
     errors = []
 
+    expired = [False]
+
     def budgeted(fn, what):
         if lookups[0] >= max_lookups:
+            return None
+        ## The deadline is checked BEFORE every request, so a degraded API
+        ## costs this node its precision and never the run's delivery. What
+        ## is left unlooked-up degrades to "not verified", never to an
+        ## all-clear — see the version_check assignment below.
+        if deadline is not None and time.monotonic() >= deadline:
+            if not expired[0]:
+                expired[0] = True
+                errors.append({'what': 'deadline',
+                               'error': 'version confirmation stopped after ' + str(max_seconds) +
+                                        's; remaining units are reported unverified'})
             return None
         lookups[0] += 1
         try:
@@ -2005,6 +2039,10 @@ tool confirm_versions:
 
     parts = [str(confirmed) + '/' + str(confirmable) + ' unit(s) version-confirmed',
              str(lookups[0]) + ' lookup(s)']
+    if expired[0]:
+        parts.append('stopped on the ' + str(max_seconds) + 's deadline')
+    elif lookups[0] >= max_lookups:
+        parts.append('lookup budget spent')
     if errors:
         parts.append(str(len(errors)) + ' lookup error(s)')
     print(json.dumps({'alerts': alerts, 'confirmable': confirmable, 'confirmed': confirmed,
@@ -2485,7 +2523,8 @@ workflow vuln_watch:
     github_api_base: "{{outputs.plan.github_api_base}}",
     timeout_secs: "{{vars.fetch_timeout_secs}}",
     allow_private: "{{vars.allow_private_sources}}",
-    max_lookups: "{{vars.max_version_lookups}}"
+    max_lookups: "{{vars.max_version_lookups}}",
+    max_seconds: "{{vars.max_version_seconds}}"
   }
 
   confirm_versions -> notify with {

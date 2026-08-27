@@ -511,7 +511,7 @@ func (h *vulnWatchHarness) runWatchOpts(t *testing.T, wf *ir.Workflow, dryRun bo
 	confirm, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
 		"alerts": match["alerts"], "github_orgs": plan["github_orgs"],
 		"github_api_base": plan["github_api_base"], "timeout_secs": 5,
-		"allow_private": true, "max_lookups": 40,
+		"allow_private": true, "max_lookups": 40, "max_seconds": 0,
 	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
 	if err != nil {
 		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
@@ -1986,7 +1986,7 @@ func vwConfirm(t *testing.T, wf *ir.Workflow, h *vulnWatchHarness, apiBase strin
 	return runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
 		"alerts": alerts, "github_orgs": []string{"testorg"},
 		"github_api_base": apiBase, "timeout_secs": 5,
-		"allow_private": true, "max_lookups": 40,
+		"allow_private": true, "max_lookups": 40, "max_seconds": 0,
 	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
 }
 
@@ -2153,6 +2153,7 @@ func TestVulnWatch_UncheckedIsNeverRenderedAsAnAllClear(t *testing.T) {
 			out, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
 				"alerts": unit(), "github_orgs": orgs, "github_api_base": h.srv.URL,
 				"timeout_secs": 5, "allow_private": true, "max_lookups": maxLookups,
+				"max_seconds": 0,
 			}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
 			if err != nil {
 				t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
@@ -2360,5 +2361,75 @@ func TestVulnWatch_EveryAffectedPackageSurvivesAndTheCountStaysRepos(t *testing.
 	}
 	if fixes["acme-core"] != "3.1.4" {
 		t.Fatalf("the second open package was dropped — one fix shown as though it covered the repo: %v", fixes)
+	}
+}
+
+// A COUNT of lookups is not a wall-clock bound. At the committed defaults, 40
+// sequential requests x a 20s per-request timeout is 800s against a 900s
+// max_duration — before DNS, body reads, and the three polling lanes that run
+// first. And confirm_versions sits upstream of BOTH notify and commit_state,
+// so overrunning the workflow budget means no message delivered and no state
+// consumed: the bot goes silent for exactly as long as GitHub is slow, which
+// directly contradicts this node's own contract ("it must never be the reason
+// an hourly tick hangs"). Delivery is at-least-once, so nothing is lost
+// permanently — but prolonged silence on a security watch IS the failure.
+func TestVulnWatch_ASlowAPICostsPrecisionNotDelivery(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer slow.Close()
+
+	// Ten units, each needing a lookup: without a deadline this is ten
+	// sequential stalls, and the node's cost grows with the alert backlog.
+	var alerts []map[string]any
+	for i := 0; i < 10; i++ {
+		cve := fmt.Sprintf("CVE-2026-70%02d", 60+i)
+		alerts = append(alerts, map[string]any{"key": "kev:" + cve, "cves": []string{cve},
+			"title": "slow " + cve, "severity": "critical", "project_names": []string{"proj"}})
+	}
+
+	start := time.Now()
+	out, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
+		"alerts": alerts, "github_orgs": []string{"testorg"}, "github_api_base": slow.URL,
+		"timeout_secs": 20, "allow_private": true, "max_lookups": 40, "max_seconds": 5,
+	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	// 10 units x 3s would be 30s unbounded. The deadline is 5s; allow the one
+	// in-flight request to finish plus interpreter start-up.
+	if elapsed > 20*time.Second {
+		t.Fatalf("the deadline did not bound the node: %s elapsed on a 5s window", elapsed)
+	}
+	if s, _ := out["summary"].(string); !strings.Contains(s, "deadline") {
+		t.Fatalf("a truncated confirmation must SAY so, got summary %q", s)
+	}
+	// And what it could not check must degrade to "not verified" — never to
+	// the all-clear, which is what makes prolonged silence into a wrong answer.
+	got, _ := out["alerts"].([]any)
+	if len(got) != len(alerts) {
+		t.Fatalf("every alert must survive the node, got %d of %d", len(got), len(alerts))
+	}
+	for i, g := range got {
+		if vc, _ := g.(map[string]any)["version_check"].(string); vc == "none_found" || vc == "confirmed" {
+			t.Fatalf("alert %d was never checked, yet reads as %q", i, vc)
+		}
+	}
+	// The whole point: every message still goes out.
+	vwRender(t, wf, h, out["alerts"])
+	delivered := strings.Join(h.bodies(), "\n")
+	for i := range alerts {
+		want := fmt.Sprintf("CVE-2026-70%02d", 60+i)
+		if !strings.Contains(delivered, want) {
+			t.Fatalf("delivery must survive a degraded confirmation — %s never reached the sink:\n%s", want, delivered)
+		}
 	}
 }
