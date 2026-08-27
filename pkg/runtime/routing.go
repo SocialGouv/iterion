@@ -76,6 +76,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 		return "", err
 	}
 
+	rs.setIncoming(selected)
 	return selected.To, nil
 }
 
@@ -217,6 +218,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 		return "", err
 	}
 
+	rs.setIncoming(e.firstEdge(routerNodeID, selected))
 	return selected, nil
 }
 

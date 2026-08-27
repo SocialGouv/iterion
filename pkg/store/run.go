@@ -756,7 +756,15 @@ type Checkpoint struct {
 	// affordability guard exists to prevent.
 	LoopBudgetMarks  map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
 	ArtifactVersions map[string]int                `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
-	Vars             map[string]any                `json:"vars" bson:"vars"`                           // resolved workflow variables
+	// SelectedIncoming records, per destination node, the incoming edges
+	// that routing actually selected for the current visit of that node.
+	// buildNodeInputRS applies with-mappings only from those edges so an
+	// unselected conditional sibling cannot clobber a selected path
+	// (issue #484). Absent on checkpoints written before the field
+	// existed — the resolver then falls back to "every incoming edge
+	// whose source has produced output".
+	SelectedIncoming map[string][]IncomingEdge `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	Vars             map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
@@ -808,6 +816,21 @@ type Checkpoint struct {
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
 	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+}
+
+// IncomingEdge identifies a workflow edge that actually fired into a node
+// for the current visit. Identity is the routing shape (from/to plus the
+// guard and loop/foreach marks), not the with-mapping list: two edges
+// between the same pair with different conditions are distinct.
+type IncomingEdge struct {
+	From          string `json:"from" bson:"from"`
+	To            string `json:"to" bson:"to"`
+	Condition     string `json:"condition,omitempty" bson:"condition,omitempty"`
+	Negated       bool   `json:"negated,omitempty" bson:"negated,omitempty"`
+	ExpressionSrc string `json:"expression,omitempty" bson:"expression,omitempty"`
+	IsElse        bool   `json:"else,omitempty" bson:"else,omitempty"`
+	LoopName      string `json:"loop,omitempty" bson:"loop,omitempty"`
+	ForeachName   string `json:"foreach,omitempty" bson:"foreach,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
