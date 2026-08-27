@@ -88,7 +88,7 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// A team-authored bot of this name overrides the catalog (same precedence
 	// as the list + launch paths). Return it marked editable.
-	for _, e := range s.tenantBotEntries(r.Context()) {
+	for _, e := range s.tenantBotEntriesList(r.Context()) {
 		if e.Name == name {
 			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
 			return
@@ -232,7 +232,7 @@ func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error)
 // doesn't drop them from the studio's cached entry (a tenant bot would otherwise
 // lose its editable flag on an icon/visibility change).
 func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string) {
-	for _, e := range s.tenantBotEntries(r.Context()) {
+	for _, e := range s.tenantBotEntriesList(r.Context()) {
 		if e.Name == name {
 			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
 			return

@@ -129,7 +129,7 @@ func (s *Server) handleBotCreateCloud(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return the discovered entry (metadata + schema), marked editable, so the
 	// builder's create → test loop can bind to it.
-	for _, e := range s.tenantBotEntries(r.Context()) {
+	for _, e := range s.tenantBotEntriesList(r.Context()) {
 		if e.Name == spec.Slug {
 			s.reflectAllowedOrigin(w, r)
 			httpx.WriteJSON(w, http.StatusCreated, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})

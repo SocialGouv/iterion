@@ -158,9 +158,22 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("botregistry: resolve workdir %s: %w", workdir, err)
 	}
-	entries, err := ListWithSchema(ListOptions{Paths: DefaultPaths(abs), Workdir: abs})
+	entries, diags, err := ListWithSchemaDiagnostics(ListOptions{Paths: DefaultPaths(abs), Workdir: abs})
 	if err != nil {
 		return "", err
+	}
+	// Discovery is now per-entry fault-tolerant, which is right for READ
+	// surfaces but wrong here: regenerating from a partial list would
+	// rewrite the COMMITTED catalog with the skipped bundle's row and card
+	// silently deleted from Nexie's routing table. Refuse to write until
+	// the malformed bundle is fixed or removed — the file stays untouched,
+	// exactly as when discovery used to fail hard.
+	if len(diags) > 0 {
+		parts := make([]string, 0, len(diags))
+		for _, d := range diags {
+			parts = append(parts, d.Path+": "+d.Error)
+		}
+		return "", fmt.Errorf("botregistry: refusing to regenerate the catalog from partial discovery — fix or remove the malformed bundle(s): %s", strings.Join(parts, "; "))
 	}
 
 	// The catalog routes to dispatchable bundles only. Loose .bot demo

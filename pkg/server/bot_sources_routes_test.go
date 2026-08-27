@@ -228,3 +228,93 @@ func keysOf(m map[string]string) []string {
 	}
 	return out
 }
+
+// driftedBotSources simulates the write/read validation drift that makes a
+// malformed tenant bundle REACH discovery: the store validates manifests at
+// write time, so a bad chat: block can only sit in the store when it was
+// written by an older iterion (before validateChatSurface) and is read back
+// by a newer one. The fake preloads that record past Create's validation.
+type driftedBotSources struct {
+	botsource.Store
+	extra botsource.BotSource
+}
+
+func (d driftedBotSources) ListByTenant(ctx context.Context, tenantID string) ([]botsource.BotSource, error) {
+	list, err := d.Store.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return append(list, d.extra), nil
+}
+
+// TestBotSource_MalformedTenantBotSurfacesDiscoveryError pins the tenant half
+// of partial discovery: a team-authored bundle whose manifest fails to load
+// (an invalid chat: block — the #486 trigger, reachable via a bot saved before
+// the rule existed) must leave the gallery with its diagnostic in
+// discovery_errors keyed by SLUG, not silently vanish.
+func TestBotSource_MalformedTenantBotSurfacesDiscoveryError(t *testing.T) {
+	s, editor, _ := newBotSourceTestServer(t)
+	s.cfg.Mode = "cloud"
+	edCtx := auth.WithIdentity(context.Background(), editor)
+
+	if _, err := s.botSources.Create(store.WithTenant(edCtx, "t1"), botsource.BotSource{
+		TenantID: "t1", Slug: "good-bot",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: good-bot\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.botSources = driftedBotSources{
+		Store: s.botSources,
+		extra: botsource.BotSource{
+			TenantID: "t1", Slug: "broken-chat",
+			Files: map[string]string{
+				botsource.MainBotFile: testBotMain,
+				"manifest.yaml":       "name: broken-chat\nchat:\n  nodes:\n    chat:\n      kind: human\n",
+			},
+		},
+	}
+
+	lr := httptest.NewRequest("GET", "/api/v1/bots", nil).WithContext(edCtx)
+	lw := httptest.NewRecorder()
+	s.handleBotsList(lw, lr)
+	if lw.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", lw.Code, lw.Body.String())
+	}
+	var listResp struct {
+		Bots []struct {
+			Name string `json:"name"`
+		} `json:"bots"`
+		DiscoveryErrors []struct {
+			Path  string `json:"path"`
+			Error string `json:"error"`
+		} `json:"discovery_errors"`
+	}
+	if err := json.Unmarshal(lw.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	var goodFound bool
+	for _, b := range listResp.Bots {
+		if b.Name == "good-bot" {
+			goodFound = true
+		}
+		if b.Name == "broken-chat" {
+			t.Errorf("malformed tenant bot must stay OUT of the gallery: %+v", b)
+		}
+	}
+	if !goodFound {
+		t.Errorf("valid tenant bot missing from gallery: %s", lw.Body.String())
+	}
+	if len(listResp.DiscoveryErrors) != 1 {
+		t.Fatalf("discovery_errors = %+v, want one; body=%s", listResp.DiscoveryErrors, lw.Body.String())
+	}
+	d := listResp.DiscoveryErrors[0]
+	if d.Path != "broken-chat" || !strings.Contains(d.Error, "chat:") {
+		t.Errorf("discovery_errors[0] = %+v, want the slug and the chat: diagnostic (no temp-root path leak)", d)
+	}
+	if strings.Contains(d.Error, "iterion-tenant-bots") || strings.Contains(d.Path, "/") {
+		t.Errorf("diagnostic leaks the materialized temp root: %+v", d)
+	}
+}

@@ -350,3 +350,67 @@ func TestList_DiagnosticPathIsWorkdirRelative(t *testing.T) {
 		t.Errorf("diag.Path = %q, want workdir-relative bots/broken", diags[0].Path)
 	}
 }
+
+func TestList_UnreadableLooseBotFileIsSkipped(t *testing.T) {
+	// parseBotFile only fails on a read error — pinned with a dangling
+	// symlink so the skip path for loose .bot files stays covered.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good.bot"), "agent x:\n  model: \"test\"\n")
+	if err := os.Symlink(filepath.Join(dir, "gone.bot"), filepath.Join(dir, "dead.bot")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the readable bot", entries)
+	}
+	if len(diags) != 1 || !strings.HasSuffix(diags[0].Path, "dead.bot") {
+		t.Fatalf("diags = %#v, want one for dead.bot", diags)
+	}
+}
+
+func TestList_DiagnosticsDedupeOverlappingRoots(t *testing.T) {
+	// An explicit root and its parent both reach the same malformed
+	// bundle: the diagnostic is reported ONCE, like the entry dedupe.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "broken", "manifest.yaml"), "name: broken\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "bots", "broken", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir, filepath.Join(dir, "bots")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want exactly one for the shared malformed bundle", diags)
+	}
+}
+
+func TestList_UnreadableSubdirDoesNotBlankSiblings(t *testing.T) {
+	// A permission-denied branch of the walk is the same failure shape as
+	// a malformed bundle: it must not blank the rest of the workspace.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "sealed", "broken.bot"), "agent x:\n  model: \"test\"\n")
+	sealed := filepath.Join(dir, "sealed")
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+	if _, err := os.ReadDir(sealed); err == nil {
+		t.Skip("elevated privileges can still read the sealed dir")
+	}
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the readable bot", entries)
+	}
+	if len(diags) != 1 || !strings.HasSuffix(diags[0].Path, "sealed") {
+		t.Fatalf("diags = %#v, want one for the sealed dir", diags)
+	}
+}

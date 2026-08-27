@@ -374,14 +374,25 @@ func DefaultPaths(workDir string) []string {
 // into one entry; individual .bot files become one entry each.
 // Missing roots are skipped silently so callers can pass optimistic
 // default paths. A source that fails to load (malformed manifest,
-// unreadable file) is recorded as a DiscoveryError and skipped — the
-// walk continues so one bad bundle cannot blank its valid siblings.
-// The error return stays for fatal failures (unstat-able root, walk
-// error).
+// unreadable file or subdirectory) is recorded as a DiscoveryError and
+// skipped — the walk continues so one bad bundle cannot blank its valid
+// siblings. The error return stays for fatal failures (an unstat-able
+// or misconfigured explicit root).
 func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	var entries []Entry
 	var diags []DiscoveryError
 	seen := map[string]bool{}
+	// Diags dedupe by path the way entries do: overlapping roots (e.g. an
+	// explicit "." beside "./bots") would otherwise report the same
+	// malformed bundle once per root that reaches it.
+	seenDiag := map[string]bool{}
+	recordDiag := func(path string, err error) {
+		if seenDiag[path] {
+			return
+		}
+		seenDiag[path] = true
+		diags = append(diags, DiscoveryError{Path: path, Error: err.Error()})
+	}
 
 	for _, root := range roots {
 		info, err := os.Stat(root)
@@ -397,7 +408,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			}
 			e, err := parseBotFile(root)
 			if err != nil {
-				diags = append(diags, DiscoveryError{Path: root, Error: err.Error()})
+				recordDiag(root, err)
 				continue
 			}
 			if e != nil && !seen[e.Path] {
@@ -408,7 +419,12 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 		}
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				return walkErr
+				// An unreadable subdirectory (permission denied) is the
+				// same failure shape as a malformed bundle — one bad branch
+				// must not blank the rest of the workspace. Record and
+				// carry on (for a directory, WalkDir skips its contents).
+				recordDiag(path, walkErr)
+				return nil
 			}
 			if d.IsDir() {
 				manifest := filepath.Join(path, bundle.ManifestFile)
@@ -416,7 +432,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				if fileExists(manifest) && fileExists(mainBot) {
 					e, err := parseBundle(path)
 					if err != nil {
-						diags = append(diags, DiscoveryError{Path: path, Error: err.Error()})
+						recordDiag(path, err)
 						// SkipDir either way: a malformed bundle must not
 						// leak its main.bot back in as a loose bot file.
 						return filepath.SkipDir
@@ -435,7 +451,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 			}
 			e, err := parseBotFile(path)
 			if err != nil {
-				diags = append(diags, DiscoveryError{Path: path, Error: err.Error()})
+				recordDiag(path, err)
 				return nil
 			}
 			if e != nil && !seen[e.Path] {

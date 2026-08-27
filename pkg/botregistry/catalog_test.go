@@ -159,3 +159,37 @@ func TestList_AppliesOverlayAndKeepsDisabled(t *testing.T) {
 		t.Error("b1 should be flagged as a bundle dir")
 	}
 }
+
+func TestRegenerateWhatsNextCatalog_RefusesPartialDiscovery(t *testing.T) {
+	// A malformed bundle beside the catalog owner: regenerating from the
+	// partial list would silently delete the skipped bot's card from the
+	// committed routing file. Regen must refuse and leave the file as-is.
+	dir := fixtureCatalogWorkspace(t)
+	ClearSchemaCache()
+	writeFile(t, filepath.Join(dir, "bots", "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "bots", "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	// Pre-existing committed catalog the regen must NOT touch.
+	generated := filepath.Join(dir, "bots", "whats-next", "skills", catalogGeneratedName)
+	writeFile(t, generated, "COMMITTED-CATALOG-SENTINEL")
+
+	dest, err := RegenerateWhatsNextCatalog(dir)
+	if err == nil {
+		t.Fatalf("expected a refusal, got dest=%q", dest)
+	}
+	if !strings.Contains(err.Error(), "broken-chat") {
+		t.Errorf("error = %v, want it to name the malformed bundle", err)
+	}
+	body, rerr := os.ReadFile(generated)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(body) != "COMMITTED-CATALOG-SENTINEL" {
+		t.Errorf("committed catalog was rewritten despite partial discovery:\n%s", body)
+	}
+}
