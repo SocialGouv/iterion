@@ -2613,3 +2613,79 @@ func TestVulnWatch_DependabotLaneUnitsSpendNoConfirmationBudget(t *testing.T) {
 		t.Fatalf("expected exactly 2 lookups (advisory + alerts for the KEV unit), got %v", out["lookups"])
 	}
 }
+
+// Only the first 6 CVEs of a unit are resolved, and that head carries NO
+// signal: poll_advisories stores the set sorted(), so they are the six
+// lowest-numbered ids — the oldest years, not the advisory's subject. The
+// committed comment claimed otherwise. A CERT-FR avis routinely carries more,
+// so the CVE that actually names the affected package can sit past the cut.
+// Unlike the pagination cut there is not even a page-size signal to notice it
+// from: it has to be marked at the source, or an incomplete look renders as a
+// complete answer.
+func TestVulnWatch_ACutCVEListIsNeverAConfidentAnswer(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+
+	// Eight CVEs. Sorted, CVE-2026-7108 lands past the six-CVE head — and it
+	// is the only one naming a package. The head is a product advisory that
+	// legitimately names none, which is what makes the answer look confident.
+	var cves []string
+	for i := 1; i <= 8; i++ {
+		cves = append(cves, fmt.Sprintf("CVE-2026-71%02d", i))
+	}
+	adv := map[string][]map[string]string{
+		"CVE-2026-7101": {}, // indexed, names no package: the deployed-product shape
+		"CVE-2026-7108": {{"ecosystem": "npm", "name": "acme-lib"}},
+	}
+
+	t.Run("no deployed-product claim on evidence never gathered", func(t *testing.T) {
+		h := newVulnWatchHarness(t)
+		h.setAdvisoryPkgs(adv)
+		alerts := []map[string]any{{"key": "avis:CERTFR-2026-AVI-001", "cves": cves,
+			"title": "a CERT-FR avis", "severity": "critical", "project_names": []string{"proj"}}}
+		out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+		if err != nil {
+			t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+		}
+		got, _ := out["alerts"].([]any)
+		vc, _ := got[0].(map[string]any)["version_check"].(string)
+		if vc == "not_a_package" {
+			t.Fatal("the CVE naming the package sits past the cut, yet the unit claims the technology has no package to check — a deployed-product claim on evidence never gathered")
+		}
+		if vc != "unavailable" {
+			t.Fatalf("a cut CVE list must read as unverified, got %q", vc)
+		}
+		if msg := vwRender(t, wf, h, out["alerts"]); strings.Contains(msg, "deployed product") {
+			t.Fatalf("a cut CVE list rendered as a deployed-product claim:\n%s", msg)
+		}
+	})
+
+	// And the same cut must not produce the other confident answer either:
+	// packages resolved from the head, nothing found for them, but a CVE past
+	// the cut could have named a package that IS running somewhere.
+	t.Run("no all-clear on evidence never gathered", func(t *testing.T) {
+		h := newVulnWatchHarness(t)
+		withHead := map[string][]map[string]string{
+			"CVE-2026-7101": {{"ecosystem": "npm", "name": "unused-lib"}},
+			"CVE-2026-7108": {{"ecosystem": "npm", "name": "acme-lib"}},
+		}
+		h.setAdvisoryPkgs(withHead)
+		h.depAlerts.Store([]map[string]any{}) // nothing matches what the head named
+		alerts := []map[string]any{{"key": "avis:CERTFR-2026-AVI-002", "cves": cves,
+			"title": "a CERT-FR avis", "severity": "critical", "project_names": []string{"proj"}}}
+		out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+		if err != nil {
+			t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+		}
+		got, _ := out["alerts"].([]any)
+		vc, _ := got[0].(map[string]any)["version_check"].(string)
+		if vc == "none_found" {
+			t.Fatal("two of the unit's CVEs were never looked at, yet the message reads \"no vulnerable dependency found in the watched orgs\"")
+		}
+		if vc != "unavailable" {
+			t.Fatalf("a cut CVE list must read as unverified, got %q", vc)
+		}
+	})
+}

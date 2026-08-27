@@ -2000,9 +2000,18 @@ tool confirm_versions:
         if a.get('repos'):
             continue
         cves = [c for c in (a.get('cves') or []) if c]
+        ## A CERT-FR avis can carry hundreds of CVEs, so only the head is
+        ## resolved. That head carries NO signal: poll_advisories stores the
+        ## set `sorted()`, so these are just the six lowest-numbered ids — the
+        ## oldest years, not the advisory's subject. Which is exactly why the
+        ## cut has to be REPORTED: if the CVE naming the affected package sits
+        ## at position 7, an unmarked result reads as "this technology has no
+        ## package to check" or as an all-clear, on evidence never gathered.
+        cve_cap = 6
+        truncated_cves = len(cves) > cve_cap
         pkgs = set()
         adv_status = set()
-        for c in cves[:6]:  # a CERT-FR avis can carry hundreds; the head is the subject
+        for c in cves[:cve_cap]:
             p, st = packages_for(c)
             pkgs |= p
             adv_status.add(st)
@@ -2011,11 +2020,13 @@ tool confirm_versions:
             ## of which is about the technology. "The advisory exists and names
             ## no package" IS the deployed-product signal the label was written
             ## for (Metabase, GitLab, a WordPress install). A read that failed,
-            ## was never funded, or matched no indexed advisory says nothing at
-            ## all — dressing that up as "deployed product" states a confident
-            ## fact about the technology derived from a transport error.
+            ## was never funded, matched no indexed advisory, or was never
+            ## reached because the CVE list was cut, says nothing at all —
+            ## dressing any of those up as "deployed product" states a
+            ## confident fact about the technology on no evidence.
             a['version_check'] = ('not_a_package'
-                                  if ('indexed' in adv_status and 'failed' not in adv_status)
+                                  if ('indexed' in adv_status and 'failed' not in adv_status
+                                      and not truncated_cves)
                                   else 'unavailable')
             continue
         confirmable += 1
@@ -2027,9 +2038,10 @@ tool confirm_versions:
         ## version and its dates, and the message showed ONE fix as though it
         ## covered the repository.
         matches = {}
-        ## An advisory read that failed leaves the package set incomplete, so
-        ## whatever the alert lane then finds cannot be a COMPLETE answer.
-        checked, complete = False, ('failed' not in adv_status)
+        ## An advisory read that failed — or a CVE list cut short — leaves the
+        ## package set incomplete, so whatever the alert lane then finds cannot
+        ## be a COMPLETE answer, and an empty one cannot be an all-clear.
+        checked, complete = False, ('failed' not in adv_status and not truncated_cves)
         for org in orgs:
             got, ok = alerts_for(org, names)
             checked = checked or ok
