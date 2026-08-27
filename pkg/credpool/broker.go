@@ -116,6 +116,14 @@ type Grant struct {
 	// must never be logged, persisted in the clear, or returned over an
 	// API.
 	Payload []byte
+	// Fingerprint is the donor credential's stable audit identity — not
+	// the payload's, which token refresh rewrites every few hours for the
+	// same subscription. It is what the borrower's usage-cap meter keys
+	// on, so a donor who reconnects a FRESH subscription opens a fresh
+	// meter instead of inheriting the exhausted readings of the one it
+	// replaced. Empty for a lent API key (the runner hashes the plaintext
+	// it holds) and for donor records that predate stamping.
+	Fingerprint string
 	// RemainingUSD is what was left of the donor's tightest spend cap.
 	// Zero means the donor set no spend cap, NOT "nothing left" — callers
 	// clamping a run budget must treat zero as "no ceiling from the pool".
@@ -385,7 +393,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		}
 	}
 
-	payload, gone, err := b.openCredential(ctx, p, now)
+	payload, fingerprint, gone, err := b.openCredential(ctx, p, now)
 	if err != nil {
 		release()
 		return nil, err
@@ -431,6 +439,7 @@ func (b *Broker) tryPledge(ctx context.Context, pool Pool, p Pledge, req Request
 		DonorID:      p.UserID,
 		Credential:   p.Credential,
 		Payload:      payload,
+		Fingerprint:  fingerprint,
 		RemainingUSD: remaining,
 	}, nil
 }
@@ -448,30 +457,36 @@ func meteredNote(src CredentialSource) string {
 // `gone` reason — rather than an error — when the credential has vanished
 // or died in a way only the donor can fix, so the caller parks the pledge
 // instead of rediscovering it on every launch.
-func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, gone string, err error) {
+//
+// fingerprint is the donor record's stable audit identity, which the
+// borrower's usage-cap meter keys on so a donor who reconnects a fresh
+// subscription is not metered against the one it replaced. Only the OAuth
+// case carries one: an API key IS its own identity, so the runner hashes
+// the plaintext it already holds rather than being told.
+func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (payload []byte, fingerprint, gone string, err error) {
 	switch p.Source {
 	case SourceOAuth:
 		rec, gerr := b.oauth.Get(ctx, p.UserID, secrets.OAuthKind(p.Ref))
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrOAuthNotFound) {
-				return nil, "the connected subscription was disconnected — reconnect it to resume sharing", nil
+				return nil, "", "the connected subscription was disconnected — reconnect it to resume sharing", nil
 			}
-			return nil, "", gerr
+			return nil, "", "", gerr
 		}
 		// An expired token with no way to renew is dead: the refresh worker
 		// skips it, so it will never come back on its own.
 		if rec.NotRefreshable && rec.AccessTokenExpiresAt != nil && !now.Before(*rec.AccessTokenExpiresAt) {
-			return nil, "the connected subscription expired and carries no refresh token — reconnect it to resume sharing", nil
+			return nil, "", "the connected subscription expired and carries no refresh token — reconnect it to resume sharing", nil
 		}
 		pt, oerr := secrets.OpenOAuthPayload(b.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 		if oerr != nil {
-			return nil, "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
+			return nil, "", "", fmt.Errorf("credpool: unseal donated subscription: %w", oerr)
 		}
-		return pt, "", nil
+		return pt, rec.Fingerprint, "", nil
 
 	case SourceAPIKey:
 		if b.apiKeys == nil {
-			return nil, "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
+			return nil, "", "", fmt.Errorf("credpool: no api-key store wired; cannot serve %s", p.Credential)
 		}
 		// GetOwned, not Get: this read runs on the BORROWER's context, in
 		// another tenant than the donor's, and the tenant-scoped Get would
@@ -481,29 +496,29 @@ func (b *Broker) openCredential(ctx context.Context, p Pledge, now time.Time) (p
 		k, gerr := b.apiKeys.GetOwned(ctx, p.KeyID, p.UserID)
 		if gerr != nil {
 			if errors.Is(gerr, secrets.ErrApiKeyNotFound) {
-				return nil, "the lent API key was deleted — pledge another to resume sharing", nil
+				return nil, "", "the lent API key was deleted — pledge another to resume sharing", nil
 			}
-			return nil, "", gerr
+			return nil, "", "", gerr
 		}
 		// A donor lends THEIR OWN key. A team-wide key is the team's to
 		// spend, not one member's to hand to the pool, and a pledge must
 		// never become a way to re-scope somebody else's credential.
 		if k.ScopeUserID == "" || k.ScopeUserID != p.UserID {
-			return nil, "that API key is not yours to lend — pledge a personal key instead", nil
+			return nil, "", "that API key is not yours to lend — pledge a personal key instead", nil
 		}
 		if k.Provider != secrets.Provider(p.Ref) {
-			return nil, "the lent API key no longer matches the pledged provider — pledge it again", nil
+			return nil, "", "the lent API key no longer matches the pledged provider — pledge it again", nil
 		}
 		if k.ExpiresAt != nil && !now.Before(*k.ExpiresAt) {
-			return nil, "the lent API key has expired — pledge a current one to resume sharing", nil
+			return nil, "", "the lent API key has expired — pledge a current one to resume sharing", nil
 		}
 		pt, oerr := secrets.OpenApiKey(b.sealer, k)
 		if oerr != nil {
-			return nil, "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
+			return nil, "", "", fmt.Errorf("credpool: unseal donated api key: %w", oerr)
 		}
-		return pt, "", nil
+		return pt, "", "", nil
 	}
-	return nil, "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
+	return nil, "", "", fmt.Errorf("credpool: unknown credential source %q", p.Source)
 }
 
 // supersedeOpenLeases closes any lease still marked as serving this run.

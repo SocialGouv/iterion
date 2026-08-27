@@ -33,12 +33,25 @@ func processUsageStore() *usagecap.MemStore {
 // A malformed policy is an error rather than an absent cap: every wrong
 // answer here fails open, and a guard silently disabled by a typo is the
 // failure the whole package exists to prevent.
+//
+// The local key carries NO credential fingerprint, unlike the runner's
+// (usagecap.Key's third segment) — deliberately, and not merely because
+// ExecutorSpec has no credential handle here. Locally there is no connect
+// event to stamp a stable identity at: the credential is whatever
+// ~/.claude/.credentials.json holds, and the CLI REWRITES that file on
+// every token refresh. Hashing it would open a new meter every few hours,
+// so no reading would ever accumulate and the cap would go quietly inert —
+// strictly worse than the slot-shaped meter, whose only cost is that an
+// operator who rotates their own credential mid-process reads the replaced
+// account's window until it resets. Closing this properly needs a stable
+// account identity, the same one secrets.SubscriptionFingerprint documents
+// as missing from Anthropic's payload.
 func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 	if spec.UsageGuard != nil {
 		return spec.UsageGuard, nil
 	}
 	store := processUsageStore()
-	key := usagecap.Key("", usagecap.ScopeLocal)
+	key := usagecap.Key("", usagecap.ScopeLocal, "")
 	sink := func(r usagecap.Reading) {
 		// Best effort: an unrecorded reading costs the NEXT run a
 		// pre-flight, never this one its correctness.
@@ -92,7 +105,7 @@ func usagePreflightFrom(src usagecap.PolicySource) (blocked bool, reason string)
 	if !pol.Enabled() {
 		return false, ""
 	}
-	readings, err := processUsageStore().Latest(context.Background(), usagecap.Key("", usagecap.ScopeLocal))
+	readings, err := processUsageStore().Latest(context.Background(), usagecap.Key("", usagecap.ScopeLocal, ""))
 	if err != nil {
 		return false, ""
 	}

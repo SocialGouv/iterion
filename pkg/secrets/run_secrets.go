@@ -48,6 +48,11 @@ type RunBundle struct {
 	// that the runner materialises as a credentials.json /
 	// auth.json before spawning the CLI subprocess.
 	OAuthCredentials map[string][]byte `json:"oauth_credentials,omitempty"`
+	// OAuthFingerprints maps the same kinds to the SUBSCRIPTION's audit
+	// fingerprint (OAuthRecord.Fingerprint) — stable across automatic
+	// token refreshes, re-stamped when a human posts new credentials.
+	// Metering keys on it; empty for records that predate stamping.
+	OAuthFingerprints map[string]string `json:"oauth_fingerprints,omitempty"`
 	// ForgeAppBotLogin is the GitHub-App bot login (e.g.
 	// "iterion-forge-1234[bot]") when the run's forge_token was resolved
 	// from a github_app connection. An installation token can't `GET /user`
