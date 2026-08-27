@@ -1932,7 +1932,12 @@ tool confirm_versions:
         confirmable += 1
         names = set(n for _, n in pkgs)
         cveset = set(cves)
-        hits = {}
+        ## Keyed by (repo, PACKAGE), not by repo: one advisory routinely names
+        ## several packages and a repo can run more than one of them. Keyed by
+        ## repo alone, every match after the first lost its package, its fix
+        ## version and its dates, and the message showed ONE fix as though it
+        ## covered the repository.
+        matches = {}
         ## An advisory read that failed leaves the package set incomplete, so
         ## whatever the alert lane then finds cannot be a COMPLETE answer.
         checked, complete = False, ('failed' not in adv_status)
@@ -1955,17 +1960,36 @@ tool confirm_versions:
                 repo = ((al.get('repository') or {}).get('full_name') or '')
                 if not repo:
                     continue
+                key = (repo, pk.get('name') or '')
+                st = (al.get('state') or '')
+                prev = matches.get(key)
+                ## An OPEN alert wins over a fixed one for the same repo+package
+                ## — still-vulnerable is the actionable truth — and it brings
+                ## its OWN fix version and dates with it. Promoting the state
+                ## alone would date an open exposure from the resolved alert
+                ## that happened to be seen first, and order here is not
+                ## controllable: it follows org iteration and GitHub's sort.
+                if prev is not None and not (st == 'open' and prev['state'] != 'open'):
+                    continue
                 sv = (al.get('security_vulnerability') or {})
-                rec = hits.setdefault(repo, {'repo': repo, 'state': al.get('state') or '',
-                                             'package': pk.get('name') or '',
-                                             'fix': ((sv.get('first_patched_version') or {}) or {}).get('identifier') or '',
-                                             'since': (al.get('created_at') or '')[:10],
-                                             'until': (al.get('fixed_at') or '')[:10]})
-                ## An open alert always wins over a fixed one for the same
-                ## repo: still-vulnerable is the actionable truth.
-                if (al.get('state') or '') == 'open':
-                    rec['state'] = 'open'
-                    rec['until'] = ''
+                matches[key] = {'repo': repo, 'package': key[1], 'state': st,
+                                'fix': ((sv.get('first_patched_version') or {}) or {}).get('identifier') or '',
+                                'since': (al.get('created_at') or '')[:10],
+                                'until': '' if st == 'open' else (al.get('fixed_at') or '')[:10]}
+        ## Group back to ONE record per repository: the operator-facing count is
+        ## repositories, and a repo running two affected packages must not
+        ## inflate it into two findings. A repo with anything still open is an
+        ## open repo, and only its open packages are the actionable part.
+        hits = {}
+        for key in sorted(matches):
+            m = matches[key]
+            g = hits.setdefault(m['repo'], {'repo': m['repo'], 'state': m['state'], 'packages': []})
+            if m['state'] == 'open' and g['state'] != 'open':
+                g['state'], g['packages'] = 'open', []
+            elif g['state'] == 'open' and m['state'] != 'open':
+                continue
+            g['packages'].append({'package': m['package'], 'fix': m['fix'],
+                                  'since': m['since'], 'until': m['until']})
         a['confirmed_repos'] = sorted(hits.values(), key=lambda r: (r['state'] != 'open', r['repo']))
         if hits:
             a['version_check'] = 'confirmed'
@@ -2104,16 +2128,27 @@ tool notify:
                 bits = []
                 for c in group[:12]:
                     who = flat(c.get('repo'), 100)
+                    pks = c.get('packages') or []
                     detail = []
-                    if c.get('fix'):
-                        detail.append('→ ' + flat(c['fix'], 30))
+                    ## Every affected package, not just the first: showing one
+                    ## fix version as though it covered the repository is how an
+                    ## operator patches half of an exposure and files it closed.
+                    for p in pks[:4]:
+                        nm = flat(p.get('package'), 40)
+                        detail.append((nm + ' → ' + flat(p.get('fix'), 30)) if p.get('fix') else nm)
+                    if len(pks) > 4:
+                        detail.append('+' + str(len(pks) - 4) + ' ' + labels['more'])
+                    ## Dates span the repo's matches, so a window can never be
+                    ## borrowed from a different package's alert.
+                    sinces = sorted(x for x in [p.get('since') or '' for p in pks] if x)
+                    untils = sorted(x for x in [p.get('until') or '' for p in pks] if x)
                     if c.get('state') == 'open':
-                        if c.get('since'):
-                            detail.append(labels['open_since'].replace('{since}', flat(c['since'], 10)))
-                    elif c.get('since') and c.get('until'):
+                        if sinces:
+                            detail.append(labels['open_since'].replace('{since}', flat(sinces[0], 10)))
+                    elif sinces and untils:
                         detail.append(labels['fixed_window']
-                                      .replace('{since}', flat(c['since'], 10))
-                                      .replace('{until}', flat(c['until'], 10)))
+                                      .replace('{since}', flat(sinces[0], 10))
+                                      .replace('{until}', flat(untils[-1], 10)))
                     bits.append('`' + who + '`' + ((' ' + ' · '.join(detail)) if detail else ''))
                 extra = len(group) - len(bits)
                 lines.append(heading + ' (' + str(len(group)) + '): ' + ', '.join(bits) +

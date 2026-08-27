@@ -2279,3 +2279,86 @@ func TestVulnWatch_ConfirmedMeansOpen_DismissedAndFixedDoNot(t *testing.T) {
 		t.Fatalf("the open exposure must be the one named as confirmed:\n%s", msg)
 	}
 }
+
+// hits used to be keyed by REPOSITORY alone, with the "open wins over fixed"
+// promotion overwriting only the state. Two defects fell out of that, and
+// neither is controllable by ordering — it follows org iteration and GitHub's
+// own sort:
+//
+//   - a repo whose FIXED alert was seen first, then an open one, kept the
+//     fixed alert's package, fix version and created_at while being stamped
+//     open — an open exposure dated from a resolved one, pointed at the fix
+//     version of possibly another package;
+//   - a repo running TWO simultaneously-affected packages showed only one,
+//     as though that single fix covered the repository.
+//
+// The operator-facing count must nevertheless stay REPOSITORIES: keying by
+// (repo, package) without regrouping would inflate one finding into two.
+func TestVulnWatch_EveryAffectedPackageSurvivesAndTheCountStaysRepos(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7050": {{"ecosystem": "npm", "name": "acme-lib"}, {"ecosystem": "npm", "name": "acme-core"}},
+	})
+	h.depAlerts.Store([]map[string]any{
+		// The FIXED alert first, deliberately: this is the order that used to
+		// date the open exposure from the resolved one.
+		vwAlert("acme/site", "acme-lib", "npm", "CVE-2026-7050", "fixed", "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z", "1.0.9"),
+		vwAlert("acme/site", "acme-lib", "npm", "CVE-2026-7050", "open", "2026-08-01T00:00:00Z", "", "2.0.1"),
+		// A second, simultaneously-open package in the SAME repo.
+		vwAlert("acme/site", "acme-core", "npm", "CVE-2026-7050", "open", "2026-08-02T00:00:00Z", "", "3.1.4"),
+	})
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7050", "cves": []string{"CVE-2026-7050"},
+		"title": "multi-package", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	// What the operator READS is the oracle, so it is checked before the shape.
+	msg := vwRender(t, wf, h, out["alerts"])
+	if strings.Contains(msg, "1.0.9") {
+		t.Fatalf("the open exposure points at the fix version of the RESOLVED alert seen first:\n%s", msg)
+	}
+	if strings.Contains(msg, "2026-01-01") {
+		t.Fatalf("the open exposure is dated from the RESOLVED alert seen first:\n%s", msg)
+	}
+	for _, want := range []string{"acme-lib → 2.0.1", "acme-core → 3.1.4"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("missing %q — half an exposure reads as a whole one:\n%s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "Vulnerable — confirmed (1)") {
+		t.Fatalf("the count must read as repositories, not matches:\n%s", msg)
+	}
+
+	got, _ := out["alerts"].([]any)
+	repos, _ := got[0].(map[string]any)["confirmed_repos"].([]any)
+	if len(repos) != 1 {
+		t.Fatalf("one repository, one finding — got %d: %v", len(repos), repos)
+	}
+	rec, _ := repos[0].(map[string]any)
+	if st, _ := rec["state"].(string); st != "open" {
+		t.Fatalf("the repo is still vulnerable, got state %q", st)
+	}
+	pkgs, _ := rec["packages"].([]any)
+	fixes := map[string]string{}
+	for _, p := range pkgs {
+		m, _ := p.(map[string]any)
+		name, _ := m["package"].(string)
+		fix, _ := m["fix"].(string)
+		fixes[name] = fix
+		if since, _ := m["since"].(string); since == "2026-01-01" {
+			t.Fatalf("%s: the open exposure is dated from the RESOLVED alert seen first", name)
+		}
+	}
+	if fixes["acme-lib"] != "2.0.1" {
+		t.Fatalf("acme-lib must carry the OPEN alert's fix version, got %q", fixes["acme-lib"])
+	}
+	if fixes["acme-core"] != "3.1.4" {
+		t.Fatalf("the second open package was dropped — one fix shown as though it covered the repo: %v", fixes)
+	}
+}
