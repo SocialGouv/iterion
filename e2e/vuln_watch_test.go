@@ -172,17 +172,28 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 			return
 		}
 		byCVE, _ := h.advisoryPkgs.Load().(map[string][]map[string]string)
-		pkgs := byCVE[r.URL.Query().Get("cve_id")]
+		cve := r.URL.Query().Get("cve_id")
+		pkgs, indexed := byCVE[cve]
+		if !indexed {
+			// The real endpoint returns 200 + an EMPTY list for a CVE it has
+			// no advisory for (measured against an unknown CVE id). That is
+			// not the deployed-product answer — it establishes nothing.
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
 		var vulns []map[string]any
 		for _, pk := range pkgs {
 			vulns = append(vulns, map[string]any{"package": map[string]any{
 				"ecosystem": pk["ecosystem"], "name": pk["name"]}})
 		}
+		// A deployed product (Metabase, GitLab, a WordPress install) has no
+		// package in any manifest. Measured on CVE-2023-38646 (Metabase RCE),
+		// the real shape of that answer is ONE advisory whose `vulnerabilities`
+		// array is empty — NOT an empty advisory list. Conflating the two is
+		// what let a "GitHub has never heard of this CVE" read out as a
+		// confident claim about the nature of the technology.
 		if vulns == nil {
-			// A deployed product (Metabase, GitLab, a WordPress install) has
-			// no package in any manifest — an empty answer is a real answer.
-			_ = json.NewEncoder(w).Encode([]map[string]any{})
-			return
+			vulns = []map[string]any{}
 		}
 		_ = json.NewEncoder(w).Encode([]map[string]any{{"vulnerabilities": vulns}})
 	})
@@ -1882,7 +1893,9 @@ func TestVulnWatch_UnverifiableTechnologySaysSoInsteadOfLookingClean(t *testing.
 	}
 	wf := compileFixture(t, "vuln-watch/main.bot")
 	h := newVulnWatchHarness(t)
-	h.setAdvisoryPkgs(map[string][]map[string]string{}) // no package for any CVE
+	// INDEXED, but naming no package — the real shape of the Metabase answer,
+	// and the only one that establishes "deployed product".
+	h.setAdvisoryPkgs(map[string][]map[string]string{"CVE-2026-7003": {}})
 	h.setKEV([]map[string]any{{"cveID": "CVE-2000-0003", "vendorProject": "x",
 		"product": "x", "dateAdded": "2026-01-01"}})
 	h.runWatch(t, wf, false)
@@ -1972,5 +1985,76 @@ func TestVulnWatch_VersionCheckNeverCarriesTheTokenOffOrigin(t *testing.T) {
 	errs, _ := out["errors"].([]any)
 	if len(errs) == 0 {
 		t.Fatalf("the refused redirect must surface as a lookup error, got: %v", out)
+	}
+}
+
+// "GitHub has no advisory indexed for this CVE" and "the advisory exists and
+// names no package" are the same empty package set and COMPLETELY different
+// facts. Only the second says anything about the technology. Deriving the
+// deployed-product claim from the first states a confident fact about what a
+// thing IS out of what the database happens not to hold — and the operator
+// reads that as "checked, nothing to check".
+func TestVulnWatch_UnindexedCVEIsNotADeployedProductClaim(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// No entry at all for the CVE => the endpoint answers 200 + [].
+	h.setAdvisoryPkgs(map[string][]map[string]string{})
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7020", "cves": []string{"CVE-2026-7020"},
+		"title": "unindexed", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	vc, _ := got[0].(map[string]any)["version_check"].(string)
+	if vc != "unavailable" {
+		t.Fatalf("an unindexed CVE must read as unverified, got %q", vc)
+	}
+}
+
+// A transport failure is not a fact about the technology either. Worse, the
+// answer used to be CACHED, so one blip mis-stamped every later unit sharing
+// that CVE for the rest of the run.
+func TestVulnWatch_FailedAdvisoryReadIsNotADeployedProductClaim(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+
+	var hits atomic.Int64
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/advisories") {
+			hits.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer broken.Close()
+
+	// TWO units on the same CVE: the second proves the failure was not cached.
+	alerts := []map[string]any{
+		{"key": "kev:CVE-2026-7021", "cves": []string{"CVE-2026-7021"}, "title": "a",
+			"severity": "critical", "project_names": []string{"proj"}},
+		{"key": "feed:CVE-2026-7021", "cves": []string{"CVE-2026-7021"}, "title": "b",
+			"severity": "critical", "project_names": []string{"proj"}},
+	}
+	out, stderr, err := vwConfirm(t, wf, h, broken.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	for i, g := range got {
+		if vc, _ := g.(map[string]any)["version_check"].(string); vc != "unavailable" {
+			t.Fatalf("alert %d: a failed advisory read must read as unverified, got %q", i, vc)
+		}
+	}
+	if hits.Load() < 2 {
+		t.Fatalf("the failed read was cached (%d attempts): one blip would mis-stamp every later unit on that CVE", hits.Load())
 	}
 }

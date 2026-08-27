@@ -412,7 +412,7 @@ tool plan:
         'confirmed_projects': 'Vulnerable — confirmed',
         'declared_projects': 'Declares this technology — to verify',
         'not_a_package': 'no dependency package to check against (deployed product): version not verifiable automatically',
-        'check_unavailable': 'version check unavailable this run (lookup budget or API error)',
+        'check_unavailable': 'version NOT verified this run (no advisory match, lookup budget or API error) — assume nothing',
         'none_found': 'no vulnerable dependency found in the watched orgs',
         'fixed_window': 'was vulnerable {since} → {until}',
         'open_since': 'since {since}',
@@ -1842,21 +1842,38 @@ tool confirm_versions:
 
     def packages_for(cve):
         ## The advisory database is the authority on WHICH packages a CVE
-        ## affects. A deployed product (Metabase, GitLab, WordPress) resolves
-        ## to no package at all — that is a real answer, not a failure.
+        ## affects — and it answers THREE different things, which the message
+        ## downstream must not collapse into one:
+        ##   * an advisory carrying package mappings -> those packages;
+        ##   * an advisory carrying NONE -> the technology genuinely has no
+        ##     package in any manifest: a deployed product. Measured shape of
+        ##     that answer (CVE-2023-38646, Metabase RCE) is ONE advisory whose
+        ##     `vulnerabilities` array is empty;
+        ##   * an EMPTY advisory list -> GitHub has no advisory indexed for
+        ##     this CVE at all. Establishes nothing; measured on an unknown id.
+        ## Returns (packages, status), status in indexed|not_indexed|failed.
         if cve in adv_cache:
             return adv_cache[cve]
         url = api_base + '/advisories?cve_id=' + quote(cve, safe='')
         data = budgeted(lambda: get(url, tokens.get('*') or next(iter(tokens.values()), '')), 'advisory ' + cve)
+        if not isinstance(data, list):
+            ## A read that failed, was never funded, or came back in a shape
+            ## the endpoint does not document. None of those is an answer —
+            ## and none may be CACHED, or one blip would mis-stamp every later
+            ## unit sharing this CVE for the rest of the run.
+            return (set(), 'failed')
         pkgs = set()
-        for a in (data or []):
+        for a in data:
+            if not isinstance(a, dict):
+                continue
             for v in (a.get('vulnerabilities') or []):
-                pk = (v.get('package') or {})
+                pk = ((v or {}).get('package') or {})
                 name, eco = pk.get('name') or '', (pk.get('ecosystem') or '').lower()
                 if name and eco:
                     pkgs.add((eco, name))
-        adv_cache[cve] = pkgs
-        return pkgs
+        res = (pkgs, 'indexed' if data else 'not_indexed')
+        adv_cache[cve] = res
+        return res
 
     def alerts_for(org, eco, names):
         token = tokens.get(org) or tokens.get('*')
@@ -1872,12 +1889,22 @@ tool confirm_versions:
     for a in alerts:
         cves = [c for c in (a.get('cves') or []) if c]
         pkgs = set()
+        adv_status = set()
         for c in cves[:6]:  # a CERT-FR avis can carry hundreds; the head is the subject
-            pkgs |= packages_for(c)
+            p, st = packages_for(c)
+            pkgs |= p
+            adv_status.add(st)
         if not pkgs:
-            ## Nothing to look up: either the advisory names no package, or the
-            ## lookup budget ran out. Say which, so the message can be honest.
-            a['version_check'] = 'unavailable' if lookups[0] >= max_lookups else 'not_a_package'
+            ## Nothing to look up — and WHY is three different facts, only one
+            ## of which is about the technology. "The advisory exists and names
+            ## no package" IS the deployed-product signal the label was written
+            ## for (Metabase, GitLab, a WordPress install). A read that failed,
+            ## was never funded, or matched no indexed advisory says nothing at
+            ## all — dressing that up as "deployed product" states a confident
+            ## fact about the technology derived from a transport error.
+            a['version_check'] = ('not_a_package'
+                                  if ('indexed' in adv_status and 'failed' not in adv_status)
+                                  else 'unavailable')
             continue
         confirmable += 1
         by_eco = {}
