@@ -1295,6 +1295,13 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		if f.session == ir.SessionFork {
 			task.ForkSession = true
 		}
+		// Best-effort modes: the id resolved, but its backing state may be
+		// gone (a cloud resume replaced the sandbox container and the CLI's
+		// session files with it). Mark the session droppable so the
+		// executor can degrade to fresh instead of failing the node forever.
+		if f.session == ir.SessionInheritIfAvailable || f.session == ir.SessionPersist {
+			task.SessionOptional = true
+		}
 		// Forward the provider fingerprint that produced the parent
 		// session so the backend can detect cross-provider forks
 		// (which fail with 400 "Invalid signature in thinking block"

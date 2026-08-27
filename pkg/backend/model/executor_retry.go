@@ -836,6 +836,37 @@ func (e *ClawExecutor) dispatchChain(
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
+		// Best-effort session degrade (inherit_if_available / persist): the
+		// upstream session id resolved, but its backing state can be gone —
+		// a cloud resume replaces the sandbox container and a CLI backend's
+		// session files die with it, after which every resume of this node
+		// fails identically (lived on branch-improve-loop's plan_revise:
+		// error_during_execution in ~2.6s, forever). "If available" covers
+		// that too: retry ONCE with the session dropped, loudly. Only for
+		// execution-shaped failures — an auth/usage-window/unavailable
+		// failure is credential- or model-level and a fresh session would
+		// hit the same wall.
+		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" {
+			switch delegate.ClassifyFallback(err, isDelegateRetryable(err)) {
+			case delegate.FallbackUnclassified, delegate.FallbackTransientExhausted:
+				if e.logger != nil {
+					e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
+						nodeID, LoopIterationFromContext(ctx), backendName, task.SessionID, err)
+				}
+				spent.add(result)
+				fresh := *task
+				fresh.SessionID = ""
+				fresh.ForkSession = false
+				fresh.SessionFingerprint = ""
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+					return backend.Execute(ctx, fresh)
+				})
+				if freshErr == nil {
+					task = &fresh
+				}
+				result, err = freshResult, freshErr
+			}
+		}
 		if err == nil {
 			return chainOutcome{
 				Result:      spent.applyTo(result),
