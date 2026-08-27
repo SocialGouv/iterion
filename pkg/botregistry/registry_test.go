@@ -470,6 +470,19 @@ chat:
 	}
 }
 
+func TestEnsureNameFree_NormalizedNameCollision(t *testing.T) {
+	// A bot created as "my_bot" while "my-bot" exists would be permanently
+	// shadowed by discovery's normalized dedupe and unreachable by its own
+	// name — the precondition must refuse it like an exact collision.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "my-bot", "manifest.yaml"), "name: my-bot\n")
+	writeFile(t, filepath.Join(dir, "my-bot", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "my_bot"); !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("err = %v, want ErrNameTaken for the normalized collision", err)
+	}
+}
+
 func TestDiagForName_OnlyBotSourcesClaimNames(t *testing.T) {
 	dir := t.TempDir()
 	// A malformed bundle whose DIRECTORY NAME carries a dot: the

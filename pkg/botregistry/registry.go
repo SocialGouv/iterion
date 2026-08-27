@@ -227,8 +227,12 @@ func EnsureNameFree(opts ListOptions, name string) error {
 	if err != nil {
 		return err
 	}
+	// Normalize like ResolveBotPath and the cross-root dedupe do: a bot
+	// created as "my_bot" while "my-bot" exists would be permanently
+	// shadowed by the dedupe and unreachable by its own name.
+	nn := NormalizeName(name)
 	for _, existing := range entries {
-		if existing.Name == name {
+		if NormalizeName(existing.Name) == nn {
 			return fmt.Errorf("%w: %q is already defined at %s", ErrNameTaken, name, existing.Path)
 		}
 	}
