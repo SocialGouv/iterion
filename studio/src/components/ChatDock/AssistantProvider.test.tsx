@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +12,7 @@ import { getDefaultRunStore, useRunStoreInstance } from "@/store/run";
 import {
   AssistantProvider,
   AssistantStoreScope,
+  useAssistantDock,
   useAssistantFixedInsetPx,
   useAssistantReservedWidthPx,
   useAssistantSession,
@@ -40,24 +42,26 @@ vi.mock("@/hooks/useChatRegistry", () => ({
 
 // The real hook opens a websocket and lists runs on mount; none of that
 // is what this file is about.
+const idleSession = vi.hoisted(() => ({
+  status: "idle" as const,
+  runId: null,
+  messages: [],
+  busyMessageId: null,
+  runStatus: null,
+  errorMessage: null,
+  lastVars: null,
+  discoveryError: null,
+  retryDiscovery: () => {},
+  sessionRepo: null,
+  launchRepo: null,
+  launch: async () => {},
+  submitHumanAnswer: async () => {},
+  newSession: () => {},
+  resume: async () => {},
+}));
+
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
-  useWhatsNextSession: () => ({
-    status: "idle",
-    runId: null,
-    messages: [],
-    busyMessageId: null,
-    runStatus: null,
-    errorMessage: null,
-    lastVars: null,
-    discoveryError: null,
-    retryDiscovery: () => {},
-    sessionRepo: null,
-    launchRepo: null,
-    launch: async () => {},
-    submitHumanAnswer: async () => {},
-    newSession: () => {},
-    resume: async () => {},
-  }),
+  useWhatsNextSession: () => idleSession,
 }));
 
 const FAKE_BOT = {
@@ -133,6 +137,42 @@ describe("AssistantProvider run-store isolation", () => {
       </AssistantStoreScope>,
     );
     expect(screen.getByTestId("orphan").textContent).toBe("default");
+  });
+});
+
+let appMounts = 0;
+
+function AppMountMarker() {
+  const [n] = useState(() => {
+    appMounts += 1;
+    return appMounts;
+  });
+  return <span data-testid="app-mounts">{n}</span>;
+}
+
+function OpenConversationButton() {
+  const dock = useAssistantDock();
+  return (
+    <button type="button" data-testid="open-convo" onClick={() => dock?.openConversation()}>
+      open
+    </button>
+  );
+}
+
+describe("the session key does not remount the app", () => {
+  // ActiveConversation used to key the whole authenticated tree. Opening a
+  // conversation (or hydrating the dock bot) remounted every route.
+  it("keeps a child mounted when a new conversation is opened", () => {
+    appMounts = 0;
+    render(
+      <AssistantProvider>
+        <AppMountMarker />
+        <OpenConversationButton />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("app-mounts").textContent).toBe("1");
+    fireEvent.click(screen.getByTestId("open-convo"));
+    expect(screen.getByTestId("app-mounts").textContent).toBe("1");
   });
 });
 

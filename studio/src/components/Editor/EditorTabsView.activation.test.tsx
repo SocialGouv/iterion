@@ -30,9 +30,10 @@ vi.mock("@/components/Home/RecentFilesPanel", () => ({
 }));
 
 let search = "";
+const loc = vi.hoisted(() => ({ setLocation: vi.fn() }));
 vi.mock("wouter", () => ({
   useSearch: () => search,
-  useLocation: () => ["/editor", vi.fn()],
+  useLocation: () => ["/editor", loc.setLocation],
   Link: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }));
 
@@ -47,6 +48,7 @@ function tabsSnapshot() {
 beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
   search = "";
+  loc.setLocation.mockClear();
 });
 
 afterEach(cleanup);
@@ -94,5 +96,22 @@ describe("the URL decides which editor tab is on screen", () => {
     render(<EditorTabsView />);
     expect(tabsSnapshot().active).toEqual({ file: "bots/demo/main.bot" });
     expect(screen.queryByText("Draft")).toBeNull();
+  });
+
+  // Saving a draft used to add `file` while leaving `draft` on the tab
+  // AND on the URL. paramsEqual then missed `{draft, file}` vs `{draft}`
+  // and the effect opened a second "Draft" tab that stole focus.
+  it("does not spawn a second Draft tab when that draft is saved as a file", () => {
+    search = "?draft=run-new";
+    const { rerender } = render(<EditorTabsView />);
+    const id = useTabsStore.getState().activeEditorTabId;
+    expect(id).toBeTruthy();
+    useTabsStore.getState().bindFile(id!, "bots/foo/main.bot");
+    rerender(<EditorTabsView />);
+    expect(tabsSnapshot().count).toBe(1);
+    expect(useTabsStore.getState().tabs[0]?.params).toEqual({
+      draft: "run-new",
+      file: "bots/foo/main.bot",
+    });
   });
 });

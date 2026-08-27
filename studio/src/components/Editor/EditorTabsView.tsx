@@ -54,23 +54,38 @@ export default function EditorTabsView() {
   }, [search]);
 
   // URL → tab: when `?file=X` is present, ensure the matching editor
-  // tab exists and is active. Idempotent on repeat because openTab
-  // focuses an existing tab with the same params. When the URL is
-  // bare `/editor` and no tabs exist, the empty-state view (below)
-  // takes over and presents the picker instead of an empty editor.
+  // tab exists and is active. Match on the file key alone — a draft tab
+  // that was saved-as carries both `draft` and `file`, and paramsEqual
+  // against `{file}` would miss it and open a duplicate.
   useEffect(() => {
     if (!fileParam) return;
+    const existing = tabs.find((t) => t.params.file === fileParam);
+    if (existing) {
+      ensureActive(existing.id);
+      return;
+    }
     ensureActive(useTabsStore.getState().openTab("editor", { file: fileParam }));
   }, [fileParam, tabs, activeTabId]);
 
-  // Same contract as `?file=`: idempotent, because openTab focuses an
-  // existing tab carrying identical params rather than opening a second one.
+  // Same contract as `?file=`, keyed on `draft` so a tab that has since
+  // been bound to a file (`{draft, file}`) is still THIS draft, not a
+  // second "Draft" tab. Once bound, rewrite the URL to `?file=` so the
+  // file effect owns the rest of the session.
   useEffect(() => {
     if (!draftParam || fileParam) return;
+    const existing = tabs.find((t) => t.params.draft === draftParam);
+    if (existing) {
+      ensureActive(existing.id);
+      const file = existing.params.file;
+      if (file) {
+        setLocation(`/editor?file=${encodeURIComponent(file)}`, { replace: true });
+      }
+      return;
+    }
     ensureActive(
       useTabsStore.getState().openTab("editor", { draft: draftParam }, "Draft"),
     );
-  }, [draftParam, fileParam, tabs, activeTabId]);
+  }, [draftParam, fileParam, tabs, activeTabId, setLocation]);
 
   // The invariant both effects above keep: if the URL names a document, ITS
   // tab is the one on screen.

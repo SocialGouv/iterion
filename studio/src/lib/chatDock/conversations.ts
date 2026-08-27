@@ -119,6 +119,24 @@ export function dedupeRunIds(list: readonly Conversation[]): Conversation[] {
 }
 
 /**
+ * switchConversationBot retargets a tab onto another bot and drops the
+ * run it owned. The previous bot's runId would otherwise be attached as
+ * if it belonged to the new bot — transcript and steering both leak.
+ */
+export function switchConversationBot(
+  list: readonly Conversation[],
+  id: string,
+  botId: string,
+): Conversation[] {
+  return list.map((c) => {
+    if (c.id !== id) return c;
+    const next: Conversation = { ...c, botId, fresh: true };
+    delete next.runId;
+    return next;
+  });
+}
+
+/**
  * claimRun records the run a conversation launched, refusing a run another
  * conversation already owns. The write-side half of the same invariant: the
  * session hook can still be handed a neighbour's run (a legacy conversation
