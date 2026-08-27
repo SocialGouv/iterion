@@ -142,16 +142,15 @@ func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
 	// forms ("kimi-code/kimi-for-coding"). Only the trailing component
 	// is a model id, and pricing is the same across regions for the
 	// providers tracked here.
-	if i := strings.LastIndex(model, "/"); i >= 0 {
-		model = model[i+1:]
-	}
+	prefix, bare := splitModelSpec(model)
 	// Second: iterion's own aggregator. It has carried published rates in
 	// its cache since ADR-042 while this function priced from a table
 	// alone — so a model models.dev knew the price of could still report
 	// no cost at all.
-	if in, out, ok := specRate(model); ok {
+	if in, out, ok := specRate(prefix, bare); ok {
 		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0
 	}
+	model = bare
 	// Fallback: the static table below. Used on cold starts (no cache
 	// populated) and for any model neither live source has shipped.
 	p, ok := modelPriceTable[model]
@@ -161,15 +160,38 @@ func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0
 }
 
+// splitModelSpec separates a model string's leading component from its model
+// id. The leading component is whatever the caller put there — a provider
+// ("anthropic/claude-opus-5"), a backend ("kimi-code/kimi-for-coding"), or a
+// provider plus a region ("anthropic/eu/claude-opus-5"). It is passed to the
+// registry as a provider HINT, never as a claim: the registry falls back to
+// its bare index when the qualified key misses, so a backend name in that
+// position costs nothing.
+func splitModelSpec(model string) (prefix, bare string) {
+	i := strings.LastIndex(model, "/")
+	if i < 0 {
+		return "", model
+	}
+	return model[:i], model[i+1:]
+}
+
 // specLookup is the aggregator seam, a package var so tests swap in a fixture
 // instead of resolving against whatever the host's ~/.iterion cache last
 // fetched. Production wiring is the process-wide registry.
-var specLookup = func(bareModel string) (modelspecs.Spec, bool) {
-	return modelspecs.Default().LookupBare(bareModel)
+//
+// It goes through the QUALIFIED lookup, which tries "provider/model" before
+// the bare index. That ordering is what keeps the tier useful on the models
+// most likely to be run: the bare index is consensus-filtered, so it reports
+// UNKNOWN as soon as two publishers quote different rates — while the
+// provider's own entry holds the right number. Resolving claude-opus-5 by the
+// bare index alone would drop it to the static table the moment a second
+// publisher listed it.
+var specLookup = func(provider, bareModel string) (modelspecs.Spec, bool) {
+	return modelspecs.Default().Lookup(provider, bareModel)
 }
 
-// specRate returns the aggregator's published pair for a bare model id, and
-// whether it is usable.
+// specRate returns the aggregator's published pair for a model, and whether it
+// is usable.
 //
 // USABLE MEANS BOTH RATES POSITIVE. The two are published and
 // consensus-filtered independently, so a half-known pair is routine, and taking
@@ -178,8 +200,8 @@ var specLookup = func(bareModel string) (modelspecs.Spec, bool) {
 // cost while a run burned real money. A half-published pair therefore falls
 // through WHOLE to the static table: mixing one rate from the aggregator with
 // the other from the table would produce a figure traceable to neither source.
-func specRate(bareModel string) (inputPerM, outputPerM float64, ok bool) {
-	spec, found := specLookup(bareModel)
+func specRate(provider, bareModel string) (inputPerM, outputPerM float64, ok bool) {
+	spec, found := specLookup(provider, bareModel)
 	if !found || spec.InputCostPerM <= 0 || spec.OutputCostPerM <= 0 {
 		return 0, 0, false
 	}

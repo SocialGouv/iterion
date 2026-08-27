@@ -84,11 +84,16 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 // branch to take; inventing one would report another vendor's answer as this
 // model's. The aggregator's bare index is consensus-filtered across publishers,
 // so the numbers below are the fields it can honestly supply.
+// It is a plain Go value, not a wire type — every caller projects it onto its
+// own response shape — so it carries no JSON tags to imply otherwise.
 type BareModelSpec struct {
-	Model           string `json:"model"`
-	Found           bool   `json:"found"`
-	ContextWindow   int    `json:"context_window"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
+	Model string
+	// Found is false when the aggregator has no entry. The zero fields below
+	// then mean "nothing known", which is the same thing every zero in this
+	// area means: unknown, never none.
+	Found           bool
+	ContextWindow   int
+	MaxOutputTokens int
 	InputCostPerM   float64
 	OutputCostPerM  float64
 }

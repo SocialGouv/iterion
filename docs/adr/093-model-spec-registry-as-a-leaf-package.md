@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-08-27
 - **Authors**: Claude
-- **Completes**: [ADR-042](042-dynamic-model-specs.md)
+- **Completes**: [ADR-042](042-dynamic-model-specs-curated-fallback-async-fetch.md)
 - **Code**:
   [pkg/backend/modelspecs/modelspecs.go](../../pkg/backend/modelspecs/modelspecs.go)
   (`Registry`, `Default`, `SetDefault`, `NewSeeded`),
@@ -63,6 +63,15 @@ isolation mechanism the code had.
 static table.** Claw keeps precedence, so no run's charged rate moves because
 iterion started reading its own aggregator. The table remains the offline
 last-known-good.
+
+The estimator resolves QUALIFIED-first (`provider/model`, then the bare
+index), because the bare index is consensus-filtered: it reports UNKNOWN as
+soon as two publishers quote different rates, while the provider's own entry
+holds the right number. A bare-only lookup would drop a model to the static
+table the moment a second publisher listed it — the common case for anything
+popular. The leading component of a model string is passed as a provider
+HINT, never a claim: a backend name in that position (`kimi-code/…`) simply
+misses the qualified key and falls to the bare one.
 
 **4. A published pair is used only when BOTH rates are positive.** The two
 are parsed independently and zeroed independently by the consensus filter, so
