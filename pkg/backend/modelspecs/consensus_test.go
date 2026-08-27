@@ -1,4 +1,4 @@
-package model
+package modelspecs
 
 import "testing"
 
@@ -15,7 +15,7 @@ func boolPtr(b bool) *bool { return &b }
 // These tests pin both halves of the fix: the grouping is deterministic, and
 // disagreement resolves to UNKNOWN instead of to an arbitrary winner.
 func TestBareIndexIsDeterministicAcrossBuilds(t *testing.T) {
-	flat := map[string]fetchedSpec{
+	flat := map[string]Spec{
 		"zai/glm-5.2":        {ContextWindow: 1_000_000, InputCostPerM: 0.50, OutputCostPerM: 2.20, Reasoning: boolPtr(true)},
 		"novita/glm-5.2":     {ContextWindow: 1_000_000, InputCostPerM: 1.44, OutputCostPerM: 4.53, Reasoning: boolPtr(true)},
 		"deepinfra/glm-5.2":  {ContextWindow: 1_000_000, InputCostPerM: 1.10, OutputCostPerM: 3.85, Reasoning: boolPtr(true)},
@@ -23,9 +23,9 @@ func TestBareIndexIsDeterministicAcrossBuilds(t *testing.T) {
 		"anthropic/claude-x": {ContextWindow: 200_000, InputCostPerM: 3, OutputCostPerM: 15, Reasoning: boolPtr(true)},
 	}
 
-	var first fetchedSpec
+	var first Spec
 	for i := 0; i < 50; i++ {
-		r := &specRegistry{}
+		r := &Registry{}
 		r.indexLocked(flat)
 		got := r.byModel["glm-5.2"]
 		if i == 0 {
@@ -39,14 +39,14 @@ func TestBareIndexIsDeterministicAcrossBuilds(t *testing.T) {
 }
 
 func TestConsensusKeepsAgreementAndDropsConflict(t *testing.T) {
-	flat := map[string]fetchedSpec{
+	flat := map[string]Spec{
 		// Four providers agree on the context window and on reasoning, and
 		// disagree on price. Price must vanish; the rest must survive.
 		"zai/glm-5.2":       {ContextWindow: 1_000_000, InputCostPerM: 0.50, OutputCostPerM: 2.20, Reasoning: boolPtr(true), ToolCall: boolPtr(true)},
 		"novita/glm-5.2":    {ContextWindow: 1_000_000, InputCostPerM: 1.44, OutputCostPerM: 4.53, Reasoning: boolPtr(true), ToolCall: boolPtr(true)},
 		"deepinfra/glm-5.2": {ContextWindow: 1_000_000, InputCostPerM: 1.10, OutputCostPerM: 3.85, Reasoning: boolPtr(true), ToolCall: boolPtr(false)},
 	}
-	r := &specRegistry{}
+	r := &Registry{}
 	r.indexLocked(flat)
 	got := r.byModel["glm-5.2"]
 
@@ -68,10 +68,10 @@ func TestConsensusKeepsAgreementAndDropsConflict(t *testing.T) {
 // A single provider is not a disagreement — the common case must pass through
 // untouched, or the fix would blind the index it was meant to repair.
 func TestSingleProviderPassesThrough(t *testing.T) {
-	flat := map[string]fetchedSpec{
+	flat := map[string]Spec{
 		"anthropic/claude-opus-5": {ContextWindow: 1_000_000, InputCostPerM: 5, OutputCostPerM: 25, Reasoning: boolPtr(true)},
 	}
-	r := &specRegistry{}
+	r := &Registry{}
 	r.indexLocked(flat)
 
 	bare := r.byModel["claude-opus-5"]
@@ -90,12 +90,12 @@ func TestSingleProviderPassesThrough(t *testing.T) {
 // rule would erase every multi-provider model, including the Claude family,
 // where all publishers quote the same vendor price.
 func TestUnanimousProvidersStillResolve(t *testing.T) {
-	flat := map[string]fetchedSpec{
+	flat := map[string]Spec{
 		"anthropic/claude-opus-5":      {ContextWindow: 1_000_000, InputCostPerM: 5, OutputCostPerM: 25, Reasoning: boolPtr(true)},
 		"azure/claude-opus-5":          {ContextWindow: 1_000_000, InputCostPerM: 5, OutputCostPerM: 25, Reasoning: boolPtr(true)},
 		"github-copilot/claude-opus-5": {ContextWindow: 1_000_000, InputCostPerM: 5, OutputCostPerM: 25, Reasoning: boolPtr(true)},
 	}
-	r := &specRegistry{}
+	r := &Registry{}
 	r.indexLocked(flat)
 	got := r.byModel["claude-opus-5"]
 	if got.InputCostPerM != 5 || got.OutputCostPerM != 25 {
@@ -111,21 +111,21 @@ func TestUnanimousProvidersStillResolve(t *testing.T) {
 // cached but never surfaced: nothing downstream could have caught a regression
 // where disagreeing providers hand a caller one publisher's completion cap.
 func TestConsensusMaxOutputTokens(t *testing.T) {
-	agree := map[string]fetchedSpec{
+	agree := map[string]Spec{
 		"anthropic/claude-opus-5": {MaxOutputTokens: 64_000},
 		"azure/claude-opus-5":     {MaxOutputTokens: 64_000},
 	}
-	r := &specRegistry{}
+	r := &Registry{}
 	r.indexLocked(agree)
 	if got := r.byModel["claude-opus-5"].MaxOutputTokens; got != 64_000 {
 		t.Errorf("unanimous max output = %d, want 64000", got)
 	}
 
-	disagree := map[string]fetchedSpec{
+	disagree := map[string]Spec{
 		"zai/glm-5.2":    {MaxOutputTokens: 128_000},
 		"novita/glm-5.2": {MaxOutputTokens: 32_000},
 	}
-	r2 := &specRegistry{}
+	r2 := &Registry{}
 	r2.indexLocked(disagree)
 	if got := r2.byModel["glm-5.2"].MaxOutputTokens; got != 0 {
 		t.Errorf("conflicting max output = %d, want 0 (unknown, not one publisher's cap)", got)
