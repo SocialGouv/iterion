@@ -40,7 +40,7 @@ func sessionDegradeExecutor(fail error) (*ClawExecutor, *sessionPickyBackend, []
 	return e, be, []chainElement{{Label: "primary"}}
 }
 
-func sessionDegradeBuilder(e *ClawExecutor, optional bool) func(context.Context, string) (*delegate.Task, error) {
+func sessionDegradeBuilder(optional bool) func(context.Context, string) (*delegate.Task, error) {
 	return func(_ context.Context, _ string) (*delegate.Task, error) {
 		return &delegate.Task{
 			NodeID:          "plan_revise",
@@ -59,7 +59,7 @@ func sessionDegradeBuilder(e *ClawExecutor, optional bool) func(context.Context,
 // in ~2.6s on every resume, run wedged).
 func TestOptionalSessionDegradesToFresh(t *testing.T) {
 	e, be, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	out, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestOptionalSessionDegradesToFresh(t *testing.T) {
 // continuity unconditionally — a failure keeps failing loudly.
 func TestRequiredSessionDoesNotDegrade(t *testing.T) {
 	e, be, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, false))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(false))
 
 	if _, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build); err == nil {
 		t.Fatal("required session must not degrade to fresh")
@@ -100,7 +100,7 @@ func TestRequiredSessionDoesNotDegrade(t *testing.T) {
 // the typed error must surface promptly instead of paying a blind retry.
 func TestOptionalSessionAuthFailureDoesNotDegrade(t *testing.T) {
 	e, be, chain := sessionDegradeExecutor(&delegate.ErrAuthFailed{Provider: delegate.BackendClaudeCode, Detail: "401"})
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	_, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build)
 	if err == nil {
@@ -135,7 +135,7 @@ func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
 	ctx := withRuntimeContext(context.Background(), runID, sessions)
 
 	e, _, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
-	build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	if _, err := e.dispatchChain(ctx, nodeID, chain, "claude-opus-5", build); err != nil {
 		t.Fatalf("optional session should degrade to fresh, got: %v", err)
@@ -154,7 +154,7 @@ func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
 func TestOptionalSessionTransientFailureDoesNotDegrade(t *testing.T) {
 	e, be, chain := sessionDegradeExecutor(&delegate.ErrTransient{Reason: "upstream 503"})
 	e.retry.MaxAttempts = 1 // exhaust the budget on the first call
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	if _, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build); err == nil {
 		t.Fatal("a transient provider failure must surface, not degrade the session")
@@ -184,7 +184,7 @@ func TestOptionalSessionDegradeIsRunVisible(t *testing.T) {
 		OnSessionDegraded: func(_ string, info SessionDegradedInfo) { seen = append(seen, info) },
 	})
 	chain := []chainElement{{Label: "primary"}}
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	out, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build)
 	if err != nil {
@@ -272,7 +272,7 @@ func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
 	reg := delegate.NewRegistry()
 	reg.Register(delegate.BackendClaudeCode, be)
 	e := newFallbackExecutor(reg, EventHooks{})
-	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(true))
 
 	out, err := e.dispatchChain(ctx, "plan_revise", []chainElement{{Label: "primary"}}, "claude-opus-5", build)
 	if err == nil {
@@ -313,7 +313,7 @@ func TestOptionalSessionDegradeSkipsBackendsThatIgnoreTheID(t *testing.T) {
 			reg := delegate.NewRegistry()
 			reg.Register(backendName, be)
 			e := newFallbackExecutor(reg, EventHooks{})
-			build := e.newElementBuilder(nodeID, backendName, nil, sessionDegradeBuilder(e, true))
+			build := e.newElementBuilder(nodeID, backendName, nil, sessionDegradeBuilder(true))
 
 			if _, err := e.dispatchChain(ctx, nodeID, []chainElement{{Label: "primary"}}, "some-model", build); err == nil {
 				t.Fatal("a backend that ignores the session id cannot be rescued by dropping it")
