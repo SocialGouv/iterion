@@ -23,6 +23,8 @@
 ##     -> page_lint -> gate
 ##   gate --(converged)--> mr_gate -> forge_auth_probe -> finalize_mr
 ##   gate --> scan_hints            (continuation_loop, max_passes)
+##   …every tail outcome -> publish_gate --(publish)--> publish
+##     -> verify_publish -> surface_site_link -> done
 ##
 ##   catalog_ingest — DETERMINISTIC. Parses the product catalog YAML,
 ##                    resolves the product entry, shallow-clones every
@@ -213,6 +215,35 @@ vars:
   mr_base: string = ""
   source_issue_ref: string = ""
 
+  ## ─── Publication (opt-in) ─────────────────────────────────────
+  ## publish=true converts the product docs into a static site
+  ## (GitBook blocks → MkDocs Material), pushes it to the SSP Cloud
+  ## datalab S3 bucket and verifies the public URL served by the
+  ## standing serve service. The platform HOW lives in the
+  ## org-private `deploy-onyxia-sspcloud` skill the publish agent
+  ## loads explicitly — swap deploy target by swapping that skill.
+  publish: bool = false
+
+  ## Base URL of the standing serve service (its user-port ingress),
+  ## e.g. https://user-devthejo-918000-user.user.lab.sspcloud.fr.
+  ## Required when publish=true: publish_gate refuses to enter the
+  ## tail without it.
+  publish_base_url: string = ""
+
+  ## URL path segment of the published site; empty = the product id.
+  publish_site: string = ""
+
+  ## The target bucket names a deployment, never a person: no default.
+  ## publish_gate refuses the tail when it is empty.
+  publish_s3_bucket: string = ""
+  publish_s3_prefix: string = "sites"
+
+  ## Ref of SocialGouv/iterion the publish agent fetches the
+  ## GitBook→MkDocs converter from (raw URL). Defaults to main (where
+  ## the converter lives once this bundle is merged); pin a tag/SHA for
+  ## reproducible deployments.
+  publish_tools_ref: string = "main"
+
 secrets:
   ## Forge access: cloning the SOURCE repositories (private ones need
   ## it), pushing the docs branch, opening the PR, back-linking the
@@ -221,6 +252,22 @@ secrets:
   ## prompt, or the run's events. optional:true so a public-source /
   ## host-authenticated setup works unchanged.
   forge_token:
+    as: file
+    optional: true
+
+  ## SSP Cloud datalab S3 (Onyxia STS) — the publish tail's push
+  ## credentials, one value per file (see the deploy-onyxia-sspcloud
+  ## skill). optional:true so every non-publishing run works
+  ## unchanged; publish_gate routes the tail out cleanly when they
+  ## are absent. They are STS tokens with a ~7-day expiry — the
+  ## publish agent reports expiry per the skill instead of retrying.
+  onyxia_s3_access_key:
+    as: file
+    optional: true
+  onyxia_s3_secret_key:
+    as: file
+    optional: true
+  onyxia_s3_session_token:
     as: file
     optional: true
 
@@ -613,6 +660,59 @@ prompt finalize_mr_user:
   back-link when a source issue is given, and return the structured
   result.
 
+## ─── Publication prompts (opt-in) ───────────────────────────────
+
+prompt publish_system:
+  You are the PUBLISH phase of a functional-documentation bot. The
+  docs corpus in this workspace has already been written, gated and
+  committed — your only job is to turn it into a static site and put
+  it live, then report the URL.
+
+  The PLATFORM playbook — where to push, with which credentials, how
+  to verify — is the `deploy-onyxia-sspcloud` skill in
+  .claude/skills/. Read it FIRST and follow it exactly: every
+  constraint in it was paid for.
+
+  Hard rules:
+  - Secrets are used BY REFERENCE only (command substitution from
+    their mounted files, per the skill). Never cat/echo/print a
+    secret value, never place one on a command line.
+  - Do NOT modify the documentation tree, the git state, or anything
+    outside your scratch build directory. You build and you push to
+    object storage; nothing else.
+  - Fail honestly: if a step cannot succeed (missing tool, expired
+    credentials, unreachable endpoint), stop, set deployed=false and
+    say exactly what failed and what the operator should do. Never
+    fabricate a URL and never report success you did not verify.
+
+prompt publish_user:
+  Product: {{input.product_id}}
+  Docs tree (GitBook-flavoured markdown): {{input.product_dir}}
+  Site slug: {{input.site}} (empty means: use the product id)
+  Serve-service base URL: {{input.base_url}}
+  S3 bucket/prefix: {{input.s3_bucket}}/{{input.s3_prefix}}
+
+  Step 1 — BUILD the static site in a scratch dir OUTSIDE the docs
+  tree (e.g. /tmp/iterion-scratch/publish):
+  - Fetch the converter (pinned ref {{input.tools_ref}}):
+    https://raw.githubusercontent.com/SocialGouv/iterion/{{input.tools_ref}}/bots/product-docs/deploy/gitbook_to_mkdocs.py
+  - python3 -m venv + pip install 'mkdocs-material' 'mkdocs>=1.6,<2'
+  - Run the converter: --src {{input.product_dir}} --out <scratch>
+    --site-name from the docs README title (fallback: the product
+    id), --site-url {{input.base_url}}/<site>/
+  - mkdocs build from <scratch> (config the converter generated).
+    A converter or build FAILURE is a stop-and-report, not something
+    to patch around: the converter fails closed on constructs it
+    does not know, and that is a finding to surface.
+
+  Step 2 — DEPLOY the built site and VERIFY the live URL, exactly as
+  the deploy-onyxia-sspcloud skill prescribes (tooling, bucket
+  guard, mirror, poll, content check).
+
+  Return JSON: {"deployed": bool, "url": "<live url or empty>",
+  "summary": "<what was built and pushed, page count, or the honest
+  failure and its remedy>"}
+
 ## ─── Schemas ────────────────────────────────────────────────────
 
 ## catalog_ingest output — the resolved product + the source
@@ -767,6 +867,41 @@ schema finalize_mr_output:
   summary: string
 
 schema surface_pr_link_input:
+  url: string
+
+## ─── Publication schemas (opt-in) ───────────────────────────────
+
+## publish_gate output — deterministic "can we publish?" so the
+## publish agent is only ever entered when the var opt-in, the serve
+## base URL and all three S3 secrets are actually present.
+schema publish_gate_output:
+  do_publish: bool
+  reason: string
+
+schema publish_input:
+  product_id: string
+  product_dir: string
+  site: string
+  base_url: string
+  s3_bucket: string
+  s3_prefix: string
+  tools_ref: string
+
+schema publish_output:
+  deployed: bool
+  url: string
+  summary: string
+
+schema verify_publish_input:
+  url: string
+  base_url: string
+
+schema verify_publish_output:
+  verified: bool
+  url: string
+  detail: string
+
+schema surface_site_link_input:
   url: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
@@ -1719,6 +1854,101 @@ if u:
     print('[iterion] preview_url=' + u + ' kind=pr scope=external')
 "`
 
+## ─── Nodes : publication tail (opt-in) ──────────────────────────
+
+## publish_gate — DETERMINISTIC pre-flight for the publish tail.
+## publish is an LLM agent; entering it with no opt-in, no serve URL
+## or no S3 credentials burns a turn to rediscover in shell what a
+## 10-line probe already knows. Read-only, idempotent.
+tool publish_gate:
+  ## Secret paths come from the TEMPLATE ({{secrets.X.path}}), which the
+  ## engine resolves for sandboxed AND host runs alike — a hardcoded
+  ## /run/iterion/secrets/ only exists under the sandbox bind-mount and
+  ## silently disabled publishing everywhere else.
+  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} BUCKET={{vars.publish_s3_bucket}} SEC_A={{secrets.onyxia_s3_access_key.path}} SEC_B={{secrets.onyxia_s3_secret_key.path}} SEC_C={{secrets.onyxia_s3_session_token.path}} python3 -c "
+import os, json
+pub = (os.environ.get('PUB') or '').strip().lower() in ('1', 'true', 'yes')
+base = (os.environ.get('BASE') or '').strip()
+bucket = (os.environ.get('BUCKET') or '').strip()
+paths = {'onyxia_s3_access_key': os.environ.get('SEC_A') or '', 'onyxia_s3_secret_key': os.environ.get('SEC_B') or '', 'onyxia_s3_session_token': os.environ.get('SEC_C') or ''}
+missing = [n for n, p in paths.items() if not (p and os.path.isfile(p))]
+ok = pub and bool(base) and bool(bucket) and not missing
+if not pub:
+    reason = 'publish disabled (vars.publish=false)'
+elif not base:
+    reason = 'publish_base_url is empty'
+elif not bucket:
+    reason = 'publish_s3_bucket is empty -- name the target bucket, there is no default'
+elif missing:
+    reason = 'missing S3 secrets: ' + ', '.join(missing)
+else:
+    reason = 'ready'
+print(json.dumps({'do_publish': ok, 'reason': reason}))
+"`
+  output: publish_gate_output
+
+agent publish:
+  backend: "claude_code"
+  model: "${ITERION_PRODUCT_DOCS_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_PRODUCT_DOCS_PUBLISH_EFFORT:-medium}"
+  skills: ["deploy-onyxia-sspcloud"]
+  input: publish_input
+  output: publish_output
+  system: publish_system
+  user: publish_user
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 40
+
+## verify_publish — DETERMINISTIC truth gate on the live URL. The
+## agent's own verification is necessary but not sufficient: this
+## node re-checks from outside the agent's narrative and FAILS the
+## run when the site is not actually serving. Polls ≤ 2 min for the
+## serve loop (60 s sync) to pick the push up.
+tool verify_publish:
+  input: verify_publish_input
+  command: `URL={{input.url}} BASE={{input.base_url}} python3 -c "
+import json, os, time, urllib.request
+u = (os.environ.get('URL') or '').strip()
+base = (os.environ.get('BASE') or '').strip().rstrip('/')
+if not u:
+    print(json.dumps({'verified': False, 'url': '', 'detail': 'publish agent returned no URL'}))
+    raise SystemExit(1)
+if not u.endswith('/'):
+    u = u + '/'
+## The truth gate verifies THE OPERATOR'S deployment, not whatever URL
+## the agent narrated: any live page would answer 200 with a title.
+if not base or not u.startswith(base + '/'):
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'returned url is not under publish_base_url (' + (base or '<empty>') + ')'}))
+    raise SystemExit(1)
+code, body = 0, ''
+for i in range(12):
+    try:
+        r = urllib.request.urlopen(u, timeout=10)
+        code = r.getcode()
+        body = r.read(65536).decode('utf-8', 'replace')
+    except Exception:
+        code, body = 0, ''
+    if code == 200 and '<title>' in body:
+        break
+    time.sleep(10)
+if code != 200 or '<title>' not in body:
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'http ' + str(code) + ' after 12 tries'}))
+    raise SystemExit(1)
+print(json.dumps({'verified': True, 'url': u, 'detail': 'http 200, title present'}))
+"`
+  output: verify_publish_output
+
+## surface_site_link — DETERMINISTIC result-link emitter, the
+## published site counterpart of surface_pr_link.
+tool surface_site_link:
+  input: surface_site_link_input
+  command: `URL={{input.url}} python3 -c "
+import os
+u = (os.environ.get('URL') or '').strip()
+if u:
+    print('[iterion] preview_url=' + u + ' kind=site scope=external')
+"`
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow product_docs:
@@ -1818,7 +2048,7 @@ workflow product_docs:
   ## finalize_mr refuses an empty PR and reports drift_remaining +
   ## unread_sources honestly in the body.
   mr_gate -> forge_auth_probe when open_mr
-  mr_gate -> done when not open_mr
+  mr_gate -> publish_gate when not open_mr
 
   forge_auth_probe -> finalize_mr when available with {
     workspace_dir:    "{{vars.workspace_dir}}",
@@ -1832,9 +2062,35 @@ workflow product_docs:
     drift_remaining:  "{{outputs.campaign.drift_remaining}}",
     unread_sources:   "{{outputs.campaign.unread_sources}}"
   }
-  forge_auth_probe -> done when not available
+  forge_auth_probe -> publish_gate when not available
   ## PR opened → surface its URL as a headline result-link in the run
-  ## summary, then finish. Nothing opened → straight to done.
+  ## summary. Every PR-tail outcome then flows into the publication
+  ## tail, which decides for itself (publish_gate) whether to run.
   finalize_mr -> surface_pr_link when opened with { url: "{{outputs.finalize_mr.url}}" }
-  finalize_mr -> done when not opened
-  surface_pr_link -> done
+  finalize_mr -> publish_gate when not opened
+  surface_pr_link -> publish_gate
+
+  ## ── Publication tail (opt-in) ───────────────────────────────────
+  ## Deterministic gate → skill-driven publish agent → deterministic
+  ## URL truth gate. verify_publish FAILS the run when the site is
+  ## not serving: a publish that was asked for either goes live or
+  ## fails loudly — never a façade.
+  publish_gate -> publish when do_publish with {
+    product_id: "{{outputs.catalog_ingest.product_id}}",
+    product_dir: "{{outputs.catalog_ingest.product_dir}}",
+    site: "{{vars.publish_site}}",
+    base_url: "{{vars.publish_base_url}}",
+    s3_bucket: "{{vars.publish_s3_bucket}}",
+    s3_prefix: "{{vars.publish_s3_prefix}}",
+    tools_ref: "{{vars.publish_tools_ref}}"
+  }
+  publish_gate -> done when not do_publish
+  ## Unconditional fallback: edge selection SKIPS a conditional edge
+  ## whose field is absent from the output (an errored tool body yields
+  ## an output without do_publish), and a node with only conditional
+  ## edges then dead-ends the run with NO_OUTGOING_EDGE. The fallback
+  ## makes the safe route structural: no publish signal → done.
+  publish_gate -> done
+  publish -> verify_publish with { url: "{{outputs.publish.url}}", base_url: "{{vars.publish_base_url}}" }
+  verify_publish -> surface_site_link with { url: "{{outputs.verify_publish.url}}" }
+  surface_site_link -> done
