@@ -103,15 +103,10 @@ func (s *Server) storedBotEntriesWithDiagnostics(ctx context.Context, tenantID s
 	return s.materializeBotEntriesWithDiagnostics(list)
 }
 
-// materializeBotEntries writes stored bundles to a temp tree and runs the
-// same botregistry.ListWithSchema discovery over them, so a stored bot's
-// metadata + vars schema are extracted identically to a catalog bot's — no
-// parallel schema code.
-func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry.EntryWithSchema {
-	entries, _ := s.materializeBotEntriesWithDiagnostics(list)
-	return entries
-}
-
+// materializeBotEntriesWithDiagnostics writes stored bundles to a temp tree
+// and runs the same botregistry discovery over them, so a stored bot's metadata
+// and vars schema are extracted without parallel schema code. Malformed rows
+// are skipped and returned through the diagnostics channel.
 func (s *Server) materializeBotEntriesWithDiagnostics(list []botsource.BotSource) ([]botregistry.EntryWithSchema, []botregistry.DiscoveryError) {
 	if len(list) == 0 {
 		return nil, nil
