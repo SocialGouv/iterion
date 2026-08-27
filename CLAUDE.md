@@ -494,6 +494,29 @@ so a pod never re-decides it. The 90%-hard-limit and exceeded checks remain
 the backstop for a single node that overruns. See
 [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
 
+That guard covers overruns caused by iteration COUNT; a single node that
+overshoots the cap on its own is covered by the **exit grace**
+([pkg/runtime/budget_exit_grace.go](pkg/runtime/budget_exit_grace.go)).
+Once a cap is *spent*, the run may walk **forward** — never around a loop —
+spending up to `cap × 1.1` to reach a terminal node, so work it has already
+paid for gets delivered instead of dying on disk. The ceiling is
+PROPORTIONAL (a small cap grants a small grace) and past it the run fails as
+`BUDGET_EXCEEDED` as before. Both stop-paths — the pre-exec check and the
+deferred overrun after a node that succeeded — go through one decision
+(`graceOrFailBudget`), so a run cannot be graced into starting and then
+killed for having spent. The grace is REFUSED outright in two cases: when
+the loop budget guard is off (the "no further iteration" half of the safety
+argument is that guard's), and when the cap was CLAMPED by an authority
+outside the run (`ir.Budget.CapImposed`, set at the single choke point
+`Budget.ClampToCeiling` — platform ceiling, credential-pool donor allowance;
+the marker travels the queue as `BudgetOverrides.cap_imposed`) — an imposed
+cap is an absolute promise to a third party. `ITERION_BUDGET_EXIT_GRACE`
+overrides the ratio and fails **closed** (`0`/`off` = absolute caps; an
+out-of-range or unparsable value also means 0, with a one-time stderr
+warning). Every graced node emits `budget_exit_grace {dimension, used,
+limit}`, rendered by `iterion report`: a deliberate overspend has to be
+visible in the events, not discovered on the invoice.
+
 ### Backend selection
 
 Six backends are wired:
@@ -667,7 +690,7 @@ The checkpoint embedded in `run.json` is the authoritative source for resume —
 
 **Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
-**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
+**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `run_finished`, `run_failed`
 
 ### Resume from Failed/Cancelled Runs
 
