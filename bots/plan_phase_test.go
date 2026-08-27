@@ -44,19 +44,16 @@ func TestPlanPhaseWiring(t *testing.T) {
 			}
 			wf := cr.Workflow
 
-			// branch-improve-loop defaults the peer policy to "skip": a
-			// fixer invoked ON a pull request must never park on its
-			// OPTIONAL cross-model plan reviewer — the Anthropic family
-			// alone always suffices to fix a branch, and a parked fixer
-			// holds the PR hostage. The other campaign bots keep "wait"
-			// (a parked campaign blocks nobody external).
-			wantPolicy := "wait"
-			if bot == "branch-improve-loop" {
-				wantPolicy = "skip"
-			}
+			// The peer policy defaults to "skip" fleet-wide: the
+			// cross-model plan reviewer is an OPTIONAL enrichment, and
+			// the primary family alone must always suffice — a dead
+			// second-family credential parked a fixer holding a PR
+			// hostage, and a stale pod key paused every cloud campaign
+			// through plan_review auto + wait. "wait" stays the per-run
+			// deliberate-spend opt-in.
 			for varName, wantDefault := range map[string]string{
 				"plan_review":        "auto",
-				"plan_review_policy": wantPolicy,
+				"plan_review_policy": "skip",
 			} {
 				v, ok := wf.Vars[varName]
 				if !ok {
