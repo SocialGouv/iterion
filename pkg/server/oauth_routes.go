@@ -334,7 +334,10 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 	// A human connecting/pasting credentials is the act that says "this
 	// subscription": stamp its audit identity here, once. The refresh
 	// worker rewrites tokens for the SAME subscription and preserves it.
-	rec.Fingerprint = secrets.FingerprintSHA256(string(blob))
+	// Derived from the account/grant the blob names rather than its bytes,
+	// so one forfait connected twice — personally AND at org level, or
+	// pasted by several teammates — stays ONE meter under one ceiling.
+	rec.Fingerprint = secrets.OAuthIdentityFingerprint(kind, blob)
 	if err := s.oauthStore.Upsert(ctx, rec); err != nil {
 		return secrets.OAuthRecord{}, err
 	}
