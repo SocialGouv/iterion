@@ -14,7 +14,7 @@ import (
 // models.dev, and "unknown model returns 0" would depend on models.dev not
 // knowing it. Tests that exercise the tier opt back in via withSpecs.
 func TestMain(m *testing.M) {
-	specLookup = func(string) (modelspecs.Spec, bool) { return modelspecs.Spec{}, false }
+	specLookup = func(string, string) (modelspecs.Spec, bool) { return modelspecs.Spec{}, false }
 	os.Exit(m.Run())
 }
 
@@ -22,7 +22,12 @@ func TestMain(m *testing.M) {
 func withSpecs(t *testing.T, table map[string]modelspecs.Spec) {
 	t.Helper()
 	prev := specLookup
-	specLookup = func(bare string) (modelspecs.Spec, bool) {
+	specLookup = func(provider, bare string) (modelspecs.Spec, bool) {
+		// Mirrors the registry's own order: the qualified key first, the
+		// bare id second.
+		if s, ok := table[provider+"/"+bare]; ok {
+			return s, true
+		}
 		s, ok := table[bare]
 		return s, ok
 	}
@@ -113,8 +118,8 @@ func TestSpecLookup_ReadsTheProcessRegistry(t *testing.T) {
 	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
 	// Restore the real wiring for this test only.
 	prev := specLookup
-	specLookup = func(bare string) (modelspecs.Spec, bool) {
-		return modelspecs.Default().LookupBare(bare)
+	specLookup = func(provider, bare string) (modelspecs.Spec, bool) {
+		return modelspecs.Default().Lookup(provider, bare)
 	}
 	t.Cleanup(func() { specLookup = prev })
 
@@ -143,5 +148,47 @@ func TestEffectiveRate_ReportsAggregatorTier(t *testing.T) {
 	}
 	if _, _, ok := StaticRate("glm-5.2"); ok {
 		t.Error("fixture assumption broken: glm-5.2 gained a committed entry")
+	}
+}
+
+// The qualified key must win over the bare one. This is not a nicety: the bare
+// index is consensus-filtered, so it reports UNKNOWN as soon as two publishers
+// quote different rates — while the provider's OWN entry holds the right
+// number. Resolving by the bare index alone would drop a model to the static
+// table the moment a second publisher listed it, which is the common case for
+// anything popular.
+//
+// glm-5.2 is the fixture because it has NO committed table entry by design, so
+// the bare path has nothing to land on: with a bare-only lookup this test
+// reads 0, and the assertion falsifies the ordering rather than restating it.
+func TestEstimateUSD_QualifiedRateBeatsTheConsensusBareOne(t *testing.T) {
+	t.Setenv("CLAW_DISABLE_LIVE_REGISTRY", "1")
+	// Restore the real wiring: the ordering under test is the registry's.
+	prev := specLookup
+	specLookup = func(provider, bare string) (modelspecs.Spec, bool) {
+		return modelspecs.Default().Lookup(provider, bare)
+	}
+	t.Cleanup(func() { specLookup = prev })
+
+	// Two publishers disagreeing on the price. consensusSpec zeroes it in the
+	// bare index; each provider's own entry keeps its number.
+	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(map[string]modelspecs.Spec{
+		"z-ai/glm-5.2":   {InputCostPerM: 0.6, OutputCostPerM: 2.2},
+		"novita/glm-5.2": {InputCostPerM: 1.44, OutputCostPerM: 4.53},
+	})))
+	if _, _, ok := StaticRate("glm-5.2"); ok {
+		t.Fatal("fixture assumption broken: glm-5.2 gained a committed table entry")
+	}
+
+	if got := EstimateUSD("z-ai/glm-5.2", 1_000_000, 1_000_000); got != 2.8 {
+		t.Errorf("qualified spec = %v, want 2.8 (z-ai's own 0.6+2.2); a bare-only lookup reads 0 here", got)
+	}
+	if got := EstimateUSD("novita/glm-5.2", 1_000_000, 1_000_000); got != 5.97 {
+		t.Errorf("the other publisher's spec = %v, want 5.97 (1.44+4.53)", got)
+	}
+	// With no provider there is genuinely no answer: the publishers disagree,
+	// and iterion must not pick one of them. Unpriced, not half-priced.
+	if got := EstimateUSD("glm-5.2", 1_000_000, 1_000_000); got != 0 {
+		t.Errorf("bare, contested spec = %v, want 0 — unknown, never one publisher's rate", got)
 	}
 }
