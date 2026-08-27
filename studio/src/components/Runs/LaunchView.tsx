@@ -90,7 +90,7 @@ export default function LaunchView() {
   } = applyLaunchHints(fields, bot?.launch);
   const { attachments, handleAttachmentChange } = useAttachmentUploads();
   const repoTarget = useRepoTarget(bot, serverInfo);
-  const overrides = useRunOverrides(filePath, worktreeOn);
+  const overrides = useRunOverrides(filePath, currentSource, worktreeOn);
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   const {

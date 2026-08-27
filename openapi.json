@@ -2974,6 +2974,166 @@
         ],
         "type": "object"
       },
+      "previewBackendOption": {
+        "properties": {
+          "unavailable_reason": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "previewCostNode": {
+        "properties": {
+          "cost_max_usd": {
+            "type": "number"
+          },
+          "cost_min_usd": {
+            "type": "number"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "tokens_in": {
+            "type": "integer"
+          },
+          "tokens_out": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "kind",
+          "tokens_in",
+          "tokens_out",
+          "cost_min_usd",
+          "cost_max_usd"
+        ],
+        "type": "object"
+      },
+      "previewCostRequest": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "backend_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "previewCostResponse": {
+        "properties": {
+          "backend_options": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/previewBackendOption"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "cost_max_usd": {
+            "type": "number"
+          },
+          "cost_min_usd": {
+            "type": "number"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/previewEffectiveSettings"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/previewCostNode"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tokens_max": {
+            "type": "integer"
+          },
+          "tokens_min": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokens_min",
+          "tokens_max",
+          "cost_min_usd",
+          "cost_max_usd",
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "previewEffectiveKnob": {
+        "properties": {
+          "effective": {
+            "type": "string"
+          },
+          "node_pinned": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective",
+          "source"
+        ],
+        "type": "object"
+      },
+      "previewEffectiveSettings": {
+        "properties": {
+          "auto_memory": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "backend": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "compress": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          },
+          "permission": {
+            "$ref": "#/components/schemas/previewEffectiveKnob"
+          }
+        },
+        "required": [
+          "compress",
+          "auto_memory",
+          "permission",
+          "backend"
+        ],
+        "type": "object"
+      },
       "setOrgStatusReq": {
         "properties": {
           "reason": {
@@ -5812,9 +5972,26 @@
     "/api/runs/preview-cost": {
       "post": {
         "operationId": "postRunsPreviewCost",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/previewCostRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/previewCostResponse"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/runs/preview-cost",

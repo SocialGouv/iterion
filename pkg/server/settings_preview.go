@@ -1,19 +1,120 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
+// buildBackendOverrideOptions screens the backend names currently offered by
+// the Studio for every LLM node. The request carries those names rather than
+// duplicating a backend catalog here: a newly detected backend is therefore
+// fail-closed by the same IR predicate without requiring a UI capability
+// table update.
+func buildBackendOverrideOptions(
+	wf *ir.Workflow,
+	runPermission string,
+	runBackend string,
+	backendNames []string,
+) map[string]map[string]previewBackendOption {
+	if wf == nil || len(backendNames) == 0 {
+		return nil
+	}
+
+	result := make(map[string]map[string]previewBackendOption)
+	for _, node := range wf.Nodes {
+		llm, ok := node.(ir.LLMNode)
+		if !ok {
+			continue
+		}
+		mode, _, err := permission.ResolveModeSourced(
+			runPermission,
+			llm.GetPermission(),
+			wf.Permission,
+			os.Getenv("ITERION_PERMISSION"),
+		)
+		if err != nil {
+			// Validation remains authoritative for malformed modes, but the
+			// picker still fails closed instead of advertising every backend
+			// while the workflow itself is unlaunchable.
+			choices := make(map[string]previewBackendOption, len(backendNames))
+			for _, backend := range backendNames {
+				backend = strings.TrimSpace(backend)
+				if backend != "" {
+					choices[backend] = previewBackendOption{UnavailableReason: fmt.Sprintf(
+						"cannot assess permission safety until the invalid permission mode is fixed: %v",
+						err,
+					)}
+				}
+			}
+			if len(choices) > 0 {
+				result[llm.NodeID()] = choices
+			}
+			continue
+		}
+		currentBackend := effectivePreviewBackend(
+			llm.GetLLMFields().Backend,
+			runBackend,
+			wf.DefaultBackend,
+			os.Getenv("ITERION_DEFAULT_BACKEND"),
+		)
+		choices := make(map[string]previewBackendOption, len(backendNames))
+		for _, backend := range backendNames {
+			backend = strings.TrimSpace(backend)
+			if backend == "" {
+				continue
+			}
+			choice := previewBackendOption{}
+			choice.UnavailableReason = ir.UngatedCrossingReason(
+				backend,
+				mode.String(),
+				len(wf.PermissionAsk) > 0,
+			)
+			if choice.UnavailableReason == "" {
+				choice.Warning = ir.ToolRestrictionLossReason(
+					currentBackend,
+					backend,
+					llm.GetTools(),
+				)
+			}
+			choices[backend] = choice
+		}
+		if len(choices) > 0 {
+			result[llm.NodeID()] = choices
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// effectivePreviewBackend mirrors the backend tail that is knowable before
+// launch. A node pin wins over the run's default-backend override; "auto" is
+// treated as unset at either layer. Credential auto-detection stays unknown,
+// which only suppresses a best-effort tools-drift warning — never a gate
+// refusal.
+func effectivePreviewBackend(node, run, workflow, env string) string {
+	for _, value := range []string{node, run, workflow, env} {
+		value = strings.TrimSpace(value)
+		if value != "" && value != "auto" {
+			return value
+		}
+	}
+	return ""
+}
+
 // buildEffectiveSettings resolves the launch-relevant knobs
 // (compress / auto_memory / permission / backend) BELOW the run-override level —
-// workflow DSL, then env, then default — and flags whether any node
-// pins its own value (a run override won't reach those nodes). The
-// Launch dialog layers the operator's own override on top client-side,
-// so this stays a pure function of (workflow, env).
+// workflow DSL, then env, then default — and flags whether any node pins its
+// own value. The Launch dialog layers the operator's override on top using
+// each knob's precedence (permission/compress/memory run overrides win node
+// pins; the default-backend setting does not), so this stays a pure function
+// of (workflow, env).
 func buildEffectiveSettings(wf *ir.Workflow) *previewEffectiveSettings {
 	if wf == nil {
 		return nil

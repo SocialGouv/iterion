@@ -116,6 +116,10 @@ func routeSchemas() map[string]routeOp {
 			}{},
 		},
 		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
+		"POST /api/runs/preview-cost": {
+			request:  previewCostRequest{},
+			response: previewCostResponse{},
+		},
 
 		// Model registry — known x usable x capabilities x pricing. Typed so
 		// the studio's picker (and every LaunchView node row) reads the same

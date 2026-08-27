@@ -801,12 +801,22 @@ export interface PreviewCostResponse {
   nodes: PreviewCostNode[];
   notes?: string[];
   effective?: PreviewEffectiveSettings;
+  // Per-node assessment of the backend names the client sent with the
+  // preview request. Blocking reasons share the runtime admission predicate;
+  // warnings describe non-security capability drift such as a claw tools:
+  // list becoming inert on a CLI backend.
+  backend_options?: Record<string, Record<string, PreviewBackendOption>>;
+}
+
+export interface PreviewBackendOption {
+  unavailable_reason?: string;
+  warning?: string;
 }
 
 // PreviewEffectiveSettings reports each launch knob's resolution BELOW
-// the run-override level (workflow/env/default + node-pinned flag) so
-// the Launch dialog can caption its selects with why a knob is what it
-// is. The client layers its own override on top.
+// the run-override level (workflow/env/default + node-pinned flag) so the
+// Launch dialog can caption its selects with why a knob is what it is. The
+// client layers its own override on top using the knob-specific precedence.
 export interface PreviewEffectiveKnob {
   effective: string;
   source: "workflow" | "env" | "default";

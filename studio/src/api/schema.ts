@@ -5913,6 +5913,52 @@ export interface components {
                 [key: string]: string;
             };
         };
+        previewBackendOption: {
+            unavailable_reason?: string;
+            warning?: string;
+        };
+        previewCostNode: {
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effort?: string;
+            kind: string;
+            model?: string;
+            node_id: string;
+            tokens_in: number;
+            tokens_out: number;
+        };
+        previewCostRequest: {
+            backend?: string;
+            backend_names?: string[];
+            file_path?: string;
+            permission?: string;
+            source?: string;
+        };
+        previewCostResponse: {
+            backend_options?: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["previewBackendOption"];
+                };
+            };
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effective?: components["schemas"]["previewEffectiveSettings"];
+            nodes: components["schemas"]["previewCostNode"][];
+            notes?: string[];
+            tokens_max: number;
+            tokens_min: number;
+        };
+        previewEffectiveKnob: {
+            effective: string;
+            node_pinned?: boolean;
+            source: string;
+        };
+        previewEffectiveSettings: {
+            auto_memory: components["schemas"]["previewEffectiveKnob"];
+            backend: components["schemas"]["previewEffectiveKnob"];
+            compress: components["schemas"]["previewEffectiveKnob"];
+            permission: components["schemas"]["previewEffectiveKnob"];
+        };
         setOrgStatusReq: {
             reason?: string;
             status: string;
@@ -8721,14 +8767,20 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["previewCostRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["previewCostResponse"];
+                };
             };
         };
     };
