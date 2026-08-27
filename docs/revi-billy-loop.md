@@ -61,6 +61,15 @@ The webhook tail resolves everything from the PR and the repo integration:
    and to you: a contested finding keeps the gate red until a human decides
    (`/revi approve [reason]`, maintainer-gated).
 
+   That third step is **not free** — it needs `review_on_sync` on the repo's
+   webhook config, which is **off by default** (a push is otherwise an
+   on-demand re-review, deliberately budget-frugal). It is the same switch the
+   merge gate needs, so a repo whose `revi/review` is a required check has it
+   on; a repo that only ever auto-reviews on open does not, and Billy's push
+   there ends the loop until someone comments `/revi`. Check it before
+   concluding the loop is broken:
+   `iterion remote api GET /api/teams/<team-id>/webhooks` → `review_on_sync`.
+
 ## Session discipline (the gotchas)
 
 - **Don't work on the PR branch while Billy runs** — he pushes onto it. After
