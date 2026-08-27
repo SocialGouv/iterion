@@ -98,6 +98,7 @@ export function useSessionDiscovery(opts: {
         isCancelled: () => cancelled,
       });
       if (attached && !cancelled) onAttached(runIdToAttach);
+      return attached && !cancelled;
     };
 
     const teardown = () => {
@@ -154,13 +155,14 @@ export function useSessionDiscovery(opts: {
         if (cancelled) return;
         setDiscoveryError(null);
         if (live) {
-          await attachTo(live);
-          return;
+          if (await attachTo(live)) return;
         }
         if (remembered) {
           try {
-            await attachTo(remembered);
-            return;
+            if (await attachTo(remembered)) return;
+            // The snapshot exists but belongs to another bot. Retire the
+            // stale pointer and fall through to the launcher.
+            forgetSessionRunId(bot.id, scopeKey);
           } catch (err) {
             if (
               controller.signal.aborted ||

@@ -237,7 +237,7 @@ func validateChatSurface(c *ChatSurface) error {
 			}
 		}
 	}
-	if len(c.Nodes) > 0 && humans == 0 {
+	if humans == 0 {
 		return fmt.Errorf("chat: no node is the operator's turn (kind: human) — the session could never be answered")
 	}
 	if c.Launcher != nil && c.SeedVar == "" {

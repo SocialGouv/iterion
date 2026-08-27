@@ -40,6 +40,11 @@ func TestValidateChatSurface_NodeRules(t *testing.T) {
 			wantErr: "no node is the operator's turn",
 		},
 		{
+			name:    "no nodes",
+			chat:    &ChatSurface{SeedVar: "initial_message"},
+			wantErr: "no node is the operator's turn",
+		},
+		{
 			name: "valid text conversation",
 			chat: &ChatSurface{Nodes: map[string]ChatNode{
 				"work": {Kind: ChatNodeBanner},
@@ -122,7 +127,12 @@ func TestValidateChatSurface_LauncherRequiresSeedVar(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			chat := &ChatSurface{Launcher: tc.launcher}
+			chat := &ChatSurface{
+				Launcher: tc.launcher,
+				Nodes: map[string]ChatNode{
+					"chat": {Kind: ChatNodeHuman, TextField: "message"},
+				},
+			}
 			err := validateChatSurface(chat)
 			if err == nil || !strings.Contains(err.Error(), "seed_var is empty") {
 				t.Fatalf("validateChatSurface() error = %v, want missing seed_var", err)

@@ -645,7 +645,7 @@ export function useAssistantReservedWidthPx(): number {
   return ctx.dock === "docked-right" &&
     reservesLayout &&
     !dockStandsDown(location)
-    ? ctx.dockWidth
+    ? clampDockWidth(ctx.dockWidth)
     : 0;
 }
 
@@ -655,14 +655,14 @@ export function useAssistantReservedWidthPx(): number {
 // render.
 function useWideDockViewport(): boolean {
   const read = () =>
-    typeof window === "undefined" || window.innerWidth > DOCK_BREAKPOINT_PX;
-  const [wide, setWide] = useState(read);
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerWidth;
+  const [viewportWidth, setViewportWidth] = useState(read);
   useEffect(() => {
-    const onResize = () => setWide(read());
+    const onResize = () => setViewportWidth(read());
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return wide;
+  return viewportWidth > DOCK_BREAKPOINT_PX;
 }
 
 // How much of the right edge another FIXED bottom-right surface must clear.

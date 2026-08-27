@@ -9,7 +9,7 @@ afterEach(cleanup);
 
 function renderShell(props: Partial<ChatDockShellProps> = {}) {
   const onDockChange = vi.fn();
-  render(
+  const view = render(
     <ChatDockShell
       dock="closed"
       onDockChange={onDockChange}
@@ -20,7 +20,7 @@ function renderShell(props: Partial<ChatDockShellProps> = {}) {
       <div>body</div>
     </ChatDockShell>,
   );
-  return { onDockChange };
+  return { onDockChange, ...view };
 }
 
 describe("ChatDockShell dock states", () => {
@@ -146,5 +146,30 @@ describe("ChatDockShell chrome", () => {
     const { onDockChange } = renderShell({ dock: "floating" });
     fireEvent.click(screen.getByRole("button", { name: /minimise assistant/i }));
     expect(onDockChange).toHaveBeenCalledWith("closed");
+  });
+});
+
+describe("ChatDockShell resize teardown", () => {
+  it.each([
+    ["floating", "floating"],
+    ["docked", "docked-right"],
+  ] as const)("removes window listeners when the %s handle unmounts", (_, dock) => {
+    const remove = vi.spyOn(window, "removeEventListener");
+    const { unmount } = renderShell({
+      dock,
+      dockedRightMode: "self",
+      onWidthChange: vi.fn(),
+    });
+    fireEvent.pointerDown(
+      screen.getByRole("separator", { name: /resize the assistant panel/i }),
+      { clientX: 500, clientY: 300 },
+    );
+
+    unmount();
+
+    expect(remove).toHaveBeenCalledWith("pointermove", expect.any(Function));
+    expect(remove).toHaveBeenCalledWith("pointerup", expect.any(Function));
+    expect(remove).toHaveBeenCalledWith("pointercancel", expect.any(Function));
+    remove.mockRestore();
   });
 });

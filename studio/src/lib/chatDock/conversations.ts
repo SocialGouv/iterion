@@ -73,7 +73,6 @@ function isConversation(v: unknown): v is Conversation {
     typeof c.id === "string" &&
     c.id !== "" &&
     typeof c.botId === "string" &&
-    c.botId !== "" &&
     optionalString(c.origin) &&
     optionalString(c.originLabel) &&
     optionalString(c.runId) &&

@@ -9,9 +9,10 @@
 // The sibling that gets this right is SessionLauncher on /whats-next;
 // these tests pin the dock to the same behaviour so the two stop
 // drifting.
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { ASSISTANT_DOCK_KEY } from "@/lib/chatDock/dockState";
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
@@ -57,8 +58,12 @@ vi.mock("@/hooks/useChatRegistry", () => ({
 
 // The composer talks to the run API on mount; irrelevant here and the
 // dock renders it under every branch below.
+const composerInstances = vi.hoisted(() => ({ next: 0 }));
 vi.mock("@/components/shared/AgentChatboxInline", () => ({
-  default: () => <div data-testid="composer" />,
+  default: function MockComposer() {
+    const [instance] = useState(() => ++composerInstances.next);
+    return <div data-testid="composer">{instance}</div>;
+  },
 }));
 
 function makeSession(over: Partial<UseWhatsNextSession> = {}): UseWhatsNextSession {
@@ -84,6 +89,7 @@ function makeSession(over: Partial<UseWhatsNextSession> = {}): UseWhatsNextSessi
 
 beforeEach(() => {
   retryDiscovery.mockClear();
+  composerInstances.next = 0;
   // The dock renders no body while closed; open it so the empty state
   // is on screen.
   window.localStorage.setItem(ASSISTANT_DOCK_KEY, "floating");
@@ -133,5 +139,14 @@ describe("ChatDock empty state", () => {
     renderDock();
     screen.getByRole("button", { name: /retry/i }).click();
     expect(retryDiscovery).toHaveBeenCalled();
+  });
+});
+
+describe("ChatDock conversation isolation", () => {
+  it("remounts conversation-owned draft state when opening another tab", () => {
+    renderDock();
+    expect(screen.getByTestId("composer").textContent).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: /new conversation/i }));
+    expect(screen.getByTestId("composer").textContent).toBe("2");
   });
 });

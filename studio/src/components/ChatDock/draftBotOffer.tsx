@@ -21,6 +21,7 @@ const openedDraftRuns = new Set<string>();
 // bots/copilot/main.bot), and one short line cannot drag a French conversation
 // into English the way a paragraph would.
 export const EDITOR_OPENED_CONFIRMATION = "Opened the editor — go ahead.";
+const EDITOR_CONSENT_TTL_MS = 30_000;
 
 /**
  * useEditorConsent turns the click into an answer to the paused turn.
@@ -32,14 +33,29 @@ export const EDITOR_OPENED_CONFIRMATION = "Opened the editor — go ahead.";
 export function useEditorConsent(
   submitPending: (text: string) => Promise<unknown>,
 ): { accept: () => void } {
-  const [pending, setPending] = useState(false);
   const [route] = useLocation();
+  const [pendingFromRoute, setPendingFromRoute] = useState<string | null>(null);
   useEffect(() => {
-    if (!pending || !route.startsWith("/editor")) return;
-    setPending(false);
-    void submitPending(EDITOR_OPENED_CONFIRMATION).catch(() => {});
-  }, [pending, route, submitPending]);
-  return { accept: () => setPending(true) };
+    if (pendingFromRoute === null) return;
+    if (route.startsWith("/editor")) {
+      setPendingFromRoute(null);
+      void submitPending(EDITOR_OPENED_CONFIRMATION).catch(() => {});
+      return;
+    }
+    // Consent belongs to this navigation attempt. Going anywhere else retires
+    // it, and the timeout also covers links opened in another tab (this tab's
+    // route never changes in that case).
+    if (route !== pendingFromRoute) {
+      setPendingFromRoute(null);
+      return;
+    }
+    const expiry = window.setTimeout(
+      () => setPendingFromRoute(null),
+      EDITOR_CONSENT_TTL_MS,
+    );
+    return () => window.clearTimeout(expiry);
+  }, [pendingFromRoute, route, submitPending]);
+  return { accept: () => setPendingFromRoute(route) };
 }
 
 // The assistant's one write-shaped affordance, and it writes nothing.
@@ -125,4 +141,3 @@ export function DraftBotOffer({
     </div>
   );
 }
-

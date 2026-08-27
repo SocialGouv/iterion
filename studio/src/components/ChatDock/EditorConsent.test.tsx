@@ -60,7 +60,10 @@ beforeEach(() => {
   draftState = { source: null, designing: true };
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("accepting the move to the editor", () => {
   it("offers the venue while the turn is designing with nothing to show", () => {
@@ -97,6 +100,32 @@ describe("accepting the move to the editor", () => {
     act(() => rerender(<Harness />));
     act(() => rerender(<Harness />));
     expect(submitPending).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires consent when navigation goes somewhere other than the editor", () => {
+    const { rerender } = render(<Harness />);
+    act(() => {
+      screen.getByText(/open the editor/i).click();
+    });
+    route = "/runs/run-2";
+    act(() => rerender(<Harness />));
+    route = "/editor";
+    act(() => rerender(<Harness />));
+    expect(submitPending).not.toHaveBeenCalled();
+  });
+
+  it("expires consent when the editor link opens outside this tab", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<Harness />);
+    act(() => {
+      screen.getByText(/open the editor/i).click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    route = "/editor";
+    act(() => rerender(<Harness />));
+    expect(submitPending).not.toHaveBeenCalled();
   });
 
   it("never speaks for the operator on its own — no click, no answer", () => {

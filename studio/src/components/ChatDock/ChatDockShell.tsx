@@ -391,8 +391,11 @@ function FloatingResizeHandle({
   size: DockSize;
   onResize: (next: DockSize) => void;
 }) {
+  const teardownRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => teardownRef.current?.(), []);
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    teardownRef.current?.();
     const startX = e.clientX;
     const startY = e.clientY;
     const start = size;
@@ -409,14 +412,17 @@ function FloatingResizeHandle({
         height: start.height + (startY - ev.clientY),
       });
     };
-    const onUp = () => {
+    const teardown = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      teardownRef.current = null;
     };
+    const onUp = () => teardown();
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+    teardownRef.current = teardown;
   };
   return (
     <div
@@ -623,8 +629,11 @@ function DockResizeHandle({
   width: number;
   onWidthChange: (px: number) => void;
 }) {
+  const teardownRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => teardownRef.current?.(), []);
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    teardownRef.current?.();
     const startX = e.clientX;
     const startWidth = width;
     // Window listeners rather than pointer capture — see FloatingResizeHandle.
@@ -633,14 +642,17 @@ function DockResizeHandle({
       // clientX) makes it wider.
       onWidthChange(startWidth + (startX - ev.clientX));
     };
-    const onUp = () => {
+    const teardown = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      teardownRef.current = null;
     };
+    const onUp = () => teardown();
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+    teardownRef.current = teardown;
   };
   return (
     <div

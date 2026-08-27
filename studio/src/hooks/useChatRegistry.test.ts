@@ -83,7 +83,14 @@ describe("chatRegistryWithFloor", () => {
     ({ name: "x", path: "/w/bots/x", ...over }) as BotEntry;
 
   it("keeps the built-in floor when discovery returns nothing", () => {
-    expect(Object.keys(chatRegistryWithFloor([]))).toContain("whats-next");
+    const reg = chatRegistryWithFloor([]);
+    const dockBot = reg["copilot"];
+    expect(Object.keys(reg)).toEqual(
+      expect.arrayContaining(["whats-next", "copilot"]),
+    );
+    expect(resolveDockBot(reg, dockBot ? [dockBot] : [], "", false)?.id).toBe(
+      "copilot",
+    );
   });
 
   it("keeps the floor for a bot the listing reports as enabled", () => {
@@ -98,6 +105,13 @@ describe("chatRegistryWithFloor", () => {
       entry({ name: "whats-next", enabled: false }),
     ]);
     expect(reg["whats-next"]).toBeUndefined();
+  });
+
+  it("does not resurrect a disabled dock fallback", () => {
+    const reg = chatRegistryWithFloor([
+      entry({ name: "copilot", enabled: false }),
+    ]);
+    expect(reg["copilot"]).toBeUndefined();
   });
 
   it("stops a disabled default from outranking the bots still enabled", () => {

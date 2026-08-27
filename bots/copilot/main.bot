@@ -540,13 +540,14 @@ agent copi:
   ## `run_command` and `write_file` are absent by construction — the
   ## permission gate denies them too, but here they simply are not
   ## registered.
-  ## The registered claw builtins minus everything that writes or shells:
+  ## The registered claw builtins minus everything that writes, shells or
+  ## searches content:
   ## RegisterClawBuiltins registers read_file, write_file, glob, grep,
   ## file_edit, web_fetch and bash; `skill` comes with the skills: block.
   ## Only names the registry knows may appear — an unknown one is a RUN
   ## failure, not a compile error (`iterion validate` does not check tool
   ## names against the registry).
-  tools: [read_file, glob, grep, skill]
+  tools: [read_file, glob, skill]
   ## interaction: human arms the ask_user MCP tool — mid-turn
   ## questions pause the run and resume the SAME session.
   interaction: human
@@ -702,7 +703,7 @@ judge review:
   user: review_user
   ## Read-only, and narrower than Copi's: a reviewer checks claims, it
   ## does not need the skill library or the web to do that.
-  tools: [read_file, glob, grep]
+  tools: [read_file, glob]
   ## fresh, never inherit: the reviewer must read the answer as the
   ## operator will, not as its author remembers writing it. Sharing the
   ## session would hand it Copi's reasoning and its conclusions.

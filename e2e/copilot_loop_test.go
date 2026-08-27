@@ -248,7 +248,7 @@ func TestCopilot_GraphContract(t *testing.T) {
 	}
 	for _, tool := range copi.Tools {
 		switch tool {
-		case "bash", "run_command", "write_file", "edit_file":
+		case "bash", "run_command", "write_file", "edit_file", "grep":
 			t.Errorf("copi tools: includes %q — on claw this list is enforced, so it is a second way to hand the bot a shell the deny list refuses", tool)
 		}
 	}
@@ -421,6 +421,9 @@ func TestCopilot_GraphContract(t *testing.T) {
 	// operator will, not as its author remembers writing it.
 	if rev.Session != ir.SessionFresh {
 		t.Errorf("reviewer session = %v, want fresh — sharing Copi's session hands it Copi's reasoning", rev.Session)
+	}
+	if slices.Contains(rev.Tools, "grep") {
+		t.Error("reviewer tools include grep even though the workflow's bare Grep deny rejects every call")
 	}
 
 	// The routing flag must exclude a closing turn. Two sibling `when`

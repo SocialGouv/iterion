@@ -31,6 +31,13 @@ describe("persistence", () => {
     expect(readConversations().map((x) => x.id)).toEqual(["a", "b"]);
   });
 
+  it("round-trips the empty bot id used for the registry default", () => {
+    writeConversations([{ id: "default", botId: "", runId: "run-default" }]);
+    expect(readConversations()).toEqual([
+      { id: "default", botId: "", runId: "run-default" },
+    ]);
+  });
+
   it("keeps the origin, which is how you get back to what you were discussing", () => {
     writeConversations([
       { id: "a", botId: "copilot", origin: "run/019f", originLabel: "Run 019f" },

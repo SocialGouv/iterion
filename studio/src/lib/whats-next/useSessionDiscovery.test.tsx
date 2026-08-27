@@ -136,3 +136,25 @@ describe("useSessionDiscovery attachRunId teardown", () => {
     await waitFor(() => expect(attached).toEqual(["run-later"]));
   });
 });
+
+describe("useSessionDiscovery refused startup attach", () => {
+  it("returns to idle when a discovered run belongs to another bot", async () => {
+    discovery.findLiveRunForBot.mockResolvedValue("wrong-run");
+    discovery.attachSessionRun.mockResolvedValue(false);
+    const setStatus = vi.fn();
+    const onAttached = vi.fn();
+
+    renderHook(
+      () =>
+        useSessionDiscovery({
+          ...baseOpts,
+          onAttached,
+          setStatus,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(setStatus).toHaveBeenLastCalledWith("idle"));
+    expect(onAttached).not.toHaveBeenCalled();
+  });
+});

@@ -99,10 +99,9 @@ export default function ChatDock() {
     // assistant's isolated one (the app around us sees the default).
     <AssistantStoreScope>
       <AssistantDock
-        // Keyed on the bot: switching correspondents must reset the dock's
-        // own state (attached refs, unread count), not carry one
-        // conversation's leftovers into another's.
-        key={sessionCtx.bot.id}
+        // Both axes reset the dock's own state (attached refs, unread count):
+        // a conversation switch commonly keeps the same bot.
+        key={`${dockCtx.activeConversationId ?? "none"}:${sessionCtx.bot.id}`}
         bot={sessionCtx.bot}
         bots={sessionCtx.bots}
         onSelectBot={sessionCtx.selectBot}

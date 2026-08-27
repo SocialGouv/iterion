@@ -31,6 +31,34 @@ export const CHAT_REGISTRY_QUERY_KEY = ["chat-registry"] as const;
 // back to whatever other chat bot it discovered, so the dock still works.
 export const PREFERRED_DOCK_BOT_ID = "copilot";
 
+// Discovery is authoritative when it answers, but a failed/in-flight listing
+// still needs one usable dock correspondent. Keep this deliberately minimal:
+// the manifest replaces it as soon as discovery succeeds.
+const DEFAULT_DOCK_BOT: FirstClassBot = {
+  id: PREFERRED_DOCK_BOT_ID,
+  label: "Copi",
+  description: "Conversational iterion assistant.",
+  workflowPath: "bots/copilot/main.bot",
+  launcherVars: [
+    { name: "reviewer", label: "Cross-review each answer" },
+  ],
+  seedVar: "initial_message",
+  nodeMap: {
+    seed: { kind: "silent" },
+    gate: { kind: "silent" },
+    copi: { kind: "banner", label: "Copi is thinking" },
+    validate_draft: { kind: "banner", label: "Validating Copi's draft" },
+    review: { kind: "banner", label: "Cross-reviewing Copi's answer" },
+    compose: { kind: "silent" },
+    chat: { kind: "human", textField: "message" },
+  },
+};
+
+const BUILTIN_CHAT_FLOOR: Readonly<Record<string, FirstClassBot>> = {
+  ...FIRST_CLASS_BOTS,
+  [PREFERRED_DOCK_BOT_ID]: DEFAULT_DOCK_BOT,
+};
+
 export interface UseChatRegistryResult {
   /** Every conversational bot the server offers, id → entry. */
   byId: Record<string, FirstClassBot>;
@@ -75,7 +103,7 @@ export function chatRegistryWithFloor(
     entries.filter((e) => e.enabled === false).map((e) => e.name),
   );
   const floor = Object.fromEntries(
-    Object.entries(FIRST_CLASS_BOTS).filter(([id]) => !disabled.has(id)),
+    Object.entries(BUILTIN_CHAT_FLOOR).filter(([id]) => !disabled.has(id)),
   );
   return { ...floor, ...discovered };
 }

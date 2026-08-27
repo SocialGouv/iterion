@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ASSISTANT_DOCK_KEY,
+  ASSISTANT_DOCK_WIDTH_KEY,
   DOCK_BREAKPOINT_PX,
 } from "@/lib/chatDock/dockState";
 import { getDefaultRunStore, useRunStoreInstance } from "@/store/run";
@@ -250,6 +251,34 @@ describe("useAssistantReservedWidthPx", () => {
     expect(screen.getByTestId("width").textContent).toBe(
       String(DOCKED_WIDTH_PX),
     );
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: previous,
+    });
+  });
+
+  it("re-clamps the reserved width when a wide viewport narrows", () => {
+    const previous = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 2000,
+    });
+    localStorage.setItem(ASSISTANT_DOCK_KEY, "docked-right");
+    localStorage.setItem(ASSISTANT_DOCK_WIDTH_KEY, "1400");
+    render(
+      <AssistantProvider>
+        <WidthProbe />
+      </AssistantProvider>,
+    );
+    expect(screen.getByTestId("width").textContent).toBe("1400");
+
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1000,
+    });
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByTestId("width").textContent).toBe("700");
+
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: previous,
