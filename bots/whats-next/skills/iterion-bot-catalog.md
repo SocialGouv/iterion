@@ -75,14 +75,30 @@ Walk top-to-bottom; first match wins.
 | "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
+| "build a new app from scratch", "greenfield from a prompt" — no existing codebase to extend | `app-dev` |
+| "finish the half-built thing", "close the gaps against the spec" — gap-driven completion, not a new feature | `feature-gap-fill` |
+| "add tests", "raise unit-test coverage", "the suite misses X" | `test-coverage` |
+| "we have no end-to-end tests for X", "keep the feature×coverage matrix honest" | `e2e-coverage` |
+| "wire error tracking / structured logs / tracing", "make it observable" — INSTRUMENTATION, a specific artefact, not a general improvement axis | `instrument` |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole-improve-loop` |
-| "focus on axis X" (observability / perf / DX / refactoring) ACROSS the codebase — improvement loop, not detection | `whole-improve-loop` (with `--var improvement_prompt=…`) |
+| "focus on axis X" (perf / DX / refactoring) ACROSS the codebase — improvement loop, not detection. For observability specifically, prefer `instrument` above | `whole-improve-loop` (with `--var improvement_prompt=…`) |
 | "review this branch", "review the PR", "fix the diff against main" — review AND fix AND commit | `branch-improve-loop` |
 | "review this PR / branch and just REPORT the issues" — read-only review, posts findings to the board, does NOT fix or commit | `review-pr` |
 | "upgrade dependencies", "patch CVEs", "bump versions", "renovate" — MUTATING (writes package.json / go.mod / lockfiles) | `secured-renovacy` |
 | "audit the docs", "find code↔doc drift", "doc/code alignment", "fix outdated README/CLAUDE.md" | `docs-refresh` |
+| "document what the product does for its users", "functional / business documentation", "doc produit", "the user guide is out of date" — for a NON-TECHNICAL audience, in a DEDICATED docs repo, from one or more source repos named by a product catalog | `product-docs` |
 | "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "OWASP source scan" — DETECTION (writes findings, not fixes) | `sec-audit-source` |
 | "audit dependencies for malware / typosquats / install hooks", "supply-chain check", "post-`npm install` triage" — DETECTION across installed deps | `sec-audit-deps` |
+| "migrate the framework major", "modernise the legacy app", "the runtime moved and everything with it" — behaviour-preserving, gate to gate | `modernize` for ONE lot; `campaign` to supervise the whole programme |
+| "pin down what this app actually does before we touch it", "golden master", "non-regression net" — record behaviour and prove the net is not blind | `golden-master` |
+| "the modernisation is blocked on a judgement call" — a divergence the written doctrine must settle | `arbitrate` (needs the target repo's own arbitration doctrine) |
+| "accessibility audit", "WCAG / RGAA conformance" | `ultra11y` — but read the Ally vs Acci distinguisher below first |
+| "generate / refresh the project wiki", "a navigable knowledge base" | `wiki-gen` |
+| "map our ADRs", "which decisions were never written down?" | `adr-cartograph` |
+| "is ADR-NNN still right?", "re-challenge that decision" — human-gated, ends in keep/change/addendum | `adr-rechallenge` |
+| "set up a reproducible toolchain", "we need a devbox.json" | `devbox-setup` |
+| "watch these feeds / releases and digest them for us" — recurring veille | `feed-watch` |
+| "give me a live URL for this branch", "a real review environment" | `review-env` |
 | architectural choice, hiring, prioritisation meeting, alignment | `""` |
 | operator is vague or it's cross-cutting | `""` |
 | long-term theme (a quarter+ horizon) on a mature/stable project | `evolve` (it accumulates the vision + proposes evolutions) |
@@ -211,6 +227,36 @@ before you walk the table on a new roadmap item.
   vision on a mature repo, the right move is often to route to `evolve`
   rather than answer at your own altitude.
 
+### `docs-refresh` (Doki) vs `wiki-gen` (Wikky) vs `product-docs` (Prody) — the three documentation bots
+
+All three write `.md` and commit. They differ on **who reads the
+result**, and secondarily on **where the pages live relative to the
+code**. Settle the audience first; the topology follows.
+
+- `docs-refresh` / Doki: a **developer** audience. It aligns the repo's
+  OWN existing technical docs (README, CLAUDE.md, `docs/**`) against
+  the code, IN PLACE, in the same repo. Repairs stale prose and writes
+  what is missing.
+- `wiki-gen` / Wikky: a **developer** audience too, but it OWNS a
+  parallel artifact — a navigable OKF `wiki/` tree it generates and
+  maintains in the code repo. Reach for it when the repo needs a
+  navigable knowledge base it does not have, not when existing docs
+  need fixing.
+- `product-docs` / Prody: a **business / end-user** audience. It writes
+  what the product does for the people who USE it — role by role,
+  journey by journey, in French — in a **dedicated documentation
+  repository**, grounded in the source code of the N **other**
+  repositories a product catalog names. It never touches those source
+  repos, and it publishes no technical content at all.
+- Tie-break — **audience**: "could a non-developer act on this page?"
+  Yes → Prody. No → Doki or Wikky.
+- Tie-break — **topology**: docs and code in the SAME repo → Doki or
+  Wikky. Docs in their own repo, code in one or more others, with a
+  catalog naming them → Prody (it is the only one that clones sources).
+- Prody needs two inputs with no default: `catalog_path` and
+  `product_id`. If the operator cannot name a product catalog, the work
+  is probably not Prody's — ask before routing.
+
 ### `ultra11y` (Ally) vs `rgaa-audit` (Acci) — who FINDS the non-conformity
 
 Both are READ-ONLY accessibility auditors. Neither fixes anything (that
@@ -322,6 +368,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
+| Prody | `product-docs` |
 | Revi (converse) | `revi-converse` |
 | Envy | `review-env` |
 | Revi | `review-pr` |
@@ -1018,6 +1065,68 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
+
+### `product-docs` — Prody
+
+Functional documentation bot — one capable agent writes and maintains
+the BUSINESS-AUDIENCE documentation of a product ("what it does for
+its users") inside a DEDICATED documentation repository, grounded in
+the source code of the N repositories a product catalog names.
+
+It resolves the product from a catalog YAML (`catalog_path` +
+`product_id`), shallow-clones every source repo out of the docs
+worktree, redacts secret-bearing files from those clones, then reads
+what the sources actually implement — user-facing templates, i18n
+catalogs, form and validation rules, routes, API contracts, any
+framework — and writes the product's pages: a hub per user role or
+journey, one sub-page per step. Every page lands as its own
+`docs(...)` commit carrying a `Bot: product-docs` trailer and a
+`Product-Docs-Sources: <repo>@<sha>` trailer recording exactly which
+source commits it was written against.
+
+Sourced facts or `[à confirmer]` — never an invented business rule.
+Human-validated prose is preserved and touched only where the code
+contradicts it. A repository it could not clone is declared as a hole
+in the report, never documented from inference.
+
+The determinism is TRUTH-only: a scope gate fails the run if anything
+outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
+it if a published page still carries working notes, and convergence
+is those two gates ∧ the campaign's honest `docs_aligned` contract —
+nothing else. A deterministic scan runs each pass as an ADVISORY
+hints producer (dead links, orphan pages, catalog surfaces no page
+covers): help the agent is free to contradict, never an obligation.
+
+EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
+skills in French (documentary model, GitBook blocks, glossary, tone),
+but when the docs repo publishes its own `.product-docs/*.md` those
+are authoritative and override the defaults. The product team owns
+its editorial line; the bot brings a default, not a house style.
+
+Opt-in delivery: open_mr=true pushes the page series and opens ONE
+pull request at the end of the run — as a DRAFT by default, because
+functional documentation is validated by the product owners on the
+forge and marking it ready is their act, not the bot's.
+
+- **Use when**:
+  Use to generate or maintain the FUNCTIONAL, non-technical
+  documentation of a product — what it does for its users, role by
+  role and journey by journey — when that documentation lives in its
+  OWN repository and the code lives in one or more OTHER repositories
+  named by a product catalog. Run it in the docs repo with
+  `catalog_path` + `product_id`. It writes `.md` under the product's
+  directory only, and never touches the source repositories.
+  
+  NOT for technical documentation living next to the code (that is
+  docs-refresh / Doki, which aligns a repo's own README / docs/ in
+  place), and NOT for a technical knowledge wiki (that is wiki-gen /
+  Wikky, which owns a `wiki/` tree in the code repo). The
+  distinguisher is the AUDIENCE first — a product's users, not its
+  developers — and the topology second: docs repo here, N source
+  repos there.
+- **Triggers**: product-docs, functional-docs, doc-produit
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_s3_bucket` (string), `publish_s3_prefix` (string), `publish_site` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
 

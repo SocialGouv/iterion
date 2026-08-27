@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -120,17 +121,95 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 			}
 			monitors = append(monitors, parsed...)
 		}
+		hint := ""
+		if sup.Model == "" {
+			hint = providerHintFromWatched(wf, sup.Watches)
+		}
 		specs = append(specs, Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   system,
-			Watches:  sup.Watches,
-			Monitors: monitors,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
+			Name:         sup.Name,
+			Model:        sup.Model,
+			ProviderHint: hint,
+			System:       system,
+			Watches:      sup.Watches,
+			Monitors:     monitors,
+			Cooldown:     sup.Cooldown,
+			MaxEvals:     sup.MaxEvals,
 		})
 	}
 	return specs
+}
+
+// providerHintFromWatched derives the provider family the watched nodes
+// run on, so an unpinned evaluator can prefer the credential the run
+// itself uses (see Spec.ProviderHint). Sources, per node, strongest
+// first: the node's explicit provider: routing (walked to the first
+// claw-routable entry), a "provider/" prefix on its model, then the
+// backend's own family (claude_code → anthropic, codex → openai). CLI
+// backends whose credential claw cannot reuse (pi, kimi, grok) yield no
+// hint. A supervisor with no watches supervises the whole run, so its
+// hint derives from ALL the workflow's agent/judge nodes (sorted for
+// determinism — Nodes is a map).
+func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
+	ids := watches
+	if len(ids) == 0 {
+		for id := range wf.Nodes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
+	for _, id := range ids {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			continue
+		}
+		var llm *ir.LLMFields
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			llm = &n.LLMFields
+		case *ir.JudgeNode:
+			llm = &n.LLMFields
+		default:
+			continue
+		}
+		if p := ir.ExpandEnvWithDefault(llm.Provider); p != "" {
+			for _, entry := range strings.Split(p, ",") {
+				if entry = strings.TrimSpace(entry); clawProviders[entry] {
+					return entry
+				}
+			}
+		}
+		// A slash in a model string is only a provider prefix for claw
+		// providers — kimi's canonical aliases (kimi-code/kimi-for-coding)
+		// carry a slash that is an alias namespace, not a provider. An
+		// unrecognized prefix yields nothing and the NEXT source (backend
+		// family, then the next watched node) is consulted instead of
+		// short-circuiting with garbage.
+		model := ir.ExpandEnvWithDefault(llm.Model)
+		if provider, _, found := strings.Cut(model, "/"); found && clawProviders[provider] {
+			return provider
+		}
+		switch ir.ExpandEnvWithDefault(llm.Backend) {
+		case "claude_code":
+			return "anthropic"
+		case "codex":
+			return "openai"
+		}
+	}
+	return ""
+}
+
+// clawProviders is the set of provider names claw can route (the same
+// families pkg/backend/detect reports on). Kept as a literal because the
+// hint is advisory: an out-of-date entry costs a fallback to detector
+// order, never a failure.
+var clawProviders = map[string]bool{
+	"anthropic": true,
+	"openai":    true,
+	"zai":       true,
+	"xai":       true,
+	"bedrock":   true,
+	"vertex":    true,
+	"foundry":   true,
 }
 
 // StartDeclared spawns one Coordinator per spec, each observing runID

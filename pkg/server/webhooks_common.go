@@ -240,8 +240,8 @@ func fixerPRVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, lau
 // mr_gate takes neither tail and its commits strand on the cloud runner's
 // storage branch — the PR never receives them. Vars already present
 // (operator LaunchVars / route ContextVars) win.
-func stampBranchImprovePushBack(vars map[string]string, botID, sourceBranch string, asPR bool) {
-	if botID != branchImproveBotID || sourceBranch == "" {
+func stampBranchImprovePushBack(vars map[string]string, botID, brancherID, sourceBranch string, asPR bool) {
+	if botID != brancherID || sourceBranch == "" {
 		return
 	}
 	if _, ok := vars["open_mr"]; ok {
@@ -350,7 +350,7 @@ func (s *Server) resolveReviewBot(
 ) (string, bool) {
 	botID := cfg.SelectBot()
 	if botID == "" {
-		botID = defaultWebhookBotReviewPR
+		botID = s.roleBots().Reviewer
 	}
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
 }
@@ -369,7 +369,7 @@ func (s *Server) resolveForgeEventBots(cfg webhooks.Config, event, author string
 	}
 	botID := cfg.SelectBot()
 	if botID == "" {
-		botID = defaultWebhookBotReviewPR
+		botID = s.roleBots().Reviewer
 		if s.logger != nil {
 			s.logger.Warn("webhooks: config %s carries no bot_rules — falling back to the pinned review default %q; re-provision the integration to route per bot", cfg.ID, botID)
 		}
@@ -443,12 +443,12 @@ func (s *Server) selectIssueLabeledBot(
 	payloadHash, srcIP string,
 ) (string, bool) {
 	botID := cfg.DefaultBotID
-	if botID == "" && cfg.AllowsBot(featureDevBotID) {
-		botID = featureDevBotID
+	if implementer := s.roleBots().Implementer; botID == "" && cfg.AllowsBot(implementer) {
+		botID = implementer
 	}
 	if botID == "" {
 		if botID = cfg.SelectBot(); botID == "" {
-			botID = defaultWebhookBotReviewPR
+			botID = s.roleBots().Reviewer
 		}
 	}
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)

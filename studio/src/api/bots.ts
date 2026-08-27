@@ -263,8 +263,10 @@ export interface BotEntryWithSchema extends BotEntry {
   /** True for team-authored bots (editable in the cloud editor); false for the
    *  read-only baked catalog. Undefined on older servers → treated read-only. */
   editable?: boolean;
-  /** "tenant" for a team-authored bot, "catalog" for a baked one. */
-  origin?: "tenant" | "catalog";
+  /** "tenant" for a team-authored bot, "platform" for a deployment-wide
+   *  override (super-admin-pushed — see /admin/bots), "catalog" for a
+   *  baked one. */
+  origin?: "tenant" | "platform" | "catalog";
 }
 
 interface ListResponse {

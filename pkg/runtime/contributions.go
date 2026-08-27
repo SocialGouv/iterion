@@ -97,7 +97,7 @@ func mirrorInjectedPluginFiles(workDir string, files []ContributionFile, logger 
 		}
 		destPath := filepath.Join(destDir, f.Name)
 		markerPath := filepath.Join(markerDir, f.Name+".sha256")
-		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierPlugin, logger)
 		if err != nil {
 			return nil, fmt.Errorf("runtime/contrib: mirror %s %q: %w", f.Kind, f.Name, err)
 		}
@@ -151,7 +151,7 @@ func mirrorInjectedLibrarySkills(workDir string, skills []LibrarySkillFile, logg
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, s.Name+".SKILL.md.sha256")
-		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, logger)
+		outcome, err := reconcileSkillFile(tmpPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
 			return nil, nil, fmt.Errorf("runtime/contrib: mirror library skill %q: %w", s.Name, err)
 		}

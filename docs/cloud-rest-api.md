@@ -2,9 +2,34 @@
 
 **Audience.** Anyone calling iterion programmatically — a CI job, an
 SDK author, an operator writing curl runbooks. Every endpoint listed
-here exists in
-[pkg/server/](../pkg/server/); the table is grouped by domain and
-machine-grepped from the `register*` functions, not curated by hand.
+here exists in [pkg/server/](../pkg/server/), grouped by domain.
+
+This page is **curated, not exhaustive**: it covers the cloud- and
+team-facing surface, and leaves out the local-studio-only routes
+(`/api/local/*`, `/api/files`, `/api/projects`, `/api/examples`,
+`/api/filesystem/*`) along with much of the run-console read surface.
+A few team-facing families have their own reference instead of a table
+here: `/api/admin/llm/*` ([cloud-llm-credentials.md](cloud-llm-credentials.md)),
+`/api/admin/settings/usage-caps` ([usage-caps.md](usage-caps.md)),
+the notification routes ([notifications.md](notifications.md)), the
+config-share routes ([config-share.md](config-share.md)), and
+`/api/teams/{id}/plugin-sources*` ([plugins.md](plugins.md)).
+For the complete inventory of the build you are actually running, use
+the generated spec — every route is recorded by the server's
+`recordingMux`, so it cannot drift:
+
+```bash
+iterion openapi                 # OpenAPI 3.1 for this binary, offline, to stdout
+curl .../api/openapi.json       # the same, from a live instance
+curl .../api/routes             # just the method+pattern inventory
+```
+
+(The `/api/v1/native`, `/api/v1/dispatcher` and `/api/v1/mcp/board` CRUD
+sub-trees register on the *same* mux but bypass the route recorder — they
+are handed the bare `ServeMux` rather than the recording wrapper — so
+they are deliberately absent from that spec. The exception worth knowing:
+the forge-facing `/api/v1/native/issues/*` routes and the dependency
+graph go through the recorded path and therefore **do** appear.)
 
 Authentication. Most routes accept any of:
 
@@ -226,11 +251,69 @@ Full reference: [webhooks.md](webhooks.md).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/me/oauth/connections` | member | List configured forfait kinds + expiry |
+| `POST` | `/api/me/oauth/{kind}/authorize/start` | member | Begin the browser authorize handshake — the primary way a user connects |
+| `POST` | `/api/me/oauth/{kind}/authorize/complete` | member | Finish that handshake |
 | `POST` | `/api/me/oauth/{kind}/credentials` | member | Upload pasted `credentials.json` / `auth.json` |
 | `POST` | `/api/me/oauth/{kind}/refresh` | member | Refresh stored access token against the IdP |
 | `DELETE` | `/api/me/oauth/{kind}` | member | Disconnect |
 
-Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go).
+Every route above has a team-scoped mirror at
+`/api/teams/{id}/oauth/…` (`connections`, `{kind}/authorize/start`,
+`{kind}/authorize/complete`, `{kind}/credentials`, `{kind}/refresh`, and
+`DELETE {kind}`) for a forfait the whole team draws on rather than one
+operator.
+
+Source: [pkg/server/oauth_routes.go](../pkg/server/oauth_routes.go),
+[pkg/server/oauth_team_routes.go](../pkg/server/oauth_team_routes.go).
+
+## Credential pool
+
+Lending your own subscription or personal metered key to the shared
+pool — full model in [credential-pool.md](credential-pool.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/me/pool` | member | Your pledges and what they have served |
+| `PUT` | `/api/me/pool/{source}/{ref}` | member | Create or update a pledge (ceilings, sharing window, bot allow-list) |
+| `DELETE` | `/api/me/pool/{source}/{ref}` | member | Withdraw a pledge |
+| `GET` | `/api/me/pool/history` | member | The runs your quota served |
+| `GET` | `/api/teams/{id}/pool` | team member | The pool's policy and its donors |
+| `PUT` | `/api/teams/{id}/pool` | team admin | Set the audience policy deciding who may draw |
+
+Source: [pkg/server/credpool_routes.go](../pkg/server/credpool_routes.go).
+
+## Cloud schedules
+
+Recurring bots, the cloud counterpart of `iterion schedule` —
+[scheduling.md](scheduling.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/teams/{id}/schedules` | team member | List the team's cron-scheduled bots |
+| `POST` | `/api/teams/{id}/schedules` | team admin | Create a schedule |
+| `PATCH` | `/api/teams/{id}/schedules/{sid}` | team admin | Update one |
+| `DELETE` | `/api/teams/{id}/schedules/{sid}` | team admin | Remove one |
+
+Source: [pkg/server/schedules_routes.go](../pkg/server/schedules_routes.go).
+
+## Triggers (event-driven runs)
+
+The subscription registry binding (event filter) → (bot launch), gated
+on `server_info.triggers_enabled` —
+[ADR-046](adr/046-event-driven-runs-trigger-spine.md).
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/api/v1/triggers` | member | List subscriptions (team-scoped in cloud) |
+| `POST` | `/api/v1/triggers` | member | Create one |
+| `GET` | `/api/v1/triggers/{id}` | member | Read one |
+| `PUT` | `/api/v1/triggers/{id}` | member | Replace one |
+| `DELETE` | `/api/v1/triggers/{id}` | member | Remove one |
+| `POST` | `/api/v1/triggers/emit` | member | Publish a custom event onto the bus |
+| `GET` | `/api/v1/triggers/health` | member | Evaluator + bus health |
+| `POST` | `/api/v1/bots/{name}/triggers/from-invocation` | member | Generate a subscription from a bot manifest's `invocations:` block |
+
+Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 ## Personal access tokens (PATs)
 
@@ -267,7 +350,7 @@ Read-only views plus the launch / resume mutations the studio drives.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/runs` | member (tenant-scoped) | List runs |
-| `GET` | `/api/runs/global-active` | super-admin | All active runs platform-wide |
+| `GET` | `/api/runs/global-active` | member | Active runs across the **local** stores on this machine — a desktop-daemon affordance walking `$HOME/.iterion/**`. In cloud mode it returns `{"runs":[]}` unconditionally: the pod's `$HOME` is shared infrastructure, so walking it could leak across tenants. |
 | `POST` | `/api/runs` | member | Launch a workflow |
 | `POST` | `/api/runs/preview-cost` | member | Estimate cost before launch |
 | `POST` | `/api/runs/uploads` | member | Upload an attachment |
@@ -284,15 +367,26 @@ Read-only views plus the launch / resume mutations the studio drives.
 | `POST` | `/api/runs/{id}/pause` | member | Pause |
 | `POST` | `/api/runs/{id}/resume` | member | Resume (re-publishes through the queue) |
 | `POST` | `/api/runs/{id}/fork` | member | Fork at a prior turn |
-| `POST` | `/api/runs/{id}/merge` | member | Merge the run's worktree onto a branch |
+| `POST` | `/api/runs/{id}/merge` | member | Land the run's storage branch on a target branch. For a **repo-targeted** run — whose workspace is gone by the time it returns — the server materialises its own clone of the launch ref, runs the same merge pipeline, and pushes the advanced target back to the forge (never force). The merge is persisted as merged only once the forge has it; a refused push records `merge_status=failed`. |
+| `GET` | `/api/runs/{id}/merge/conflicts` | member | Conflicting paths left by a merge attempt |
+| `POST` | `/api/runs/{id}/merge/conflicts/resolve` | member | Resolve one conflicting path with supplied content |
+| `POST` | `/api/runs/{id}/merge/conflicts/resolve-with-agent` | member | Delegate one conflict to the resolver agent (`ITERION_CONFLICT_RESOLVER_MODEL`) |
+| `POST` | `/api/runs/{id}/merge/conflicts/finalize` | member | Commit the resolved merge and continue the pipeline |
+| `POST` | `/api/runs/{id}/merge/conflicts/abort` | member | Abandon the merge; the storage branch is preserved |
 | `POST` | `/api/runs/{id}/commit-and-finalize` | member | Commit pending work and finalise |
 | `POST` | `/api/runs/{id}/rename` | member | Rename a run |
+| `GET` | `/api/runs/{id}/children` | member | Child (subbot) runs |
+| `GET` | `/api/runs/{id}/review/scope` / `…/review/diff` | member | Human-gate review scope and its diff ([review-scope.md](review-scope.md)) |
+| `GET` | `/api/runs/{id}/session-board` | member | Session-board widgets ([session-board.md](session-board.md)) |
+| `GET` | `/api/runs/{id}/interactions/pending` | member | Unanswered `ask_user_async` questions |
+| `GET`/`DELETE` | `/api/runs/{id}/queue-messages`, `…/queue-message/{msgID}` | member | Pending steering messages for the run |
 | `GET` | `/api/runs/{id}/log` | member | Streamed run log |
 | `GET` | `/api/runs/{id}/preview` | member | Preview proxy (SSRF-guarded) |
+| `GET` | `/api/ws/runs/{id}/shell` | member (via `?t=`) | Post-mortem PTY in a preserved worktree ([post-mortem-shell.md](post-mortem-shell.md)) |
 | `GET` | `/api/ws/runs/{id}` | member (via `?t=`) | Live run-console WebSocket |
 | `GET` | `/api/v1/runs/stats` | member | Rolling stats (for the studio) |
 | `GET` | `/api/v1/limits/cost` | member | Cost-cap status |
-| `POST` | `/api/v1/limits/cost/override` | super-admin | Temporary cost-cap override |
+| `POST` | `/api/v1/limits/cost/override` | member | Grant or revoke the day's cost-cap override. **Any authenticated member** — the handler performs no role check and records the audit actor as `operator`. |
 
 Source: [pkg/server/runs.go](../pkg/server/runs.go).
 
@@ -317,8 +411,18 @@ Source: [pkg/server/runs.go](../pkg/server/runs.go).
 | `GET` | `/api/admin/dlq/{seq}` | super-admin | Peek payload |
 | `POST` | `/api/admin/dlq/{seq}/replay` | super-admin | Re-publish onto the live subject |
 | `DELETE` | `/api/admin/dlq/{seq}` | super-admin | Discard |
+| `GET` | `/api/admin/bots` | super-admin | List platform bot overrides (metadata + content digest) |
+| `GET` | `/api/admin/bots/{slug}` | super-admin | One override incl. its file map |
+| `PUT` | `/api/admin/bots/{slug}` | super-admin | Push/replace an override (`{files, version?}`; compiled before persisting; 413 over the body cap) |
+| `DELETE` | `/api/admin/bots/{slug}` | super-admin | Remove the override (baked catalog serves again) |
+| `PUT/DELETE` | `/api/admin/bots/{slug}/files/{path}` | super-admin | Single-file edit of an override |
+| `POST` | `/api/admin/bots/{slug}/fork` | super-admin | Seed the override from the baked bundle (`{from}`) |
+| `GET/PUT` | `/api/admin/settings/bot-roles` | super-admin | Webhook role→bot bindings (merge semantics; `null` clears a field) |
+| `GET/PUT` | `/api/admin/settings/sandbox` | super-admin | `sandbox: auto` fallback image override |
 
 Sources: [pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go),
+[pkg/server/admin_bots_routes.go](../pkg/server/admin_bots_routes.go),
+[pkg/server/platform_settings.go](../pkg/server/platform_settings.go),
 [pkg/server/queue_sweeper.go](../pkg/server/queue_sweeper.go).
 
 ## Server info + health

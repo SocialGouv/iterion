@@ -129,8 +129,8 @@ Operator (JWT, `canManageTeam`, audited):
 | DELETE | `/api/teams/{id}/config-shares/{sid}` | revoke |
 | GET | `/api/teams/{id}/config-shares/{sid}/deliveries` | audit trail |
 
-The studio surfaces the operator side on a bot's home page (a "Config shares"
-card, gated on `server_info.config_shares_enabled`).
+The studio surfaces the operator side on a bot's home page (the
+"Config-share links" card, gated on `server_info.config_shares_enabled`).
 
 Signed-in **config-editor** (the least-privilege `config_editor` team role,
 ADR-078 — a real cookie session, `canEditConfigShares`-gated, not a token):
@@ -144,8 +144,8 @@ ADR-078 — a real cookie session, `canEditConfigShares`-gated, not a token):
 | PATCH | `/api/teams/{id}/config-editor/shares/{sid}/schedule` | edit **only** the cron of that category's schedule |
 
 **Cadence.** The recurrence of a category's digest is not repo config — it is a
-first-class schedule in iterion's schedule store (visible in the Schedules
-view). The config-editor may read and adjust **only the cron** of the schedule
+first-class schedule in iterion's schedule store (visible in the studio
+under Automations → Schedules). The config-editor may read and adjust **only the cron** of the schedule
 bound to its share's `(bot, category)` (`vars.category == share.category`); a
 different category's schedule is unreachable, and a missing schedule returns
 `404` (creating a category's schedule + delivery sinks stays an operator

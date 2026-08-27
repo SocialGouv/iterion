@@ -125,16 +125,19 @@ func publishForeignVersion(t *testing.T, conn *natsq.Conn, v int, runID, tenantI
 func TestSchemaRolloutMixedFleet(t *testing.T) {
 	uri := schemaRolloutNATSURI(t)
 
-	// Both directions of a strict-equality mismatch: this runner BEHIND a
+	// Both directions of an out-of-window mismatch: this runner BEHIND a
 	// newer producer (server-first rolling upgrade), and this runner AHEAD
-	// of messages published before the cutover (the Revi case on #481).
+	// of messages published before the dual-accept window opened (the Revi
+	// case on #481). Versions INSIDE [MinSchemaVersion, SchemaVersion]
+	// decode normally (additive fields — pinned by the pkg/queue unit
+	// tests), so the "older" direction probes just below the window.
 	for _, dir := range []struct {
 		name              string
 		v                 int
 		incompatibleShape bool
 	}{
 		{"newer producer than consumer, changed wire shape", queue.SchemaVersion + 1, true},
-		{"older producer than consumer", queue.SchemaVersion - 1, false},
+		{"older producer than consumer", queue.MinSchemaVersion - 1, false},
 	} {
 		t.Run(dir.name, func(t *testing.T) {
 			conn, _ := schemaRolloutConn(t, uri)
@@ -426,7 +429,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("save run: %v", err)
 		}
-		publishForeignVersion(t, conn, queue.SchemaVersion-1, runID, tenantID, false)
+		publishForeignVersion(t, conn, queue.MinSchemaVersion-1, runID, tenantID, false)
 		cons, err := conn.NewConsumer(ctx)
 		if err != nil {
 			t.Fatalf("consumer: %v", err)
@@ -505,7 +508,7 @@ func TestSchemaRolloutMixedFleet(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("save run: %v", err)
 		}
-		publishForeignVersion(t, conn, queue.SchemaVersion-1, runID, tenantID, false)
+		publishForeignVersion(t, conn, queue.MinSchemaVersion-1, runID, tenantID, false)
 		cons, err := conn.NewConsumer(ctx)
 		if err != nil {
 			t.Fatalf("consumer: %v", err)

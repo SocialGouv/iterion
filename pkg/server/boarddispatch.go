@@ -601,10 +601,11 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return fmt.Errorf("card %s has no bot", iss.ID)
 	}
 	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
-	path, source, err := s.resolveBotSource(iss.Bot)
+	lb, err := s.resolveBotSource(ctx, iss.Bot)
 	if err != nil {
 		return err
 	}
+	defer lb.Cleanup()
 	// A webhook-launched card carries its launch context (repo + the webhook's
 	// BYOK key / secret overrides) in reserved BotArgs keys (ensureBoardCard) —
 	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
@@ -617,10 +618,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// A card that targets a pull request also needs the repo's launch policy
 	// and a publish grant, neither of which can ride the card itself.
 	lc.Vars = s.applyPRLaunchContext(ctx, tenant, "", iss.Bot, lc.Vars, nil)
-	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath:        path,
-		Source:          source,
-		BotID:           iss.Bot,
+	spec := runview.LaunchSpec{
 		Vars:            lc.Vars,
 		RepoURL:         lc.RepoURL,
 		RepoRef:         lc.RepoRef,
@@ -638,7 +636,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 			IssueID:    iss.ID,
 			IssueTitle: iss.Title,
 		},
-	})
+	}
+	lb.Stamp(&spec)
+	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/store"
+
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -452,4 +455,139 @@ func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
 	if len(resp.Bots) != 1 || resp.Bots[0].Name != "alpha" {
 		t.Fatalf("explicit --bots-path must stay pinned: got %+v", resp.Bots)
 	}
+}
+
+// A platform-override entry carries an EMPTY Path. PUT /api/v1/bots/{name}
+// must refuse it (409) instead of joining "" and scaffolding a stray
+// ./manifest.yaml in the server's CWD while silently dropping the edit.
+func TestHandleBotsPut_PlatformOverrideRefused(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	ctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+	if _, err := s.botSources.Create(ctx, botsource.BotSource{
+		TenantID: botsource.PlatformTenantID,
+		Slug:     "shadow-bot",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: shadow-bot\ndisplay_name: Shadow\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidatePlatformBots()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	strayManifest := filepath.Join(cwd, "manifest.yaml")
+	if _, err := os.Stat(strayManifest); err == nil {
+		t.Fatalf("precondition: %s already exists", strayManifest)
+	}
+
+	r := httptest.NewRequest("PUT", "/api/v1/bots/shadow-bot", strings.NewReader(`{"display_name":"Hijack"}`))
+	r.SetPathValue("name", "shadow-bot")
+	w := httptest.NewRecorder()
+	s.handleBotsPut(w, r)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("PUT on a platform-override bot = %d (%s), want 409", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(strayManifest); err == nil {
+		_ = os.Remove(strayManifest)
+		t.Fatal("PUT scaffolded a stray manifest.yaml in the server CWD")
+	}
+}
+
+// The workspace overlay is never consulted for platform-override entries, so
+// toggling one through it must refuse instead of 200-ing a silent no-op.
+func TestHandleBotOverlay_PlatformOverrideRefused(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	s.cfg.WorkDir = t.TempDir()
+	ctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+	if _, err := s.botSources.Create(ctx, botsource.BotSource{
+		TenantID: botsource.PlatformTenantID,
+		Slug:     "shadow-bot",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: shadow-bot\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidatePlatformBots()
+
+	r := httptest.NewRequest("PUT", "/api/v1/bots/shadow-bot/overlay", strings.NewReader(`{"enabled":false}`))
+	r.SetPathValue("name", "shadow-bot")
+	w := httptest.NewRecorder()
+	s.handleBotOverlay(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("overlay on a platform-override bot = %d (%s), want 409", w.Code, w.Body.String())
+	}
+}
+
+// A loose single-file catalog bot forks as {main.bot: <its source>} — the
+// fork must not walk the file's PARENT directory (which sweeps in every
+// sibling bot and then 404s on the missing top-level main.bot key).
+func TestCatalogBundleFiles_LooseSingleFileBot(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "solo.bot"), []byte(testBotMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling bundle whose files must NOT leak into the fork.
+	sib := filepath.Join(dir, "sibling")
+	if err := os.MkdirAll(sib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sib, "main.bot"), []byte(testBotMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Bots.Paths = []string{dir}
+
+	files, id, err := s.catalogBundleFiles("solo")
+	if err != nil {
+		t.Fatalf("catalogBundleFiles: %v", err)
+	}
+	if id != "solo" || len(files) != 1 || files[botsource.MainBotFile] != testBotMain {
+		t.Fatalf("loose fork = (id=%q, %d files) — want just main.bot with the loose source", id, len(files))
+	}
+}
+
+// platformBotManifest sits on every launch's retry-policy resolution: it
+// must serve from the resolver cache, never pay a per-call store read.
+// Proven by swapping in a store that fails every read AFTER the cache is
+// warm — the manifest must still come back.
+func TestPlatformBotManifest_ServedFromCache(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	ctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
+	if _, err := s.botSources.Create(ctx, botsource.BotSource{
+		TenantID: botsource.PlatformTenantID,
+		Slug:     "cached-bot",
+		Files: map[string]string{
+			botsource.MainBotFile: testBotMain,
+			"manifest.yaml":       "name: cached-bot\ndisplay_name: Cached\n",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidatePlatformBots()
+	if m := s.platformBotManifest("cached-bot"); m == nil || m.DisplayName != "Cached" {
+		t.Fatalf("warm read = %+v, want the override manifest", m)
+	}
+
+	s.botSources = failingBotSourceStore{Store: s.botSources}
+	if m := s.platformBotManifest("cached-bot"); m == nil || m.DisplayName != "Cached" {
+		t.Fatalf("cached read = %+v — a per-call store read leaked through", m)
+	}
+}
+
+// failingBotSourceStore fails every read.
+type failingBotSourceStore struct{ botsource.Store }
+
+func (failingBotSourceStore) GetBySlug(context.Context, string, string) (botsource.BotSource, error) {
+	return botsource.BotSource{}, context.DeadlineExceeded
+}
+
+func (failingBotSourceStore) ListByTenant(context.Context, string) ([]botsource.BotSource, error) {
+	return nil, context.DeadlineExceeded
 }

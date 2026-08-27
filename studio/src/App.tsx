@@ -34,6 +34,7 @@ const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
 const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const PlatformLlmCredsPage = lazy(() => import("@/views/admin/PlatformLlmCredsPage"));
+const PlatformBotsPage = lazy(() => import("@/views/admin/PlatformBotsPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -453,6 +454,7 @@ function AuthedApp() {
           <Route path="/admin/orgs" component={OrgsAdminPage} />
           <Route path="/admin/users" component={UsersAdminPage} />
           <Route path="/admin/llm-credentials" component={PlatformLlmCredsPage} />
+            <Route path="/admin/bots" component={PlatformBotsPage} />
           <Route path="/admin/audit" component={AuditAdminPage} />
           <Route path="/admin/dlq" component={DLQAdminPage} />
           {serverInfo?.native_tracker_enabled ? (

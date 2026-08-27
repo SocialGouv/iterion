@@ -114,7 +114,21 @@ func CompileWorkflowFromSource(path, source string) (*ir.Workflow, string, error
 // inline source when supplied, on-disk file otherwise. Used by the
 // cloud-mode publisher path so a missing FilePath isn't fatal as long
 // as the caller uploaded the source.
-func compileForLaunch(path, source string) (*ir.Workflow, string, error) {
+//
+// bundleDir, when non-empty, is a launch-materialized STORED bot bundle
+// (LaunchSpec.BundleDir): its prompts/ merge into the AST before ir.Compile
+// — the same treatment a baked bundle gets through CompileBundleWorkflow —
+// so a stored bot's prompt references validate and hash identically. A
+// bundle dir that fails to open is an explicit error, never a silent
+// fall-through to a prompt-less compile.
+func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, error) {
+	if bundleDir != "" {
+		b, err := bundle.OpenDir(bundleDir)
+		if err != nil {
+			return nil, "", fmt.Errorf("open stored bot bundle: %w", err)
+		}
+		return compileWith(path, source, true, b)
+	}
 	if source != "" {
 		return CompileWorkflowFromSource(path, source)
 	}

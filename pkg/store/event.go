@@ -195,9 +195,15 @@ const (
 	EventEdgeSelected   EventType = "edge_selected"
 	EventBudgetWarning  EventType = "budget_warning"
 	EventBudgetExceeded EventType = "budget_exceeded"
-	EventRunFinished    EventType = "run_finished"
-	EventRunFailed      EventType = "run_failed"
-	EventRunCancelled   EventType = "run_cancelled"
+	// EventBudgetExitGrace records that a node ran on a SPENT budget
+	// because it sits on the run's exit path — data: {dimension, used,
+	// limit, node}. A run that emits it has, deliberately, spent past
+	// what it declared: the operator must be able to see that in the
+	// events, not only in the invoice.
+	EventBudgetExitGrace EventType = "budget_exit_grace"
+	EventRunFinished     EventType = "run_finished"
+	EventRunFailed       EventType = "run_failed"
+	EventRunCancelled    EventType = "run_cancelled"
 	// EventAlert is an in-process-only run-health alert (stall, budget,
 	// failure) fanned out to studio browser sessions via the event
 	// broker. It is NEVER persisted to events.jsonl — the alert Manager

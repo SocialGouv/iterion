@@ -194,16 +194,32 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 	}
 	checks := rs.budget.Check()
 	if exc := findExceeded(checks); exc != nil {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
-			"dimension": exc.dimension,
-			"used":      exc.used,
-			"limit":     exc.limit,
-		}); err != nil {
-			e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
-			result.eventErrors++
+		// Same grace as the sequential path (graceOrFailBudget): a run
+		// graced past its cap that then walks into a fan-out must not
+		// die at the first branch. No lastGrace dedupe here — branches
+		// run concurrently and those fields are unsynchronized; one
+		// grace event per branch boundary is the honest audit anyway.
+		if _, ok := e.withinBudgetGrace(rs); ok {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
+				result.eventErrors++
+			}
+		} else {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
+				result.eventErrors++
+			}
+			result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
+			return true
 		}
-		result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
-		return true
 	}
 	if hl := findHardLimited(checks); hl != nil {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
@@ -334,6 +350,20 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	}
 
 	if exc := findExceeded(checks); exc != nil {
+		// Post-exec twin of the pre-exec grace above: the node already
+		// spent — killing the branch here converts "stop without
+		// spending" into "spend, then stop anyway".
+		if _, ok := e.withinBudgetGrace(rs); ok {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
+				result.eventErrors++
+			}
+			return false
+		}
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,

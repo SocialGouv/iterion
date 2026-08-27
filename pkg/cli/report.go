@@ -229,6 +229,8 @@ func (rb *reportBuilder) summarize(evt *store.Event, step *reportStep) bool {
 		return rb.sumArtifactWritten(evt, step)
 	case store.EventBudgetWarning:
 		return rb.sumBudgetWarning(evt, step)
+	case store.EventBudgetExitGrace:
+		return rb.sumBudgetExitGrace(evt, step)
 	case store.EventRunFinished:
 		return rb.sumRunFinished(step)
 	case store.EventRunFailed:
@@ -411,6 +413,19 @@ func (rb *reportBuilder) sumBudgetWarning(evt *store.Event, step *reportStep) bo
 		}
 		step.Summary = fmt.Sprintf("Budget warning: %v (used: %v / limit: %v)", evt.Data["dimension"], evt.Data["used"], evt.Data["limit"])
 	}
+	return true
+}
+
+// sumBudgetExitGrace renders the sole audit record of a deliberate
+// overspend: the run walked past a spent cap, inside the bounded grace,
+// to deliver work it had already paid for. The triple must survive into
+// the report — an operator reading it later should not have to open the
+// raw events to learn which axis overran and by how much.
+func (rb *reportBuilder) sumBudgetExitGrace(evt *store.Event, step *reportStep) bool {
+	dim, _ := evt.Data["dimension"].(string)
+	used, _ := evt.Data["used"].(float64)
+	limit, _ := evt.Data["limit"].(float64)
+	step.Summary = fmt.Sprintf("Budget %s spent (%.0f/%.0f) — %q graced to deliver banked work", dim, used, limit, evt.NodeID)
 	return true
 }
 

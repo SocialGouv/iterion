@@ -476,6 +476,25 @@ workflow review:
 
 Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
 
+#### Budget fields
+
+`max_duration` is a Go duration **string**, and the only budget field
+resolved through `${VAR:-default}` — `max_duration: "${RUN_BUDGET:-30m}"`
+lets a bot be re-timed per environment without editing the `.bot`. Two
+consequences worth knowing:
+
+- A value that does not parse is **not** a compile diagnostic. The
+  runtime logs `the duration cap is NOT ENFORCED for this run` at WARN
+  and carries on with no time limit, so a `"2h3Om"` typo costs the cap
+  silently unless you read the log.
+- If `max_duration` was the *only* limit declared, that same typo drops
+  the whole budget tracker (no cost, token, or iteration accounting
+  either) — the tracker is only built when at least one limit resolved.
+
+The numeric fields (`max_cost_usd`, `max_tokens`, `max_iterations`,
+`warn_tokens`) are typed, so they fail at compile time instead
+(`C046` for a malformed `max_cost_usd`).
+
 #### Budget and loop back-edges
 
 A loop's back-edge is declined when the budget can no longer fund another
@@ -530,6 +549,57 @@ subprocess — so a runner pod re-resolving the chain from its own empty
 environment cannot quietly replace what the operator asked for. It is not
 persisted on the run, so `iterion resume --loop-budget-guard` must
 re-state it.
+
+**Exit grace.** Once a cap is *spent* (100%+), the run may still walk
+**forward** — never around a declared `loop` — spending up to **10%
+beyond the declared cap** to reach a terminal node, so work it has already paid for
+gets delivered (the PR opened, the report written) instead of dying on
+disk. Every graced node is recorded as a `budget_exit_grace` event naming
+the exceeded axis and its own used/limit pair. The allowance is
+proportional and bounded: past `cap × 1.1` the run fails as
+`BUDGET_EXCEEDED`, exactly as before — including the `max_duration` axis,
+where a graced node is given a real deadline at the graced ceiling rather
+than running unbounded. `ITERION_BUDGET_EXIT_GRACE` overrides the ratio;
+`0` (or `off`/`no`/`false`/`none`) makes every declared cap **absolute** —
+the setting for deployments where a cap must be a hard invoice ceiling
+(shared instances, pooled credentials). It parses **fail-closed**: a value
+outside `[0,1]`, or one that is not a number, also means 0, with a one-time
+stderr warning — an operator reaching for this variable wants a *tighter*
+policy, so an unreadable value must never grant the permissive default.
+
+The grace is **refused** in two cases:
+
+- **the loop budget guard is off** — the "no further iteration" half of the
+  safety argument belongs to that guard, and with it lifted a graced run
+  could take a back-edge and keep looping on a spent budget;
+
+  The guard prices `loop`-named back-edges. A `foreach` back-edge is
+  bounded by its collection rather than by affordability, so a graced run
+  inside a `foreach` body keeps iterating until the proportional ceiling
+  stops it — the spend bound holds either way, but "it cannot iterate
+  again" is a promise only the declared-`loop` form makes.
+- **the cap was imposed from outside the run** — a limit clamped by the
+  platform ceiling or by a credential-pool donor's remaining allowance is an
+  absolute promise to a third party, so the declared figure *is* the wall.
+  The marker is set at one choke point (`Budget.ClampToCeiling`, only when
+  it actually lowers something) and travels the cloud queue as
+  `BudgetOverrides.cap_imposed`, so a runner pod enforces it too.
+
+Both *exceeded* stop-paths — the check before a node runs and the overrun
+noticed after one succeeds — go through the same decision, so a node is
+never refused by a rule stricter than the one that admitted it. What the
+second path still catches is a node whose **own** spend carries the run
+past `cap × (1+ratio)`: it completes, and the run then ends. The grace
+buys the node its chance to deliver, not immunity from the ceiling.
+
+The grace only exists **past** the cap. The separate 90% hard limit, which
+refuses to start a new node while an axis sits in `[90%, 100%)` to bound
+concurrent overage, is **not** graced and is unchanged: it is reached only
+when nothing is exceeded yet, so it stops a run *before* the grace could
+ever apply. The counter-intuitive consequence is real — a run refused at
+92% of its cap gets no grace, while a run already at 105% may walk on to
+its terminal node. Raise the cap and resume for the former; the latter is
+the case the grace was built for.
 
 ```iter
 workflow campaign:

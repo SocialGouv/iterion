@@ -125,17 +125,21 @@ flowchart LR
 
 ## 💡 What teams build with it
 
-Iterion ships a maintained fleet of **25+ production bots** — real, grounded
+Iterion ships a maintained fleet of **30+ production bots** — real, grounded
 examples of what an operated agent workflow looks like. A few of the jobs they do:
 
 | | Use case | Bots that run it |
 |---|---|---|
 | 🚀 | **Ship software from a prompt** — greenfield apps and end-to-end features | Appy · Featurly · Fini · Bmady |
 | 🔁 | **Continuously review & improve a codebase** — whole-repo and per-branch campaigns, mono-default PR review with optional cross-family confirmation, test coverage | Willy · Billy · Revi · Testy |
+| 🏗️ | **Modernise a legacy codebase** — behaviour-preserving programmes run lot by lot, over a golden-master net that is proved non-blind by mutation, with a doctrine-bound judge for the blocked cases | Morphy · Goldy · Campy · Themis |
 | 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Vulny · Shieldy |
 | ⬆️ | **Upgrade dependencies safely** — multi-stack agentic upgrades with a review gate | Renovacy · Vetty |
-| 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography | Doki · Wikky · Adry |
-| ♿ | **Accessibility audits** — RGAA 4.1.2 over deterministic gates | Acci |
+| 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography and ADR re-challenge | Doki · Wikky · Adry · ReArchi |
+| ♿ | **Accessibility audits** — WCAG 2.2 AA / RGAA over deterministic gates | Acci · Ally |
+| 🧪 | **Close the end-to-end coverage gap** — inventory an app's features from the outside, keep a committed feature×coverage matrix, write the missing specs | Endy |
+| 📈 | **Make a codebase observable** — error tracking, standardized structured logs, opt-in tracing | Obsy |
+| 🌐 | **Stand up a live review environment** — deploy the current commit and hand back a real https URL for e2e tests and human review | Envy |
 | 🗂️ | **Triage & route work** — classify board cards, auto-open PRs, answer PR questions | Triagy · Revi |
 | 📡 | **Watch & react** — feed/veille monitoring and digests | Vigie |
 | 🧭 | **A strategic partner** — a conversational co-CTO and roadmap, an architectural visionary | Nexie · Evoly |

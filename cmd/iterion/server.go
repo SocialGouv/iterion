@@ -43,6 +43,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -325,6 +326,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Logger:  logger,
 	})
 
+	sandboxResolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -340,8 +342,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
-		BotSources:       stores.botSources,
 		CredPool:         credBroker,
+		// The SAME resolver instance the server's admin PUT invalidates —
+		// publish-time pinning sees a mutation immediately on this replica.
+		SandboxImage: func(ctx context.Context) string {
+			return sandboxResolver.Get(ctx).EffectiveImage()
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -515,6 +521,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
 		BotSources:             stores.botSources,
+		BotRolesSettings:       stores.botRoles,
+		SandboxSettings:        stores.sandboxCfg,
+		SandboxResolver:        sandboxResolver,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -616,6 +625,8 @@ type cloudStores struct {
 	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
 	usageCapSettings *usagecap.MongoSettingsStore
+	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -643,6 +654,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
+		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas

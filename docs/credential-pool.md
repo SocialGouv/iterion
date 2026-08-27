@@ -87,6 +87,16 @@ declared budget, the allowance) wins. A donor who set no spend cap grants an
 allowance of `0`, which means *no ceiling*, not "nothing left" (an exhausted
 donor is never selected in the first place).
 
+A cap the allowance actually lowered is marked **imposed** — the clamp runs
+through the same `Budget.ClampToCeiling` primitive as the platform ceiling,
+which sets the marker whenever it changes something, and the marker travels
+onto the queue as `BudgetOverrides.cap_imposed`. That matters because the
+runtime otherwise grants a spent run a bounded **exit grace** (up to 10%
+past its cap, to walk forward to a terminal node — see
+[dsl.md](dsl.md#budget-and-loop-back-edges)). On a donor's allowance the
+grace is **refused**: someone else's money is an absolute promise, so the
+clamped figure is the wall, not a soft target.
+
 ## Availability rules
 
 A pledge is skipped when it is paused, unhealthy, inside a cooldown, outside

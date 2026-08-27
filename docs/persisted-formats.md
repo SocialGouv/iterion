@@ -168,7 +168,7 @@ emitter when a consumer needs an exact payload contract.
 | Family | Persisted event types |
 |---|---|
 | Run lifecycle/control | `run_started`, `run_paused`, `human_input_requested`, `human_answers_recorded`, `interaction_answered`, `run_resumed`, `run_auto_resumed`, `run_retry_scheduled`, `run_workspace_reset`, `run_steered`, `run_health`, `run_finished`, `run_failed`, `run_cancelled`, `run_interrupted` |
-| Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `artifact_written`, `plan_written` |
+| Graph/budget/artifacts | `branch_started`, `branch_finished`, `branch_abandoned`, `node_started`, `node_recovery`, `node_verified_action`, `node_finished`, `edge_selected`, `join_ready`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `artifact_written`, `plan_written` |
 | LLM, delegation, and tools | `llm_request`, `llm_prompt`, `llm_retry`, `llm_step_finished`, `assistant_text`, `llm_compacted`, `tool_started`, `tool_called`, `tool_error`, `delegate_started`, `delegate_finished`, `delegate_error`, `delegate_retry`, `model_fallback`, `model_drift` |
 | Review gate | `review_turn`, `review_verdict`, `review_merged` |
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
@@ -180,6 +180,18 @@ emitter when a consumer needs an exact payload contract.
 `run_health` is its persisted, replayable counterpart. A single torn JSONL
 tail line is tolerated; widespread corruption returns the typed
 `ErrEventsCorrupted` rather than presenting a partial audit as complete.
+
+`budget_exit_grace` is the audit record of a **deliberate** overspend: the
+node ran on a cap that was already spent, inside the bounded exit grace, so
+the run could reach a terminal node and deliver work it had paid for. Its
+`data` carries `{dimension, used, limit}` — the axis that overran and *its
+own* used/limit pair, never another axis's — with the graced node in the
+event's own `node_id`. On the sequential path it is deduplicated per
+`(node_id, dimension)`; a fan-out emits one per branch boundary instead,
+because branches run concurrently and one event per boundary is the honest
+audit. `iterion report` renders it, so an operator never has to open the raw
+stream to learn that a run spent past what it declared. See
+[dsl.md](dsl.md#budget-and-loop-back-edges).
 
 ## Artifacts
 

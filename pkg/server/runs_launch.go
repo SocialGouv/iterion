@@ -248,30 +248,32 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Cloud mode has no operator filesystem, so a bare workspace file_path
-	// can't be read. But a CATALOG bot (bots/<name>) IS present on both the
-	// server and runner pod images — resolve it off the pod FS (like the
-	// webhook/scheduler/board/trigger launchers) and carry BotID so the
-	// runner mirrors the bundle's skills. This is what lets the studio
-	// launch Nexie/Revi/etc. by id or catalog path without uploading bytes.
+	// can't be read. Resolve the bot through the tiered authority instead
+	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a
+	// PLATFORM override, then the baked catalog off the pod FS. Stored bots
+	// run their store content inline, with the materialized bundle merged at
+	// compile and the ref stamped for the runner; catalog bots resolve like
+	// the webhook/scheduler/board/trigger launchers. This is what lets the
+	// studio launch Nexie/Revi/etc. by id or catalog path without uploading
+	// bytes — and what makes an override effective on the very next launch.
 	botID := strings.TrimSpace(req.BotID)
-	// A TEAM-AUTHORED bot (pkg/botsource) resolves FIRST so it overrides a baked
-	// catalog bot of the same slug: its main.bot runs inline, and its skills ride
-	// the publisher's Contributions channel to the runner.
+	var launchLB *launchBot
 	if s.cfg.Mode == "cloud" && req.Source == "" {
-		if src, slug, ok := s.tenantBotSource(r.Context(), req.BotID, req.FilePath); ok {
-			req.Source, botID = src, slug
-			if req.FilePath == "" {
-				req.FilePath = "bots/" + slug + "/main.bot"
-			}
+		id, _ := auth.FromContext(r.Context())
+		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
+		if lbErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "resolve bot: %v", lbErr)
+			span.SetStatus(codes.Error, "bot resolution failed")
+			return
+		}
+		if lb != nil {
+			launchLB = lb
+			defer launchLB.Cleanup()
+			req.Source, req.FilePath, botID = lb.Source, lb.Path, lb.BotID
 		}
 	}
-	if s.cfg.Mode == "cloud" && req.Source == "" {
-		if src, p, id, ok := s.catalogBotSource(req.BotID, req.FilePath); ok {
-			req.Source, req.FilePath, botID = src, p, id
-		}
-	}
-	// Anything that is not a resolvable catalog bundle still requires inline
-	// Source in cloud: the server pod cannot read an arbitrary operator path.
+	// Anything that is not a resolvable bot still requires inline Source in
+	// cloud: the server pod cannot read an arbitrary operator path.
 	if s.cfg.Mode == "cloud" && req.Source == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source or a catalog bot_id is required (file_path is not portable across the server pod's filesystem)")
 		span.SetStatus(codes.Error, "cloud mode requires source")
@@ -398,7 +400,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
+	spec := runview.LaunchSpec{
 		FilePath:          absPath,
 		Source:            req.Source,
 		BotID:             botID,
@@ -438,7 +440,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		RepoRef:            req.RepoRef,
 		ProjectPath:        repoProjectPath,
 		SecretOverrides:    repoSecretOverrides,
-	})
+	}
+	// Stored-bot resolution (team/platform): the compile-time bundle dir and
+	// the runner-side ref ride the spec. Threaded from the SAME resolution
+	// that produced req.Source — never re-fetched, so a push racing this
+	// request cannot pair this launch's IR with newer resources.
+	launchLB.StampBundle(&spec)
+	res, err := s.runs.Launch(ctx, spec)
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)
@@ -520,12 +528,13 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Shared with the retry sweeper so the automated resume resolves its
 	// source exactly like this one (see resolveResumeSource).
-	absPath, resolvedSource, pathErr := s.resolveResumeSource(filePath, req.Source, runMeta.WorkflowSource)
+	absPath, resolvedSource, resumeLB, pathErr := s.resolveResumeSource(r.Context(), runMeta.BotSourceTenant, filePath, req.Source, runMeta.WorkflowSource)
 	if pathErr != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", pathErr)
 		span.SetStatus(codes.Error, "resume source unresolvable")
 		return
 	}
+	defer resumeLB.Cleanup()
 	req.Source = resolvedSource
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
@@ -566,13 +575,17 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		// force-resume retry re-sends the SAME upload ids, and they
 		// would already be gone. Only paid for on an upload-carrying
 		// resume — it compiles the workflow a second time.
-		if pfErr := s.runs.PreflightResume(ctx, runview.ResumeSpec{
+		pfSpec := runview.ResumeSpec{
 			RunID:    id,
 			FilePath: absPath,
 			Source:   req.Source,
 			Answers:  answers,
 			Force:    req.Force,
-		}); pfErr != nil {
+		}
+		if resumeLB != nil {
+			pfSpec.BundleDir, pfSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+		}
+		if pfErr := s.runs.PreflightResume(ctx, pfSpec); pfErr != nil {
 			s.writeResumeError(w, r, pfErr)
 			span.RecordError(pfErr)
 			span.SetStatus(codes.Error, "resume preflight failed")
@@ -592,14 +605,18 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		answers = promoted
 	}
 
-	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
+	resumeSpec := runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
 		Source:   req.Source,
 		Answers:  answers,
 		Force:    req.Force,
 		Timeout:  timeout,
-	})
+	}
+	if resumeLB != nil {
+		resumeSpec.BundleDir, resumeSpec.BotBundle = resumeLB.BundleDir, resumeLB.Ref
+	}
+	res, err := s.runs.Resume(ctx, resumeSpec)
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {
 			s.httpErrorFor(w, r, http.StatusServiceUnavailable, "server is draining: %v", err)

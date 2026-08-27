@@ -22,6 +22,7 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 )
@@ -29,6 +30,33 @@ import (
 // MainBotFile is the required workflow entry of every bundle — mirrors
 // bundle.MainBotFile so a source cannot persist a bundle the loader would reject.
 const MainBotFile = bundle.MainBotFile
+
+// PlatformTenantID is the sentinel tenant under which the DEPLOYMENT's own
+// bot overrides are stored — the DB-backed form of the catalog baked into
+// the server/runner images, so iterating on a native bot is one API/CLI
+// call instead of an image build + rollout. Platform overrides are ordinary
+// BotSource rows with TenantID = PlatformTenantID, written and read under
+// store.WithTenant(ctx, PlatformTenantID): same collection, same
+// validation, zero schema change — the botsource counterpart of
+// secrets.PlatformTenantID. The ':' suffix keeps the literal outside the
+// identity space of real team ids (mirrors the secrets sentinel family).
+//
+// Resolution precedence everywhere a bot id resolves: team botsource →
+// platform botsource → baked catalog FS. Super-admin only: a platform
+// override runs across ALL tenants, the same trust level as the image.
+const PlatformTenantID = "platform:"
+
+// Bundle size limits enforced by Validate. A BotSource is one Mongo
+// document; unbounded content would silently approach the 16 MB BSON cap
+// and start failing writes with an opaque driver error. The limits keep a
+// row an order of magnitude below that wall and are far above every
+// shipped catalog bundle (largest ≈ 700 KB).
+const (
+	// MaxBundleBytes caps the sum of all file paths + contents.
+	MaxBundleBytes = 6 << 20 // 6 MiB
+	// MaxBundleFiles caps the file-map entry count.
+	MaxBundleFiles = 512
+)
 
 // BotSource is a team-authored bot bundle held as a file map.
 type BotSource struct {
@@ -53,6 +81,20 @@ type BotSource struct {
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// Manifest decodes the bundle's manifest from the file map (manifest.yaml
+// or manifest.yml), or nil when absent/undecodable — the one place the
+// "which manifest file, decoded how" rule lives for stored bundles.
+func (s *BotSource) Manifest() *bundle.Manifest {
+	for _, f := range []string{bundle.ManifestFile, bundle.ManifestFileAlt} {
+		if body, ok := s.Files[f]; ok {
+			if m, err := bundle.DecodeManifest([]byte(body), f); err == nil {
+				return m
+			}
+		}
+	}
+	return nil
 }
 
 // Store persists bot sources. Mongo-backed in cloud, memory in tests/local.
@@ -89,13 +131,28 @@ func (s *BotSource) Validate() error {
 	if len(s.Files) == 0 {
 		return fmt.Errorf("botsource: files is empty (main.bot is required)")
 	}
+	if len(s.Files) > MaxBundleFiles {
+		return fmt.Errorf("botsource: bundle has %d files, over the %d-file limit", len(s.Files), MaxBundleFiles)
+	}
 	if strings.TrimSpace(s.Files[MainBotFile]) == "" {
 		return fmt.Errorf("botsource: %s is required and must not be empty", MainBotFile)
 	}
-	for key := range s.Files {
+	total := 0
+	for key, content := range s.Files {
 		if err := safeBundlePath(key); err != nil {
 			return err
 		}
+		// The store carries JSON/BSON text: a non-UTF-8 file would be
+		// corrupted on the encoding round trip. Enforced HERE (the one
+		// chokepoint every write path crosses), not only in the friendlier
+		// walkers that feed push/fork.
+		if !utf8.ValidString(content) {
+			return fmt.Errorf("botsource: file %q is not UTF-8 text — binary files cannot be stored in a bot source", key)
+		}
+		total += len(key) + len(content)
+	}
+	if total > MaxBundleBytes {
+		return fmt.Errorf("botsource: bundle is %d bytes, over the %d-byte limit", total, MaxBundleBytes)
 	}
 	if body, ok := s.Files[bundle.ManifestFile]; ok {
 		if _, err := bundle.DecodeManifest([]byte(body), bundle.ManifestFile); err != nil {

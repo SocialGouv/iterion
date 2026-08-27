@@ -24,7 +24,6 @@ import (
 
 	"os"
 
-	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
@@ -92,11 +91,11 @@ type Config struct {
 	// counterpart to a plugin installed into the pod's iterion home, which a
 	// restart silently loses. Nil keeps local-only resolution.
 	PluginSources *pluginsource.Resolver
-	// BotSources, when non-nil, resolves the launching team's authored bot
-	// bundles (pkg/botsource) so a tenant bot's skills/ reach the runner via the
-	// Contributions channel — the runner's baked BotsPaths cannot resolve a
-	// tenant bundle, so this is the only way its skills mirror into the workspace.
-	BotSources botsource.Store
+	// SandboxImage, when non-nil, resolves the deployment's effective
+	// `sandbox: auto` fallback image (platform runtime setting over the env
+	// default) at publish time so the pinned value rides the RunMessage.
+	// Nil → the runner keeps its own env/built-in resolution.
+	SandboxImage func(context.Context) string
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -137,7 +136,7 @@ type Publisher struct {
 	oauthForfait   secrets.OAuthStore
 	forgeConns     forge.ConnectionStore
 	pluginSources  *pluginsource.Resolver
-	botSources     botsource.Store
+	sandboxImage   func(context.Context) string
 	credPool       *credpool.Broker
 	identity       TeamResolver
 
@@ -229,7 +228,7 @@ func New(cfg Config) (*Publisher, error) {
 		oauthForfait:   cfg.OAuthForfait,
 		forgeConns:     cfg.ForgeConnections,
 		pluginSources:  cfg.PluginSources,
-		botSources:     cfg.BotSources,
+		sandboxImage:   cfg.SandboxImage,
 		credPool:       cfg.CredPool,
 		identity:       cfg.Identity,
 	}, nil
@@ -824,6 +823,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoSHA:         spec.RepoRef,
 		ProjectPath:     spec.ProjectPath,
 		BotID:           spec.BotID,
+		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
 		// Same display parity a local launch gets from the engine: the
@@ -929,16 +929,21 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
-	contributions = p.appendTenantBotSkills(ctx, contributions, tenantID, spec.BotID)
 	msg := &queue.RunMessage{
-		V:               queue.SchemaVersion,
-		Contributions:   contributions,
-		RunID:           runID,
-		WorkflowName:    wf.Name,
-		WorkflowHash:    hash,
-		IRCompiled:      body,
-		Vars:            inputs,
-		SecretsRef:      creds.secretsRef,
+		V:             queue.SchemaVersion,
+		Contributions: contributions,
+		RunID:         runID,
+		WorkflowName:  wf.Name,
+		WorkflowHash:  hash,
+		IRCompiled:    body,
+		Vars:          inputs,
+		SecretsRef:    creds.secretsRef,
+		// The stored-bundle ref THREADED from the launch surface's own
+		// resolution (never re-fetched here — a push racing the launch must
+		// not pair this compile's IR with newer resources). The runner
+		// rebuilds the bundle from the store and verifies the version.
+		BotBundle:       queueBotBundleRef(spec.BotBundle),
+		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
@@ -1172,7 +1177,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if contribErr != nil {
 		return contribErr
 	}
-	contributions = p.appendTenantBotSkills(ctx, contributions, prior.TenantID, prior.BotID)
 	msg := &queue.RunMessage{
 		V:             queue.SchemaVersion,
 		Contributions: contributions,
@@ -1184,7 +1188,12 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 			Answers: spec.Answers,
 			Force:   spec.Force,
 		},
-		SecretsRef:      creds.secretsRef,
+		SecretsRef: creds.secretsRef,
+		// Re-resolved by the resume surface like credentials are re-sealed:
+		// the resumed attempt runs the CURRENT stored bundle, consistently
+		// across the compile above and the runner-side materialization.
+		BotBundle:       queueBotBundleRef(spec.BotBundle),
+		SandboxImage:    p.effectiveSandboxImage(ctx),
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
@@ -1487,6 +1496,10 @@ func clampBudgetToGrant(o *ir.BudgetOverrides, wf *ir.Workflow, grant *credpool.
 		logger.Info("cloudpublisher: run %s cost budget capped at $%.2f by its donor's remaining allowance", runID, resolved.MaxCostUSD)
 	}
 	effective.MaxCostUSD = resolved.MaxCostUSD
+	// The donor's allowance is an ABSOLUTE promise: the exit grace must
+	// not spend past it, so the imposed-cap marker travels with the
+	// override (ir.Budget.CapImposed on the runner side).
+	effective.CapImposed = effective.CapImposed || resolved.CapImposed
 	return budgetForWire(&effective)
 }
 
@@ -1503,6 +1516,7 @@ func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
 		MaxDuration:         o.MaxDuration,
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
+		CapImposed:          o.CapImposed,
 	}
 }
 

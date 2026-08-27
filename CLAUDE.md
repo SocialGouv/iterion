@@ -225,6 +225,16 @@ the hours this one spent.
   `purpose: security_read`, which is what keeps the refresh worker from
   minting it a runtime token (that mint would 422 → degrade → withdraw the
   token it exists to supply) and keeps the publish resolver from picking it.
+- [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
+  (incl. natives) on a cloud instance WITHOUT an image rollout: the
+  platform bot-override tier (`iterion remote admin bots push bots/<slug>`,
+  botsource rows under the `platform:` sentinel, resolution team →
+  platform → baked at every launch surface, the runner's by-ref rebuild +
+  version-drift guard, digest-audited), plus the runtime-mutable webhook
+  role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
+  image (`admin sandbox set --default-image …`, pinned per RunMessage).
+  Read it when a bot tweak seems to need a deploy, when a push must be
+  reverted, or when a run fails on "version drift".
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -392,7 +402,8 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/botregistry/` — Discovers bots on disk (single `.bot` files + `.botz` bundle dirs); the shared layer behind `iterion bots list`, the studio `GET /api/v1/bots`, and the dispatcher's per-ticket bot-override resolution. Also generates Nexie's bot-catalog skill from manifests (`iterion bots regen-catalog`, [pkg/botregistry/catalog.go](pkg/botregistry/catalog.go))
 - `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
 - `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
-- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md))
+- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md)) — and, under the reserved `platform:` sentinel tenant, the deployment-wide **platform bot overrides** (super-admin `/api/admin/bots` + `iterion remote admin bots push`): the DB-backed form of the baked catalog, resolved team → platform → baked at every launch surface via [pkg/server/bot_resolver.go](pkg/server/bot_resolver.go) and rebuilt runner-side from the queue message's versioned `bot_bundle` ref (see [docs/platform-bots.md](docs/platform-bots.md))
+- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
 - `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
 - `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
 - `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
@@ -505,6 +516,36 @@ unlike `compress:`, the run-level override **travels onto the cloud queue**
 so a pod never re-decides it. The 90%-hard-limit and exceeded checks remain
 the backstop for a single node that overruns. See
 [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
+
+That guard covers overruns caused by iteration COUNT; a single node that
+overshoots the cap on its own is covered by the **exit grace**
+([pkg/runtime/budget_exit_grace.go](pkg/runtime/budget_exit_grace.go)).
+Once a cap is *spent*, the run may walk **forward** — never around a
+declared `loop`; a `foreach` back-edge is bounded by its collection, not
+priced, so only the declared-loop form promises "it cannot iterate again" —
+spending up to `cap × 1.1` to reach a terminal node, so work it has already
+paid for gets delivered instead of dying on disk. The ceiling is
+PROPORTIONAL (a small cap grants a small grace) and past it the run fails as
+`BUDGET_EXCEEDED` as before. Both *exceeded* stop-paths — the pre-exec check
+and the deferred overrun after a node that succeeded — go through one
+decision (`graceOrFailBudget`), so a node is never refused by a stricter
+rule than the one that admitted it; a node whose OWN spend crosses
+`cap × 1.1` still completes and then ends the run. The 90% hard limit (`budgetHardThreshold`,
+refusing a new node while an axis is in `[90%, 100%)`) is a SEPARATE,
+un-graced path reached only when nothing is exceeded yet — so a run refused
+at 92% gets no grace while one at 105% may walk on, which is surprising
+until you see that the grace begins where the cap ends. The grace is REFUSED outright in two cases: when
+the loop budget guard is off (the "no further iteration" half of the safety
+argument is that guard's), and when the cap was CLAMPED by an authority
+outside the run (`ir.Budget.CapImposed`, set at the single choke point
+`Budget.ClampToCeiling` — platform ceiling, credential-pool donor allowance;
+the marker travels the queue as `BudgetOverrides.cap_imposed`) — an imposed
+cap is an absolute promise to a third party. `ITERION_BUDGET_EXIT_GRACE`
+overrides the ratio and fails **closed** (`0`/`off` = absolute caps; an
+out-of-range or unparsable value also means 0, with a one-time stderr
+warning). Every graced node emits `budget_exit_grace {dimension, used,
+limit}`, rendered by `iterion report`: a deliberate overspend has to be
+visible in the events, not discovered on the invoice.
 
 ### Backend selection
 
@@ -685,7 +726,7 @@ The checkpoint embedded in `run.json` is the authoritative source for resume —
 
 **Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
-**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
+**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `run_finished`, `run_failed`
 
 ### Resume from Failed/Cancelled Runs
 
@@ -1342,18 +1383,22 @@ the BOT, keyed on generic context the engine already provides:**
   naming the other bot. Adding a second reviewer or a second fixer is a bundle,
   not an engine PR. See [pkg/server/webhooks_handoff.go](pkg/server/webhooks_handoff.go).
 
-**Known debt (extract when touched, don't extend):** the webhook layer still
-hardcodes distinguished-role bot ids — `defaultWebhookBotReviewPR`
-("review-pr"), `branchImproveBotID`, `featureDevBotID`
-([pkg/server/webhooks_common.go](pkg/server/webhooks_common.go)), the
-`cmd == "revi"` special-casing ([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)),
-the Billy merge-queue auto-heal + its mission prompt
+**Known debt (extract when touched, don't extend):** the webhook role bot
+ids are no longer read as constants — they resolve through
+`Server.roleBots()` over the `bot_roles` platform-settings family
+([pkg/platformcfg](pkg/platformcfg/platformcfg.go), `iterion remote admin
+roles set --reviewer …`), the constants remaining only as the DEFAULTS
+(enforced by the symbol-sweep test in
+[bot_resolver_sweep_test.go](pkg/server/bot_resolver_sweep_test.go)). What
+remains hardcoded: the `cmd == "revi"` special-casing
+([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)), the
+Billy merge-queue auto-heal mission prompt
 ([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
-`botRosterOrder` list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
+`botRosterOrder` display list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
 and the dispatcher's `ImplementBotOrDefault → "feature-dev"`
-([pkg/dispatcher/config.go](pkg/dispatcher/config.go)). These are ROLES
-(reviewer / implementer / brancher) that should resolve from config/manifest,
-not baked ids. **Do not add to this list** — thread new behaviour through the
+([pkg/dispatcher/config.go](pkg/dispatcher/config.go), local-YAML
+configurable already). Full role-from-manifest extraction stays future
+work. **Do not add to this list** — thread new behaviour through the
 generic seams above. If you find a fresh instance, flag it.
 
 ## A bot that needs tools declares them in `devbox.json`
@@ -1518,7 +1563,7 @@ iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--ma
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
-iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker (import mirrors a forge repo's issues, one-way + idempotent)
 iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
@@ -1536,8 +1581,9 @@ iterion server [--port] [--store-dir]   # HTTP server (run console + studio), wi
 iterion version [--commit]              # Print version; --commit prints only the 12-char git SHA (errors when the build carries none)
 
 # Operational runner and hidden subprocess entry points:
-# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
+# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`, `iterion __permission-hook`
 # Only the double-underscore commands are hidden internal subprocess entry points.
+# `iterion migrate` is a visible-name but Hidden operator-only command (to-cloud, run-paths, orgs).
 ```
 
 Global flags: `--json` (machine output), `--help`

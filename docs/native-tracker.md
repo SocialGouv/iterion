@@ -41,8 +41,8 @@ one record to `events.jsonl`. The event types are:
 `issue_created`, `issue_updated`, `issue_state_changed`,
 `issue_deleted`, `issue_claimed`, `issue_released`,
 `issue_last_run_updated`, `issue_comment_added`,
-`issue_blockers_updated`, `issue_unblocked`, `board_updated`,
-`label_rename`, `label_merge`, `label_delete`.
+`issue_blockers_updated`, `issue_unblocked`, `issue_gave_up`,
+`board_updated`, `label_rename`, `label_merge`, `label_delete`.
 
 The dispatcher stamps every issue it processes with `last_run_id`
 (the run that handled it) + `last_workdir` (the worktree path on
@@ -246,16 +246,20 @@ same JWT middleware as `/api/runs/*`.
 dedicated typed columns on the native `Issue` record; they are not
 part of the freeform `fields` map. `bot_args` is merged on top of
 the dispatcher's rendered `dispatch.vars` key-by-key at launch time,
-with `bot_args` winning on shared keys. `bot` is resolved into the
-dispatch request for custom runners/future routing, but the current
-stock `EngineRunner` is precompiled for one workflow and does not use
-the per-ticket `bot` field to override workflow selection. Use
-`assignee_workflows:` in the dispatcher config for current stock
-workflow routing. See [docs/dispatcher.md §Per-ticket bot + args
-fields](dispatcher.md) for the current handoff.
+with `bot_args` winning on shared keys. `bot` is the dispatch **routing
+key**: the poll loop sets `routeAssignee = iss.Bot` whenever it is
+non-empty, so a per-ticket `bot` wins over the ticket's `assignee` for
+workflow selection, and the bot file is resolved and route-checked
+before dispatch. `assignee_workflows:` in the dispatcher config is the
+routing table consulted under whichever key won. See
+[docs/dispatcher.md §Per-ticket bot + args fields](dispatcher.md).
 
-The SPA's Board view (`/board` in the studio) consumes exactly these
-endpoints — it's a thin React shell on top of the REST surface.
+The SPA's Board view (`/board` in the studio) is a thin React shell on
+top of the REST surface. The table below covers the issue/board CRUD;
+the label manager and the board-schema editor add
+`GET /labels`, `POST /labels/rename`, `POST /labels/merge`,
+`DELETE /labels/{label}`, and the `/board/states*`, `/board/fields*`
+and `/board/views*` routes.
 
 ## Pipeline board (the second board)
 
@@ -455,7 +459,7 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-board` | GET | Global projection: 3 fixed lanes + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
+| `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes (Opened, In progress, Needs attention, Closed) + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
 | `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required; optional `blockers`, `upsert`; `{start:true}` → ready when deps OK else `waiting_deps` |
 | `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
