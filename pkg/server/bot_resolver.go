@@ -132,7 +132,12 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 	}
 	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
 	if err != nil {
-		return nil, nil //nolint:nilerr // unknown id = not found here, the caller decides
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil // unknown id = not found here, the caller decides
+		}
+		// A matching malformed bundle is not absence: preserve the discovery
+		// diagnostic so studio/webhook launches explain why it is unavailable.
+		return nil, err
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

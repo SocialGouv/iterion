@@ -75,6 +75,43 @@ func TestList_DedupesSameBotAcrossRoots(t *testing.T) {
 	}
 }
 
+func TestList_MalformedHigherPrecedenceBundleReservesName(t *testing.T) {
+	// A broken source bundle must not make an older packed copy runnable.
+	// DefaultPaths establishes bots/ > examples/ > .botz/ precedence, and
+	// that precedence still applies when the winning source cannot load.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "review-pr", "manifest.yaml"), `name: review-pr
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "bots", "review-pr", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, ".botz", "review-pr", "manifest.yaml"), "name: review-pr\ndisplay_name: Stale Revi\n")
+	writeFile(t, filepath.Join(dir, ".botz", "review-pr", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if NormalizeName(entry.Name) == "review-pr" {
+			t.Fatalf("malformed bots/review-pr must shadow the stale .botz copy, got %+v", entry)
+		}
+	}
+	if len(diags) != 1 || !strings.Contains(diags[0].Path, filepath.Join("bots", "review-pr")) {
+		t.Fatalf("diags = %#v, want the higher-precedence bundle diagnostic", diags)
+	}
+
+	_, err = ResolveBotPath("review-pr", DefaultPaths(dir))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ResolveBotPath = %v, want the higher-precedence load diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("ResolveBotPath = %v, want the malformed chat diagnostic", err)
+	}
+}
+
 func TestList_MissingPathIsSkipped(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "x.bot"), `## ---

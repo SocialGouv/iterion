@@ -56,14 +56,14 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botreg
 		}
 	}
 	add(catalog, false, "catalog")
-	add(s.platformBotEntries(), false, "platform")
+	if set := s.platformBotSetCached(); set != nil {
+		add(set.entries, false, "platform")
+		diags = append(diags, set.diagnostics...)
+	}
 	if id, _ := auth.FromContext(ctx); id.TeamID != "" {
 		tenantEntries, tenantDiags := s.storedBotEntriesWithDiagnostics(ctx, id.TeamID)
 		add(tenantEntries, true, "tenant")
 		diags = append(diags, tenantDiags...)
-	}
-	if set := s.platformBotSetCached(); set != nil {
-		diags = append(diags, set.diagnostics...)
 	}
 	out := make([]botEntryView, 0, len(order))
 	for _, name := range order {

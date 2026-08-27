@@ -457,11 +457,35 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 	var entries []Entry
 	var diags []DiscoveryError
 	seen := map[string]bool{}
+	// Names are claimed as sources are encountered, not in a final pass.
+	// This preserves root precedence even when the higher-precedence source
+	// is malformed: bots/foo must reserve "foo" so a stale .botz/foo cannot
+	// silently become runnable in its place.
+	seenName := map[string]bool{}
+	addEntry := func(e *Entry) {
+		if e == nil || seen[e.Path] {
+			return
+		}
+		seen[e.Path] = true
+		key := NormalizeName(e.Name)
+		if seenName[key] {
+			return
+		}
+		seenName[key] = true
+		entries = append(entries, *e)
+	}
 	// Diags dedupe by path the way entries do: overlapping roots (e.g. an
 	// explicit "." beside "./bots") would otherwise report the same
 	// malformed bundle once per root that reaches it.
 	seenDiag := map[string]bool{}
 	recordDiag := func(path string, kind DiscoveryErrorKind, err error) {
+		if kind == DiscoveryErrorBundle || kind == DiscoveryErrorFile {
+			base := filepath.Base(path)
+			if kind == DiscoveryErrorFile {
+				base = strings.TrimSuffix(base, filepath.Ext(base))
+			}
+			seenName[NormalizeName(base)] = true
+		}
 		if seenDiag[path] {
 			return
 		}
@@ -486,10 +510,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				recordDiag(root, DiscoveryErrorFile, err)
 				continue
 			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
+			addEntry(e)
 			continue
 		}
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
@@ -512,10 +533,7 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 						// leak its main.bot back in as a loose bot file.
 						return filepath.SkipDir
 					}
-					if e != nil && !seen[e.Path] {
-						entries = append(entries, *e)
-						seen[e.Path] = true
-					}
+					addEntry(e)
 					return filepath.SkipDir
 				}
 				return nil
@@ -529,35 +547,14 @@ func discoverBots(roots []string) ([]Entry, []DiscoveryError, error) {
 				recordDiag(path, DiscoveryErrorFile, err)
 				return nil
 			}
-			if e != nil && !seen[e.Path] {
-				entries = append(entries, *e)
-				seen[e.Path] = true
-			}
+			addEntry(e)
 			return nil
 		})
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	// Dedupe by bundle name across roots, keeping the first occurrence.
-	// Roots are walked in precedence order (DefaultPaths = bots, examples,
-	// .botz), so a source bot in bots/ shadows a stray packed copy of the
-	// same bot in a later root — e.g. a local `iterion bundle pack`
-	// artifact under the gitignored .botz/, which otherwise duplicates the
-	// catalog card and the routing target. Keyed on NormalizeName so
-	// kebab/snake spellings of the same bot collapse the way ResolveBotPath
-	// already resolves them.
-	seenName := make(map[string]bool, len(entries))
-	deduped := entries[:0]
-	for _, e := range entries {
-		key := NormalizeName(e.Name)
-		if seenName[key] {
-			continue
-		}
-		seenName[key] = true
-		deduped = append(deduped, e)
-	}
-	return deduped, diags, nil
+	return entries, diags, nil
 }
 
 func parseBundle(dir string) (*Entry, error) {

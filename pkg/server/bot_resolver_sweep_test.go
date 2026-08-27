@@ -30,7 +30,7 @@ var resolverSweepAllowed = map[string]string{
 func TestBotResolutionSweep_NoRawRegistryReads(t *testing.T) {
 	// Raw lookups that would bypass the platform tier. ResolveBotPath /
 	// FindByName / List / ListWithSchema over the server's effective paths.
-	raw := regexp.MustCompile(`botregistry\.(ResolveBotPath|FindByName|List|ListWithSchema)\(`)
+	raw := regexp.MustCompile(`botregistry\.(ResolveBotPath|FindByName|List|ListWithSchema|ListWithDiagnostics|ListWithSchemaDiagnostics)\(`)
 	sweepServerFiles(t, func(name, body string) {
 		if !raw.MatchString(body) {
 			return

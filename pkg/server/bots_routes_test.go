@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -509,6 +510,33 @@ chat:
 	}
 	if strings.Contains(d.Error, dir) || filepath.IsAbs(d.Path) {
 		t.Errorf("discovery_errors[0] = %+v, must not expose the absolute catalog root %q", d, dir)
+	}
+}
+
+func TestResolveBotTiered_PreservesMalformedCatalogDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	writeBotFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeBotFile(t, filepath.Join(dir, "broken-chat", "main.bot"), testBotSrc)
+
+	srv := New(Config{
+		DisableAuth: true,
+		Bots:        BotsConfig{Paths: []string{dir}},
+	}, iterlog.New(iterlog.LevelError, nil))
+
+	got, err := srv.resolveBotTiered(context.Background(), "", "broken-chat", "")
+	if got != nil {
+		t.Fatalf("resolved malformed bot = %+v, want nil", got)
+	}
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("resolveBotTiered = %v, want the load diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("resolveBotTiered = %v, want the malformed chat diagnostic", err)
 	}
 }
 
