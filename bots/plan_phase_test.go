@@ -97,11 +97,12 @@ func TestPlanPhaseWiring(t *testing.T) {
 	}
 }
 
-// TestPlanPhaseCampaignEdgeMappings pins two authoring invariants that
-// still matter after the engine applies only *selected* incoming edges
-// (#484). A selected forward edge that omits a field still leaks the
-// raw {{input.x}} placeholder, and two selected loop back-edges that
-// share a key still last-wins on that visit:
+// TestPlanPhaseCampaignEdgeMappings pins two authoring invariants the
+// engine still relies on after #484. Exclusive FORWARD siblings are
+// filtered to the selected edge; a loop-head RE-ENTRY still overlays
+// the selected back-edge on every forward edge whose source has output
+// (the back-edge is partial — it restates only the keys that change).
+// So:
 //
 //  1. every FORWARD edge into `campaign` maps every campaign_input field
 //     — an unmapped field is not "" but the raw {{input.x}} placeholder

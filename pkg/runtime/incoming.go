@@ -102,6 +102,25 @@ func edgeInIncoming(edge *ir.Edge, selected []store.IncomingEdge) bool {
 	return false
 }
 
+// incomingOnlyBounded reports whether every recorded incoming edge is a
+// bounded-iteration back-edge (loop or foreach). That is the loop-head
+// re-entry shape: selectEdgeRS replaced the head's set with the single
+// back-edge. A back-edge is an OVERLAY of the keys that change per
+// iteration, not a replacement of the head's whole input — unmapped
+// keys must still come from the forward/entry edges whose sources have
+// output (#484 is about exclusive FORWARD siblings).
+func incomingOnlyBounded(selected []store.IncomingEdge) bool {
+	if len(selected) == 0 {
+		return false
+	}
+	for i := range selected {
+		if selected[i].LoopName == "" && selected[i].ForeachName == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // firstEdge returns the first workflow edge from→to. Used when a router
 // names a target node rather than an *ir.Edge (LLM single-mode).
 func (e *Engine) firstEdge(from, to string) *ir.Edge {
@@ -149,6 +168,18 @@ func mergeJoinIncoming(rs *runState, joinNodeID string, results []*branchResult)
 			seen[k] = true
 			union = append(union, in)
 		}
+	}
+	if len(union) == 0 {
+		// No successful branch recorded an edge into the join (every
+		// branch failed under best_effort, or the join came from the
+		// pre-computed topology). Recording an EMPTY set marks the
+		// node "tracked", which makes buildNodeInputRS drop every
+		// with-mapping into it — including the ones the untracked
+		// fallback would still apply.
+		if rs.selectedIncoming != nil {
+			delete(rs.selectedIncoming, joinNodeID)
+		}
+		return
 	}
 	if rs.selectedIncoming == nil {
 		rs.selectedIncoming = make(map[string][]store.IncomingEdge)

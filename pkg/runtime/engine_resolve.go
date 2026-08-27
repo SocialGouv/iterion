@@ -93,11 +93,18 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	// applyEdge merges one edge's with-mappings into result. A not-yet-run
 	// source never contributes (the mapping is left to a later-firing
 	// edge / the entry fallback). When routing recorded a selected
-	// incoming set for this visit, unselected siblings are skipped even
-	// if their source has output — otherwise a mutually exclusive `when`
-	// / `else` pair that later converges lets the unselected mapping
-	// silently overwrite the selected one (issue #484).
+	// incoming set for this visit:
+	//
+	//  - exclusive FORWARD siblings (#484): only the selected edges
+	//    contribute, so an unselected `when`/`else` cannot clobber.
+	//  - loop-head RE-ENTRY: the recorded set is the single back-edge
+	//    (selectEdgeRS replaces). A back-edge is an OVERLAY of the keys
+	//    that change per iteration, not a replacement of the head's
+	//    whole input — unmapped keys still come from forward/entry
+	//    edges whose source has output. Filtering those out leaked
+	//    raw `{{input.x}}` into campaign prompts (Rae4900).
 	selected, tracked := incomingFor(nodeID, sc)
+	overlayForward := tracked && incomingOnlyBounded(selected)
 	applyEdge := func(edge *ir.Edge) {
 		if edge.To != nodeID || len(edge.With) == 0 {
 			return
@@ -105,8 +112,12 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		if _, ok := sc.outputs[edge.From]; !ok && edge.From != "" {
 			return
 		}
-		if tracked && !edgeInIncoming(edge, selected) {
-			return
+		if tracked {
+			if overlayForward && !edge.IsBoundedIteration() {
+				// keep the forward pass unfiltered
+			} else if !edgeInIncoming(edge, selected) {
+				return
+			}
 		}
 
 		// {{input.X}} in a with-mapping is the source node's output —

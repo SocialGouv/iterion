@@ -236,3 +236,61 @@ func TestSelectedIncoming_SurvivesFailedResume(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectedIncoming_LoopReentryOverlaysPartialBackEdge(t *testing.T) {
+	// A back-edge restates only the keys that change. On re-entry the
+	// recorded set is that single back-edge; unmapped keys must still
+	// come from the entry edge (Rae4900).
+	c := func(node, field string) *ir.DataMapping {
+		return &ir.DataMapping{Key: "c", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{node, field}}}, Raw: "{{outputs." + node + "." + field + "}}"}
+	}
+	wf := &ir.Workflow{
+		Name:  "partial_backedge",
+		Entry: "seed",
+		Nodes: map[string]ir.Node{
+			"seed": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "seed"}},
+			"head": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "head"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "seed", To: "head", With: []*ir.DataMapping{
+				c("seed", "zero"),
+				{Key: "fail_log", Raw: "gate-findings"},
+			}},
+			{From: "head", To: "head", LoopName: "spin", With: []*ir.DataMapping{c("head", "c_next")}},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{"spin": {Name: "spin", MaxIterations: 3, Entries: map[string]bool{"head": true}, Body: map[string]bool{"head": true}}},
+	}
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("run-overlay", nil)
+	rs.outputs["seed"] = map[string]any{"zero": int64(0)}
+	rs.outputs["head"] = map[string]any{"c_next": int64(1)}
+	rs.selectedIncoming["head"] = []store.IncomingEdge{
+		{From: "head", To: "head", LoopName: "spin"},
+	}
+
+	got := eng.buildNodeInputRS("head", rs.scope())
+	if got["c"] != int64(1) {
+		t.Fatalf("back-edge overlay of c = %#v, want 1", got["c"])
+	}
+	if got["fail_log"] != "gate-findings" {
+		t.Fatalf("unmapped entry key dropped on re-entry: fail_log=%#v, want %q", got["fail_log"], "gate-findings")
+	}
+}
+
+func TestMergeJoinIncoming_EmptyUnionLeavesUntracked(t *testing.T) {
+	rs := &runState{selectedIncoming: map[string][]store.IncomingEdge{
+		"join": {{From: "stale", To: "join"}},
+	}}
+	mergeJoinIncoming(rs, "join", []*branchResult{
+		{err: fmt.Errorf("failed"), selectedIncoming: map[string][]store.IncomingEdge{
+			"join": {{From: "a", To: "join"}},
+		}},
+		{err: fmt.Errorf("failed too")},
+	})
+	if _, tracked := rs.selectedIncoming["join"]; tracked {
+		t.Fatalf("empty union left join tracked: %#v", rs.selectedIncoming["join"])
+	}
+}
