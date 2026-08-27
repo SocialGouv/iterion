@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // Decision is the supervisor bot's structured verdict for one wake. The
@@ -120,32 +121,43 @@ func NewLLMEvaluator() *LLMEvaluator {
 
 // resolveModel picks the model spec: the spec's pin wins, then the
 // ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the provider
-// family the supervised nodes run on (Spec.ProviderHint — only when
-// that provider is detected available), then the detector's first
-// suggestion. Returns ErrNoSupervisorModel when none resolve.
-func resolveModel(specModel, providerHint string) (string, error) {
+// family the supervised nodes run on (Spec.ProviderHint — when the env
+// detector sees it OR the run's ctx credentials fund it), then the
+// detector's first suggestion. Returns ErrNoSupervisorModel when none
+// resolve.
+func resolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
 	if specModel != "" {
 		return specModel, nil
 	}
 	if env := os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
 		return env, nil
 	}
-	report := detect.Detect(context.Background())
-	return resolveModelWith("", providerHint, report.Providers)
+	report := detect.Detect(ctx)
+	ctxFunded := func(string) bool { return false }
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		ctxFunded = ctxFundsProvider(creds)
+	}
+	return resolveModelWith("", providerHint, report.Providers, ctxFunded)
 }
 
 // resolveModelWith is resolveModel's pure tail (pin/env already
 // consulted by the caller when empty is passed): hinted provider first —
 // the credential the supervised run itself uses beats whatever key sits
 // first in the host environment, which on the prod pods was a dead
-// OPENAI key 429-ing every eval — then the detector's order.
-func resolveModelWith(specModel, providerHint string, providers []detect.ProviderStatus) (string, error) {
+// OPENAI key 429-ing every eval — then the detector's order. The env
+// detector alone cannot gate the hint: on a runner pod the run's
+// credentials are ctx-sealed (or OAuth-forfait files), invisible to an
+// os.Getenv probe, while the claw registry resolves them from ctx at
+// call time — so ctx funding honours the hint too. detect populates
+// SuggestedModel regardless of availability, which is what makes the
+// ctx-funded branch resolvable.
+func resolveModelWith(specModel, providerHint string, providers []detect.ProviderStatus, ctxFunded func(provider string) bool) (string, error) {
 	if specModel != "" {
 		return specModel, nil
 	}
 	if providerHint != "" {
 		for _, p := range providers {
-			if p.Name == providerHint && p.Available && p.SuggestedModel != "" {
+			if p.Name == providerHint && p.SuggestedModel != "" && (p.Available || ctxFunded(p.Name)) {
 				return p.SuggestedModel, nil
 			}
 		}
@@ -156,10 +168,30 @@ func resolveModelWith(specModel, providerHint string, providers []detect.Provide
 	return "", ErrNoSupervisorModel
 }
 
+// ctxFundsProvider maps the run's ctx credentials onto claw providers: a
+// per-provider API key funds its provider, and an OAuth-forfait
+// credential dir funds the provider its CLI belongs to (claude_code →
+// anthropic, codex → openai) — the registry builds clients from both at
+// call time (credentialsLookup / oauthDirLookup).
+func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
+	return func(provider string) bool {
+		if creds.APIKeys[secrets.Provider(provider)] != "" {
+			return true
+		}
+		switch provider {
+		case "anthropic":
+			return creds.OAuthCredentialFiles["claude_code"] != ""
+		case "openai":
+			return creds.OAuthCredentialFiles["codex"] != ""
+		}
+		return false
+	}
+}
+
 // Evaluate implements Evaluator.
 func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, EvalUsage, error) {
 	if e.client == nil {
-		spec, err := resolveModel(in.Spec.Model, in.Spec.ProviderHint)
+		spec, err := resolveModel(ctx, in.Spec.Model, in.Spec.ProviderHint)
 		if err != nil {
 			return nil, EvalUsage{}, err
 		}

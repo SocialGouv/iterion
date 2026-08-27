@@ -165,8 +165,14 @@ func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
 				return strings.TrimSpace(first)
 			}
 		}
+		// A slash in a model string is only a provider prefix for claw
+		// providers — kimi's canonical aliases (kimi-code/kimi-for-coding)
+		// carry a slash that is an alias namespace, not a provider. An
+		// unrecognized prefix yields nothing and the NEXT source (backend
+		// family, then the next watched node) is consulted instead of
+		// short-circuiting with garbage.
 		model := ir.ExpandEnvWithDefault(llm.Model)
-		if provider, _, found := strings.Cut(model, "/"); found && provider != "" && !strings.ContainsAny(provider, "${") {
+		if provider, _, found := strings.Cut(model, "/"); found && clawProviders[provider] {
 			return provider
 		}
 		switch ir.ExpandEnvWithDefault(llm.Backend) {
@@ -177,6 +183,20 @@ func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
 		}
 	}
 	return ""
+}
+
+// clawProviders is the set of provider names claw can route (the same
+// families pkg/backend/detect reports on). Kept as a literal because the
+// hint is advisory: an out-of-date entry costs a fallback to detector
+// order, never a failure.
+var clawProviders = map[string]bool{
+	"anthropic": true,
+	"openai":    true,
+	"zai":       true,
+	"xai":       true,
+	"bedrock":   true,
+	"vertex":    true,
+	"foundry":   true,
 }
 
 // StartDeclared spawns one Coordinator per spec, each observing runID
