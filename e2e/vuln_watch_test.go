@@ -2732,3 +2732,39 @@ func TestVulnWatch_AdvisoryLookupSurvivesATokenTheEndpointRefuses(t *testing.T) 
 		t.Fatalf("a refused bearer on a PUBLIC endpoint took the whole confirmation down, got %q", vc)
 	}
 }
+
+// The harness drives this bot's nodes BY HAND rather than running the engine,
+// which is what makes the suite fast and credential-free — and what lets the
+// graph and the harness drift apart in silence. confirm_versions came with a
+// comment saying exactly that ("a node added to the graph has to be added HERE
+// too or it silently never runs"), but a comment is not a check: a future node
+// wired into the workflow and forgotten here would be covered by nothing, and
+// every existing test would still pass.
+//
+// This is that check. It is deliberately scoped to this one bot's fixture, so
+// it can only ever fail on the bot the suite is about.
+func TestVulnWatch_HarnessDrivesEveryNodeInTheGraph(t *testing.T) {
+	wf := compileFixture(t, "vuln-watch/main.bot")
+
+	// Every tool node the harness is known to drive (see runWatchOpts and the
+	// per-node tests). Adding a node to main.bot without wiring it here — or
+	// into runWatchOpts — is the drift this test exists to catch.
+	driven := map[string]bool{
+		"plan": true, "poll_dependabot": true, "poll_advisories": true,
+		"poll_exploit": true, "match_policy": true, "confirm_versions": true,
+		"notify": true, "commit_state": true,
+	}
+	for id, node := range wf.Nodes {
+		if _, isTool := node.(*ir.ToolNode); !isTool {
+			continue
+		}
+		if !driven[id] {
+			t.Errorf("tool node %q is in the workflow but no test drives it — the harness executes nodes by hand, so it is covered by nothing", id)
+		}
+	}
+	for id := range driven {
+		if _, ok := wf.Nodes[id]; !ok {
+			t.Errorf("the harness claims to drive %q, which no longer exists in the workflow", id)
+		}
+	}
+}
