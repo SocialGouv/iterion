@@ -171,6 +171,13 @@ func (r *specRegistry) merge(provider, modelID string, curated ModelCapabilities
 	if spec.ContextWindow > 0 {
 		out.ContextWindow = spec.ContextWindow
 	}
+	// Max output has no curated counterpart, but the >0 guard still matters:
+	// consensusSpec zeroes a field the providers disagree on, and zero means
+	// unknown — carrying it through unguarded would overwrite a value a later
+	// curated branch may supply.
+	if spec.MaxOutputTokens > 0 {
+		out.MaxOutputTokens = spec.MaxOutputTokens
+	}
 	// Flags fall back to heuristics when the source omits them (nil pointer).
 	if spec.Reasoning != nil {
 		out.Reasoning = *spec.Reasoning

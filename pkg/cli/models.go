@@ -19,14 +19,15 @@ type ModelsOptions struct {
 
 // modelRow is one resolved model in the output (human + JSON share this shape).
 type modelRow struct {
-	Spec          string `json:"spec"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Source        string `json:"source"`
-	ContextWindow int    `json:"context_window"`
-	Reasoning     bool   `json:"reasoning"`
-	ToolCall      bool   `json:"tool_call"`
-	Temperature   bool   `json:"temperature"`
+	Spec            string `json:"spec"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Source          string `json:"source"`
+	ContextWindow   int    `json:"context_window"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	Reasoning       bool   `json:"reasoning"`
+	ToolCall        bool   `json:"tool_call"`
+	Temperature     bool   `json:"temperature"`
 }
 
 // modelsResult is the top-level JSON envelope.
@@ -67,14 +68,15 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 			return UserInputError(err)
 		}
 		result.Models = append(result.Models, modelRow{
-			Spec:          rc.Spec,
-			Provider:      rc.Provider,
-			Model:         rc.Model,
-			Source:        string(rc.Source),
-			ContextWindow: rc.ContextWindow,
-			Reasoning:     rc.Reasoning,
-			ToolCall:      rc.ToolCall,
-			Temperature:   rc.Temperature,
+			Spec:            rc.Spec,
+			Provider:        rc.Provider,
+			Model:           rc.Model,
+			Source:          string(rc.Source),
+			ContextWindow:   rc.ContextWindow,
+			MaxOutputTokens: rc.MaxOutputTokens,
+			Reasoning:       rc.Reasoning,
+			ToolCall:        rc.ToolCall,
+			Temperature:     rc.Temperature,
 		})
 	}
 
@@ -93,13 +95,14 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 	}
 
 	p.Header("Model capabilities")
-	headers := []string{"MODEL", "SOURCE", "CONTEXT", "REASON", "TOOLS", "TEMP"}
+	headers := []string{"MODEL", "SOURCE", "CONTEXT", "MAX OUT", "REASON", "TOOLS", "TEMP"}
 	rows := make([][]string, 0, len(result.Models))
 	for _, m := range result.Models {
 		rows = append(rows, []string{
 			m.Spec,
 			m.Source,
 			formatContextWindow(m.ContextWindow),
+			formatContextWindow(m.MaxOutputTokens),
 			yesNo(m.Reasoning),
 			yesNo(m.ToolCall),
 			yesNo(m.Temperature),
@@ -110,7 +113,8 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 }
 
 // formatContextWindow renders a token count compactly (1M, 200K, 4096) and
-// "—" when unknown (zero).
+// "—" when unknown (zero). Shared by the context window and the max-output
+// column: both are token counts whose zero means unknown.
 func formatContextWindow(n int) string {
 	switch {
 	case n <= 0:

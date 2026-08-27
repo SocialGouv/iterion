@@ -105,3 +105,29 @@ func TestUnanimousProvidersStillResolve(t *testing.T) {
 		t.Errorf("unanimous context window lost: %d", got.ContextWindow)
 	}
 }
+
+// Max output joins context window and price as a consensus-filtered numeric
+// field. It is tested apart from them because it was the one field parsed and
+// cached but never surfaced: nothing downstream could have caught a regression
+// where disagreeing providers hand a caller one publisher's completion cap.
+func TestConsensusMaxOutputTokens(t *testing.T) {
+	agree := map[string]fetchedSpec{
+		"anthropic/claude-opus-5": {MaxOutputTokens: 64_000},
+		"azure/claude-opus-5":     {MaxOutputTokens: 64_000},
+	}
+	r := &specRegistry{}
+	r.indexLocked(agree)
+	if got := r.byModel["claude-opus-5"].MaxOutputTokens; got != 64_000 {
+		t.Errorf("unanimous max output = %d, want 64000", got)
+	}
+
+	disagree := map[string]fetchedSpec{
+		"zai/glm-5.2":    {MaxOutputTokens: 128_000},
+		"novita/glm-5.2": {MaxOutputTokens: 32_000},
+	}
+	r2 := &specRegistry{}
+	r2.indexLocked(disagree)
+	if got := r2.byModel["glm-5.2"].MaxOutputTokens; got != 0 {
+		t.Errorf("conflicting max output = %d, want 0 (unknown, not one publisher's cap)", got)
+	}
+}
