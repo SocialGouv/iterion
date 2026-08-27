@@ -144,6 +144,28 @@ type RunBudget struct {
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
 }
 
+// RunBudgetOverrides is the operator's launch-time budget ask, persisted
+// verbatim so the resume path can replay it — the budget counterpart of
+// ModelOverrides ("replayed from the run doc, the single source the
+// launch stamped"). Distinct from RunBudget, which is the EFFECTIVE
+// resolved cap set the runtime snapshots for display: that one is
+// display-only by contract, this one is the replay source. It matters
+// because cloud resumes are often unattended (usage-window auto-retries),
+// so no operator is present to re-state the override — a resume that
+// dropped it silently fell back to the workflow's own cap. Mesure : un
+// run posé avec max_duration 8h, parqué par le cap puis repris, est mort
+// à 14407s/14400s pendant que son doc affichait 8h. Nil = the launch
+// declared no override. No CapImposed field: that marker is a product of
+// the grant clamp, recomputed against the CURRENT grant on every
+// publication, never a declaration.
+type RunBudgetOverrides struct {
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
+	MaxTokens           int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	MaxDuration         string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
+	MaxIterations       int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
+	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
+}
+
 // RunBudgetRaises is the live-steering (raise_budget) counterpart of
 // RunBudget: the ABSOLUTE caps granted mid-run, persisted so resume
 // re-applies them (raise-only) over the workflow's declared budget.
@@ -274,6 +296,10 @@ type Run struct {
 	// budget meters with a denominator. Nil when the workflow declares
 	// no budget: block and no overrides applied. See RunBudget.
 	Budget *RunBudget `json:"budget,omitempty" bson:"budget,omitempty"`
+	// BudgetOverrides is the launch-time budget ask persisted verbatim —
+	// the resume path's replay source (see RunBudgetOverrides). Nil for
+	// launches that declared none and for legacy runs.
+	BudgetOverrides *RunBudgetOverrides `json:"budget_overrides,omitempty" bson:"budget_overrides,omitempty"`
 	// LoopOverrides is the accumulated per-loop iteration grant applied
 	// by live steering (bump_loop): loop name → extra iterations on top
 	// of the loop's declared/expr-resolved max. AUTHORITATIVE for
