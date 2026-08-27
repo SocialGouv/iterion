@@ -24,10 +24,18 @@ func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, owner
 		UserID:        ownerKey,
 		Kind:          secrets.OAuthKindClaudeCode,
 		SealedPayload: sealed,
+		// Production shape: sealOAuthRecord stamps the subscription's audit
+		// identity at connect time. A sentinel rather than a real hash —
+		// what a tier owes the bundle is THIS record's identity, whatever
+		// it was derived from.
+		Fingerprint: seededFP(ownerKey),
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 }
+
+// seededFP is the fingerprint seedOAuth stamps on the record it creates.
+func seededFP(ownerKey string) string { return "fp-" + ownerKey }
 
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {
 	t.Helper()

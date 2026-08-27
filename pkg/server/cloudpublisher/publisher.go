@@ -487,12 +487,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					continue
 				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
-				if rec.Fingerprint != "" {
-					if bundle.OAuthFingerprints == nil {
-						bundle.OAuthFingerprints = map[string]string{}
-					}
-					bundle.OAuthFingerprints[string(rec.Kind)] = rec.Fingerprint
-				}
+				setOAuthFingerprint(&bundle, string(rec.Kind), rec.Fingerprint)
 				p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
 			}
 		}
@@ -513,6 +508,11 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			switch grant.Source {
 			case credpool.SourceOAuth:
 				bundle.OAuthCredentials[grant.Ref] = grant.Payload
+				// The donor's own credential identity, so the borrower's
+				// meter follows the lent subscription rather than the slot
+				// it landed in: a donor who reconnects a fresh one is not
+				// parked by the readings of the account it replaced.
+				setOAuthFingerprint(&bundle, grant.Ref, grant.Fingerprint)
 			case credpool.SourceAPIKey:
 				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
 			}
@@ -588,6 +588,23 @@ type credResolution struct {
 	// topology vars for a queued run. Empty = nothing resolved (env
 	// fallback), in which case no injection happens.
 	families reviewtopology.FamilySet
+}
+
+// setOAuthFingerprint stamps the audit identity of the credential that
+// filled an OAuth slot, whichever tier it came from. Every tier must do it:
+// the runner's usage-cap meter keys on this, and a slot filled without one
+// falls back to the historical slot-shaped meter — where a rotated
+// credential inherits the exhausted readings of the account it replaced.
+// An empty fingerprint (a record predating stamping) is left absent rather
+// than written blank, so the historical key stays reachable.
+func setOAuthFingerprint(bundle *secrets.RunBundle, kind, fp string) {
+	if fp == "" {
+		return
+	}
+	if bundle.OAuthFingerprints == nil {
+		bundle.OAuthFingerprints = map[string]string{}
+	}
+	bundle.OAuthFingerprints[kind] = fp
 }
 
 // fillFromPlatform fills the API-key and OAuth slots still empty after the
@@ -687,8 +704,14 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 			}
 			bundle.OAuthCredentials[string(rec.Kind)] = payload
 			bundle.PlatformSourced[string(rec.Kind)] = true
+			// The platform forfait is ONE meter for the whole deployment
+			// (ScopePlatform), which makes rotating it exactly the lived
+			// failure one tier up: without the identity, a super-admin who
+			// swaps in a fresh subscription inherits the exhausted
+			// readings of the one it replaced, fleet-wide.
+			setOAuthFingerprint(bundle, string(rec.Kind), rec.Fingerprint)
 			taken[secrets.WireFamily(string(rec.Kind))] = true
-			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, rec.Kind)
+			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s fp=%s", runID, rec.Kind, rec.Fingerprint)
 		}
 	}
 }
