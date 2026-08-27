@@ -7,6 +7,7 @@ import {
   attachSessionRun,
   candidateWorkflows,
   pickLiveRunId,
+  runBelongsToBot,
 } from "./startupDiscovery";
 
 const api = vi.hoisted(() => ({
@@ -86,7 +87,7 @@ describe("attachSessionRun", () => {
     };
     const store = { getState: () => state } as unknown as RunStore;
     api.getRunWithRetry.mockResolvedValueOnce({
-      run: { id: "run-a", workflow_name: "whats-next" },
+      run: { id: "run-a", workflow_name: "whats_next" },
     });
     let cancelled = false;
 
@@ -107,7 +108,7 @@ describe("attachSessionRun", () => {
     await expect(attaching).resolves.toBe(false);
   });
 
-  it("rejects a run whose workflow is not this bot's", async () => {
+  it("refuses a run whose workflow is not this bot's", async () => {
     const state = {
       reset: vi.fn(),
       applySnapshot: vi.fn(),
@@ -116,18 +117,32 @@ describe("attachSessionRun", () => {
     };
     const store = { getState: () => state } as unknown as RunStore;
     api.getRunWithRetry.mockResolvedValueOnce({
-      run: { id: "run-nexie", workflow_name: "whats-next" },
+      run: { id: "run-a", workflow_name: "copilot" },
     });
 
-    const attached = await attachSessionRun({
-      store,
-      runId: "run-nexie",
-      botId: "copilot",
-      scopeKey: "project-a",
-      signal: new AbortController().signal,
-      isCancelled: () => false,
-    });
-    expect(attached).toBe(false);
+    await expect(
+      attachSessionRun({
+        store,
+        runId: "run-a",
+        botId: "whats-next",
+        scopeKey: "project-a",
+        signal: new AbortController().signal,
+        isCancelled: () => false,
+      }),
+    ).resolves.toBe(false);
+    expect(state.reset).not.toHaveBeenCalled();
     expect(state.applySnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("runBelongsToBot", () => {
+  it("accepts hyphen and underscore spellings of the bot id", () => {
+    expect(runBelongsToBot("whats_next", "whats-next")).toBe(true);
+    expect(runBelongsToBot("whats-next", "whats-next")).toBe(true);
+  });
+
+  it("rejects another bot's workflow", () => {
+    expect(runBelongsToBot("copilot", "whats-next")).toBe(false);
+    expect(runBelongsToBot(undefined, "whats-next")).toBe(false);
   });
 });

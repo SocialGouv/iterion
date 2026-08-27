@@ -18,6 +18,7 @@ import {
   writeConversations,
   type Conversation,
   claimRun,
+  switchConversationBot,
 } from "./conversations";
 
 const c = (id: string, botId = "copilot"): Conversation => ({ id, botId });
@@ -254,5 +255,18 @@ describe("one run, one conversation", () => {
   it("lets a conversation re-record its own run", () => {
     const list = [{ id: "a", botId: "copilot", runId: "run-a" }];
     expect(claimRun(list, "a", "run-a")?.[0]?.runId).toBe("run-a");
+  });
+});
+
+describe("switching the bot on a conversation", () => {
+  it("drops the previous bot's run so the new bot cannot attach it", () => {
+    const list = [
+      { id: "a", botId: "copilot", runId: "run-copi", fresh: false },
+      { id: "b", botId: "copilot", runId: "run-other" },
+    ];
+    const got = switchConversationBot(list, "a", "whats-next");
+    expect(got[0]).toMatchObject({ id: "a", botId: "whats-next", fresh: true });
+    expect(got[0]?.runId).toBeUndefined();
+    expect(got[1]?.runId).toBe("run-other");
   });
 });

@@ -23,7 +23,26 @@ import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 import { AssistantProvider, useAssistantSession } from "./AssistantProvider";
 
 const { nexie, copi, sessionState } = vi.hoisted(() => ({
-  sessionState: { runId: null as string | null },
+  sessionState: {
+    runId: null as string | null,
+    session: {
+      status: "idle" as const,
+      runId: null as string | null,
+      messages: [] as unknown[],
+      busyMessageId: null,
+      runStatus: null,
+      errorMessage: null,
+      lastVars: null,
+      discoveryError: null,
+      retryDiscovery: () => {},
+      sessionRepo: null,
+      launchRepo: null,
+      launch: async () => {},
+      submitHumanAnswer: async () => {},
+      newSession: () => {},
+      resume: async () => {},
+    },
+  },
   nexie: {
     id: "whats-next",
     label: "Nexie",
@@ -56,24 +75,7 @@ vi.mock("@/hooks/useChatRegistry", () => ({
 }));
 
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
-  useWhatsNextSession: () =>
-    ({
-      status: "idle",
-      runId: sessionState.runId,
-      messages: [],
-      busyMessageId: null,
-      runStatus: null,
-      errorMessage: null,
-      lastVars: null,
-      discoveryError: null,
-      retryDiscovery: () => {},
-      sessionRepo: null,
-      launchRepo: null,
-      launch: async () => {},
-      submitHumanAnswer: async () => {},
-      newSession: () => {},
-      resume: async () => {},
-    }) as unknown as UseWhatsNextSession,
+  useWhatsNextSession: () => sessionState.session as unknown as UseWhatsNextSession,
 }));
 
 function BotProbe() {
@@ -103,6 +105,7 @@ function renderAt(path: string, children: React.ReactNode) {
 beforeEach(() => {
   window.localStorage.clear();
   sessionState.runId = null;
+  sessionState.session.runId = null;
 });
 
 afterEach(() => {
@@ -149,6 +152,7 @@ describe("the assistant's correspondent per route", () => {
     writeConversations([{ id: "dock-1", botId: "copilot", runId: "dock-run" }]);
     writeActiveConversation("dock-1");
     sessionState.runId = "nexie-run";
+    sessionState.session.runId = "nexie-run";
     renderAt("/whats-next", <BotProbe />);
     await waitFor(() => {
       expect(screen.getByTestId("bot").textContent).toBe("Nexie");
@@ -160,6 +164,7 @@ describe("the assistant's correspondent per route", () => {
     writeConversations([{ id: "dock-1", botId: "copilot" }]);
     writeActiveConversation("dock-1");
     sessionState.runId = "copi-run";
+    sessionState.session.runId = "copi-run";
     renderAt("/board", <BotProbe />);
     await waitFor(() => {
       expect(readConversations()[0]?.runId).toBe("copi-run");

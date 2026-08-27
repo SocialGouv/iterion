@@ -55,6 +55,7 @@ import {
   addConversation,
   claimRun,
   closeConversation,
+  switchConversationBot,
   newConversationId,
   readActiveConversation,
   readConversations,
@@ -156,6 +157,26 @@ const FALLBACK_BOT: FirstClassBot = {
   launcherVars: [],
   nodeMap: {},
 };
+
+// Used only until the keyed engine publishes its first session, so the
+// unkeyed app tree can render on the first paint without waiting.
+const FALLBACK_SESSION = {
+  status: "idle",
+  runId: null,
+  messages: [],
+  busyMessageId: null,
+  runStatus: null,
+  errorMessage: null,
+  lastVars: null,
+  discoveryError: null,
+  retryDiscovery: () => {},
+  sessionRepo: null,
+  launchRepo: null,
+  launch: async () => {},
+  submitHumanAnswer: async () => {},
+  newSession: () => {},
+  resume: async () => {},
+} as unknown as UseWhatsNextSession;
 
 export function AssistantProvider({ children }: { children: ReactNode }) {
   // One store for the whole app lifetime. Not the registry
@@ -317,15 +338,7 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     (id: string) => {
       writeStringFlag(ASSISTANT_BOT_KEY, id);
       if (!active) return;
-      // Drop runId: the conversation's previous run belongs to the previous
-      // bot. Keeping it makes attachRunId hydrate that transcript under the
-      // new bot's name and queue the next message into the wrong session.
-      persist(
-        ensured.map((c) =>
-          c.id === active.id ? { ...c, botId: id, runId: undefined } : c,
-        ),
-        active.id,
-      );
+      persist(switchConversationBot(ensured, active.id, id), active.id);
     },
     [active, ensured, persist],
   );
@@ -408,10 +421,13 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
         />
       ))}
       <ActiveConversation
-        // Not keyed. A key here remounts `{children}` — AppShell, the
-        // route tree, dialogs — because this wraps the authenticated
-        // app. Session identity is the hook's bot/scope reset plus
-        // selectBot dropping runId (R39dd84).
+        // Keyed on the conversation AND the bot: switching either is a
+        // different session, and a stale transcript must not bleed across.
+        // The key lives on the session engine, NOT around {children} —
+        // children is the authenticated app, and remounting it on a
+        // /whats-next round-trip (or a bot hydrate) dropped scroll,
+        // closed dialogs, and refetched every query.
+        sessionKey={`${active?.id ?? "none"}:${activeBot?.id ?? "none"}`}
         bot={activeBot}
         bots={registry.dockBots}
         selectBot={selectBot}
@@ -484,6 +500,7 @@ function RunSessionPump({
 // The conversation on screen: it runs the session AND publishes it, so the
 // dock and /whats-next read the same one.
 function ActiveConversation({
+  sessionKey,
   bot,
   bots,
   selectBot,
@@ -493,6 +510,7 @@ function ActiveConversation({
   onLaunched,
   children,
 }: {
+  sessionKey: string;
   bot: FirstClassBot | null;
   bots: FirstClassBot[];
   selectBot: (id: string) => void;
@@ -502,32 +520,58 @@ function ActiveConversation({
   onLaunched: (runId: string) => void;
   children: ReactNode;
 }) {
+  const [sessionValue, setSessionValue] =
+    useState<AssistantSessionContextValue | null>(null);
   return (
-    <RunStoreProvider store={store}>
-      <ActiveConversationInner
-        bot={bot}
-        bots={bots}
-        selectBot={selectBot}
-        discover={discover}
-        attachRunId={attachRunId}
-        onLaunched={onLaunched}
+    <>
+      <RunStoreProvider store={store}>
+        <ActiveConversationEngine
+          key={sessionKey}
+          bot={bot}
+          bots={bots}
+          selectBot={selectBot}
+          discover={discover}
+          attachRunId={attachRunId}
+          onLaunched={onLaunched}
+          onSession={(value) =>
+            setSessionValue((prev) =>
+              prev &&
+              prev.bot === value.bot &&
+              prev.session === value.session &&
+              prev.bots === value.bots &&
+              prev.selectBot === value.selectBot
+                ? prev
+                : value,
+            )
+          }
+        />
+      </RunStoreProvider>
+      <AssistantSessionContext.Provider
+        value={
+          sessionValue ?? { bot, session: FALLBACK_SESSION, bots, selectBot }
+        }
       >
-        {children}
-      </ActiveConversationInner>
-    </RunStoreProvider>
+        {/* Hand the default store back: everything below is the ordinary
+            app, and must not read the assistant's run. Unkeyed so a
+            session-key change cannot remount the route tree. */}
+        <RunStoreProvider store={getDefaultRunStore()}>{children}</RunStoreProvider>
+      </AssistantSessionContext.Provider>
+    </>
   );
 }
 
 // Split so the session hook runs UNDER its conversation's store — the same
-// reason AssistantSessionHost is split from AssistantProvider.
-function ActiveConversationInner({
+// reason AssistantSessionHost is split from AssistantProvider. Keyed by
+// sessionKey in the parent; publishes the session as context rather than
+// wrapping the app in the keyed node.
+function ActiveConversationEngine({
   bot,
   bots,
   selectBot,
   discover,
   attachRunId,
   onLaunched,
-  children,
+  onSession,
 }: {
   bot: FirstClassBot | null;
   bots: FirstClassBot[];
@@ -535,7 +579,7 @@ function ActiveConversationInner({
   discover: boolean;
   attachRunId: string | null;
   onLaunched: (runId: string) => void;
-  children: ReactNode;
+  onSession: (value: AssistantSessionContextValue) => void;
 }) {
   const session = useWhatsNextSession(bot ?? FALLBACK_BOT, {
     discover,
@@ -551,15 +595,10 @@ function ActiveConversationInner({
     () => ({ bot, session, bots, selectBot }),
     [bot, session, bots, selectBot],
   );
-  return (
-    <AssistantSessionContext.Provider value={sessionValue}>
-      {/* Hand the default store back: everything below is the ordinary
-          app, and must not read the assistant's run. */}
-      <RunStoreProvider store={getDefaultRunStore()}>
-        {children}
-      </RunStoreProvider>
-    </AssistantSessionContext.Provider>
-  );
+  useEffect(() => {
+    onSession(sessionValue);
+  }, [sessionValue, onSession]);
+  return null;
 }
 
 // AssistantStoreScope re-enters the assistant's run store. Any surface

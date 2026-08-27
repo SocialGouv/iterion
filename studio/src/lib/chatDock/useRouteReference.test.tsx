@@ -15,24 +15,26 @@ import { AssistantProvider } from "@/components/ChatDock/AssistantProvider";
 import { isAssistantOwnRoute } from "./routeReference";
 import { useRouteReference } from "./useRouteReference";
 
+const idleSession = vi.hoisted(() => ({
+  status: "idle" as const,
+  runId: null,
+  messages: [],
+  busyMessageId: null,
+  runStatus: null,
+  errorMessage: null,
+  lastVars: null,
+  discoveryError: null,
+  retryDiscovery: () => {},
+  sessionRepo: null,
+  launchRepo: null,
+  launch: async () => {},
+  submitHumanAnswer: async () => {},
+  newSession: () => {},
+  resume: async () => {},
+}));
+
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
-  useWhatsNextSession: () => ({
-    status: "idle",
-    runId: null,
-    messages: [],
-    busyMessageId: null,
-    runStatus: null,
-    errorMessage: null,
-    lastVars: null,
-    discoveryError: null,
-    retryDiscovery: () => {},
-    sessionRepo: null,
-    launchRepo: null,
-    launch: async () => {},
-    submitHumanAnswer: async () => {},
-    newSession: () => {},
-    resume: async () => {},
-  }),
+  useWhatsNextSession: () => idleSession,
 }));
 
 afterEach(cleanup);

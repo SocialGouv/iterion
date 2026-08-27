@@ -54,6 +54,16 @@ export async function findLiveRunForBot(
   return pickLiveRunId(matches);
 }
 
+// runBelongsToBot is the same match findLiveRunForBot uses: hyphen and
+// underscore spellings of the bot id. Anything else is another bot's run.
+export function runBelongsToBot(
+  workflowName: string | undefined,
+  botId: string,
+): boolean {
+  if (!workflowName || !botId) return false;
+  return candidateWorkflows(botId).includes(workflowName);
+}
+
 // attachSessionRun hydrates the CALLER'S run store from the
 // given run and remembers it for this (bot, scope). Returns false when
 // `isCancelled()` reports the caller's effect was torn down after the
@@ -77,14 +87,11 @@ export async function attachSessionRun(opts: {
   // listing by a beat. See getRunWithRetry for the race rationale.
   const snap = await getRunWithRetry(opts.runId, { signal: opts.signal });
   if (opts.isCancelled()) return false;
-  const workflow = snap.run.workflow_name ?? "";
-  if (!candidateWorkflows(opts.botId).includes(workflow)) {
-    // attachRunId is conversation-owned, not bot-owned. After a bot
-    // switch the previous bot's runId can still be sitting on the
-    // conversation; hydrating it would fold that transcript through
-    // the new bot's nodeMap and queue messages into the wrong run.
-    return false;
-  }
+  // attachRunId is a conversation's remembered run. Switching the tab's
+  // bot used to keep that id, so bot B would hydrate bot A's transcript
+  // and the composer would steer A's run. Refuse here — the lookup is
+  // also bot-scoped, so an explicit attach must be too.
+  if (!runBelongsToBot(snap.run?.workflow_name, opts.botId)) return false;
   // Continuity is the central whats-next promise: when the user
   // returns to /whats-next after a previous session ended, they
   // expect to see the full transcript of that exchange, not a
