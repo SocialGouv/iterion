@@ -99,9 +99,8 @@ Order of operations:
 
 1. Read `<store>/runs/<id>/run.json`: status, error, and the checkpoint.
    `Glob` for it when you only have an id prefix.
-2. Read `events.jsonl`. It can be long — `Grep` for the node id, for
-   `run_failed`, `budget_`, `edge_selected` or `llm_retry`, then read a
-   slice around the hit.
+2. Read `events.jsonl`. It can be long, so read it in slices and look for the
+   node id, `run_failed`, `budget_`, `edge_selected` or `llm_retry`.
 3. Find the *first* thing that went wrong, not the last thing that
    printed. Cascades are common: one bad node output produces ten
    downstream complaints.

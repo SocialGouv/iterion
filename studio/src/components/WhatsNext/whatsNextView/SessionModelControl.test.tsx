@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { UseSessionModelPrefResult } from "@/hooks/useSessionModelPref";
@@ -9,14 +15,27 @@ import SessionModelControl from "./SessionModelControl";
 
 vi.mock("@/hooks/useModelCatalog", () => ({
   useModelCatalog: () => ({
-    models: [],
+    models: [
+      {
+        spec: "openai/unproven",
+        provider: "openai",
+        model: "unproven",
+        backends: [],
+        usable: false,
+        reachability: "unknown",
+      },
+    ],
     recommended: null,
     resolvedDefaultBackend: "",
     error: null,
   }),
 }));
 vi.mock("@/components/models/ModelPicker", () => ({
-  default: () => <div data-testid="model-picker" />,
+  default: ({ onChange }: { onChange: (spec: string) => void }) => (
+    <button type="button" onClick={() => onChange("openai/unproven")}>
+      choose unproven
+    </button>
+  ),
 }));
 
 afterEach(cleanup);
@@ -56,5 +75,27 @@ describe("SessionModelControl preference errors", () => {
     fireEvent.click(screen.getByRole("button", { name: /model:/i }));
 
     expect(screen.getByText(/cannot remember the choice/i)).toBeTruthy();
+  });
+
+  it("clears the previous backend when the resolved model drives none", async () => {
+    const save = vi.fn();
+    render(
+      <SessionModelControl
+        pref={pref({
+          choice: { model: "anthropic/old", backend: "claude_code" },
+          save,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /model:/i }));
+    fireEvent.click(screen.getByRole("button", { name: "choose unproven" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        model: "openai/unproven",
+        backend: "",
+      }),
+    );
   });
 });

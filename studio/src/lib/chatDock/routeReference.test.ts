@@ -379,6 +379,8 @@ describe("hrefForReference", () => {
   it("refuses an unknown view rather than inventing a route", () => {
     expect(hrefForReference("view/../../etc")).toBeNull();
     expect(hrefForReference("view/admin-secret")).toBeNull();
+    expect(hrefForReference("view/toString")).toBeNull();
+    expect(hrefForReference("view/__proto__")).toBeNull();
   });
 
   it("refuses a reference with no id, and junk", () => {

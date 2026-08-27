@@ -43,6 +43,9 @@ export interface AssistantComposer {
   // An ask_user pause with options may forbid free text — the chips are
   // then the only input.
   allowFreeText: boolean;
+  // Whether the dock's page/attachment decorator will be applied to the next
+  // typed message. Option-constrained ask_user answers must stay byte-exact.
+  willDecorateMessage: boolean;
   busyPending: boolean;
   // True while a launch/discovery is in flight and there is no run to
   // talk to yet. Surfaces disable the composer on it: sending in that
@@ -86,6 +89,8 @@ export function useAssistantComposer({
   const allowFreeText = pendingIsAskUser
     ? askUserAllowsFreeText(pendingHumanQuestion?.questions)
     : true;
+  const willDecorateMessage =
+    !!decorate && (!pendingIsAskUser || options.length === 0);
   const quickReplies: string[] = !pendingIsAskUser
     ? readQuickReplies(pendingHumanQuestion?.questions)
     : [];
@@ -107,10 +112,11 @@ export function useAssistantComposer({
     async (text: string, opts: { skills: string[] }) => {
       const trimmed = text.trim();
       if (trimmed === "") return;
-      // A typed chat answer may carry page context, but ask_user is a
-      // constrained value protocol: an option such as "approve" must reach
-      // the runtime byte-for-byte or exact option matching fails.
-      const decorated = decorate && !pendingIsAskUser ? decorate(trimmed) : trimmed;
+      // A typed chat answer and a free-form ask_user question may carry page
+      // context. Only ask_user with structured options is a constrained value
+      // protocol: an option such as "approve" must remain byte-for-byte.
+      const decorated =
+        willDecorateMessage && decorate ? decorate(trimmed) : trimmed;
       if (pendingHumanQuestion) {
         await submitPending(decorated);
         return;
@@ -157,7 +163,14 @@ export function useAssistantComposer({
       // disjunction above), so the run is live: inject into its inbox.
       await queueMessage(session.runId!, decorated, { skills: opts.skills });
     },
-    [decorate, pendingHumanQuestion, pendingIsAskUser, submitPending, session, bot.seedVar],
+    [
+      decorate,
+      pendingHumanQuestion,
+      submitPending,
+      session,
+      bot,
+      willDecorateMessage,
+    ],
   );
 
   return {
@@ -166,6 +179,7 @@ export function useAssistantComposer({
     options,
     quickReplies,
     allowFreeText,
+    willDecorateMessage,
     busyPending:
       !!pendingHumanQuestion &&
       session.busyMessageId === pendingHumanQuestion.id,

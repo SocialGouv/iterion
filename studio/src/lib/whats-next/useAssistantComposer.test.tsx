@@ -94,7 +94,12 @@ describe("useAssistantComposer routing", () => {
 
   it("does not decorate a constrained ask_user option", async () => {
     const s = session({
-      messages: [pending({ [ASK_USER_RESPONSE_KEY]: { type: "string" } })],
+      messages: [
+        pending({
+          [ASK_USER_RESPONSE_KEY]: { type: "string" },
+          _ask_user_options: [{ id: "approve", label: "Approve" }],
+        }),
+      ],
     });
     const { result } = renderHook(() =>
       useAssistantComposer({
@@ -109,6 +114,27 @@ describe("useAssistantComposer routing", () => {
     expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
       [ASK_USER_RESPONSE_KEY]: "approve",
     });
+    expect(result.current.willDecorateMessage).toBe(false);
+  });
+
+  it("decorates a free-form ask_user answer", async () => {
+    const s = session({
+      messages: [pending({ [ASK_USER_RESPONSE_KEY]: { type: "string" } })],
+    });
+    const { result } = renderHook(() =>
+      useAssistantComposer({
+        bot,
+        session: s,
+        decorate: (text) => `[attached: run/123]\n${text}`,
+      }),
+    );
+
+    await act(() => result.current.onComposerSend("investigate", { skills: [] }));
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      [ASK_USER_RESPONSE_KEY]: "[attached: run/123]\ninvestigate",
+    });
+    expect(result.current.willDecorateMessage).toBe(true);
   });
 
   it("queues into a live run with the selected skills", async () => {

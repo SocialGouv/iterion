@@ -56,6 +56,19 @@ describe("persistence", () => {
     expect(readConversations().map((x) => x.id)).toEqual(["a"]);
   });
 
+  it("drops entries whose optional navigation fields have corrupt types", () => {
+    window.localStorage.setItem(
+      CONVERSATIONS_KEY,
+      JSON.stringify([
+        { id: "good", botId: "copilot", origin: "view/board" },
+        { id: "bad-origin", botId: "copilot", origin: { href: "/admin" } },
+        { id: "bad-run", botId: "copilot", runId: 42 },
+        { id: "bad-fresh", botId: "copilot", fresh: "yes" },
+      ]),
+    );
+    expect(readConversations().map((x) => x.id)).toEqual(["good"]);
+  });
+
   it("survives outright garbage", () => {
     window.localStorage.setItem(CONVERSATIONS_KEY, "{{{not json");
     expect(readConversations()).toEqual([]);

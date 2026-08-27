@@ -219,7 +219,9 @@ function AssistantDock({
   const onComposerSend = useCallback(
     async (text: string, opts: { skills: string[] }) => {
       await composer.onComposerSend(text, opts);
-      setAttached([]);
+      // Option-constrained ask_user answers intentionally skip decoration, so
+      // attached references did not travel and must remain for the next turn.
+      if (composer.willDecorateMessage) setAttached([]);
     },
     [composer],
   );
@@ -567,4 +569,3 @@ export function AssistantDockCrashed() {
   }, [docked, setDock]);
   return null;
 }
-

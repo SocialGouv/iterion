@@ -284,7 +284,10 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
         tabId={tabId}
         title={`Couldn't reload “${tab?.label ?? file}”`}
         message={loadError ?? "The file could not be opened."}
-        onRetry={() => setRetryNonce((n) => n + 1)}
+        onRetry={() => {
+          setRetryNonce((n) => n + 1);
+          if (draft && !file) void draftQuery.refetch();
+        }}
       />
     );
   } else {
