@@ -129,6 +129,19 @@ type ProviderFallbackInfo struct {
 	ToSkip bool
 }
 
+// SessionDegradedInfo describes a best-effort session that could not be
+// resumed, passed to the OnSessionDegraded hook.
+type SessionDegradedInfo struct {
+	BackendName string // backend whose session failed to load
+	SessionID   string // the id that failed to serve
+	// Reason is the delegate.FallbackCategory the failure classified as.
+	// Always "unclassified" today — the degrade fires on nothing else,
+	// deliberately (a typed auth/usage-window/transient failure names a
+	// cause the session had no part in).
+	Reason string
+	Err    error // the failure the dropped session is being blamed for
+}
+
 // EventHooks allows the executor to emit observability events back to the caller.
 type EventHooks struct {
 	OnLLMRequest    func(nodeID string, info LLMRequestInfo)
@@ -179,6 +192,14 @@ type EventHooks struct {
 	// provider — and lets the studio / Prometheus exporter surface that
 	// a credential route was exhausted without the run itself failing.
 	OnProviderFallback func(nodeID string, info ProviderFallbackInfo)
+
+	// OnSessionDegraded fires when a best-effort session
+	// (`session: inherit_if_available` / `persist`) failed to serve and
+	// the call was re-run with the session dropped. Purely observational
+	// — the node goes on to succeed — but it is the ONLY thing that puts
+	// "this node ran without the conversation it asked for" in the run
+	// record; the process log alone leaves a downstream gate blind.
+	OnSessionDegraded func(nodeID string, info SessionDegradedInfo)
 
 	// OnNodeFinished fires after a node's executor returns successfully.
 	// The output map carries iterion's conventional usage keys (`_tokens`,
@@ -246,6 +267,7 @@ func ChainHooks(a, b EventHooks) EventHooks {
 		OnDelegateError:    chainCb2(a.OnDelegateError, b.OnDelegateError),
 		OnDelegateRetry:    chainCb2(a.OnDelegateRetry, b.OnDelegateRetry),
 		OnProviderFallback: chainCb2(a.OnProviderFallback, b.OnProviderFallback),
+		OnSessionDegraded:  chainCb2(a.OnSessionDegraded, b.OnSessionDegraded),
 		OnNodeFinished:     chainCb2(a.OnNodeFinished, b.OnNodeFinished),
 	}
 }

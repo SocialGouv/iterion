@@ -165,3 +165,71 @@ func TestOptionalSessionTransientFailureDoesNotDegrade(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionalSessionDegradeIsRunVisible: the node SUCCEEDS having lost
+// the conversation its `session:` field asked for. A process log line is
+// not a run record — without a stamp on the output a downstream
+// deterministic gate cannot fail closed on the amnesiac input, and
+// without an event nothing in the timeline says the node started blank
+// (R051957).
+func TestOptionalSessionDegradeIsRunVisible(t *testing.T) {
+	var seen []SessionDegradedInfo
+	be := &sessionPickyBackend{
+		name: delegate.BackendClaudeCode,
+		fail: errors.New("delegate: claude-code error: subtype=error_during_execution"),
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, be)
+	e := newFallbackExecutor(reg, EventHooks{
+		OnSessionDegraded: func(_ string, info SessionDegradedInfo) { seen = append(seen, info) },
+	})
+	chain := []chainElement{{Label: "primary"}}
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+
+	out, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build)
+	if err != nil {
+		t.Fatalf("optional session should degrade to fresh, got: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("want exactly 1 session-degrade event, got %d", len(seen))
+	}
+	if seen[0].SessionID != "dead-session" || seen[0].BackendName != delegate.BackendClaudeCode {
+		t.Errorf("event does not name the session that failed: %+v", seen[0])
+	}
+	if seen[0].Reason != string(delegate.FallbackUnclassified) || seen[0].Err == nil {
+		t.Errorf("event lost the reason/cause: %+v", seen[0])
+	}
+	if !out.SessionDegraded {
+		t.Fatal("chainOutcome does not report the degrade — the output stamp is derived from it")
+	}
+	stamped := map[string]any{"ok": true}
+	stampFallbackMeta(stamped, out)
+	if stamped["_session_degraded"] != true {
+		t.Errorf("output not stamped _session_degraded: %v", stamped)
+	}
+	if _, ok := stamped["_fallback_used"]; ok {
+		t.Errorf("a session degrade is not a route change — _fallback_used must stay clear: %v", stamped)
+	}
+}
+
+// A clean pass must carry neither key: an output that stamps
+// _session_degraded always means something actually happened.
+func TestCleanPassStampsNoSessionDegrade(t *testing.T) {
+	e, be, chain := sessionDegradeExecutor(errors.New("unused"))
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil,
+		func(_ context.Context, _ string) (*delegate.Task, error) {
+			return &delegate.Task{NodeID: "plan_revise", Model: "claude-opus-5"}, nil
+		})
+	out, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build)
+	if err != nil {
+		t.Fatalf("clean pass failed: %v", err)
+	}
+	if len(be.tasks) != 1 || out.SessionDegraded {
+		t.Fatalf("clean pass reported a degrade: attempts=%d degraded=%v", len(be.tasks), out.SessionDegraded)
+	}
+	stamped := map[string]any{"ok": true}
+	stampFallbackMeta(stamped, out)
+	if _, ok := stamped["_session_degraded"]; ok {
+		t.Errorf("clean pass stamped _session_degraded: %v", stamped)
+	}
+}

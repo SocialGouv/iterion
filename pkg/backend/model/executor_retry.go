@@ -661,6 +661,14 @@ type chainOutcome struct {
 	// zero-value output (only the caller knows the schema). Result carries
 	// the failed routes' accumulated spend, never content.
 	Skipped bool
+	// SessionDegraded reports that the element that served did so only
+	// after its best-effort session (`session: inherit_if_available` /
+	// `persist`) failed to load and was dropped — the node completed
+	// WITHOUT the conversation it asked for. It exists for the same
+	// reason as FellThrough: a deterministic gate must be able to fail
+	// closed on a degraded input, and an amnesiac node's output is
+	// well-formed in every other respect.
+	SessionDegraded bool
 }
 
 // dispatchChain walks a node's fallback chain, building each element
@@ -856,13 +864,12 @@ func (e *ClawExecutor) dispatchChain(
 		// would buy a SECOND full retry budget (backoff included) under
 		// a provider outage and silently discard continuity for an
 		// unrelated cause (R1486ff).
+		sessionDegraded := false
 		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" {
-			switch delegate.ClassifyFallback(err, isDelegateRetryable(err)) {
+			switch cat := delegate.ClassifyFallback(err, isDelegateRetryable(err)); cat {
 			case delegate.FallbackUnclassified:
-				if e.logger != nil {
-					e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
-						nodeID, LoopIterationFromContext(ctx), backendName, task.SessionID, err)
-				}
+				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
+				sessionDegraded = true
 				spent.add(result)
 				// Dropping task.SessionID is not enough to make the retry
 				// fresh: a claw node's conversation lives in the
@@ -887,12 +894,13 @@ func (e *ClawExecutor) dispatchChain(
 		}
 		if err == nil {
 			return chainOutcome{
-				Result:      spent.applyTo(result),
-				BackendName: backendName,
-				Backend:     backend,
-				Task:        task,
-				ServedBy:    stepLabel(el),
-				FellThrough: i > 0,
+				Result:          spent.applyTo(result),
+				BackendName:     backendName,
+				Backend:         backend,
+				Task:            task,
+				ServedBy:        stepLabel(el),
+				FellThrough:     i > 0,
+				SessionDegraded: sessionDegraded,
 			}, nil
 		}
 		causes = append(causes, err)
@@ -1067,6 +1075,36 @@ func (e *ClawExecutor) noteFallback(
 		Attempts:    e.retry.maxAttempts(),
 		Err:         err,
 		ToSkip:      to.Skip,
+	})
+}
+
+// noteSessionDegrade emits the one log line and the one hook that make a
+// dropped best-effort session visible.
+//
+// A degrade is not a route change — the same backend, model and
+// credential serve the retry — so it is deliberately NOT a
+// model_fallback: what changed is the node's INPUT, which now lacks the
+// conversation its `session:` field asked for. That is the whole reason
+// it needs a record of its own; the node goes on to complete
+// successfully and would otherwise read as a clean pass.
+func (e *ClawExecutor) noteSessionDegrade(
+	ctx context.Context,
+	nodeID, backendName, sessionID string,
+	cat delegate.FallbackCategory,
+	err error,
+) {
+	if e.logger != nil {
+		e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
+			nodeID, LoopIterationFromContext(ctx), backendName, sessionID, err)
+	}
+	if e.hooks.OnSessionDegraded == nil {
+		return
+	}
+	e.hooks.OnSessionDegraded(nodeID, SessionDegradedInfo{
+		BackendName: backendName,
+		SessionID:   sessionID,
+		Reason:      string(cat),
+		Err:         err,
 	})
 }
 

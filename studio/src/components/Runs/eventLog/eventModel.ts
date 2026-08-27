@@ -28,6 +28,10 @@ export const EVENT_BADGE: Record<string, string> = {
   // override, fallback route). Same colour as fallback: the record
   // is honest, the run is degraded.
   model_drift: "bg-warning-soft text-warning-fg",
+  // A best-effort session that could not be resumed: the node ran, but
+  // without the conversation it asked for. Same colour as fallback —
+  // the run continues on a degraded input.
+  session_degraded: "bg-warning-soft text-warning-fg",
   llm_request: "bg-surface-2 text-fg-muted",
   llm_step_finished: "bg-surface-2 text-fg-muted",
   tool_called: "bg-surface-2 text-fg-muted",
@@ -100,6 +104,8 @@ export function previewData(data: Record<string, unknown> | undefined): string {
     "cooldown_until",
     "attempts",
     "from_backend",
+    // session_degraded: which session failed to load, and why.
+    "session_id",
     "to_action",
     "to_backend",
     "to_model",

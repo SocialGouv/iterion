@@ -202,7 +202,21 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 // Nothing is written on the happy path, so an output that carries these
 // keys always means something actually happened.
 func stampFallbackMeta(output map[string]any, out chainOutcome) {
-	if output == nil || !out.FellThrough {
+	if output == nil {
+		return
+	}
+	// A dropped best-effort session is a degraded INPUT, not a route
+	// change: the node's first-choice backend/model/credential served it
+	// — it just served it amnesiac. So it gets its own key rather than
+	// `_fallback_used`, which a gate reads as "something other than what
+	// I asked for produced this". Both are the same posture though: an
+	// output that carries either key means the node ran degraded, and a
+	// deterministic gate can fail closed on it (see the session_degraded
+	// event for the human-readable half).
+	if out.SessionDegraded {
+		output["_session_degraded"] = true
+	}
+	if !out.FellThrough {
 		return
 	}
 	output["_fallback_used"] = true
