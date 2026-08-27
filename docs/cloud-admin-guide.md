@@ -18,25 +18,43 @@ precise REST shapes, see [cloud-rest-api.md](cloud-rest-api.md).
 
 ### 1.1 Bootstrap the super-admin
 
-On a fresh cluster, set `ITERION_BOOTSTRAP_ADMIN_EMAIL` and roll the
-chart. The server creates the account on **first boot** if the `users`
-collection is empty and prints a one-time password at WARN level
+There are two paths, and which one you get depends on whether
+`ITERION_BOOTSTRAP_ADMIN_PASSWORD` is set.
+
+**Declarative (recommended for GitOps).** Set
+`ITERION_BOOTSTRAP_ADMIN_EMAIL` **and**
+`ITERION_BOOTSTRAP_ADMIN_PASSWORD` (typically from a k8s Secret). The
+account is created **active** with that password and reconciled to it on
+**every** boot: super-admin flag restored, status forced back to active,
+password reset only on drift so idempotent restarts are no-ops. The
+secret is authoritative — rotate by updating it and restarting, and note
+that a password changed through the UI **reverts on the next restart**
+by design. Nothing is logged on this path.
+
+**One-time temp password (when no password is declared).** Set only
+`ITERION_BOOTSTRAP_ADMIN_EMAIL` and roll the chart. The server creates
+the account on **first boot** if the `users` collection is empty and
+prints a one-time password at WARN level
 ([cmd/iterion/server.go](../cmd/iterion/server.go)):
 
 ```
 {"level":"warn","msg":"server: BOOTSTRAP super-admin created — email=ops@example.com temp_password=4xT0n… (rotate via POST /api/auth/password/change)"}
 ```
 
-**Recovery case.** If the operator missed the log (pod restarted, log
-aggregator misconfigured, …) and the bootstrap user is still in
-`pending_password_change`, restart the server pod — the bootstrap
-code path re-issues a fresh temp password for that one specific state.
-An already-active account is **never** force-reset this way.
+**Recovery case** (temp-password path only). If the operator missed the
+log (pod restarted, log aggregator misconfigured, …) and the bootstrap
+user is still in `pending_password_change`, restart the server pod — the
+bootstrap code path re-issues a fresh temp password for that one
+specific state. An already-active account is **never** force-reset this
+way. With `ITERION_BOOTSTRAP_ADMIN_PASSWORD` set this recovery is
+unnecessary: the declared secret already is the password.
 
 After login, post to `/api/auth/password/change` to rotate, then unset
 `ITERION_BOOTSTRAP_ADMIN_EMAIL` on the next deploy (the guard is
 `users.count()==0` so leaving it set is safe, but removing it is
-cleaner).
+cleaner). On the declarative path you **keep both** variables set —
+reconciliation on every boot is the point, and rotating means changing
+the secret rather than calling the password-change endpoint.
 
 ### 1.2 Create an org and a first owner
 
@@ -71,9 +89,15 @@ curl -X PATCH https://iterion.example.com/api/admin/orgs/$ORG_ID \
 
 UI path: Admin → Organisations → Acme → Limits → Save.
 
-Every field is optional; `0` means "inherit the platform default"
-(which the operator sets via `ITERION_ORG_DEFAULT_*` env vars — see
-[cloud-deployment.md](cloud-deployment.md)). Negative values are 400s.
+Every field is optional; `0` means "inherit the platform default". For
+the four launch-gate limits that default comes from the
+`ITERION_ORG_DEFAULT_*` env vars — see
+[quotas-and-limits.md](quotas-and-limits.md). `memory_quota_bytes` is
+the exception: it falls back to the compiled
+`knowledge.DefaultOrgAggregateQuota`, not to any `ITERION_ORG_DEFAULT_*`
+var, and the memory ceilings are tuned with
+`ITERION_MEMORY_QUOTA_ORG_TOTAL` / `ITERION_MEMORY_QUOTA_<VISIBILITY>`
+on the filesystem adapter. Negative values are 400s.
 The handler also propagates a `memory_quota_bytes` change into the
 enforced memory counter via `SetTenantQuota`
 ([pkg/server/admin_orgs_routes.go](../pkg/server/admin_orgs_routes.go)) —
