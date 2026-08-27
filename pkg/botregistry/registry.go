@@ -343,11 +343,15 @@ func ListWithDiagnostics(opts ListOptions) ([]Entry, []DiscoveryError, error) {
 			}
 		}
 		// Same treatment for the diagnostics: the studio surfaces them, so
-		// give them the workspace-relative path it can open too.
+		// give them the workspace-relative path it can open too. Manifest
+		// loading also embeds the absolute path in Error; strip the same
+		// workspace prefix there before the diagnostic crosses an API boundary.
+		workdirPrefix := filepath.Clean(opts.Workdir) + string(filepath.Separator)
 		for i := range diags {
 			if rel, relErr := filepath.Rel(opts.Workdir, diags[i].Path); relErr == nil && !strings.HasPrefix(rel, "..") {
 				diags[i].Path = filepath.ToSlash(rel)
 			}
+			diags[i].Error = strings.ReplaceAll(diags[i].Error, workdirPrefix, "")
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })

@@ -350,6 +350,9 @@ func TestList_DiagnosticPathIsWorkdirRelative(t *testing.T) {
 	if diags[0].Path != "bots/broken" {
 		t.Errorf("diag.Path = %q, want workdir-relative bots/broken", diags[0].Path)
 	}
+	if strings.Contains(diags[0].Error, dir) {
+		t.Errorf("diag.Error = %q, must not contain the absolute workdir %q", diags[0].Error, dir)
+	}
 }
 
 func TestList_UnreadableLooseBotFileIsSkipped(t *testing.T) {

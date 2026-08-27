@@ -73,6 +73,7 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"bots": entries}
 	if len(diags) > 0 {
+		diags = redactAbsoluteDiscoveryPaths(diags)
 		// Headless deployments have no operator watching the CLI stderr or
 		// the studio banner — the server log is the only place a skipped
 		// bundle's lost automations stay attributable.
@@ -84,6 +85,25 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 		resp["discovery_errors"] = diags
 	}
 	s.writeJSONFor(w, r, resp)
+}
+
+// redactAbsoluteDiscoveryPaths is the HTTP-boundary fallback for a catalog
+// pinned outside WorkDir. ListWithDiagnostics already makes workspace paths
+// relative; an external --bots-path has no trustworthy public root, so retain
+// the source basename and a source-relative error without exposing the host or
+// container prefix to authenticated tenants.
+func redactAbsoluteDiscoveryPaths(diags []botregistry.DiscoveryError) []botregistry.DiscoveryError {
+	out := append([]botregistry.DiscoveryError(nil), diags...)
+	for i := range out {
+		if !filepath.IsAbs(out[i].Path) {
+			continue
+		}
+		path := filepath.Clean(out[i].Path)
+		prefix := filepath.Dir(path) + string(filepath.Separator)
+		out[i].Path = filepath.Base(path)
+		out[i].Error = strings.ReplaceAll(out[i].Error, prefix, "")
+	}
+	return out
 }
 
 // handleBotsGet returns one bot with its full schema. Returns 404 when

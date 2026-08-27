@@ -504,8 +504,11 @@ chat:
 		t.Fatalf("discovery_errors = %+v, want one; body=%s", resp.DiscoveryErrors, rec.Body.String())
 	}
 	d := resp.DiscoveryErrors[0]
-	if !strings.HasSuffix(d.Path, "broken-chat") || !strings.Contains(d.Error, "chat:") {
+	if d.Path != "broken-chat" || !strings.Contains(d.Error, "chat:") {
 		t.Errorf("discovery_errors[0] = %+v, want the broken-chat path and chat: diagnostic", d)
+	}
+	if strings.Contains(d.Error, dir) || filepath.IsAbs(d.Path) {
+		t.Errorf("discovery_errors[0] = %+v, must not expose the absolute catalog root %q", d, dir)
 	}
 }
 
