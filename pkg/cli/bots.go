@@ -24,6 +24,12 @@ type BotsListOptions struct {
 	// Format selects the output rendering: "json" (default), "markdown",
 	// or "skill" (a SKILL.md ready to drop in a `<bundle>/skills/`).
 	Format string
+
+	// ErrW, when set, receives one warning line per skipped malformed
+	// bundle/bot file (discovery keeps listing the valid siblings). Nil
+	// discards the warnings — the structured diagnostics stay available
+	// through botregistry.ListWithDiagnostics.
+	ErrW io.Writer
 }
 
 // BotsList walks Opts.Paths, parses metadata, and writes the result to w.
@@ -37,31 +43,45 @@ func BotsList(opts BotsListOptions, w io.Writer) error {
 
 	switch opts.Format {
 	case "json":
-		entries, err := botregistry.List(botregistry.ListOptions{Paths: opts.Paths})
+		entries, diags, err := botregistry.ListWithDiagnostics(botregistry.ListOptions{Paths: opts.Paths})
 		if err != nil {
 			return err
 		}
+		warnDiscoveryErrors(opts.ErrW, diags)
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(entries)
 	case "markdown":
-		entries, err := botregistry.List(botregistry.ListOptions{Paths: opts.Paths})
+		entries, diags, err := botregistry.ListWithDiagnostics(botregistry.ListOptions{Paths: opts.Paths})
 		if err != nil {
 			return err
 		}
+		warnDiscoveryErrors(opts.ErrW, diags)
 		return renderBotsMarkdown(w, entries)
 	case "skill":
 		// The skill catalog wants the per-bot vars too, so use the
 		// schema-augmented list and the shared catalog renderer (the same
 		// one botregistry.RegenerateWhatsNextCatalog splices into Nexie's
 		// live catalog).
-		entries, err := botregistry.ListWithSchema(botregistry.ListOptions{Paths: opts.Paths})
+		entries, diags, err := botregistry.ListWithSchemaDiagnostics(botregistry.ListOptions{Paths: opts.Paths})
 		if err != nil {
 			return err
 		}
+		warnDiscoveryErrors(opts.ErrW, diags)
 		return renderBotsSkill(w, entries)
 	default:
 		return fmt.Errorf("bots: unknown format %q (json|markdown|skill)", opts.Format)
+	}
+}
+
+// warnDiscoveryErrors reports each skipped malformed source on w. Kept
+// off the primary writer so the JSON/markdown payload stays parseable.
+func warnDiscoveryErrors(w io.Writer, diags []botregistry.DiscoveryError) {
+	if w == nil {
+		return
+	}
+	for _, d := range diags {
+		fmt.Fprintf(w, "bots: skipping %s: %s\n", d.Path, d.Error)
 	}
 }
 

@@ -107,11 +107,22 @@ var schemaCache sync.Map // map[string]cachedSchema
 // entry's schema is loaded lazily through LoadSchema, with caching by
 // path+mtime — repeated calls are cheap. Parse errors do not abort the
 // list: the failing entry surfaces SchemaError and Vars/Presets nil
-// so the UI can still show the bot in the picker.
+// so the UI can still show the bot in the picker. Discovery-level
+// failures (a bundle whose manifest does not load at all) are skipped
+// the same way; they are available through ListWithSchemaDiagnostics.
 func ListWithSchema(opts ListOptions) ([]EntryWithSchema, error) {
-	entries, err := List(opts)
+	entries, _, err := ListWithSchemaDiagnostics(opts)
+	return entries, err
+}
+
+// ListWithSchemaDiagnostics is ListWithSchema plus the per-entry
+// discovery errors from the underlying walk (see ListWithDiagnostics) —
+// the channel the studio's bot gallery surfaces so a malformed bundle is
+// visible instead of silently absent.
+func ListWithSchemaDiagnostics(opts ListOptions) ([]EntryWithSchema, []DiscoveryError, error) {
+	entries, diags, err := ListWithDiagnostics(opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]EntryWithSchema, 0, len(entries))
 	for _, e := range entries {
@@ -126,7 +137,7 @@ func ListWithSchema(opts ListOptions) ([]EntryWithSchema, error) {
 		}
 		out = append(out, es)
 	}
-	return out, nil
+	return out, diags, nil
 }
 
 // invocationVarWarnings flags each invocation whose ArgsVar names a var the

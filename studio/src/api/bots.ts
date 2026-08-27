@@ -267,8 +267,21 @@ export interface BotEntryWithSchema extends BotEntry {
   origin?: "tenant" | "catalog";
 }
 
+/** BotDiscoveryError is one bot source the registry skipped: the bundle
+ *  directory or .bot file at `path` failed to load (e.g. a malformed
+ *  manifest `chat:` block). Discovery is per-entry fault-tolerant, so
+ *  the bot is ABSENT from the list — this is the channel that keeps the
+ *  skip visible. Mirrors botregistry.DiscoveryError. */
+export interface BotDiscoveryError {
+  path: string;
+  error: string;
+}
+
 interface ListResponse {
   bots: BotEntryWithSchema[];
+  /** One entry per skipped malformed bundle/bot file. Absent when
+   *  everything discovered cleanly. */
+  discovery_errors?: BotDiscoveryError[];
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +294,18 @@ interface ListResponse {
 export async function listBots(): Promise<BotEntryWithSchema[]> {
   const r = await apiRequest<ListResponse>(BASE);
   return r.bots ?? [];
+}
+
+/** listBotsWithDiagnostics is listBots plus the per-source discovery
+ *  errors: the bots whose bundle failed to load and were therefore
+ *  skipped. The bots store keeps them so the gallery can warn instead
+ *  of letting a malformed bundle vanish silently. */
+export async function listBotsWithDiagnostics(): Promise<{
+  bots: BotEntryWithSchema[];
+  discoveryErrors: BotDiscoveryError[];
+}> {
+  const r = await apiRequest<ListResponse>(BASE);
+  return { bots: r.bots ?? [], discoveryErrors: r.discovery_errors ?? [] };
 }
 
 /** getBot fetches a single bot by name with its full schema. Useful

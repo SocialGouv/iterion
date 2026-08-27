@@ -28,14 +28,17 @@ type botEntryView struct {
 // A team bot overrides a catalog bot of the same name (the override the tenant
 // store is designed to express). Catalog entries are marked read-only; team
 // entries editable. Outside cloud / without an active team it returns the
-// catalog alone, all read-only.
-func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
+// catalog alone, all read-only. The second return carries the per-entry
+// discovery errors (one per skipped malformed bundle) so the list endpoint
+// can surface them instead of letting a bad bundle vanish silently.
+func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, []botregistry.DiscoveryError, error) {
 	var catalog []botregistry.EntryWithSchema
+	var diags []botregistry.DiscoveryError
 	if len(s.effectivePaths()) > 0 {
 		var err error
-		catalog, err = botregistry.ListWithSchema(s.botListOptions())
+		catalog, diags, err = botregistry.ListWithSchemaDiagnostics(s.botListOptions())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	byName := make(map[string]botEntryView, len(catalog))
@@ -56,7 +59,7 @@ func (s *Server) mergedBotEntries(ctx context.Context) ([]botEntryView, error) {
 	for _, name := range order {
 		out = append(out, byName[name])
 	}
-	return out, nil
+	return out, diags, nil
 }
 
 // tenantBotEntries materializes the caller team's authored bot bundles to a temp

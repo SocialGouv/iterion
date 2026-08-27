@@ -2,9 +2,10 @@ import { errorMessage } from "@/lib/errorHints";
 import { create } from "zustand";
 
 import {
-  listBots,
+  listBotsWithDiagnostics,
   setBotOverlay,
   updateBot,
+  type BotDiscoveryError,
   type BotEntryWithSchema,
   type BotPatch,
 } from "@/api/bots";
@@ -17,6 +18,10 @@ interface BotsState {
   bots: BotEntryWithSchema[] | null;
   loading: boolean;
   error: string | null;
+  /** One entry per bundle the registry SKIPPED as malformed — the bot
+   *  is absent from `bots`, so the gallery warns instead of letting it
+   *  vanish silently. Empty when everything discovered cleanly. */
+  discoveryErrors: BotDiscoveryError[];
   /** Fetch once (no-op if already loaded or in flight). */
   fetch: () => Promise<void>;
   /** Force a new request that supersedes any in-flight catalog load. */
@@ -40,9 +45,9 @@ async function load(set: (partial: Partial<BotsState>) => void): Promise<void> {
   const seq = ++loadSeq;
   set({ loading: true, error: null });
   try {
-    const bots = await listBots();
+    const { bots, discoveryErrors } = await listBotsWithDiagnostics();
     if (seq !== loadSeq) return; // superseded (e.g. project switch)
-    set({ bots, loading: false });
+    set({ bots, discoveryErrors, loading: false });
   } catch (e) {
     if (seq !== loadSeq) return;
     set({ error: errorMessage(e), loading: false });
@@ -53,6 +58,7 @@ export const useBotsStore = create<BotsState>((set, get) => ({
   bots: null,
   loading: false,
   error: null,
+  discoveryErrors: [],
   fetch: () => {
     if (get().bots !== null) return Promise.resolve();
     if (inflight) return inflight;

@@ -453,3 +453,55 @@ func TestBotsListExplicitPathsPinnedAcrossSwitch(t *testing.T) {
 		t.Fatalf("explicit --bots-path must stay pinned: got %+v", resp.Bots)
 	}
 }
+
+func TestBotsListRoute_MalformedBundleSurfacesDiscoveryError(t *testing.T) {
+	botregistry.ClearSchemaCache()
+	dir := t.TempDir()
+	// One valid bundle beside one whose chat: block validateChatSurface
+	// rejects (human node with no text_field). The malformed bundle must
+	// not blank the gallery: it leaves the list, with its diagnostic in
+	// discovery_errors.
+	writeBotFile(t, filepath.Join(dir, "good", "manifest.yaml"), "name: good\ndescription: fine\n")
+	writeBotFile(t, filepath.Join(dir, "good", "main.bot"), testBotSrc)
+	writeBotFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeBotFile(t, filepath.Join(dir, "broken-chat", "main.bot"), testBotSrc)
+
+	srv := New(Config{
+		DisableAuth: true,
+		Bots:        BotsConfig{Paths: []string{dir}},
+	}, iterlog.New(iterlog.LevelError, nil))
+	srv.handler = srv.mux
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/bots", nil)
+	rec := httptest.NewRecorder()
+	srv.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Bots            []botregistry.EntryWithSchema `json:"bots"`
+		DiscoveryErrors []struct {
+			Path  string `json:"path"`
+			Error string `json:"error"`
+		} `json:"discovery_errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.Bots) != 1 || resp.Bots[0].Name != "good" {
+		t.Fatalf("bots = %+v, want only the valid bundle; body=%s", resp.Bots, rec.Body.String())
+	}
+	if len(resp.DiscoveryErrors) != 1 {
+		t.Fatalf("discovery_errors = %+v, want one; body=%s", resp.DiscoveryErrors, rec.Body.String())
+	}
+	d := resp.DiscoveryErrors[0]
+	if !strings.HasSuffix(d.Path, "broken-chat") || !strings.Contains(d.Error, "chat:") {
+		t.Errorf("discovery_errors[0] = %+v, want the broken-chat path and chat: diagnostic", d)
+	}
+}

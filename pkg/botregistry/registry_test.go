@@ -292,3 +292,61 @@ func TestList_SetsRelPath(t *testing.T) {
 		t.Errorf("RelPath without workdir = %q, want empty", bare[0].RelPath)
 	}
 }
+
+func TestList_MalformedBundleDoesNotBlankSiblings(t *testing.T) {
+	// One bundle with a malformed chat: block (validateChatSurface rejects a
+	// human node with no text_field) next to one valid bundle: the malformed
+	// one stays OUT with its diagnostic, the valid one still lists.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good", "manifest.yaml"), "name: good\ndescription: fine\n")
+	writeFile(t, filepath.Join(dir, "good", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the valid bundle", entries)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want one discovery error", diags)
+	}
+	if !strings.HasSuffix(diags[0].Path, "broken-chat") {
+		t.Errorf("diag.Path = %q, want the broken-chat bundle dir", diags[0].Path)
+	}
+	if !strings.Contains(diags[0].Error, "chat:") {
+		t.Errorf("diag.Error = %q, want the chat: validation diagnostic", diags[0].Error)
+	}
+
+	// List keeps its two-value contract: valid siblings, no error.
+	plain, err := List(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 || plain[0].Name != "good" {
+		t.Fatalf("List = %#v, want only the valid bundle", plain)
+	}
+}
+
+func TestList_DiagnosticPathIsWorkdirRelative(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "broken", "manifest.yaml"), "name: broken\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "bots", "broken", "main.bot"), "agent x:\n  model: \"test\"\n")
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir), Workdir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want one", diags)
+	}
+	if diags[0].Path != "bots/broken" {
+		t.Errorf("diag.Path = %q, want workdir-relative bots/broken", diags[0].Path)
+	}
+}
