@@ -870,6 +870,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
 		ModelOverrides: runModelOverrides(spec.ModelOverrides),
+		// The raw budget ask, same doctrine as the model pins above: the
+		// run doc is the single source the resume path replays from. The
+		// clamped/effective figure is NOT what is stamped — the resume
+		// re-clamps against its own grant.
+		BudgetOverrides: runBudgetOverrides(spec.Budget),
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -1118,6 +1123,13 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 // runner picks it up and dispatches to engine.Resume which threads
 // the answers in.
 //
+// A JetStream redelivery of the ORIGINAL launch message is a different
+// resume path (the runner converts it in place, keeping the message's
+// launch-time budget — the figure clamped against the launch grant):
+// only this explicit republication re-clamps the persisted budget ask
+// against the CURRENT grant. Two resumes of the same run can therefore
+// carry different caps, each honest about its own grant.
+//
 // On publish failure the run is reverted to its prior resumable status
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
@@ -1231,7 +1243,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// paused for a day must not come back holding yesterday's budget.
 		// Offset by what the run already banked: the engine restores that
 		// figure into the very tracker this ceiling is checked against.
-		Budget:         clampBudgetToGrant(nil, wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
+		// The launch's own budget ask is replayed from the run doc (same
+		// doctrine as ModelOverrides below): cloud resumes are often
+		// unattended auto-retries, so nothing else can re-state it, and a
+		// dropped override silently reverts the run to the workflow's cap.
+		Budget:         clampBudgetToGrant(budgetOverridesFromRun(prior.BudgetOverrides), wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		// A resumed attempt must honour the SAME pins the launch declared —
@@ -1587,6 +1603,41 @@ func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOve
 		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
 	}
 	return out
+}
+
+// runBudgetOverrides converts the launch's raw budget ask into the
+// persisted run-doc form (the resume path's replay source, the budget
+// twin of runModelOverrides). An absent or all-zero ask persists as nil
+// so legacy docs and override-less launches stay byte-identical.
+// CapImposed is deliberately not persisted: it is a product of the grant
+// clamp, recomputed against the CURRENT grant on every publication.
+func runBudgetOverrides(o *ir.BudgetOverrides) *store.RunBudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &store.RunBudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
+}
+
+// budgetOverridesFromRun replays a run doc's persisted budget ask onto a
+// resume publication, where clampBudgetToGrant re-clamps it against the
+// resume's own grant exactly like a fresh launch.
+func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
+	if o == nil {
+		return nil
+	}
+	return &ir.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
 }
 
 // queueOverridesFromRun replays a run doc's persisted pins onto a resume
