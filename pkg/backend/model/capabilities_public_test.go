@@ -120,3 +120,31 @@ func TestKnownModelSpecs_AllParseable(t *testing.T) {
 		}
 	}
 }
+
+// Max output reaches the operator-facing view only through the aggregator —
+// there is no curated table of completion caps — so the two states worth
+// pinning are "the aggregator knows it" and "nothing does".
+func TestResolveCapabilities_MaxOutputTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
+	}))
+	defer srv.Close()
+
+	r := newTestRegistry(t, srv.URL)
+	if err := r.refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	withGlobalSpecs(t, r)
+
+	rc := ResolveCapabilities("anthropic", "claude-sonnet-4-6")
+	if rc.MaxOutputTokens != 64000 {
+		t.Errorf("MaxOutputTokens = %d, want 64000 (aggregator)", rc.MaxOutputTokens)
+	}
+
+	// A model the aggregator does not carry reports zero — unknown, never
+	// "uncapped".
+	miss := ResolveCapabilities("openai", "o3")
+	if miss.MaxOutputTokens != 0 {
+		t.Errorf("curated-only MaxOutputTokens = %d, want 0", miss.MaxOutputTokens)
+	}
+}

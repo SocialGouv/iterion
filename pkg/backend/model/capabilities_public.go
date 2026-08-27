@@ -36,6 +36,9 @@ type ResolvedCapabilities struct {
 	ToolCall      bool             `json:"tool_call"`
 	Temperature   bool             `json:"temperature"`
 	ContextWindow int              `json:"context_window"`
+	// MaxOutputTokens is the aggregator's published completion cap. Zero
+	// means the aggregator had no figure — never "uncapped".
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// Per-million-token prices as published by the aggregator. Zero means
 	// the aggregator had no price — never "free". Surfaced so the pricing
 	// audit can hold this figure next to the committed table.
@@ -54,16 +57,17 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 		src = SourceAggregator
 	}
 	return ResolvedCapabilities{
-		Provider:       provider,
-		Model:          modelID,
-		Spec:           provider + "/" + modelID,
-		Source:         src,
-		Reasoning:      caps.Reasoning,
-		ToolCall:       caps.ToolCall,
-		Temperature:    caps.Temperature,
-		ContextWindow:  caps.ContextWindow,
-		InputCostPerM:  caps.InputCostPerM,
-		OutputCostPerM: caps.OutputCostPerM,
+		Provider:        provider,
+		Model:           modelID,
+		Spec:            provider + "/" + modelID,
+		Source:          src,
+		Reasoning:       caps.Reasoning,
+		ToolCall:        caps.ToolCall,
+		Temperature:     caps.Temperature,
+		ContextWindow:   caps.ContextWindow,
+		MaxOutputTokens: caps.MaxOutputTokens,
+		InputCostPerM:   caps.InputCostPerM,
+		OutputCostPerM:  caps.OutputCostPerM,
 	}
 }
 
