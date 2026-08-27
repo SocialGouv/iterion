@@ -36,7 +36,7 @@ type Store interface {
 // really are one subscription.
 //
 // credFP, when known, is the audit fingerprint of the credential itself
-// (secrets.FingerprintHex). It is what makes the meter follow the
+// (secrets.FingerprintSHA256). It is what makes the meter follow the
 // CREDENTIAL and not the slot: a rotated token opens a fresh key, so a
 // seven-day reading recorded against the old account — legitimately fresh
 // until its own reset instant — cannot park runs that no longer draw on
