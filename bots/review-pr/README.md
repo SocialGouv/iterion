@@ -44,6 +44,7 @@ All inputs are workflow `vars` (override with `--var name=value`):
 | `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's workspace). |
 | `base_ref` | `main` | Ref to diff against (`merge-base(base_ref, HEAD)` vs working tree). `HEAD` = uncommitted only. |
 | `scope_notes` | `""` | Free-text steering passed to the selected reviewer(s). |
+| `prior_pushback` | `""` | What a fixer already did with an EARLIER review of this same PR, per finding id: fixed (with the commit), contested (with its argument), or deferred. Stamped at launch by the engine when such a run exists; empty is the normal case. This is what keeps a review↔fix pair converging instead of oscillating — a contested finding returns only against NEW evidence. It is **not** an instruction to drop it: a wrong argument must be answered, and a finding that is still real still counts against the gate. |
 | `severity_threshold` | `low` | Drop findings below this (low < medium < high < critical). |
 | `max_findings` | `40` | Cap on issues/rows (highest severity first); a capped run says so. |
 | `post_to_board` | `true` | File findings on the native board; `false` = report only. |
