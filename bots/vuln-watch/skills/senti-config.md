@@ -219,8 +219,32 @@ iterion remote schedules create --data '{"bot_id":"vuln-watch",
   "repo_ref":"main","vars":{"mode":"watch","state_commit":"true"}}'
 ```
 
+**A scheduled launch resolves NO connection for its `repo_url`** —
+unlike a studio/API launch (which pins a `connection_id` and mints a
+fresh managed token), the tick's clone token comes from the bot's
+`forge_token` secret resolution: per-bot binding first, else any team
+secret *named* `forge_token`. Bind the bot to the forge connection's
+MANAGED secret (auto-refreshed hourly; a hand-set `forge_token` team
+secret rots and every tick then dies on the clone):
+
+```sh
+# secret_id = the connection's forge_github_<conn-prefix> managed secret
+# (GET /api/teams/<team>/secrets to find it)
+iterion remote api POST /api/teams/<team>/bots/vuln-watch/bindings \
+  --data '{"secret_id":"<managed-secret-id>",
+           "secret_name_for_workflow":"forge_token",
+           "allowed_hosts":["github.com"]}'
+```
+
 ## Troubleshooting
 
+- **Every scheduled tick fails the CLONE: "Invalid username or token.
+  Password authentication is not supported for Git operations"** — the
+  bot has no `forge_token` binding, so the tick fell back to a stale
+  team secret named `forge_token` (manual launches still work: they
+  mint through their pinned connection, which masks the gap). Create
+  the binding to the connection's managed secret (see the cloud
+  scheduling recipe above), then resume one parked run to prove it.
 - **Run failed: "no Dependabot token for configured org(s)"** — the
   `dependabot_tokens` secret is missing/incomplete. App path: check the
   connection's health (`missing_security_permissions`) and its
