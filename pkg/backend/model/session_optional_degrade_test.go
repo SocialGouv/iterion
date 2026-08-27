@@ -144,3 +144,24 @@ func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
 		t.Errorf("the dead session's conversation survived the degrade: %s", snap)
 	}
 }
+
+// TestOptionalSessionTransientFailureDoesNotDegrade: a throttle, a 5xx
+// or a TCP blip that outlived the retry budget classifies as
+// transient_exhausted — a provider-side cause the session id had no
+// part in. Degrading there would buy a SECOND full retry budget under a
+// provider outage AND discard the node's continuity for nothing
+// (R1486ff), so the failure must surface with the session intact.
+func TestOptionalSessionTransientFailureDoesNotDegrade(t *testing.T) {
+	e, be, chain := sessionDegradeExecutor(&delegate.ErrTransient{Reason: "upstream 503"})
+	e.retry.MaxAttempts = 1 // exhaust the budget on the first call
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+
+	if _, err := e.dispatchChain(context.Background(), "plan_revise", chain, "claude-opus-5", build); err == nil {
+		t.Fatal("a transient provider failure must surface, not degrade the session")
+	}
+	for i, task := range be.tasks {
+		if task.SessionID == "" {
+			t.Fatalf("attempt %d ran fresh: a provider-side transient must not drop the session", i)
+		}
+	}
+}

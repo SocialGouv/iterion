@@ -842,13 +842,23 @@ func (e *ClawExecutor) dispatchChain(
 		// session files die with it, after which every resume of this node
 		// fails identically (lived on branch-improve-loop's plan_revise:
 		// error_during_execution in ~2.6s, forever). "If available" covers
-		// that too: retry ONCE with the session dropped, loudly. Only for
-		// execution-shaped failures — an auth/usage-window/unavailable
-		// failure is credential- or model-level and a fresh session would
-		// hit the same wall.
+		// that too: retry ONCE with the session dropped, loudly.
+		//
+		// UNCLASSIFIED only. That is where a dead session lands — the
+		// backend refused to load it and said nothing typed about why —
+		// and, being non-retryable, it makes the fresh attempt a single
+		// extra call. Every other category names a cause the session is
+		// not: auth / usage_window / unavailable are credential- or
+		// model-level (a fresh session hits the same wall), and
+		// transient_exhausted is by construction "isDelegateRetryable
+		// said yes and the budget ran out" — a throttle, a 5xx, a TCP
+		// blip, none of which the session id caused. Degrading there
+		// would buy a SECOND full retry budget (backoff included) under
+		// a provider outage and silently discard continuity for an
+		// unrelated cause (R1486ff).
 		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" {
 			switch delegate.ClassifyFallback(err, isDelegateRetryable(err)) {
-			case delegate.FallbackUnclassified, delegate.FallbackTransientExhausted:
+			case delegate.FallbackUnclassified:
 				if e.logger != nil {
 					e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
 						nodeID, LoopIterationFromContext(ctx), backendName, task.SessionID, err)
