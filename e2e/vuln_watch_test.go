@@ -2566,3 +2566,50 @@ func TestVulnWatch_TruncatedWalkIsReportedNotPresentedAsComplete(t *testing.T) {
 		t.Fatalf("a truncated walk rendered as an all-clear:\n%s", msg)
 	}
 }
+
+// The Dependabot lane is the one lane that is ALREADY version-precise: its
+// units carry `repos`, the repositories running an affected version. notify
+// renders confirmed_repos only on the branch where `repos` is empty, so a
+// lookup spent on one of those units can never be displayed — it is drawn
+// from the same bounded budget the KEV and feed units need, and those are the
+// units this node exists for. The first live tick had that lane alone
+// reporting ~200 new alerts against max_alerts_per_run=20.
+func TestVulnWatch_DependabotLaneUnitsSpendNoConfirmationBudget(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7080": {{"ecosystem": "npm", "name": "acme-lib"}},
+		"CVE-2026-7081": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	h.depAlerts.Store([]map[string]any{vwAlert("acme/site", "acme-lib", "npm",
+		"CVE-2026-7081", "open", "2026-08-01T00:00:00Z", "", "2.0.1")})
+
+	alerts := []map[string]any{
+		// Already version-precise: nothing to confirm, nothing renderable.
+		{"key": "dep:CVE-2026-7080", "cves": []string{"CVE-2026-7080"}, "title": "dependabot unit",
+			"severity": "critical", "repos": []string{"acme/known"}, "project_names": []string{"proj"}},
+		// The unit the feature is FOR — it must still get its confirmation.
+		{"key": "kev:CVE-2026-7081", "cves": []string{"CVE-2026-7081"}, "title": "kev unit",
+			"severity": "critical", "project_names": []string{"proj"}},
+	}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	dep, _ := got[0].(map[string]any)
+	if _, spent := dep["version_check"]; spent {
+		t.Fatalf("the Dependabot-lane unit was looked up; nothing can render the result: %v", dep["version_check"])
+	}
+	kev, _ := got[1].(map[string]any)
+	if vc, _ := kev["version_check"].(string); vc != "confirmed" {
+		t.Fatalf("the KEV unit is what the budget is for, got %q", vc)
+	}
+	// One advisory + one alerts page for the KEV unit — and nothing else.
+	if n, _ := out["lookups"].(float64); n != 2 {
+		t.Fatalf("expected exactly 2 lookups (advisory + alerts for the KEV unit), got %v", out["lookups"])
+	}
+}

@@ -1989,6 +1989,16 @@ tool confirm_versions:
     confirmable = 0
     confirmed = 0
     for a in alerts:
+        ## A unit carrying `repos` came off the DEPENDABOT lane, which is
+        ## already version-precise — it names the repositories running an
+        ## affected version, which is exactly what this node has to go and
+        ## establish for every OTHER lane. notify renders confirmed_repos only
+        ## on the branch where `repos` is empty, so confirming these would be
+        ## lookups nothing can ever display, drawn from the same budget the KEV
+        ## and feed units need. Not hypothetical: the first live tick had that
+        ## lane alone reporting ~200 new alerts against max_alerts_per_run=20.
+        if a.get('repos'):
+            continue
         cves = [c for c in (a.get('cves') or []) if c]
         pkgs = set()
         adv_status = set()
