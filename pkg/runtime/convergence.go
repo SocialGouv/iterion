@@ -97,6 +97,8 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 		e.logger.Warn("failed to emit convergence_ready: %v", err)
 	}
 
+	mergeJoinIncoming(rs, convergenceNodeID, results)
+
 	// Return the convergence node ID — the main loop will execute it normally.
 	return convergenceNodeID, nil
 }

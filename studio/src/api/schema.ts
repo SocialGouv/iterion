@@ -5122,6 +5122,9 @@ export interface components {
             round_robin_counters?: {
                 [key: string]: number;
             };
+            selected_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
             vars: {
                 [key: string]: unknown;
             };
@@ -5283,6 +5286,16 @@ export interface components {
             attempts?: number;
             run_id?: string;
             state?: string;
+        };
+        IncomingEdge: {
+            condition?: string;
+            else?: boolean;
+            expression?: string;
+            foreach?: string;
+            from: string;
+            loop?: string;
+            negated?: boolean;
+            to: string;
         };
         InvalidSpec: {
             reason: string;

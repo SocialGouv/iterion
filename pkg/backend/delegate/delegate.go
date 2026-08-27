@@ -659,6 +659,23 @@ type Task struct {
 	// a new ID and does not mutate the original session.
 	ForkSession bool
 
+	// SessionOptional marks SessionID as best-effort continuity
+	// (session: inherit_if_available / persist): the id resolved on the
+	// upstream output map, but its backing state may no longer load —
+	// a cloud resume replaces the sandbox container, and a CLI backend's
+	// session files die with it. Plain `inherit`/`fork` leave it false
+	// and keep failing loudly, since they asked for continuity
+	// unconditionally.
+	//
+	// It is a PERMISSION, not an instruction: the executor MAY retry a
+	// failed call once with the session dropped — loudly (a
+	// `session_degraded` event plus a `_session_degraded` output stamp) —
+	// before walking the fallback chain, but only when the failure is
+	// UNCLASSIFIED and only on a backend that actually resumes with the
+	// id. Both narrowings are argued at model.sessionResumeEligible and
+	// at the dispatch site.
+	SessionOptional bool
+
 	// SessionFingerprint carries the provider fingerprint that the
 	// parent SessionID was created against (e.g. "anthropic-direct",
 	// "facade:api.z.ai"). The backend uses it to detect a cross-provider

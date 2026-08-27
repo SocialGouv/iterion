@@ -210,3 +210,32 @@ func TestPlatformTier_storeErrorDegradesToNoOp(t *testing.T) {
 		t.Fatalf("bundle = %+v, want empty on a degraded platform store", b)
 	}
 }
+
+// The platform forfait is ONE meter for the whole deployment
+// (usagecap.ScopePlatform), so a super-admin rotating it is exactly the
+// lived failure the credential-keyed meter exists to prevent — one tier
+// up, and fleet-wide. The record's identity must reach the bundle or the
+// runner falls back to the slot-shaped key and the fresh subscription
+// inherits the exhausted readings of the one it replaced.
+func TestPlatformTier_oauthFillCarriesTheCredentialsIdentity(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
+
+	p := &Publisher{
+		oauthForfait: oauth,
+		runSecrets:   secrets.NewMemoryRunSecretsStore(),
+		sealer:       sealer,
+		logger:       testLogger(),
+	}
+	rs := p.runSecrets.(*secrets.MemoryRunSecretsStore)
+
+	b := resolveBundle(t, p, rs, sealer, "run-1", "team1", "webhook:cfg-1")
+	if len(b.OAuthCredentials["claude_code"]) == 0 {
+		t.Fatal("no platform forfait in the bundle — the tier is not wired")
+	}
+	want := seededFP(secrets.PlatformOwnerKey)
+	if got := b.OAuthFingerprints["claude_code"]; got != want {
+		t.Errorf("OAuthFingerprints[claude_code] = %q, want %q — a rotated platform forfait would inherit the replaced account's meter", got, want)
+	}
+}

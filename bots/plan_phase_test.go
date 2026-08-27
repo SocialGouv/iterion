@@ -44,9 +44,19 @@ func TestPlanPhaseWiring(t *testing.T) {
 			}
 			wf := cr.Workflow
 
+			// branch-improve-loop defaults the peer policy to "skip": a
+			// fixer invoked ON a pull request must never park on its
+			// OPTIONAL cross-model plan reviewer — the Anthropic family
+			// alone always suffices to fix a branch, and a parked fixer
+			// holds the PR hostage. The other campaign bots keep "wait"
+			// (a parked campaign blocks nobody external).
+			wantPolicy := "wait"
+			if bot == "branch-improve-loop" {
+				wantPolicy = "skip"
+			}
 			for varName, wantDefault := range map[string]string{
 				"plan_review":        "auto",
-				"plan_review_policy": "wait",
+				"plan_review_policy": wantPolicy,
 			} {
 				v, ok := wf.Vars[varName]
 				if !ok {
@@ -97,10 +107,12 @@ func TestPlanPhaseWiring(t *testing.T) {
 	}
 }
 
-// TestPlanPhaseCampaignEdgeMappings pins the two edge-merge invariants the
-// engine cannot check (buildNodeInputRS applies EVERY edge whose source
-// has output — forward edges first, then loop back-edges, later
-// declaration winning on a shared key):
+// TestPlanPhaseCampaignEdgeMappings pins two authoring invariants the
+// engine still relies on after #484. Exclusive FORWARD siblings are
+// filtered to the selected edge; a loop-head RE-ENTRY still overlays
+// the selected back-edge on every forward edge whose source has output
+// (the back-edge is partial — it restates only the keys that change).
+// So:
 //
 //  1. every FORWARD edge into `campaign` maps every campaign_input field
 //     — an unmapped field is not "" but the raw {{input.x}} placeholder

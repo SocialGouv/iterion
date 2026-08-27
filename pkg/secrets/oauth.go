@@ -89,9 +89,16 @@ type OAuthRecord struct {
 	// can renew it. Inverted polarity so legacy records (field absent =
 	// false) keep being attempted; the first ErrNotRefreshable outcome
 	// self-heals them by setting this flag.
-	NotRefreshable bool      `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
-	CreatedAt      time.Time `bson:"created_at" json:"created_at"`
-	UpdatedAt      time.Time `bson:"updated_at" json:"updated_at"`
+	NotRefreshable bool `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
+	// Fingerprint is the audit identity of the SUBSCRIPTION behind this
+	// record: stamped when a human connects/pastes credentials, PRESERVED
+	// by the automatic refresh worker (whose rewrites are the same
+	// account), self-healed on legacy records at their first refresh. It
+	// is what downstream metering keys on — re-posting credentials is the
+	// act that says "different subscription", so it re-stamps.
+	Fingerprint string    `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	CreatedAt   time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.
@@ -187,6 +194,37 @@ func ParseCodexView(payload []byte) (CodexCredentialsView, error) {
 		return v, fmt.Errorf("secrets: parse auth.json: %w", err)
 	}
 	return v, nil
+}
+
+// SubscriptionFingerprint returns the audit identity of the SUBSCRIPTION
+// behind an OAuth credentials payload — what the usage-cap meter keys on,
+// so runs that spend one account share one ledger.
+//
+// It prefers a stable account identifier the payload names, because the
+// blob itself is not one: the same subscription connected twice (org-level
+// and personally, or re-pasted after a token looked broken) serialises
+// differently every time, and hashing the blob would open a second meter
+// that starts empty and admits a run the first meter would have parked.
+// Codex's auth.json carries `tokens.account_id`, which is exactly that
+// identifier; the hash is namespaced so an account-derived identity can
+// never be confused with a blob-derived one.
+//
+// KNOWN GAP — Anthropic: a Claude Code credentials.json carries no account
+// or subscription id (see AnthropicCredentialsView, and the token exchange
+// in oauth_authcode.go, which returns only tokens/scopes/expiry), so it
+// falls back to the whole-blob hash and re-connecting the SAME Claude
+// subscription still opens a fresh meter. That fails OPEN — the next run
+// proceeds and republishes the provider's own reading at its first call —
+// and the mid-run guard remains the backstop. Closing it needs an identity
+// from outside the payload (an Anthropic profile lookup at connect time),
+// not a different hash of it.
+func SubscriptionFingerprint(kind OAuthKind, payload []byte) string {
+	if kind == OAuthKindCodex {
+		if v, err := ParseCodexView(payload); err == nil && v.Tokens.AccountID != "" {
+			return fingerprintHex("oauth-account:" + string(kind) + ":" + v.Tokens.AccountID)
+		}
+	}
+	return fingerprintHex(string(payload))
 }
 
 // CodexAuthJSONPath returns the on-disk location of Codex CLI's auth.json,

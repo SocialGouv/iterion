@@ -554,6 +554,10 @@ func (s *Service) Rewind(ctx context.Context, spec RewindSpec) (*RewindResult, e
 //     stays exhausted; grant more with resume's --max-iterations.
 //   - LoopPreviousOutput / LoopCurrentOutput: the pivot may legitimately
 //     read {{loop.<name>.previous_output}} on its first re-execution.
+//   - SelectedIncoming of the PIVOT: the last visit's selected edges are
+//     what the re-execution should rebuild from. Downstream keys are
+//     cleared with the dropped nodes. A graph edit that invalidates the
+//     pivot's identities is handled at resolve time (untracked fallback).
 func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []string) {
 	cp.NodeID = nodeID
 	if cp.ArtifactVersions == nil {
@@ -561,6 +565,7 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	}
 	for _, id := range dropped {
 		delete(cp.Outputs, id)
+		delete(cp.SelectedIncoming, id)
 	}
 	// Recovery budgets clear over the UNFILTERED set: a node that failed
 	// has attempts recorded and no output, so keying this on `dropped`

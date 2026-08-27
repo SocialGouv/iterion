@@ -308,6 +308,45 @@ func providerFallbackEligible(backendName string) bool {
 	return backendName == delegate.BackendClaudeCode
 }
 
+// sessionResumeBackends are the backends that actually CONSUME
+// Task.SessionID to resume a conversation. Membership is a property of
+// the code, verified per backend, not a guess:
+//
+//	claude_code — claudesdk.WithResume(task.SessionID)
+//	codex       — codexsdk.WithResume(task.SessionID)
+//	pi          — `--session-id` / `--fork <id>`
+//
+// Everyone else only ever REPORTS a session id and never resumes one:
+// claw never mentions Task.SessionID at all (its conversation lives in
+// the host's (runID, nodeID) store and is replayed independently), and
+// the generic CLI-agent path behind kimi/grok parses an id out of the
+// CLI's output without ever passing one back in.
+//
+// Deliberately its own set rather than a reuse of
+// providerFallbackEligible: that one answers "does this backend honour
+// the provider HINT", a different question with a different answer.
+var sessionResumeBackends = map[string]bool{
+	delegate.BackendClaudeCode: true,
+	delegate.BackendCodex:      true,
+	delegate.BackendPi:         true,
+}
+
+// sessionResumeEligible reports whether dropping Task.SessionID can
+// plausibly change the outcome of a retry on this backend.
+//
+// It gates the optional-session degrade for the same reason
+// collapseHintOnlyChain trims a hint-only chain: on a backend that
+// ignores the id, the "fresh" retry is a byte-identical call that will
+// fail identically, so the degrade would be a whole wasted agentic turn
+// — and it would evict the node's accumulated conversation on the way,
+// destroying real state for a failure the session had no part in. Under
+// the shipped `sandbox: auto` that is not a corner case: a sandboxed
+// claw failure flattens to a string at the __claw-runner IPC boundary
+// and classifies UNCLASSIFIED, so EVERY such failure would qualify.
+func sessionResumeEligible(backendName string) bool {
+	return sessionResumeBackends[backendName]
+}
+
 // chainIsHintOnly reports whether every element defers to the node's
 // resolved backend — i.e. the chain can only swap a credential, never
 // re-shape the task. That is exactly the legacy `provider:` chain
@@ -661,6 +700,14 @@ type chainOutcome struct {
 	// zero-value output (only the caller knows the schema). Result carries
 	// the failed routes' accumulated spend, never content.
 	Skipped bool
+	// SessionDegraded reports that the element that served did so only
+	// after its best-effort session (`session: inherit_if_available` /
+	// `persist`) failed to load and was dropped — the node completed
+	// WITHOUT the conversation it asked for. It exists for the same
+	// reason as FellThrough: a deterministic gate must be able to fail
+	// closed on a degraded input, and an amnesiac node's output is
+	// well-formed in every other respect.
+	SessionDegraded bool
 }
 
 // dispatchChain walks a node's fallback chain, building each element
@@ -836,20 +883,82 @@ func (e *ClawExecutor) dispatchChain(
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
+		// Best-effort session degrade (inherit_if_available / persist): the
+		// upstream session id resolved, but its backing state can be gone —
+		// a cloud resume replaces the sandbox container and a CLI backend's
+		// session files die with it, after which every resume of this node
+		// fails identically (lived on branch-improve-loop's plan_revise:
+		// error_during_execution in ~2.6s, forever). "If available" covers
+		// that too: retry ONCE with the session dropped, loudly.
+		//
+		// UNCLASSIFIED only. That is where a dead session lands — the
+		// backend refused to load it and said nothing typed about why —
+		// and, being non-retryable, it makes the fresh attempt a single
+		// extra call. Every other category names a cause the session is
+		// not: auth / usage_window / unavailable are credential- or
+		// model-level (a fresh session hits the same wall), and
+		// transient_exhausted is by construction "isDelegateRetryable
+		// said yes and the budget ran out" — a throttle, a 5xx, a TCP
+		// blip, none of which the session id caused. Degrading there
+		// would buy a SECOND full retry budget (backoff included) under
+		// a provider outage and silently discard continuity for an
+		// unrelated cause (R1486ff).
+		sessionDegraded := false
+		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" &&
+			sessionResumeEligible(backendName) {
+			switch cat := delegate.ClassifyFallback(err, isDelegateRetryable(err)); cat {
+			case delegate.FallbackUnclassified:
+				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
+				sessionDegraded = true
+				spent.add(result)
+				// Dropping task.SessionID is not, by itself, enough to
+				// make the retry fresh. The (runID, nodeID) claw store is
+				// replayed independently of the id (claw_backend's
+				// session_replay envelope), and it is keyed by NODE, not
+				// by element or iteration — so a node that ran on claw
+				// earlier in its chain, or in an earlier loop pass, can
+				// still hold messages that would be replayed into the call
+				// this event just announced as FRESH. sessionResumeEligible
+				// keeps the degrade off claw itself, so this is the guard
+				// for that residue, on the same terms the route-change path
+				// evicts for.
+				e.evictNodeSessionForFallback(ctx, nodeID)
+				fresh := *task
+				fresh.SessionID = ""
+				fresh.ForkSession = false
+				fresh.SessionFingerprint = ""
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+					return backend.Execute(ctx, fresh)
+				})
+				if freshErr == nil {
+					task = &fresh
+				}
+				result, err = freshResult, freshErr
+			}
+		}
 		if err == nil {
 			return chainOutcome{
-				Result:      spent.applyTo(result),
-				BackendName: backendName,
-				Backend:     backend,
-				Task:        task,
-				ServedBy:    stepLabel(el),
-				FellThrough: i > 0,
+				Result:          spent.applyTo(result),
+				BackendName:     backendName,
+				Backend:         backend,
+				Task:            task,
+				ServedBy:        stepLabel(el),
+				FellThrough:     i > 0,
+				SessionDegraded: sessionDegraded,
 			}, nil
 		}
 		causes = append(causes, err)
 
 		if ctx.Err() != nil {
-			return chainOutcome{Result: result, BackendName: backendName}, err
+			// Cancellation is terminal for the node, but it does not
+			// un-spend what the abandoned attempts already burned: fold
+			// `spent` in here exactly as the exhausted-chain tail does.
+			// Dropping it under-reported an abandoned route's tokens and
+			// cost to max_cost_usd, the org monthly cap and a lending
+			// donor's ledger — and the optional-session degrade made that
+			// reachable on a SINGLE-route node, where `spent` used to be
+			// provably empty at this point.
+			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName}, err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat
@@ -1018,6 +1127,36 @@ func (e *ClawExecutor) noteFallback(
 		Attempts:    e.retry.maxAttempts(),
 		Err:         err,
 		ToSkip:      to.Skip,
+	})
+}
+
+// noteSessionDegrade emits the one log line and the one hook that make a
+// dropped best-effort session visible.
+//
+// A degrade is not a route change — the same backend, model and
+// credential serve the retry — so it is deliberately NOT a
+// model_fallback: what changed is the node's INPUT, which now lacks the
+// conversation its `session:` field asked for. That is the whole reason
+// it needs a record of its own; the node goes on to complete
+// successfully and would otherwise read as a clean pass.
+func (e *ClawExecutor) noteSessionDegrade(
+	ctx context.Context,
+	nodeID, backendName, sessionID string,
+	cat delegate.FallbackCategory,
+	err error,
+) {
+	if e.logger != nil {
+		e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
+			nodeID, LoopIterationFromContext(ctx), backendName, sessionID, err)
+	}
+	if e.hooks.OnSessionDegraded == nil {
+		return
+	}
+	e.hooks.OnSessionDegraded(nodeID, SessionDegradedInfo{
+		BackendName: backendName,
+		SessionID:   sessionID,
+		Reason:      string(cat),
+		Err:         err,
 	})
 }
 

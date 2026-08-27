@@ -290,6 +290,15 @@
             },
             "type": "object"
           },
+          "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
           "vars": {
             "additionalProperties": {},
             "type": "object"
@@ -845,6 +854,39 @@
         },
         "required": [
           "at"
+        ],
+        "type": "object"
+      },
+      "IncomingEdge": {
+        "properties": {
+          "condition": {
+            "type": "string"
+          },
+          "else": {
+            "type": "boolean"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "foreach": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "negated": {
+            "type": "boolean"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
         ],
         "type": "object"
       },

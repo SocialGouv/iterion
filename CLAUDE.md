@@ -192,6 +192,12 @@ the hours this one spent.
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
+  on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
+  what the command seeds (prior-review hand-off, push-back, ledger, gate),
+  the session gotchas (don't touch the branch while he runs, pull after his
+  push), and the dogfood duty (bilan per run). Read it before acting on a
+  Revi review of an iterion PR.
 - [docs/probes-and-graceful-shutdown.md](docs/probes-and-graceful-shutdown.md) —
   what `/healthz` and `/readyz` promise on the server AND the runner, the
   lame-duck window (`ITERION_SHUTDOWN_DELAY`) that keeps a deploy or an HPA
@@ -1814,6 +1820,15 @@ review ([pkg/server/forge_publish.go](pkg/server/forge_publish.go)). See
 sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
 (`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
 head sha, off by default so the developer keeps the choice.
+
+**Revi → Billy is the habit on this repo.** When Revi leaves findings on a PR
+here, comment **`/billy`** on the PR and let the fixer work — don't hand-fix
+the findings in a session. The command seeds Billy with Revi's review
+(kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
+gate count, and the push re-triggers Revi. Every such run is a dogfood run:
+monitor it, fix the frictions it surfaces, write the bilan. Full habit +
+gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). (The zero-touch
+`auto_fix_on_gate_failure` lane is deliberately not enabled here yet.)
 
 ## Conventions
 

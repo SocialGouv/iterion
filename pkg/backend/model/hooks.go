@@ -950,6 +950,32 @@ func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
 		nodeID, info.BackendName, info.Attempt, info.Delay.Milliseconds(), errMsg)
 }
 
+// onSessionDegraded implements the OnSessionDegraded hook: it turns a
+// dropped best-effort session into a first-class store event.
+//
+// Warn-level: the node is about to succeed, but it succeeds AMNESIAC —
+// it lost the conversation its `session:` field asked for. That is a
+// fact about the node's input quality, and the only other trace is a
+// process log line nobody reads after the fact.
+func (h *storeHooks) onSessionDegraded(nodeID string, info SessionDegradedInfo) {
+	data := map[string]any{
+		"backend":    info.BackendName,
+		"session_id": info.SessionID,
+		"reason":     info.Reason,
+	}
+	if info.Err != nil {
+		data["error"] = info.Err.Error()
+	}
+	h.emit(nodeID, store.EventSessionDegraded, data)
+
+	errMsg := ""
+	if info.Err != nil {
+		errMsg = info.Err.Error()
+	}
+	h.logger.Warn("Session degraded [%s]: %s could not resume session %s (%s) — the node runs FRESH, without the conversation it asked for: %s",
+		nodeID, info.BackendName, info.SessionID, info.Reason, errMsg)
+}
+
 // onProviderFallback implements the OnProviderFallback hook: it turns a
 // chain fall-through into a first-class store event.
 //
@@ -1141,6 +1167,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		OnDelegateError:    h.onDelegateError,
 		OnDelegateRetry:    h.onDelegateRetry,
 		OnProviderFallback: h.onProviderFallback,
+		OnSessionDegraded:  h.onSessionDegraded,
 		// OnToolNodeResult handles direct tool nodes with full I/O content.
 		OnToolNodeResult: h.onToolNodeResult,
 	}

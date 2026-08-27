@@ -122,7 +122,7 @@ func TestParseMode(t *testing.T) {
 func TestMemStore(t *testing.T) {
 	ctx := t.Context()
 	s := NewMemStore()
-	key := Key("claude_code", ScopePlatform)
+	key := Key("claude_code", ScopePlatform, "")
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 
 	if got, err := s.Latest(ctx, "unknown"); err != nil || len(got) != 0 {
@@ -156,10 +156,27 @@ func TestKeyScoping(t *testing.T) {
 	// A tenant's own subscription is a different meter from the
 	// deployment's: merging them would let one tenant's spend park
 	// another's runs.
-	if Key("claude_code", TenantScope("t1")) == Key("claude_code", ScopePlatform) {
+	if Key("claude_code", TenantScope("t1"), "") == Key("claude_code", ScopePlatform, "") {
 		t.Fatal("tenant and platform credentials must not share a key")
 	}
-	if Key("claude_code", TenantScope("")) != Key("claude_code", ScopePlatform) {
+	if Key("claude_code", TenantScope(""), "") != Key("claude_code", ScopePlatform, "") {
 		t.Fatal("a run with no tenant falls back to the platform meter")
+	}
+}
+
+// The key follows the credential: a fingerprint opens its own meter, an
+// empty fingerprint IS the historical two-segment key — readings recorded
+// before fingerprinting stay readable and expire in place.
+func TestKey_CredentialFingerprintSegment(t *testing.T) {
+	if got := Key("claude_code", ScopePlatform, ""); got != "claude_code|platform" {
+		t.Errorf("fingerprint-less key = %q, want the historical format", got)
+	}
+	a := Key("claude_code", TenantScope("t1"), "aaaa1111")
+	b := Key("claude_code", TenantScope("t1"), "bbbb2222")
+	if a == b {
+		t.Error("two credentials on one tenant must not share a meter")
+	}
+	if a != "claude_code|tenant:t1|fp:aaaa1111" {
+		t.Errorf("fingerprinted key = %q", a)
 	}
 }

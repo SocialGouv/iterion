@@ -236,3 +236,57 @@ func TestParseCodexView_Malformed(t *testing.T) {
 		t.Fatalf("expected zero view on parse error, got %+v", v)
 	}
 }
+
+// The meter identity must be the SUBSCRIPTION, not the credentials blob.
+// The blob is not one: the same account connected twice — org-level and
+// personally, or re-pasted after a token looked broken — serialises
+// differently every time, and a blob hash would open a second meter that
+// starts empty and admits a run the first would have parked. Codex names
+// its account; Anthropic does not, and that gap is pinned here too so it
+// stays a documented limit rather than a silent one.
+func TestSubscriptionFingerprint_IdentifiesTheAccountNotTheBlob(t *testing.T) {
+	codex := func(token, account string) []byte {
+		return []byte(`{"auth_mode":"chatgpt","tokens":{"access_token":"` + token +
+			`","refresh_token":"r-` + token + `","account_id":"` + account + `"}}`)
+	}
+
+	// One account, two connections: different tokens, ONE meter.
+	first := SubscriptionFingerprint(OAuthKindCodex, codex("tok-1", "acct-A"))
+	second := SubscriptionFingerprint(OAuthKindCodex, codex("tok-2", "acct-A"))
+	if first != second {
+		t.Errorf("same codex account fingerprinted %q then %q — one subscription would get two meters and two ceilings", first, second)
+	}
+	if first == "" {
+		t.Fatal("empty fingerprint: every payload must yield an identity")
+	}
+
+	// Two accounts must never share a meter — that is the whole point of
+	// keying the ledger on the credential.
+	if other := SubscriptionFingerprint(OAuthKindCodex, codex("tok-1", "acct-B")); other == first {
+		t.Error("two distinct codex accounts share a fingerprint: one account's spend would park the other's runs")
+	}
+
+	// An account-derived identity must never collide with a blob-derived
+	// one, hence the namespace in the hashed input.
+	if raw := SubscriptionFingerprint(OAuthKindClaudeCode, codex("tok-1", "acct-A")); raw == first {
+		t.Error("account-derived and blob-derived identities collide — the namespace is not applied")
+	}
+
+	// Fallbacks: a codex payload with no account_id, and Anthropic, which
+	// carries no account identifier at all (see SubscriptionFingerprint's
+	// KNOWN GAP). Both must still yield a stable per-blob identity rather
+	// than an empty one, which would collapse every credential onto the
+	// historical slot-shaped key.
+	noAccount := []byte(`{"auth_mode":"apikey","tokens":{"access_token":"tok-9"}}`)
+	if got := SubscriptionFingerprint(OAuthKindCodex, noAccount); got != fingerprintHex(string(noAccount)) {
+		t.Errorf("codex without account_id = %q, want the blob fallback", got)
+	}
+	anth := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-1"}}`)
+	if got := SubscriptionFingerprint(OAuthKindClaudeCode, anth); got != fingerprintHex(string(anth)) {
+		t.Errorf("anthropic = %q, want the blob fallback", got)
+	}
+	if SubscriptionFingerprint(OAuthKindClaudeCode, anth) ==
+		SubscriptionFingerprint(OAuthKindClaudeCode, []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-2"}}`)) {
+		t.Error("two distinct anthropic credentials share a fingerprint")
+	}
+}

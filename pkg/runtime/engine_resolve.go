@@ -37,6 +37,10 @@ type resolveScope struct {
 	runInputs map[string]any
 	artifacts map[string]map[string]any
 	rs        *runState
+	// incomingByNode, when non-nil, is the selected-incoming map used
+	// instead of rs.selectedIncoming. Fan-out branches pass their
+	// private copy so concurrent writers never race the trunk map.
+	incomingByNode map[string][]store.IncomingEdge
 }
 
 // scope returns a resolveScope wired straight from rs — the common
@@ -55,12 +59,17 @@ func (rs *runState) scope() resolveScope {
 }
 
 // buildNodeInputRS constructs the input map for a node by looking at the
-// edge `with` mappings that target this node. For convergence points,
-// mappings from ALL resolved incoming edges are merged. If no mappings
-// exist, the run-level inputs are used for the entry node. The runState
-// (sc.rs) is required so that `{{loop.*}}` / `{{run.*}}` references
-// resolve against the run's iteration state. Pass nil for sc.rs only in
-// tests that don't exercise those namespaces.
+// edge `with` mappings that target this node. Only incoming edges that
+// routing actually selected for the current visit contribute (issue
+// #484); an unselected conditional sibling whose source has already
+// produced output is ignored. When no selection was recorded (legacy
+// checkpoint, or a direct test of the resolver) the pre-#484 fallback
+// still applies: every incoming edge whose source has output. For
+// convergence points, mappings from every *selected* incoming edge are
+// merged. If no mappings exist, the run-level inputs are used for the
+// entry node. The runState (sc.rs) is required so that `{{loop.*}}` /
+// `{{run.*}}` references resolve against the run's iteration state. Pass
+// nil for sc.rs only in tests that don't exercise those namespaces.
 func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any {
 	result := make(map[string]any)
 
@@ -81,15 +90,40 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		}
 	}
 
-	// applyEdge merges one edge's with-mappings into result. Only edges whose
-	// source has already produced output contribute (so a not-yet-run source
-	// leaves the mapping to a later-firing edge / the entry fallback).
+	// applyEdge merges one edge's with-mappings into result. A not-yet-run
+	// source never contributes (the mapping is left to a later-firing
+	// edge / the entry fallback). When routing recorded a selected
+	// incoming set for this visit:
+	//
+	//  - exclusive FORWARD siblings (#484): only the selected edges
+	//    contribute, so an unselected `when`/`else` cannot clobber.
+	//  - loop-head RE-ENTRY: the recorded set is the single back-edge
+	//    (selectEdgeRS replaces). A back-edge is an OVERLAY of the keys
+	//    that change per iteration, not a replacement of the head's
+	//    whole input — unmapped keys still come from forward/entry
+	//    edges whose source has output. Filtering those out leaked
+	//    raw `{{input.x}}` into campaign prompts (Rae4900).
+	selected, tracked := incomingFor(nodeID, sc)
+	if tracked && e.workflow != nil && !incomingMatchesWorkflow(nodeID, selected, e.workflow.Edges) {
+		// Stale checkpoint: resume --force / rewind re-executes against
+		// an edited .bot. Filtering on identities that match no current
+		// edge would drop every with-mapping (R25212d).
+		tracked = false
+	}
+	overlayForward := tracked && incomingOnlyBounded(selected)
 	applyEdge := func(edge *ir.Edge) {
 		if edge.To != nodeID || len(edge.With) == 0 {
 			return
 		}
 		if _, ok := sc.outputs[edge.From]; !ok && edge.From != "" {
 			return
+		}
+		if tracked {
+			if overlayForward && !edge.IsBoundedIteration() {
+				// keep the forward pass unfiltered
+			} else if !edgeInIncoming(edge, selected) {
+				return
+			}
 		}
 
 		// {{input.X}} in a with-mapping is the source node's output —
@@ -127,8 +161,9 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 		}
 	}
 
-	// Merge with-mappings from ALL edges targeting this node whose source has
-	// produced output, in TWO precedence passes:
+	// Merge with-mappings from eligible incoming edges in TWO precedence
+	// passes (eligible = selected for this visit, or the untracked
+	// fallback of "source has produced output"):
 	//
 	//  1. Non-iteration (forward / entry) edges first.
 	//  2. Bounded-iteration back-edges (loop / foreach) last, so they WIN on a

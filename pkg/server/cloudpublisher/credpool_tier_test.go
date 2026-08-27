@@ -311,3 +311,24 @@ func TestWantsFor_unpinnedRunKeepsTheWholeOrder(t *testing.T) {
 		}
 	}
 }
+
+// A lent subscription is metered like any other: on the DONOR credential's
+// own identity. Without it the borrower's meter is slot-shaped, so a donor
+// who reconnects a fresh subscription is still parked by the readings of
+// the account it replaced — the lived failure, borrowed.
+func TestPoolTier_grantCarriesTheDonorCredentialsIdentity(t *testing.T) {
+	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
+
+	bundle, creds := f.resolve(t, "run-1", nil)
+
+	if creds.grant == nil {
+		t.Fatal("no grant — the tier is not wired")
+	}
+	want := seededFP("donor")
+	if creds.grant.Fingerprint != want {
+		t.Errorf("grant.Fingerprint = %q, want the donor record's %q", creds.grant.Fingerprint, want)
+	}
+	if got := bundle.OAuthFingerprints["claude_code"]; got != want {
+		t.Errorf("OAuthFingerprints[claude_code] = %q, want %q — the borrower's meter would follow the slot, not the lent credential", got, want)
+	}
+}

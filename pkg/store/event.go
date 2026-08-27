@@ -364,6 +364,22 @@ const (
 	// dir, Put failure). The node succeeded; the next visit runs fresh.
 	// Data: reason (short).
 	EventPersistDegraded EventType = "persist_session_degraded"
+	// EventSessionDegraded is the RESTORE-side twin of
+	// EventPersistDegraded: a node whose session is best-effort
+	// (`session: inherit_if_available` / `persist`) resolved an id whose
+	// backing state no longer loads — a cloud resume replaced the sandbox
+	// container and the CLI's session files died with it — so the
+	// executor re-ran the call with the session dropped. The node
+	// SUCCEEDS having lost its upstream (or accumulated) conversation,
+	// which is precisely why it must be loud: without this event the only
+	// trace is a process log line, and nothing in the run record would say
+	// the node started amnesiac. The node's own output carries the
+	// machine-readable half (`_session_degraded`), so a deterministic gate
+	// can fail closed on it.
+	//
+	// Data keys: backend, session_id (the id that failed to serve),
+	// reason (delegate.FallbackCategory), error.
+	EventSessionDegraded EventType = "session_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:
