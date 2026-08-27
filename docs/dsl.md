@@ -586,9 +586,11 @@ The grace is **refused** in two cases:
   `BudgetOverrides.cap_imposed`, so a runner pod enforces it too.
 
 Both *exceeded* stop-paths — the check before a node runs and the overrun
-noticed after one succeeds — go through the same decision, so a run can
-never be graced into starting a node and then killed for having spent on
-it.
+noticed after one succeeds — go through the same decision, so a node is
+never refused by a rule stricter than the one that admitted it. What the
+second path still catches is a node whose **own** spend carries the run
+past `cap × (1+ratio)`: it completes, and the run then ends. The grace
+buys the node its chance to deliver, not immunity from the ceiling.
 
 The grace only exists **past** the cap. The separate 90% hard limit, which
 refuses to start a new node while an axis sits in `[90%, 100%)` to bound

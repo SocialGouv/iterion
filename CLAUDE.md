@@ -497,14 +497,17 @@ the backstop for a single node that overruns. See
 That guard covers overruns caused by iteration COUNT; a single node that
 overshoots the cap on its own is covered by the **exit grace**
 ([pkg/runtime/budget_exit_grace.go](pkg/runtime/budget_exit_grace.go)).
-Once a cap is *spent*, the run may walk **forward** — never around a loop —
+Once a cap is *spent*, the run may walk **forward** — never around a
+declared `loop`; a `foreach` back-edge is bounded by its collection, not
+priced, so only the declared-loop form promises "it cannot iterate again" —
 spending up to `cap × 1.1` to reach a terminal node, so work it has already
 paid for gets delivered instead of dying on disk. The ceiling is
 PROPORTIONAL (a small cap grants a small grace) and past it the run fails as
 `BUDGET_EXCEEDED` as before. Both *exceeded* stop-paths — the pre-exec check
 and the deferred overrun after a node that succeeded — go through one
-decision (`graceOrFailBudget`), so a run cannot be graced into starting and
-then killed for having spent. The 90% hard limit (`budgetHardThreshold`,
+decision (`graceOrFailBudget`), so a node is never refused by a stricter
+rule than the one that admitted it; a node whose OWN spend crosses
+`cap × 1.1` still completes and then ends the run. The 90% hard limit (`budgetHardThreshold`,
 refusing a new node while an axis is in `[90%, 100%)`) is a SEPARATE,
 un-graced path reached only when nothing is exceeded yet — so a run refused
 at 92% gets no grace while one at 105% may walk on, which is surprising
@@ -1498,7 +1501,7 @@ iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--ma
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
-iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker (import mirrors a forge repo's issues, one-way + idempotent)
 iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
