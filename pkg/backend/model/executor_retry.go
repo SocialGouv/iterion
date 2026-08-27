@@ -854,6 +854,14 @@ func (e *ClawExecutor) dispatchChain(
 						nodeID, LoopIterationFromContext(ctx), backendName, task.SessionID, err)
 				}
 				spent.add(result)
+				// Dropping task.SessionID is not enough to make the retry
+				// fresh: a claw node's conversation lives in the
+				// (runID, nodeID) session store and is replayed regardless
+				// of the id (claw_backend's session_replay envelope). Left
+				// in place it would re-send the FAILED attempt's messages
+				// into the "fresh" call — the exact hazard the route-change
+				// path evicts for — and make the log line above a lie.
+				e.evictNodeSessionForFallback(ctx, nodeID)
 				fresh := *task
 				fresh.SessionID = ""
 				fresh.ForkSession = false

@@ -116,3 +116,31 @@ func TestOptionalSessionAuthFailureDoesNotDegrade(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionalSessionDegradeEvictsNodeSession: dropping task.SessionID
+// only makes the retry fresh for a backend that keys continuity on the
+// id. A claw node's conversation lives in the (runID, nodeID) session
+// store and is replayed regardless — including the FAILED attempt's
+// messages — so the degrade must evict it, exactly as the route-change
+// path does, or the "FRESH session" it logs is not fresh at all.
+func TestOptionalSessionDegradeEvictsNodeSession(t *testing.T) {
+	const runID, nodeID = "run-1", "plan_revise"
+	sessions := newNodeSessionStore()
+	if err := sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`)); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	if sessions.LoadSnapshot(runID, nodeID) == nil {
+		t.Fatal("precondition: snapshot not stored")
+	}
+	ctx := withRuntimeContext(context.Background(), runID, sessions)
+
+	e, _, chain := sessionDegradeExecutor(errors.New("delegate: claude-code error: subtype=error_during_execution"))
+	build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+
+	if _, err := e.dispatchChain(ctx, nodeID, chain, "claude-opus-5", build); err != nil {
+		t.Fatalf("optional session should degrade to fresh, got: %v", err)
+	}
+	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
+		t.Errorf("the dead session's conversation survived the degrade: %s", snap)
+	}
+}
