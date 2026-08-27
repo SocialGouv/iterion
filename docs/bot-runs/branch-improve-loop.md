@@ -1,5 +1,86 @@
 # Billy — branch-improvement validation
 
+## 2026-08-27 — first `/billy` of the Revi→Billy habit on iterion itself (runs 01a0428a, 01a042b9, 01a042d7)
+
+- Status: **partial.** The habit's whole chain worked — `/billy` comment →
+  launch with `prior_review` seeded (3.6–6 KB, the kind-matched hand-off),
+  campaign converged in ONE pass (7 commits, verify green, in-loop review
+  clean), honest verdict posted — but the **push died on an expired forge
+  token** after 1h11, so the fixes never reached the PR. Three engine/bot
+  defects found, two fixed in this change, one filed
+  (native:54412d84). This bilan inaugurates [docs/revi-billy-loop.md](../revi-billy-loop.md).
+- Versions: iterion cloud prod (edge ~v3.65) · bot `branch-improve-loop` 1.2.0
+- Method: the documented habit — Revi reviewed SocialGouv/iterion#541
+  (1 high: "OAuth meter key follows the access token"), then `/billy`
+  comments (maintainer). Weekly usage cap was at 95% → rotated the team +
+  platform claude_code OAuth credential (fresh token), temporarily raised
+  the runtime week cap 95→99 to get past the pre-#541 shared-meter stale
+  reading, resumed the parked review. Three Billy attempts:
+  - **Run 1 (01a0428a):** paused on `plan_review` — the team's codex OAuth
+    record was DEAD (401), and `plan_review: auto` had resolved `on` from
+    its mere existence. Uploaded a fresh codex auth.json → peer served on
+    retry — then `plan_revise` wedged forever (~2.6s
+    `error_during_execution` × 9): the mid-plan-phase resume had replaced
+    the sandbox container, the author session's files died with it, and
+    `inherit_if_available` only tolerated a MISSING session id, not an
+    unloadable one. Cancelled.
+  - **Run 2 (01a042b9):** `plan_review` 400 — `gpt-5.6-sol requires a newer
+    codex-cli` (the ChatGPT-wire version gate; runner lacks a recent
+    `ITERION_CODEX_VERSION`). Cancelled; pinned `plan_review: "off"` in the
+    iterion repo integration's launch_vars (operator directive: **the fixer
+    must never depend on a second family — Anthropic alone suffices**).
+  - **Run 3 (01a042d7):** clean campaign, pure Anthropic. Converged in one
+    pass: `branch_clean`, 7 commits, verify_run green, in-loop review clean,
+    $9.13 / 90 K tokens / 1h11. Fixed Revi's finding the right way
+    (refresh-invariant identity: fingerprint stamped at connect/seal,
+    `PledgeID` for pool grants) — notable because the PR author had
+    hand-fixed the finding mid-dogfood and Revi's re-review had STILL found
+    1 high; Billy's ledger disposed of every id with arguments. Then
+    `push_back_tool`: `Invalid username or token` — the sealed GitHub App
+    installation token (minted at launch, ~1h validity) had expired. The 7
+    commits died with the pod; the verdict honestly posted
+    `failure — 3 fix(es) never reached this head`.
+- Value: the habit is real — the hand-off, the one-pass convergence, the
+  honest gate all worked; and the dogfood surfaced defects no test had.
+- Findings / misses: (1) a DEAD second-family credential blocks the whole
+  fixer via `plan_review: auto` + `policy: wait`; (2) `inherit_if_available`
+  wedges forever when the session's backing state died with the container;
+  (3) `push_auth_probe` validates token PRESENCE, not validity (answered
+  `available` with a 10-min-dead token); (4) the launch-minted forge push
+  token cannot outlive the App-token validity, so any >1h fixer run loses
+  its push.
+- Engine/bot hardening (this change): `plan_review_policy` defaults to
+  `skip` for Billy (bot 1.2.1 — the peer is optional enrichment, never a
+  blocker); `Task.SessionOptional` — the executor retries ONCE with a fresh
+  session when an optional session fails to serve (red-first tests). Filed:
+  mint-at-use forge push token + a real auth probe (native:54412d84).
+- Follow-up — **both delivery runs landed the same day**:
+  - **Run 4 on #541 (01a0431d, 53 min):** re-derived the lost fixes from the
+    fresh prior_review, converged, **pushed 6 commits** (refresh-invariant
+    OAuth meter identity + tests actually executing the refresh path +
+    operator docs), verdict `success — 3 finding(s) fixed, re-review by the
+    fixer clean, build green` on `556d6f4e`.
+  - **Run 5 on #544 (01a0431e, 1h53):** `/billy` on the habit PR itself for
+    Revi's 3 findings on OUR fixes — **pushed 11 commits** that materially
+    hardened the session-degrade change: loud degrade (event + output
+    stamp, R051957), narrowed to `unclassified` failures (R1486ff),
+    claw node-session eviction, backend gate (only backends that resume by
+    SessionID), the SessionOptional mapping pinned across all six session
+    modes (R552e44), plus docs/ADR alignment — and it improved the habit
+    runbook itself (the `review_on_sync` dependency of step 3).
+  - The 1h53 push succeeding **contradicts** the "App token dies at 1h"
+    hypothesis for run 3's failure; the board card (native:54412d84) was
+    corrected — the standing defect is `push_auth_probe` validating
+    presence, not validity; run 3's root cause is unreproduced (plausible:
+    the integration PATCH 2 min before launch re-provisioned the managed
+    forge_token).
+- Lessons for next run: keep fixer runs under the App-token validity until
+  mint-at-use lands (tighter `scope_notes`, or `max_duration` < 1h so the
+  budget guard ships what is banked while the token is alive); the usage-cap
+  runbook rotation is CLI-only now (`iterion remote admin llm oauth set` +
+  team `/oauth/{kind}/credentials` — no k8s secret edit, no runner restart);
+  after any `/billy`, `git pull` before touching the branch.
+
 ## 2026-08-13 — the write path on a self-hosted GitLab, end to end (run 019ffb9e)
 
 - Status: **validated.** Every link a fixer needs on a forge that had never

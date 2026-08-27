@@ -431,6 +431,39 @@ A fall-through also **drops the failed route's conversation** — the
 session store carries no provider fingerprint, so replaying it would
 send one provider's signed turns to another.
 
+### A best-effort session that no longer loads
+
+`session: inherit_if_available` and `session: persist` say the session
+is *best effort*. Sometimes the id resolves but its backing state is
+gone — a cloud resume replaces the sandbox container, and the CLI's
+session files die with it, after which every resume of that node fails
+identically and forever. "If available" covers that too: the executor
+retries **once** with the session dropped.
+
+Deliberately narrow, on three axes:
+
+- **Unclassified failures only.** That is where a refused session lands
+  (the backend declined to load it and said nothing typed about why),
+  and being non-retryable it makes the fresh attempt a single extra
+  call. `auth` / `usage_window` / `unavailable` are credential- or
+  model-level — a fresh session hits the same wall — and
+  `transient_exhausted` is a provider-side cause (throttle, 5xx, TCP
+  blip) the session had no part in.
+- **Backends that actually resume with the id** — `claude_code`,
+  `codex`, `pi`. `claw` never reads `SessionID` (its conversation is
+  replayed from the run's own store), and `kimi` / `grok` only report
+  one, so there the "fresh" call would be byte-identical.
+- **`inherit` and `fork` never degrade.** They asked for continuity
+  unconditionally, and keep failing loudly.
+
+Like a fall-through, it is not silent: a `session_degraded` event
+(backend, session id, reason, error) and **`_session_degraded: true` on
+the node's own output**, so a deterministic gate can fail closed on an
+amnesiac input. It is *not* a `model_fallback` and does not set
+`_fallback_used`: the same backend, model and credential served — what
+degraded is the node's input. The node's accumulated `claw` conversation
+is evicted alongside, so "fresh" means fresh on every backend.
+
 ### Refusals
 
 Two crossings are compile-time **errors** (`C176`), because the degraded

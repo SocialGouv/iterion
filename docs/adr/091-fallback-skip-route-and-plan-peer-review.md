@@ -159,7 +159,8 @@ execution) hardened the design; all folded in before first release:
   pre-existing repo-wide posture, review-pr included); and a
   `session: inherit_if_available` node resumed cross-pod can hold a
   dead `_session_id` — the engine seam wanted is "resume failure under
-  inherit_if_available ⇒ fresh".
+  inherit_if_available ⇒ fresh". *(The second is CLOSED — see the third
+  amendment.)*
 
 ## Second amendment (2026-08-26, from Revi's pre-merge gate review)
 
@@ -179,6 +180,46 @@ execution) hardened the design; all folded in before first release:
   now fails at launch instead of silently selecting wait), and
   `fillZeroValues` emits `float64` for int fields (the JSON-shaped
   contract ValidateOutput and a store round-trip expect).
+
+## Third amendment (2026-08-27, from the first `/billy` dogfood on this repo)
+
+Two of the decisions above met a real run and moved
+([docs/bot-runs/branch-improve-loop.md](../bot-runs/branch-improve-loop.md),
+[docs/revi-billy-loop.md](../revi-billy-loop.md)):
+
+- **The `inherit_if_available ⇒ fresh` seam shipped**, closing the
+  known-and-accepted item above — and with a WIDER scope than asked.
+  `delegate.Task.SessionOptional` is set for `inherit_if_available` AND
+  for `persist`: both say the session is best-effort, and a cloud resume
+  that replaces the sandbox container kills the CLI's session files for
+  either. On an UNCLASSIFIED failure the executor drops the session
+  (evicting the claw node-session store too, so "fresh" is fresh on
+  every backend) and retries once. Unclassified ONLY: auth /
+  usage_window / unavailable are credential- or model-level, and
+  transient_exhausted is a provider-side cause the session had no part
+  in — degrading there would buy a second full retry budget under an
+  outage and discard continuity for nothing.
+  Widening to `persist` is deliberate: a wedged node returns
+  `error_during_execution` in ~2.6s on EVERY resume, so "fail loudly and
+  let the run-level retry handle it" is not a live option — the retry
+  re-hits the same dead file. Losing one loop iteration's memory is the
+  cheaper failure.
+- **The degrade is loud**, on the same terms this ADR set for the skip
+  route: a `session_degraded` store event (the restore-side twin of
+  `persist_session_degraded`) and a `_session_degraded: true` stamp on
+  the node's own output, so a deterministic gate can fail closed on an
+  amnesiac input. It is deliberately NOT a `model_fallback` — the same
+  backend, model and credential served; what degraded is the node's
+  INPUT.
+- **`plan_review_policy` now defaults to `skip` for
+  `branch-improve-loop` only.** The discriminator is not the bot's
+  identity but the property that it is invoked ON an external artifact:
+  a fixer that parks on an OPTIONAL cross-model reviewer holds someone's
+  pull request hostage, while a parked campaign on a workspace blocks
+  nobody. The other three campaign bots keep `wait`. Residual risk,
+  filed rather than fixed: a permanently dead peer credential now
+  degrades every run silently, and the only operator signal is the run
+  console — the fixer's PR comment does not yet say "plan peer skipped".
 
 ## Consequences
 

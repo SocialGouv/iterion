@@ -189,8 +189,10 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 }
 
-// stampFallbackMeta records, on the node's own output, that the run was
-// served by something other than its first choice.
+// stampFallbackMeta records, on the node's own output, that the node ran
+// DEGRADED — served by something other than its first choice
+// (`_fallback_used` / `_served_by`), or served by its first choice
+// without the session it asked for (`_session_degraded`).
 //
 // This is the half of ADR-087's judge guardrail that a bot can act on.
 // A reviewer served by a weaker model still emits a well-formed verdict
@@ -202,7 +204,21 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 // Nothing is written on the happy path, so an output that carries these
 // keys always means something actually happened.
 func stampFallbackMeta(output map[string]any, out chainOutcome) {
-	if output == nil || !out.FellThrough {
+	if output == nil {
+		return
+	}
+	// A dropped best-effort session is a degraded INPUT, not a route
+	// change: the node's first-choice backend/model/credential served it
+	// — it just served it amnesiac. So it gets its own key rather than
+	// `_fallback_used`, which a gate reads as "something other than what
+	// I asked for produced this". Both are the same posture though: an
+	// output that carries either key means the node ran degraded, and a
+	// deterministic gate can fail closed on it (see the session_degraded
+	// event for the human-readable half).
+	if out.SessionDegraded {
+		output["_session_degraded"] = true
+	}
+	if !out.FellThrough {
 		return
 	}
 	output["_fallback_used"] = true
@@ -1294,6 +1310,13 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		task.SessionID = sid
 		if f.session == ir.SessionFork {
 			task.ForkSession = true
+		}
+		// Best-effort modes: the id resolved, but its backing state may be
+		// gone (a cloud resume replaced the sandbox container and the CLI's
+		// session files with it). Mark the session droppable so the
+		// executor can degrade to fresh instead of failing the node forever.
+		if f.session == ir.SessionInheritIfAvailable || f.session == ir.SessionPersist {
+			task.SessionOptional = true
 		}
 		// Forward the provider fingerprint that produced the parent
 		// session so the backend can detect cross-provider forks
