@@ -12,21 +12,28 @@ import (
 
 func testLogger() *iterlog.Logger { return iterlog.New(iterlog.LevelError, io.Discard) }
 
-// seedOAuth seals a credentials.json under ownerKey/claude_code.
-func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, ownerKey, token string) {
+// seedOAuth seals a credentials.json under ownerKey/claude_code and stamps
+// its subscription identity exactly as the connect handler
+// (sealOAuthRecord) does — a record reaching the publisher any other way
+// does not exist in production. Returns that identity, which is what the
+// resolved bundle must carry into the run's usage-cap meter key.
+func seedOAuth(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, ownerKey, token string) string {
 	t.Helper()
 	blob := []byte(`{"claudeAiOauth":{"accessToken":"` + token + `"}}`)
 	sealed, err := secrets.SealOAuthPayload(sealer, ownerKey, secrets.OAuthKindClaudeCode, blob)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
+	fp := secrets.OAuthIdentityFingerprint(secrets.OAuthKindClaudeCode, blob)
 	if err := st.Upsert(context.Background(), secrets.OAuthRecord{
 		UserID:        ownerKey,
 		Kind:          secrets.OAuthKindClaudeCode,
 		SealedPayload: sealed,
+		Fingerprint:   fp,
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
+	return fp
 }
 
 func resolveBundle(t *testing.T, p *Publisher, runSecrets *secrets.MemoryRunSecretsStore, sealer secrets.Sealer, runID, tenant, owner string) secrets.RunBundle {

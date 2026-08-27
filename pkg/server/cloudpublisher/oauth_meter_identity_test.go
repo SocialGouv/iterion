@@ -1,7 +1,6 @@
 package cloudpublisher
 
 import (
-	"context"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -21,28 +20,6 @@ import (
 //
 // This test is the ratchet: it walks the bundle the runner would actually
 // receive, per tier, and fails on any OAuth slot with no identity.
-
-// seedOAuthStamped seals a claude_code forfait under ownerKey and stamps
-// the record exactly as the connect handler (sealOAuthRecord) does.
-// Returns the identity the tier is expected to carry into the bundle.
-func seedOAuthStamped(t *testing.T, st secrets.OAuthStore, sealer secrets.Sealer, ownerKey, refreshToken string) string {
-	t.Helper()
-	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-access-000000000000","refreshToken":"` + refreshToken + `"}}`)
-	sealed, err := secrets.SealOAuthPayload(sealer, ownerKey, secrets.OAuthKindClaudeCode, blob)
-	if err != nil {
-		t.Fatalf("seal: %v", err)
-	}
-	fp := secrets.OAuthIdentityFingerprint(secrets.OAuthKindClaudeCode, blob)
-	if err := st.Upsert(context.Background(), secrets.OAuthRecord{
-		UserID:        ownerKey,
-		Kind:          secrets.OAuthKindClaudeCode,
-		SealedPayload: sealed,
-		Fingerprint:   fp,
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	return fp
-}
 
 func assertOAuthSlotsIdentified(t *testing.T, b secrets.RunBundle, tier string) {
 	t.Helper()
@@ -77,7 +54,7 @@ func TestOAuthMeterIdentity_EveryTierStampsTheSlotItFills(t *testing.T) {
 	// Tier 3, the run owner's personal forfait.
 	t.Run("user", func(t *testing.T) {
 		p, rs, sealer, oauth := newPub(t)
-		want := seedOAuthStamped(t, oauth, sealer, "alice", "rt-alice")
+		want := seedOAuth(t, oauth, sealer, "alice", "sk-ant-alice")
 		b := resolveBundle(t, p, rs, sealer, "run-1", "team1", "alice")
 		assertOAuthSlotsIdentified(t, b, "user tier")
 		if got := b.OAuthFingerprints["claude_code"]; got != want {
@@ -89,7 +66,7 @@ func TestOAuthMeterIdentity_EveryTierStampsTheSlotItFills(t *testing.T) {
 	// whose owner is a synthetic identity with no personal forfait.
 	t.Run("org fallback", func(t *testing.T) {
 		p, rs, sealer, oauth := newPub(t)
-		want := seedOAuthStamped(t, oauth, sealer, secrets.OrgOwnerKey("team1"), "rt-org")
+		want := seedOAuth(t, oauth, sealer, secrets.OrgOwnerKey("team1"), "sk-ant-org")
 		b := resolveBundle(t, p, rs, sealer, "run-1", "team1", "webhook:cfg-1")
 		assertOAuthSlotsIdentified(t, b, "org tier")
 		if got := b.OAuthFingerprints["claude_code"]; got != want {
@@ -102,7 +79,7 @@ func TestOAuthMeterIdentity_EveryTierStampsTheSlotItFills(t *testing.T) {
 	// an inherited reading would park the WHOLE deployment.
 	t.Run("platform", func(t *testing.T) {
 		p, rs, sealer, oauth := newPub(t)
-		want := seedOAuthStamped(t, oauth, sealer, secrets.PlatformOwnerKey, "rt-platform")
+		want := seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
 		b := resolveBundle(t, p, rs, sealer, "run-1", "team1", "webhook:cfg-1")
 		assertOAuthSlotsIdentified(t, b, "platform tier")
 		if !b.PlatformSourced["claude_code"] {
@@ -114,7 +91,7 @@ func TestOAuthMeterIdentity_EveryTierStampsTheSlotItFills(t *testing.T) {
 
 		// Rotate it: the same slot, the same shared platform scope, a
 		// different subscription — and therefore a different meter.
-		rotated := seedOAuthStamped(t, oauth, sealer, secrets.PlatformOwnerKey, "rt-platform-NEW")
+		rotated := seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform-NEW")
 		after := resolveBundle(t, p, rs, sealer, "run-2", "team1", "webhook:cfg-1")
 		if got := after.OAuthFingerprints["claude_code"]; got != rotated || got == want {
 			t.Errorf("after rotation identity = %q, want the new record's %q (was %q) — "+
