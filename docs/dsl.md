@@ -538,12 +538,32 @@ gets delivered (the PR opened, the report written) instead of dying on
 disk. Every graced node is recorded as a `budget_exit_grace` event naming
 the exceeded axis and its own used/limit pair. The allowance is
 proportional and bounded: past `cap × 1.1` the run fails as
-`BUDGET_EXCEEDED`, exactly as before. `ITERION_BUDGET_EXIT_GRACE`
-overrides the ratio; `0` makes every declared cap **absolute** — the
-setting for deployments where a cap must be a hard invoice ceiling
-(shared instances, pooled credentials). Because the "no further
-iteration" half of the safety argument belongs to the loop guard, the
-grace is **refused entirely when the guard is off**.
+`BUDGET_EXCEEDED`, exactly as before — including the `max_duration` axis,
+where a graced node is given a real deadline at the graced ceiling rather
+than running unbounded. `ITERION_BUDGET_EXIT_GRACE` overrides the ratio;
+`0` (or `off`/`no`/`false`/`none`) makes every declared cap **absolute** —
+the setting for deployments where a cap must be a hard invoice ceiling
+(shared instances, pooled credentials). It parses **fail-closed**: a value
+outside `[0,1]`, or one that is not a number, also means 0, with a one-time
+stderr warning — an operator reaching for this variable wants a *tighter*
+policy, so an unreadable value must never grant the permissive default.
+
+The grace is **refused** in two cases:
+
+- **the loop budget guard is off** — the "no further iteration" half of the
+  safety argument belongs to that guard, and with it lifted a graced run
+  could take a back-edge and keep looping on a spent budget;
+- **the cap was imposed from outside the run** — a limit clamped by the
+  platform ceiling or by a credential-pool donor's remaining allowance is an
+  absolute promise to a third party, so the declared figure *is* the wall.
+  The marker is set at one choke point (`Budget.ClampToCeiling`, only when
+  it actually lowers something) and travels the cloud queue as
+  `BudgetOverrides.cap_imposed`, so a runner pod enforces it too.
+
+Both budget stop-paths — the check before a node runs and the overrun
+noticed after one succeeds — go through the same decision, so a run can
+never be graced into starting a node and then killed for having spent on
+it.
 
 ```iter
 workflow campaign:
