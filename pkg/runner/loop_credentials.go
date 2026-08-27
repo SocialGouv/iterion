@@ -64,15 +64,14 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// same subscription), so the record's connect-time fingerprint
 	// travels in the bundle instead. Absent for legacy records — those
 	// keep the fingerprint-less meter they always had.
+	// The OAuth half is filled by the materialisation loop below, per kind
+	// that actually reached a file the CLI will read — an identity for a
+	// slot the run cannot use would meter this run against a credential it
+	// never spends.
 	fingerprints := map[string]string{}
 	for prov, key := range bundle.APIKeys {
 		if key != "" {
 			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
-		}
-	}
-	for kind, fp := range bundle.OAuthFingerprints {
-		if fp != "" {
-			fingerprints[kind] = fp
 		}
 	}
 
@@ -129,6 +128,14 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		}
 		tmpDirs = append(tmpDirs, dir)
 		creds.OAuthCredentialFiles[kind] = dir
+		// Only now is this the credential the run will spend: a kind that
+		// failed to materialise falls back to the pod's env, and stamping
+		// its identity would publish this run's readings onto the meter of
+		// an account it never touched. Empty for a record that predates
+		// stamping — that slot keeps the fingerprint-less meter it had.
+		if fp := bundle.OAuthFingerprints[kind]; fp != "" {
+			fingerprints[kind] = fp
+		}
 		refreshFiles[kind] = filepath.Join(dir, fname)
 		r.cfg.Logger.Info("runner: oauth-forfait active run=%s tenant=%s kind=%s file=%s/%s", msg.RunID, msg.TenantID, kind, dir, fname)
 	}

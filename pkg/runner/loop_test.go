@@ -711,6 +711,61 @@ func TestInjectCredentials_HappyPathAndCleanup(t *testing.T) {
 	}
 }
 
+// The meter identity must name the credential the run WILL SPEND. An
+// OAuth slot that fails to materialise leaves no file for the CLI to read,
+// so the run falls back to the pod's env — and stamping that slot's
+// identity anyway would publish this run's readings onto the meter of an
+// account it never touched, where they would later park runs that do draw
+// on it. An unknown kind is the deterministic way to reach that skip; a
+// full disk is the real one.
+func TestInjectCredentials_UnmaterialisedOAuthSlotGetsNoMeterIdentity(t *testing.T) {
+	sealer := testSealer(t)
+	rs := secrets.NewMemoryRunSecretsStore()
+	bundle := secrets.RunBundle{
+		OAuthCredentials: map[string][]byte{
+			string(secrets.OAuthKindCodex): []byte(`{"tokens":{}}`),
+			"future_cli":                   []byte(`{}`),
+		},
+		OAuthFingerprints: map[string]string{
+			string(secrets.OAuthKindCodex): "codexfp000000000",
+			"future_cli":                   "futurefp00000000",
+		},
+	}
+	sealed, err := secrets.SealRunBundle(sealer, "run-1", bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", TenantID: "team-a", RunID: "run-1", SealedBundle: sealed}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{cfg: Config{Logger: iterlog.Nop(), RunSecrets: rs, Sealer: sealer}}
+	ctx, cleanup, err := r.injectCredentials(context.Background(), &queue.RunMessage{RunID: "run-1", TenantID: "team-a", SecretsRef: "ref-1"})
+	if err != nil {
+		t.Fatalf("injectCredentials: %v", err)
+	}
+	defer cleanup()
+
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("credentials not stamped into ctx")
+	}
+	// The kind that materialised carries its identity...
+	if creds.OAuthDir("codex") == "" {
+		t.Fatal("codex slot did not materialise — the fixture proves nothing")
+	}
+	if got := creds.Fingerprint("codex"); got != "codexfp000000000" {
+		t.Errorf("materialised slot identity = %q, want the bundle's", got)
+	}
+	// ...the one that did not, does not.
+	if dir := creds.OAuthDir("future_cli"); dir != "" {
+		t.Fatalf("unknown kind unexpectedly materialised at %q", dir)
+	}
+	if got := creds.Fingerprint("future_cli"); got != "" {
+		t.Errorf("unmaterialised slot carries identity %q: this run would meter against a credential it cannot use", got)
+	}
+}
+
 func TestDeleteRunSecrets(t *testing.T) {
 	rs := secrets.NewMemoryRunSecretsStore()
 	if err := rs.Put(context.Background(), secrets.RunSecretsRecord{ID: "ref-1", RunID: "run-1"}); err != nil {

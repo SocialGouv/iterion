@@ -38,6 +38,19 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 		return spec.UsageGuard, nil
 	}
 	store := processUsageStore()
+	// No credential fingerprint here, deliberately, and it is not an
+	// oversight the cloud path forgot to mirror: the local LLM credential
+	// is never a secrets.Credentials entry. ResolveLocalCredentials fills
+	// only the workflow's declared GENERIC secrets — the subscription
+	// itself is the host's own ~/.claude OAuth dir or env, resolved inside
+	// the delegate, invisible at this layer and at the launch gate that
+	// must read the SAME key back (usagePreflightFrom). Splitting one side
+	// only would make the local pre-flight find nothing, ever — a cap
+	// silently disabled, which is worse than the staleness it would fix.
+	// The residue: a long-lived studio whose operator rotates their
+	// credential reads the replaced account's window until the process
+	// restarts (this store is process memory, not Mongo), with the mid-run
+	// guard as the backstop.
 	key := usagecap.Key("", usagecap.ScopeLocal, "")
 	sink := func(r usagecap.Reading) {
 		// Best effort: an unrecorded reading costs the NEXT run a
