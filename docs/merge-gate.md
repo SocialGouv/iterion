@@ -92,7 +92,7 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
-| `block_fork_prs` | `false` | Filter fork PRs from any auto-launch. **Recommended ON whenever `review_on_sync` is enabled on a public repo** (see caution). |
+| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider. See the caution for what actually guards fork PRs. |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
@@ -100,9 +100,17 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > by the webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
 > there is no author-trust gate on this lane. On a public repo a fork
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
-> by the org launch gate + webhook rate limit. Enable **`block_fork_prs`**
-> (and/or set an `AuthorAllowlist`/`MinAuthorRole`) alongside `review_on_sync`
-> so untrusted fork PRs don't auto-re-review.
+> by the org launch gate + webhook rate limit.
+>
+> **Where fork PRs actually stand, per provider.** On **GitHub** and
+> **Forgejo** the guard is unconditional and needs no configuration: an
+> inbound PR event whose head is a fork is filtered before the sync lane
+> is even considered, so the fork re-review exposure above cannot occur
+> there. A repo collaborator can still launch a bot on fork code
+> deliberately with a `/command`, which gates on the commenter's
+> permission. On **GitLab** there is no fork/cross-project guard at all,
+> so a forked-MR auto-review *is* reachable — bound that lane with an
+> `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
 
 ## Activating the blocking gate on a repo
 
