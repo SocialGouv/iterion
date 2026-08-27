@@ -27,6 +27,16 @@ ordering alone is not sufficient (issue #481).
   bump (commit `427a9f44e`), so an earlier v7 runner could accept and ignore
   those pins. The later v8 bump cannot retroactively repair that window; this
   rule records the lesson so the next intent-bearing field ships atomically.
+- **The exemption, and how to tell.** A field is exempt only when a runner
+  that ignores it cannot fail OPEN. `BudgetOverrides.cap_imposed` was added
+  inside v8 with no bump on exactly that ground: it carries no operator
+  choice (the publisher *derives* it from a clamp — see
+  [credential-pool.md](credential-pool.md)), and the only consumer that would
+  act on it, the runtime's budget exit grace, shipped in the same commit. A
+  runner old enough to drop the field is old enough to have no grace to
+  refuse, so ignoring it costs nothing. Apply the test in that direction: not
+  "is the field new?" but "what does a runner that never sees it do instead,
+  and is that safe?"
 - **Until the bump ships, reject — never drop.** A launch that carries a
   field the current wire version cannot transport must fail loudly at publish
   time. Once the carrier and version bump ship together, the rejection can be
