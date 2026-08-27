@@ -84,6 +84,7 @@ loudly because mutant reverts restore `HEAD` and would otherwise judge a tree th
 
 ```
 converged = stable ∧ noop_silent ∧ revert_clean ∧ collateral == 0
+          ∧ unstable_controls == []
           ∧ uncontrolled == [] ∧ blind_lanes == [] ∧ missing_archetypes == []
           ∧ corpus_distinct ≥ min_corpus ∧ runner_replayable
           ∧ holdout_reused == [] ∧ score_pct ≥ floor
