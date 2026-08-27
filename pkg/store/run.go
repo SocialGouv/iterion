@@ -814,8 +814,8 @@ type Checkpoint struct {
 // guard and loop/foreach marks), not the with-mapping list: two edges
 // between the same pair with different conditions are distinct.
 type IncomingEdge struct {
-	From          string `json:"from"`
-	To            string `json:"to"`
+	From          string `json:"from" bson:"from"`
+	To            string `json:"to" bson:"to"`
 	Condition     string `json:"condition,omitempty" bson:"condition,omitempty"`
 	Negated       bool   `json:"negated,omitempty" bson:"negated,omitempty"`
 	ExpressionSrc string `json:"expression,omitempty" bson:"expression,omitempty"`

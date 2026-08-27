@@ -280,6 +280,24 @@ func TestSelectedIncoming_LoopReentryOverlaysPartialBackEdge(t *testing.T) {
 	}
 }
 
+func TestSelectedIncoming_StaleRecordFallsBack(t *testing.T) {
+	// resume --force against an edited .bot can rehydrate an identity
+	// that matches no current edge. Filtering on it would hand the node
+	// an empty input (R25212d).
+	wf := exclusiveSiblingWorkflow(true)
+	eng := New(wf, tmpStore(t), newStubExecutor())
+	rs := eng.newRunState("run-stale", nil)
+	rs.outputs["copi"] = map[string]any{"has_draft": true}
+	rs.outputs["validate"] = map[string]any{"ok": true}
+	rs.selectedIncoming["gate"] = []store.IncomingEdge{
+		{From: "validate", To: "gate", Condition: "ok"}, // no such guard on the current graph
+	}
+	got := eng.buildNodeInputRS("gate", rs.scope())
+	if got["validated"] != "from-else" {
+		t.Fatalf("stale selected incoming dropped mappings: %#v, want last-wins fallback %q", got["validated"], "from-else")
+	}
+}
+
 func TestMergeJoinIncoming_EmptyUnionLeavesUntracked(t *testing.T) {
 	rs := &runState{selectedIncoming: map[string][]store.IncomingEdge{
 		"join": {{From: "stale", To: "join"}},

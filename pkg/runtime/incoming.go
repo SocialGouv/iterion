@@ -109,6 +109,20 @@ func edgeInIncoming(edge *ir.Edge, selected []store.IncomingEdge) bool {
 // iteration, not a replacement of the head's whole input — unmapped
 // keys must still come from the forward/entry edges whose sources have
 // output (#484 is about exclusive FORWARD siblings).
+// incomingMatchesWorkflow reports whether at least one recorded incoming
+// edge still exists on the current workflow. A resume --force / rewind
+// against an edited .bot can rehydrate identities that no longer match
+// (renamed source, changed `when`, flipped `else`); treating that set as
+// tracked would drop every with-mapping (R25212d).
+func incomingMatchesWorkflow(nodeID string, selected []store.IncomingEdge, edges []*ir.Edge) bool {
+	for _, edge := range edges {
+		if edge != nil && edge.To == nodeID && edgeInIncoming(edge, selected) {
+			return true
+		}
+	}
+	return false
+}
+
 func incomingOnlyBounded(selected []store.IncomingEdge) bool {
 	if len(selected) == 0 {
 		return false

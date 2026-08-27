@@ -104,6 +104,12 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any
 	//    edges whose source has output. Filtering those out leaked
 	//    raw `{{input.x}}` into campaign prompts (Rae4900).
 	selected, tracked := incomingFor(nodeID, sc)
+	if tracked && e.workflow != nil && !incomingMatchesWorkflow(nodeID, selected, e.workflow.Edges) {
+		// Stale checkpoint: resume --force / rewind re-executes against
+		// an edited .bot. Filtering on identities that match no current
+		// edge would drop every with-mapping (R25212d).
+		tracked = false
+	}
 	overlayForward := tracked && incomingOnlyBounded(selected)
 	applyEdge := func(edge *ir.Edge) {
 		if edge.To != nodeID || len(edge.With) == 0 {
