@@ -906,7 +906,15 @@ func (e *ClawExecutor) dispatchChain(
 		causes = append(causes, err)
 
 		if ctx.Err() != nil {
-			return chainOutcome{Result: result, BackendName: backendName}, err
+			// Cancellation is terminal for the node, but it does not
+			// un-spend what the abandoned attempts already burned: fold
+			// `spent` in here exactly as the exhausted-chain tail does.
+			// Dropping it under-reported an abandoned route's tokens and
+			// cost to max_cost_usd, the org monthly cap and a lending
+			// donor's ledger — and the optional-session degrade made that
+			// reachable on a SINGLE-route node, where `spent` used to be
+			// provably empty at this point.
+			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName}, err
 		}
 		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		lastCat = cat

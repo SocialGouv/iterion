@@ -233,3 +233,55 @@ func TestCleanPassStampsNoSessionDegrade(t *testing.T) {
 		t.Errorf("clean pass stamped _session_degraded: %v", stamped)
 	}
 }
+
+// cancellingDegradeBackend fails the session-carrying attempt after
+// spending real tokens, then cancels the run during the fresh retry.
+type cancellingDegradeBackend struct {
+	cancel context.CancelFunc
+	fail   error
+	calls  int
+}
+
+func (b *cancellingDegradeBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
+	b.calls++
+	if task.SessionID != "" {
+		return delegate.Result{
+			BackendName: delegate.BackendClaudeCode,
+			Tokens:      500,
+			Output:      map[string]any{"_tokens": 500, "_cost_usd": 1.25},
+		}, b.fail
+	}
+	b.cancel()
+	return delegate.Result{BackendName: delegate.BackendClaudeCode}, ctx.Err()
+}
+
+// TestOptionalSessionDegradeKeepsSpendOnCancel: cancellation is terminal
+// for the node but does not un-spend what the abandoned attempt burned.
+// The degrade made this reachable on a SINGLE-route node — where the
+// accumulator used to be provably empty at the cancel return — so a
+// cancel during the fresh retry silently dropped the first attempt's
+// tokens and cost from max_cost_usd, the org monthly cap and a lending
+// donor's ledger.
+func TestOptionalSessionDegradeKeepsSpendOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	be := &cancellingDegradeBackend{
+		cancel: cancel,
+		fail:   errors.New("delegate: claude-code error: subtype=error_during_execution"),
+	}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, be)
+	e := newFallbackExecutor(reg, EventHooks{})
+	build := e.newElementBuilder("plan_revise", delegate.BackendClaudeCode, nil, sessionDegradeBuilder(e, true))
+
+	out, err := e.dispatchChain(ctx, "plan_revise", []chainElement{{Label: "primary"}}, "claude-opus-5", build)
+	if err == nil {
+		t.Fatal("a cancelled fresh retry must surface the cancellation")
+	}
+	if be.calls != 2 {
+		t.Fatalf("want 2 attempts (dead session, then fresh), got %d", be.calls)
+	}
+	if out.Result.Tokens != 500 {
+		t.Errorf("the abandoned attempt's tokens were dropped on cancel: %d", out.Result.Tokens)
+	}
+}
