@@ -76,10 +76,17 @@ func TestSubmitLaunchWithoutBudgetAskPersistsNone(t *testing.T) {
 	if _, err := p.SubmitLaunch(ctx, "run-bo-2", spec, wf, "hash"); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
 	}
-	if published == nil || published.Budget != nil {
+	if published == nil {
+		t.Fatal("nothing published")
+	}
+	if published.Budget != nil {
 		t.Fatalf("ask-less launch published budget %+v, want nil (older consumers stay byte-identical)", published.Budget)
 	}
-	if r, _ := st.LoadRun(ctx, "run-bo-2"); r != nil && r.BudgetOverrides != nil {
+	r, err := st.LoadRun(ctx, "run-bo-2")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.BudgetOverrides != nil {
 		t.Fatalf("ask-less launch persisted %+v, want none", r.BudgetOverrides)
 	}
 }
