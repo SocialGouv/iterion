@@ -911,13 +911,17 @@ func (e *ClawExecutor) dispatchChain(
 				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
 				sessionDegraded = true
 				spent.add(result)
-				// Dropping task.SessionID is not enough to make the retry
-				// fresh: a claw node's conversation lives in the
-				// (runID, nodeID) session store and is replayed regardless
-				// of the id (claw_backend's session_replay envelope). Left
-				// in place it would re-send the FAILED attempt's messages
-				// into the "fresh" call — the exact hazard the route-change
-				// path evicts for — and make the log line above a lie.
+				// Dropping task.SessionID is not, by itself, enough to
+				// make the retry fresh. The (runID, nodeID) claw store is
+				// replayed independently of the id (claw_backend's
+				// session_replay envelope), and it is keyed by NODE, not
+				// by element or iteration — so a node that ran on claw
+				// earlier in its chain, or in an earlier loop pass, can
+				// still hold messages that would be replayed into the call
+				// this event just announced as FRESH. sessionResumeEligible
+				// keeps the degrade off claw itself, so this is the guard
+				// for that residue, on the same terms the route-change path
+				// evicts for.
 				e.evictNodeSessionForFallback(ctx, nodeID)
 				fresh := *task
 				fresh.SessionID = ""

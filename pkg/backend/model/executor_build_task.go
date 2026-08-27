@@ -189,8 +189,10 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 }
 
-// stampFallbackMeta records, on the node's own output, that the run was
-// served by something other than its first choice.
+// stampFallbackMeta records, on the node's own output, that the node ran
+// DEGRADED — served by something other than its first choice
+// (`_fallback_used` / `_served_by`), or served by its first choice
+// without the session it asked for (`_session_degraded`).
 //
 // This is the half of ADR-087's judge guardrail that a bot can act on.
 // A reviewer served by a weaker model still emits a well-formed verdict
