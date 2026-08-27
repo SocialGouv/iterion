@@ -79,6 +79,10 @@ type vulnWatchHarness struct {
 	epssScores               atomic.Value // map[string]string served by /epss
 	// advisoryPkgs feeds GET /advisories?cve_id=… : cve -> [{ecosystem,name}].
 	advisoryPkgs atomic.Value
+	// redirectAdvisoriesTo, when set, makes /advisories answer a 302 there —
+	// the shape that gives urllib's default opener its chance to carry the
+	// Authorization header off the API origin.
+	redirectAdvisoriesTo atomic.Value
 	// depQueries records every query string the alerts endpoint received, so a
 	// test can assert HOW it was asked — the `state=all` trap is invisible in
 	// the response (GitHub answers 200 + empty list, never an error).
@@ -163,6 +167,10 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 		_ = json.NewEncoder(w).Encode(alerts)
 	})
 	mux.HandleFunc("/advisories", func(w http.ResponseWriter, r *http.Request) {
+		if to, _ := h.redirectAdvisoriesTo.Load().(string); to != "" {
+			http.Redirect(w, r, to, http.StatusFound)
+			return
+		}
 		byCVE, _ := h.advisoryPkgs.Load().(map[string][]map[string]string)
 		pkgs := byCVE[r.URL.Query().Get("cve_id")]
 		var vulns []map[string]any
@@ -1905,5 +1913,64 @@ func vwAlert(repo, pkg, eco, cve, state, created, fixedAt, patched string) map[s
 			"summary": cve + " summary", "severity": "critical"},
 		"security_vulnerability": map[string]any{
 			"first_patched_version": map[string]any{"identifier": patched}},
+	}
+}
+
+// vwConfirm drives confirm_versions alone against an arbitrary API base — the
+// node is where the org's Dependabot token is spent, so its egress guards are
+// worth exercising directly rather than only through a whole watch cycle.
+func vwConfirm(t *testing.T, wf *ir.Workflow, h *vulnWatchHarness, apiBase string, alerts []map[string]any) (map[string]any, string, error) {
+	t.Helper()
+	return runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
+		"alerts": alerts, "github_orgs": []string{"testorg"},
+		"github_api_base": apiBase, "timeout_secs": 5,
+		"allow_private": true, "max_lookups": 40,
+	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
+}
+
+// urllib's default opener copies the Authorization header onto a redirected
+// request and compares no hosts, so a 30x answered by the API origin hands the
+// org's Dependabot token to whoever the Location names. The pin has to be the
+// full ORIGIN, not the hostname: a same-name hop to another scheme or port is
+// exactly as much of a leak, and the "same host" spelling of the guard would
+// wave both through.
+func TestVulnWatch_VersionCheckNeverCarriesTheTokenOffOrigin(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+
+	// The attacker end: a SECOND origin on the same hostname (127.0.0.1) and a
+	// different port — what a hostname-only guard would happily follow.
+	var leaked atomic.Bool
+	var reached atomic.Bool
+	thief := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		if r.Header.Get("Authorization") != "" {
+			leaked.Store(true)
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer thief.Close()
+	h.redirectAdvisoriesTo.Store(thief.URL + "/stolen")
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7010", "cves": []string{"CVE-2026-7010"},
+		"title": "redirect probe", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	if leaked.Load() {
+		t.Fatal("the Dependabot token was handed to another origin across a redirect")
+	}
+	if reached.Load() {
+		t.Fatal("the redirect off the API origin was followed at all — the hop must be refused before it is made")
+	}
+	// And the refusal must be REPORTED, not silently read as an answer: a
+	// swallowed hop that renders as an all-clear is the failure mode of its own.
+	errs, _ := out["errors"].([]any)
+	if len(errs) == 0 {
+		t.Fatalf("the refused redirect must surface as a lookup error, got: %v", out)
 	}
 }

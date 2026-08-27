@@ -1759,35 +1759,71 @@ tool confirm_versions:
         except ValueError:
             tokens = {}
 
-    base_host = (urlsplit(api_base).hostname or '')
+    _base_parts = urlsplit(api_base)
+    base_host = (_base_parts.hostname or '')
+    base_scheme = _base_parts.scheme
+
+    def _port_of(parts):
+        return parts.port or (443 if parts.scheme == 'https' else 80)
+
+    base_port = _port_of(_base_parts)
 
     def _addr_ok(ip):
         a = ipaddress.ip_address(ip)
         return allow_private or a.is_global
 
+    def _origin_ok(parts):
+        ## The token is a bearer credential: what may carry it is an ORIGIN,
+        ## not a hostname. Pinning the host alone would still allow an
+        ## https -> http hop on the same name (the token in clear on the
+        ## wire) or a hop to another service on a different port.
+        return (parts.scheme in ('http', 'https') and parts.scheme == base_scheme
+                and (parts.hostname or '') == base_host and _port_of(parts) == base_port)
+
+    def _addrs_ok(parts):
+        for fam, _, _, _, sa in socket.getaddrinfo(parts.hostname, _port_of(parts), proto=socket.IPPROTO_TCP):
+            if not _addr_ok(sa[0]):
+                raise OSError('refusing a non-public address for ' + str(parts.hostname))
+
+    class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+        ## urllib's default opener copies EVERY header (bar content-*) onto a
+        ## redirected request and compares no hosts — so a 30x answered by the
+        ## API origin would hand the org's Dependabot token to whoever the
+        ## Location names, with the pre-flight address check never re-run.
+        ## The polling lanes carry the same guard; this one also pins the
+        ## scheme and port, so an https -> http downgrade cannot slip through.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            parts = urlsplit(newurl)
+            if not _origin_ok(parts):
+                raise OSError('refusing redirect off the configured API origin: ' + str(newurl)[:200])
+            _addrs_ok(parts)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    _opener = urllib.request.build_opener(_SafeRedirect())
+
     def get(url, token):
-        ## Same egress discipline as the polling lanes: the host is pinned to
+        ## Same egress discipline as the polling lanes: the origin is pinned to
         ## the configured API base, and a resolved address must be public
         ## unless the operator opted into private ranges.
         parts = urlsplit(url)
+        if not _origin_ok(parts):
+            raise OSError('refusing an off-origin request: ' + url[:200])
         ## Same guard as the polling lanes: the token rides as a bearer, so
         ## plaintext is refused unless the operator opted into private
         ## sources (which is also what a test harness uses).
-        if parts.scheme not in ('http', 'https') or (parts.hostname or '') != base_host:
-            raise OSError('refusing an off-host request: ' + url[:200])
         if parts.scheme != 'https' and not allow_private:
             raise OSError('refusing a plaintext request carrying a token: ' + url[:200])
-        for fam, _, _, _, sa in socket.getaddrinfo(parts.hostname, parts.port or (443 if parts.scheme == 'https' else 80), proto=socket.IPPROTO_TCP):
-            if not _addr_ok(sa[0]):
-                raise OSError('refusing a non-public address for ' + str(parts.hostname))
+        _addrs_ok(parts)
         req = urllib.request.Request(url, headers={
             'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
             'User-Agent': 'iterion-vuln-watch'})
         if token:
             req.add_header('Authorization', 'Bearer ' + token)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode('utf-8') or '[]')
+        with _opener.open(req, timeout=timeout) as r:
+            ## Bounded like the sibling lane's read: a hostile or broken
+            ## endpoint must not be able to stream this node out of memory.
+            return json.loads(r.read(8 * 1024 * 1024).decode('utf-8') or '[]')
 
     lookups = [0]
     errors = []
