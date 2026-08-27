@@ -203,3 +203,49 @@ func TestRefreshRecord_SubscriptionFingerprintStampsOnceThenSticks(t *testing.T)
 		t.Fatalf("refresh replaced the fingerprint (%q): the meter identity must survive token rotation", stamped.Fingerprint)
 	}
 }
+
+// The half above cannot reach: a payload with no refreshToken returns
+// ErrNotRefreshable before any token exchange, so "a SUCCESSFUL refresh
+// preserves the identity" was asserted but never executed — and that is
+// the invariant that actually protects the cap. A refresh REWRITES the
+// payload (new access + refresh token, same subscription); if the
+// fingerprint moved with it, the meter would rotate every few hours, no
+// reading would ever accumulate against a cap, and the failure would be
+// silent — a cap that measures nothing looks exactly like a cap with
+// headroom.
+func TestRefreshRecord_ASuccessfulRefreshKeepsTheSubscriptionIdentity(t *testing.T) {
+	freshRetrySchedule(t)
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-old1234567890abcd","refreshToken":"rf-old"}}`)
+	sealed, err := SealOAuthPayload(sealer, "erin", OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	srv := newFakeOAuthServer(
+		`{"access_token":"sk-ant-rotated1234567890abcd","refresh_token":"rf-rotated","expires_in":3600}`,
+		http.StatusOK)
+	defer srv.Close()
+
+	rec := OAuthRecord{UserID: "erin", Kind: OAuthKindClaudeCode,
+		SealedPayload: sealed, Fingerprint: "connect-time-identity"}
+	if err := RefreshRecord(context.Background(), sealer, redirectingClient(srv.URL), "client-xyz", "", &rec); err != nil {
+		t.Fatalf("RefreshRecord: %v", err)
+	}
+
+	// The refresh really happened — otherwise the assertion below would
+	// hold vacuously, which is exactly the trap this test replaces.
+	rotated, err := OpenOAuthPayload(sealer, rec.UserID, rec.Kind, rec.SealedPayload)
+	if err != nil {
+		t.Fatalf("unseal refreshed payload: %v", err)
+	}
+	view, err := ParseAnthropicView(rotated)
+	if err != nil {
+		t.Fatalf("parse refreshed payload: %v", err)
+	}
+	if view.ClaudeAIOauth.AccessToken != "sk-ant-rotated1234567890abcd" {
+		t.Fatalf("payload not rotated (%q): the success path never ran", view.ClaudeAIOauth.AccessToken)
+	}
+	if rec.Fingerprint != "connect-time-identity" {
+		t.Errorf("fingerprint = %q after a successful refresh, want the connect-time identity: the meter would rotate with every token", rec.Fingerprint)
+	}
+}
