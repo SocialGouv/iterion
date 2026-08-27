@@ -56,19 +56,23 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}
 
-	// The audit identity of each credential, computed while the plaintext
-	// is in hand: cleanup zeroes the secrets, the fingerprints stay — they
-	// are what lets the usage-cap meter key tell a rotated credential from
-	// the account it replaced.
+	// The audit identity of each credential: cleanup zeroes the secrets,
+	// the fingerprints stay — they are what lets the usage-cap meter key
+	// tell a rotated credential from the account it replaced. An API key
+	// is static, so its own hash identifies it; an OAuth payload is NOT
+	// (the refresh worker rewrites its tokens every few hours for the
+	// same subscription), so the record's connect-time fingerprint
+	// travels in the bundle instead. Absent for legacy records — those
+	// keep the fingerprint-less meter they always had.
 	fingerprints := map[string]string{}
 	for prov, key := range bundle.APIKeys {
 		if key != "" {
 			fingerprints[string(prov)] = secrets.FingerprintHex(key)
 		}
 	}
-	for kind, payload := range bundle.OAuthCredentials {
-		if len(payload) > 0 {
-			fingerprints[kind] = secrets.FingerprintHex(string(payload))
+	for kind, fp := range bundle.OAuthFingerprints {
+		if fp != "" {
+			fingerprints[kind] = fp
 		}
 	}
 

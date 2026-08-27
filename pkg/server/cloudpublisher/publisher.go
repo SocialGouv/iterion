@@ -487,7 +487,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					continue
 				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
-				p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s", label, runID, ownerKey, rec.Kind)
+				if rec.Fingerprint != "" {
+					if bundle.OAuthFingerprints == nil {
+						bundle.OAuthFingerprints = map[string]string{}
+					}
+					bundle.OAuthFingerprints[string(rec.Kind)] = rec.Fingerprint
+				}
+				p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
 			}
 		}
 		addOAuth(ownerID, "user")

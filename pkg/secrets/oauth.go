@@ -89,9 +89,16 @@ type OAuthRecord struct {
 	// can renew it. Inverted polarity so legacy records (field absent =
 	// false) keep being attempted; the first ErrNotRefreshable outcome
 	// self-heals them by setting this flag.
-	NotRefreshable bool      `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
-	CreatedAt      time.Time `bson:"created_at" json:"created_at"`
-	UpdatedAt      time.Time `bson:"updated_at" json:"updated_at"`
+	NotRefreshable bool `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
+	// Fingerprint is the audit identity of the SUBSCRIPTION behind this
+	// record: stamped when a human connects/pastes credentials, PRESERVED
+	// by the automatic refresh worker (whose rewrites are the same
+	// account), self-healed on legacy records at their first refresh. It
+	// is what downstream metering keys on — re-posting credentials is the
+	// act that says "different subscription", so it re-stamps.
+	Fingerprint string    `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	CreatedAt   time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.

@@ -172,3 +172,34 @@ func TestOAuthRefreshWorker_SkipsKindWithoutClientID(t *testing.T) {
 		t.Fatalf("expected 0 refreshed, got %d", n)
 	}
 }
+
+// The subscription fingerprint's two invariants, pinned where they live:
+// a legacy record is stamped once from its current payload (self-heal),
+// and a record that already carries one KEEPS it through any refresh
+// outcome — the refresh rewrites tokens for the SAME subscription, so a
+// fingerprint that moved with the payload would rotate the meter every
+// few hours and no reading would ever accumulate against its cap.
+func TestRefreshRecord_SubscriptionFingerprintStampsOnceThenSticks(t *testing.T) {
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-snapshot1234567890abcd"}}`)
+	sealed, err := SealOAuthPayload(sealer, "erin", OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+
+	legacy := OAuthRecord{UserID: "erin", Kind: OAuthKindClaudeCode, SealedPayload: sealed}
+	_ = RefreshRecord(context.Background(), sealer, http.DefaultClient, "client-xyz", "", &legacy)
+	if legacy.Fingerprint == "" {
+		t.Fatal("legacy record not self-healed: fingerprint still empty after a refresh attempt")
+	}
+	if legacy.Fingerprint != fingerprintHex(string(blob)) {
+		t.Fatalf("self-heal stamped %q, want the current payload's fingerprint", legacy.Fingerprint)
+	}
+
+	stamped := OAuthRecord{UserID: "erin", Kind: OAuthKindClaudeCode,
+		SealedPayload: sealed, Fingerprint: "prior-identity"}
+	_ = RefreshRecord(context.Background(), sealer, http.DefaultClient, "client-xyz", "", &stamped)
+	if stamped.Fingerprint != "prior-identity" {
+		t.Fatalf("refresh replaced the fingerprint (%q): the meter identity must survive token rotation", stamped.Fingerprint)
+	}
+}
