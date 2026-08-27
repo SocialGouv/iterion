@@ -114,9 +114,11 @@ somehow skipped resolution) behaves as DUAL — a pure non-regression.
   deterministic stub e2e (`e2e/testdata/review_topology_mini.bot` +
   `e2e/review_topology_test.go`) proving dual alternates, auto→mono, and mono
   fires exactly one family — all converge.
-- **Regression guard:** `bots/review_topology_test.go` fails if any
-  review-loop bot reverts to `mode: round_robin` or drops the topology
-  vars / gpt-edge guard.
+- **Regression guard:** a catalog test (`bots/review_topology_test.go`)
+  failed if any review-loop bot reverted to `mode: round_robin` or dropped
+  the topology vars / gpt-edge guard. *Superseded* — see the addendum: that
+  file was deleted once its enforced list emptied, and the live guard is
+  `e2e/review_topology_test.go`.
 - **Follow-ons:** a studio Launch-modal toggle (the API field exists; the
   React control is TODO), and classifying cloud providers into families.
 
