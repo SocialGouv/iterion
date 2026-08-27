@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -190,10 +191,41 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 			if kept == nil {
 				kept = []map[string]any{}
 			}
-			_ = json.NewEncoder(w).Encode(kept)
-			return
+			alerts = kept
 		}
-		_ = json.NewEncoder(w).Encode(alerts)
+		// Paginate like the real endpoint — per_page + a Link: rel="next"
+		// header — or a test asserting the walk is vacuous, and the silent
+		// truncation this reproduces stays invisible.
+		perPage := 100
+		if v := r.URL.Query().Get("per_page"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				perPage = n
+			}
+		}
+		page := 1
+		if v := r.URL.Query().Get("page"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				page = n
+			}
+		}
+		start := (page - 1) * perPage
+		if start > len(alerts) {
+			start = len(alerts)
+		}
+		end := start + perPage
+		if end > len(alerts) {
+			end = len(alerts)
+		}
+		if end < len(alerts) {
+			nextQ := r.URL.Query()
+			nextQ.Set("page", strconv.Itoa(page+1))
+			w.Header().Set("Link", "<"+h.srv.URL+r.URL.Path+"?"+nextQ.Encode()+`>; rel="next"`)
+		}
+		out := alerts[start:end]
+		if out == nil {
+			out = []map[string]any{}
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	})
 	mux.HandleFunc("/advisories", func(w http.ResponseWriter, r *http.Request) {
 		if to, _ := h.redirectAdvisoriesTo.Load().(string); to != "" {
@@ -2431,5 +2463,106 @@ func TestVulnWatch_ASlowAPICostsPrecisionNotDelivery(t *testing.T) {
 		if !strings.Contains(delivered, want) {
 			t.Fatalf("delivery must survive a degraded confirmation — %s never reached the sink:\n%s", want, delivered)
 		}
+	}
+}
+
+// alerts_for asked for per_page=100 and never followed Link: rel="next" —
+// indeed get() discarded r.headers entirely, so pagination was not even
+// OBSERVABLE from this node. The branch's own measurement shows a single
+// package yielding 78 alerts in one org; an advisory naming several packages
+// across a 388-repo org exceeds 100 routinely, and every repo past the first
+// page vanished with no marker. Under-reporting the confirmed set is the
+// failure this node exists to fix, and it degraded exactly on the biggest,
+// most urgent advisories. The sibling poll_dependabot lane takes this
+// seriously (MAX_PAGES with a truncated flag, "truncation is REPORTED, never
+// silent"); this lane had neither.
+func TestVulnWatch_ConfirmationWalksPastTheFirstPage(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7070": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	// 150 affected repos: one full page plus a remainder.
+	var alerts []map[string]any
+	for i := 0; i < 150; i++ {
+		alerts = append(alerts, vwAlert(fmt.Sprintf("acme/repo-%03d", i), "acme-lib", "npm",
+			"CVE-2026-7070", "open", "2026-08-01T00:00:00Z", "", "2.0.1"))
+	}
+	h.depAlerts.Store(alerts)
+
+	unit := []map[string]any{{"key": "kev:CVE-2026-7070", "cves": []string{"CVE-2026-7070"},
+		"title": "big advisory", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, unit)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	repos, _ := got[0].(map[string]any)["confirmed_repos"].([]any)
+	if len(repos) != 150 {
+		t.Fatalf("the walk stopped at one page: %d of 150 repos confirmed", len(repos))
+	}
+	// The last repo lives only on page 2.
+	last := false
+	for _, r := range repos {
+		if n, _ := r.(map[string]any)["repo"].(string); n == "acme/repo-149" {
+			last = true
+		}
+	}
+	if !last {
+		t.Fatal("acme/repo-149 is on page 2 and was dropped with no marker")
+	}
+}
+
+// And when the walk IS cut short, what it did not reach must not be presented
+// as an answer. This is the sharp case: page 1 holds only NON-matching alerts
+// and every real match lives on page 2. Unpaginated — or paginated but silent
+// about stopping — the node sees nothing, concludes nothing is there, and
+// renders the explicit all-clear "no vulnerable dependency found in the
+// watched orgs" over 50 genuinely vulnerable repositories.
+func TestVulnWatch_TruncatedWalkIsReportedNotPresentedAsComplete(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7071": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	var alerts []map[string]any
+	// Page 1: 100 alerts on the same package but a DIFFERENT advisory, so the
+	// cve filter drops every one of them.
+	for i := 0; i < 100; i++ {
+		alerts = append(alerts, vwAlert(fmt.Sprintf("acme/other-%03d", i), "acme-lib", "npm",
+			"CVE-2026-9999", "open", "2026-08-01T00:00:00Z", "", "2.0.1"))
+	}
+	// Page 2: the 50 repos that are actually vulnerable.
+	for i := 0; i < 50; i++ {
+		alerts = append(alerts, vwAlert(fmt.Sprintf("acme/hit-%03d", i), "acme-lib", "npm",
+			"CVE-2026-7071", "open", "2026-08-01T00:00:00Z", "", "2.0.1"))
+	}
+	h.depAlerts.Store(alerts)
+
+	unit := []map[string]any{{"key": "kev:CVE-2026-7071", "cves": []string{"CVE-2026-7071"},
+		"title": "big advisory", "severity": "critical", "project_names": []string{"proj"}}}
+	// Budget: one advisory lookup + exactly one alerts page, then nothing left.
+	out, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
+		"alerts": unit, "github_orgs": []string{"testorg"}, "github_api_base": h.srv.URL,
+		"timeout_secs": 5, "allow_private": true, "max_lookups": 2, "max_seconds": 0,
+	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	unitOut, _ := got[0].(map[string]any)
+	if vc, _ := unitOut["version_check"].(string); vc == "none_found" {
+		t.Fatal("the walk stopped before the page holding all 50 vulnerable repos, and the message reads \"no vulnerable dependency found in the watched orgs\"")
+	} else if vc != "unavailable" {
+		t.Fatalf("a walk cut short must read as unverified, got %q", vc)
+	}
+	if msg := vwRender(t, wf, h, out["alerts"]); strings.Contains(msg, "no vulnerable dependency found") {
+		t.Fatalf("a truncated walk rendered as an all-clear:\n%s", msg)
 	}
 }
