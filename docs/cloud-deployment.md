@@ -106,6 +106,16 @@ On the first boot of an empty users collection,
 one-time password printed in the server logs. Capture that password,
 sign in, change it, and remove the bootstrap env var on the next deploy.
 
+Adding `ITERION_BOOTSTRAP_ADMIN_PASSWORD` to the same Secret switches
+that account to a **declarative** one: it is created active with the
+declared password and reconciled to it on every boot (super-admin flag,
+active status, password only when it has drifted), and nothing is
+logged. Rotation is a Secret update plus a restart — and a password
+changed through the UI reverts at the next restart, which is the
+trade-off for making the Secret authoritative. Keep both variables set
+on this path. See
+[cloud-admin-guide.md](cloud-admin-guide.md#11-bootstrap-the-super-admin).
+
 API clients do not send a static deployment token. They authenticate
 with an access JWT issued by login/refresh, passed as
 `Authorization: Bearer <access-jwt>` or via the `iterion_auth` cookie.

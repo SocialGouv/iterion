@@ -55,7 +55,7 @@ iterion validate workflow.bot
 iterion validate bundle.botz --json
 ```
 
-Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction band C240–C242, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
+Accepted inputs are `.bot`, `.botz`, and bundle directories. Validation reports sparse DSL diagnostics in C001–C199 plus the async-interaction and structural band C240–C244, and bundle checks in C200–C234; the [diagnostic catalogue](references/diagnostics.md) is authoritative.
 
 ### `iterion diagram`
 
@@ -133,6 +133,7 @@ Access/isolation:
 | `--compress off\|on\|ultra` | Override command-output rewriting/compression. |
 | `--auto-memory on\|off` | Let agent/judge nodes read and maintain a persistent `MEMORY.md` across runs of this bot on this project. Empty inherits the workflow/node `auto_memory:` then `ITERION_AUTO_MEMORY`; the default is off, so a run is hermetic unless it opts in. Honoured by `claude_code`, `claw` and `pi`. |
 | `--repo-devbox on\|off` | Install the **target** repository's `devbox.json` for this run. Turn it off for a run that reads a repo without building it (a review, an audit) and would otherwise pay its whole Nix toolchain; the bot's own `devbox.json` is unaffected. Empty inherits the workflow `repo_devbox:` then `ITERION_REPO_DEVBOX`; default on. |
+| `--supervisors on\|off` | Spawn the workflow's DSL-declared [supervisor](supervisors.md) watchers. `off` runs unsupervised — cost control, or isolating a suspect steering policy. Empty inherits `ITERION_SUPERVISORS`; default on. A skip is always logged. |
 
 Worktree finalization:
 
@@ -155,7 +156,10 @@ iterion inspect --run-id RUN --node analyze --section trace
 iterion inspect --run-id RUN --exec exec:main:analyze:0
 ```
 
-Node selection supports `--branch`, `--iteration` (`-1` latest), `--section summary|events|trace|tools|artifacts|interactions|log|all`, and `--log-tail`.
+Run-level mode takes `--events` and `--full` (show all details). Node
+selection supports `--branch`, `--iteration` (`-1` latest), `--section
+summary|events|trace|tools|artifacts|interactions|log|all`, and
+`--log-tail`.
 
 ### `iterion report`
 
@@ -174,7 +178,7 @@ iterion resume --run-id RUN --answers-file answers.json
 iterion resume --run-id RUN --answer music=@./theme.mp3   # file field → staged as an attachment
 ```
 
-`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the three run-shape toggles `--auto-memory`, `--repo-devbox` and `--loop-budget-guard`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
+`--file` defaults to the persisted source path. `--force` ignores source drift; `--force-stale` takes over a `running` run whose event stream has been silent for at least 60 seconds. Resume also accepts `--auto-resume`, model/backend overrides, `--fallback`, all `--max-*` budget overrides, permission mode/rules, and the four run-shape toggles `--auto-memory`, `--repo-devbox`, `--loop-budget-guard` and `--supervisors`. None of these launch overrides are persisted on the run, so repeat them when continuity matters. See [resume](resume.md).
 
 ### `iterion fork`
 
@@ -347,7 +351,8 @@ reported per worktree so it is visible before `--apply`.
 The command is a dry run until `--apply`, and reports what it spared and
 why, so "nothing was eligible" is never confused with "everything was
 guarded". Each spared entry carries a `skip_reason`: `run-active`,
-`unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`, or
+`unlanded`, `nested-repo`, `too-recent`, `keep-last`, `already-gone`,
+`paused-run` (a dormant run waiting on operator input), or
 `needs-higher-level`, or `resumable`. `run-active` also covers a run whose
 lock another iterion process holds; the reason is printed beside the entry.
 
@@ -416,7 +421,7 @@ iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest bots]
 iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
-iterion bots install <git-url|path> [--path <bundle>] [--dest bots]
+iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force]
 iterion bots regen-catalog
 ```
 
@@ -433,7 +438,7 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--model`, `--backend` | Pin instead of auto-detection. |
 | `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |
 
-`bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to workspace `.botz/` and never run the bot. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
+`bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
 
 ### `iterion marketplace`
 
@@ -458,7 +463,7 @@ iterion plugin run repo-falcon index
 iterion plugin install <directory|git-url>
 ```
 
-Built-ins are `rtk` (enabled by default), `graphify`, `repo-falcon`, and `firecrawl` (disabled by default). Third-party installs are disabled until enabled. A bare public skill library can be installed through the same path. See [plugins](plugins.md).
+Built-ins are `rtk` (enabled by default), `graphify`, `repo-falcon`, `codeindex`, and `firecrawl` (disabled by default). Third-party installs are disabled until enabled. A bare public skill library can be installed through the same path. See [plugins](plugins.md).
 
 ### `iterion skill`
 
@@ -626,7 +631,7 @@ The watcher evaluates on turn boundaries/monitor matches and injects node-scoped
 
 ## Remote, benchmarks, and utility commands
 
-`iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
+`iterion remote` exposes typed cloud domains for runs, bots, marketplace, issues/boards, dispatcher, triggers, schedules, orgs/teams/users, tokens, secrets/keys/bindings, webhooks/forge, audit/usage/limits, memory, plugins, the credential pool, SSO/admin, routes/OpenAPI, and raw API access. CI can use `ITERION_REMOTE_URL`, `ITERION_REMOTE_TOKEN`, and optional team/org selectors without a config file. The complete reference is [cloud CLI](cloud-cli.md).
 
 `iterion bench asymptote` accepts primary `--runs`, optional `--variant-runs`, a required `--judge-node`, judge field/threshold, loop selector, labels, title, per-run detail, and output path. See [asymptote bench](asymptote-bench.md).
 

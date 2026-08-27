@@ -41,7 +41,7 @@ With prompt-orchestration, a crash means re-running the planner — paying again
 
 ### 3. Hard budgets
 
-`max_cost_usd`, `max_tokens`, `max_duration`, `max_iterations`, `max_parallel_branches` are enforced by the runtime ([pkg/runtime/budget.go](../pkg/runtime/budget.go)), not by hoping the model remembers the instruction. The mutex-protected tracker covers all parallel branches; an over-spend cuts the run with a `BUDGET_EXCEEDED` error, not a polite stop.
+`max_cost_usd`, `max_tokens`, `max_duration`, `max_iterations`, `max_parallel_branches` are enforced by the runtime ([pkg/runtime/budget.go](../pkg/runtime/budget.go)), not by hoping the model remembers the instruction. The mutex-protected tracker covers all parallel branches; an over-spend cuts the run with a `BUDGET_EXCEEDED` error, not a polite stop. A spent cap buys exactly one bounded concession: the run may walk *forward* to a terminal node inside a proportional [exit grace](dsl.md#budget-and-loop-back-edges) — never around a loop, never on a cap the platform imposed — so the work it has already paid for is delivered, and every graced node says so in the event log.
 
 "Please don't spend more than $5" in a prompt is a soft suggestion. The next surprise context window says hi.
 
