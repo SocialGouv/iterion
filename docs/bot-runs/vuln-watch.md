@@ -1,5 +1,33 @@
 # vuln-watch (Senti) — run log
 
+## 2026-08-27 — prod wiring, first live alerts (runs 01a04222 / 01a04232 / 01a04234)
+
+- Status: **validated** — Senti is live on the cloud instance, hourly at `17 * * * *`.
+- Versions: bot 0.1.0 · iterion v3.64.1 (prod)
+- Method: cloud runs against `SocialGouv/iterion-veille@main`, `mode=watch`,
+  `state_commit=true`; credentials from the **watch-only GitHub App** path
+  (PR #527), not a PAT.
+- Result: the never-exercised App flow works end to end. `poll_dependabot`
+  reported `orgs_ok: 2, orgs_failed: 0, new_alerts: 200` — proving the
+  `dependabot_tokens` map is keyed by ORG (`socialgouv`, `dnum-socialgouv`)
+  and not by the App's bot handle. Run 1 (dry) and run 2 (real) were
+  BOOTSTRAP: 0 alerts, 77 observed, cursors armed and state pushed. Run 3
+  posted **5 alerts, delivered 5/5** to `#veille-vigie-secu`.
+- Value: the five are exactly the shape the design promises — exploitation-driven
+  and project-scoped. React Server Components (KEV 2025-12-05, EPSS 100%) named
+  **53 projects**; GitLab (KEV 2024-05-01) **17**; WordPress **1** (RITM); plus
+  Metabase and a Splunk/Kafka unit. Zero LLM tokens, zero project names sent to
+  a model.
+- Findings / misses: none new. The 5-alert figure matches the replayed
+  acceptance measurement exactly, across a completely different credential path.
+- Engine hardening: the watch-only App + `forge.Purpose` seam (PR #527) exists
+  *because* widening the runtime forge App to All-repositories would have granted
+  `contents:write` on 388 repos to obtain a read. Three adversarial reviewers plus
+  one Revi round found 21 real defects in it before merge.
+- Lessons for next run: a `dry_run` does NOT commit state, so the first real run
+  is always another BOOTSTRAP — budget two ticks before expecting alerts. The
+  per-run cap never engaged (0 overflow) on a 5-alert backlog.
+
 ## 2026-08-24 — retro-Metabase acceptance probe (runs 01a0352e-*, 01a03530-*)
 - Status: validated
 - Versions: bot 0.1.0 · iterion v3.58.3+7dd9767f6 (feat/vuln-watch-senti)
