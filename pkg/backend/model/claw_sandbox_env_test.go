@@ -69,3 +69,15 @@ func TestForwardableProviderEnv_runCredentialsBeatTheAmbientOnes(t *testing.T) {
 		}
 	})
 }
+
+// The ChatGPT-forfait wire gates model access on the codex-cli version
+// header, and the sandbox image ships no codex binary — so the operator's
+// ITERION_CODEX_VERSION override must cross into the in-container runner
+// or newer models 400 only when sandboxed.
+func TestForwardableProviderEnv_forwardsCodexVersionOverride(t *testing.T) {
+	t.Setenv("ITERION_CODEX_VERSION", "0.144.6")
+	env := forwardableProviderEnv(context.Background())
+	if env["ITERION_CODEX_VERSION"] != "0.144.6" {
+		t.Errorf("ITERION_CODEX_VERSION = %q, want the ambient override forwarded", env["ITERION_CODEX_VERSION"])
+	}
+}

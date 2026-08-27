@@ -1063,6 +1063,13 @@ var providerCredentialEnvVars = []string{
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
 	"ANTHROPIC_CUSTOM_HEADERS",
+	// The ChatGPT-forfait wire gates model availability on the codex-cli
+	// `version:` header. The sandbox image ships no codex binary, so the
+	// in-container runner's `codex --version` probe finds nothing and
+	// falls back to claw's baked-in version — which the backend then
+	// refuses for newer models ("gpt-5.6-sol requires a newer codex-cli").
+	// The operator override must therefore cross the boundary.
+	"ITERION_CODEX_VERSION",
 }
 
 // byokEnvVar names the environment variable claw's registry reads for a
