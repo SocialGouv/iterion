@@ -85,7 +85,7 @@ iterion attributes metrics from each backend on a best-effort basis:
 | `iterion_llm_request_total`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `iterion_llm_retry_total`       | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `iterion_node_duration_ms`      | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `iterion_tool_call_total`       | ✅ | ✅ | ✅ | — | — | — |
+| `iterion_tool_call_total`       | ✅ | ✅ | ✅ | — | — | ✅ |
 | `iterion_node_tokens_total`     | ✅ | ✅ | ✅ | ✅\* | ✅\* | ✅ |
 | `iterion_node_cost_usd_total`   | ✅\*\* | ✅\*\* | ✅† | — | — | ✅\*\* |
 | `iterion_parallel_branches`     | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -102,9 +102,12 @@ modes, so it does not depend on Iterion's pricing table.
 
 Every backend result is stamped with the common `_tokens` / `_model` /
 `_cost_usd` fields that are available. Tool-call counters are narrower: claw
-emits them from its native loop, Claude Code from SDK stream blocks, and pi
-from RPC events. The Codex SDK and the current Kimi/Grok adapters expose no
-per-tool callback.
+emits them from its native loop, Claude Code from SDK stream blocks, pi from
+RPC events, and Codex from app-server item lifecycles (`WebSearch`, `Bash`,
+etc.). The current Kimi/Grok adapters expose no per-tool callback. Codex Web
+search exposes a call count but not a per-call billed amount; `_cost_usd`
+therefore remains the model/token estimate rather than pretending to include
+an unknown search surcharge.
 
 If a particular SDK version omits the usage block (e.g. early codex
 betas), the tokens counter simply does not increment for that node — no
