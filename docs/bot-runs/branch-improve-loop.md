@@ -54,9 +54,26 @@
   blocker); `Task.SessionOptional` — the executor retries ONCE with a fresh
   session when an optional session fails to serve (red-first tests). Filed:
   mint-at-use forge push token + a real auth probe (native:54412d84).
-- Follow-up: a fourth `/billy` was launched right after to re-deliver the
-  lost fixes (its prior_review is the re-review of the current head);
-  outcome to be appended by the session that watches it land.
+- Follow-up — **both delivery runs landed the same day**:
+  - **Run 4 on #541 (01a0431d, 53 min):** re-derived the lost fixes from the
+    fresh prior_review, converged, **pushed 6 commits** (refresh-invariant
+    OAuth meter identity + tests actually executing the refresh path +
+    operator docs), verdict `success — 3 finding(s) fixed, re-review by the
+    fixer clean, build green` on `556d6f4e`.
+  - **Run 5 on #544 (01a0431e, 1h53):** `/billy` on the habit PR itself for
+    Revi's 3 findings on OUR fixes — **pushed 11 commits** that materially
+    hardened the session-degrade change: loud degrade (event + output
+    stamp, R051957), narrowed to `unclassified` failures (R1486ff),
+    claw node-session eviction, backend gate (only backends that resume by
+    SessionID), the SessionOptional mapping pinned across all six session
+    modes (R552e44), plus docs/ADR alignment — and it improved the habit
+    runbook itself (the `review_on_sync` dependency of step 3).
+  - The 1h53 push succeeding **contradicts** the "App token dies at 1h"
+    hypothesis for run 3's failure; the board card (native:54412d84) was
+    corrected — the standing defect is `push_auth_probe` validating
+    presence, not validity; run 3's root cause is unreproduced (plausible:
+    the integration PATCH 2 min before launch re-provisioned the managed
+    forge_token).
 - Lessons for next run: keep fixer runs under the App-token validity until
   mint-at-use lands (tighter `scope_notes`, or `max_duration` < 1h so the
   budget guard ships what is banked while the token is alive); the usage-cap
