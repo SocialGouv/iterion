@@ -501,10 +501,14 @@ Once a cap is *spent*, the run may walk **forward** — never around a loop —
 spending up to `cap × 1.1` to reach a terminal node, so work it has already
 paid for gets delivered instead of dying on disk. The ceiling is
 PROPORTIONAL (a small cap grants a small grace) and past it the run fails as
-`BUDGET_EXCEEDED` as before. Both stop-paths — the pre-exec check and the
-deferred overrun after a node that succeeded — go through one decision
-(`graceOrFailBudget`), so a run cannot be graced into starting and then
-killed for having spent. The grace is REFUSED outright in two cases: when
+`BUDGET_EXCEEDED` as before. Both *exceeded* stop-paths — the pre-exec check
+and the deferred overrun after a node that succeeded — go through one
+decision (`graceOrFailBudget`), so a run cannot be graced into starting and
+then killed for having spent. The 90% hard limit (`budgetHardThreshold`,
+refusing a new node while an axis is in `[90%, 100%)`) is a SEPARATE,
+un-graced path reached only when nothing is exceeded yet — so a run refused
+at 92% gets no grace while one at 105% may walk on, which is surprising
+until you see that the grace begins where the cap ends. The grace is REFUSED outright in two cases: when
 the loop budget guard is off (the "no further iteration" half of the safety
 argument is that guard's), and when the cap was CLAMPED by an authority
 outside the run (`ir.Budget.CapImposed`, set at the single choke point

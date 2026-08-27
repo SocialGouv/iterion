@@ -99,7 +99,7 @@ on that dimension), not as zero.
 | `ITERION_CLOUD_MAX_ITERATIONS` | Ceiling on the workflow's `max_iterations`. | unset (no ceiling) |
 | `ITERION_CLOUD_MAX_TOKENS` | Ceiling on `max_tokens`. | unset |
 | `ITERION_CLOUD_MAX_COST_USD` | Ceiling on `max_cost_usd`, in dollars. | unset |
-| `ITERION_CLOUD_MAX_DURATION` | Ceiling on `max_duration` (Go duration, e.g. `4h`). Compared by parsed seconds; a workflow value that is unparseable or absent is replaced by the ceiling. | unset |
+| `ITERION_CLOUD_MAX_DURATION` | Ceiling on `max_duration` (Go duration, e.g. `4h`). Compared by parsed seconds; a workflow value that is unparseable or absent is replaced by the ceiling. Unlike the numeric dials this one is not validated at read time: any non-empty string is accepted, and one that is not a Go duration clamps **nothing** on this axis — silently, with no log line, since the runner only logs a clamp that changed something. | unset |
 | `ITERION_CLOUD_MAX_PARALLEL_BRANCHES` | Ceiling on `max_parallel_branches`. | unset |
 | `ITERION_CLOUD_RETRY_MAX_ATTEMPTS` | Ceiling on the resolved retry policy's `max_attempts`, applied last so a tenant cannot reserve a pod for a hundred attempts — see [scheduling.md](scheduling.md). | unset |
 | `ITERION_CLOUD_RETRY_MAX_WAIT` | Ceiling on the resolved retry policy's `max_wait` (Go duration). | unset |

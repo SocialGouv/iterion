@@ -560,10 +560,19 @@ The grace is **refused** in two cases:
   it actually lowers something) and travels the cloud queue as
   `BudgetOverrides.cap_imposed`, so a runner pod enforces it too.
 
-Both budget stop-paths — the check before a node runs and the overrun
+Both *exceeded* stop-paths — the check before a node runs and the overrun
 noticed after one succeeds — go through the same decision, so a run can
 never be graced into starting a node and then killed for having spent on
 it.
+
+The grace only exists **past** the cap. The separate 90% hard limit, which
+refuses to start a new node while an axis sits in `[90%, 100%)` to bound
+concurrent overage, is **not** graced and is unchanged: it is reached only
+when nothing is exceeded yet, so it stops a run *before* the grace could
+ever apply. The counter-intuitive consequence is real — a run refused at
+92% of its cap gets no grace, while a run already at 105% may walk on to
+its terminal node. Raise the cap and resume for the former; the latter is
+the case the grace was built for.
 
 ```iter
 workflow campaign:
