@@ -73,6 +73,41 @@ default image are `ITERION_SANDBOX_DEFAULT`, `ITERION_SANDBOX_OVERRIDE`, and
 | `ITERION_BUDGET_EXIT_GRACE` | How far past a *spent* cap a run may walk **forward** to reach a terminal node, as a fraction of the declared cap — so work already paid for gets delivered instead of dying on disk. Accepts a ratio in `[0,1]`; `off`/`no`/`false`/`none`/`0` make every declared cap **absolute** (the setting for shared instances and pooled credentials). Fails **closed**: an out-of-range or unparsable value is treated as `0` with a one-time stderr warning, never as the permissive default. The grace is refused outright when the loop budget guard is off, and on a cap clamped by an outside authority (platform ceiling, credential-pool donor allowance). Each graced node emits a `budget_exit_grace` event — see [dsl.md](dsl.md#budget-and-loop-back-edges). | `0.1` (10%) |
 | `ITERION_REPO_DEVBOX` | Env level of the `repo_devbox:` chain (`--repo-devbox` → workflow → this → default). `off` skips the **target repo's** `devbox.json`; the bot's own is always installed. Worth turning off for a run that reads a repo without building it — see [dsl.md](dsl.md#the-target-repos-toolchain--repo_devbox). | `on` |
 
+## Platform budget ceiling (cloud)
+
+The multitenant safeguard: a **hard, tenant-unraisable** cap on every run a
+runner pod executes. Set on the **runner** Deployment. Each variable is
+independent — set only the dimensions you want to bound; leaving one unset
+means "no platform limit on that axis", and setting none at all is a no-op,
+so a self-hosted or single-tenant deployment keeps its `.bot` budgets
+verbatim.
+
+The ceiling is applied *after* the launch overrides, and it only ever
+**lowers**: a tenant cannot raise it with `--max-cost-usd`, and a bot that
+declares no budget at all **inherits** the ceiling rather than running
+unlimited — which is what bounds an `as X(unbounded)` loop, whose fuel falls
+back to `max_iterations` ([dsl-totality-and-tc.md](dsl-totality-and-tc.md)).
+A clamp that actually changes a limit marks the budget **imposed**, so the
+runtime's [exit grace](dsl.md#budget-and-loop-back-edges) is refused and the
+figure is absolute.
+
+A value that is empty, non-numeric, or ≤ 0 is treated as *unset* (no ceiling
+on that dimension), not as zero.
+
+| Variable | Effect | Default |
+|---|---|---|
+| `ITERION_CLOUD_MAX_ITERATIONS` | Ceiling on the workflow's `max_iterations`. | unset (no ceiling) |
+| `ITERION_CLOUD_MAX_TOKENS` | Ceiling on `max_tokens`. | unset |
+| `ITERION_CLOUD_MAX_COST_USD` | Ceiling on `max_cost_usd`, in dollars. | unset |
+| `ITERION_CLOUD_MAX_DURATION` | Ceiling on `max_duration` (Go duration, e.g. `4h`). Compared by parsed seconds; a workflow value that is unparseable or absent is replaced by the ceiling. | unset |
+| `ITERION_CLOUD_MAX_PARALLEL_BRANCHES` | Ceiling on `max_parallel_branches`. | unset |
+| `ITERION_CLOUD_RETRY_MAX_ATTEMPTS` | Ceiling on the resolved retry policy's `max_attempts`, applied last so a tenant cannot reserve a pod for a hundred attempts — see [scheduling.md](scheduling.md). | unset |
+| `ITERION_CLOUD_RETRY_MAX_WAIT` | Ceiling on the resolved retry policy's `max_wait` (Go duration). | unset |
+
+This is the *per-run* bound. The *per-org* monthly cost cap, run quota,
+concurrency and launch rate are a separate admission layer with its own
+variables — see [quotas-and-limits.md](quotas-and-limits.md).
+
 ## See also
 
 - [probes-and-graceful-shutdown.md](probes-and-graceful-shutdown.md) — what the probe endpoints promise and how the delays compose.
