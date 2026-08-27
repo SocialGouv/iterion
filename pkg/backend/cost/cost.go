@@ -12,13 +12,26 @@
 //     from OpenRouter). Picks up new models without iterion-side
 //     updates — the long-term path that eliminates the static-table
 //     maintenance burden.
-//  2. The static modelPriceTable below. Acts as the offline fallback
+//  2. iterion's own model-spec aggregator (models.dev via
+//     pkg/backend/modelspecs), whose published cost.input/cost.output
+//     were fetched and cached for months before anything read them.
+//     Consulted only when BOTH rates are positive — see specRate.
+//  3. The static modelPriceTable below. Acts as the offline fallback
 //     for cold starts (no cache file yet) and as a last-known-good
-//     for models the live source has not yet published.
+//     for models neither live source has published.
+//
+// Step 1 keeps its precedence over step 2 deliberately: claw already
+// answers for a large share of models, and reordering would silently
+// change the rate every such run is charged at. Step 2's own argument —
+// that models.dev is consensus-filtered across publishers while
+// OpenRouter is one of the multi-provider sources that filtering exists
+// to neutralize — is real, but it is a pricing decision, and this file's
+// standing rule is that a price change is committed by a human, not
+// slipped in by a refactor.
 //
 // Operators can opt out of step 1 with CLAW_DISABLE_LIVE_REGISTRY=1
-// (typically in air-gapped environments); the static table then
-// serves every lookup.
+// (typically in air-gapped environments) and of step 2 with
+// ITERION_MODEL_SPECS=off; the static table then serves every lookup.
 package cost
 
 import (
@@ -26,6 +39,8 @@ import (
 	"strings"
 
 	clawapi "github.com/SocialGouv/claw-code-go/pkg/api"
+
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
 // pricePerMillion is the per-million-token price (USD) for a small set of
@@ -121,17 +136,54 @@ func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
 	if pricing, ok := clawapi.LookupModelPricing(model); ok {
 		return (float64(inputTokens)*pricing.InputUSDPerMillion + float64(outputTokens)*pricing.OutputUSDPerMillion) / 1_000_000.0
 	}
-	// Fallback: the static table below. Used on cold starts (cache
-	// not yet populated) and for any model the live source has not
-	// yet shipped.
+	// The model string arrives in every shape a backend might report:
+	// bare ("claude-opus-5"), qualified ("anthropic/claude-opus-5"),
+	// region-prefixed ("anthropic/eu/claude-opus-5") and CLI-backend
+	// forms ("kimi-code/kimi-for-coding"). Only the trailing component
+	// is a model id, and pricing is the same across regions for the
+	// providers tracked here.
 	if i := strings.LastIndex(model, "/"); i >= 0 {
 		model = model[i+1:]
 	}
+	// Second: iterion's own aggregator. It has carried published rates in
+	// its cache since ADR-042 while this function priced from a table
+	// alone — so a model models.dev knew the price of could still report
+	// no cost at all.
+	if in, out, ok := specRate(model); ok {
+		return (float64(inputTokens)*in + float64(outputTokens)*out) / 1_000_000.0
+	}
+	// Fallback: the static table below. Used on cold starts (no cache
+	// populated) and for any model neither live source has shipped.
 	p, ok := modelPriceTable[model]
 	if !ok {
 		return 0
 	}
 	return (float64(inputTokens)*p.inputUSDPerMillion + float64(outputTokens)*p.outputUSDPerMillion) / 1_000_000.0
+}
+
+// specLookup is the aggregator seam, a package var so tests swap in a fixture
+// instead of resolving against whatever the host's ~/.iterion cache last
+// fetched. Production wiring is the process-wide registry.
+var specLookup = func(bareModel string) (modelspecs.Spec, bool) {
+	return modelspecs.Default().LookupBare(bareModel)
+}
+
+// specRate returns the aggregator's published pair for a bare model id, and
+// whether it is usable.
+//
+// USABLE MEANS BOTH RATES POSITIVE. The two are published and
+// consensus-filtered independently, so a half-known pair is routine, and taking
+// it would price the missing half at zero — the exact shape of "looks right, is
+// wrong" this file already shipped once, when an unlisted model reported no
+// cost while a run burned real money. A half-published pair therefore falls
+// through WHOLE to the static table: mixing one rate from the aggregator with
+// the other from the table would produce a figure traceable to neither source.
+func specRate(bareModel string) (inputPerM, outputPerM float64, ok bool) {
+	spec, found := specLookup(bareModel)
+	if !found || spec.InputCostPerM <= 0 || spec.OutputCostPerM <= 0 {
+		return 0, 0, false
+	}
+	return spec.InputCostPerM, spec.OutputCostPerM, true
 }
 
 // Annotate writes the conventional `_tokens` / `_model` / `_cost_usd`
