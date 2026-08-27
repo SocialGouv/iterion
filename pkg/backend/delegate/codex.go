@@ -754,6 +754,9 @@ func hasNonEmptyStructuredOutput(value any) bool {
 // with the node-level `full_access: true`, not by listing a mutating tool.
 func codexSandboxForAllowedTools(allowed []string) string {
 	for _, t := range allowed {
+		if isCodexWebSearchTool(t) {
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(t)) {
 		case "read", "read_file", "readfile", "cat", "glob", "grep", "ls":
 			continue

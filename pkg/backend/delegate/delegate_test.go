@@ -225,6 +225,8 @@ func TestCodexSandboxForAllowedTools(t *testing.T) {
 		{"native notebook_edit is mutating", []string{"notebook_edit"}, "workspace-write"},
 		{"read-only reviewer stays read-only", []string{"Read", "Glob", "Grep"}, "read-only"},
 		{"single read tool stays read-only", []string{"Grep"}, "read-only"},
+		{"native web search stays read-only", []string{"web_search"}, "read-only"},
+		{"portable WebSearch alias stays read-only", []string{"WebSearch"}, "read-only"},
 		{"unknown name preserves possible writer semantics", []string{"SomeFutureTool"}, "workspace-write"},
 	}
 	for _, tt := range tests {

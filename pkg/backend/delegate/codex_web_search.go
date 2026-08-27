@@ -17,6 +17,7 @@ import (
 
 const codexWebSearchModeLive = "live"
 const codexWebSearchModeDisabled = "disabled"
+const codexWebSearchVersionTimeout = 5 * time.Second
 
 var codexVersionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
@@ -26,11 +27,20 @@ var codexVersionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
 // can honour the DSL contract exactly.
 func codexWebSearchRequested(task Task) bool {
 	for _, name := range task.AllowedTools {
-		if strings.EqualFold(strings.TrimSpace(name), "web_search") {
+		if isCodexWebSearchTool(name) {
 			return true
 		}
 	}
 	return false
+}
+
+func isCodexWebSearchTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "web_search", "websearch", "web-search":
+		return true
+	default:
+		return false
+	}
 }
 
 func codexWebSearchMode(task Task) string {
@@ -63,9 +73,11 @@ func validateCodexWebSearchCapability(ctx context.Context, explicitCommand strin
 		)
 	}
 
-	versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// This check is a hard capability gate rather than the SDK's best-effort
+	// warning, so allow extra headroom for npm shims and cold filesystems.
+	versionCtx, cancel := context.WithTimeout(ctx, codexWebSearchVersionTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(versionCtx, path, "--version").CombinedOutput()
+	out, err := exec.CommandContext(versionCtx, path, "--version").Output()
 	if err != nil {
 		return fmt.Errorf(
 			"delegate: codex web_search capability unavailable: cannot verify %s --version: %w; web_search requires Codex CLI >= %s",
@@ -134,7 +146,7 @@ func emitCodexToolHooks(hooks TaskHooks, msg *codexsdk.AssistantMessage, inFligh
 		switch typed := block.(type) {
 		case *codexsdk.ToolUseBlock:
 			uses[typed.ID] = typed
-			if eventType != "item.completed" {
+			if (eventType == "" || eventType == "item.started") && inFlight[typed.ID] == "" {
 				inFlight[typed.ID] = typed.Name
 				if hooks.OnToolStarted != nil {
 					hooks.OnToolStarted(typed.Name, typed.ID, marshalCodexToolInput(typed.Input))
@@ -165,7 +177,7 @@ func emitCodexToolHooks(hooks TaskHooks, msg *codexsdk.AssistantMessage, inFligh
 			name = use.Name
 		}
 		delete(inFlight, id)
-		hooks.OnToolCalled(name, id, false, codexCompletedToolOutput(msg.Audit))
+		hooks.OnToolCalled(name, id, codexCompletedToolErrored(msg.Audit), codexCompletedToolOutput(msg.Audit))
 	}
 }
 
@@ -201,4 +213,53 @@ func codexCompletedToolOutput(audit *codexsdk.AuditEnvelope) string {
 		return ""
 	}
 	return string(audit.Payload)
+}
+
+// codexCompletedToolErrored recovers completion state for item types that the
+// SDK currently represents with a ToolUseBlock only (notably file changes and
+// WebSearch). App-server audit payloads preserve the original JSON-RPC
+// envelope, while exec/custom transports may expose the item at top level, so
+// accept both shapes.
+func codexCompletedToolErrored(audit *codexsdk.AuditEnvelope) bool {
+	if audit == nil || len(audit.Payload) == 0 {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(audit.Payload, &payload); err != nil {
+		return false
+	}
+	item, _ := payload["item"].(map[string]any)
+	if item == nil {
+		if params, ok := payload["params"].(map[string]any); ok {
+			item, _ = params["item"].(map[string]any)
+		}
+	}
+	if item == nil {
+		return false
+	}
+	if success, ok := item["success"].(bool); ok {
+		return !success
+	}
+	status, _ := item["status"].(string)
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error", "cancelled", "canceled", "rejected":
+		return true
+	}
+	return nonEmptyCodexError(item["error"])
+}
+
+func nonEmptyCodexError(value any) bool {
+	if value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case map[string]any:
+		return len(typed) > 0
+	case []any:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
