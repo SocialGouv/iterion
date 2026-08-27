@@ -52,6 +52,7 @@ def convert_page(text, relpath):
     # Step numbering restarts at each {% stepper %}.
     step_no = 0
     pending_step_title = False  # swallow the first heading inside a step as its title
+    step_line_idx = -1  # index in out of the step's admonition line (title promotion target)
 
     def indent():
         return "    " * len(stack)
@@ -89,6 +90,7 @@ def convert_page(text, relpath):
             step_no += 1
             # Title is filled in when the step's first heading is seen.
             out.append(indent() + '!!! abstract "Étape %d"' % step_no)
+            step_line_idx = len(out) - 1
             stack.append(("step", indent()))
             pending_step_title = True
             continue
@@ -130,8 +132,12 @@ def convert_page(text, relpath):
         if pending_step_title:
             h = HEADING_RE.match(line)
             if h:
-                # Promote the step's own heading into the admonition title.
-                out[-1] = out[-1][: out[-1].rindex('"Étape')] + '"Étape %d — %s"' % (step_no, h.group(1).replace('"', "'"))
+                # Promote the step's own heading into the admonition title —
+                # at the REMEMBERED admonition line: a blank line between
+                # {% step %} and its heading has already pushed more lines
+                # onto out, so out[-1] is not the admonition anymore.
+                target = out[step_line_idx]
+                out[step_line_idx] = target[: target.rindex('"Étape')] + '"Étape %d — %s"' % (step_no, h.group(1).replace('"', "'"))
                 pending_step_title = False
                 continue
             if line.strip():

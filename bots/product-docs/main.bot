@@ -233,13 +233,16 @@ vars:
   ## URL path segment of the published site; empty = the product id.
   publish_site: string = ""
 
-  publish_s3_bucket: string = "devthejo"
+  ## The target bucket names a deployment, never a person: no default.
+  ## publish_gate refuses the tail when it is empty.
+  publish_s3_bucket: string = ""
   publish_s3_prefix: string = "sites"
 
-  ## Pinned ref of SocialGouv/iterion the publish agent fetches the
-  ## GitBook→MkDocs converter from (raw URL). Pin a tag/SHA once the
-  ## publish tail has landed on main.
-  publish_tools_ref: string = "feat/product-docs-publish"
+  ## Ref of SocialGouv/iterion the publish agent fetches the
+  ## GitBook→MkDocs converter from (raw URL). Defaults to main (where
+  ## the converter lives once this bundle is merged); pin a tag/SHA for
+  ## reproducible deployments.
+  publish_tools_ref: string = "main"
 
 secrets:
   ## Forge access: cloning the SOURCE repositories (private ones need
@@ -891,6 +894,7 @@ schema publish_output:
 
 schema verify_publish_input:
   url: string
+  base_url: string
 
 schema verify_publish_output:
   verified: bool
@@ -1857,17 +1861,24 @@ if u:
 ## or no S3 credentials burns a turn to rediscover in shell what a
 ## 10-line probe already knows. Read-only, idempotent.
 tool publish_gate:
-  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} python3 -c "
+  ## Secret paths come from the TEMPLATE ({{secrets.X.path}}), which the
+  ## engine resolves for sandboxed AND host runs alike — a hardcoded
+  ## /run/iterion/secrets/ only exists under the sandbox bind-mount and
+  ## silently disabled publishing everywhere else.
+  command: `PUB={{vars.publish}} BASE={{vars.publish_base_url}} BUCKET={{vars.publish_s3_bucket}} SEC_A={{secrets.onyxia_s3_access_key.path}} SEC_B={{secrets.onyxia_s3_secret_key.path}} SEC_C={{secrets.onyxia_s3_session_token.path}} python3 -c "
 import os, json
 pub = (os.environ.get('PUB') or '').strip().lower() in ('1', 'true', 'yes')
 base = (os.environ.get('BASE') or '').strip()
-names = ['onyxia_s3_access_key', 'onyxia_s3_secret_key', 'onyxia_s3_session_token']
-missing = [n for n in names if not os.path.isfile('/run/iterion/secrets/' + n)]
-ok = pub and bool(base) and not missing
+bucket = (os.environ.get('BUCKET') or '').strip()
+paths = {'onyxia_s3_access_key': os.environ.get('SEC_A') or '', 'onyxia_s3_secret_key': os.environ.get('SEC_B') or '', 'onyxia_s3_session_token': os.environ.get('SEC_C') or ''}
+missing = [n for n, p in paths.items() if not (p and os.path.isfile(p))]
+ok = pub and bool(base) and bool(bucket) and not missing
 if not pub:
     reason = 'publish disabled (vars.publish=false)'
 elif not base:
     reason = 'publish_base_url is empty'
+elif not bucket:
+    reason = 'publish_s3_bucket is empty -- name the target bucket, there is no default'
 elif missing:
     reason = 'missing S3 secrets: ' + ', '.join(missing)
 else:
@@ -1895,14 +1906,20 @@ agent publish:
 ## serve loop (60 s sync) to pick the push up.
 tool verify_publish:
   input: verify_publish_input
-  command: `URL={{input.url}} python3 -c "
+  command: `URL={{input.url}} BASE={{input.base_url}} python3 -c "
 import json, os, time, urllib.request
 u = (os.environ.get('URL') or '').strip()
+base = (os.environ.get('BASE') or '').strip().rstrip('/')
 if not u:
     print(json.dumps({'verified': False, 'url': '', 'detail': 'publish agent returned no URL'}))
     raise SystemExit(1)
 if not u.endswith('/'):
     u = u + '/'
+## The truth gate verifies THE OPERATOR'S deployment, not whatever URL
+## the agent narrated: any live page would answer 200 with a title.
+if not base or not u.startswith(base + '/'):
+    print(json.dumps({'verified': False, 'url': u, 'detail': 'returned url is not under publish_base_url (' + (base or '<empty>') + ')'}))
+    raise SystemExit(1)
 code, body = 0, ''
 for i in range(12):
     try:
@@ -2068,6 +2085,12 @@ workflow product_docs:
     tools_ref: "{{vars.publish_tools_ref}}"
   }
   publish_gate -> done when not do_publish
-  publish -> verify_publish with { url: "{{outputs.publish.url}}" }
+  ## Unconditional fallback: edge selection SKIPS a conditional edge
+  ## whose field is absent from the output (an errored tool body yields
+  ## an output without do_publish), and a node with only conditional
+  ## edges then dead-ends the run with NO_OUTGOING_EDGE. The fallback
+  ## makes the safe route structural: no publish signal → done.
+  publish_gate -> done
+  publish -> verify_publish with { url: "{{outputs.publish.url}}", base_url: "{{vars.publish_base_url}}" }
   verify_publish -> surface_site_link with { url: "{{outputs.verify_publish.url}}" }
   surface_site_link -> done

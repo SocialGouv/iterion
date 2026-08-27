@@ -17,7 +17,8 @@
 # relaunching the service re-injects fresh ones.
 set -u
 
-SITES_BUCKET="${SITES_BUCKET:-devthejo}"
+# The bucket names a deployment, never a person: fail loudly when unset.
+: "${SITES_BUCKET:?SITES_BUCKET is required (the datalab account bucket to mirror from)}"
 SITES_PREFIX="${SITES_PREFIX:-sites}"
 SERVE_PORT="${SERVE_PORT:-5000}"
 SYNC_INTERVAL="${SYNC_INTERVAL:-60}"
@@ -25,7 +26,15 @@ SITES_DIR="${SITES_DIR:-$HOME/sites}"
 
 ENDPOINT_HOST="${AWS_S3_ENDPOINT:-minio.lab.sspcloud.fr}"
 # MC_HOST_* carries the STS session token, which `mc alias set` cannot.
-export MC_HOST_sites="https://${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}:${AWS_SESSION_TOKEN}@${ENDPOINT_HOST}"
+# The value is parsed as a URL: STS secrets are base64-family and can
+# carry '/', '+', '=' or ':' — percent-encode each part or a '/' in the
+# secret silently truncates the authority.
+export MC_HOST_sites="$(python3 - <<'PYENC'
+import os, urllib.parse
+q = lambda v: urllib.parse.quote(os.environ.get(v, ''), safe='')
+print('https://' + q('AWS_ACCESS_KEY_ID') + ':' + q('AWS_SECRET_ACCESS_KEY') + ':' + q('AWS_SESSION_TOKEN') + '@' + os.environ.get('AWS_S3_ENDPOINT', 'minio.lab.sspcloud.fr'))
+PYENC
+)"
 
 # mc ships in the Onyxia images; install it only when absent (plain images).
 if ! command -v mc >/dev/null 2>&1; then

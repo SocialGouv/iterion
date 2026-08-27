@@ -2,6 +2,8 @@ package bots
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1580,5 +1582,119 @@ func TestProductDocsSourceStampRecordsFullSHA(t *testing.T) {
 	parts := strings.SplitN(got.Stamp, "@", 2)
 	if len(parts) != 2 || len(parts[1]) != 40 {
 		t.Fatalf("sources_stamp %q does not record a full 40-char sha — the shallow-delta repair cannot fetch it", got.Stamp)
+	}
+}
+
+// TestProductDocsPublishGate pins the publish tail's deterministic
+// pre-flight, executing the real node body: the tail opens only on the
+// explicit opt-in + a serve base URL + a named bucket + all three S3
+// secrets present at their TEMPLATE-resolved paths (host and sandbox
+// runs resolve differently; a hardcoded mount path silently disabled
+// publishing on host runs).
+func TestProductDocsPublishGate(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "publish_gate")
+
+	secretsDir := t.TempDir()
+	paths := map[string]string{}
+	for _, n := range []string{"onyxia_s3_access_key", "onyxia_s3_secret_key", "onyxia_s3_session_token"} {
+		p := filepath.Join(secretsDir, n)
+		if err := os.WriteFile(p, []byte("v"), 0o600); err != nil {
+			t.Fatalf("write secret fixture: %v", err)
+		}
+		paths[n] = p
+	}
+	run := func(t *testing.T, publish, base, bucket, missing string) publishGateOut {
+		t.Helper()
+		refs := map[string]string{
+			"vars.publish":                         publish,
+			"vars.publish_base_url":                base,
+			"vars.publish_s3_bucket":               bucket,
+			"secrets.onyxia_s3_access_key.path":    paths["onyxia_s3_access_key"],
+			"secrets.onyxia_s3_secret_key.path":    paths["onyxia_s3_secret_key"],
+			"secrets.onyxia_s3_session_token.path": paths["onyxia_s3_session_token"],
+		}
+		if missing != "" {
+			refs["secrets."+missing+".path"] = filepath.Join(secretsDir, "absent")
+		}
+		var got publishGateOut
+		runJSON(t, resolveCommand(t, command, refs), &got)
+		return got
+	}
+
+	if got := run(t, "true", "https://serve.example", "demo-bucket", ""); !got.DoPublish || got.Reason != "ready" {
+		t.Fatalf("all preconditions met yet the gate refused: %+v", got)
+	}
+	if got := run(t, "false", "https://serve.example", "demo-bucket", ""); got.DoPublish || !strings.Contains(got.Reason, "disabled") {
+		t.Fatalf("publish=false must route the tail out with its reason: %+v", got)
+	}
+	if got := run(t, "true", "https://serve.example", "", ""); got.DoPublish || !strings.Contains(got.Reason, "bucket") {
+		t.Fatalf("an empty bucket must refuse the tail (no personal default): %+v", got)
+	}
+	if got := run(t, "true", "https://serve.example", "demo-bucket", "onyxia_s3_secret_key"); got.DoPublish || !strings.Contains(got.Reason, "onyxia_s3_secret_key") {
+		t.Fatalf("a missing secret must be named in the refusal: %+v", got)
+	}
+}
+
+type publishGateOut struct {
+	DoPublish bool   `json:"do_publish"`
+	Reason    string `json:"reason"`
+}
+
+// TestProductDocsVerifyPublish pins the external truth gate: it verifies
+// THE OPERATOR'S deployment — a 200 with a title under publish_base_url —
+// never whatever live URL the agent happened to narrate.
+func TestProductDocsVerifyPublish(t *testing.T) {
+	requireGitPython(t)
+	command := toolCommand(t, "product-docs/main.bot", "verify_publish")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/site/" {
+			_, _ = w.Write([]byte("<html><head><title>Demo</title></head></html>"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	var got verifyPublishOut
+	runJSON(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/site/",
+		"input.base_url": srv.URL,
+	}), &got)
+	if !got.Verified {
+		t.Fatalf("a live page under the base was not verified: %+v", got)
+	}
+
+	runExpectingFailure(t, resolveCommand(t, command, map[string]string{
+		"input.url":      srv.URL + "/site/",
+		"input.base_url": "https://elsewhere.example",
+	}), "not under publish_base_url")
+}
+
+type verifyPublishOut struct {
+	Verified bool   `json:"verified"`
+	URL      string `json:"url"`
+	Detail   string `json:"detail"`
+}
+
+// TestGitbookToMkdocsBlankLineStep pins the converter against the crash
+// Revi reproduced: a blank line between {% step %} and its heading made
+// the title promotion index into the wrong output line (ValueError).
+func TestGitbookToMkdocsBlankLineStep(t *testing.T) {
+	requireGitPython(t)
+	script := filepath.Join("product-docs", "deploy", "gitbook_to_mkdocs.py")
+	py := `
+import importlib.util
+spec = importlib.util.spec_from_file_location('g', '` + script + `')
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+out = g.convert_page('# P\n\n{% stepper %}\n{% step %}\n\n### Titre\ncontenu\n{% endstep %}\n{% endstepper %}\n', 't.md')
+assert 'Étape 1 — Titre' in out, out
+print('ok')
+`
+	cmd := exec.Command("python3", "-c", py)
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ok") {
+		t.Fatalf("converter crashed on blank-line step: %v\n%s", err, out)
 	}
 }
