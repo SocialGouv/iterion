@@ -1913,7 +1913,27 @@ tool confirm_versions:
         if cve in adv_cache:
             return adv_cache[cve]
         url = api_base + '/advisories?cve_id=' + quote(cve, safe='')
-        got = budgeted(lambda: get(url, tokens.get('*') or next(iter(tokens.values()), '')), 'advisory ' + cve)
+
+        def fetch_advisory():
+            ## /advisories is a PUBLIC endpoint — it answers unauthenticated
+            ## (verified against the live API). A token is sent only to buy the
+            ## authenticated rate limit, and the one available here is some
+            ## org's Dependabot credential: in production a watch-only GitHub
+            ## App installation token whose manifest permissions were REPLACED
+            ## by metadata + vulnerability_alerts read (docs/forge-security-read.md),
+            ## which this endpoint has no reason to accept. If it is rejected,
+            ## the advisory lane must not go dark — every unit would render as
+            ## unverified and the whole confirmation would quietly stop working
+            ## — so fall back to the unauthenticated read it does not need.
+            tok = tokens.get('*') or next(iter(tokens.values()), '')
+            if not tok:
+                return get(url, '')
+            try:
+                return get(url, tok)
+            except Exception:
+                return get(url, '')
+
+        got = budgeted(fetch_advisory, 'advisory ' + cve)
         ## A cve_id query returns at most one advisory, so there is no page to
         ## walk here — only the alerts lane needs that.
         data = got[0] if got else None

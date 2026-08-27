@@ -89,6 +89,10 @@ type vulnWatchHarness struct {
 	// (`actions`, `erlang`, `other`, `swift` come back from /advisories and are
 	// all refused here).
 	rejectEcosystem atomic.Bool
+	// refuseAdvisoryToken makes /advisories 403 any authenticated request while
+	// still serving the anonymous one — the shape of an App installation token
+	// scoped to something this endpoint does not recognise.
+	refuseAdvisoryToken atomic.Bool
 	// depQueries records every query string the alerts endpoint received, so a
 	// test can assert HOW it was asked — the `state=all` trap is invisible in
 	// the response (GitHub answers 200 + empty list, never an error).
@@ -230,6 +234,10 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	mux.HandleFunc("/advisories", func(w http.ResponseWriter, r *http.Request) {
 		if to, _ := h.redirectAdvisoriesTo.Load().(string); to != "" {
 			http.Redirect(w, r, to, http.StatusFound)
+			return
+		}
+		if h.refuseAdvisoryToken.Load() && r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		byCVE, _ := h.advisoryPkgs.Load().(map[string][]map[string]string)
@@ -2688,4 +2696,39 @@ func TestVulnWatch_ACutCVEListIsNeverAConfidentAnswer(t *testing.T) {
 			t.Fatalf("a cut CVE list must read as unverified, got %q", vc)
 		}
 	})
+}
+
+// /advisories is a PUBLIC endpoint — it answers unauthenticated (verified
+// against the live API). The token sent with it buys only the authenticated
+// rate limit, and the one available here is some org's Dependabot credential:
+// in production a watch-only GitHub App installation token whose manifest
+// permissions were REPLACED by metadata + vulnerability_alerts read, which
+// this endpoint has no reason to accept. If it 403s, every advisory lookup
+// fails, every unit renders "not verified", and the whole confirmation stops
+// working silently — the exact capability degradation this bot must not have.
+func TestVulnWatch_AdvisoryLookupSurvivesATokenTheEndpointRefuses(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// Refuse the bearer, exactly as an App token scoped to something else
+	// would be refused — but serve the public read.
+	h.refuseAdvisoryToken.Store(true)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7090": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	h.depAlerts.Store([]map[string]any{vwAlert("acme/site", "acme-lib", "npm",
+		"CVE-2026-7090", "open", "2026-08-01T00:00:00Z", "", "2.0.1")})
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7090", "cves": []string{"CVE-2026-7090"},
+		"title": "token probe", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	if vc, _ := got[0].(map[string]any)["version_check"].(string); vc != "confirmed" {
+		t.Fatalf("a refused bearer on a PUBLIC endpoint took the whole confirmation down, got %q", vc)
+	}
 }
