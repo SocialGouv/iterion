@@ -146,13 +146,33 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 			return
 		}
 		alerts, _ := h.depAlerts.Load().([]map[string]any)
-		// Mirror the REAL endpoint: `state=all` is not a valid value and
-		// GitHub answers an EMPTY list rather than erroring. A confirmation
-		// built on it would be silently, permanently empty — so the fake has
-		// to reproduce the trap, not paper over it.
-		if r.URL.Query().Get("state") == "all" {
-			_ = json.NewEncoder(w).Encode([]map[string]any{})
-			return
+		// Mirror the REAL endpoint: `state` is a comma-separated list over
+		// {auto_dismissed, dismissed, fixed, open} and `all` is not a member,
+		// so GitHub matches NOTHING and answers an empty list rather than
+		// erroring. A confirmation built on it would be silently, permanently
+		// empty — the fake reproduces the trap instead of papering over it,
+		// and honours the filter, or a test asserting one is vacuous.
+		if want := r.URL.Query().Get("state"); want != "" {
+			states := map[string]bool{}
+			for _, s := range strings.Split(want, ",") {
+				states[strings.TrimSpace(s)] = true
+			}
+			var kept []map[string]any
+			for _, a := range alerts {
+				// The real endpoint always carries a state; a fixture that
+				// omits one means the ordinary case, `open`.
+				st, _ := a["state"].(string)
+				if st == "" {
+					st = "open"
+				}
+				if states[st] {
+					kept = append(kept, a)
+				}
+			}
+			if kept == nil {
+				kept = []map[string]any{}
+			}
+			alerts = kept
 		}
 		if want := r.URL.Query().Get("package"); want != "" {
 			names := map[string]bool{}
@@ -1938,6 +1958,26 @@ func vwAlert(repo, pkg, eco, cve, state, created, fixedAt, patched string) map[s
 	}
 }
 
+// vwRender drives notify alone over an already-confirmed alert list, so a test
+// can assert what the operator actually READS without replaying a whole tick.
+func vwRender(t *testing.T, wf *ir.Workflow, h *vulnWatchHarness, alerts any) string {
+	t.Helper()
+	plan, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "plan").Script, nil, map[string]any{
+		"workspace_dir": h.ws, "config_path": "vuln-watch.json",
+		"inventory_path": "inventory.json", "mode": "watch",
+	}, nil))
+	if err != nil {
+		t.Fatalf("plan failed: %v\nstderr: %s", err, stderr)
+	}
+	if _, stderr, err = runPy(t, h.ws, vwSub(t, vwTool(t, wf, "notify").Script, map[string]any{
+		"alerts": alerts, "overflow_count": 0, "stale_sources": []any{},
+		"sinks": plan["sinks"], "labels": plan["labels"], "dry_run": false,
+	}, nil, map[string]string{"webhooks": h.webhooksFile})); err != nil {
+		t.Fatalf("notify failed: %v\nstderr: %s", err, stderr)
+	}
+	return h.lastBody(t)
+}
+
 // vwConfirm drives confirm_versions alone against an arbitrary API base — the
 // node is where the org's Dependabot token is spent, so its egress guards are
 // worth exercising directly rather than only through a whole watch cycle.
@@ -2162,5 +2202,80 @@ func TestVulnWatch_EcosystemOutsideTheAlertsVocabularyStillConfirms(t *testing.T
 	}
 	if vc != "confirmed" {
 		t.Fatalf("the actions advisory is confirmable without the ecosystem filter, got %q", vc)
+	}
+}
+
+// The state parameter used to be omitted entirely, so the endpoint returned
+// `dismissed` and `auto_dismissed` alerts alongside the rest (the branch's own
+// measurement: 73 open vs 78 total for one package) and NOTHING filtered them
+// out. A dismissal is a decision, not an exposure — and it has no fixed_at, so
+// neither the open_since nor the fixed_window detail fired: it printed as a
+// bare repo name under "Vulnerable — confirmed", visually identical to a
+// genuinely-open hit. Over-naming the confirmed list is the exact noise class
+// this whole change exists to remove.
+//
+// A `fixed` alert is the milder half of the same defect: its detail says "was
+// vulnerable", but a skimmed security message is read by its HEADINGS, and the
+// heading above it asserted current exposure.
+func TestVulnWatch_ConfirmedMeansOpen_DismissedAndFixedDoNot(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7040": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	h.depAlerts.Store([]map[string]any{
+		vwAlert("acme/open-one", "acme-lib", "npm", "CVE-2026-7040", "open", "2026-08-01T00:00:00Z", "", "2.0.1"),
+		vwAlert("acme/fixed-one", "acme-lib", "npm", "CVE-2026-7040", "fixed", "2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z", "2.0.1"),
+		vwAlert("acme/dismissed-one", "acme-lib", "npm", "CVE-2026-7040", "dismissed", "2026-05-01T00:00:00Z", "", "2.0.1"),
+		vwAlert("acme/auto-dismissed-one", "acme-lib", "npm", "CVE-2026-7040", "auto_dismissed", "2026-05-01T00:00:00Z", "", "2.0.1"),
+	})
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7040", "cves": []string{"CVE-2026-7040"},
+		"title": "state probe", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	for _, q := range h.queries() {
+		if strings.Contains(q, "state=all") {
+			t.Fatalf("state=all matches nothing — the confirmation would be permanently empty: %q", q)
+		}
+	}
+	got, _ := out["alerts"].([]any)
+	unit, _ := got[0].(map[string]any)
+	repos, _ := unit["confirmed_repos"].([]any)
+	byRepo := map[string]string{}
+	for _, r := range repos {
+		m, _ := r.(map[string]any)
+		name, _ := m["repo"].(string)
+		st, _ := m["state"].(string)
+		byRepo[name] = st
+	}
+	for _, gone := range []string{"acme/dismissed-one", "acme/auto-dismissed-one"} {
+		if _, ok := byRepo[gone]; ok {
+			t.Fatalf("%s was dismissed — a decision is not an exposure, and it would print bare under \"Vulnerable — confirmed\"", gone)
+		}
+	}
+	if byRepo["acme/open-one"] != "open" || byRepo["acme/fixed-one"] != "fixed" {
+		t.Fatalf("open and fixed must both survive, with their states intact: %v", byRepo)
+	}
+
+	// And the message must not file the fixed one under a heading that asserts
+	// current vulnerability.
+	msg := vwRender(t, wf, h, out["alerts"])
+	openIdx := strings.Index(msg, "Vulnerable — confirmed")
+	fixedIdx := strings.Index(msg, "Was vulnerable — already fixed")
+	if openIdx < 0 || fixedIdx < 0 {
+		t.Fatalf("both sections must appear:\n%s", msg)
+	}
+	openLine := msg[openIdx:fixedIdx]
+	if strings.Contains(openLine, "acme/fixed-one") {
+		t.Fatalf("an already-fixed repo sits under the heading asserting current exposure:\n%s", msg)
+	}
+	if !strings.Contains(openLine, "acme/open-one") {
+		t.Fatalf("the open exposure must be the one named as confirmed:\n%s", msg)
 	}
 }

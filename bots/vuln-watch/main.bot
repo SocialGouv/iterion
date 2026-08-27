@@ -410,6 +410,7 @@ tool plan:
         'fix_see_source': 'see the advisory',
         'projects': 'Affected projects',
         'confirmed_projects': 'Vulnerable — confirmed',
+        'fixed_projects': 'Was vulnerable — already fixed',
         'declared_projects': 'Declares this technology — to verify',
         'not_a_package': 'no dependency package to check against (deployed product): version not verifiable automatically',
         'check_unavailable': 'version NOT verified this run (no advisory match, lookup budget or API error) — assume nothing',
@@ -1731,10 +1732,14 @@ tool confirm_versions:
   ##
   ## GOTCHA, paid for: `state=all` is NOT a valid value for that endpoint,
   ## and GitHub answers 200 with an EMPTY list instead of an error — the
-  ## confirmation would have been silently, permanently empty. OMIT the
-  ## parameter to get every state (open + fixed + dismissed); measured
-  ## `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0,
-  ## no state param -> 78.
+  ## confirmation would have been silently, permanently empty. Measured
+  ## `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0, no state
+  ## param -> 78. The REASON, per GitHub's own OpenAPI description: `state` is
+  ## a comma-separated LIST over {auto_dismissed, dismissed, fixed, open}, and
+  ## `all` is simply not a member — so it matches nothing rather than
+  ## everything. `open,fixed` is the valid spelling of what this node wants
+  ## (an exposure, and the window of a closed one), and it drops both
+  ## dismissal states server-side: a dismissal is a decision, not an exposure.
   input: confirm_input
   output: confirm_output
   language: py
@@ -1890,12 +1895,13 @@ tool confirm_versions:
         ## instead of one per ecosystem, and the (ecosystem, name) pair is
         ## re-checked on the way back so nothing is lost by dropping it.
         ##
-        ## NO `state` parameter either — see the GOTCHA in this node's header.
+        ## `state=open,fixed` — NEVER `state=all`; see the GOTCHA in this
+        ## node's header for why the latter silently matches nothing.
         token = tokens.get(org) or tokens.get('*')
         if not token:
             return ([], False)
-        url = (api_base + '/orgs/' + quote(org, safe='') + '/dependabot/alerts?per_page=100&package=' +
-               quote(','.join(sorted(names)), safe=','))
+        url = (api_base + '/orgs/' + quote(org, safe='') + '/dependabot/alerts?per_page=100&state=' +
+               quote('open,fixed', safe=',') + '&package=' + quote(','.join(sorted(names)), safe=','))
         data = budgeted(lambda: get(url, token), 'alerts ' + org)
         if not isinstance(data, list):
             return ([], False)
@@ -2086,9 +2092,17 @@ tool notify:
             ## nobody reads. What confirm_versions proved comes FIRST and stays
             ## short; the rest is demoted to context, explicitly unverified.
             conf = a.get('confirmed_repos') or []
-            if conf:
+            def render_repos(group, heading):
+                ## A heading is what a skimmed security message is read by, so
+                ## an already-fixed match must NEVER sit under one that asserts
+                ## current exposure — its "was vulnerable" detail line does not
+                ## undo the word above it. Open exposures and closed history are
+                ## two sections; the window is kept, it is just not called a
+                ## vulnerability any more.
+                if not group:
+                    return
                 bits = []
-                for c in conf[:12]:
+                for c in group[:12]:
                     who = flat(c.get('repo'), 100)
                     detail = []
                     if c.get('fix'):
@@ -2101,9 +2115,12 @@ tool notify:
                                       .replace('{since}', flat(c['since'], 10))
                                       .replace('{until}', flat(c['until'], 10)))
                     bits.append('`' + who + '`' + ((' ' + ' · '.join(detail)) if detail else ''))
-                extra = len(conf) - len(bits)
-                lines.append(labels['confirmed_projects'] + ' (' + str(len(conf)) + '): ' + ', '.join(bits) +
+                extra = len(group) - len(bits)
+                lines.append(heading + ' (' + str(len(group)) + '): ' + ', '.join(bits) +
                              ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
+            if conf:
+                render_repos([c for c in conf if c.get('state') == 'open'], labels['confirmed_projects'])
+                render_repos([c for c in conf if c.get('state') != 'open'], labels['fixed_projects'])
             else:
                 ## Say WHY nothing is confirmed. "none_found" and "this kind of
                 ## technology cannot be checked" are different facts, and
