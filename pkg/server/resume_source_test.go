@@ -233,3 +233,18 @@ type resumeBlipStore struct{ botsource.Store }
 func (resumeBlipStore) GetBySlug(context.Context, string, string) (botsource.BotSource, error) {
 	return botsource.BotSource{}, context.DeadlineExceeded
 }
+
+// The transient typing must cover BOTH resolveResumeBot branches: a run with
+// NO persisted origin (every baked-catalog and pre-change run) still touches
+// the platform tier via resolveBotTiered, and a store blip there must re-arm
+// the sweeper, not permanently abandon a paid usage-window retry.
+func TestResolveResumeBot_NoOriginTransientIsTyped(t *testing.T) {
+	s, _, _ := newBotSourceTestServer(t)
+	s.cfg.Mode = "cloud"
+	s.botSources = resumeBlipStore{Store: s.botSources}
+
+	_, err := s.resolveResumeBot(context.Background(), "", "bots/shared/main.bot")
+	if !errors.Is(err, errResumeResolveTransient) {
+		t.Fatalf("no-origin store blip must be typed errResumeResolveTransient, got %v", err)
+	}
+}

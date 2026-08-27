@@ -432,6 +432,15 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 	if err != nil {
 		return nil, "", nil //nolint:nilerr // unresolvable id = not found, not an error
 	}
+	if filepath.Base(mainPath) != botsource.MainBotFile {
+		// A loose <name>.bot has no bundle dir of its own — walking its
+		// PARENT would sweep in every sibling bot. Fork just its source.
+		body, rerr := os.ReadFile(mainPath)
+		if rerr != nil {
+			return nil, "", fmt.Errorf("read catalog bot %q: %w", botID, rerr)
+		}
+		return map[string]string{botsource.MainBotFile: string(body)}, botID, nil
+	}
 	files, err := botsource.ReadBundleDir(filepath.Dir(mainPath))
 	if err != nil {
 		return nil, "", fmt.Errorf("read catalog bundle %q: %w", botID, err)

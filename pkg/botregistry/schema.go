@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -333,6 +334,25 @@ func loadSchemaUncached(path string) (*VarsBlock, *PresetsBlock, error) {
 func ClearSchemaCache() {
 	schemaCache.Range(func(k, _ any) bool {
 		schemaCache.Delete(k)
+		return true
+	})
+}
+
+// PurgeSchemaCacheUnder drops the cached entries whose path sits under dir.
+// For a caller that materializes bundles into an EPHEMERAL directory (a
+// fresh path per call), the path-keyed entries can never be hit again —
+// without the purge each pass leaks them into the process-global cache
+// for the replica's whole lifetime.
+func PurgeSchemaCacheUnder(dir string) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return
+	}
+	prefix := abs + string(filepath.Separator)
+	schemaCache.Range(func(k, _ any) bool {
+		if p, ok := k.(string); ok && strings.HasPrefix(p, prefix) {
+			schemaCache.Delete(k)
+		}
 		return true
 	})
 }

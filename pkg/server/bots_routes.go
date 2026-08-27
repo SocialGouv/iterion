@@ -142,6 +142,14 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 			"bots: %q is a loose .bot file; convert it to a bundle (manifest.yaml + main.bot) to edit metadata", name)
 		return
 	}
+	// A stored (platform-override) entry carries an EMPTY path — joining it
+	// would write manifest.yaml relative to the server's CWD and silently
+	// lose the edit (the next read re-serves the untouched override).
+	if entry.Path == "" {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is managed as a platform override; edit it via /api/admin/bots (or `iterion remote admin bots push`)", name)
+		return
+	}
 	var req botUpdateRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
@@ -194,6 +202,13 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 	var req botOverlayRequest
 	if err := readJSON(r, &req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
+		return
+	}
+	// The workspace overlay is never consulted for a platform-override
+	// entry, so a hide/show toggle there would 200 and change nothing.
+	if s.entryOrigin(name) == "platform" {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is managed as a platform override; the workspace overlay does not apply (remove the override via /api/admin/bots to fall back to the catalog)", name)
 		return
 	}
 	if err := botregistry.SetOverlayEnabled(s.cfg.WorkDir, name, req.Enabled); err != nil {

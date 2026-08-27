@@ -20,7 +20,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
@@ -171,7 +170,7 @@ type Server struct {
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
-	platformBots   *platformcfg.Resolver[[]botregistry.EntryWithSchema]
+	platformBots   *platformcfg.Resolver[platformBotSet]
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →

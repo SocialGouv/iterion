@@ -99,7 +99,12 @@ func (s *Server) materializeBotEntries(list []botsource.BotSource) []botregistry
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = os.RemoveAll(root) }()
+	defer func() {
+		// The temp root is unique per call: its schema-cache entries can
+		// never be re-hit and would otherwise leak on every TTL refresh.
+		botregistry.PurgeSchemaCacheUnder(root)
+		_ = os.RemoveAll(root)
+	}()
 
 	for _, bs := range list {
 		if err := botsource.Materialize(filepath.Join(root, bs.Slug), bs.Files); err != nil {

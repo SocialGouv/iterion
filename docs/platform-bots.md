@@ -100,6 +100,11 @@ review the diff first (`admin bots pull` + `git diff` against the repo).
 - `push` derives the slug from the bundle DIRECTORY name; listing/launch
   key on the manifest `name:`. Keep them identical (every shipped bot
   does) — a divergent pair would append a new entry instead of overriding.
+- **One-time resume hash mismatch**: stored bots now compile through the
+  full bundle path, so the workflow hash folds in `prompts/` + presets. A
+  run launched from a stored bot BEFORE this change was hashed
+  source-only — resuming it hash-mismatches once; resume it with
+  `--force`. Runs launched after this change are unaffected.
 - The k8s sandbox driver drops host binds, so a bundle `devbox.json`
   staged via the host-bind path does not provision inside a k8s sandbox —
   a pre-existing gap shared with baked bundles.

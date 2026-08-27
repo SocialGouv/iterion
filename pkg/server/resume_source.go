@@ -117,7 +117,11 @@ func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath
 	}
 	lb, err := s.resolveBotTiered(ctx, "", "", filePath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve bot: %w", err)
+		// resolveBotTiered only errors on a store/FS failure — a genuine
+		// "not found" returns (nil, nil). A blip is transient here exactly
+		// as on the persisted-origin branch above: typed so the retry
+		// sweeper RE-ARMS instead of permanently abandoning the retry.
+		return nil, fmt.Errorf("%w: resolve bot: %v", errResumeResolveTransient, err)
 	}
 	return lb, nil
 }

@@ -183,28 +183,41 @@ func (s *Server) resolveBotSource(ctx context.Context, botID string) (*launchBot
 
 // ---- catalog metadata overlay (entries + manifests) ----
 
-// platformBotEntries returns the platform overrides as schema-augmented
-// entries, cached per replica behind a platformcfg.Resolver (30s TTL,
+// platformBotSet is the cached projection of the platform tenant's rows:
+// the schema-augmented entry set AND the decoded manifests, built from the
+// same list read so the two can never disagree within a TTL window.
+type platformBotSet struct {
+	entries   []botregistry.EntryWithSchema
+	manifests map[string]*bundle.Manifest
+}
+
+// platformBotSetCached returns the resolver-cached set (30s TTL,
 // invalidate-on-own-write, serve-last-known on a store outage — one cache
 // mechanism, not a sibling with divergent semantics). Nil without a
-// bot-source store (local mode) or when the platform tenant holds no rows.
-func (s *Server) platformBotEntries() []botregistry.EntryWithSchema {
+// bot-source store (local mode).
+func (s *Server) platformBotSetCached() *platformBotSet {
 	if s.botSources == nil || s.platformBots == nil {
 		return nil
 	}
-	entries := s.platformBots.Get(context.Background())
-	if entries == nil {
+	return s.platformBots.Get(context.Background())
+}
+
+// platformBotEntries returns the platform overrides as schema-augmented
+// entries; nil when the platform tenant holds no rows.
+func (s *Server) platformBotEntries() []botregistry.EntryWithSchema {
+	set := s.platformBotSetCached()
+	if set == nil {
 		return nil
 	}
-	return *entries
+	return set.entries
 }
 
 // newPlatformBotsResolver builds the entry-set cache. The fetch propagates
 // a ListByTenant failure so an outage serves the LAST-KNOWN entry set
 // instead of caching an empty one (platform metadata silently vanishing
 // from command discovery / hand-offs for a TTL window).
-func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[[]botregistry.EntryWithSchema] {
-	return platformcfg.NewResolverFunc(func(ctx context.Context) (*[]botregistry.EntryWithSchema, error) {
+func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[platformBotSet] {
+	return platformcfg.NewResolverFunc(func(ctx context.Context) (*platformBotSet, error) {
 		if s.botSources == nil {
 			return nil, nil
 		}
@@ -212,8 +225,16 @@ func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[[]botregistry.E
 		if err != nil {
 			return nil, err
 		}
-		entries := s.materializeBotEntries(list)
-		return &entries, nil
+		set := platformBotSet{
+			entries:   s.materializeBotEntries(list),
+			manifests: make(map[string]*bundle.Manifest, len(list)),
+		}
+		for i := range list {
+			if m := list[i].Manifest(); m != nil {
+				set.manifests[list[i].Slug] = m
+			}
+		}
+		return &set, nil
 	}, s.logger.Warn)
 }
 
@@ -265,19 +286,20 @@ func (s *Server) effectiveEntries() ([]botregistry.Entry, error) {
 	return out, nil
 }
 
-// platformBotManifest decodes the manifest of a platform override, or nil
+// platformBotManifest returns the manifest of a platform override, or nil
 // when there is none (or it carries no manifest). The manifest tier behind
-// botManifest, so retry-policy/config-share reads honor an override.
+// botManifest, so retry-policy/config-share reads honor an override. Served
+// from the resolver cache — botManifest sits on every launch's retry-policy
+// resolution, which must not pay an unbounded per-call store read.
 func (s *Server) platformBotManifest(slug string) *bundle.Manifest {
-	if s.botSources == nil || slug == "" {
+	if slug == "" {
 		return nil
 	}
-	ctx := store.WithTenant(context.Background(), botsource.PlatformTenantID)
-	bs, err := s.botSources.GetBySlug(ctx, botsource.PlatformTenantID, slug)
-	if err != nil {
+	set := s.platformBotSetCached()
+	if set == nil {
 		return nil
 	}
-	return bs.Manifest()
+	return set.manifests[slug]
 }
 
 // entryOrigin reports how a bot name currently resolves for display:
