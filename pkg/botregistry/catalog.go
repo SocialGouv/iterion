@@ -168,9 +168,24 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 	// silently deleted from Nexie's routing table. Refuse to write until
 	// the malformed bundle is fixed or removed — the file stays untouched,
 	// exactly as when discovery used to fail hard.
-	if len(diags) > 0 {
-		parts := make([]string, 0, len(diags))
-		for _, d := range diags {
+	//
+	// Only DIRECTORY-sourced diagnostics block: a skipped bundle dir (parse
+	// failure) or an unreadable dir (contents unknown — conservative). A
+	// skipped LOOSE .bot file never contributes a card (they are excluded
+	// below), so a broken demo under examples/ must not freeze the catalog.
+	var blocking []DiscoveryError
+	for _, d := range diags {
+		p := d.Path
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(abs, filepath.FromSlash(p))
+		}
+		if info, statErr := os.Stat(p); statErr == nil && info.IsDir() {
+			blocking = append(blocking, d)
+		}
+	}
+	if len(blocking) > 0 {
+		parts := make([]string, 0, len(blocking))
+		for _, d := range blocking {
 			parts = append(parts, d.Path+": "+d.Error)
 		}
 		return "", fmt.Errorf("botregistry: refusing to regenerate the catalog from partial discovery — fix or remove the malformed bundle(s): %s", strings.Join(parts, "; "))

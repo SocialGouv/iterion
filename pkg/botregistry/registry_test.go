@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -412,5 +413,33 @@ func TestList_UnreadableSubdirDoesNotBlankSiblings(t *testing.T) {
 	}
 	if len(diags) != 1 || !strings.HasSuffix(diags[0].Path, "sealed") {
 		t.Fatalf("diags = %#v, want one for the sealed dir", diags)
+	}
+}
+
+func TestResolveBotPath_MalformedBundleExplainsWhy(t *testing.T) {
+	// Launch/dispatch against a malformed bundle must name the cause, not
+	// report a bare "not found".
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	_, err := ResolveBotPath("broken-chat", []string{dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want the load diagnostic, not not-exist", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("err = %v, want the chat: diagnostic naming the cause", err)
+	}
+	// An unrelated name still reports not-found.
+	if _, err := ResolveBotPath("ghost", []string{dir}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want os.ErrNotExist for an unknown bot", err)
 	}
 }

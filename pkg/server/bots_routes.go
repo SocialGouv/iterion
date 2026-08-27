@@ -73,6 +73,14 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"bots": entries}
 	if len(diags) > 0 {
+		// Headless deployments have no operator watching the CLI stderr or
+		// the studio banner — the server log is the only place a skipped
+		// bundle's lost automations stay attributable.
+		if s.logger != nil {
+			for _, d := range diags {
+				s.logger.Warn("bots: skipping %s: %s", d.Path, d.Error)
+			}
+		}
 		resp["discovery_errors"] = diags
 	}
 	s.writeJSONFor(w, r, resp)

@@ -193,3 +193,23 @@ chat:
 		t.Errorf("committed catalog was rewritten despite partial discovery:\n%s", body)
 	}
 }
+
+func TestRegenerateWhatsNextCatalog_LooseFileSkipDoesNotBlock(t *testing.T) {
+	// The refusal guards the catalog's CONTENT: only bundle dirs (and
+	// unreadable dirs, conservatively) can carry a card. A skipped loose
+	// .bot file — here a dangling symlink under examples/ — must not
+	// freeze catalog regeneration.
+	dir := fixtureCatalogWorkspace(t)
+	ClearSchemaCache()
+	if err := os.Symlink(filepath.Join(dir, "examples", "gone.bot"), filepath.Join(dir, "examples", "dead.bot")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	dest, err := RegenerateWhatsNextCatalog(dir)
+	if err != nil {
+		t.Fatalf("a loose-file skip must not block regen: %v", err)
+	}
+	if dest == "" {
+		t.Fatal("expected the catalog to regenerate")
+	}
+}

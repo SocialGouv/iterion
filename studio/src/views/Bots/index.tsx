@@ -219,8 +219,8 @@ export default function BotsView() {
           title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped — malformed bundle`}
         >
           <ul className="list-disc pl-4">
-            {discoveryErrors.map((d) => (
-              <li key={d.path}>
+            {discoveryErrors.map((d, i) => (
+              <li key={`${i}-${d.path}`}>
                 <code>{d.path}</code>: {d.error}
               </li>
             ))}

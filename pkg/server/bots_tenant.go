@@ -129,12 +129,17 @@ func (s *Server) tenantBotEntries(ctx context.Context) ([]botregistry.EntryWithS
 	// Same identity mapping for the diagnostics: the temp-root path is
 	// meaningless to the operator (and a server-filesystem leak); the slug
 	// names the bot they saved. Scrub the temp root out of the diagnostic
-	// string too — LoadManifest embeds the full manifest path in it.
+	// string too — LoadManifest embeds the full manifest path in it. A diag
+	// pointing AT the temp root itself (walk error on the directory the
+	// process just created) has no slug: fall back to a generic label.
 	for i := range diags {
 		if slug := slugFromMaterializedPath(root, diags[i].Path); slug != "" {
 			diags[i].Path = slug
+		} else {
+			diags[i].Path = "tenant-bot-store"
 		}
 		diags[i].Error = strings.ReplaceAll(diags[i].Error, root+string(filepath.Separator), "")
+		diags[i].Error = strings.ReplaceAll(diags[i].Error, root, "<store>")
 	}
 	return entries, diags
 }

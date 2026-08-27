@@ -310,9 +310,12 @@ func WorkdirFromPaths(paths []string) string {
 
 // ResolveBotPath looks up a bot by name across paths and returns the
 // path to its workflow source file (bundle's main.bot or loose .bot).
-// Returns os.ErrNotExist when no bot with that name is found.
+// Returns os.ErrNotExist when no bot with that name is found — unless a
+// skipped (malformed) bundle matches by directory name, in which case
+// the load diagnostic explains WHY the bot is unavailable instead of a
+// bare "not found".
 func ResolveBotPath(name string, paths []string) (string, error) {
-	entries, err := List(ListOptions{Paths: paths})
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: paths})
 	if err != nil {
 		return "", err
 	}
@@ -330,6 +333,15 @@ func ResolveBotPath(name string, paths []string) (string, error) {
 	for _, e := range entries {
 		if NormalizeName(e.Name) == nn {
 			return e.MainFile(), nil
+		}
+	}
+	// A malformed bundle has no parseable name, so it can only match by
+	// its directory / file base — enough to turn "bot not found" into the
+	// actual cause on the launch/dispatch path.
+	for _, d := range diags {
+		base := strings.TrimSuffix(filepath.Base(d.Path), filepath.Ext(d.Path))
+		if NormalizeName(base) == nn {
+			return "", fmt.Errorf("bot %q is unavailable — its bundle failed to load: %s", name, d.Error)
 		}
 	}
 	return "", fmt.Errorf("bot %q not found in %v: %w", name, paths, os.ErrNotExist)
