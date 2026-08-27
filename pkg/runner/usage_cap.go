@@ -41,6 +41,7 @@ import (
 // deployment's single meter — is the platform's.
 func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 	scope := usagecap.ScopePlatform
+	credFP := ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tenantOwnKey := creds.APIKey(secrets.ProviderAnthropic) != "" &&
 			!creds.IsPlatformSourced(string(secrets.ProviderAnthropic))
@@ -49,8 +50,18 @@ func usageCapKey(ctx context.Context, msg *queue.RunMessage) string {
 		if tenantOwnKey || tenantOwnOAuth {
 			scope = usagecap.TenantScope(msg.TenantID)
 		}
+		// The meter follows the CREDENTIAL: same preference order as the
+		// delegate (a ctx API key outranks an OAuth dir), so the
+		// fingerprint names the credential the run will actually spend.
+		// A rotated token therefore opens a fresh meter instead of
+		// inheriting the readings of the account it replaced.
+		if fp := creds.Fingerprint(string(secrets.ProviderAnthropic)); fp != "" {
+			credFP = fp
+		} else if fp := creds.Fingerprint(delegate.BackendClaudeCode); fp != "" {
+			credFP = fp
+		}
 	}
-	return usagecap.Key(delegate.BackendClaudeCode, scope)
+	return usagecap.Key(delegate.BackendClaudeCode, scope, credFP)
 }
 
 // usageGuardFor builds the guard for one run: the machine-wide policy

@@ -56,6 +56,22 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}
 
+	// The audit identity of each credential, computed while the plaintext
+	// is in hand: cleanup zeroes the secrets, the fingerprints stay — they
+	// are what lets the usage-cap meter key tell a rotated credential from
+	// the account it replaced.
+	fingerprints := map[string]string{}
+	for prov, key := range bundle.APIKeys {
+		if key != "" {
+			fingerprints[string(prov)] = secrets.FingerprintHex(key)
+		}
+	}
+	for kind, payload := range bundle.OAuthCredentials {
+		if len(payload) > 0 {
+			fingerprints[kind] = secrets.FingerprintHex(string(payload))
+		}
+	}
+
 	creds := secrets.Credentials{
 		APIKeys: bundle.APIKeys,
 		Generic: bundle.GenericSecrets,
@@ -70,6 +86,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		// usage-cap scope check reads them to meter platform-tier
 		// credentials on the shared platform key.
 		PlatformSourced: bundle.PlatformSourced,
+		Fingerprints:    fingerprints,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
 	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set

@@ -34,7 +34,16 @@ type Store interface {
 // meter. Runs that fall back to the deployment's own credential share
 // ScopePlatform, and merging THOSE is not a compromise but the point — they
 // really are one subscription.
-func Key(backend, scope string) string {
+//
+// credFP, when known, is the audit fingerprint of the credential itself
+// (secrets.FingerprintHex). It is what makes the meter follow the
+// CREDENTIAL and not the slot: a rotated token opens a fresh key, so a
+// seven-day reading recorded against the old account — legitimately fresh
+// until its own reset instant — cannot park runs that no longer draw on
+// it. Mesure : une clé neuve posée sur une team est restée bloquée des
+// jours par le reading à 95% de la clé qu'elle remplaçait. Readings
+// recorded under a fingerprint-less key simply expire in place.
+func Key(backend, scope, credFP string) string {
 	backend = strings.TrimSpace(backend)
 	scope = strings.TrimSpace(scope)
 	if backend == "" {
@@ -43,7 +52,11 @@ func Key(backend, scope string) string {
 	if scope == "" {
 		scope = ScopePlatform
 	}
-	return backend + "|" + scope
+	k := backend + "|" + scope
+	if fp := strings.TrimSpace(credFP); fp != "" {
+		k += "|fp:" + fp
+	}
+	return k
 }
 
 const (

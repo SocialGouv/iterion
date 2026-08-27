@@ -38,7 +38,7 @@ func resolveUsageGuard(spec ExecutorSpec) (*usagecap.Guard, error) {
 		return spec.UsageGuard, nil
 	}
 	store := processUsageStore()
-	key := usagecap.Key("", usagecap.ScopeLocal)
+	key := usagecap.Key("", usagecap.ScopeLocal, "")
 	sink := func(r usagecap.Reading) {
 		// Best effort: an unrecorded reading costs the NEXT run a
 		// pre-flight, never this one its correctness.
@@ -92,7 +92,7 @@ func usagePreflightFrom(src usagecap.PolicySource) (blocked bool, reason string)
 	if !pol.Enabled() {
 		return false, ""
 	}
-	readings, err := processUsageStore().Latest(context.Background(), usagecap.Key("", usagecap.ScopeLocal))
+	readings, err := processUsageStore().Latest(context.Background(), usagecap.Key("", usagecap.ScopeLocal, ""))
 	if err != nil {
 		return false, ""
 	}
