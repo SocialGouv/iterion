@@ -67,7 +67,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	fingerprints := map[string]string{}
 	for prov, key := range bundle.APIKeys {
 		if key != "" {
-			fingerprints[string(prov)] = secrets.FingerprintHex(key)
+			fingerprints[string(prov)] = secrets.FingerprintSHA256(key)
 		}
 	}
 	for kind, fp := range bundle.OAuthFingerprints {
