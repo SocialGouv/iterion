@@ -209,6 +209,44 @@ subscription is never blocked by what another tenant spent, and runs falling
 back to the deployment's own credential share one meter, which is correct —
 they really are one subscription.
 
+### Rotating a credential resets its meter — on purpose
+
+The key names the CREDENTIAL, not the slot it sits in:
+
+```
+claude_code|tenant:<id>              # legacy, still valid, expires in place
+claude_code|tenant:<id>|fp:aaaa1111  # the meter of ONE credential
+```
+
+`fp:` is the audit fingerprint of the credential the run actually spends,
+stamped when a human connects it and preserved across the automatic token
+refreshes (which rewrite the tokens of the *same* subscription). Without
+it, posting a fresh token over an exhausted one inherited the old
+account's reading — legitimately fresh until its own reset instant, up to
+seven days out — and parked every run of a credential with a full week
+available. That happened.
+
+So: **connect a new credential and the pre-flight finds nothing, fails
+open, and republishes the new account's real readings at the first call.**
+The old readings expire in place under their orphaned key (the collection
+has a 14-day TTL), and nothing needs migrating. This applies to every tier
+— a tenant's forfait, a pool donor's lent subscription, and the
+deployment's own platform forfait, where the meter is fleet-wide.
+
+Two boundaries worth knowing:
+
+- **Re-connecting the SAME Anthropic subscription also opens a fresh
+  meter.** A `credentials.json` carries no account id, so iterion cannot
+  tell "the same subscription again" from "a different one" (Codex's
+  `auth.json` does carry `account_id`, and is metered per account). The
+  reflex of re-pasting credentials when a token *looks* broken therefore
+  forgets what was measured. It fails open — one run rediscovers the wall
+  and republishes it — and the mid-run guard is the backstop.
+- **A local CLI/studio run is metered per machine, not per credential.**
+  Rotating your own credential inside a long-lived `iterion studio`
+  process keeps reading the replaced account's window until it resets;
+  restart the process to clear it.
+
 The pre-flight **fails open** on every uncertainty (no ledger, an unreadable
 ledger, nothing measured yet, a rolled-over reading). A cap exists to protect
 a subscription from a fleet, not to strand the fleet on a bookkeeping outage;
