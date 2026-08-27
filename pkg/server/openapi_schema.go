@@ -115,6 +115,10 @@ func routeSchemas() map[string]routeOp {
 		},
 		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
 
+		// Model capabilities — the limits and published prices a model
+		// picker captions its selection with.
+		"GET /api/model-capabilities": {response: modelCapabilitiesResponse{}},
+
 		// Global pipeline board — a single execution projection of every
 		// root pipeline (ADR-074). Additive to the native backlog (/board).
 		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},

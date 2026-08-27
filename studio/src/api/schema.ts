@@ -1563,6 +1563,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/model-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/model-capabilities */
+        get: operations["getModelCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/openapi.json": {
         parameters: {
             query?: never;
@@ -5750,6 +5767,19 @@ export interface components {
             email: string;
             password: string;
         };
+        modelCapabilitiesResponse: {
+            context_window: number;
+            input_cost_per_m: number;
+            max_output_tokens: number;
+            model: string;
+            output_cost_per_m: number;
+            provider?: string;
+            reasoning?: boolean;
+            source: string;
+            spec: string;
+            temperature?: boolean;
+            tool_call?: boolean;
+        };
         orgView: {
             created_at?: string;
             id: string;
@@ -8010,6 +8040,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getModelCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelCapabilitiesResponse"];
+                };
             };
         };
     };
