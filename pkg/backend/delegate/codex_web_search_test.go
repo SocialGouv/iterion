@@ -40,14 +40,28 @@ func TestValidateCodexWebSearchCapabilityRejectsOldCLI(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	command := writeCodexVersionFixture(t, "codex-cli 0.102.0")
-	err := validateCodexWebSearchCapability(context.Background(), command)
+	_, err := validateCodexWebSearchCapability(context.Background(), command)
 	if err == nil {
 		t.Fatal("expected an incompatible CLI error")
 	}
-	for _, fragment := range []string{"web_search capability unavailable", "0.102.0", codexsdk.MinimumCLIVersion, "upgrade Codex CLI"} {
+	for _, fragment := range []string{"web_search mode unavailable", "0.102.0", codexWebSearchMinCLIVersion, "upgrade Codex CLI"} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Errorf("error %q does not contain %q", err, fragment)
 		}
+	}
+}
+
+func TestCodexDisabledWebSearchStillValidatesModeCapability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	command := writeCodexVersionFixture(t, "codex-cli 0.102.0")
+	result, err := (&CodexBackend{Command: command, Logger: testLogger()}).Execute(context.Background(), Task{})
+	if err == nil || !strings.Contains(err.Error(), "web_search mode unavailable") {
+		t.Fatalf("disabled web_search path did not reject incompatible CLI: result=%+v err=%v", result, err)
+	}
+	if result.ExitCode != -1 || result.BackendName != BackendCodex {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
@@ -55,9 +69,13 @@ func TestValidateCodexWebSearchCapabilityAcceptsPinnedMinimum(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
 	}
-	command := writeCodexVersionFixture(t, "codex-cli "+codexsdk.MinimumCLIVersion)
-	if err := validateCodexWebSearchCapability(context.Background(), command); err != nil {
+	command := writeCodexVersionFixture(t, "codex-cli "+codexWebSearchMinCLIVersion)
+	got, err := validateCodexWebSearchCapability(context.Background(), command)
+	if err != nil {
 		t.Fatalf("minimum compatible CLI rejected: %v", err)
+	}
+	if got != command {
+		t.Fatalf("resolved CLI = %q, want probed path %q", got, command)
 	}
 }
 
@@ -66,9 +84,24 @@ func TestValidateCodexWebSearchCapabilityIgnoresStderrVersions(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	command := writeCodexVersionFixtureScript(t,
-		"printf '%s\\n' 'npm notice 99.99.99' >&2\nprintf '%s\\n' 'codex-cli "+codexsdk.MinimumCLIVersion+"'\n")
-	if err := validateCodexWebSearchCapability(context.Background(), command); err != nil {
+		"printf '%s\\n' 'npm notice 99.99.99' >&2\nprintf '%s\\n' 'codex-cli "+codexWebSearchMinCLIVersion+"'\n")
+	if _, err := validateCodexWebSearchCapability(context.Background(), command); err != nil {
 		t.Fatalf("stderr noise replaced the Codex stdout version: %v", err)
+	}
+}
+
+func TestValidateCodexWebSearchCapabilityHonorsSDKSkipAndPinsPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	command := writeCodexVersionFixture(t, "not-a-semver")
+	t.Setenv("CODEX_CLI_SKIP_VERSION_CHECK", "1")
+	got, err := validateCodexWebSearchCapability(context.Background(), command)
+	if err != nil {
+		t.Fatalf("SDK version-check escape hatch rejected: %v", err)
+	}
+	if got != command {
+		t.Fatalf("resolved CLI = %q, want %q", got, command)
 	}
 }
 

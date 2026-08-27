@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -17,6 +18,11 @@ import (
 
 const codexWebSearchModeLive = "live"
 const codexWebSearchModeDisabled = "disabled"
+
+// codexWebSearchMinCLIVersion is the oldest supported CLI release whose
+// ConfigToml accepts the top-level web_search mode enum. Keep this capability
+// floor independent from the SDK's general minimum even while they coincide.
+const codexWebSearchMinCLIVersion = "0.103.0"
 const codexWebSearchVersionTimeout = 5 * time.Second
 
 var codexVersionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
@@ -56,21 +62,27 @@ func codexWebSearchOption(task Task) codexsdk.Option {
 	})
 }
 
-// validateCodexWebSearchCapability fails before the work process starts when
-// the installed CLI cannot provide the app-server + webSearch item contract
-// used by the pinned SDK. The SDK's ordinary discovery only warns on an old
-// version, which is unsafe for a requested capability: the run could otherwise
-// continue without Web access.
-func validateCodexWebSearchCapability(ctx context.Context, explicitCommand string) error {
+// validateCodexWebSearchCapability resolves and validates the CLI before the
+// work process starts. Every Codex task emits the top-level web_search mode, so
+// both live and disabled paths need the ConfigToml enum introduced by this
+// capability floor. The returned path must be passed to WithCliPath so the SDK
+// executes the same installation that was probed.
+func validateCodexWebSearchCapability(ctx context.Context, explicitCommand string) (string, error) {
 	path, ok := clilocate.Locate(explicitCommand, clilocate.Spec{
 		Name:      "codex",
 		Fallbacks: clilocate.CommonBinaryCandidates("codex"),
 	})
 	if !ok {
-		return fmt.Errorf(
-			"delegate: codex web_search capability unavailable: Codex CLI not found; install Codex CLI >= %s or remove web_search from tools",
-			codexsdk.MinimumCLIVersion,
+		return "", fmt.Errorf(
+			"delegate: codex web_search mode unavailable: Codex CLI not found; install Codex CLI >= %s",
+			codexWebSearchMinCLIVersion,
 		)
+	}
+	// Match the SDK's documented operator escape hatch. The resolved path is
+	// still returned and passed to WithCliPath so discovery cannot choose a
+	// different installation from the one this function selected.
+	if os.Getenv("CODEX_CLI_SKIP_VERSION_CHECK") != "" {
+		return path, nil
 	}
 
 	// This check is a hard capability gate rather than the SDK's best-effort
@@ -79,30 +91,30 @@ func validateCodexWebSearchCapability(ctx context.Context, explicitCommand strin
 	defer cancel()
 	out, err := exec.CommandContext(versionCtx, path, "--version").Output()
 	if err != nil {
-		return fmt.Errorf(
-			"delegate: codex web_search capability unavailable: cannot verify %s --version: %w; web_search requires Codex CLI >= %s",
+		return "", fmt.Errorf(
+			"delegate: codex web_search mode unavailable: cannot verify %s --version: %w; web_search requires Codex CLI >= %s",
 			path,
 			err,
-			codexsdk.MinimumCLIVersion,
+			codexWebSearchMinCLIVersion,
 		)
 	}
 
 	version := codexVersionPattern.FindString(string(out))
 	if version == "" {
-		return fmt.Errorf(
-			"delegate: codex web_search capability unavailable: cannot parse Codex CLI version from %q; web_search requires >= %s",
+		return "", fmt.Errorf(
+			"delegate: codex web_search mode unavailable: cannot parse Codex CLI version from %q; web_search requires >= %s",
 			strings.TrimSpace(string(out)),
-			codexsdk.MinimumCLIVersion,
+			codexWebSearchMinCLIVersion,
 		)
 	}
-	if compareCodexVersions(version, codexsdk.MinimumCLIVersion) < 0 {
-		return fmt.Errorf(
-			"delegate: codex web_search capability unavailable: Codex CLI %s is too old; web_search requires >= %s (upgrade Codex CLI or remove web_search from tools)",
+	if compareCodexVersions(version, codexWebSearchMinCLIVersion) < 0 {
+		return "", fmt.Errorf(
+			"delegate: codex web_search mode unavailable: Codex CLI %s is too old; web_search requires >= %s (upgrade Codex CLI)",
 			version,
-			codexsdk.MinimumCLIVersion,
+			codexWebSearchMinCLIVersion,
 		)
 	}
-	return nil
+	return path, nil
 }
 
 func compareCodexVersions(a, b string) int {
