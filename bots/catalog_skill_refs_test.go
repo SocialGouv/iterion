@@ -42,6 +42,10 @@ var operatorAttachedSkills = map[string]string{
 	// bot, which is exactly what "catalog bots are repo-agnostic" forbids.
 	// Both bots handle its absence explicitly.
 	"deploy-target": "operator-attached platform playbook; shipping one would pin the bot to a platform",
+	// product-docs (Doku) deploys a GitBook → MkDocs tree to SSP Cloud /
+	// Onyxia. The playbook is org-private; shipping it would pin a catalog
+	// bot to one platform.
+	"deploy-onyxia-sspcloud": "org-private SSP Cloud/Onyxia playbook; shipping it would pin a catalog bot to one platform",
 }
 
 // skillsListRe matches a node's inline skills list. Lists in this DSL are
