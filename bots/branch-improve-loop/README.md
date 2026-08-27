@@ -102,11 +102,15 @@ push-back lane — see below.)
   mutually-exclusive lanes:
   - **`forge_auth_probe` → `finalize_mr`** — the opt-in PR path (`open_mr`)
     shipping the series of per-pass commits.
-  - **`push_auth_probe` → `push_back_tool` → `post_pr_feedback`** — the
+  - **`push_auth_probe` → `push_back_tool` → `publish_verdict`** — the
     **PR push-back** path (`push_branch` set, `open_mr=false`): a ~100ms
     credential probe, then `push_back_tool` pushes the run's HEAD onto the
-    PR's source branch (no-op via rev-list when nothing is new), then Billy
-    posts his review verdict as a comment on the PR (`pr_url`).
+    PR's source branch (no-op via rev-list when nothing is new), then
+    `publish_verdict` posts Billy's review verdict as a comment on the PR
+    (`pr_url`) **and**, when `gate_enabled`, a `gate_context` commit
+    status on the head the push just produced — a status posted on the
+    old head leaves a required check absent, which blocks the PR with
+    nothing pointing at why. See [merge-gate.md](../../docs/merge-gate.md).
   - **`done`** — finish (commits stay on the storage branch).
 
 ## Convergence & bounding
@@ -168,13 +172,16 @@ while remaining universal: the agent writes the repo's own build/test into
 |---|---|---|
 | `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's worktree). |
 | `base_ref` | `main` | Branch/ref to diff against; scope is `git diff $(git merge-base base_ref HEAD)` (merge-base vs working tree). |
+| `pilot` | `end` | Where the human sits in the loop. `end` runs to completion and the human reviews the result; `middle` presents the plan — which findings it intends to fix, which to contest and why — and **waits for the operator to arbitrate before any invasive edit**. Both are first-class; `middle` is how you delegate the work while keeping the arbitration. Rendered as a top-level studio launch field alongside `base_ref`. |
 | `scope_notes` | `""` | Free-form extra context for the campaign agent. |
 | `prior_review` | `""` | Findings to verify and fix before continuing the campaign's own review. The webhook path seeds this automatically when `/billy` is invoked on a PR that Revi already reviewed; Billy rechecks every finding against the current diff rather than trusting a stale verdict. |
 | `baseline` | `""` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply against `base_ref`). |
 | `max_passes` | `8` | Hard cap on continuation passes — the convergence backstop; sizes the declared loop. |
 | `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
 | `push_branch` | `""` | PR-context push-back: the existing forge branch (the PR's source branch) the run's commits belong to. Set with `open_mr=false` → `push_back_tool` pushes HEAD onto it so fixes land ON the PR. Empty = commits stay on the local storage branch. |
-| `pr_url` | `""` | The PR Billy is hardening, as a forge URL. When set, `post_pr_feedback` posts Billy's review verdict as a comment ON that PR. Empty = skip. |
+| `pr_url` | `""` | The PR Billy is hardening, as a forge URL. When set, `publish_verdict` posts Billy's review verdict as a comment ON that PR. Empty = skip. |
+| `gate_enabled` / `gate_context` | `true` / `revi/review` | Merge gate: `publish_verdict` also posts a commit status under `gate_context` on the PR head this run produced. The context is the check NAME — a required check applies to every PR, so a repo where several bots gate different PRs gives them ONE shared context, pinned per repo on the integration `launch_vars`. |
+| `forge_publish_url` / `forge_publish_token` | `""` | The deterministic forge-publish grant, **injected by the iterion server** at launch when the run's team has a forge connection covering `pr_url`'s repo. The run itself never holds a posting credential. |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/branch-improve-loop` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). |
 
 ## Run
@@ -186,3 +193,17 @@ iterion run bots/branch-improve-loop/main.bot \
 ```
 
 See [main.bot](main.bot) for the full DSL.
+
+## Plan phase (cross-model pair review, ADR-091)
+
+`plan_review: auto` resolves at launch from the run's credentials: when a
+SECOND model family is available, the diff triage is authored (claude,
+read-only), critiqued by a cross-family peer (`claw` +
+`openai/gpt-5.6-sol` by default), and revised by the SAME author session
+before the campaign fixes; otherwise the phase is bypassed whole (the v2
+shape, unchanged). `plan_review_policy` picks the mid-run
+peer-unavailability behaviour: `skip` (default — the reviewer's
+`action: skip` route: continue unreviewed, loudly stamped; the peer is
+an optional enrichment and must never block the campaign — Anthropic
+alone always suffices) or `wait` (the run parks failed_resumable, the
+usage-window retry resumes it — the deliberate-spend posture).

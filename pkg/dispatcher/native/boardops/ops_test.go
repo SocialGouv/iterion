@@ -320,3 +320,48 @@ func TestCreateIssue_ParentIDAndAutoSpawn(t *testing.T) {
 		t.Fatalf("auto ParentID = %q", child2.ParentID)
 	}
 }
+
+// Closing a ticket the DISPATCHER filed (retry budget exhausted) is the
+// operator's acknowledgement of that give-up, so it must drop the stamp —
+// including when the close target is the state the give-up already wrote,
+// where the state change is a no-op and nothing else can expire the stamp.
+// Otherwise the card stays in the pipeline board's needs-attention lane after
+// being closed.
+func TestClose_AcknowledgesADispatcherGiveUp(t *testing.T) {
+	s := newStore(t)
+	caps := NewCapabilities("board.create,board.close,board.read")
+	res, err := Call(s, caps, "create_issue", json.RawMessage(`{"title":"doomed"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var iss native.Issue
+	_ = json.Unmarshal(res, &iss)
+
+	if _, err := s.SetState(iss.ID, native.StateBlocked); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	if err := s.SetGaveUp(iss.ID, &native.GiveUp{RunID: "run-x", State: native.StateBlocked, Attempts: 3}); err != nil {
+		t.Fatalf("SetGaveUp: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]string{"id": iss.ID, "to": native.StateBlocked})
+	closed, err := Call(s, caps, "close_issue", args)
+	if err != nil {
+		t.Fatalf("close_issue: %v", err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.GaveUp != nil {
+		t.Errorf("give-up stamp survived close_issue: %+v", got.GaveUp)
+	}
+	// The tool's own result must agree with what was persisted.
+	var reported native.Issue
+	if err := json.Unmarshal(closed, &reported); err != nil {
+		t.Fatalf("decode close_issue result: %v", err)
+	}
+	if reported.GaveUp != nil {
+		t.Errorf("close_issue reported a stamp it just cleared: %+v", reported.GaveUp)
+	}
+}

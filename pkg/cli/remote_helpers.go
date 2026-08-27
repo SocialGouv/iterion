@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/server"
 )
 
 // APIError is a non-2xx response from the remote instance. Message is
@@ -109,10 +111,10 @@ func (c *RemoteClient) ResolveTeam(ctx context.Context, flag string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if me.ActiveTeamID == "" {
+	if me.ActiveTeam == "" {
 		return "", fmt.Errorf("no team scope: pass --team, set ITERION_REMOTE_TEAM, or run `iterion remote teams switch <id>`")
 	}
-	return me.ActiveTeamID, nil
+	return me.ActiveTeam, nil
 }
 
 // ResolveOrg is ResolveTeam's org-level counterpart.
@@ -127,34 +129,26 @@ func (c *RemoteClient) ResolveOrg(ctx context.Context, flag string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if me.ActiveOrgID == "" {
+	if me.ActiveOrg == "" {
 		return "", fmt.Errorf("no org scope: pass --org, set ITERION_REMOTE_ORG, or run `iterion remote orgs switch <id>`")
 	}
-	return me.ActiveOrgID, nil
+	return me.ActiveOrg, nil
 }
 
-// RemoteMe is the subset of GET /api/auth/me the CLI consumes.
-type RemoteMe struct {
-	User struct {
-		ID           string `json:"id"`
-		Email        string `json:"email"`
-		Name         string `json:"name"`
-		IsSuperAdmin bool   `json:"is_super_admin"`
-	} `json:"user"`
-	ActiveOrgID  string `json:"active_org_id"`
-	ActiveTeamID string `json:"active_team_id"`
-	Teams        []struct {
-		TeamID   string `json:"team_id"`
-		TeamName string `json:"team_name"`
-		OrgID    string `json:"org_id"`
-		Role     string `json:"role"`
-	} `json:"teams"`
-}
+// RemoteMe IS the server's /api/auth/me response type, aliased: the
+// decode target cannot drift from the wire (a hand-mirrored struct once
+// kept a field the server had renamed, silently decoding zero teams).
+// Teams nest under Orgs (server.OrgTreeView → server.MembershipView).
+type RemoteMe = server.AuthMeResponse
 
 // Me fetches the authenticated account's identity view.
 func (c *RemoteClient) Me(ctx context.Context) (RemoteMe, error) {
 	var me RemoteMe
 	_, err := c.Call(ctx, "GET", "/api/auth/me", nil, &me)
+	// The aliased response type carries an AccessToken field the login
+	// path uses; /api/auth/me never populates it. Zero it regardless so
+	// no future caller can serialize a token out of this struct.
+	me.AccessToken = ""
 	return me, err
 }
 

@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -92,7 +91,7 @@ func (s *Server) handoffConsumersFor(botID string) []bundle.ConsumedArtifact {
 	if strings.TrimSpace(botID) == "" {
 		return nil
 	}
-	entry, ok, err := botregistry.FindByName(s.botListOptions(), botID)
+	entry, ok, err := s.effectiveFindByName(botID)
 	if err != nil {
 		s.logWarn("handoff: cannot read the bot catalog, %s will be launched without its declared seeds: %v", botID, err)
 		return nil
@@ -168,7 +167,7 @@ func (s *Server) realWebhookHandoff(ctx context.Context, cfg webhooks.Config, ki
 // participate in the hand-off — a real boundary, stated here because a miss is
 // silent and would otherwise read as "nothing reviewed this PR".
 func (s *Server) handoffProducers(kind bundle.HandoffKind) map[string]bundle.ProducedArtifact {
-	entries, err := botregistry.List(s.botListOptions())
+	entries, err := s.effectiveEntries()
 	if err != nil {
 		// Swallowing this disables every hand-off, and a missing seed is
 		// indistinguishable by design from "nothing reviewed this PR" — so the

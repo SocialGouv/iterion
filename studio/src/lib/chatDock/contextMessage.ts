@@ -66,3 +66,30 @@ export function withPageContext(
   if (lines.length === 0) return trimmed;
   return `${lines.join("\n")}\n\n${trimmed}`;
 }
+
+/**
+ * withoutPageContext strips the machine-generated context lines for DISPLAY.
+ *
+ * They are protocol, not speech. The operator already sees what the assistant
+ * was told — that is what the context chip above the composer is for — so
+ * echoing `[page context: view/editor]` inside their own message bubble shows
+ * them the same fact twice, in the one place where it reads as something they
+ * typed.
+ *
+ * Display only: what is SENT keeps the lines. Both prefixes are stripped, and
+ * only at the top, because that is the only place withPageContext puts them —
+ * a bracketed line further down is content, and content is never rewritten.
+ */
+export function withoutPageContext(text: string): string {
+  const lines = text.split("\n");
+  let start = 0;
+  while (start < lines.length) {
+    const line = (lines[start] ?? "").trim();
+    if (line.startsWith(CONTEXT_PREFIX) || line.startsWith(ATTACHED_PREFIX)) {
+      start += 1;
+      continue;
+    }
+    break;
+  }
+  return lines.slice(start).join("\n").trimStart();
+}

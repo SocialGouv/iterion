@@ -96,7 +96,7 @@ human approve_plan:
 > **Adding `input:` to an existing gate is a compile-affecting change.**
 > Once a node declares an input schema, every `{{input.X}}` reference in
 > its prompts is checked against it — an `X` the schema does not declare
-> is a hard error (`C034`, *field not found in input schema*). So the
+> is a hard error (`C034`, *field not found in the node's input schema*). So the
 > schema must enumerate **every** key the node's prompts interpolate, not
 > just the ones you want typed. Leaving `input:` off keeps the payload
 > rendering (inferred from each value's shape) with no such constraint.

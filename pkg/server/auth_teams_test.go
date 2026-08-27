@@ -49,7 +49,7 @@ func TestHandleListTeams_BulkLookup(t *testing.T) {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Teams []membershipView `json:"teams"`
+		Teams []MembershipView `json:"teams"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)

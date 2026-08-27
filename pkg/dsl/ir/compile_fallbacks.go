@@ -28,6 +28,8 @@ func compileFallbacks(decls []*ast.FallbackDecl) []Fallback {
 			Model:    strings.TrimSpace(d.Model),
 			Provider: strings.TrimSpace(d.Provider),
 			Metered:  d.Metered,
+			Action:   strings.ToLower(strings.TrimSpace(d.Action)),
+			When:     strings.TrimSpace(d.When),
 		}
 		for _, on := range d.On {
 			if t := strings.TrimSpace(on); t != "" {

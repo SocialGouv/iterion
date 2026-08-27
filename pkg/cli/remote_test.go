@@ -361,9 +361,6 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	var revoked string
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"active_team_id":"team-a","teams":[{"team_id":"team-b","team_name":"B","org_id":"o1","role":"member"}]}`)
-	})
 	mux.HandleFunc("POST /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -371,7 +368,8 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 			t.Errorf("mint team_id = %v", req["team_id"])
 		}
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"pat":{"id":"p-new"},"token":"iap_new"}`)
+		// org_id: the server states the team's org; the CLI follows it.
+		fmt.Fprint(w, `{"pat":{"id":"p-new"},"token":"iap_new","org_id":"o1"}`)
 	})
 	mux.HandleFunc("GET /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q},{"id":"p-new","name":"cli","fingerprint":"other"}]}`, oldFP)
@@ -401,18 +399,33 @@ func TestRemoteTeamsSwitch_MintsPersistsRevokes(t *testing.T) {
 	if cfg.Token != "iap_new" || cfg.TeamID != "team-b" {
 		t.Errorf("persisted cfg = %+v", cfg)
 	}
+	if cfg.OrgID != "o1" {
+		t.Errorf("org scope did not follow the team into its org: OrgID = %q, want o1", cfg.OrgID)
+	}
 }
 
+// The server's canViewTeam is the membership authority: a 403 from the
+// mint endpoint is the rejection, propagated with the teams-list hint. No
+// client-side pre-check — a stale duplicate of the server's rule is what
+// once made this command refuse every team.
 func TestRemoteTeamsSwitch_RejectsNonMember(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ITERION_REMOTE_URL", "")
 	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"active_team_id":"team-a","teams":[]}`)
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":"not a member of team \"team-x\""}`)
 	}))
 	p, _ := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "  ", "cli"); err == nil ||
+		!strings.Contains(err.Error(), "team id required") {
+		t.Fatalf("blank team id must be rejected before any mint, got %v", err)
+	}
 	err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-x", "cli")
 	if err == nil || !strings.Contains(err.Error(), "not a member") {
-		t.Fatalf("want membership error, got %v", err)
+		t.Fatalf("want the server's membership rejection, got %v", err)
+	}
+	if cfg, cfgErr := cli.LoadRemoteConfig(); cfgErr == nil && cfg.TeamID == "team-x" {
+		t.Fatal("a rejected switch must not persist the target team")
 	}
 }
 

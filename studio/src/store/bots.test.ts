@@ -104,4 +104,16 @@ describe("useBotsStore load sequencing", () => {
     expect(useBotsStore.getState().discoveryErrors).toHaveLength(1);
     expect(useBotsStore.getState().discoveryErrors[0]?.path).toBe("bots/broken");
   });
+
+  it("clears stale discovery errors when the latest refetch fails", async () => {
+    useBotsStore.setState({
+      discoveryErrors: [{ path: "bots/old-broken", error: "old project diagnostic" }],
+    });
+    vi.mocked(listBotsWithDiagnostics).mockRejectedValue(new Error("new project unavailable"));
+
+    await useBotsStore.getState().refetch();
+
+    expect(useBotsStore.getState().error).toContain("new project unavailable");
+    expect(useBotsStore.getState().discoveryErrors).toEqual([]);
+  });
 });

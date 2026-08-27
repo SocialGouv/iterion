@@ -38,6 +38,7 @@ type RunOptions struct {
 	Recipe        string               // recipe JSON file path (alternative to File)
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
+	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
 	RunID         string               // explicit run ID (auto-generated if empty)
 	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
 	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
@@ -101,6 +102,10 @@ type RunOptions struct {
 	// `loop_budget_guard:` then ITERION_LOOP_BUDGET_GUARD; the default
 	// is on.
 	LoopBudgetGuard string
+	// Supervisors is the run-level override for spawning DSL-declared
+	// `supervisor NAME:` watchers ("", "on", "off"). "" inherits
+	// ITERION_SUPERVISORS; the default is on. See docs/supervisors.md.
+	Supervisors string
 
 	// RepoDevbox is the run-level override deciding whether the TARGET
 	// REPO's devbox.json is installed for this run ("on"|"off"; empty
@@ -194,6 +199,9 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if err := runtime.ValidateLoopBudgetGuardMode(opts.LoopBudgetGuard); err != nil {
 		return UserInputError(fmt.Errorf("--loop-budget-guard: %w", err))
 	}
+	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
 	// Validate launch overrides independently of executor construction. The
 	// normal CLI path parses them again while building the real executor, but
 	// an injected executor deliberately skips that build (tests and embedders).
@@ -267,15 +275,6 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
-	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
-	// event hub onto the engine so each coordinator can observe this run
-	// live. Injection (store-direct) is set up after the store exists.
-	var superviseHub *supervise.EventHub
-	if len(wf.Supervisors) > 0 {
-		superviseHub = supervise.NewEventHub()
-		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
-	}
-
 	runName := store.GenerateRunName(iterFile + ":" + runID)
 	storeDir := runStoreDir(iterFile, opts.StoreDir)
 	// Workspace versioning, on the same terms as a studio launch: a run
@@ -294,6 +293,18 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		engineOpts = append(engineOpts, runtime.WithLogger(logger))
 	}
 
+	// DSL-declared supervisors (`supervisor NAME:`): wire an in-process
+	// event hub onto the engine so each coordinator can observe this run
+	// live. Injection (store-direct) is set up after the store exists.
+	// The shared gate resolves the kill switch (--supervisors →
+	// ITERION_SUPERVISORS → on) and logs the skip — AFTER the tee, so
+	// "why didn't the coach steer?" is answerable from run.log.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+	}
+
 	s, err := store.New(storeDir, store.WithLogger(logger))
 	if err != nil {
 		return fmt.Errorf("cannot create store: %w", err)
@@ -308,10 +319,25 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	if telemetry.prometheus != nil {
 		exporterHooks = telemetry.prometheus
 	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
 	executor, err := buildRunExecutor(opts, wf, s, runID, storeDir, logger, exporterHooks,
-		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile))
+		runview.ResolveBotID("", bundleManifestName(bundleHandle), iterFile), hookObservers)
 	if err != nil {
 		return err
+	}
+	// The ENGINE's context needs the credentials too, not only the
+	// executor's: declared file secrets are mounted into the sandbox at
+	// run start, from the ctx handed to Run. Without this the mount is
+	// skipped and an optional secret silently never reaches the bot.
+	if localStore, localSealer, lsErr := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger); lsErr != nil {
+		return lsErr
+	} else if stamped, sErr := runview.StampLocalCredentials(ctx, wf, localStore, localSealer, logger); sErr != nil {
+		return sErr
+	} else {
+		ctx = stamped
 	}
 	if c, ok := executor.(io.Closer); ok {
 		defer func() {
@@ -346,17 +372,24 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
-	// Resolve the mono/dual review topology for bi-model review-loop bots.
-	// No-op unless the workflow declares a review_mode var; then detect
-	// host provider credentials and inject the resolved review_mode +
-	// mono_family (the --review-mode flag / a --var override wins over
-	// auto-detection). See pkg/reviewtopology.
-	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(ctx), opts.ReviewMode); injected {
-		if family != "" {
-			logger.Info("review topology: %s (family %s)", mode, family)
-		} else {
-			logger.Info("review topology: %s", mode)
+	// Fail here, not at run start: an operator-typed skill name that
+	// resolves to nothing must be an error they see immediately, next to
+	// the command that named it — the same treatment `--preset <unknown>`
+	// gets. The workflow's OWN refs stay soft (a bundle ships its skills;
+	// the library is a fallback), but nobody typed those.
+	if names, _ := ResolveExtraSkills(opts.Skills); len(names) > 0 {
+		if err := runtime.ResolveExtraSkills(storeDir, names); err != nil {
+			return err
 		}
+	}
+
+	// Resolve the credential-derived topology vars (review_mode +
+	// mono_family, plan_review, llm_families). No-op unless the workflow
+	// declares the matching var; then detect host provider credentials and
+	// inject the resolution (the --review-mode flag / a --var override wins
+	// over auto-detection). See pkg/reviewtopology.
+	if inj := reviewtopology.InjectAll(wf, inputs, reviewtopology.FamiliesFromReport(detect.Detect(ctx)), opts.ReviewMode); inj.Summary() != "" {
+		logger.Info("%s", inj.Summary())
 	}
 
 	if opts.Timeout > 0 {
@@ -442,37 +475,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 // `supervisor NAME:` block on the workflow, observing this run through
 // the in-process hub and steering via a store-direct injector (same
 // store handle as the engine, so the inbox doorbell stays in lockstep).
-// Returns a stop func to drain them when the run ends.
+// Returns a stop func to drain them when the run ends. The kill switch
+// was already resolved where the hub was created.
 func startCLISupervisors(ctx context.Context, hub *supervise.EventHub, s store.RunStore, runID string, wf *ir.Workflow, logger *iterlog.Logger) func() {
 	inj := &supervise.StoreInjector{Store: s}
-	var coords []*supervise.Coordinator
-	for _, sup := range wf.Supervisors {
-		system := ""
-		if sup.System != "" {
-			if p, ok := wf.Prompts[sup.System]; ok && p != nil {
-				system = p.Body
-			}
-		}
-		spec := supervise.Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   system,
-			Watches:  sup.Watches,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
-		}
-		coord := supervise.New(hub, inj, runID, spec, nil, logger)
-		if coord == nil {
-			continue
-		}
-		coord.Start(ctx)
-		coords = append(coords, coord)
-	}
-	return func() {
-		for _, c := range coords {
-			c.Close()
-		}
-	}
+	return supervise.StartDeclared(ctx, hub, inj, runID, supervise.SpecsFromWorkflow(wf, logger), logger)
 }
 
 // teeRunLog defers to store.TeeRunLog so the dispatcher and any
@@ -494,6 +501,7 @@ func buildRunExecutor(
 	logger *iterlog.Logger,
 	exporter exporterEventHooks,
 	botID string,
+	hookObservers []func(store.Event),
 ) (runtime.NodeExecutor, error) {
 	if opts.Executor != nil {
 		return opts.Executor, nil
@@ -507,14 +515,19 @@ func buildRunExecutor(
 		return nil, err
 	}
 	execSpec := runview.ExecutorSpec{
-		Workflow:   wf,
-		Vars:       opts.Vars,
-		Store:      s,
-		RunID:      runID,
-		Logger:     logger,
-		StoreDir:   storeDir,
-		Compress:   opts.Compress,
-		AutoMemory: opts.AutoMemory,
+		Workflow: wf,
+		Vars:     opts.Vars,
+		Store:    s,
+		RunID:    runID,
+		Logger:   logger,
+		StoreDir: storeDir,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire ONLY
+		// this seam — a declared supervisor's hub must ride it or its
+		// text monitors can never see the agent speak (the engine seam
+		// carries none of them).
+		EventObservers: hookObservers,
+		Compress:       opts.Compress,
+		AutoMemory:     opts.AutoMemory,
 		// Empty for a standalone .bot, where the executor falls back to the
 		// workflow name. Set for a bundle, so this run keys its bot-scoped
 		// memory on the same id the studio and the cloud use.
@@ -593,7 +606,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
-			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath))
+			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -638,14 +651,25 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// to the parent. There is thus nothing to register — a Manager here
 		// would have no caller. Per-child control is a studio-only capability.
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
-		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+		childLock, err := s.LockRun(childCtx, childRunID)
+		if err != nil {
+			return nil, fmt.Errorf("subbot %s: acquire run lock: %w", childRunID, err)
+		}
+		runErr := func() error {
+			// Keep the unlock scoped to the active pass: the human-gate park
+			// below must remain unlocked, while a panic recovered by a fan-out
+			// branch must still release the child run lock.
+			defer func() { _ = childLock.Unlock() }()
+			return childEng.Run(childCtx, childRunID, req.Vars)
+		}()
+		if runErr != nil {
 			// A human gate inside the child pauses the CHILD run (its doc is
 			// paused_waiting_human with a checkpoint + interaction); that is
 			// not a parent failure. Park this subbot node until the operator
 			// answers the child's review (pipeline-board sidebar / `iterion
 			// resume --run-id <child>`) and the child reaches a terminal
 			// state, then pick up its output from the store.
-			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+			if errors.Is(runErr, runtime.ErrRunPaused) || errors.Is(runErr, runtime.ErrRunPausedOperator) {
 				out, aerr := runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
 				if aerr == nil {
 					// Consumed — tidy the record. On error (shutdown mid-park or
@@ -655,7 +679,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 				return out, aerr
 			}
 			// Non-pause error: leave the re-attach record for the resume path.
-			return nil, err
+			return nil, runErr
 		}
 		runview.ClearSubbotChild(ctx, s, req)
 		return last, nil
@@ -700,6 +724,7 @@ func buildEngine(
 
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
+	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,
 		append(base,
 			runtime.WithWorkflowHash(wfHash),
@@ -718,6 +743,7 @@ func buildEngine(
 			runtime.WithRepoDevbox(opts.RepoDevbox),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
+			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
 			runtime.WithSource(opts.Source),
 		)...,
 	)

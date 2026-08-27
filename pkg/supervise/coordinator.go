@@ -2,7 +2,9 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -56,16 +58,37 @@ type Coordinator struct {
 	done   chan struct{}
 
 	// --- owned by the run() goroutine; no locks ---
-	startedAt  time.Time
-	activeNode string
-	monitors   []Monitor
-	recent     []string
-	last       *Decision
-	evalCount  int
-	inTokens   int
-	outTokens  int
-	lastEvalAt time.Time
-	finished   bool // bot signalled Done; re-armed by a monitor match
+	startedAt time.Time
+	// activeByBranch tracks the currently-executing node of each branch
+	// (parallel branches run concurrently; within one branch the engine
+	// executes nodes sequentially). Keying by branch is what makes the
+	// view self-healing: both observer transports drop events
+	// non-blockingly on a full buffer, so a node_finished can be lost
+	// while evaluate() blocks the run() goroutine — the branch's next
+	// node_started then supersedes the stale entry instead of leaving
+	// the watched node armed forever. The main path is branch "".
+	activeByBranch map[string]string
+	// lastWatchedActive is the most recently started watched node —
+	// the injection scope for a node-scoped supervisor.
+	lastWatchedActive string
+	monitors          []Monitor
+	// seedCount marks the prefix of monitors that came pre-seeded from
+	// the Spec (DSL `monitors:` / CLI --monitor). Seeded monitors are
+	// declarative and broad, so their matches honour the cooldown;
+	// bot-registered ones (the rest of the slice) were chosen by the
+	// bot for precision and bypass it.
+	seedCount int
+	recent    []string
+	last      *Decision
+	// evalCount counts COMPLETED evaluations against MaxEvals;
+	// evalFailures counts consecutive transport/model failures, which do
+	// not consume the budget but park supervision at maxEvalFailures.
+	evalCount    int
+	evalFailures int
+	inTokens     int
+	outTokens    int
+	lastEvalAt   time.Time
+	finished     bool // bot signalled Done; re-armed by a bot-registered monitor match
 }
 
 // New builds a Coordinator from the Observer + Injector seams.
@@ -81,14 +104,16 @@ func New(obs Observer, inj Injector, runID string, spec Spec, eval Evaluator, lo
 		eval = NewLLMEvaluator()
 	}
 	return &Coordinator{
-		obs:      obs,
-		inj:      inj,
-		runID:    runID,
-		spec:     spec.withDefaults(),
-		eval:     eval,
-		logger:   logger,
-		monitors: append([]Monitor(nil), spec.Monitors...),
-		done:     make(chan struct{}),
+		obs:            obs,
+		inj:            inj,
+		runID:          runID,
+		spec:           spec.withDefaults(),
+		eval:           eval,
+		logger:         logger,
+		activeByBranch: make(map[string]string),
+		monitors:       append([]Monitor(nil), spec.Monitors...),
+		seedCount:      len(spec.Monitors),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -103,9 +128,10 @@ func (c *Coordinator) Start(ctx context.Context) {
 	go c.run()
 }
 
-// Close stops the coordinator and waits for the worker to drain.
+// Close stops the coordinator and waits for the worker to drain. A
+// coordinator that was never Started has no worker to wait for.
 func (c *Coordinator) Close() {
-	if c == nil {
+	if c == nil || c.ctx == nil {
 		return
 	}
 	if c.cancel != nil {
@@ -128,29 +154,80 @@ func (c *Coordinator) run() {
 	}
 	defer release()
 
+	// One startup line so an operator (and a dogfood log) can tell a
+	// spawned-but-silent supervisor from one that never spawned.
+	c.info("supervise[%s]: watching run %s (nodes %v, cooldown %s, max_evals %d)",
+		c.spec.Name, c.runID, c.spec.Watches, c.spec.Cooldown, c.spec.MaxEvals)
+
 	var debounce *time.Timer
 	var debounceC <-chan time.Time
-	// Stop the debounce timer on every exit path (ctx cancel, event-channel
-	// close, terminal event) so a run that ends mid-debounce doesn't leave a
-	// live timer until it fires.
+	var debounceOpenedAt time.Time
+	// pending defers a cooldown-suppressed SEEDED monitor match to the
+	// cooldown's expiry instead of dropping it: the reason string carries
+	// the rendered trigger event, so the signal survives even if the
+	// event is evicted from the recent ring meanwhile. One slot — the
+	// first suppressed match wins; later ones add nothing (the eval that
+	// eventually fires sees the whole recent window anyway).
+	var pending *time.Timer
+	var pendingC <-chan time.Time
+	pendingWake := ""
+	// Stop both timers on every exit path (ctx cancel, event-channel
+	// close, terminal event) so a run that ends mid-debounce doesn't
+	// leave a live timer until it fires.
 	defer func() {
 		if debounce != nil {
 			debounce.Stop()
+		}
+		if pending != nil {
+			pending.Stop()
 		}
 	}()
 	armDebounce := func() {
 		if debounce == nil {
 			debounce = time.NewTimer(turnDebounce)
+			debounceOpenedAt = time.Now()
+			debounceC = debounce.C
+			return
+		}
+		if debounceC == nil {
+			debounceOpenedAt = time.Now()
+		} else if time.Since(debounceOpenedAt) >= c.spec.Cooldown {
+			// A sustained boundary stream (a busy claude_code node emits
+			// one every few seconds) would otherwise push the deadline
+			// forward forever and starve the periodic wake entirely. Once
+			// the window has been open a full cooldown, let it fire.
+			return
+		}
+		if !debounce.Stop() {
+			select {
+			case <-debounce.C:
+			default:
+			}
+		}
+		debounce.Reset(turnDebounce)
+		debounceC = debounce.C
+	}
+	armPending := func(reason string) {
+		if pendingC != nil {
+			return
+		}
+		pendingWake = reason
+		wait := c.spec.Cooldown - time.Since(c.lastEvalAt) + 100*time.Millisecond
+		if wait < 100*time.Millisecond {
+			wait = 100 * time.Millisecond
+		}
+		if pending == nil {
+			pending = time.NewTimer(wait)
 		} else {
-			if !debounce.Stop() {
+			if !pending.Stop() {
 				select {
-				case <-debounce.C:
+				case <-pending.C:
 				default:
 				}
 			}
-			debounce.Reset(turnDebounce)
+			pending.Reset(wait)
 		}
-		debounceC = debounce.C
+		pendingC = pending.C
 	}
 
 	for {
@@ -171,14 +248,45 @@ func (c *Coordinator) run() {
 			if evt.Timestamp.Before(c.startedAt) {
 				continue
 			}
+			// The inbox family echoes queued-message TEXT — including the
+			// supervisor's own steering — back onto the stream. Matching
+			// it would loop the coordinator on itself (one intervention →
+			// its own text re-fires the marker → another eval → …) until
+			// the eval budget is gone. Ingested above (it stays visible in
+			// `recent`), never matched or treated as a boundary.
+			if isInboxEvent(evt.Type) {
+				continue
+			}
 			if !c.armed() {
 				continue
 			}
-			if c.matchesMonitor(evt) {
-				// High-signal: evaluate immediately, bypassing cooldown,
-				// and re-arm if the bot had declared itself done.
-				c.finished = false
-				c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
+			// A deferred wake whose timer expired while the watched node
+			// was gone (end of a pass) re-arms when the node comes back:
+			// the give-up marker was emitted as the pass wrapped up, and
+			// the next pass is exactly who should hear about it.
+			if pendingWake != "" && pendingC == nil &&
+				evt.Type == store.EventNodeStarted && c.spec.watchesNode(evt.NodeID) {
+				reason := pendingWake
+				pendingWake = ""
+				armPending(reason)
+			}
+			if matched, registered := c.matchesMonitor(evt); matched {
+				if registered {
+					// Bot-chosen signal: evaluate immediately, bypassing
+					// cooldown, and re-arm a done supervisor.
+					c.finished = false
+					c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
+				} else if !c.finished {
+					// Pre-seeded (declarative) monitors are broad; their
+					// matches honour the cooldown — but a suppressed match
+					// is DEFERRED to the cooldown's expiry, never dropped
+					// (a give-up marker fires once; losing it kills the
+					// monitor lane's whole purpose).
+					reason := fmt.Sprintf("monitor matched: %s", RenderEvent(evt))
+					if suppressed := c.evaluate(reason, false); suppressed {
+						armPending(reason)
+					}
+				}
 			} else if !c.finished && IsTurnBoundary(evt) {
 				armDebounce()
 			}
@@ -187,23 +295,62 @@ func (c *Coordinator) run() {
 			if c.armed() && !c.finished {
 				c.evaluate("turn_boundary", false)
 			}
+		case <-pendingC:
+			pendingC = nil
+			if c.armed() && !c.finished {
+				reason := pendingWake
+				pendingWake = ""
+				if suppressed := c.evaluate(reason+" (deferred by cooldown)", false); suppressed {
+					// Another wake consumed the slot first — push again.
+					armPending(reason)
+				}
+			}
+			// Disarmed: keep pendingWake — a fresh watched node_started
+			// re-arms it (see the events case) instead of dropping the
+			// one-shot signal.
 		}
 	}
 }
 
-// ingest folds an event into the coordinator's view: tracks the active
-// node and keeps a bounded ring of rendered recent events.
+// isInboxEvent reports whether evt belongs to the user-message inbox
+// family, whose Data carries queued-message text verbatim.
+func isInboxEvent(t store.EventType) bool {
+	switch t {
+	case store.EventUserMessageQueued, store.EventUserMessageDelivered,
+		store.EventUserMessageConsumed, store.EventUserMessageCancelled:
+		return true
+	}
+	return false
+}
+
+// ingest folds an event into the coordinator's view: tracks the set of
+// active nodes and keeps a bounded ring of rendered recent events.
 func (c *Coordinator) ingest(evt *store.Event) {
 	switch evt.Type {
 	case store.EventNodeStarted:
-		c.activeNode = evt.NodeID
+		if evt.NodeID != "" {
+			// Overwrite: within a branch nodes are sequential, so this
+			// start supersedes the branch's previous node even if its
+			// node_finished was dropped (self-heal).
+			superseded := c.activeByBranch[evt.BranchID]
+			c.activeByBranch[evt.BranchID] = evt.NodeID
+			if superseded != "" && superseded == c.lastWatchedActive && superseded != evt.NodeID {
+				c.rescanLastWatchedActive()
+			}
+		}
 		// A freshly-started watched node re-arms a done supervisor.
 		if c.spec.watchesNode(evt.NodeID) {
 			c.finished = false
+			c.lastWatchedActive = evt.NodeID
 		}
 	case store.EventNodeFinished:
-		if evt.NodeID == c.activeNode {
-			c.activeNode = ""
+		// Guard against a stale finished for a node this branch already
+		// superseded: only the branch's CURRENT node clears the entry.
+		if c.activeByBranch[evt.BranchID] == evt.NodeID {
+			delete(c.activeByBranch, evt.BranchID)
+		}
+		if evt.NodeID == c.lastWatchedActive {
+			c.rescanLastWatchedActive()
 		}
 	}
 	c.recent = append(c.recent, RenderEvent(evt))
@@ -212,46 +359,81 @@ func (c *Coordinator) ingest(evt *store.Event) {
 	}
 }
 
-// armed reports whether the supervisor is currently watching the active
-// node. Whole-run supervisors (empty Watches) are always armed.
+// rescanLastWatchedActive repoints lastWatchedActive at any still-active
+// watched node (another branch may run one), or clears it.
+func (c *Coordinator) rescanLastWatchedActive() {
+	c.lastWatchedActive = ""
+	for _, id := range c.activeByBranch {
+		if c.spec.watchesNode(id) {
+			c.lastWatchedActive = id
+			break
+		}
+	}
+}
+
+// armed reports whether any currently-active node is watched. Whole-run
+// supervisors (empty Watches) are always armed.
 func (c *Coordinator) armed() bool {
 	if len(c.spec.Watches) == 0 {
 		return true
 	}
-	return c.activeNode != "" && c.spec.watchesNode(c.activeNode)
-}
-
-// matchesMonitor reports whether any registered monitor fires on evt.
-func (c *Coordinator) matchesMonitor(evt *store.Event) bool {
-	for _, m := range c.monitors {
-		if m.matches(evt) {
+	for _, id := range c.activeByBranch {
+		if c.spec.watchesNode(id) {
 			return true
 		}
 	}
 	return false
 }
 
+// matchesMonitor reports whether any monitor fires on evt, and whether
+// at least one of the firing monitors was bot-registered (index past the
+// pre-seeded prefix) — the class whose matches bypass the cooldown.
+func (c *Coordinator) matchesMonitor(evt *store.Event) (matched, registered bool) {
+	for i, m := range c.monitors {
+		if m.matches(evt) {
+			matched = true
+			if i >= c.seedCount {
+				return true, true
+			}
+		}
+	}
+	return matched, false
+}
+
+// maxEvalFailures is the consecutive-failure cap after which the
+// coordinator stops trying: a supervisor with no reachable model would
+// otherwise burn its whole eval budget on transport errors in seconds
+// and read as spawned-but-silent.
+const maxEvalFailures = 3
+
 // evaluate consults the bot and applies its decision. bypassCooldown is
-// true for monitor-match wakes (high-signal); turn-boundary wakes honour
-// the cooldown floor. Both honour the hard MaxEvals budget.
-func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
+// true for bot-registered monitor wakes (high-signal); seeded-monitor
+// and turn-boundary wakes honour the cooldown floor. All honour the
+// hard MaxEvals budget (of COMPLETED evaluations — a failed call does
+// not consume it, but maxEvalFailures consecutive failures park
+// supervision). Returns suppressed=true iff the wake was skipped by the
+// cooldown — the one outcome the caller may defer and retry.
+func (c *Coordinator) evaluate(reason string, bypassCooldown bool) (suppressed bool) {
 	if c.finished {
-		return
+		return false
+	}
+	if c.evalFailures >= maxEvalFailures {
+		return false
 	}
 	if c.evalCount >= c.spec.MaxEvals {
 		if c.evalCount == c.spec.MaxEvals {
 			c.info("supervise[%s]: eval budget exhausted (%d) on run %s — supervision paused", c.spec.Name, c.spec.MaxEvals, c.runID)
 			c.evalCount++ // log once
 		}
-		return
+		return false
 	}
 	if !bypassCooldown && !c.lastEvalAt.IsZero() && time.Since(c.lastEvalAt) < c.spec.Cooldown {
-		return
+		return true
 	}
 
 	in := EvalInput{
 		Spec:         c.spec,
-		ActiveNode:   c.activeNode,
+		ActiveNode:   c.lastWatchedActive,
 		WakeReason:   reason,
 		RecentEvents: append([]string(nil), c.recent...),
 		Monitors:     append([]Monitor(nil), c.monitors...),
@@ -259,15 +441,34 @@ func (c *Coordinator) evaluate(reason string, bypassCooldown bool) {
 	}
 	dec, usage, err := c.eval.Evaluate(c.ctx, in)
 	c.lastEvalAt = time.Now()
-	c.evalCount++
 	c.inTokens += usage.InputTokens
 	c.outTokens += usage.OutputTokens
 	if err != nil {
-		c.warn("supervise[%s]: evaluation failed on run %s: %v", c.spec.Name, c.runID, err)
-		return
+		// An eval in flight when the run tears down is cancelled with it
+		// — a normal shutdown, not a supervisor malfunction: no warn
+		// after the run's terminal summary, no failure counted.
+		if c.ctx != nil && c.ctx.Err() != nil &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			c.info("supervise[%s]: evaluation cancelled at run end (wake=%s)", c.spec.Name, reason)
+			return false
+		}
+		c.evalFailures++
+		c.warn("supervise[%s]: evaluation failed on run %s (wake=%s): %v", c.spec.Name, c.runID, reason, err)
+		if c.evalFailures >= maxEvalFailures {
+			c.warn("supervise[%s]: supervision paused after %d consecutive evaluation failures", c.spec.Name, c.evalFailures)
+		}
+		return false
 	}
+	c.evalFailures = 0
+	c.evalCount++
+	// A silent verdict is the common (and desired) case — log it anyway
+	// so an operator can tell "evaluated and chose silence" from "never
+	// woke", and see the eval budget drain.
+	c.info("supervise[%s]: eval %d/%d (wake=%s) → %s",
+		c.spec.Name, c.evalCount, c.spec.MaxEvals, reason, dec.logSummary())
 	c.last = dec
 	c.applyDecision(dec)
+	return false
 }
 
 // applyDecision registers any new monitors and enqueues the steering
@@ -277,12 +478,22 @@ func (c *Coordinator) applyDecision(dec *Decision) {
 		return
 	}
 	for _, m := range dec.Watch {
-		if !m.isEmpty() {
+		// Deduplicate: the eval prompt shows the current list and asks
+		// which patterns to KEEP watching, so a bot that re-emits them
+		// verbatim would otherwise grow the slice by its whole set every
+		// eval (observed: 4 seed → 24 after 5 evals).
+		if !m.isEmpty() && !slices.Contains(c.monitors, m) {
 			c.monitors = append(c.monitors, m)
 		}
 	}
-	if dec.Intervene && strings.TrimSpace(dec.Message) != "" {
-		c.inject(dec.Message)
+	if dec.Intervene {
+		if strings.TrimSpace(dec.Message) != "" {
+			c.inject(dec.Message)
+		} else {
+			// An intervention with no text is a malformed decision; say
+			// so instead of silently doing nothing.
+			c.warn("supervise[%s]: bot chose intervene with an empty message — dropped", c.spec.Name)
+		}
 	}
 	if dec.Done {
 		c.finished = true
@@ -295,7 +506,7 @@ func (c *Coordinator) applyDecision(dec *Decision) {
 func (c *Coordinator) inject(text string) {
 	scopeNode := ""
 	if len(c.spec.Watches) > 0 {
-		scopeNode = c.activeNode
+		scopeNode = c.lastWatchedActive
 	}
 	body := text
 	if c.spec.Name != "" {

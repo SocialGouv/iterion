@@ -503,6 +503,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	// a resumed paused run reads the v0.1.0 skill content even though
 	// the host has v0.2.0 — the marker file logic preserves any user
 	// customisation. See F-RT-7.
+	ClearSkillTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -584,6 +585,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.pauseSessionRef = cp.BackendSessionStateRef
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	restoreSelectedIncoming(rs, cp)
 	// Do not EvictRun here: pause-resume must keep in-process claw
 	// message history (evictRunSessions already skips ErrRunPaused).
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
@@ -755,6 +757,7 @@ func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *st
 // selected sous-bot.
 func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	e.restoreRunEnv(r)
+	ClearSkillTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
@@ -811,6 +814,7 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	restoreSelectedIncoming(rs, cp)
 	pinBackendRehydration(rs, cp)
 	rs.nodeSessions = cloneNodeSessions(cp.NodeSessions)
 	if rs.nodeSessions == nil {
@@ -1709,10 +1713,13 @@ type pauseInfo struct {
 }
 
 // drainOperatorMessagesForPause empties the run's operator-queued
-// chat-message inbox at pause time and returns the texts in FIFO
-// order. Used by the claude_code / codex pause path — those backends
-// can't accept mid-session stdin, so the operator's intent rides on
-// the resume system prompt. Each transition emits a
+// chat-message inbox at pause time — run-scoped messages plus the ones
+// scoped to the PAUSING node, never a message tagged for another node
+// (a supervisor's steering for `campaign` must not be folded into an
+// unrelated human node's resume prompt) — and returns the texts in
+// FIFO order. Used by the claude_code / codex pause path — those
+// backends can't accept mid-session stdin, so the operator's intent
+// rides on the resume system prompt. Each transition emits a
 // user_message_delivered event through the engine's event observer
 // so WS subscribers (the studio chatbox) update their badge.
 //
@@ -1722,8 +1729,8 @@ type pauseInfo struct {
 // the run. Mirror failures log at warn level but don't block the
 // drain (the agent will see the text without the skill in those
 // cases; the operator surfaces the gap via the catalog endpoint).
-func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string) []string {
-	msgs, _, _ := store.DrainPendingMessages(ctx, e.store, e.onEvent, runID)
+func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID, nodeID string) []string {
+	msgs, _, _ := store.DrainPendingMessagesForNode(ctx, e.store, e.onEvent, runID, nodeID)
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -1766,7 +1773,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, 
 	// stdin) still see the operator's intent. claw drains the same
 	// inbox between agent iterations (model.StoreInboxBinder), so on
 	// most runs the queue is already empty by the time we land here.
-	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID); len(queuedTexts) > 0 {
+	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID, nodeID); len(queuedTexts) > 0 {
 		if questions == nil {
 			questions = map[string]any{}
 		}

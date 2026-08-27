@@ -3,7 +3,9 @@
 An LLM subscription ("forfait") meters two rolling windows, five hours and
 seven days, and refuses every call once one is exhausted. iterion already
 survives that refusal: the run parks and a durable retry resumes it when the
-window reopens ([scheduling.md](scheduling.md#retry)). What it could not do
+window reopens
+([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)).
+What it could not do
 was stop *before* the wall — and the wall is rarely where an operator wants
 to be, because the same subscription usually pays for their own interactive
 work. A fleet of bots that drives it to 100% takes the human down with it.
@@ -57,6 +59,59 @@ There is deliberately **no per-run flag and no DSL field**. The cap protects
 a credential and the deployment that owns it, not a run — a bot able to lift
 the guard would not be a guard. `ITERION_USAGE_CAP=off` is the escape hatch,
 and it belongs to whoever runs the deployment.
+
+## Changing the caps at runtime (no restart)
+
+The env vars above are **defaults**. On a cloud deployment the two
+percentages are also a platform-scoped runtime-settings record (Mongo
+`platform_settings`, same tier as the platform LLM credentials), mutable
+through the super-admin API — so retuning a cap in production is one call,
+not a `kubectl set env` on two deployments plus a rolling restart:
+
+```sh
+iterion remote admin caps                       # record + env + EFFECTIVE + source
+iterion remote admin caps set --five-hour 80 --week 70
+iterion remote admin caps set --clear-week      # back to the env default
+```
+
+The raw surface is `GET/PUT /api/admin/settings/usage-caps` (super-admin,
+the same guard as the platform LLM-credential routes). The PUT has **merge
+semantics**: a field present with a number sets that override, present with
+`null` clears it, absent leaves it untouched — a call naming one window can
+never silently clear the other. Values must be integers 0–100 (0 = no cap);
+anything else — including an unknown field name — is rejected `400` with the
+reason. Every update lands in the platform audit log
+(`platform.settings.usage_caps.updated`) with old value, new value and the
+caller.
+
+**Propagation bound: ≤ 30 seconds.** Both enforcement points — the server's
+launch-time pre-flight and the runner's claim pre-flight + mid-run guard —
+resolve the effective policy through a TTL-cached lookup
+(`usagecap.Resolver`, 30s TTL), re-read **per evaluation**. One DB record is
+the single source of truth for every replica of both deployments, which ends
+the class of divergence where one deployment rolled with a new env value and
+the other did not. A run already in flight picks a tightened cap up at its
+next reading, within the same bound. The pod that served the update is
+coherent immediately (its cache is invalidated in the handler).
+
+Semantics that stay put:
+
+- **Env fallback.** No record (or a cleared field) → the env value applies.
+  A deployment that never touches the API behaves exactly as its env vars
+  say.
+- **Only the percentages are runtime-mutable.** The soft/hard **modes** and
+  the `ITERION_USAGE_CAP` kill switch stay env-only: they encode the
+  deployment's enforcement posture, and a posture change should be witnessed
+  by a deploy. In particular the kill switch **wins** — with
+  `ITERION_USAGE_CAP=off`, a DB percentage stays inert, so a runtime write
+  can never re-arm a guard the operator explicitly disarmed.
+- **Verification without DB access.** `/healthz` (and `/readyz`) echo the
+  EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
+  `db+env`) — curl it after a change and watch the new number appear within
+  the propagation bound.
+- **Settings reads fail toward the last-known value** (env defaults before
+  the first successful read), retried once per TTL window: a settings-store
+  blip changes nothing abruptly in either direction.
 
 ### Which windows a cap governs
 
@@ -153,6 +208,44 @@ The ledger is keyed per credential: a tenant that brought its own
 subscription is never blocked by what another tenant spent, and runs falling
 back to the deployment's own credential share one meter, which is correct —
 they really are one subscription.
+
+### Rotating a credential resets its meter — on purpose
+
+The key names the CREDENTIAL, not the slot it sits in:
+
+```
+claude_code|tenant:<id>              # legacy, still valid, expires in place
+claude_code|tenant:<id>|fp:aaaa1111  # the meter of ONE credential
+```
+
+`fp:` is the audit fingerprint of the credential the run actually spends,
+stamped when a human connects it and preserved across the automatic token
+refreshes (which rewrite the tokens of the *same* subscription). Without
+it, posting a fresh token over an exhausted one inherited the old
+account's reading — legitimately fresh until its own reset instant, up to
+seven days out — and parked every run of a credential with a full week
+available. That happened.
+
+So: **connect a new credential and the pre-flight finds nothing, fails
+open, and republishes the new account's real readings at the first call.**
+The old readings expire in place under their orphaned key (the collection
+has a 14-day TTL), and nothing needs migrating. This applies to every tier
+— a tenant's forfait, a pool donor's lent subscription, and the
+deployment's own platform forfait, where the meter is fleet-wide.
+
+Two boundaries worth knowing:
+
+- **Re-connecting the SAME Anthropic subscription also opens a fresh
+  meter.** A `credentials.json` carries no account id, so iterion cannot
+  tell "the same subscription again" from "a different one" (Codex's
+  `auth.json` does carry `account_id`, and is metered per account). The
+  reflex of re-pasting credentials when a token *looks* broken therefore
+  forgets what was measured. It fails open — one run rediscovers the wall
+  and republishes it — and the mid-run guard is the backstop.
+- **A local CLI/studio run is metered per machine, not per credential.**
+  Rotating your own credential inside a long-lived `iterion studio`
+  process keeps reading the replaced account's window until it resets;
+  restart the process to clear it.
 
 The pre-flight **fails open** on every uncertainty (no ledger, an unreadable
 ledger, nothing measured yet, a rolled-over reading). A cap exists to protect

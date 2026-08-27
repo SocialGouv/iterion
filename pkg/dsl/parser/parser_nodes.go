@@ -693,6 +693,20 @@ func (p *parser) parseFallbackEntry() *ast.FallbackDecl {
 			if v := p.parseBool(); v != nil {
 				fd.Metered = *v
 			}
+		case "action":
+			// Bare ident, matching the DSL's enum style (`await: wait_all`).
+			// A quoted string is tolerated for the JSON round-trip authors.
+			at := p.next()
+			switch at.Type {
+			case TokenIdent, TokenString:
+				fd.Action = at.Value
+			default:
+				p.addError(DiagExpectedToken, at, "expected fallback action (skip), got "+at.Type.String())
+				p.skipToNewline()
+			}
+		case "when":
+			// A quoted expr over vars, like a compute `expr:` value.
+			fd.When = p.expectString()
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown fallback property '"+propName+"'")
 			p.skipToNewline()

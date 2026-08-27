@@ -75,7 +75,13 @@ type Orchestrator struct {
 	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
 	// server so the orchestrator stays free of the github package + App key.
 	GitHubAppMinter func(ctx context.Context, conn Connection) (string, error)
-	PublicURL       string
+	// LogWarn, when set, reports a non-blocking anomaly (the only current one:
+	// a security-read withdrawal that could not run while disconnecting).
+	// Injected like the other seams so the package stays logger-free; nil
+	// silences it, which is why callers that CAN act on the error get it
+	// returned instead.
+	LogWarn   func(format string, args ...any)
+	PublicURL string
 
 	// Optional injection points for tests (default to time.Now / uuid).
 	Now   func() time.Time
@@ -740,6 +746,19 @@ func (o *Orchestrator) EnsureManagedSecret(ctx context.Context, conn *Connection
 // token, stamping its id onto the connection. Reused across every repo/bot
 // of the connection; the refresh worker rewrites its plaintext on rotation.
 func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection, actor string) (string, error) {
+	// A watch-only connection has no runtime token to hand a bot: its App
+	// holds neither contents nor hooks. Refusing HERE is what makes the guard
+	// exhaustive — this is the single chokepoint every runtime path funnels
+	// through (Provision, and the repo-targeted launch via
+	// EnsureManagedSecret), and it fires BEFORE Provision writes the bot
+	// bindings. That ordering matters more than the message: a binding is
+	// keyed (tenant, bot, secret_name) and therefore TEAM-GLOBAL, it is
+	// written before the first forge call, and nothing rolls it back — so a
+	// provision that fails later would leave every repo of that bot pointing
+	// at a token that cannot push.
+	if conn.IsSecurityReadOnly() {
+		return "", fmt.Errorf("forge: connection %s is watch-only (Dependabot alerts): it holds no contents/hooks grant and has no runtime token to hand a bot — use the team's runtime connection", conn.ID)
+	}
 	if conn.ManagedSecretID != "" {
 		return conn.ManagedSecretID, nil
 	}
@@ -923,6 +942,29 @@ func (o *Orchestrator) DeprovisionConnection(ctx context.Context, tenantID, conn
 	if conn.ManagedSecretID != "" {
 		if derr := o.Secrets.Delete(ctx, conn.ManagedSecretID); derr != nil && !errors.Is(derr, secrets.ErrGenericSecretNotFound) {
 			return fmt.Errorf("forge: delete managed secret: %w", derr)
+		}
+	}
+	// The security-read map is SHARED across connections, so it survives this
+	// one — withdraw just this connection's org entry. Disconnecting is the
+	// operator's most explicit cut: leaving a live org-wide alerts token
+	// readable by every bot of the team (and then unreachable, since the
+	// connection is gone) is the opposite of what they asked for.
+	if conn.SecurityReadEnabled {
+		if derr := RemoveSecurityReadToken(ctx, o.Secrets, o.Sealer, &conn); derr != nil {
+			// A MALFORMED map must not block the operator's most explicit
+			// security action (the documented hand-set path makes "a bare
+			// PAT instead of a JSON map" the obvious mistake), and there is
+			// nothing to withdraw from it anyway. Anything else — a store
+			// error, a seal failure — would leave a LIVE org-wide token
+			// behind, so it propagates and the disconnect is retried.
+			if errors.Is(derr, ErrSecurityReadMalformed) {
+				if o.LogWarn != nil {
+					o.LogWarn("forge: %s holds an unparseable %s secret; disconnecting %s without withdrawing it: %v",
+						conn.TenantID, SecurityReadSecretName, conn.ID, derr)
+				}
+			} else {
+				return fmt.Errorf("forge: withdraw security-read token: %w", derr)
+			}
 		}
 	}
 	return o.Connections.Delete(ctx, connID)

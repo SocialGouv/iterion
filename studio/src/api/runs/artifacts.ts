@@ -51,9 +51,11 @@ export async function getArtifact(
   runId: string,
   nodeId: string,
   version: number,
+  opts?: { signal?: AbortSignal },
 ): Promise<Artifact> {
   return request(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(nodeId)}/${version}`,
+    { signal: opts?.signal },
   );
 }
 
@@ -156,4 +158,81 @@ async function blobToBase64(blob: Blob): Promise<string> {
     parts.push(String.fromCharCode(...bytes.subarray(i, i + chunk)));
   }
   return btoa(parts.join(""));
+}
+
+// A conversational bot can produce a `.bot` DRAFT as part of a turn — Copi's
+// `design` posture does, and a deterministic node compiles it before the
+// operator reads the reply. The draft is NOT a file: the bot is read-only with
+// respect to the workspace, so it lives only in that node's artifact.
+//
+// Found by SHAPE, never by node name. The studio's chat registry is
+// manifest-driven (issue #333), so hardcoding "copi" here would put a specific
+// bot's node id back into studio code — the same coupling the registry
+// removed. Any node publishing a non-empty `draft_bot` string qualifies.
+export const DRAFT_BOT_FIELD = "draft_bot";
+
+// The bot's own posture for the turn. A conversational bot that designs
+// workflows announces it here BEFORE it has anything to show, which is what
+// lets the studio offer the editor first and the draft second — the order the
+// operator asked for: settle where the work happens, then do it there.
+export const MODE_FIELD = "mode";
+export const DESIGN_MODE = "design";
+
+export interface DraftLookup {
+  /** The `.bot` source, when this conversation has produced one. */
+  source: string | null;
+  /** True when the latest turn is designing, draft or not. */
+  designing: boolean;
+}
+
+// Newest artifacts first: a draft is the LATEST thing the conversation
+// produced, so the last-written node is where the search should start.
+export async function lookupDraft(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<DraftLookup> {
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const s of ordered) {
+    if (opts?.signal?.aborted) return { source: null, designing: false };
+    let art: Artifact;
+    try {
+      art = await getArtifact(runId, s.node_id, s.version, opts);
+    } catch {
+      // One unreadable artifact must not hide a draft published by another
+      // node — keep looking rather than failing the whole lookup.
+      continue;
+    }
+    const value = art.data?.[DRAFT_BOT_FIELD];
+    // The first artifact that DECLARES a posture is the newest turn boundary.
+    // An `info` turn retires an older design and its draft; a fresh design
+    // cannot inherit a prior turn's draft when it has not produced one yet.
+    if (
+      art.data &&
+      Object.prototype.hasOwnProperty.call(art.data, MODE_FIELD)
+    ) {
+      const designing = art.data[MODE_FIELD] === DESIGN_MODE;
+      const source =
+        designing && typeof value === "string" && value.trim() !== ""
+          ? value
+          : null;
+      return { source, designing };
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      // Backward compatibility for bots that publish a draft but predate
+      // `mode`: a non-empty draft itself implies the design posture.
+      return { source: value, designing: true };
+    }
+  }
+  return { source: null, designing: false };
+}
+
+/** Back-compat shorthand for callers that only want the source. */
+export async function findDraftBotSource(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<string | null> {
+  return (await lookupDraft(runId, opts)).source;
 }

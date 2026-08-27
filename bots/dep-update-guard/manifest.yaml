@@ -1,7 +1,12 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.7.6
+version: 2.7.7
+## 2.7.7 -- verify-build skill §1c: timeouts are a strictness axis. The verify
+## sandbox runs 2-5x slower than CI, and go test's implicit 10m per-binary
+## timeout manufactured hold_unstable on four consecutive Actions-pin bumps
+## while CI was green on the identical shas. The skill now requires keeping
+## CI's explicit timeouts and RAISING the implicit ones (e.g. -timeout 30m).
 ## 2.7.6 -- a verify that overruns is a red build, not a crashed run. The
 ## TimeoutExpired handler concatenated e.output to a str, and on the timeout
 ## path that attribute is BYTES even though text=True was passed (the decode

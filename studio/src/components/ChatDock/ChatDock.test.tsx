@@ -27,6 +27,34 @@ vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
   useWhatsNextSession: () => session,
 }));
 
+// The dock hosts every chat bot EXCEPT the one that owns /whats-next, so the
+// built-in floor (which is that bot alone) leaves it with no correspondent.
+// These tests are about the dock's empty/degraded BODY, not about discovery,
+// so give it one eligible bot; the "no eligible bot" path is pinned by its own
+// test at the bottom of this file.
+const { dockBot } = vi.hoisted(() => ({
+  dockBot: {
+    id: "copilot",
+    label: "Copi",
+    description: "",
+    workflowPath: "bots/copilot/main.bot",
+    launcherVars: [],
+    nodeMap: {},
+  },
+}));
+
+vi.mock("@/hooks/useChatRegistry", () => ({
+  useChatRegistry: () => ({
+    byId: { copilot: dockBot },
+    bots: [dockBot],
+    dockBots: [dockBot],
+    resolve: () => dockBot,
+    resolveDock: () => dockBot,
+    loading: false,
+    error: null,
+  }),
+}));
+
 // The composer talks to the run API on mount; irrelevant here and the
 // dock renders it under every branch below.
 vi.mock("@/components/shared/AgentChatboxInline", () => ({

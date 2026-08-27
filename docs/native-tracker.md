@@ -41,8 +41,8 @@ one record to `events.jsonl`. The event types are:
 `issue_created`, `issue_updated`, `issue_state_changed`,
 `issue_deleted`, `issue_claimed`, `issue_released`,
 `issue_last_run_updated`, `issue_comment_added`,
-`issue_blockers_updated`, `issue_unblocked`, `board_updated`,
-`label_rename`, `label_merge`, `label_delete`.
+`issue_blockers_updated`, `issue_unblocked`, `issue_gave_up`,
+`board_updated`, `label_rename`, `label_merge`, `label_delete`.
 
 The dispatcher stamps every issue it processes with `last_run_id`
 (the run that handled it) + `last_workdir` (the worktree path on
@@ -155,6 +155,7 @@ iterion issue move     <id-or-prefix>  --to <state>
 iterion issue update   <id-or-prefix>  [--title T] [--body B] [--labels L1,L2]
                                        [--priority N] [--assignee A] [--blockers B1,B2]
                                        [--field k=v]+ [--clear-field K]+
+                                       [--clear-last-run]
 iterion issue close    <id-or-prefix>          # → first terminal state
 
 iterion issue board show
@@ -168,6 +169,24 @@ shown in `list`).
 `--field key=value` infers the type from the value: `true`/`false` →
 bool, integers / floats → number, everything else → string. Use
 `--clear-field key` to unset a value.
+
+`--clear-last-run` drops the card's `last_run` pointer. While that pointer
+names a resumable run the dispatcher **resumes** it on the next dispatch
+instead of starting one; clearing it is how an operator gets back to a fresh
+run after a failure resuming cannot fix. The run history (`runs`) is kept.
+
+It clears the pointer, not the ticket: a card the dispatcher gave up on is
+still in a terminal state, so the fresh run materialises once the ticket is
+**restaged** too (Retry on the board, or `iterion issue move … --to ready`).
+Clear first, then restage — the other order re-pins the pointer.
+
+Two limits are deliberate. It **refuses** while the run is still alive
+(`running` / `queued` / `paused_*`): that pointer is also the dispatcher's
+sibling guard, and clearing it there would let the next dispatch start a
+*second* run on the same ticket. And a live dispatcher with a retry already
+scheduled for the ticket holds its own in-memory pointer, which wins over the
+persisted one for that attempt — for a ticket the dispatcher has **given up**
+on, the retry was dropped at give-up, so the flag takes effect immediately.
 
 `iterion issue list` accepts `--json` (the global flag) to emit
 machine-readable output:
@@ -227,16 +246,20 @@ same JWT middleware as `/api/runs/*`.
 dedicated typed columns on the native `Issue` record; they are not
 part of the freeform `fields` map. `bot_args` is merged on top of
 the dispatcher's rendered `dispatch.vars` key-by-key at launch time,
-with `bot_args` winning on shared keys. `bot` is resolved into the
-dispatch request for custom runners/future routing, but the current
-stock `EngineRunner` is precompiled for one workflow and does not use
-the per-ticket `bot` field to override workflow selection. Use
-`assignee_workflows:` in the dispatcher config for current stock
-workflow routing. See [docs/dispatcher.md §Per-ticket bot + args
-fields](dispatcher.md) for the current handoff.
+with `bot_args` winning on shared keys. `bot` is the dispatch **routing
+key**: the poll loop sets `routeAssignee = iss.Bot` whenever it is
+non-empty, so a per-ticket `bot` wins over the ticket's `assignee` for
+workflow selection, and the bot file is resolved and route-checked
+before dispatch. `assignee_workflows:` in the dispatcher config is the
+routing table consulted under whichever key won. See
+[docs/dispatcher.md §Per-ticket bot + args fields](dispatcher.md).
 
-The SPA's Board view (`/board` in the studio) consumes exactly these
-endpoints — it's a thin React shell on top of the REST surface.
+The SPA's Board view (`/board` in the studio) is a thin React shell on
+top of the REST surface. The table below covers the issue/board CRUD;
+the label manager and the board-schema editor add
+`GET /labels`, `POST /labels/rename`, `POST /labels/merge`,
+`DELETE /labels/{label}`, and the `/board/states*`, `/board/fields*`
+and `/board/views*` routes.
 
 ## Pipeline board (the second board)
 
@@ -291,13 +314,57 @@ Lane semantics — the board is **task-centric**:
   without reserving — otherwise Stop would punish the operator who pressed
   it, and Close would retain the very slot it exists to release. Failures
   iterion caused *itself* (a drain at shutdown, the boot orphan sweep) show
-  here but do not reserve, or every restart would hold every slot;
+  here but do not reserve, or every restart would hold every slot. A
+  **dispatcher give-up** also lands here even though its ticket reads
+  terminal — see below;
 - `Closed` = every pipeline that reached an end: finished, or stopped by the
   operator. A per-card **Success** / **Stopped** badge distinguishes the
   outcome; a successful card's output shows in the details sidebar, a stopped
   one shows the **reason** and (ticket-backed) offers **Retry** (restages to
   Ready) + Edit. A header control filters the lane by **All / Success /
   Stopped**.
+
+**A dispatcher give-up is not a filing.** When `iterion dispatch` exhausts
+`agent.max_attempts` on a ticket it files it into `agent.failed_state`
+(default `blocked`) by itself — the *same* terminal state the board's Close
+writes. A terminal ticket otherwise means "a human already filed this", so
+before the give-up stamp the projection could not tell the two apart and put
+the card in **Closed**: the one class of failure the Needs-attention lane
+exists for — a pipeline that died and wants a human — was the one it never
+showed, because a deterministic failure (a fail-closed bot demanding a rewind)
+burns the whole retry budget on every run.
+
+The dispatcher therefore **stamps** the give-up on the ticket
+(`Issue.gave_up`: the run, the state it wrote, the attempt count, an
+`issue_gave_up` event), and the projection routes a terminal ticket carrying a
+*current* stamp to `needs_attention`, badged **Gave up**.
+
+The stamp expires by itself, and permanently: it names the run and the state,
+the store **drops it on any write in a different state** (one hook on each
+store's write path, so no future state writer has to remember), and a stamp
+naming another run never describes the card. That permanence is load-bearing —
+a dispatcher retry resumes the *same* run id, so a stamp that merely looked
+stale would come back to life the moment a human filed the ticket back into
+that state, and the board would re-file an operator's own decision as an
+unattended give-up.
+
+The one case no write hook can catch is filing a ticket into the state it is
+**already** in — the give-up's target and every close target are the same
+state. So the three closes clear the stamp explicitly: the pipeline board's
+**Close**, `iterion issue close`, and the board tool `close_issue`. That is
+what makes closing the acknowledgement the give-up never got.
+
+A given-up card renders in the lane but **reserves no slot**: it is terminal,
+nothing will relaunch it until the operator acts, and holding capacity for it
+would leak a slot with no bound.
+
+**Getting back to a fresh run.** A ticket's `last_run_id` pointer is what the
+dispatcher resumes on the next dispatch (`resolveRunID` → `resumableRunID`),
+so a run that died in a way resuming cannot fix keeps being resumed. Drop the
+pointer with `iterion issue update <id> --clear-last-run` — the next dispatch
+mints a new run from the workflow entry instead. The run *history*
+(`Issue.runs`) is kept: those runs happened, and their consoles are the
+evidence.
 
 **Closing a pipeline.** `Close` (⋯ menu, every non-terminal lane) cancels
 everything still alive under the card and files the ticket as **abandoned**
@@ -392,12 +459,13 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-board` | GET | Global projection: 3 fixed lanes + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
+| `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes (Opened, In progress, Needs attention, Closed) + one folded card per root pipeline (progress, pending reviews, deps, contract args, output, concurrency). Optional `?since=<duration\|RFC3339>` prunes CLOSED cards last changed before the cutoff (live pipelines are never pruned) so a long-lived store escapes the ≤500-card truncation banner; the prune is reported via `hidden_closed_count` / `hidden_closed_before` |
 | `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required; optional `blockers`, `upsert`; `{start:true}` → ready when deps OK else `waiting_deps` |
 | `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` stages Ready when hard deps are done, else parks in `waiting_deps` (or 409); unstage → backlog |
 | `/api/v1/pipeline-board/tasks/{id}` | PATCH | Edit a not-yet-run ticket (title, body, labels, priority, bot, bot_args, blockers) |
 | `/api/v1/pipeline-board/tasks/{id}` | DELETE | Delete a ticket (issue only, never a run); 409 while any run in its tree is active |
 | `/api/v1/pipeline-board/tasks/{id}/reset` | POST | Cancel every active run in the ticket's tree, then restage it to Ready |
+| `/api/v1/pipeline-board/tasks/{id}/close` | POST | Cancel the ticket's tree and file it terminal (`blocked`, never `done`); also clears a dispatcher give-up stamp — Close is the acknowledgement |
 | `/api/v1/pipeline-board/tasks/{id}/dependency-graph` | GET | Limited-depth hard-dep graph (also `GET /api/v1/native/issues/{id}/dependency-graph`) |
 | `/api/v1/pipeline-board/bulk/ready` | POST | `{ids?\|family_id?\|pipeline_kind?}` stage many tickets Ready (skip open blockers by default) |
 | `/api/v1/pipeline-board/bulk/recompute-deps` | POST | Re-promote `waiting_deps` tickets whose blockers are now satisfied |

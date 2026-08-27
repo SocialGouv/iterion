@@ -88,7 +88,12 @@ the same logical run model consumed by [`pkg/runview`](../pkg/runview/).
   `failed_resumable` runs can resume without replaying completed upstream work.
 - Budgets cover tokens, estimated cost, duration, iterations, and parallelism.
   Operators can raise a live run's budget or grant loop iterations at the next
-  safe node boundary; the override is persisted for resume.
+  safe node boundary; the override is persisted for resume. A cap that runs
+  out mid-run does not strand what the run already paid for: the loop guard
+  declines a back-edge it cannot fund, and a spent cap still buys a bounded
+  walk **forward** to a terminal node — refused on a cap the platform or a
+  credential-pool donor imposed. See
+  [dsl.md](dsl.md#budget-and-loop-back-edges).
 - `worktree: auto` executes against a fresh Git worktree and always protects a
   successful committed result with a branch. CLI launches may land it
   automatically; studio launches normally defer landing to the review/merge

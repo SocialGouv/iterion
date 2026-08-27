@@ -92,7 +92,7 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `review_on_sync` | `false` | Re-review on each push so the required status re-evaluates on the fixed head. **Required for a blocking gate.** |
-| `block_fork_prs` | `false` | Filter fork PRs from any auto-launch. **Recommended ON whenever `review_on_sync` is enabled on a public repo** (see caution). |
+| `block_fork_prs` | `false` | Persisted and returned by the webhook CRUD API, but **no launch path reads it** — the only references are the struct field and the two CRUD assignments. Setting it changes nothing on any provider. See the caution for what actually guards fork PRs. |
 
 > **Caution — budget with `review_on_sync`.** The sync lane re-runs Revi's
 > selected topology on **every push** (each new head SHA): one LLM reviewer in
@@ -100,9 +100,17 @@ Webhook config ([`pkg/webhooks/types.go`](../pkg/webhooks/types.go)):
 > by the webhook's `AuthorAllowlist` (empty = any author) and per-head idempotency —
 > there is no author-trust gate on this lane. On a public repo a fork
 > contributor pushing repeatedly can drive repeated full reviews, bounded only
-> by the org launch gate + webhook rate limit. Enable **`block_fork_prs`**
-> (and/or set an `AuthorAllowlist`/`MinAuthorRole`) alongside `review_on_sync`
-> so untrusted fork PRs don't auto-re-review.
+> by the org launch gate + webhook rate limit.
+>
+> **Where fork PRs actually stand, per provider.** On **GitHub** and
+> **Forgejo** the guard is unconditional and needs no configuration: an
+> inbound PR event whose head is a fork is filtered before the sync lane
+> is even considered, so the fork re-review exposure above cannot occur
+> there. A repo collaborator can still launch a bot on fork code
+> deliberately with a `/command`, which gates on the commenter's
+> permission. On **GitLab** there is no fork/cross-project guard at all,
+> so a forked-MR auto-review *is* reachable — bound that lane with an
+> `AuthorAllowlist` / `MinAuthorRole`, since `block_fork_prs` is inert.
 
 ## Activating the blocking gate on a repo
 
@@ -434,12 +442,20 @@ and paints a failure onto a long-merged PR). The repair re-reads the live
 status before writing, so the redundant offer costs one API read.
 
 Telling "already answered" from "must escalate" is what makes the second offer
-safe. A synthetic failure deliberately does *not* stand the repair down — that
-is how a **second** death on one head (a relaunched run dying too) escalates
-instead of mistaking the first death's marker for an answer. But the same run
-re-offered every minute is already answered. The status's target URL names the
-run it speaks for, which separates the two with no bookkeeping a second replica
-would not share.
+safe, and the answer turns on WHOSE marker is on the head. **Its own** — the
+event and the sweep racing, or the sweep re-reading its 60-minute window every
+minute for an hour — is already answered: the repair returns immediately,
+writing no status and walking no tail. **Another run's** is a different
+question, and only that case falls through: a **second** death on one head (a
+relaunched run dying too) must still walk the relaunch/escalation tail instead
+of mistaking the first death's marker for an answer. Even then the STATUS
+WRITE stands down: one marker per head is enough, and re-posting from a run
+the marker does not speak for is a storm —
+two dead runs re-pointing the target URL at themselves on every sweep tick
+produced **116 status writes on one head in 15 minutes**
+(buildkit-operator#21, 2026-08-17). The status's target URL names the run it
+speaks for, which separates "mine" from "another's" with no bookkeeping a
+second replica would not share.
 
 The sweep is **not elected** — the repair is idempotent by re-reading the live
 status, so a leader would buy nothing. One consequence needs care: the
@@ -478,12 +494,25 @@ the synthetic failure when it completes.
 
 When the one relaunch is already spent and the gate dies AGAIN on the same
 head — or the relaunch cannot start at all — the problem graduates to the
-team's board: a card labelled `source:gate-reconcile` (deduped per PR+head)
-naming the dead runs, the failure reason, and the remedy. A required check
-dying repeatedly on one revision is a structural signal (a run budget too
-short for the workload, a recurring provider quota, a bot defect), which is a
-human's call, and the board is where Nexie and the operator will actually see
-it.
+team's board: a card labelled `source:gate-reconcile` naming BOTH dead runs
+(the relaunch stamps a `gate_relaunch_of` launch var so its own death can name
+the original), the failure reasons, and the remedy. The same escalation is
+ALSO posted as a **PR comment** through the connection's review client: the
+board is the operator's queue, but the PR is where the people waiting on the
+merge look — a card alone sat unseen in a team inbox for 7 days while a
+security PR stayed blocked. The comment rides the card's insert, so the two
+travel together in both directions: a deployment with **no board** (no
+`CloudBoardFor`, or a team without one) gets neither, and the synthetic
+`failure` status is then the only surface carrying the interruption — worth
+knowing before pointing a board-less deployment at a required check. Card and
+comment are bounded to once per (PR, head) by a **deterministic card id**
+(UUIDv5 of team/repo/PR/head): the
+sweep runs unelected on every replica, and two replicas racing past a
+List-based dedup would each file the card AND each post the comment — the
+store's unique-id insert is what serialises them. A required check dying
+repeatedly on one revision is a structural signal (a run budget too short for
+the workload, a recurring provider quota, a bot defect), which is a human's
+call.
 
 The auto-fix lane ([above](#autofix)) deliberately ignores these synthetic
 failures: `review died` means there are no findings to fix, so the recovery is

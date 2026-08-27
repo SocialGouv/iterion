@@ -12,8 +12,13 @@
 // for the page the operator is on, pinned visibly above the composer and
 // carried as a one-line pointer on every message.
 
-import { useCallback, useEffect, useState, type DragEvent as ReactDragEvent } from "react";
-import { useLocation } from "wouter";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
+import { useLocation, useSearch } from "wouter";
 
 import {
   AssistantStoreScope,
@@ -21,6 +26,7 @@ import {
   useAssistantSession,
 } from "@/components/ChatDock/AssistantProvider";
 import ContextChip from "@/components/ChatDock/ContextChip";
+import ContextEye from "@/components/ChatDock/ContextEye";
 import { ChatDockShell } from "@/components/ChatDock/ChatDockShell";
 import AttachedReferences from "@/components/ChatDock/AttachedReferences";
 import BotSwitcher from "@/components/ChatDock/BotSwitcher";
@@ -34,19 +40,50 @@ import {
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
 import { withPageContext } from "@/lib/chatDock/contextMessage";
-import type { DockState } from "@/lib/chatDock/dockState";
+import {
+  ASSISTANT_FLOATING_SIZE_KEY,
+  type DockState,
+} from "@/lib/chatDock/dockState";
 import { ASSISTANT_HINT, ASSISTANT_LANE, ASSISTANT_TITLE } from "@/lib/chatDock/labels";
-import { isAssistantOwnRoute } from "@/lib/chatDock/routeReference";
+import { dockStandsDown } from "@/lib/chatDock/routeReference";
 import { useRouteReference } from "@/lib/chatDock/useRouteReference";
 import { useUnreadWhileClosed } from "@/lib/chatDock/useUnreadWhileClosed";
 import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
+import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
+import { useQueryClient } from "@tanstack/react-query";
+
+import {
+  SIDEBAR_COLLAPSED_PX,
+  SIDEBAR_EXPANDED_PX,
+} from "@/components/shared/Sidebar";
+import { useUIStore } from "@/store/ui";
+
+import {
+  DraftBotOffer,
+  useEditorConsent,
+} from "@/components/ChatDock/draftBotOffer";
+import {
+  ConversationStrip,
+  WorkplaceLink,
+} from "@/components/ChatDock/ConversationStrip";
+import { editorDraftKey, useDraftState } from "@/hooks/useDraftBot";
+import {
+  botDeclaresReviewer,
+  readAskBeforeStart,
+  readReviewer,
+  writeAskBeforeStart,
+  writeReviewer,
+} from "@/lib/chatDock/assistantPrefs";
+
+
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 export default function ChatDock() {
@@ -54,9 +91,9 @@ export default function ChatDock() {
   const sessionCtx = useAssistantSession();
   const [location] = useLocation();
   if (!dockCtx || !sessionCtx?.bot) return null;
-  // /whats-next renders this same session full-width — the dock would be
-  // a second composer over one conversation.
-  if (isAssistantOwnRoute(location)) return null;
+  // /whats-next renders this same session full-width — the dock would be a
+  // second composer over one conversation.
+  if (dockStandsDown(location)) return null;
   return (
     // The transcript and composer read the run store; re-enter the
     // assistant's isolated one (the app around us sees the default).
@@ -72,6 +109,8 @@ export default function ChatDock() {
         session={sessionCtx.session}
         dock={dockCtx.dock}
         onDockChange={dockCtx.setDock}
+        dockWidth={dockCtx.dockWidth}
+        onWidthChange={dockCtx.setDockWidth}
       />
     </AssistantStoreScope>
   );
@@ -84,6 +123,8 @@ function AssistantDock({
   session,
   dock,
   onDockChange,
+  dockWidth,
+  onWidthChange,
 }: {
   bot: FirstClassBot;
   bots: readonly FirstClassBot[];
@@ -91,8 +132,21 @@ function AssistantDock({
   session: UseWhatsNextSession;
   dock: DockState;
   onDockChange: (next: DockState) => void;
+  dockWidth: number;
+  onWidthChange: (px: number) => void;
 }) {
   const { reference, active, dismissed, dismiss, restore } = useRouteReference();
+
+  // The floating panel grows leftward from its top-left handle, so its width
+  // budget must stop at the sidebar — not at the viewport edge. Focus mode
+  // drops the chrome entirely, so there is nothing to clear.
+  const focusMode = useUIStore((s) => s.expanded);
+  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
+  const leftInset = focusMode
+    ? 0
+    : sidebarCollapsed
+      ? SIDEBAR_COLLAPSED_PX
+      : SIDEBAR_EXPANDED_PX;
 
   // What the operator DROPPED in, cleared once it has gone out with a
   // message. Held here rather than in the session because it belongs to the
@@ -114,6 +168,48 @@ function AssistantDock({
     [active, attached],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
+  // The chat equivalent of a CLI's `/new`. Lives in the dock's own chrome
+  // because a bot that answers ONLY here (Copi) would otherwise have no way
+  // to end a conversation — /whats-next's header is Nexie's, not his.
+  const newSession = useNewSessionAction({ bot, session });
+
+  const editorConsent = useEditorConsent(composer.submitPending);
+  const [route] = useLocation();
+  const search = useSearch();
+  // Same query key as the draft offer, so this costs nothing extra.
+  const workplaceDraft = useDraftState(session.runId, session.messages.length);
+
+  // The strip and the origin link both read the dock context, which is where
+  // the conversations live (the session context changes on every event and
+  // would re-render the strip with it).
+  const dockCtx = useAssistantDock();
+  const strip = {
+    conversations: dockCtx?.conversations ?? [],
+    activeConversationId: dockCtx?.activeConversationId ?? null,
+    atConversationLimit: dockCtx?.atConversationLimit ?? false,
+    selectConversation: dockCtx?.selectConversation ?? (() => {}),
+    closeConversationById: dockCtx?.closeConversationById ?? (() => {}),
+    openConversation: dockCtx?.openConversation ?? (() => {}),
+    labelFor: (c: { botId: string }) =>
+      bots.find((b) => b.id === c.botId)?.label ?? bot.label,
+  };
+  const activeConversation =
+    strip.conversations.find((c) => c.id === strip.activeConversationId) ?? null;
+
+  // Tell an open editor tab when there is something new to read.
+  //
+  // The draft is a node OUTPUT — written at `artifact_written`, when the turn
+  // ends — so this is the earliest instant anything could have changed, and
+  // the tab needs no clock of its own. The conversation drives the canvas
+  // instead of the canvas guessing.
+  const queryClient = useQueryClient();
+  const turnCount = session.messages.length;
+  useEffect(() => {
+    if (!session.runId) return;
+    void queryClient.invalidateQueries({
+      queryKey: editorDraftKey(session.runId),
+    });
+  }, [session.runId, turnCount, queryClient]);
 
   // Consume the attachments when a message leaves. Wrapping the composer's
   // send rather than clearing optimistically: a send that throws keeps the
@@ -123,7 +219,9 @@ function AssistantDock({
   const onComposerSend = useCallback(
     async (text: string, opts: { skills: string[] }) => {
       await composer.onComposerSend(text, opts);
-      setAttached([]);
+      // Option-constrained ask_user answers intentionally skip decoration, so
+      // attached references did not travel and must remain for the next turn.
+      if (composer.willDecorateMessage) setAttached([]);
     },
     [composer],
   );
@@ -152,9 +250,22 @@ function AssistantDock({
       title={ASSISTANT_TITLE}
       titleHint={ASSISTANT_HINT}
       headerSlot={
-        <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
+        <>
+          <BotSwitcher bots={bots} current={bot} onSelect={onSelectBot} />
+          <ConversationStrip
+            conversations={strip.conversations}
+            activeId={strip.activeConversationId}
+            atLimit={strip.atConversationLimit}
+            onSelect={strip.selectConversation}
+            onClose={strip.closeConversationById}
+            onOpen={strip.openConversation}
+            labelFor={(c) => strip.labelFor(c)}
+          />
+
+        </>
       }
       lane={ASSISTANT_LANE}
+      leftInset={leftInset}
       bubbleLabel="Open assistant"
       bubbleTitle="Ask the assistant about this page"
       attentionTitle="The assistant is waiting on you"
@@ -162,7 +273,14 @@ function AssistantDock({
       attention={needsAttention}
       openOnReferenceDrag
       dockedRightMode="self"
+      dockedWidth={dockWidth}
+      onWidthChange={onWidthChange}
+      floatingSizeKey={ASSISTANT_FLOATING_SIZE_KEY}
     >
+      {/* The confirm for "new conversation". Rendered inside the dock so it
+          is reachable from wherever the dock is — the assistant is not
+          route-bound and neither is ending its session. */}
+      {newSession.dialog}
       {/* The whole dock body is the drop target, not just the textarea: an
           operator dragging a run card aims at the panel, and a 40px-tall
           bullseye is a feature nobody finds. dragOver only lights up for a
@@ -198,7 +316,7 @@ function AssistantDock({
           and only scrolls as a flex child. */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {session.messages.length === 0 ? (
-          <EmptyState session={session} />
+          <EmptyState session={session} bot={bot} />
         ) : (
           <ChatTranscript
             messages={session.messages}
@@ -207,6 +325,13 @@ function AssistantDock({
             // The pending turn's input lives in the composer below, same
             // contract as the /whats-next route.
             composerHandlesId={composer.pendingHumanQuestion?.id}
+            bubbleSlot={
+              <DraftBotOffer
+                runId={session.runId}
+                revision={session.messages.length}
+                onOpenEditor={editorConsent.accept}
+              />
+            }
             onHumanSubmit={(messageId, outcome) => {
               const m = session.messages.find((x) => x.id === messageId);
               if (!m || m.kind !== "human-question") return;
@@ -242,6 +367,13 @@ function AssistantDock({
         </div>
       ) : (
         <div className="shrink-0 border-t border-border-default bg-surface-0">
+          <WorkplaceLink
+            conversation={activeConversation}
+            runId={session.runId}
+            hasDraft={!!workplaceDraft.source}
+            currentPath={route}
+            currentSearch={search}
+          />
           <AttachedReferences references={attached} onDetach={detach} />
           {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
@@ -277,7 +409,17 @@ function AssistantDock({
           {(!composer.pendingIsAskUser ||
             composer.allowFreeText ||
             composer.options.length === 0) && (
-            <div className="px-3 py-2">
+            <div className="px-3 py-2 flex items-end gap-1">
+              {/* In the row, not above it: the page context rides the
+                  message being typed, so its control belongs beside the
+                  composer — and the row already exists, so unlike the
+                  strip it replaced this costs no vertical space. */}
+              <ContextEye
+                reference={reference}
+                dismissed={dismissed}
+                onDismiss={dismiss}
+              />
+              <div className="min-w-0 flex-1">
               <AgentChatboxInline
                 runId={session.runId ?? ""}
                 compact={dock === "floating"}
@@ -300,6 +442,7 @@ function AssistantDock({
                 }
                 onSend={onComposerSend}
               />
+              </div>
             </div>
           )}
         </div>
@@ -317,7 +460,59 @@ function AssistantDock({
 // are different states, and here they are one keystroke from a blind
 // double-launch. Say so with the same words as SessionLauncher, the
 // sibling that renders this session full-width.
-function EmptyState({ session }: { session: UseWhatsNextSession }) {
+// Offered BEFORE a conversation exists, because cross-review is priced per
+// turn for the whole session — a switch buried in settings would be found after
+// the money was spent. Dismissible for good: "don't ask again" keeps the saved
+// answer and stops the question, and Settings → Assistant can change both.
+function StartOptions({ bot }: { bot: FirstClassBot }) {
+  const [reviewer, setReviewer] = useState(readReviewer);
+  const [ask, setAsk] = useState(readAskBeforeStart);
+  // Only for a bot whose manifest says it understands cross-review. Offering a
+  // toggle that does nothing is worse than not offering one.
+  if (!ask || !botDeclaresReviewer(bot)) return null;
+  return (
+    <div className="mb-3 rounded-md border border-border-subtle bg-surface-2 p-2.5 space-y-2 text-left">
+      <p className="text-caption text-fg-muted">Before you start</p>
+      <Checkbox
+        checked={reviewer}
+        onChange={(e) => {
+          setReviewer(e.target.checked);
+          writeReviewer(e.target.checked);
+        }}
+        label={
+          <span>
+            Cross-review each answer
+            <span className="block text-caption text-fg-subtle">
+              A second model, from another family, criticises the answer before
+              you read it. Costs a full extra call per turn.
+            </span>
+          </span>
+        }
+      />
+      <Checkbox
+        checked={!ask}
+        onChange={(e) => {
+          const nextAsk = !e.target.checked;
+          setAsk(nextAsk);
+          writeAskBeforeStart(nextAsk);
+        }}
+        label={
+          <span className="text-caption text-fg-subtle">
+            Don't ask again — change it in Settings → Assistant
+          </span>
+        }
+      />
+    </div>
+  );
+}
+
+function EmptyState({
+  session,
+  bot,
+}: {
+  session: UseWhatsNextSession;
+  bot: FirstClassBot;
+}) {
   if (session.discoveryError) {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto p-3">
@@ -337,12 +532,18 @@ function EmptyState({ session }: { session: UseWhatsNextSession }) {
       </div>
     );
   }
+  if (session.status === "launching") {
+    return (
+      <div className="flex-1 min-h-0 grid place-items-center px-4 text-center">
+        <p className="text-caption text-fg-muted">Starting a session…</p>
+      </div>
+    );
+  }
   return (
-    <div className="flex-1 min-h-0 grid place-items-center px-4 text-center">
-      <p className="text-caption text-fg-muted">
-        {session.status === "launching"
-          ? "Starting a session…"
-          : "Ask about the page you're on — the first message starts a session."}
+    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 flex flex-col justify-center">
+      <StartOptions bot={bot} />
+      <p className="text-caption text-fg-muted text-center">
+        Ask about the page you're on — the first message starts a session.
       </p>
     </div>
   );

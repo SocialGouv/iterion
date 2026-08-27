@@ -950,7 +950,7 @@ func TestRecordRunGitMeta(t *testing.T) {
 	t.Run("empty baseline skips persistence", func(t *testing.T) {
 		fake := &fakeGitMetaStore{}
 		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
-		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "")
+		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "", runtime.WorkspaceIntegrity{})
 		if fake.saved != nil {
 			t.Errorf("snapshot persisted despite empty baseline: %+v", fake.saved)
 		}
@@ -958,7 +958,7 @@ func TestRecordRunGitMeta(t *testing.T) {
 	t.Run("non-git workdir skips persistence", func(t *testing.T) {
 		fake := &fakeGitMetaStore{}
 		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
-		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "deadbeef")
+		r.recordRunGitMeta(context.Background(), msg, t.TempDir(), "deadbeef", runtime.WorkspaceIntegrity{})
 		if fake.saved != nil {
 			t.Errorf("snapshot persisted for a non-git dir: %+v", fake.saved)
 		}
@@ -984,7 +984,7 @@ func TestRecordRunGitMeta(t *testing.T) {
 		}
 		gitCommitAll(t, r, dir, "c2")
 
-		r.recordRunGitMeta(ctx, msg, dir, base)
+		r.recordRunGitMeta(ctx, msg, dir, base, runtime.WorkspaceIntegrity{})
 		if fake.saved == nil {
 			t.Fatal("no snapshot persisted")
 		}
@@ -1023,12 +1023,52 @@ func TestRecordRunGitMeta(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r.recordRunGitMeta(ctx, msg, dir, head)
+		r.recordRunGitMeta(ctx, msg, dir, head, runtime.WorkspaceIntegrity{})
 		if fake.saved == nil {
 			t.Fatal("no snapshot persisted for a no-commit run")
 		}
 		if len(fake.saved.Commits) != 0 || len(fake.saved.Files) != 0 {
 			t.Errorf("expected empty commit/file lists, got %+v / %+v", fake.saved.Commits, fake.saved.Files)
+		}
+	})
+	t.Run("baseline tree with a diverging pod-side HEAD is NOT recorded", func(t *testing.T) {
+		// Export-based sandbox whose pod finished elsewhere: an empty
+		// snapshot here would be a confident lie (the run committed, the
+		// export lost it) — recordRunGitMeta must skip, not certify zero.
+		fake := &fakeGitMetaStore{}
+		r := &Runner{cfg: Config{Store: fake, Logger: iterlog.Nop()}}
+		dir := t.TempDir()
+		ctx := context.Background()
+		if err := r.runGit(ctx, dir, "", "init", "-q"); err != nil {
+			t.Fatalf("git init: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCommitAll(t, r, dir, "c1")
+		head, err := gitlib.RevParseHead(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		r.recordRunGitMeta(ctx, msg, dir, head, runtime.WorkspaceIntegrity{
+			Applicable: true, PodHead: "feedfacefeedfacefeedfacefeedfacefeedface"})
+		if fake.saved != nil {
+			t.Errorf("empty snapshot persisted despite the pod-side HEAD disagreeing: %+v", fake.saved)
+		}
+
+		r.recordRunGitMeta(ctx, msg, dir, head, runtime.WorkspaceIntegrity{
+			Applicable: true, CaptureErr: "pod gone"})
+		if fake.saved != nil {
+			t.Errorf("empty snapshot persisted despite the pod-side HEAD being unknown: %+v", fake.saved)
+		}
+
+		// The pod agreeing (HEAD == baseline) keeps the empty snapshot a
+		// recordable FACT — falsified the other way.
+		r.recordRunGitMeta(ctx, msg, dir, head, runtime.WorkspaceIntegrity{
+			Applicable: true, PodHead: head})
+		if fake.saved == nil {
+			t.Error("pod-confirmed empty snapshot was not persisted")
 		}
 	})
 }

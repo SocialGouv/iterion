@@ -240,8 +240,8 @@ func fixerPRVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, lau
 // mr_gate takes neither tail and its commits strand on the cloud runner's
 // storage branch — the PR never receives them. Vars already present
 // (operator LaunchVars / route ContextVars) win.
-func stampBranchImprovePushBack(vars map[string]string, botID, sourceBranch string, asPR bool) {
-	if botID != branchImproveBotID || sourceBranch == "" {
+func stampBranchImprovePushBack(vars map[string]string, botID, brancherID, sourceBranch string, asPR bool) {
+	if botID != brancherID || sourceBranch == "" {
 		return
 	}
 	if _, ok := vars["open_mr"]; ok {
@@ -350,7 +350,7 @@ func (s *Server) resolveReviewBot(
 ) (string, bool) {
 	botID := cfg.SelectBot()
 	if botID == "" {
-		botID = defaultWebhookBotReviewPR
+		botID = s.roleBots().Reviewer
 	}
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
 }
@@ -369,7 +369,7 @@ func (s *Server) resolveForgeEventBots(cfg webhooks.Config, event, author string
 	}
 	botID := cfg.SelectBot()
 	if botID == "" {
-		botID = defaultWebhookBotReviewPR
+		botID = s.roleBots().Reviewer
 		if s.logger != nil {
 			s.logger.Warn("webhooks: config %s carries no bot_rules — falling back to the pinned review default %q; re-provision the integration to route per bot", cfg.ID, botID)
 		}
@@ -443,12 +443,12 @@ func (s *Server) selectIssueLabeledBot(
 	payloadHash, srcIP string,
 ) (string, bool) {
 	botID := cfg.DefaultBotID
-	if botID == "" && cfg.AllowsBot(featureDevBotID) {
-		botID = featureDevBotID
+	if implementer := s.roleBots().Implementer; botID == "" && cfg.AllowsBot(implementer) {
+		botID = implementer
 	}
 	if botID == "" {
 		if botID = cfg.SelectBot(); botID == "" {
-			botID = defaultWebhookBotReviewPR
+			botID = s.roleBots().Reviewer
 		}
 	}
 	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
@@ -623,7 +623,12 @@ type webhookLaunchResult struct {
 func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, meta webhookEventMeta, botID string) {
 	cancel := s.webhookCancelRun
 	if cancel == nil && s.runs != nil {
-		cancel = s.runs.Cancel
+		// Named reason: this cancel is nobody's click. It lands in run.Error,
+		// which the merge-gate synthetic status quotes — "cancelled by user"
+		// there sent operators hunting for a human who did nothing.
+		cancel = func(runID string) error {
+			return s.runs.CancelWithReason(runID, supersededRunReason)
+		}
 	}
 	if cfg.Overlap == "" || s.webhookDeliveries == nil || cancel == nil {
 		return
@@ -666,6 +671,11 @@ func (s *Server) supersedeLiveRuns(ctx context.Context, cfg webhooks.Config, met
 // live runs are necessarily among the most recent deliveries on its webhook,
 // and an unbounded scan would put the whole delivery history on the hot path.
 const supersedeLookback = 50
+
+// supersededRunReason is recorded as the run error of a run cancelled by the
+// overlap=supersede lane. Kept short: the merge-gate synthetic description
+// quotes it within a 60-rune budget.
+const supersededRunReason = "superseded by a newer delivery for the same subject"
 
 // scheduleForgeBoardProjection kicks the near-real-time forge→board refresh
 // for a repo. Once per DELIVERY, never once per bot: a fan-out would otherwise

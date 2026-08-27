@@ -777,7 +777,7 @@ agent verify_build:
 ## the agent-prepared verify.sh and reports the REAL exit code (v2 —
 ## replaces the v1 `validate` agent whose stable:true was self-reported).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} VERIFY_TIMEOUT_S={{vars.verify_timeout_s}} python3 -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -876,7 +876,7 @@ pre = tree_state()
 rc = 0
 out = ''
 reason = ''
-limit = int({{vars.verify_timeout_s}})
+limit = int(os.environ['VERIFY_TIMEOUT_S'])
 try:
     p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=limit)
     out = p.stdout or ''

@@ -142,6 +142,10 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 				e.logger.Warn("runtime: workspace %s has no commits yet — running in-place (worktree needs a HEAD to anchor on)", e.workDir)
 			}
 		} else {
+			// The pool this run is about to grow is bounded here, before
+			// it grows. Best-effort and never fatal — see boundWorktreePool.
+			e.boundWorktreePool(ctx, e.store.Root())
+
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {
 				e.markFailedBestEffort(ctx, runID, "worktree setup", wtErr)
@@ -262,7 +266,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -287,6 +291,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		run.AutoMerge = e.autoMerge
 		if e.preset != "" {
 			run.Preset = e.preset
+		}
+		// Persisted so every resume re-applies it. This matters more than
+		// Preset does: a conversational bot resumes on EVERY turn, so a
+		// launch-only list would quietly disappear after the first reply.
+		if len(e.extraSkills) > 0 {
+			run.ExtraSkills = e.extraSkills
 		}
 		// Persist the workflow-declared tool-permission mode so the studio
 		// RunHeader can badge a gated run (off|ask|deny). This is the bot's
@@ -373,7 +383,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated {
+		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated && e.parentRunID == "" {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself. Only promote this to a managed-worktree baseline
 			// when the workspace was DELEGATED to the engine (WithWorkDir —
@@ -391,6 +401,17 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			//     without the workDirDelegated gate, closing such a run
 			//     would create an iterion/run/* branch there and best-effort
 			//     FF the operator's checked-out branch onto its HEAD.
+			//   - A NESTED run (subbot child) is handed its parent's workspace,
+			//     not given one of its own: the parent is still working in that
+			//     directory. Delegation says "this workspace is yours to close",
+			//     and only one run can mean it. Without the parentRunID gate a
+			//     `worktree: none` child stamps Worktree=true over its parent's
+			//     live tree, and every resume path finalizes unconditionally —
+			//     so answering the child's human gate would `git add -A &&
+			//     git commit` the parent's half-written tree and branch it, and
+			//     a child review gate would squash-merge it into the operator's
+			//     checkout. The parent owns its workspace for its whole life,
+			//     child included.
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
@@ -434,7 +455,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// bundle's skills/ entries into <workDir>/.claude/skills/ so both
 	// claude_code's native skill lookup and the claw `skill` tool
 	// discover them transparently. Workspace files always win on
-	// collision (see runtime/bundle.go for the rule).
+	// collision (see runtime/bundle.go for the rule). Tier sidecars from a
+	// PREVIOUS run are wiped first: precedence arbitrates within this
+	// pass, never across runs.
+	ClearSkillTierMarkers(e.workDir)
 	ownedSkills, err := mirrorBundleSkills(e.workDir, e.bundle, e.logger)
 	if err != nil {
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
@@ -459,6 +483,18 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run.
 	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
+	// Say, on the run's own record, that this run carried skills its .bot
+	// does not mention. Without it the addition is invisible state changing
+	// how the bot answers, and a bug report against the run is
+	// irreproducible. Best-effort: losing the note must not lose the run.
+	if len(e.extraSkills) > 0 {
+		if err := e.emit(ctx, runID, store.EventSkillsInjected, "", map[string]any{
+			"skills": append([]string(nil), e.extraSkills...),
+			"origin": e.extraSkillsOrigin,
+		}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: skills_injected event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -473,7 +509,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
 func (e *Engine) applyLibrarySkills() []string {
-	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)

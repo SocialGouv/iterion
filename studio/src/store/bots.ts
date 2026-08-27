@@ -50,7 +50,9 @@ async function load(set: (partial: Partial<BotsState>) => void): Promise<void> {
     set({ bots, discoveryErrors, loading: false });
   } catch (e) {
     if (seq !== loadSeq) return;
-    set({ error: errorMessage(e), loading: false });
+    // The failed request may belong to a newly selected project. Do not keep
+    // showing the previous project's skipped-bundle diagnostics beside it.
+    set({ error: errorMessage(e), discoveryErrors: [], loading: false });
   }
 }
 

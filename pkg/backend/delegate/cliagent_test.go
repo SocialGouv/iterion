@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
+	"github.com/SocialGouv/iterion/pkg/backend/permissionhook"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
@@ -256,5 +259,320 @@ func TestCLIAgentExecuteNoBinary(t *testing.T) {
 	_, err := b.Execute(context.Background(), Task{UserPrompt: "hi"})
 	if err == nil {
 		t.Fatal("expected error when no binary configured")
+	}
+}
+
+func TestCLIAgentPermissionShadowHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", iterionBin)
+
+	realHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("model = \"k2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(realHome, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	policy, err := permission.NewPolicy(permission.ModeDeny, []string{"Read(**)"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", StoreDir: t.TempDir(), Permission: policy, ExtraEnv: []string{"KIMI_CODE_HOME=" + realHome}}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), task, kimiProtocol, BackendKimi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 1 || !strings.HasPrefix(env[0], "KIMI_CODE_HOME=") {
+		t.Fatalf("hook env = %v", env)
+	}
+	shadow := strings.TrimPrefix(env[0], "KIMI_CODE_HOME=")
+	config, err := os.ReadFile(filepath.Join(shadow, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"model = \"k2\"", "[[hooks]]", "PreToolUse", "__permission-hook", "--policy-b64", "cd " + shellQuote(shadow)} {
+		if !strings.Contains(string(config), want) {
+			t.Errorf("shadow config missing %q:\n%s", want, config)
+		}
+	}
+	// The gate's authority must travel by value in the frozen argv, never as a
+	// file the gated agent could rewrite between two tool calls (#498 R3e6bb0).
+	wantPolicy, err := permissionhook.EncodePolicy(policy.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), wantPolicy) {
+		t.Errorf("registration does not carry the policy by value:\n%s", config)
+	}
+	if entries, err := os.ReadDir(shadow); err == nil {
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "policy") {
+				t.Errorf("a policy file was materialised in the shadow home: %s", e.Name())
+			}
+		}
+	}
+	// The shadow home must sit outside the workspace: <workspace>/.iterion is
+	// exactly where a repo-scoped Edit(**)/Write(**) allow rule reaches.
+	if stateRoot, _ := task.StateDir(BackendKimi); strings.HasPrefix(shadow, stateRoot) {
+		t.Errorf("shadow home %s sits under the run state dir %s, which a repo-scoped write rule can reach", shadow, stateRoot)
+	}
+	if info, err := os.Lstat(filepath.Join(shadow, "credentials")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("credentials were not linked into the shadow home: info=%v err=%v", info, err)
+	}
+	cleanup()
+	if _, err := os.Stat(shadow); !os.IsNotExist(err) {
+		t.Errorf("shadow home survived cleanup: %v", err)
+	}
+	// Assert on `credentials`, not `config.toml`: config.toml is in
+	// ExcludedEntries, so it is never symlinked and RemoveAll could not reach
+	// it under any implementation — a vacuous assertion (#498 review R946e69).
+	// `credentials` IS symlinked, so it is what proves cleanup unlinks rather
+	// than follows.
+	if info, err := os.Stat(filepath.Join(realHome, "credentials")); err != nil || !info.IsDir() {
+		t.Errorf("cleanup followed the symlink into the operator home: info=%v err=%v", info, err)
+	}
+}
+
+func TestCLIAgentPermissionUnsupportedModesRefuse(t *testing.T) {
+	askPolicy, err := permission.NewPolicy(permission.ModeAsk, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: askPolicy}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "cannot pause") {
+		t.Fatalf("permission: ask error = %v, want an explicit refusal", err)
+	}
+
+	denyWithAskRule, err := permission.NewPolicy(permission.ModeDeny, nil, []string{"Bash(git push:*)"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyWithAskRule}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "ask rules") {
+		t.Fatalf("deny + ask rule error = %v, want an explicit refusal", err)
+	}
+
+	denyPolicy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &recordingRun{}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: run}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+		t.Fatalf("sandboxed gated run error = %v, want an explicit refusal", err)
+	}
+
+	// A noop-driver Run reads as Hostless() — but runOnce still takes the
+	// `Sandbox != nil` branch, where ExecOpts.Env drops the shadow-home
+	// override and the node would run ungated. The guard must key on the same
+	// predicate runOnce does (#498 review, Re8c9e8).
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(context.Background(), Task{Permission: denyPolicy, Sandbox: noopLikeRun{}}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+		t.Fatalf("noop-driver gated run error = %v, want the same refusal: ExecOpts.Env would drop the shadow home", err)
+	}
+}
+
+// TestCLIAgentPermissionUnknownDialectRefuses pins the fail-CLOSED direction of
+// the backendName → hook-dialect handshake (#498 review, Rd8d86a). A protocol
+// that declares a PermissionHook under a name the hook subprocess cannot spell
+// must be refused before the CLI is launched: the hook would exit non-zero with
+// empty stdout, which grok and kimi both read as ALLOW, so the node would run
+// completely ungated — the one outcome the gate exists to prevent.
+func TestCLIAgentPermissionUnknownDialectRefuses(t *testing.T) {
+	proto := kimiProtocol
+	proto.Name = "some-future-cli"
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: proto}).preparePermissionHook(
+		context.Background(), Task{Permission: policy}, proto, proto.Name)
+	if err == nil || !strings.Contains(err.Error(), "dialect") {
+		t.Fatalf("unknown hook dialect error = %v, want an explicit refusal", err)
+	}
+}
+
+// TestCLIAgentPermissionRefusesBinaryInsideWorkspace pins the third leg of the
+// containment argument (#498 review, R8d24f4). The shadow home and the policy
+// are both kept out of the agent's reach; the hook BINARY is the one the agent
+// re-executes on every tool call, and a spawn failure is an ALLOW on both CLIs
+// — so a corrupted file, not a crafted one, is enough to disarm the gate.
+func TestCLIAgentPermissionRefusesBinaryInsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit fixture")
+	}
+	workspace := t.TempDir()
+	inside := filepath.Join(workspace, "iterion")
+	if err := os.WriteFile(inside, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BIN", inside)
+
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", WorkDir: workspace, StoreDir: t.TempDir(), Permission: policy}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+		t.Fatalf("hook binary inside the gated workspace error = %v, want an explicit refusal", err)
+	}
+}
+
+// TestCLIAgentPermissionRefusesRelativeBinInsideWorkspace pins R05d9fd: a
+// relative ITERION_BIN (the shape CLAUDE.md documents as ITERION_BIN=./iterion)
+// used to skip pathInsideCheckout — filepath.Rel cannot relate an absolute
+// workspace to "./iterion", so the guard answered "outside" — and then freeze
+// that relative path into the hook argv, which the CLI resolves against the
+// gated workspace. Absolutising first makes the containment check see the
+// real path and makes the spawn cwd-independent.
+func TestCLIAgentPermissionRefusesRelativeBinInsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable-bit fixture")
+	}
+	workspace := t.TempDir()
+	inside := filepath.Join(workspace, "iterion")
+	if err := os.WriteFile(inside, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+	t.Setenv("ITERION_BIN", "./iterion")
+
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{NodeID: "n", WorkDir: workspace, StoreDir: t.TempDir(), Permission: policy}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+		t.Fatalf("relative ITERION_BIN inside the gated workspace error = %v, want an explicit refusal", err)
+	}
+}
+
+// TestCLIAgentPermissionAbsolutisesRelativeBinOutsideWorkspace is the other
+// half of R05d9fd: a relative ITERION_BIN that really is outside the workspace
+// must still be frozen as an absolute path. Otherwise the CLI spawns it with
+// cwd = the gated workspace and either hits a different file or fails open.
+func TestCLIAgentPermissionAbsolutisesRelativeBinOutsideWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX hook command fixture")
+	}
+	binDir := t.TempDir()
+	workspace := t.TempDir()
+	iterionBin := filepath.Join(binDir, "iterion")
+	if err := os.WriteFile(iterionBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Chdir(binDir)
+	t.Setenv("ITERION_BIN", "./iterion")
+
+	realHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(realHome, "config.toml"), []byte("model = \"k2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := permission.NewPolicy(permission.ModeDeny, []string{"Read(**)"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := Task{
+		NodeID:     "n",
+		WorkDir:    workspace,
+		StoreDir:   t.TempDir(),
+		Permission: policy,
+		ExtraEnv:   []string{"KIMI_CODE_HOME=" + realHome},
+	}
+	env, cleanup, err := (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), task, kimiProtocol, BackendKimi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	if len(env) != 1 || !strings.HasPrefix(env[0], "KIMI_CODE_HOME=") {
+		t.Fatalf("hook env = %v", env)
+	}
+	shadow := strings.TrimPrefix(env[0], "KIMI_CODE_HOME=")
+	config, err := os.ReadFile(filepath.Join(shadow, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs("./iterion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), abs) {
+		t.Errorf("registration must carry the absolute hook binary %q:\n%s", abs, config)
+	}
+	if strings.Contains(string(config), "'./iterion'") {
+		t.Errorf("registration still has a cwd-relative binary:\n%s", config)
+	}
+	if !strings.Contains(string(config), "cd "+shellQuote(shadow)) {
+		t.Errorf("registration must cd out of the gated workspace:\n%s", config)
+	}
+}
+
+// TestShellQuoteIsPOSIXNotCmdExe pins the quoting dialect that makes Windows
+// ungatable: cmd.exe does not treat `'` as a quoting character, so this
+// string would split on spaces and fail to spawn (#498 review, R1f6137).
+func TestShellQuoteIsPOSIXNotCmdExe(t *testing.T) {
+	got := shellQuote(`C:\Program Files\iterion\iterion.exe`)
+	want := `'C:\Program Files\iterion\iterion.exe'`
+	if got != want {
+		t.Fatalf("shellQuote = %q, want POSIX single-quoting %q", got, want)
+	}
+}
+
+// TestCLIAgentPermissionRefusesWindows pins R1f6137: the seam must not invite
+// the operator past the symlink half (Developer Mode) into a POSIX-quoted
+// hook command that cmd.exe cannot spawn — both CLIs read a spawn failure as
+// ALLOW.
+func TestCLIAgentPermissionRefusesWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only seam refusal")
+	}
+	policy, err := permission.NewPolicy(permission.ModeDeny, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = (&CLIAgentBackend{Protocol: kimiProtocol}).preparePermissionHook(
+		context.Background(), Task{Permission: policy}, kimiProtocol, BackendKimi)
+	if err == nil || !strings.Contains(err.Error(), "unsupported on Windows") {
+		t.Fatalf("windows gated run error = %v, want an explicit refusal", err)
+	}
+}
+
+func TestSameModelID(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"anthropic/claude-opus-5", "claude-opus-5", true},
+		{"claude-opus-5", "anthropic/claude-opus-5", true},
+		{"glm-4.6", "anthropic/claude-opus-5", false},
+		{"", "", true},
+		{"openai/gpt-5.5", "gpt-5.5", true},
+		{"openai/gpt-5.5", "gpt-5.5-2026", true},
+		{"gpt-5.5", "gpt-5.5-2026", true},
+		{"gpt-5", "gpt-5.5", false},
+		{"claude-sonnet-4", "claude-sonnet-4-6", false},
+		{"kimi-k2", "kimi-k2-0905", true},
+		{"gpt-4o", "gpt-4o-2024-08-06", true},
+	}
+	for _, tc := range cases {
+		if got := SameModelID(tc.a, tc.b); got != tc.want {
+			t.Errorf("SameModelID(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+		if got := SameModelID(tc.b, tc.a); got != tc.want {
+			t.Errorf("SameModelID(%q, %q) = %v, want %v (symmetry)", tc.b, tc.a, got, tc.want)
+		}
 	}
 }

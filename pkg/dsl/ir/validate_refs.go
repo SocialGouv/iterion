@@ -18,9 +18,10 @@ import (
 // human-readable location string for diagnostics.
 type refContext struct {
 	Ref         *Ref
-	NodeID      string // consuming node ID
+	NodeID      string // consuming node ID (edge with-mappings: the source)
 	Location    string // e.g. "prompt 'sys' (node 'a')"
 	IncludeSelf bool   // true for edge with-mappings: the source node itself is available
+	EdgeTo      string // destination of an edge with-mapping; empty otherwise
 }
 
 // collectAllRefs gathers every template reference in the workflow together
@@ -50,10 +51,16 @@ func collectAllRefs(w *Workflow) []refContext {
 		}
 	}
 
-	// Edge with-mapping refs. The with-mapping is evaluated when the
-	// edge fires, so the source node (From) and all its predecessors
-	// have already produced their outputs. We use From as the consumer
-	// context and include From itself as an additional "self" predecessor.
+	// Edge with-mapping refs. The mapping is evaluated when the edge
+	// fires, so the source (From) has already produced its output.
+	// {{input.x}} in that mapping is the source output (every router
+	// copies its input onto its output, which is how pass-through
+	// works) — not the source input schema, and not a silent fallback
+	// to run-level inputs. C034 checks the source output schema; a
+	// schemaless non-router source, or a mid-graph router whose
+	// incoming with-keys do not include the field, warns C032. Use
+	// {{vars.x}} for a launch-time value. IncludeSelf so
+	// {{outputs.<source>}} is reachable too.
 	for _, e := range w.Edges {
 		for _, dm := range e.With {
 			for _, ref := range dm.Refs {
@@ -62,6 +69,7 @@ func collectAllRefs(w *Workflow) []refContext {
 					NodeID:      e.From,
 					Location:    fmt.Sprintf("edge %s -> %s, with %q", e.From, e.To, dm.Key),
 					IncludeSelf: true,
+					EdgeTo:      e.To,
 				})
 			}
 		}
@@ -481,7 +489,16 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 		return
 	}
 
-	// Can only validate if the consuming node has an input schema.
+	if rc.EdgeTo != "" {
+		c.validateEdgeInputRef(w, rc, node, fieldName)
+		return
+	}
+	c.validateNodeInputRef(w, rc, node, fieldName)
+}
+
+// validateNodeInputRef is C034 for prompts, tool commands, and compute
+// exprs: {{input.x}} is a field of the consuming node's input.
+func (c *compiler) validateNodeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
 	inSchema := NodeInputSchema(node)
 	if inSchema == "" {
 		return
@@ -497,6 +514,122 @@ func (c *compiler) validateInputRef(w *Workflow, rc refContext) {
 			"%s: reference %s accesses field %q not found in input schema %q of node %q",
 			rc.Location, rc.Ref.Raw, fieldName, inSchema, rc.NodeID)
 	}
+}
+
+// validateEdgeInputRef is C034 for edge with-mappings: {{input.x}} is a
+// field of the source node's output (the payload available when the
+// edge fires). Routers copy their input onto their output (an llm
+// router also records the selection). An entry router's input is the
+// run payload (keys unknown at compile time); a mid-graph router's
+// input is only its incoming with-keys plus mode-specific bindings, so
+// a field in neither is C032 — otherwise dropping the run-input
+// fallback would silently nil {{input.var}} on a router that never
+// received it. Any other schemaless source also warns C032. Run-level
+// inputs / vars are a different namespace ({{vars.x}}).
+func (c *compiler) validateEdgeInputRef(w *Workflow, rc refContext, node Node, fieldName string) {
+	if isRuntimeInjectedField(fieldName) {
+		return
+	}
+	if implicit := NodeImplicitOutputFields(node); implicit != nil {
+		if !slices.Contains(implicit, fieldName) {
+			c.errorf(DiagInputFieldNotInSchema,
+				"%s: reference %s accesses field %q on %s node %q — its only output field(s): %s (edge with-mappings resolve {{input.*}} against the source node's output)",
+				rc.Location, rc.Ref.Raw, fieldName, node.NodeKind(), rc.NodeID, strings.Join(implicit, ", "))
+		}
+		return
+	}
+
+	outSchema := NodeOutputSchema(node)
+	if outSchema == "" {
+		if r, isRouter := node.(*RouterNode); isRouter {
+			c.validateRouterEdgeInput(w, rc, r, fieldName)
+			return
+		}
+		msg := fmt.Sprintf("%s: reference %s accesses field %q on node %q which has no output schema; cannot verify (edge with-mappings resolve {{input.*}} against the source node's output, not run inputs)",
+			rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+		if _, isVar := w.Vars[fieldName]; isVar {
+			msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+		}
+		c.warnf(DiagRefNodeNoSchema, "%s", msg)
+		return
+	}
+	schema, ok := w.Schemas[outSchema]
+	if !ok {
+		return // already reported by C002
+	}
+	if findField(schema, fieldName) != nil {
+		return
+	}
+
+	msg := fmt.Sprintf("%s: reference %s accesses field %q not found in output schema %q of source node %q (edge with-mappings resolve {{input.*}} against the source node's output)",
+		rc.Location, rc.Ref.Raw, fieldName, outSchema, rc.NodeID)
+	if _, isVar := w.Vars[fieldName]; isVar {
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+	}
+	if inSchema := NodeInputSchema(node); inSchema != "" {
+		if s, ok := w.Schemas[inSchema]; ok && findField(s, fieldName) != nil {
+			msg += fmt.Sprintf("; field %q is on the source node's input schema, not its output", fieldName)
+		}
+	}
+	c.errorf(DiagInputFieldNotInSchema, "%s", msg)
+}
+
+// validateRouterEdgeInput is C032 for a mid-graph router whose outgoing
+// {{input.x}} is not in the pass-through namespace (incoming with-keys
+// plus mode-specific bindings). An entry router always has the run
+// payload as its input floor (even on loop re-entry), whose extra keys
+// are not known at compile time, so it stays silent.
+func (c *compiler) validateRouterEdgeInput(w *Workflow, rc refContext, r *RouterNode, fieldName string) {
+	if rc.NodeID == w.Entry {
+		return
+	}
+	if routerPassThroughKeys(w, r)[fieldName] {
+		return
+	}
+	msg := fmt.Sprintf("%s: reference %s accesses field %q on router %q which does not pass it through (not supplied by an incoming with-mapping); edge with-mappings resolve {{input.*}} against the source node's output, not run inputs",
+		rc.Location, rc.Ref.Raw, fieldName, rc.NodeID)
+	if _, isVar := w.Vars[fieldName]; isVar {
+		msg += fmt.Sprintf("; use {{vars.%s}} for a workflow variable", fieldName)
+	}
+	c.warnf(DiagRefNodeNoSchema, "%s", msg)
+}
+
+// routerPassThroughKeys is the set of keys a mid-graph router will have
+// on its output — incoming with-keys, plus the fields each mode adds
+// itself (llm selection, fan_out_each item binding).
+func routerPassThroughKeys(w *Workflow, r *RouterNode) map[string]bool {
+	keys := map[string]bool{}
+	id := r.NodeID()
+	for _, e := range w.Edges {
+		if e.To != id {
+			continue
+		}
+		for _, dm := range e.With {
+			keys[dm.Key] = true
+		}
+	}
+	switch r.RouterMode {
+	case RouterLLM:
+		keys["reasoning"] = true
+		if r.RouterMulti {
+			keys["selected_routes"] = true
+		} else {
+			keys["selected_route"] = true
+		}
+	case RouterFanOutEach:
+		bind := r.ItemBinding
+		if bind == "" {
+			bind = "item"
+		}
+		keys[bind] = true
+		// Runtime binds the element under BOTH the declared `as:` name
+		// and the literal "item" (fan_out_each.go), so {{input.item}}
+		// resolves even with a custom binding.
+		keys["item"] = true
+		keys["index"] = true
+		keys["count"] = true
+	}
+	return keys
 }
 
 func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors map[string]map[string]bool, producers map[string]string) {

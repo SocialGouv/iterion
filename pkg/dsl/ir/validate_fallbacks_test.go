@@ -44,7 +44,7 @@ func compileFallbackSrc(t *testing.T, src string) *CompileResult {
 // inert (bypassPermissions keeps the full native toolset); it exists so
 // the claw route is not a tool-less agent.
 func TestFallbacksCompileToOrderedRoutes(t *testing.T) {
-	src := fallbackWorkflow("  tools: [read_file, run_command]\n", `    api:
+	src := fallbackWorkflow("  tools: [read_file, bash]\n", `    api:
       backend: "claw"
       model: "anthropic/claude-opus-5"
       on: [usage_window]
@@ -133,7 +133,7 @@ func TestFallbackUnknownTriggerWarns(t *testing.T) {
 // not exist — pi already fails rather than degrades in this exact
 // situation, and C176 adopts that precedent at compile time.
 func TestFallbackUngatedRouteIsRefused(t *testing.T) {
-	src := fallbackWorkflow("  permission: deny\n  tools: [read_file]\n",
+	src := fallbackWorkflow("  permission: ask\n  tools: [read_file]\n",
 		"    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -141,6 +141,66 @@ func TestFallbackUngatedRouteIsRefused(t *testing.T) {
 	}
 	if !cr.HasErrors() {
 		t.Error("C176 must be an error: falling back UNGATED is the failure this check exists for")
+	}
+}
+
+// externalHookBackends are the CLI backends whose PreToolUse hook is an
+// EXTERNAL process. Both earned their entry with a live denial (a real model,
+// a real tool call, a filesystem sentinel), and both are deny-only for the
+// same structural reason — see gateEnforcingModes.
+var externalHookBackends = []struct{ backend, model string }{
+	{"kimi", "kimi-code/kimi-for-coding"},
+	{"grok", "grok-4.6"},
+}
+
+func TestFallbackExternalHookDenyRouteIsAllowed(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := fallbackWorkflow("  permission: deny\n  tools: [read_file]\n",
+				"    cheap:\n      backend: \""+tc.backend+"\"\n      model: \""+tc.model+"\"\n")
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+				t.Fatalf("%s's proven PreToolUse deny hook must admit permission: deny routes: %+v", tc.backend, cr.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestGatedPrimaryBackendIsScreened(t *testing.T) {
+	src := "agent x:\n  backend: \"codex\"\n  model: \"gpt-5.4\"\n  system: p\n  permission: deny\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+		t.Fatalf("a gated primary backend without live enforcement proof must C176: %+v", cr.Diagnostics)
+	}
+}
+
+func TestExternalHookDenyPrimaryBackendIsAllowed(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+				t.Fatalf("%s permission: deny primary should compile: %+v", tc.backend, cr.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestExternalHookDenyWithAskRulesIsRefused: an explicit ask rule outranks the
+// mode default, and an external hook process cannot pause the parent iterion
+// run. Admitting it would silently downgrade the operator's `ask` to `deny`.
+func TestExternalHookDenyWithAskRulesIsRefused(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  ask: [\"Bash(git push:*)\"]\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
+				t.Fatalf("%s cannot preserve an explicit ask rule from an external hook process: %+v", tc.backend, cr.Diagnostics)
+			}
+		})
 	}
 }
 
@@ -181,7 +241,7 @@ func TestFallbackClawToCLIRefusedEvenWithToolsList(t *testing.T) {
 // tools its claw route will actually get. The list is inert on the CLI
 // primary and load-bearing on the route, so this must compile clean.
 func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
-	src := fallbackWorkflow("  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -190,7 +250,7 @@ func TestFallbackCLIToClawAllowedWithToolsList(t *testing.T) {
 }
 
 func TestFallbackPersistCrossBackendRefused(t *testing.T) {
-	src := fallbackWorkflow("  session: persist\n  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  session: persist\n  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -199,7 +259,7 @@ func TestFallbackPersistCrossBackendRefused(t *testing.T) {
 }
 
 func TestFallbackInheritIfAvailableCrossBackendRefused(t *testing.T) {
-	src := fallbackWorkflow("  session: inherit_if_available\n  tools: [read_file, run_command]\n",
+	src := fallbackWorkflow("  session: inherit_if_available\n  tools: [read_file, bash]\n",
 		"    api:\n      backend: \"claw\"\n      model: \"anthropic/claude-opus-5\"\n")
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -239,7 +299,7 @@ func TestNodeWithoutFallbacksIsUntouched(t *testing.T) {
 // let the common shape compile clean.
 func TestFallbackUngatedRouteRefusedFromWorkflowGate(t *testing.T) {
 	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  tools: [read_file]\n" +
-		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"codex\"\n      model: \"gpt-5.4\"\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  permission: deny\n  x -> done\n"
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -253,7 +313,7 @@ func TestFallbackUngatedRouteRefusedFromWorkflowGate(t *testing.T) {
 // run time — which is the shipped default shape.
 func TestFallbackUngatedRouteRefusedOnAutoBackend(t *testing.T) {
 	src := "agent x:\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
-		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"codex\"\n      model: \"gpt-5.4\"\n" +
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
 	cr := compileFallbackSrc(t, src)
 	if !hasDiag(cr.Diagnostics, DiagFallbackUnsafeCross) {
@@ -282,5 +342,58 @@ func TestFallbackDriftDoesNotLieAboutReasoningEffort(t *testing.T) {
 		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
 	if !hasDiag(compileFallbackSrc(t, kimi).Diagnostics, DiagFallbackDrift) {
 		t.Error("C177 must still fire for a backend that really has no dial")
+	}
+}
+
+// TestGatedExternalHookBackendWarnsAboutSandbox: the gate on grok/kimi runs
+// through a HOST-side hook, and the shipped default is `sandbox: auto`. Without
+// this warning the coupling is invisible until the agent node dies mid-run
+// (#498 review, R9ab052) — the headline capability looking unreachable in the
+// default configuration.
+func TestGatedExternalHookBackendWarnsAboutSandbox(t *testing.T) {
+	for _, tc := range externalHookBackends {
+		t.Run(tc.backend, func(t *testing.T) {
+			src := "agent x:\n  backend: \"" + tc.backend + "\"\n  model: \"" + tc.model + "\"\n  system: p\n  permission: deny\n" +
+				"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+			cr := compileFallbackSrc(t, src)
+			if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("expected C136 for a gated %s node with no sandbox opt-out: %+v", tc.backend, cr.Diagnostics)
+			}
+			if cr.HasErrors() {
+				t.Errorf("C136 must WARN, not reject: --sandbox none and ITERION_SANDBOX_DEFAULT=none both make this legal at run time")
+			}
+		})
+	}
+}
+
+func TestGatedExternalHookBackendSilentWhenSandboxDeclined(t *testing.T) {
+	cases := map[string]string{
+		"workflow-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  sandbox: none\n  entry: x\n  x -> done\n",
+		"node-level": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n  permission: deny\n  sandbox: none\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+		"gate off": "agent x:\n  backend: \"grok\"\n  model: \"grok-4.6\"\n  system: p\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("C136 fired although the run can reach the host-side hook: %+v", cr.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestGatedExternalHookFallbackWarnsAboutSandbox: a fallback ROUTE to grok/kimi
+// carries the same host-side requirement as a primary one — the fall-through
+// would otherwise die mid-run, at the worst possible moment.
+func TestGatedExternalHookFallbackWarnsAboutSandbox(t *testing.T) {
+	src := "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
+		"  fallbacks:\n    cheap:\n      backend: \"kimi\"\n      model: \"kimi-code/kimi-for-coding\"\n" +
+		"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n"
+	cr := compileFallbackSrc(t, src)
+	if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+		t.Fatalf("expected C136 for a gated fallback route to kimi: %+v", cr.Diagnostics)
 	}
 }

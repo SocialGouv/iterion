@@ -32,8 +32,8 @@ flowchart LR
 | `claw` | Recommended in-process backend for direct provider calls and native Iterion tools. | Automatic or explicit. |
 | `claude_code` | Recommended CLI-agent backend for implementation work and Claude subscription/OAuth use. | Automatic when Claude Code OAuth is detected, or explicit. |
 | `pi` | Supported, with iterion's permission gate. Reaches ~36 providers and reports a provider-computed cost. Runs a long-lived `--mode rpc` session by default — tool events, native steering, authoritative accounting, pre-flight handshake (`ITERION_PI_MODE=print` rolls back). Permission gate, ask_user, board capabilities and workflow-declared MCP servers (all three transports — streamable http, legacy sse, stdio) work via an embedded extension, which loads on the **rpc transport only**: a node declaring `permission:` is refused under `ITERION_PI_MODE=print` rather than run ungated. | Explicit only. |
-| `kimi` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
-| `grok` | Supported through the generic CLI-agent protocol; session resume/fork is not wired. | Explicit only. |
+| `kimi` | Supported through the generic CLI-agent protocol, with iterion's permission gate in **`deny` only** — an external `PreToolUse` hook can hard-block a call but cannot pause the run for `ask`, so `ask` is refused at compile time (C176). A gated node needs `sandbox: none` (C136 warns), and session resume/fork is not wired. | Explicit only. |
+| `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
 ## TL;DR
@@ -287,7 +287,7 @@ through `claw`. See [ADR-087](adr/087-cross-backend-model-fallback-chain.md).
 agent implement:
   backend: "claude_code"          # forfait
   model: "claude-opus-5"
-  tools: [read_file, run_command]
+  tools: [read_file, bash]
   fallbacks:
     api:                          # same model, metered Anthropic key
       backend: "claw"
@@ -337,13 +337,98 @@ A `usage_window` failure **skips** the in-node retry budget when a route
 remains: retrying inside a shut window cannot succeed, and the whole
 chain runs under one per-node `timeout:`.
 
+When a `usage_window` failure carries a provider reset instant, the executor
+also puts the effective `(backend, credential hint, model)` route on a reactive
+cooldown until that instant. The ledger is ready to do the same for a typed
+temporary `unavailable` failure with a reset instant, but no shipped backend
+produces that stage-3 condition yet. Later nodes in the same run enter the
+chain at the first route whose `on:` filter accepts the remembered category,
+without spawning the refused backend again. The skip remains visible as a
+`model_fallback` event with `attempts: 0`, `cooldown: true` and
+`cooldown_until`; it is an info line rather than another rate-limit warning.
+The route is remembered even when the node that hit the wall had nowhere to
+fall through to — a refusal belongs to the route, not to one node's chain —
+so the next node whose chain *does* accept the category skips a spawn the
+first one had to pay for.
+
+Cooldown is strictly fail-open: an absent/already-passed reset, a reset more
+than eight days out (the same implausibility ceiling as the durable retry's
+`max_wait` — a misparsed provider datetime must not keep a healthy route dark
+for a whole run), or no later route accepting the failure, all leave dispatch
+unchanged. Entries expire on read at their own reset instant (no sweeper), and
+the mid-call usage guard stays armed for parallel branches that were already
+in flight. Operators can set `ITERION_ROUTE_COOLDOWN=off` before launching a
+run to restore the historical probe-on-every-node behaviour. The switch is
+read once when that run's executor is created; unset, `on`, and unrecognised
+values keep the cooldown enabled.
+
+### Terminal degrade (`action: skip`) and the route gate (`when:`)
+
+Two route properties extend the chain beyond backend switches
+([ADR-091](adr/091-fallback-skip-route-and-plan-peer-review.md)):
+
+```yaml
+judge plan_review:
+  backend: "claw"
+  model: "openai/gpt-5.6-sol"
+  fallbacks:
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      ## unfiltered on purpose: "skip" here means the peer must NEVER
+      ## block — and under `sandbox: auto` a claw failure flattens to a
+      ## string at the IPC boundary and classifies UNCLASSIFIED, which a
+      ## FILTERED skip refuses (see below). Scope the filter only when
+      ## the node runs unsandboxed with typed errors intact.
+      on: [any]
+```
+
+`action: skip` is a **terminal degrade**: when the walk reaches it, the
+node COMPLETES with a zero-value output (every schema field at its zero
+— `""` / `false` / `0` / `[]`) stamped `_skipped: true` +
+`_fallback_used` + `_served_by`, instead of failing the run. It is the
+"continue and ignore" half of an optional-node policy — the "pause and
+retry" half is simply *not* declaring it: the failure then stays
+`failed_resumable` and the run-level usage-window retry parks the run
+until the window reopens. `on:` filters it like any route — with one
+deliberate asymmetry: an **unclassified** failure (a bare CLI exit, a
+flattened sandbox error) still routes to any *executable* route, but a
+filtered skip REFUSES it — routing an indescribable failure to another
+backend is a safety net, converting it into a zero-value success is a
+lie. `on: [any]` opts in explicitly. The compiler (C173) refuses a skip
+route that also names a backend/model/provider/metered, an unknown
+`action:`, and a skip that is not the LAST route (everything after a
+terminal is unreachable).
+
+`when:` gates any route on an expression over `vars` — evaluated at
+dispatch, so an ordinary `--var` picks the active route set per run
+(that is how ONE `plan_review` node expresses both `wait` and `skip`
+policies). The compiler checks the expression parses, reads only
+`vars.*` (a route has no input/outputs of its own), and references only
+**declared** vars — at run time an absent var reads as false and would
+silently disarm the route. String literals use single quotes
+(`vars.policy == 'skip'`); a route whose gate is false is simply absent
+from the chain.
+
+Downstream, a deterministic compute reads the stamp
+(`outputs.<node>._skipped == true`) and routes around whatever consumed
+the node's real output — never silently. Observability: the
+`model_fallback` event carries `to_action: "skip"` (with an empty
+`to_backend` — nothing serves), and the run header's fallbacks chip
+lists the node with `skipped: true` even though no backend ran.
+
 ### What a fall-through leaves behind
 
 Nothing about it is silent:
 
 - a `model_fallback` event in `events.jsonl` (from/to backend, model and
   provider, the classified reason, attempts spent) plus a `run.log`
-  warning;
+  warning for a fresh failure, or an info line for a cooldown skip;
+- a `model_drift` event when the provider-reported model is not the
+  one the node declared (proxy / `ANTHROPIC_MODEL` / a fallback that
+  also changed the model). `delegate_started` carries `declared_model`;
+  `delegate_finished` / `delegate_error` add `effective_model`;
+  `run.json` `nodes_served` is the last pair per node;
 - `_backend` / `_model` on the node output name the route that
   **served**, not the one requested;
 - `_fallback_used` and `_served_by` are stamped so a bot's deterministic
@@ -361,14 +446,49 @@ A fall-through also **drops the failed route's conversation** — the
 session store carries no provider fingerprint, so replaying it would
 send one provider's signed turns to another.
 
+### A best-effort session that no longer loads
+
+`session: inherit_if_available` and `session: persist` say the session
+is *best effort*. Sometimes the id resolves but its backing state is
+gone — a cloud resume replaces the sandbox container, and the CLI's
+session files die with it, after which every resume of that node fails
+identically and forever. "If available" covers that too: the executor
+retries **once** with the session dropped.
+
+Deliberately narrow, on three axes:
+
+- **Unclassified failures only.** That is where a refused session lands
+  (the backend declined to load it and said nothing typed about why),
+  and being non-retryable it makes the fresh attempt a single extra
+  call. `auth` / `usage_window` / `unavailable` are credential- or
+  model-level — a fresh session hits the same wall — and
+  `transient_exhausted` is a provider-side cause (throttle, 5xx, TCP
+  blip) the session had no part in.
+- **Backends that actually resume with the id** — `claude_code`,
+  `codex`, `pi`. `claw` never reads `SessionID` (its conversation is
+  replayed from the run's own store), and `kimi` / `grok` only report
+  one, so there the "fresh" call would be byte-identical.
+- **`inherit` and `fork` never degrade.** They asked for continuity
+  unconditionally, and keep failing loudly.
+
+Like a fall-through, it is not silent: a `session_degraded` event
+(backend, session id, reason, error) and **`_session_degraded: true` on
+the node's own output**, so a deterministic gate can fail closed on an
+amnesiac input. It is *not* a `model_fallback` and does not set
+`_fallback_used`: the same backend, model and credential served — what
+degraded is the node's input. The node's accumulated `claw` conversation
+is evicted alongside, so "fresh" means fresh on every backend.
+
 ### Refusals
 
 Two crossings are compile-time **errors** (`C176`), because the degraded
 run would be silently wrong rather than merely worse:
 
-- a route on a backend that cannot enforce the node's `permission:` gate
-  (`kimi`, `grok`, `codex`) — the anti-prompt-injection boundary must not
-  disappear at the moment the run is under stress;
+- a route on a backend/mode pair that cannot enforce the node's
+  `permission:` gate (`kimi` and `grok` accept `deny` but not `ask`; `codex`
+  is not admitted at all) — the anti-prompt-injection boundary must not
+  disappear at the moment the run is under stress. The same check now covers
+  the primary backend, not only fallbacks;
 - a route crossing the claw⇄CLI boundary, because the `tools:` list
   does not mean the same thing on both sides. The two directions are not
   symmetric:
@@ -381,6 +501,14 @@ run would be silently wrong rather than merely worse:
   - **CLI → claw is refused only when the list is empty**, which on claw
     means *zero* tools. Declaring the tools explicitly is the documented
     pattern: inert on the CLI primary, load-bearing on the claw route.
+
+A third refusal is `C135`: a claw route on a node whose `tools:` list
+names something claw cannot resolve. The list is inert on the CLI
+primary, so a name like `run_command` or `list_files` looks harmless
+there — but the route resolves every name against the in-process
+registry, so it would fail at the exact moment the run is already
+falling back. Declare the tools with claw's own names (`bash`,
+`glob`, …); the diagnostic names the nearest one.
 
 A route that changes `backend:` must pin its own `model:` (`C173`):
 model specs are not portable (`claw` needs `provider/model`,
@@ -502,6 +630,18 @@ only have `ANTHROPIC_API_KEY` and the binary, `claw` is preferred (same auth,
 no subprocess fork). To use `claude_code` with API-key auth, set
 `backend: claude_code` explicitly on the node.
 
+**MCP isolation.** iterion spawns the CLI with `--strict-mcp-config`, so the
+only MCP servers a node gets are the ones iterion resolves and passes via
+`--mcp-config`: the `.bot`'s `mcp_server:`/`mcp:` blocks, the target repo's
+`.mcp.json` (workflow `autoload_project`, default on), and iterion's own
+ask_user/board servers. The operator's personal user-scope servers
+(`~/.claude.json`) do **not** boot inside bot nodes — inheriting them meant
+undeclared tools reaching the agent, an `npx`/server boot per node visit
+(a CPU spike per iteration on loop-heavy bots), and personal API keys on the
+subprocess argv. `ITERION_CLAUDE_CODE_STRICT_MCP=0` is the escape hatch that
+restores host-config inheritance. Settings remain inherited independently
+(`--setting-sources`, above).
+
 ### `codex`
 
 The Codex backend delegates to the installed Codex CLI through the pinned Agent
@@ -597,6 +737,47 @@ order) — currently
 `anthropic/glm-5.2` for z.ai,
 `openai/gpt-5.4-mini` for OpenAI, and
 `xai/grok-3` for xAI.
+
+#### The `tools:` list is load-bearing here (`C135`)
+
+claw is the one backend a node's `tools:` list actually constrains: it
+resolves every declared name against the in-process registry and fails
+the node on one it does not have. So the names must be claw's own —
+`read_file`, `write_file`, `file_edit`, `glob`, `grep`, `bash`,
+`web_fetch`, `skill`, `web_search`, the `task_*` / `worker_*` families,
+… — and **not** the names that circulate in older examples
+(`list_files`, `run_command`, `git_diff`, `search_codebase`, `tree`,
+`patch`): none of those has ever been registered.
+
+`iterion validate` catches this before launch (`C135`) rather than
+letting the run die on `unknown tool "list_files"` after the workspace
+is prepared, and it names the nearest built-in. The check applies to
+claw only — on every CLI backend the lowercase list is advisory, so an
+unknown name there is dead config, not a failure — and it never touches
+qualified MCP references (`mcp.<server>.<tool>`, the `mcp__server__tool`
+alias form, wildcards), which are resolved when the server connects.
+
+What it lets through, and why. iterion's own board and watch tools are
+accepted by their **bare** name (`create_issue`, `subscribe`, …): the
+registry resolves a dot-free name as a unique suffix over the connected
+MCP tools, and the runtime registers those families for every run.
+
+That same shorthand is why C135 **blocks only what it can positively
+identify** — a legacy phantom name, a near-miss typo, an unexpandable
+`${VAR}` — and merely **warns** on any other unrecognised name. Half the
+MCP catalog is invisible at compile time: project `.mcp.json` entries and
+enabled plugins' servers are merged after compilation, and a claw node
+gets them spliced in as `mcp.<srv>.*`, so `tools: [firecrawl_search]`
+runs on a host with that plugin enabled. Blocking it would refuse a
+working workflow to guard a guess. Wiring MCP explicitly (an
+`mcp_server:` declaration or an `mcp:` block, on the workflow or the
+node) softens even the identifiable names — a server you wire on purpose
+can expose any name at all.
+
+One thing it does **not** let through: `tools:` is the single node field
+iterion never expands — `model:`, `backend:`, `command:` and `timeout:`
+all go through `${VAR}` substitution, this one reaches the registry
+verbatim. A `${VAR}` entry can therefore only fail, and C135 says so.
 
 ### xAI Grok (`model: "xai/…"`)
 
@@ -920,6 +1101,7 @@ agent implement:
   backend: "kimi"
   model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
   system: "…the task…"
+  permission: deny                   # supported on host runs
 ```
 
 ### `grok` (xAI Grok Build CLI)
@@ -959,10 +1141,26 @@ backend. That is **distinct** from calling the xAI HTTP API via
   (e.g. `$MOONSHOT_API_KEY` for kimi, Grok Build OAuth for grok) — iterion
   inherits the host environment and does not fight the CLI's native
   resolution.
-- **Tools are not host-gated.** Like `codex`, these CLIs run with their
-  *own* built-in toolset; a node's `tools:` list is advisory. For a hard
-  tool-permission boundary use `claude_code`, `claw`, or pi in RPC mode; all
-  three enforce the shared permission gate.
+- **Permission gate.** These CLIs still run their *own* built-in toolset and a
+  node's `tools:` list remains advisory. For `permission: deny`, iterion points
+  the CLI at a per-invocation shadow home (`KIMI_CODE_HOME` / `GROK_HOME`) that
+  links the real credentials but adds an iterion `PreToolUse` hook; the
+  operator's home is untouched, and that shadow home is created outside the
+  workspace so a repo-scoped write rule cannot reach the gate's own
+  registration. The policy itself rides base64-encoded in the hook argv the
+  CLI freezes at session start, never as a re-read file. Both denial paths are live-proven — a real
+  model's real tool call blocked, with a filesystem sentinel rather than model
+  prose as the oracle (`e2e/live_feat_permission_{kimi,grok}_test.go`) — and
+  both are admitted by C176 for `deny`. Grok keeps its
+  `--permission-mode bypassPermissions --always-approve` flags: grok's own
+  authorization pipeline runs `PreToolUse` hooks *first*, before always-approve
+  short-circuits it. External hooks cannot pause the parent run, so `ask`
+  (including explicit `ask:` rules under `deny`) is refused. Guarded sandbox
+  runs are also refused because neither CLI currently carries its home and hook
+  binary into the container — so a gated node needs `sandbox: none` (the
+  shipped default is `auto`, and **C136** warns at compile time rather than
+  letting the run die at the agent node). Windows is refused: the hook command
+  is POSIX-quoted and a spawn failure is an ALLOW.
 - **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
   `--reasoning-effort` (`ultracode` degrades to `high`).
 - **Sessions** are captured for observability (`sessionId`) but resume/fork

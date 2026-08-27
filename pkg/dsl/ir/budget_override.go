@@ -22,12 +22,16 @@ type BudgetOverrides struct {
 	MaxDuration         string
 	MaxIterations       int
 	MaxParallelBranches int
+	// CapImposed travels with an override whose value was clamped by an
+	// external authority (pool-grant allowance) so the runtime knows the
+	// resulting cap is absolute — see ir.Budget.CapImposed.
+	CapImposed bool
 }
 
 // IsZero reports whether no override was supplied.
 func (o BudgetOverrides) IsZero() bool {
 	return o.MaxCostUSD <= 0 && o.MaxTokens <= 0 && o.MaxDuration == "" &&
-		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0
+		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0 && !o.CapImposed
 }
 
 // Validate rejects a malformed MaxDuration early with an actionable
@@ -73,5 +77,8 @@ func ApplyBudgetOverrides(wf *Workflow, o BudgetOverrides) {
 	}
 	if o.MaxParallelBranches > 0 {
 		wf.Budget.MaxParallelBranches = o.MaxParallelBranches
+	}
+	if o.CapImposed {
+		wf.Budget.CapImposed = true
 	}
 }

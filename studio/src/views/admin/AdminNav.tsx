@@ -9,6 +9,7 @@ const ITEMS = [
   { value: "/admin/orgs", label: "Organizations" },
   { value: "/admin/users", label: "Users" },
   { value: "/admin/llm-credentials", label: "LLM credentials" },
+  { value: "/admin/bots", label: "Bot overrides" },
   { value: "/admin/audit", label: "Audit" },
   { value: "/admin/dlq", label: "Dead-letter queue" },
 ];

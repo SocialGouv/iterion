@@ -22,15 +22,22 @@ const (
 	// "needs_attention" holds runs that DIED mid-flight and want a human. A
 	// root card is in that lane iff its run status is failed or
 	// failed_resumable, its tree has no pending human review, and — when the
-	// card is ticket-backed — its ticket is in a non-terminal state. It is
-	// deliberately narrower than the old failed bucket: a run the operator
-	// CANCELLED is a decision, not an anomaly, and stays in Closed.
+	// card is ticket-backed — its ticket is in a non-terminal state OR is
+	// terminal because the dispatcher GAVE UP on it (pipelineTicketGaveUp).
+	// It is deliberately narrower than the old failed bucket: a run the
+	// operator CANCELLED is a decision, not an anomaly, and stays in Closed.
+	// An exhausted retry budget is not a decision — nobody chose it — which
+	// is why it belongs here even though the ticket reads terminal.
 	//
-	// The lane is load-bearing, not cosmetic: a card sitting in it RESERVES a
-	// concurrency slot (see pipeline_reservations.go) so nothing else takes
-	// the place it needs to restart into. That is why membership and
-	// reservation are decided by one function, pipelineLaneForRoot — a card
-	// that reserves without rendering here would be an invisible held slot.
+	// The lane is load-bearing, not cosmetic: a card sitting in it usually
+	// RESERVES a concurrency slot (see pipeline_reservations.go) so nothing
+	// else takes the place it needs to restart into. That is why membership
+	// and reservation are decided by one function, pipelineLaneForRoot — a
+	// card that reserves without rendering here would be an invisible held
+	// slot. The converse is allowed and deliberate: a card can render here
+	// and hold nothing, which is what a given-up (terminal) ticket does —
+	// nothing will relaunch it until the operator acts, so reserving for it
+	// would leak capacity with no bound.
 	pipelineColumnOpened         = "opened"
 	pipelineColumnInProgress     = "in_progress"
 	pipelineColumnNeedsAttention = "needs_attention"

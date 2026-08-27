@@ -96,7 +96,7 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	// A team-authored bot of this name overrides the catalog (same precedence
 	// as the list + launch paths). Return it marked editable.
-	for _, e := range s.tenantBotEntriesList(r.Context()) {
+	for _, e := range s.tenantBotEntries(r.Context()) {
 		if e.Name == name {
 			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
 			return
@@ -111,7 +111,7 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: "catalog"})
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
 }
 
 // botUpdateRequest is the wire body for PUT /api/v1/bots/{name}. Pointer
@@ -155,6 +155,14 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 	if !entry.IsBundleDir {
 		s.httpErrorFor(w, r, http.StatusConflict,
 			"bots: %q is a loose .bot file; convert it to a bundle (manifest.yaml + main.bot) to edit metadata", name)
+		return
+	}
+	// A stored (platform-override) entry carries an EMPTY path — joining it
+	// would write manifest.yaml relative to the server's CWD and silently
+	// lose the edit (the next read re-serves the untouched override).
+	if entry.Path == "" {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is managed as a platform override; edit it via /api/admin/bots (or `iterion remote admin bots push`)", name)
 		return
 	}
 	var req botUpdateRequest
@@ -211,6 +219,13 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid request: %v", err)
 		return
 	}
+	// The workspace overlay is never consulted for a platform-override
+	// entry, so a hide/show toggle there would 200 and change nothing.
+	if s.entryOrigin(name) == "platform" {
+		s.httpErrorFor(w, r, http.StatusConflict,
+			"bots: %q is managed as a platform override; the workspace overlay does not apply (remove the override via /api/admin/bots to fall back to the catalog)", name)
+		return
+	}
 	if err := botregistry.SetOverlayEnabled(s.cfg.WorkDir, name, req.Enabled); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "bots: overlay: %v", err)
 		return
@@ -221,18 +236,11 @@ func (s *Server) handleBotOverlay(w http.ResponseWriter, r *http.Request) {
 	s.respondBot(w, r, name)
 }
 
-// findBot returns the schema-augmented entry for name (exact match).
+// findBot returns the schema-augmented entry for name (exact match), with
+// the platform overlay applied — a platform override's metadata is what
+// every tenant sees.
 func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error) {
-	entries, err := botregistry.ListWithSchema(s.botListOptions())
-	if err != nil {
-		return botregistry.EntryWithSchema{}, false, err
-	}
-	for _, e := range entries {
-		if e.Name == name {
-			return e, true, nil
-		}
-	}
-	return botregistry.EntryWithSchema{}, false, nil
+	return s.effectiveFindByName(name)
 }
 
 // respondBot re-resolves name (post-mutation) and writes it as JSON. It carries
@@ -240,7 +248,7 @@ func (s *Server) findBot(name string) (botregistry.EntryWithSchema, bool, error)
 // doesn't drop them from the studio's cached entry (a tenant bot would otherwise
 // lose its editable flag on an icon/visibility change).
 func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string) {
-	for _, e := range s.tenantBotEntriesList(r.Context()) {
+	for _, e := range s.tenantBotEntries(r.Context()) {
 		if e.Name == name {
 			s.writeJSONFor(w, r, botEntryView{EntryWithSchema: e, Editable: true, Origin: "tenant"})
 			return
@@ -255,7 +263,7 @@ func (s *Server) respondBot(w http.ResponseWriter, r *http.Request, name string)
 		s.httpErrorFor(w, r, http.StatusNotFound, "bots: %q not found", name)
 		return
 	}
-	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: "catalog"})
+	s.writeJSONFor(w, r, botEntryView{EntryWithSchema: entry, Editable: false, Origin: s.entryOrigin(name)})
 }
 
 // regenCatalog refreshes the orchestrator-facing bot catalog after a

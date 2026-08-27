@@ -117,6 +117,74 @@ func TestAwaitAnswersReleasedByAnswer(t *testing.T) {
 	}
 }
 
+// TestAwaitAnswersDoorbellNeverMissed asserts the in-process doorbell
+// is a RELIABLE release mechanism (arm-before-check invariant) — not a
+// happy-path best-effort layered over the level-poll. The fixture pins
+// a large poll (via awaitAnswersPollInterval override) AND a large node
+// timeout so ONLY the doorbell can release the parked gate branch in
+// the test's 3s ceiling: if a ring landed in the [check … arm] gap and
+// were dropped, the test would deadline instead of converging. Repeat
+// the launch/answer cycle many times to stress every possible
+// interleaving of the ring with the branch scheduler.
+func TestAwaitAnswersDoorbellNeverMissed(t *testing.T) {
+	// Force the fallback poll well outside the test's convergence
+	// budget. If the doorbell is missed, nothing else releases the
+	// gate within 3s.
+	prev := runtime.SetAwaitAnswersPollInterval(60 * time.Second)
+	t.Cleanup(func() { runtime.SetAwaitAnswersPollInterval(prev) })
+
+	wf := compileFixture(t, "async_await_mini.bot")
+
+	// Many iterations: each one is a fresh engine + fresh store + fresh
+	// run, exercising the arm-check-select window against the ring in
+	// every scheduler interleaving. A missed ring on ANY iteration
+	// hangs that iteration and trips the ceiling.
+	const iters = 10
+	for i := 0; i < iters; i++ {
+		s := tmpStore(t)
+		runID := "e2e-async-doorbell"
+		iid := runID + "_asker_async_1"
+		seedAsyncInteraction(t, s, runID, "asker", iid, "ship it?")
+
+		eng := runtime.New(wf, s, newScenarioExecutor())
+		done := make(chan error, 1)
+		go func() { done <- eng.Run(context.Background(), runID, nil) }()
+
+		// Small sleep so the gate branch has a chance to reach the arm
+		// (best case exercises the doorbell wake). No sleep would still
+		// pass — the pre-arm answer is caught by the store check — but
+		// this is the interleaving the observed slow-pod failure hits.
+		time.Sleep(50 * time.Millisecond)
+		if _, err := store.AnswerInteraction(context.Background(), s, runID, iid, map[string]any{delegate.AskUserQuestionKey: "yes"}); err != nil {
+			t.Fatalf("iter %d: answer interaction: %v", i, err)
+		}
+		eng.NotifyInteractionAnswered()
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("iter %d: run: %v", i, err)
+			}
+		// The ceiling bounds a FULL engine lifecycle, not just the doorbell
+		// wake: under -race on a loaded CI runner one iteration takes
+		// several seconds before the gate node even parks (observed: 3s
+		// tripped on iter 0 in CI while 30 local -race runs stayed <2s).
+		// 15s keeps the discriminant intact — the poll is at 60s and the
+		// node timeout at 30s, so only the doorbell can release in time.
+		case <-time.After(15 * time.Second):
+			t.Fatalf("iter %d: run did not converge in 15s — doorbell missed (poll=60s and node timeout=30s both well outside this window)", i)
+		}
+
+		r, err := s.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("iter %d: load run: %v", i, err)
+		}
+		if r.Status != store.RunStatusFinished {
+			t.Fatalf("iter %d: status = %s, want finished", i, r.Status)
+		}
+	}
+}
+
 // TestAwaitAnswersTimeout: an unanswered question bounds the wait at
 // the node's mandatory timeout and fails the run with an explicit
 // timeout error naming the pending interaction.

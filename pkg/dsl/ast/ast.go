@@ -445,6 +445,11 @@ type SupervisorDecl struct {
 	System   string   // prompt reference name (the supervision policy)
 	Cooldown string   // raw duration string ("30s"); parsed by the IR compiler
 	MaxEvals int      // hard cap on LLM evaluations (0 = default)
+	// Monitors are pre-seeded event patterns in the CLI --monitor grammar
+	// ("event_type=tool_error,tool_name=Bash"), armed from the run's very
+	// first event — the bot can register more at runtime, but anything it
+	// registers only exists after its first eval.
+	Monitors []string
 	Span     Span
 }
 
@@ -526,6 +531,8 @@ type FallbackDecl struct {
 	Provider string   // credential-routing hint ("" = auto)
 	On       []string // failure categories that may route here ("" = the package default)
 	Metered  bool     // author's acknowledgement that this route spends a metered credential
+	Action   string   // "" = route (execute backend+model); "skip" = terminal degrade: serve a zero-value output, loudly marked
+	When     string   // optional expr over vars gating this route ("" = always active); lets a --var pick the route set per run
 	Span     Span
 }
 

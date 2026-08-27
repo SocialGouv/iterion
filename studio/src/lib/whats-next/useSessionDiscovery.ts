@@ -38,8 +38,25 @@ export function useSessionDiscovery(opts: {
   // Called with the attached run's id once the store is hydrated.
   onAttached: (runId: string) => void;
   setStatus: (status: WhatsNextStatus) => void;
+  // Should this session look for an existing run to attach to?
+  //
+  // Discovery is keyed on (bot, scope), so with several conversations open on
+  // the SAME bot it hands every one of them the same run — clicking "new
+  // conversation" showed the old one. A conversation the operator just opened
+  // must therefore start empty and launch its own; only a session that IS the
+  // continuation of an earlier one should attach.
+  discover?: boolean;
+  // Attach to THIS run, skipping the bot-scoped lookup entirely.
+  //
+  // The lookup answers "the latest live run for this bot", which is the wrong
+  // question once several conversations share a bot: whichever one remounted
+  // last would take another's run. A conversation that has launched knows its
+  // own run id and must use it.
+  attachRunId?: string | null;
 }): SessionDiscovery {
   const { bot, scopeKey, repoScopeEnabled, overview, activeRepo } = opts;
+  const discover = opts.discover ?? true;
+  const attachRunId = opts.attachRunId ?? null;
   const { onAttached, setStatus } = opts;
   // The store this session lives in — the assistant's isolated one when
   // mounted under AssistantProvider, the module default otherwise. Stable
@@ -82,6 +99,37 @@ export function useSessionDiscovery(opts: {
       });
       if (attached && !cancelled) onAttached(runIdToAttach);
     };
+
+    const teardown = () => {
+      cancelled = true;
+      controller.abort();
+      // Reset the gate so the strict-mode double-mount (and any
+      // legitimate re-mount triggered by deps changing) re-runs the
+      // discovery cleanly. Without this, mount #2's effect short-
+      // circuits, mount #1's aborted discovery never sets runId, and
+      // status stays "idle" → the launcher mistakenly shows even
+      // when a paused run is sitting on disk waiting to be resumed.
+      attachAttemptedRef.current = false;
+    };
+
+    if (attachRunId) {
+      attachAttemptedRef.current = true;
+      void (async () => {
+        try {
+          await attachTo(attachRunId);
+        } catch {
+          // A run that is gone (pruned, cancelled elsewhere) leaves the
+          // conversation on its empty state rather than borrowing another's.
+        }
+      })();
+      return teardown;
+    }
+    if (!discover) {
+      // Not an error state: this conversation is meant to be empty until the
+      // operator says something.
+      attachAttemptedRef.current = true;
+      return teardown;
+    }
 
     const remembered = recallSessionRunId(bot.id, scopeKey);
     setStatus("launching");
@@ -143,21 +191,11 @@ export function useSessionDiscovery(opts: {
     })();
 
     void startup;
-    return () => {
-      cancelled = true;
-      controller.abort();
-      // Reset the gate so the strict-mode double-mount (and any
-      // legitimate re-mount triggered by deps changing) re-runs the
-      // discovery cleanly. Without this, mount #2's effect short-
-      // circuits, mount #1's aborted discovery never sets runId, and
-      // status stays "idle" → the launcher mistakenly shows even
-      // when a paused run is sitting on disk waiting to be resumed.
-      attachAttemptedRef.current = false;
-    };
+    return teardown;
     // scopeKey folds in (team, active repo) — a repo switch re-runs the
     // discovery for the new scope; discoveryNonce is the manual retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bot.id, scopeKey, discoveryNonce]);
+  }, [bot.id, scopeKey, discoveryNonce, discover, attachRunId]);
 
   const retryDiscovery = useCallback(() => {
     setDiscoveryError(null);

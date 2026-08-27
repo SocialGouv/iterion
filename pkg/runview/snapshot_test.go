@@ -1300,6 +1300,62 @@ func TestSnapshotReducer_FallbacksUsedDedupesByNode(t *testing.T) {
 	}
 }
 
+// The chip is last-state-wins in BOTH directions across loop passes:
+// served-then-skipped shows (skipped); skipped-then-served-CLEAN (the
+// primary worked on the later pass) clears the entry entirely — a stale
+// "fell back (skipped)" chip on a node that ended up running normally
+// misreports the run's final shape.
+func TestSnapshotReducer_FallbacksUsedLastStateWins(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	skippedOut := map[string]any{"output": map[string]any{
+		"_fallback_used": true, "_served_by": "give_up", "_skipped": true,
+	}}
+	servedOut := map[string]any{"output": map[string]any{
+		"_backend": "claw", "_model": "openai/gpt-5.6-sol",
+		"_fallback_used": true, "_served_by": "api",
+	}}
+	cleanOut := map[string]any{"output": map[string]any{
+		"_backend": "claw", "_model": "openai/gpt-5.6-sol",
+	}}
+
+	// Pass 1 skipped, pass 2 served by a real fallback route → the chip
+	// shows the served route, not the stale skip.
+	b.Apply(evt(0, store.EventNodeFinished, "", "review", skippedOut))
+	b.Apply(evt(1, store.EventNodeFinished, "", "review", servedOut))
+	got := b.Snapshot().Run.FallbacksUsed
+	if len(got) != 1 || got[0].Skipped || got[0].ServedBy != "api" {
+		t.Fatalf("skip→served: %+v, want one entry served_by=api skipped=false", got)
+	}
+
+	// Pass 3 clean on the primary → the degradation no longer holds and
+	// the chip disappears (the event timeline keeps the history).
+	b.Apply(evt(2, store.EventNodeFinished, "", "review", cleanOut))
+	if got := b.Snapshot().Run.FallbacksUsed; len(got) != 0 {
+		t.Fatalf("clean pass must clear the stale chip, got %+v", got)
+	}
+
+	// And the reverse: served then SKIPPED — the most degraded state
+	// must not be hidden by a first-seen entry.
+	b.Apply(evt(3, store.EventNodeFinished, "", "implement", servedOut))
+	b.Apply(evt(4, store.EventNodeFinished, "", "implement", skippedOut))
+	got = b.Snapshot().Run.FallbacksUsed
+	if len(got) != 1 || !got[0].Skipped {
+		t.Fatalf("served→skip: %+v, want one entry skipped=true", got)
+	}
+
+	// A snapshot already handed out must not mutate when a later clean
+	// pass removes the entry from the builder (the removal shifts the
+	// backing array; an aliased slice would duplicate entries).
+	before := b.Snapshot().Run.FallbacksUsed
+	b.Apply(evt(5, store.EventNodeFinished, "", "implement", cleanOut))
+	if len(before) != 1 || !before[0].Skipped || before[0].NodeID != "implement" {
+		t.Fatalf("earlier snapshot mutated by a later Apply: %+v", before)
+	}
+	if after := b.Snapshot().Run.FallbacksUsed; len(after) != 0 {
+		t.Fatalf("clean pass must clear the entry in the NEW snapshot, got %+v", after)
+	}
+}
+
 func TestSnapshotReducer_RunRewoundResetsDroppedNodes(t *testing.T) {
 	// The run_rewound event must erase the execution state of the nodes
 	// the rewind invalidated: the event log is append-only, so without a

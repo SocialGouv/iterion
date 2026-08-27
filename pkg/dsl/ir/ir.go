@@ -1293,6 +1293,12 @@ type Budget struct {
 	// (advisory) but never blocks execution. 0 = disabled.
 	WarnTokens    int
 	MaxIterations int
+	// CapImposed marks a budget at least one of whose limits was CLAMPED
+	// by an authority outside the run — the platform ceiling, a credential
+	// pool donor's remaining allowance. Set by ClampToCeiling when it
+	// actually changes something. An imposed cap is an absolute promise to
+	// a third party: the runtime's exit grace must not spend past it.
+	CapImposed bool
 }
 
 // ClampToCeiling lowers each numeric limit so it never EXCEEDS the
@@ -1309,6 +1315,15 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 	if b == nil || ceiling == nil {
 		return
 	}
+	before := *b
+	defer func() {
+		// One choke point marks every externally-imposed cap: both the
+		// platform ceiling and the pool-grant clamp go through here.
+		before.CapImposed = b.CapImposed
+		if *b != before {
+			b.CapImposed = true
+		}
+	}()
 	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
 	b.MaxTokens = clampToCeiling(b.MaxTokens, ceiling.MaxTokens)
 	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
@@ -1422,7 +1437,18 @@ type Fallback struct {
 	Provider string   // "" = auto
 	On       []string // failure categories that may route here; empty = the runtime default
 	Metered  bool     // the author's acknowledgement that this route spends a metered credential
+	Action   string   // "" = route; FallbackActionSkip = terminal degrade (zero-value output, loudly marked)
+	When     string   // optional expr over vars gating the route ("" = always active), evaluated at dispatch
 }
+
+// FallbackActionSkip is the `action: skip` terminal route: instead of
+// executing an alternative backend, the node completes with a zero-value
+// output stamped `_skipped` / `_fallback_used` so a downstream
+// deterministic gate can fail closed on the degraded result. The
+// "continue and ignore" half of a peer-node unavailability policy — the
+// "pause and retry" half is simply NOT declaring it (the failure stays a
+// failure and the run-level usage-window retry parks the run).
+const FallbackActionSkip = "skip"
 
 type CursorInvocation struct {
 	Enabled  bool

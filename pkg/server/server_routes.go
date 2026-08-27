@@ -284,6 +284,18 @@ func (s *Server) routes() {
 	// (api-keys need the BYOK store, oauth the forfait store).
 	s.registerAdminLLMRoutes()
 
+	// Platform runtime settings (super-admin): the DB-backed form of the
+	// operational env vars — first family: the usage-cap percentages.
+	s.registerAdminSettingsRoutes()
+
+	// Platform bot overrides (super-admin): the DB-backed form of the baked
+	// bot catalog, so iterating on a native bot needs no image rollout.
+	s.registerAdminBotRoutes()
+
+	// Platform settings families beyond the caps: webhook role→bot bindings
+	// and the runtime-mutable sandbox default image.
+	s.registerAdminSettingsFamilyRoutes()
+
 	// Dispatcher + native tracker — both optional. Each handler is
 	// registered through requireAuth so a server bound to a non-loopback
 	// address (devcontainer / LAN / SSH tunnel) can't have its kanban

@@ -120,6 +120,20 @@ verdict in production:
   exact invocation — flags included — from the CI step or the task-runner
   target CI calls; when in doubt, run the repo's own umbrella target
   (`task check`, `make ci`) INSTEAD of hand-assembling steps.
+- **Timeouts are a strictness axis — your sandbox is SLOWER than CI.** A
+  wall-clock limit is a threshold like any other, and the verify sandbox
+  (shared CPU, cold caches) routinely runs the same suite 2-5× slower than
+  the repo's CI runners. Go's default per-binary `go test` timeout is 10m:
+  a suite that takes 6m in CI dies at 10m in a throttled pod with
+  `panic: test timed out` — a red that says nothing about the bump
+  (observed live: four consecutive GitHub-Actions pin bumps held
+  `hold_unstable` because the repo's e2e package outran 10m in the sandbox
+  while the repo's CI was green on the identical shas). So: keep every
+  explicit timeout CI sets, and RAISE — never lower — the implicit ones:
+  pass a generous `-timeout` (e.g. 3× the CI duration, `-timeout 30m`) to
+  `go test`, and give `verify.sh` itself headroom over the suite's worst
+  observed wall-clock. A longer timeout is LESS strict and therefore always
+  legitimate; a tighter one manufactures reds CI would not show.
 - **Call the target; never transcribe its body.** When a task runner defines
   the step, `verify.sh` invokes `task <target>` — it does not copy what that
   target runs. A Taskfile/Makefile command is frequently a multi-line shell

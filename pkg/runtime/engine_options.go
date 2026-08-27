@@ -232,6 +232,27 @@ func WithPreset(name string) EngineOption {
 	return func(e *Engine) { e.preset = name }
 }
 
+// WithExtraSkills adds skill-library skills to a run on top of whatever the
+// workflow declares (`iterion run --skill <name>`, repeatable, or the
+// ITERION_SKILLS machine default).
+//
+// ADDITIVE, never a filter. The bot's author declared a set for a reason, and
+// an operator adding their own house standard must not be able to silently
+// remove one — the union is taken in collectSkillRefs. It is also not
+// posture-aware on purpose: a node's posture is a bias its own turn may flip,
+// so filtering the roster by it would lock the agent out of a skill exactly on
+// the turn it discovers it needs one.
+//
+// An unresolvable name is a LAUNCH ERROR, unlike a workflow's own reference
+// which is soft: the operator typed this one and is entitled to be told it
+// landed nowhere.
+func WithExtraSkills(names []string, origin string) EngineOption {
+	return func(e *Engine) {
+		e.extraSkills = names
+		e.extraSkillsOrigin = origin
+	}
+}
+
 // WithSource records the originating action that produced this run.
 // The dispatcher passes a non-nil *store.RunSource carrying the
 // issue back-reference so the studio's RunHeader can link back to

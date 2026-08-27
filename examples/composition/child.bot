@@ -7,7 +7,7 @@ vars:
   ticket: string = "none"
 
 tool work:
-  command: `printf '{"validated":true,"echoed":"%s"}' "{{vars.ticket}}"`
+  command: `printf '{"validated":true,"echoed":"%s"}' {{vars.ticket}}`
   output: out
 
 workflow child:

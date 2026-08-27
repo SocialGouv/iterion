@@ -76,3 +76,57 @@ func TestBuildExecutor_OptionalSecretUnresolvedOK(t *testing.T) {
 		t.Fatalf("optional unresolved secret must not fail BuildExecutor: %v", err)
 	}
 }
+
+// TestStampLocalCredentials_ReachesTheEngineContext pins WHERE the resolved
+// credentials have to land. The engine mounts declared file secrets into the
+// sandbox at run start, reading them from the context handed to Run — so a
+// caller that stamps only the executor's own context ships a container with
+// no secret files, and an optional secret is skipped in silence. That is how
+// a docs bot's PR tail reported "no forge_token secret" on a host whose
+// store held exactly that secret.
+func TestStampLocalCredentials_ReachesTheEngineContext(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	memStore := secrets.NewMemoryGenericSecretStore()
+	const secretID = "sec-forge-token"
+	sealed, err := secrets.SealGenericSecret(sealer, secretID, []byte("jeton-de-test"))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := memStore.Create(context.Background(), secrets.GenericSecret{
+		ID:           secretID,
+		ScopeTeamID:  secrets.LocalScopeTeam,
+		Name:         "forge_token",
+		SealedSecret: sealed,
+	}); err != nil {
+		t.Fatalf("store the secret: %v", err)
+	}
+
+	wf := &ir.Workflow{Name: "canary", Secrets: map[string]*ir.Secret{
+		"forge_token": {As: "file", Optional: true},
+	}}
+
+	ctx, err := StampLocalCredentials(context.Background(), wf, memStore, sealer, nil)
+	if err != nil {
+		t.Fatalf("StampLocalCredentials: %v", err)
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("the returned context carries no credentials: the sandbox would mount nothing")
+	}
+	if got := creds.GenericSecret("forge_token"); got == "" {
+		t.Fatal("forge_token resolved empty from a store that holds it — the file secret would be skipped as unresolved")
+	}
+
+	// No local store: the caller's context must come back untouched rather
+	// than carrying an empty credential set that masks the cloud path's own.
+	same, err := StampLocalCredentials(context.Background(), wf, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("no-store stamp: %v", err)
+	}
+	if _, ok := secrets.CredentialsFromContext(same); ok {
+		t.Fatal("stamped credentials with no local store configured")
+	}
+}

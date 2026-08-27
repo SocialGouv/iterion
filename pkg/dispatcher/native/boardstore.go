@@ -31,6 +31,10 @@ type BoardStore interface {
 	// run parked awaiting human/operator input, so the board grid can badge
 	// the card without a per-run fetch. A best-effort HINT (see Issue.AwaitingInput).
 	SetAwaitingInput(id string, v bool) error
+	// SetGaveUp records (nil clears) that the dispatcher filed this ticket
+	// itself after exhausting its retry budget, so a reader can tell an
+	// automatic give-up from an operator's own filing (see Issue.GaveUp).
+	SetGaveUp(id string, g *GiveUp) error
 
 	// AddComment appends a note to the issue's discussion thread and
 	// returns the updated issue plus the created comment.

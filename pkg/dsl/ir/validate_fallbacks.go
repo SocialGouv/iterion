@@ -3,6 +3,8 @@ package ir
 import (
 	"fmt"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 )
 
 // `fallbacks:` diagnostics (ADR-087).
@@ -31,21 +33,30 @@ var KnownFallbackTriggers = map[string]bool{
 	"any":                 true,
 }
 
-// gateEnforcingBackends are the backends that can enforce iterion's
-// tool-permission gate. A `fallbacks:` route on any other backend would
+// gateEnforcingModes are the permission modes each backend can enforce. A
+// `fallbacks:` route on any other backend/mode pair would
 // run the node UNGATED — the anti-prompt-injection boundary silently
-// disappearing at the moment the run is under stress. pi already refuses
-// rather than degrades in this situation; C176 adopts that precedent at
-// compile time.
-var gateEnforcingBackends = map[string]bool{
-	"claude_code": true,
-	"claw":        true,
-	"pi":          true,
+// disappearing at the moment the run is under stress.
+//
+// Membership is earned by a live denial, never declared: grok and kimi are
+// here because a real model's real tool call was blocked by iterion's own
+// hook process, with a filesystem sentinel — not model prose — as the
+// authority (e2e/live_feat_permission_kimi_test.go,
+// e2e/live_feat_permission_grok_test.go). Both are deny-only: their hook is
+// an EXTERNAL process, so it can hard-deny but cannot pause the parent
+// iterion run the way claude_code's in-process hook does, and `ask` would
+// therefore silently become `deny`.
+var gateEnforcingModes = map[string]map[string]bool{
+	"claude_code": {"ask": true, "deny": true},
+	"claw":        {"ask": true, "deny": true},
+	"pi":          {"ask": true, "deny": true},
+	"grok":        {"deny": true},
+	"kimi":        {"deny": true},
 }
 
 // reasoningEffortBackends are the backends that carry a
 // reasoning-effort dial. Deliberately its OWN set rather than a reuse
-// of gateEnforcingBackends: that set answers "can this backend enforce
+// of gateEnforcingModes: that set answers "can this backend enforce
 // the permission gate", and the two memberships differ — grok passes
 // `--reasoning-effort` and codex has `model_reasoning_effort`, so
 // reusing the gate set made C177 assert a fact the engine contradicts.
@@ -87,18 +98,152 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 			continue
 		}
 		fbs := nn.GetFallbacks()
-		if len(fbs) == 0 {
-			continue
-		}
 		f := nn.GetLLMFields()
 		kind, id := nn.NodeKind().String(), nn.NodeID()
 		nodeBackend := effectiveNodeBackend(f.Backend, w.DefaultBackend)
+		effectivePermission := EffectivePermission(nn.GetPermission(), w.Permission)
+
+		// The primary route is a capability crossing too. Screening only
+		// fallbacks let `backend: grok` + `permission: deny` compile and run
+		// silently ungated — worse than a loud C176 refusal.
+		if nodeBackend != "" {
+			if reason := UngatedCrossingReason(nodeBackend, effectivePermission, len(w.PermissionAsk) > 0); reason != "" {
+				c.errorfAt(DiagFallbackUnsafeCross, id, "",
+					"%s %q: primary route %s", kind, id, reason)
+			}
+		}
+		// An external-hook backend cannot be gated inside a container: the CLI
+		// home and the hook binary are host-side. That refusal is correct, but
+		// it fires at the AGENT NODE, mid-run — and the shipped default is
+		// `sandbox: auto`, so the common shape (no `sandbox:` block) reaches it
+		// every time. Warn at compile time so the operator learns the coupling
+		// before launching, not after. A warning rather than an error because
+		// `ITERION_SANDBOX_DEFAULT=none` and `--sandbox none` both make the run
+		// legal without the workflow saying anything.
+		c.checkGatedCLIBackendSandbox(kind, id, nn, nodeBackend, effectivePermission, w)
+
+		if len(fbs) == 0 {
+			continue
+		}
 
 		seen := map[string]bool{}
-		for _, fb := range fbs {
+		for i, fb := range fbs {
 			c.checkFallbackShape(kind, id, fb, seen)
+			c.checkFallbackAction(kind, id, fb, i == len(fbs)-1)
+			c.checkFallbackWhen(w, kind, id, fb)
 			c.checkFallbackTriggers(kind, id, fb)
-			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission)
+			c.checkFallbackCrossing(kind, id, fb, nn, nodeBackend, w.Permission, len(w.PermissionAsk) > 0)
+		}
+	}
+}
+
+// externalHookGateBackends are the gate-enforcing backends whose hook is an
+// out-of-process CLI hook, and which therefore need a host-side run. Kept
+// separate from gateEnforcingModes: that set answers "can this backend enforce
+// the gate at all", this one answers "what does enforcing it cost the run".
+var externalHookGateBackends = map[string]bool{"grok": true, "kimi": true}
+
+// checkGatedCLIBackendSandbox warns when a gated node routes to an
+// external-hook backend on a workflow that has not opted out of the sandbox.
+func (c *compiler) checkGatedCLIBackendSandbox(kind, id string, nn LLMNode, nodeBackend, permission string, w *Workflow) {
+	mode := strings.ToLower(strings.TrimSpace(permission))
+	if mode == "" || mode == "off" {
+		return
+	}
+	// nodeSandboxSpec (validate_sandbox.go) takes a Node; every LLMNode is one.
+	if sandboxOptsOut(nodeSandboxSpec(nn.(Node))) || sandboxOptsOut(w.Sandbox) {
+		return
+	}
+	routes := []string{}
+	if externalHookGateBackends[nodeBackend] {
+		routes = append(routes, nodeBackend)
+	}
+	for _, fb := range nn.GetFallbacks() {
+		if externalHookGateBackends[fb.Backend] {
+			routes = append(routes, fb.Backend)
+		}
+	}
+	if len(routes) == 0 {
+		return
+	}
+	c.warnfAt(DiagGatedCLIBackendSandbox, id, "",
+		"%s %q: permission: %s is enforced on %s through a host-side CLI hook, which a sandboxed run cannot reach — and the shipped default is sandbox: auto, so this node will FAIL at run time unless the workflow declares sandbox: none (or the run is launched with --sandbox none / ITERION_SANDBOX_DEFAULT=none)",
+		kind, id, mode, strings.Join(dedupeStrings(routes), ", "))
+}
+
+// sandboxOptsOut reports whether a spec explicitly declines the sandbox.
+func sandboxOptsOut(spec *SandboxSpec) bool {
+	return spec != nil && strings.EqualFold(strings.TrimSpace(spec.Mode), "none")
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0:0]
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// checkFallbackAction validates the `action:` field. A skip route is
+// terminal by definition, so declaring anything after it is an authoring
+// mistake the run could never reach, and declaring a backend/model on it
+// contradicts what it does.
+func (c *compiler) checkFallbackAction(kind, id string, fb Fallback, isLast bool) {
+	switch fb.Action {
+	case "":
+		return
+	case FallbackActionSkip:
+	default:
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares unknown action %q; the only action is %q (a terminal degrade — omit action: for an ordinary route)",
+			kind, id, fallbackLabel(fb), fb.Action, FallbackActionSkip)
+		return
+	}
+	if fb.Backend != "" || fb.Model != "" || fb.Provider != "" || fb.Metered {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares action: skip together with a backend/model/provider/metered — a skip route executes and spends nothing, so the route fields are dead config hiding what actually happens",
+			kind, id, fallbackLabel(fb))
+	}
+	if !isLast {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s declares action: skip but is not the LAST route — skip is terminal, so every route after it is unreachable",
+			kind, id, fallbackLabel(fb))
+	}
+}
+
+// checkFallbackWhen validates that a route's `when:` gate parses, only
+// reads vars — the one namespace resolvable at dispatch time, where the
+// gate is evaluated (a route has no node input or outputs of its own) —
+// and only DECLARED vars: at runtime an absent var evaluates to nil →
+// false, so a typo would silently disarm the policy the route encodes.
+func (c *compiler) checkFallbackWhen(w *Workflow, kind, id string, fb Fallback) {
+	if fb.When == "" {
+		return
+	}
+	astExpr, err := expr.Parse(fb.When)
+	if err != nil {
+		c.errorfAt(DiagFallbackMalformed, id, "",
+			"%s %q: fallback %s has an unparseable when: expression (note: string literals use single quotes, e.g. vars.policy == 'skip'): %v",
+			kind, id, fallbackLabel(fb), err)
+		return
+	}
+	for _, ref := range astExpr.Refs() {
+		if ref.Namespace != "vars" {
+			c.errorfAt(DiagFallbackMalformed, id, "",
+				"%s %q: fallback %s when: references %s.%s — a route gate is evaluated at dispatch, where only vars.* resolves",
+				kind, id, fallbackLabel(fb), ref.Namespace, strings.Join(ref.Path, "."))
+			continue
+		}
+		if len(ref.Path) > 0 && w != nil {
+			if _, ok := w.Vars[ref.Path[0]]; !ok {
+				c.errorfAt(DiagFallbackMalformed, id, "",
+					"%s %q: fallback %s when: targets undeclared variable %q — at run time an absent var reads as false and silently disarms the route",
+					kind, id, fallbackLabel(fb), ref.Path[0])
+			}
 		}
 	}
 }
@@ -106,9 +251,9 @@ func (c *compiler) validateFallbacks(w *Workflow) {
 // checkFallbackShape validates the route on its own terms.
 func (c *compiler) checkFallbackShape(kind, id string, fb Fallback, seen map[string]bool) {
 	label := fallbackLabel(fb)
-	if fb.Backend == "" && fb.Model == "" && fb.Provider == "" {
+	if fb.Backend == "" && fb.Model == "" && fb.Provider == "" && fb.Action == "" {
 		c.errorfAt(DiagFallbackMalformed, id, "",
-			"%s %q: fallback %s declares neither backend, model nor provider — it would re-issue the identical call that just failed",
+			"%s %q: fallback %s declares neither backend, model, provider nor action — it would re-issue the identical call that just failed",
 			kind, id, label)
 		return
 	}
@@ -147,7 +292,7 @@ func (c *compiler) checkFallbackTriggers(kind, id string, fb Fallback) {
 // node's capabilities, using the same predicates the launch-time
 // run-level route is screened by — so an operator cannot reach through
 // `--fallback` a crossing the compiler refuses in the .bot.
-func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string) {
+func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNode, nodeBackend, workflowPermission string, hasAskRules bool) {
 	// An env-ref backend is not knowable here; defer to the runtime.
 	if fb.Backend == "" || strings.Contains(fb.Backend, "${") {
 		return
@@ -159,7 +304,7 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 	// so this check does NOT depend on the node's backend being
 	// statically knowable — the auto-resolved shape is the shipped
 	// default and must not escape it.
-	if reason := UngatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission)); reason != "" {
+	if reason := UngatedCrossingReason(fb.Backend, EffectivePermission(nn.GetPermission(), workflowPermission), hasAskRules); reason != "" {
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
@@ -177,6 +322,10 @@ func (c *compiler) checkFallbackCrossing(kind, id string, fb Fallback, nn LLMNod
 		c.errorfAt(DiagFallbackUnsafeCross, id, "",
 			"%s %q: fallback %s %s", kind, id, label, reason)
 	}
+
+	// A route's ability to RESOLVE the node's declared tools is checked in
+	// validate_tools.go (C135): it is a property of the list rather than of
+	// the crossing, and it applies to the node's own backend too.
 
 	// Reasoning effort degrades rather than misleads, so it warns.
 	if effort := nn.GetLLMFields().ReasoningEffort; effort != "" && !reasoningEffortBackends[fb.Backend] {
@@ -200,12 +349,21 @@ func EffectivePermission(nodePermission, workflowPermission string) string {
 // UngatedCrossingReason returns why a route may not serve a gated node,
 // or "" when it may. Shared by C176 and every launch-time screen so an
 // operator override cannot reach a crossing the compiler refuses.
-func UngatedCrossingReason(routeBackend, permission string) string {
-	if permission == "" || permission == "off" || gateEnforcingBackends[routeBackend] {
+func UngatedCrossingReason(routeBackend, permission string, hasAskRules bool) string {
+	mode := strings.ToLower(strings.TrimSpace(permission))
+	if mode == "" || mode == "off" {
 		return ""
 	}
+	if gateEnforcingModes[routeBackend][mode] {
+		if !hasAskRules || gateEnforcingModes[routeBackend]["ask"] {
+			return ""
+		}
+		return fmt.Sprintf(
+			"runs on backend %q, which can enforce permission: %s but cannot pause for the workflow's explicit ask: rules — the run would not preserve the declared gate",
+			routeBackend, mode)
+	}
 	return fmt.Sprintf(
-		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would execute UNGATED",
+		"runs on backend %q, which cannot enforce the effective permission: %s gate — the run would be UNGATED",
 		routeBackend, permission)
 }
 

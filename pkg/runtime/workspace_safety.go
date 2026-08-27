@@ -13,10 +13,29 @@ import (
 
 // readOnlyTools is the set of built-in tool names that are guaranteed to
 // never modify the workspace. These are safe for parallel execution.
+//
+// Two vocabularies live here on purpose. `glob`, `grep`, `read_file` and
+// `web_fetch` are claw's REAL read-only tools — the names a claw node must
+// use, since claw resolves its `tools:` list against the registry (C135). The
+// others (`git_diff`, `git_status`, `list_files`, `search_codebase`, `tree`)
+// are not registered anywhere: they are declarative intent on CLI-backend
+// nodes, whose lists are advisory, and dozens of catalog bots express
+// "this reviewer only reads" with them. Dropping them would silently reclassify
+// those nodes as mutating and change parallel-branch admission, so they stay.
+//
+// The claw names were missing until 2026-08, which made the C135 migration
+// (`list_files` → `glob`, `search_codebase` → `grep`) flip a read-only claw
+// reviewer to mutating — tightening admission for a rename that changed
+// nothing about what the node can do.
 var readOnlyTools = map[string]bool{
+	// claw built-ins that only read.
+	"read_file": true,
+	"glob":      true,
+	"grep":      true,
+	"web_fetch": true,
+	// Declarative intent on CLI backends, where the list is advisory.
 	"git_diff":        true,
 	"git_status":      true,
-	"read_file":       true,
 	"list_files":      true,
 	"search_codebase": true,
 	"tree":            true,

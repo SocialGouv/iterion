@@ -50,7 +50,7 @@ func capTestPolicy() usagecap.Policy {
 func capRunner(pol usagecap.Policy, caps usagecap.Store, rs store.RunStore) *Runner {
 	return &Runner{cfg: Config{
 		Logger:         iterlog.Nop(),
-		UsageCapPolicy: pol,
+		UsageCapSource: usagecap.StaticPolicy(pol),
 		UsageCaps:      caps,
 		Store:          rs,
 	}}
@@ -75,7 +75,7 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	ctx := t.Context()
 	resets := time.Now().UTC().Add(30 * time.Hour)
 	caps := usagecap.NewMemStore()
-	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform)
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
 	if err := caps.Record(ctx, key, usagecap.Reading{
 		Window:      usagecap.WindowSevenDay,
 		Utilization: 0.92,
@@ -117,6 +117,58 @@ func TestUsageCapPreflight_BlocksBeforeSpendingAnything(t *testing.T) {
 	}
 }
 
+// The runtime settings path, at THIS enforcement point: a cap written to
+// the settings store starts refusing runs on the same Runner value —
+// no restart, no reconstruction — once the resolver's TTL elapses.
+func TestUsageCapPreflight_RuntimeSettingsChangeIsLive(t *testing.T) {
+	ctx := t.Context()
+	caps := usagecap.NewMemStore()
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "")
+	if err := caps.Record(ctx, key, usagecap.Reading{
+		Window:      usagecap.WindowSevenDay,
+		Utilization: 0.60,
+		Status:      usagecap.StatusAllowed,
+		ResetsAt:    time.Now().UTC().Add(30 * time.Hour),
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Env default: week capped at 75% — the 60% reading passes.
+	envPol := usagecap.Policy{Week: usagecap.WindowPolicy{MaxPercent: 75, Mode: usagecap.ModeHard}}
+	settings := usagecap.NewMemorySettingsStore()
+	now := time.Now().UTC()
+	src := usagecap.NewResolver(settings, envPol,
+		usagecap.WithClock(func() time.Time { return now }))
+	rs := &capStatusStore{}
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.Nop(),
+		UsageCapSource: src,
+		UsageCaps:      caps,
+		Store:          rs,
+	}}
+
+	if err := r.usageCapPreflight(ctx, capLLMWorkflow(), &queue.RunMessage{RunID: "run-1"}, iterlog.Nop()); err != nil {
+		t.Fatalf("60%% under the env 75%% cap must pass, got %v", err)
+	}
+
+	// The operator tightens the cap to 50% through the settings record.
+	pct := 50
+	if err := settings.PutSettings(ctx, usagecap.Settings{WeekPct: &pct}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(usagecap.DefaultSettingsTTL)
+
+	err := r.usageCapPreflight(ctx, capLLMWorkflow(), &queue.RunMessage{RunID: "run-2"}, iterlog.Nop())
+	if err == nil {
+		t.Fatal("the tightened runtime cap must refuse the next claim — same Runner, no restart")
+	}
+	var rl *delegate.ErrRateLimited
+	if !errors.As(err, &rl) || rl.Kind != delegate.RateLimitKindUsageWindow {
+		t.Fatalf("got %v, want the usage-window park error", err)
+	}
+}
+
 // Failing open is the deliberate posture: the mid-run guard still stands
 // behind the pre-flight, so an unavailable ledger costs one call — while
 // failing closed would strand a whole fleet on a bookkeeping outage.
@@ -148,7 +200,7 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 			pol:  usagecap.Policy{},
 			caps: func(t *testing.T) usagecap.Store {
 				s := usagecap.NewMemStore()
-				_ = s.Record(t.Context(), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform), fresh())
+				_ = s.Record(t.Context(), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""), fresh())
 				return s
 			},
 		},
@@ -172,7 +224,7 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 			pol:  capTestPolicy(),
 			caps: func(t *testing.T) usagecap.Store {
 				s := usagecap.NewMemStore()
-				_ = s.Record(t.Context(), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform), stale())
+				_ = s.Record(t.Context(), usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""), stale())
 				return s
 			},
 		},
@@ -197,14 +249,14 @@ func TestUsageCapPreflight_FailsOpen(t *testing.T) {
 func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	msg := &queue.RunMessage{TenantID: "team-7"}
 
-	if got := usageCapKey(context.Background(), msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
+	if got := usageCapKey(context.Background(), msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "") {
 		t.Errorf("no credentials in ctx = %q, want the platform meter", got)
 	}
 
 	own := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-tenant"},
 	})
-	if got := usageCapKey(own, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7")) {
+	if got := usageCapKey(own, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "") {
 		t.Errorf("tenant BYOK = %q, want the tenant's own meter", got)
 	}
 
@@ -213,7 +265,7 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 	unrelated := secrets.WithCredentials(context.Background(), secrets.Credentials{
 		Generic: map[string]string{"forge_token": "x"},
 	})
-	if got := usageCapKey(unrelated, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
+	if got := usageCapKey(unrelated, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "") {
 		t.Errorf("unrelated secrets = %q, want the platform meter", got)
 	}
 
@@ -229,7 +281,7 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 			delegate.BackendClaudeCode:        true,
 		},
 	})
-	if got := usageCapKey(platformFilled, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform) {
+	if got := usageCapKey(platformFilled, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, "") {
 		t.Errorf("platform-sourced bundle = %q, want the platform meter", got)
 	}
 
@@ -242,7 +294,7 @@ func TestUsageCapKey_SeparatesTenantCredentialsFromThePlatform(t *testing.T) {
 		},
 		PlatformSourced: map[string]bool{string(secrets.ProviderOpenAI): true},
 	})
-	if got := usageCapKey(mixed, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7")) {
+	if got := usageCapKey(mixed, msg); got != usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "") {
 		t.Errorf("tenant anthropic + platform openai = %q, want the tenant meter", got)
 	}
 }
@@ -269,7 +321,7 @@ func TestUsageGuardFor_PublishesUnderTheRunsCredentialKey(t *testing.T) {
 	}
 	g.Observe(usagecap.Reading{Window: usagecap.WindowFiveHour, Utilization: 0.5, ObservedAt: time.Now().UTC()})
 
-	got, err := caps.Latest(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7")))
+	got, err := caps.Latest(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +361,7 @@ func capToolOnlyWorkflow() *ir.Workflow {
 func TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel(t *testing.T) {
 	ctx := t.Context()
 	caps := usagecap.NewMemStore()
-	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform),
+	if err := caps.Record(ctx, usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, ""),
 		usagecap.Reading{
 			Window:      usagecap.WindowSevenDay,
 			Utilization: 0.92,
@@ -336,5 +388,82 @@ func TestUsageCapPreflight_SparesAWorkflowThatCannotCallAModel(t *testing.T) {
 	if err := r.usageCapPreflight(ctx, capLLMWorkflow(),
 		&queue.RunMessage{RunID: "think-1"}, iterlog.Nop()); err == nil {
 		t.Error("the cap must still refuse a model-calling run")
+	}
+}
+
+// The failure this pins, lived on a real deployment: a fresh OAuth token was
+// posted over a team's exhausted one, and the seven-day reading recorded
+// against the OLD account — legitimately fresh until its own reset instant,
+// five days out — kept parking every run. The meter must follow the
+// CREDENTIAL, not the slot: a rotated credential opens a fresh key, finds
+// nothing recorded, and the preflight fails open.
+func TestUsageCapPreflight_RotatedCredentialIsNotParkedByTheOldAccounts(t *testing.T) {
+	ctx := t.Context()
+	caps := usagecap.NewMemStore()
+	msg := &queue.RunMessage{RunID: "run-1", TenantID: "team-7"}
+
+	oldCreds := secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: t.TempDir()},
+		Fingerprints:         map[string]string{delegate.BackendClaudeCode: "aaaa1111bbbb2222"},
+	}
+	newCreds := secrets.Credentials{
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: t.TempDir()},
+		Fingerprints:         map[string]string{delegate.BackendClaudeCode: "cccc3333dddd4444"},
+	}
+	oldCtx := secrets.WithCredentials(ctx, oldCreds)
+	newCtx := secrets.WithCredentials(ctx, newCreds)
+
+	// The old account's week is spent — recorded under the OLD credential's
+	// meter, exactly where the guard published it.
+	if err := caps.Record(ctx, usageCapKey(oldCtx, msg), usagecap.Reading{
+		Window:      usagecap.WindowSevenDay,
+		Utilization: 0.95,
+		Status:      usagecap.StatusRejected,
+		ResetsAt:    time.Now().UTC().Add(5 * 24 * time.Hour),
+		ObservedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rs := &capStatusStore{}
+	r := capRunner(capTestPolicy(), caps, rs)
+
+	// Same tenant, same slot, OLD token: parked.
+	if err := r.usageCapPreflight(oldCtx, capLLMWorkflow(), msg, iterlog.Nop()); err == nil {
+		t.Fatal("the old credential's meter is at 95%: the run must be parked")
+	}
+
+	// Same tenant, same slot, NEW token: the old reading must not apply.
+	if err := r.usageCapPreflight(newCtx, capLLMWorkflow(), msg, iterlog.Nop()); err != nil {
+		t.Fatalf("rotated credential parked by the replaced account's reading: %v", err)
+	}
+}
+
+// The meter key names the credential the run actually spends: the delegate
+// ranks a ctx API key above an OAuth dir, so the fingerprint must follow
+// the same preference, and legacy credentials without fingerprints keep the
+// fingerprint-less key they always had.
+func TestUsageCapKey_FingerprintFollowsTheSpendingCredential(t *testing.T) {
+	msg := &queue.RunMessage{TenantID: "team-7"}
+
+	both := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys:              map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-tenant"},
+		OAuthCredentialFiles: map[string]string{delegate.BackendClaudeCode: "/tmp/x"},
+		Fingerprints: map[string]string{
+			string(secrets.ProviderAnthropic): "aaaa000011112222",
+			delegate.BackendClaudeCode:        "bbbb000011112222",
+		},
+	})
+	want := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "aaaa000011112222")
+	if got := usageCapKey(both, msg); got != want {
+		t.Errorf("both slots filled = %q, want the API key's fingerprint %q (delegate preference order)", got, want)
+	}
+
+	legacy := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		APIKeys: map[secrets.Provider]string{secrets.ProviderAnthropic: "sk-tenant"},
+	})
+	want = usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope("team-7"), "")
+	if got := usageCapKey(legacy, msg); got != want {
+		t.Errorf("legacy fingerprint-less credentials = %q, want the historical key %q", got, want)
 	}
 }

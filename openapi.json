@@ -1,6 +1,42 @@
 {
   "components": {
     "schemas": {
+      "AuthMeResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "active_org_id": {
+            "type": "string"
+          },
+          "active_org_role": {
+            "type": "string"
+          },
+          "active_role": {
+            "type": "string"
+          },
+          "active_team_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "orgs": {
+            "items": {
+              "$ref": "#/components/schemas/OrgTreeView"
+            },
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserView"
+          }
+        },
+        "required": [
+          "user",
+          "orgs"
+        ],
+        "type": "object"
+      },
       "BackendStatus": {
         "properties": {
           "auth": {
@@ -120,6 +156,9 @@
               "$ref": "#/components/schemas/Entry"
             },
             "type": "array"
+          },
+          "reachability": {
+            "type": "string"
           },
           "recommended_spec": {
             "type": "string"
@@ -251,6 +290,15 @@
             },
             "type": "object"
           },
+          "selected_incoming": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IncomingEdge"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
           "vars": {
             "additionalProperties": {},
             "type": "object"
@@ -326,6 +374,9 @@
           "id": {
             "type": "string"
           },
+          "installation_account": {
+            "type": "string"
+          },
           "installation_id": {
             "type": "integer"
           },
@@ -345,11 +396,17 @@
           "provider": {
             "type": "string"
           },
+          "purpose": {
+            "type": "string"
+          },
           "scopes": {
             "items": {
               "type": "string"
             },
             "type": "array"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -549,6 +606,9 @@
           "provider": {
             "type": "string"
           },
+          "reachability": {
+            "type": "string"
+          },
           "reasoning": {
             "type": "boolean"
           },
@@ -589,7 +649,8 @@
           "temperature",
           "ultracode_capable",
           "price_known",
-          "usable"
+          "usable",
+          "reachability"
         ],
         "type": "object"
       },
@@ -694,6 +755,9 @@
           },
           "served_by": {
             "type": "string"
+          },
+          "skipped": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -749,6 +813,9 @@
             },
             "type": "array"
           },
+          "security_read_only": {
+            "type": "boolean"
+          },
           "tenant_id": {
             "type": "string"
           },
@@ -766,6 +833,60 @@
           "created_by",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "GiveUp": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "attempts": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at"
+        ],
+        "type": "object"
+      },
+      "IncomingEdge": {
+        "properties": {
+          "condition": {
+            "type": "string"
+          },
+          "else": {
+            "type": "boolean"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "foreach": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "negated": {
+            "type": "boolean"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
         ],
         "type": "object"
       },
@@ -830,6 +951,9 @@
             "additionalProperties": {},
             "type": "object"
           },
+          "gave_up": {
+            "$ref": "#/components/schemas/GiveUp"
+          },
           "id": {
             "type": "string"
           },
@@ -877,6 +1001,55 @@
         ],
         "type": "object"
       },
+      "MembershipView": {
+        "properties": {
+          "personal": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "team_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "team_name",
+          "team_slug",
+          "role"
+        ],
+        "type": "object"
+      },
+      "NodeServed": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": "integer"
+          },
+          "declared_model": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend"
+        ],
+        "type": "object"
+      },
       "NodeSessionSlot": {
         "properties": {
           "backend": {
@@ -897,6 +1070,39 @@
         },
         "required": [
           "backend"
+        ],
+        "type": "object"
+      },
+      "OrgTreeView": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_role": {
+            "type": "string"
+          },
+          "org_slug": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "org_id",
+          "org_name",
+          "org_slug",
+          "org_role",
+          "teams"
         ],
         "type": "object"
       },
@@ -978,6 +1184,9 @@
           },
           "failed": {
             "type": "boolean"
+          },
+          "gave_up": {
+            "$ref": "#/components/schemas/GiveUp"
           },
           "id": {
             "type": "string"
@@ -1471,6 +1680,12 @@
           "name": {
             "type": "string"
           },
+          "nodes_served": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NodeServed"
+            },
+            "type": "object"
+          },
           "parent_node_id": {
             "type": "string"
           },
@@ -1798,6 +2013,35 @@
         ],
         "type": "object"
       },
+      "UserView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_super_admin": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "status",
+          "is_super_admin"
+        ],
+        "type": "object"
+      },
       "WireEdge": {
         "properties": {
           "condition": {
@@ -1968,39 +2212,138 @@
         ],
         "type": "object"
       },
-      "authResponse": {
+      "botSourceForkReq": {
         "properties": {
-          "access_token": {
+          "from": {
             "type": "string"
-          },
-          "active_org_id": {
-            "type": "string"
-          },
-          "active_org_role": {
-            "type": "string"
-          },
-          "active_role": {
-            "type": "string"
-          },
-          "active_team_id": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "string"
-          },
-          "orgs": {
-            "items": {
-              "$ref": "#/components/schemas/orgTreeView"
-            },
-            "type": "array"
-          },
-          "user": {
-            "$ref": "#/components/schemas/userView"
           }
         },
         "required": [
-          "user",
-          "orgs"
+          "from"
+        ],
+        "type": "object"
+      },
+      "botSourceMetaView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "slug",
+          "files",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "botSourcePutReq": {
+        "properties": {
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "type": "object"
+      },
+      "botSourceView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "slug",
+          "files",
+          "version",
+          "created_at",
+          "updated_at"
         ],
         "type": "object"
       },
@@ -2145,11 +2488,20 @@
             },
             "type": "array"
           },
+          "missing_security_permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "provider": {
             "type": "string"
           },
           "provisioned_repo_count": {
             "type": "integer"
+          },
+          "security_read_enabled": {
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -2174,7 +2526,8 @@
           "status",
           "provider",
           "kind",
-          "provisioned_repo_count"
+          "provisioned_repo_count",
+          "security_read_enabled"
         ],
         "type": "object"
       },
@@ -2219,6 +2572,9 @@
           "allow_repo_creation": {
             "type": "boolean"
           },
+          "allow_security_read": {
+            "type": "boolean"
+          },
           "client_id": {
             "type": "string"
           },
@@ -2242,6 +2598,9 @@
           },
           "provider": {
             "type": "string"
+          },
+          "security_read_only": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2307,32 +2666,6 @@
         ],
         "type": "object"
       },
-      "membershipView": {
-        "properties": {
-          "personal": {
-            "type": "boolean"
-          },
-          "role": {
-            "type": "string"
-          },
-          "team_id": {
-            "type": "string"
-          },
-          "team_name": {
-            "type": "string"
-          },
-          "team_slug": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "team_id",
-          "team_name",
-          "team_slug",
-          "role"
-        ],
-        "type": "object"
-      },
       "modelPrefRequest": {
         "properties": {
           "backend": {
@@ -2374,39 +2707,6 @@
         "required": [
           "key",
           "set"
-        ],
-        "type": "object"
-      },
-      "orgTreeView": {
-        "properties": {
-          "org_id": {
-            "type": "string"
-          },
-          "org_name": {
-            "type": "string"
-          },
-          "org_role": {
-            "type": "string"
-          },
-          "org_slug": {
-            "type": "string"
-          },
-          "personal": {
-            "type": "boolean"
-          },
-          "teams": {
-            "items": {
-              "$ref": "#/components/schemas/membershipView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "org_id",
-          "org_name",
-          "org_slug",
-          "org_role",
-          "teams"
         ],
         "type": "object"
       },
@@ -2721,35 +3021,6 @@
           }
         },
         "type": "object"
-      },
-      "userView": {
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "is_super_admin": {
-            "type": "boolean"
-          },
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "email",
-          "status",
-          "is_super_admin"
-        ],
-        "type": "object"
       }
     }
   },
@@ -2783,6 +3054,195 @@
           }
         },
         "summary": "GET /api/admin/audit",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots": {
+      "get": {
+        "operationId": "getAdminBots",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "bot_sources": {
+                      "items": {
+                        "$ref": "#/components/schemas/botSourceMetaView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "bot_sources"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/bots",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}": {
+      "delete": {
+        "operationId": "deleteAdminBotsBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "getAdminBotsBySlug",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminBotsBySlug",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourcePutReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PUT /api/admin/bots/{slug}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}/files/{path}": {
+      "delete": {
+        "operationId": "deleteAdminBotsBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/bots/{slug}/files/{path...}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putAdminBotsBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/bots/{slug}/files/{path...}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/bots/{slug}/fork": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminBotsBySlugFork",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/botSourceForkReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/botSourceView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/admin/bots/{slug}/fork",
         "tags": [
           "admin"
         ]
@@ -3296,6 +3756,84 @@
         }
       ]
     },
+    "/api/admin/settings/bot-roles": {
+      "get": {
+        "operationId": "getAdminSettingsBotRoles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/bot-roles",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBotRoles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/bot-roles",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/sandbox": {
+      "get": {
+        "operationId": "getAdminSettingsSandbox",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/sandbox",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsSandbox",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/sandbox",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/settings/usage-caps": {
+      "get": {
+        "operationId": "getAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsUsageCaps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/usage-caps",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/users": {
       "get": {
         "operationId": "getAdminUsers",
@@ -3418,7 +3956,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
@@ -3453,7 +3991,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/authResponse"
+                  "$ref": "#/components/schemas/AuthMeResponse"
                 }
               }
             },
@@ -6983,6 +7521,170 @@
         }
       ]
     },
+    "/api/teams/{id}/bot-sources": {
+      "get": {
+        "operationId": "getTeamsByIdBotSources",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bot-sources",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/bot-sources/{slug}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBotSourcesBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/bot-sources/{slug}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bot-sources/{slug}/files/{path}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotSourcesBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putTeamsByIdBotSourcesBySlugFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/teams/{id}/bot-sources/{slug}/files/{path...}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bot-sources/{slug}/fork": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotSourcesBySlugFork",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bot-sources/{slug}/fork",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/bots/{bot_id}/bindings": {
       "get": {
         "operationId": "getTeamsByIdBotsByBotIdBindings",
@@ -7456,7 +8158,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdForgeConnectionsByConnId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
       "get": {

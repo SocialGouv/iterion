@@ -163,7 +163,10 @@ the hours this one spent.
   `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs) — including
   the **platform tier**: the deployment's own DB-backed fallback keys/forfait
   (`iterion remote admin llm …`, studio Admin → LLM credentials), rotated
-  with one call instead of a k8s-secret edit + redeploy.
+  with one call instead of a k8s-secret edit + redeploy — and the
+  one-credential activation of the campaign bots' **cross-model plan
+  review** (provision the codex OAuth forfait → `plan_review` resolves
+  `on` at the next launch, nothing else to configure).
 - [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
   (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
 - [docs/credential-pool.md](docs/credential-pool.md) — mutualising
@@ -178,13 +181,23 @@ the hours this one spent.
 - [docs/usage-caps.md](docs/usage-caps.md) — capping the LLM
   subscription below the provider's own wall (`ITERION_USAGE_CAP_*`:
   soft on the 5h window, hard on the weekly one), where the numbers
-  come from, and the KEDA emergency brake. Read it when bots are eating
-  the forfait an operator also works on.
+  come from, and the KEDA emergency brake. The percentages are also
+  **runtime-mutable without a restart** (`iterion remote admin caps set
+  --five-hour 80 --week 70`, super-admin; DB record over the env
+  defaults, ≤30s propagation to both deployments, `/healthz` echoes the
+  effective values — ADR-090). Read it when bots are eating the forfait
+  an operator also works on.
 - [docs/merge-gate.md](docs/merge-gate.md) — the required check's full life:
   the in-flight claim at launch, the verdict, and the two triggers that
   guarantee a dead review still answers (outcome event + 1-min sweep).
   Read it when a gate looks stuck — "absent", "pending forever", a synthetic
   `review died`, or a repair that posts nothing and says why in the logs.
+- [docs/revi-billy-loop.md](docs/revi-billy-loop.md) — the Revi → Billy habit
+  on THIS repo: findings on a PR here → comment `/billy` (don't hand-fix),
+  what the command seeds (prior-review hand-off, push-back, ledger, gate),
+  the session gotchas (don't touch the branch while he runs, pull after his
+  push), and the dogfood duty (bilan per run). Read it before acting on a
+  Revi review of an iterion PR.
 - [docs/probes-and-graceful-shutdown.md](docs/probes-and-graceful-shutdown.md) —
   what `/healthz` and `/readyz` promise on the server AND the runner, the
   lame-duck window (`ITERION_SHUTDOWN_DELAY`) that keeps a deploy or an HPA
@@ -194,6 +207,40 @@ the hours this one spent.
   the `terminationGracePeriodSeconds` arithmetic. Read it on 502s during a
   deploy, a CrashLoop at boot, or a runner that reads `Ready` while the
   queue sits still.
+- [docs/worktree-pool.md](docs/worktree-pool.md) — where a long-lived
+  store's disk goes: `worktree: auto` parks a FULL checkout per run under
+  `<store>/worktrees/`, a failed run keeps its own for inspection, and
+  nothing but `iterion clean` ever came back for it (measured: 355 MB each
+  on this repo, 32 of them = 12 GB in forty minutes, on a `/tmp` tmpfs =
+  RAM, which killed the machine). Covers the runtime bound
+  (`ITERION_WORKTREE_POOL_MAX`, default 8), why it spares dirty and
+  resumable checkouts, and the `iterion clean` invocation for the rest.
+  Read it on "the disk is full", or before pointing `--store-dir` anywhere.
+- [docs/forge-security-read.md](docs/forge-security-read.md) — giving a bot
+  org-wide **Dependabot alerts** read access: the `dependabot_tokens` team
+  secret (JSON map org→token — the shape is the contract), the GitHub App
+  path (add "Dependabot alerts: Read-only" + org approval + per-connection
+  `security_read_enabled` PATCH, refresh worker keeps it minted) vs the
+  hand-set fine-grained-PAT path, and the health/422 diagnostics. Read it
+  when wiring vuln-watch (Senti) or when its run fails on "no Dependabot
+  token". Covers the **coverage trap** — the org-wide endpoint returns only
+  what the installation can see, so a `selected`-scope install is silently
+  near-blind — and the **watch-only App** (`security_read_only`, manifest
+  permissions REPLACED by `metadata`+`vulnerability_alerts` read) that makes
+  an All-repositories install safe. Its connection carries
+  `purpose: security_read`, which is what keeps the refresh worker from
+  minting it a runtime token (that mint would 422 → degrade → withdraw the
+  token it exists to supply) and keeps the publish resolver from picking it.
+- [docs/platform-bots.md](docs/platform-bots.md) — iterating on any bot
+  (incl. natives) on a cloud instance WITHOUT an image rollout: the
+  platform bot-override tier (`iterion remote admin bots push bots/<slug>`,
+  botsource rows under the `platform:` sentinel, resolution team →
+  platform → baked at every launch surface, the runner's by-ref rebuild +
+  version-drift guard, digest-audited), plus the runtime-mutable webhook
+  role bots (`admin roles set --reviewer …`) and `sandbox: auto` default
+  image (`admin sandbox set --default-image …`, pinned per RunMessage).
+  Read it when a bot tweak seems to need a deploy, when a push must be
+  reverted, or when a run fails on "version drift".
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
@@ -207,7 +254,8 @@ the hours this one spent.
   second conversational bot is a bundle, not a studio release), the
   page-context chip, dragging a run/card/bot onto the composer, and
   assistant-vs-steering on a run page. Read it before adding a chat
-  surface or wondering why the dock shows Nexie and not Copi.
+  surface, or to know which bot answers where: Nexie owns `/whats-next`
+  and only that route, the dock everywhere else is Copi.
 - [docs/models.md](docs/models.md) — the model registry (`iterion models`,
   `GET /api/models`: known × usable × capabilities × pricing), the launch-time
   model/backend/effort overrides, and how to change the studio assistant's
@@ -304,7 +352,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
   - `detect/` — Backend credential auto-detection (OAuth, API keys, AWS/GCP) consumed by `model/executor.go`'s resolver and the studio toolbar BackendStatusPill
   - `tooldisplay/` — Human-readable rendering of tool calls for the run console / report
 - `pkg/runtime/` — Workflow execution engine (branch scheduling, events, budget, recovery dispatch)
-- `pkg/reviewtopology/` — Resolves the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052**) from detected credentials and injects it into a run's inputs, but only for bots that opt in by declaring a `review_mode` var (`InjectIfDeclared`). **`auto` resolves to mono** — dual doubles the reviewer spend on every run, so it is an explicit opt-in. Consumed by `review-pr` and `evolve`. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md)
+- `pkg/reviewtopology/` — Resolves the credential-derived topology vars, each opt-in by var declaration (`InjectAll` at every launch surface): the mono/dual review topology (`review_mode` / `mono_family`, **ADR-052** — **`auto` resolves to mono**, dual is an explicit spend; consumed by `review-pr` and `evolve`), the cross-model plan-review switch (`plan_review`, **ADR-091** — auto → on iff ≥2 distinct model families are credentialed; consumed by the 4 campaign bots' plan phase), and the raw family list (`llm_families`) so any bot can build its own policy without a new engine role var. On cloud, `cloudpublisher` derives the family set from the run's SEALED bundle (all five credential tiers) and injects the same vars onto queued runs. See [docs/adr/052-review-topology-mono-dual.md](docs/adr/052-review-topology-mono-dual.md) + [docs/adr/091-fallback-skip-route-and-plan-peer-review.md](docs/adr/091-fallback-skip-route-and-plan-peer-review.md)
 - `pkg/store/` — Run persistence (JSON-based, versioned artifacts, events.jsonl)
 - `pkg/server/` — HTTP server for studio backend (embedded static UI)
 - `pkg/dispatcher/` — Long-running dispatcher: native kanban store, polling actor, tracker adapters (native, github, forgejo)
@@ -360,7 +408,8 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/botregistry/` — Discovers bots on disk (single `.bot` files + `.botz` bundle dirs); the shared layer behind `iterion bots list`, the studio `GET /api/v1/bots`, and the dispatcher's per-ticket bot-override resolution. Also generates Nexie's bot-catalog skill from manifests (`iterion bots regen-catalog`, [pkg/botregistry/catalog.go](pkg/botregistry/catalog.go))
 - `pkg/bundlelint/` — Cross-checks a bundle's `manifest.yaml` against its compiled `main.bot` (var/secret mismatches the DSL compiler can't see), surfaced at `iterion validate` under a dedicated C2xx diagnostic family
 - `pkg/pluginsource/` — Team-scoped durable binding for private plugins: persists git repo + referenced secret id so cloud pods can fetch and cache skills; the checkout is a re-derivable cache, the credential referenced never inlined
-- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md))
+- `pkg/botsource/` — Team-authored bot bundles: the writable, tenant-scoped counterpart to the read-only catalog baked into a runner image (the plugin-side `pkg/pluginsource` analogue for bots). Stores the bundle CONTENT as a multi-file map (`main.bot` + `manifest.yaml` + `skills/`…) since it's authored in the studio editor, not fetched from git; Mongo in cloud, memory-backed for tests/local. Two-tier editability: baked catalog bots stay read-only; a team forks one (`Origin = "forked:<catalog-id>"`) or authors a new one. Backs the studio cloud bot editor + `/api/teams/{id}/bot-sources` (see [docs/cloud-rest-api.md](docs/cloud-rest-api.md)) — and, under the reserved `platform:` sentinel tenant, the deployment-wide **platform bot overrides** (super-admin `/api/admin/bots` + `iterion remote admin bots push`): the DB-backed form of the baked catalog, resolved team → platform → baked at every launch surface via [pkg/server/bot_resolver.go](pkg/server/bot_resolver.go) and rebuilt runner-side from the queue message's versioned `bot_bundle` ref (see [docs/platform-bots.md](docs/platform-bots.md))
+- `pkg/platformcfg/` — Platform runtime-settings families beyond the usage caps (ADR-090 doctrine: env/const = default, DB record = runtime override, ≤30s TTL resolvers, super-admin API/CLI): `bot_roles` (the webhook role→bot bindings that were hardcoded constants — reviewer/revi_converse/brancher/implementer, consumed via `Server.roleBots()`) and `sandbox` (the `sandbox: auto` fallback image, resolved at publish and pinned on the RunMessage). One doc per family in the shared `platform_settings` collection. See [docs/platform-bots.md](docs/platform-bots.md)
 - `pkg/askusermcp/` — Shared MCP tool surface (`ask_user`, `ask_user_async`, `await_answers`) exposed over both stdio and HTTP transports for interactive workflows
 - `pkg/runshell/` — Spawns an interactive post-mortem PTY shell in a preserved run worktree (studio "Open shell"); Unix-only with a Windows stub
 - `pkg/clock/` — Minimal `Clock` abstraction (real + fake) for deterministic testing of time-dependent logic (e.g. daily spend-cap resets)
@@ -437,7 +486,7 @@ warning: it has a push seam but no per-file read-back, so the agent's notes
 could not be synced. Distinct from the `memory:` block (iterion's own tools +
 scopes). See [docs/memory-and-knowledge.md](docs/memory-and-knowledge.md).
 
-**`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives claude_code's `wirePermissionHook`, claw's `executeToolsDirect` gate, and pi's embedded RPC extension — so a bot behaves consistently across the three gated backends. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
+**`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives claude_code's `wirePermissionHook`, claw's `executeToolsDirect` gate, pi's embedded RPC extension, and the external PreToolUse hook adapter used by Kimi/Grok. Claude Code, claw, and pi support `ask|deny`; Kimi and Grok are admitted for host-side `deny` only — their hook is an EXTERNAL process, so it can hard-block but cannot pause the run for `ask`. Both earned admission with a live denial (a real model's real tool call, a filesystem sentinel as the oracle), never by declaration. Unsupported primary routes are refused too — a declared gate must never become inert. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112/C176. See [docs/permissions.md](docs/permissions.md).
 
 **Edge syntax:**
 ```
@@ -474,6 +523,36 @@ so a pod never re-decides it. The 90%-hard-limit and exceeded checks remain
 the backstop for a single node that overruns. See
 [docs/dsl.md](docs/dsl.md#budget-and-loop-back-edges).
 
+That guard covers overruns caused by iteration COUNT; a single node that
+overshoots the cap on its own is covered by the **exit grace**
+([pkg/runtime/budget_exit_grace.go](pkg/runtime/budget_exit_grace.go)).
+Once a cap is *spent*, the run may walk **forward** — never around a
+declared `loop`; a `foreach` back-edge is bounded by its collection, not
+priced, so only the declared-loop form promises "it cannot iterate again" —
+spending up to `cap × 1.1` to reach a terminal node, so work it has already
+paid for gets delivered instead of dying on disk. The ceiling is
+PROPORTIONAL (a small cap grants a small grace) and past it the run fails as
+`BUDGET_EXCEEDED` as before. Both *exceeded* stop-paths — the pre-exec check
+and the deferred overrun after a node that succeeded — go through one
+decision (`graceOrFailBudget`), so a node is never refused by a stricter
+rule than the one that admitted it; a node whose OWN spend crosses
+`cap × 1.1` still completes and then ends the run. The 90% hard limit (`budgetHardThreshold`,
+refusing a new node while an axis is in `[90%, 100%)`) is a SEPARATE,
+un-graced path reached only when nothing is exceeded yet — so a run refused
+at 92% gets no grace while one at 105% may walk on, which is surprising
+until you see that the grace begins where the cap ends. The grace is REFUSED outright in two cases: when
+the loop budget guard is off (the "no further iteration" half of the safety
+argument is that guard's), and when the cap was CLAMPED by an authority
+outside the run (`ir.Budget.CapImposed`, set at the single choke point
+`Budget.ClampToCeiling` — platform ceiling, credential-pool donor allowance;
+the marker travels the queue as `BudgetOverrides.cap_imposed`) — an imposed
+cap is an absolute promise to a third party. `ITERION_BUDGET_EXIT_GRACE`
+overrides the ratio and fails **closed** (`0`/`off` = absolute caps; an
+out-of-range or unparsable value also means 0, with a one-time stderr
+warning). Every graced node emits `budget_exit_grace {dimension, used,
+limit}`, rendered by `iterion report`: a deliberate overspend has to be
+visible in the events, not discovered on the invoice.
+
 ### Backend selection
 
 Six backends are wired:
@@ -493,11 +572,25 @@ through `claw`. `on:` filters which failure routes where (default
 fall-through is deliberately **loud**: a `model_fallback` event,
 `_backend`/`_model` naming what actually *served*, and
 `_fallback_used`/`_served_by` so a deterministic gate can fail closed on
-a degraded input. Two crossings are compile-time errors (C176): a route
-that cannot enforce the node's `permission:` gate, and a claw⇄CLI
+a degraded input. THREE crossings are compile-time errors (C176): a route
+that cannot enforce the node's `permission:` gate; a claw⇄CLI
 crossing on a node with an empty `tools:` list (the list inverts meaning
-across that boundary). See
+across that boundary); and a **backend change on a node that keeps its
+conversation** (`session: inherit` / `inherit_if_available` / `fork` —
+`sessionContinuityCrossingReason`), since session continuity has no
+cross-backend meaning. The third is why a node that must survive a
+fall-through WITHOUT losing its thread builds its ladder from different
+*providers* inside ONE backend rather than from different backends —
+Copi's claw ladder is the shipped example. Two route properties extend the chain (ADR-091):
+`action: skip` is a TERMINAL degrade — the node completes with a
+zero-value output stamped `_skipped` instead of failing the run (the
+"continue and ignore" half of an optional-peer policy; "pause and
+retry" = don't declare it, the failure stays resumable for the
+usage-window retry) — and `when:` gates any route on an expr over vars,
+so one node expresses both policies picked per run by a `--var`. C173
+guards both. See
 [ADR-087](docs/adr/087-cross-backend-model-fallback-chain.md) +
+[ADR-091](docs/adr/091-fallback-skip-route-and-plan-peer-review.md) +
 [docs/backends.md](docs/backends.md).
 
 **Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw`; other CLI backends, including codex, are explicit opt-ins). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](docs/backends.md).
@@ -513,7 +606,12 @@ Code:
   read-before-edit/parallel-tool/`file:line`/refusal posture); appending
   keeps it as the base. iterion also emits `--setting-sources user,project`
   so the target repo's `CLAUDE.md`/settings are honoured (tunable via
-  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). Tool restriction: under the
+  `ITERION_CLAUDE_CODE_SETTING_SOURCES`). MCP is the opposite —
+  `--strict-mcp-config` makes the node's resolved MCP set (`mcp_server:`/
+  `mcp:` blocks, repo `.mcp.json`, iterion's ask_user/board servers)
+  authoritative: the operator's personal `~/.claude.json` servers never
+  boot inside a bot node (`ITERION_CLAUDE_CODE_STRICT_MCP=0` restores
+  inheritance). Tool restriction: under the
   always-on `--permission-mode bypassPermissions`, `--allowedTools` does
   **not** gate the toolset — claude_code nodes always have the full native
   toolset (a node's lowercase `tools:` list is a no-op here; the real
@@ -522,7 +620,15 @@ Code:
 - **claw** — claw-code-go is a bare API client with **no** native system
   prompt, so iterion prepends an authored `agenticOperatingPosture` base
   (the parity substrate) before the node's `system:` text. A node's
-  `tools:` list **does** restrict claw (lowercase names are claw-native).
+  `tools:` list **does** restrict claw (lowercase names are claw-native)
+  — and is RESOLVED against the registry, so a name claw does not have
+  fails the node at dispatch. `iterion validate` refuses it first (C135,
+  claw only — on a CLI backend the list is inert, so an unknown name
+  there is dead config, not a failure); the catalog of accepted names is
+  [pkg/backend/toolcatalog](pkg/backend/toolcatalog/toolcatalog.go), kept
+  honest by a conformance test against the real registry. `list_files` /
+  `run_command` / `git_diff` / `search_codebase` circulate in older
+  examples and have never been registered — use `glob` / `bash` / `grep`.
 
 The `bypassPermissions` note above describes the default (`permission:
 off`). The opt-in **permission gate** (`permission: ask|deny`, see the
@@ -626,7 +732,7 @@ The checkpoint embedded in `run.json` is the authoritative source for resume —
 
 **Run statuses:** `queued` (cloud mode only — submitted to the NATS queue, not yet claimed by a runner pod) → `running` → `paused_waiting_human` or `paused_operator` → `finished` | `failed` | `failed_resumable` | `cancelled`
 
-**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `run_finished`, `run_failed`
+**Key event types:** `run_started`, `node_started`, `llm_request`, `llm_retry`, `tool_called`, `artifact_written`, `human_input_requested`, `run_paused`, `run_resumed`, `join_ready`, `edge_selected`, `budget_warning`, `budget_exceeded`, `budget_exit_grace`, `run_finished`, `run_failed`
 
 ### Resume from Failed/Cancelled Runs
 
@@ -892,7 +998,21 @@ CLI/VSCode session — iterion tails its
 that runs the hidden `iterion __claude-hook-drain` to inject from an
 inbox under `~/.iterion/claude-sessions/<key>/`). The transcript tailer
 is an `Observer` and the inbox an `Injector`, so the same Coordinator/bot
-drive both managed and raw targets. Reference:
+drive both managed and raw targets. The block may pre-seed `monitors:`
+(CLI `--monitor` grammar, armed from the first event — the bot-registered
+kind only exists after its first eval). Declared supervisors spawn by
+default on every launch surface (CLI run/resume, studio/runview, the
+dispatcher's direct engine path, cloud runner pods), with the usual
+escape hatch: run-level `--supervisors on|off` / launch-API field →
+`ITERION_SUPERVISORS` → on (skip always logged; the resolution lives in
+`pkg/supervise`, shared by every spawn site) — and like `auto_memory:`
+the run-level override travels onto the cloud queue
+(`RunMessage.supervisors`, schema v8) so a pod never re-decides an
+operator's `off`. The supervisor hub rides BOTH event seams (engine
+observer + backend-hook `ExecutorSpec.EventObservers`) — hook events
+(`assistant_text`, `tool_*`) never fire the engine seam, and text
+monitors are blind without the second wire. feature-dev's Persy
+(perseverance coach) is the shipped reference use. Reference:
 [docs/supervisors.md](docs/supervisors.md),
 [examples/supervisor/sample.bot](examples/supervisor/sample.bot).
 
@@ -978,6 +1098,35 @@ Current bundles and their skills:
   [scripts/adhoc/whats-next-skills-gen.bot](scripts/adhoc/whats-next-skills-gen.bot)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).
+- [bots/copilot/skills/](bots/copilot/skills/) — 5 skills, **one per
+  posture** plus the playbook and a second design skill:
+  `iterion-concepts` (info), `iterion-dsl-authoring` +
+  `iterion-bot-architecture` (design), `iterion-run-debug` (debug),
+  `copi-conversation` (the operating playbook, loaded every turn).
+  The two design skills are deliberately separate because they fail
+  differently: `iterion-dsl-authoring` is how to SPELL a `.bot` (the
+  syntax traps that compile clean and break at runtime),
+  `iterion-bot-architecture` is how to DESIGN one (responsibilities,
+  closed contracts, the PASS/RETRY/BLOCKED shape, why a retry re-enters
+  its producer rather than a correction twin, subbot boundaries,
+  idempotency, budgets, proof categories). Folding them together makes
+  a reader treat architecture rules as compiler rules — the one thing
+  the design posture must never tell an operator. A repo may override
+  the second with its own standard (`authoring_standard:` declaration
+  or `ITERION_AUTHORING_STANDARD_PATH`), which the skill tells Copi to
+  read and prefer.
+
+**A `skills:` entry that resolves to nothing is silent.** It is not a
+compile error and not a bundle-lint finding — the runtime mirrors
+nothing, the agent's Skill tool finds nothing, and the bot answers from
+the model's priors instead of the authored knowledge (it reads as "the
+bot got dumber", not as a typo). `bots/catalog_skill_refs_test.go`
+closes that gap: every name in a catalog bot's `skills:` list must exist
+as `<bundle>/skills/<name>.md` with matching frontmatter. The exception
+is a skill a bot deliberately does NOT ship so the operator attaches it
+from the skill library (ADR-059) — `deploy-target` for app-dev /
+review-env, where shipping one would pin a catalog bot to a platform.
+Those live in a commented allowlist in that test.
 
 **Maintain skills inline with the code they describe.** Each time
 you touch a skill's subject area and notice the skill is wrong,
@@ -1240,18 +1389,22 @@ the BOT, keyed on generic context the engine already provides:**
   naming the other bot. Adding a second reviewer or a second fixer is a bundle,
   not an engine PR. See [pkg/server/webhooks_handoff.go](pkg/server/webhooks_handoff.go).
 
-**Known debt (extract when touched, don't extend):** the webhook layer still
-hardcodes distinguished-role bot ids — `defaultWebhookBotReviewPR`
-("review-pr"), `branchImproveBotID`, `featureDevBotID`
-([pkg/server/webhooks_common.go](pkg/server/webhooks_common.go)), the
-`cmd == "revi"` special-casing ([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)),
-the Billy merge-queue auto-heal + its mission prompt
+**Known debt (extract when touched, don't extend):** the webhook role bot
+ids are no longer read as constants — they resolve through
+`Server.roleBots()` over the `bot_roles` platform-settings family
+([pkg/platformcfg](pkg/platformcfg/platformcfg.go), `iterion remote admin
+roles set --reviewer …`), the constants remaining only as the DEFAULTS
+(enforced by the symbol-sweep test in
+[bot_resolver_sweep_test.go](pkg/server/bot_resolver_sweep_test.go)). What
+remains hardcoded: the `cmd == "revi"` special-casing
+([pkg/server/webhooks_gitlab.go](pkg/server/webhooks_gitlab.go)), the
+Billy merge-queue auto-heal mission prompt
 ([pkg/server/webhooks_github.go](pkg/server/webhooks_github.go)), the
-`botRosterOrder` list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
+`botRosterOrder` display list ([pkg/server/server_dsl.go](pkg/server/server_dsl.go)),
 and the dispatcher's `ImplementBotOrDefault → "feature-dev"`
-([pkg/dispatcher/config.go](pkg/dispatcher/config.go)). These are ROLES
-(reviewer / implementer / brancher) that should resolve from config/manifest,
-not baked ids. **Do not add to this list** — thread new behaviour through the
+([pkg/dispatcher/config.go](pkg/dispatcher/config.go), local-YAML
+configurable already). Full role-from-manifest extraction stays future
+work. **Do not add to this list** — thread new behaviour through the
 generic seams above. If you find a fresh instance, flag it.
 
 ## A bot that needs tools declares them in `devbox.json`
@@ -1403,7 +1556,7 @@ above is the standing baseline, not an open-work list).
 ```
 iterion validate <file.bot>            # Parse and validate workflow
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
-iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --model, --backend, --effort-for, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
+iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --skill, --model, --backend, --effort-for, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
 iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions
@@ -1416,11 +1569,11 @@ iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--ma
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
-iterion issue create|list|show|move|update|close|board  # Native kanban tracker
+iterion issue create|list|show|move|update|close|board|import  # Native kanban tracker (import mirrors a forge repo's issues, one-way + idempotent)
 iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
-iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
+iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field, or added to any run with `iterion run --skill <name>` / ITERION_SKILLS (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
 iterion models [provider/model-id]      # The model registry: capabilities + source + price + whether THIS host can reach it (shared with GET /api/models; see docs/models.md)
@@ -1434,8 +1587,9 @@ iterion server [--port] [--store-dir]   # HTTP server (run console + studio), wi
 iterion version [--commit]              # Print version; --commit prints only the 12-char git SHA (errors when the build carries none)
 
 # Operational runner and hidden subprocess entry points:
-# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`
+# `iterion runner`, `iterion __claw-runner`, `iterion __mcp-ask-user`, `iterion __mcp-board`, `iterion __mcp-control`, `iterion __scan-shards`, `iterion __claude-hook-drain`, `iterion __permission-hook`
 # Only the double-underscore commands are hidden internal subprocess entry points.
+# `iterion migrate` is a visible-name but Hidden operator-only command (to-cloud, run-paths, orgs).
 ```
 
 Global flags: `--json` (machine output), `--help`
@@ -1645,15 +1799,18 @@ rebuilds each on `main` + earlier-queued PRs and merges only if that combined
 tree is green — closing the semantic inter-PR conflict class (two PRs green
 apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
 push / `--squash` without `--auto`). Required checks: `test`, `race`,
-`vendor-check`, `mongo-conformance`. Full details + revert command:
+`vendor-check`, `mongo-conformance`, `golangci`, `revi/review`.
+`nats-conformance` remains advisory until an admin adds it to ruleset
+18857412. Full details + revert command:
 [docs/merge-policy.md](docs/merge-policy.md).
 
-**Optional Revi merge gate.** Revi (`bots/review-pr`) can post a
+**Revi merge gate.** Revi (`bots/review-pr`) posts a
 deterministic `revi/review` commit status on a PR head — `success` when 0
 findings meet `gate_severity` (default `high`), else `failure`. Add that
-context to the required checks to make Revi's verdict block the merge (it is
-advisory until then). The verdict is a COUNT computed in the bot, never an LLM
-judgment; the review comments stay non-blocking advice. Pairs with the webhook
+context to another repository's required checks to make its verdict block the
+merge; it is already required here by ruleset 18857412. The verdict is a COUNT
+computed in the bot, never an LLM judgment; the review comments stay
+non-blocking advice. Pairs with the webhook
 `review_on_sync` opt-in (re-review each push so the status tracks the fixed
 head) and Revi's falsifiability `questions` channel (non-blocking assumptions,
 never gate). The forge-agnostic write path is `forge.CommitStatusClient`
@@ -1664,9 +1821,18 @@ sharing one context on the same PR, and the per-repo **opt-in** zero-touch lane
 (`auto_fix_on_gate_failure`) where a red gate launches the repo's fixer once per
 head sha, off by default so the developer keeps the choice.
 
+**Revi → Billy is the habit on this repo.** When Revi leaves findings on a PR
+here, comment **`/billy`** on the PR and let the fixer work — don't hand-fix
+the findings in a session. The command seeds Billy with Revi's review
+(kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
+gate count, and the push re-triggers Revi. Every such run is a dogfood run:
+monitor it, fix the frictions it surfaces, write the bilan. Full habit +
+gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). (The zero-touch
+`auto_fix_on_gate_failure` lane is deliberately not enabled here yet.)
+
 ## Conventions
 
-- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; CI `golangci` job (add to the branch-protection required checks to gate merges)
+- Go linting: `go fmt` + `go vet` + a curated `golangci-lint` (`.golangci.yml`: errcheck/govet/ineffassign/staticcheck/unconvert/unused; misspell off — it flags French comments; tests skip errcheck/SA1012; `cmd/iterion-desktop` excluded as cgo/build-tagged). Run via `task lint`; the CI `golangci` job is a required check.
 - Tests use the standard `testing` package — no test frameworks
 - Binary name is `iterion` (ignored in .gitignore)
 - Store data lives in `.iterion/` (ignored in .gitignore)

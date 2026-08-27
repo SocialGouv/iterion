@@ -63,6 +63,22 @@ export interface PipelineBoardBlocking {
   title?: string;
 }
 
+/**
+ * The dispatcher's give-up stamp: this ticket's terminal state was written by
+ * an exhausted retry budget, not by a human filing it. The two are the same
+ * state on the board, so this is the only thing that tells them apart.
+ */
+export interface PipelineBoardGiveUp {
+  /** The run whose failure exhausted the budget. */
+  run_id: string;
+  /** The state the give-up wrote (usually the board's `blocked`). */
+  state?: string;
+  /** How many attempts were burned before giving up. */
+  attempts?: number;
+  /** When the give-up happened (RFC 3339). */
+  at?: string;
+}
+
 /** Spawned child ticket under a planner parent. */
 export interface PipelineBoardChildRef {
   issue_id: string;
@@ -128,6 +144,10 @@ export interface PipelineBoardCard {
   // for its own restart. Nothing is running against it — retrying, resuming
   // or closing the card releases the slot.
   reserves_slot?: boolean;
+  // Set when the ticket's TERMINAL state was written by the dispatcher giving
+  // up (its retry budget ran out), not by an operator filing it. It is why
+  // such a card sits in Needs attention while its ticket reads "blocked".
+  gave_up?: PipelineBoardGiveUp;
   // Ready lane (wire ID "opened") — a task-backed ticket staged (waiting for a
   // concurrency slot; the studio auto-launches it when one frees).
   ready?: boolean;
@@ -241,6 +261,24 @@ function normalizeAttempts(value: unknown): PipelineBoardAttempt[] | undefined {
       ...(text(source.at) ? { at: text(source.at) } : {}),
     };
   });
+}
+
+function normalizeGiveUp(value: unknown): PipelineBoardGiveUp | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  const run_id = text(source.run_id);
+  // A stamp with no run cannot be attributed to the card showing it, and the
+  // server never emits one — treat it as absent rather than render a claim
+  // about an unknown run.
+  if (!run_id) return undefined;
+  const out: PipelineBoardGiveUp = { run_id };
+  const state = text(source.state);
+  if (state) out.state = state;
+  const attempts = numberValue(source.attempts);
+  if (attempts !== undefined) out.attempts = attempts;
+  const at = text(source.at);
+  if (at) out.at = at;
+  return out;
 }
 
 // normalizeExternal tolerates the two shapes the server emits: a task-backed
@@ -392,6 +430,7 @@ export function normalizePipelineBoardCard(
   const attempts = normalizeAttempts(source.attempts);
   const reviews = normalizePendingReviews(source.pending_reviews);
   const external = normalizeExternal(source.external);
+  const giveUp = normalizeGiveUp(source.gave_up);
   return {
     id,
     kind: text(source.kind) ?? (runID ? "run" : "task"),
@@ -447,6 +486,7 @@ export function normalizePipelineBoardCard(
     ...(typeof source.reserves_slot === "boolean"
       ? { reserves_slot: source.reserves_slot }
       : {}),
+    ...(giveUp ? { gave_up: giveUp } : {}),
     ...(typeof source.ready === "boolean" ? { ready: source.ready } : {}),
     ...(entryInput ? { entry_input: entryInput } : {}),
     ...(numberValue(source.queue_position) !== undefined

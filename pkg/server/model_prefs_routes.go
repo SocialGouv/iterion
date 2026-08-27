@@ -78,14 +78,24 @@ func (s *Server) handleGetModelPref(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const maxModelPrefBody = 4 << 10
+const maxModelPrefModelLen = 256
+
 func (s *Server) handlePutModelPref(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	if s.cfg.ModelPrefs == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "model preferences are not available on this server")
 		return
 	}
 	var req modelPrefRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxModelPrefBody)).Decode(&req); err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid preference payload: %v", err)
+		return
+	}
+	if len(req.Model) > maxModelPrefModelLen {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "model is too long")
 		return
 	}
 	key, err := modelprefs.NormalizeKey(req.Key)
@@ -121,6 +131,9 @@ func (s *Server) handlePutModelPref(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteModelPref(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
 	if s.cfg.ModelPrefs == nil {
 		s.httpErrorFor(w, r, http.StatusNotFound, "model preferences are not available on this server")
 		return

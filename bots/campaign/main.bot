@@ -824,18 +824,56 @@ tool finalize:
                           else "RED (exit %d) — tail:\n\n```\n%s\n```" % (code, log[-1500:]))
 
     # Requalification: distinct commands once each, verdicts projected.
+    # Same contract surface as modernize's plan_read: a scalar exit_gate is
+    # one command, a sequence several; any other shape is unreadable and the
+    # lot carrying it is NOT requalifiable — iterating it raw would shell
+    # out one command per character (or per mapping key) and manufacture a
+    # verdict nobody's gate ever rendered.
+    def gate_commands(l):
+        """(commands, defect): commands is None when the gate is not
+        requalifiable, and defect names WHICH refusal, verbatim for the
+        committed verdict — the two causes are distinct diagnoses."""
+        gates = l.get("exit_gate") or []
+        if isinstance(gates, str):
+            gates = [gates]
+        if not isinstance(gates, list) or not all(isinstance(g, str) for g in gates):
+            shape = (type(l.get("exit_gate")).__name__ if not isinstance(gates, list)
+                     else "list holding %s" % type(next(
+                         g for g in gates if not isinstance(g, str))).__name__)
+            return None, "unreadable exit_gate (%s)" % shape
+        # A command containing an INTERIOR newline is refused by modernize's
+        # reader (its transport is newline-joined); accepting it here would
+        # let this supervisor requalify a lot the executing bot cannot even
+        # read. Strip first — yq hands every block/folded scalar with a
+        # trailing newline, and a single-command block is legitimate.
+        gates = [g.strip() for g in gates]
+        gates = [g for g in gates if g]
+        if any("\n" in g for g in gates):
+            return None, "multi-line exit_gate command"
+        return gates, ""
+
     requal = {"head": head[:12], "commands": {}, "lots": {}}
     if not dirty and blocked:
         cmds = []
         for l in blocked:
-            for g in (l.get("exit_gate") or []):
+            for g in (gate_commands(l)[0] or []):
                 if g not in cmds:
                     cmds.append(g)
         for c in cmds:
             code, log = sh(c)
             requal["commands"][c] = {"rc": code, "tail": log[-400:]}
         for l in blocked:
-            gates = l.get("exit_gate") or []
+            gates, defect = gate_commands(l)
+            if gates is None:
+                requal["lots"][l.get("id")] = {"verdict": "%s — not "
+                                               "requalifiable" % defect}
+                continue
+            if not gates:
+                # Zero commands ran; "every gate command green" over an empty
+                # set is the vacuous claim this report exists to refuse.
+                requal["lots"][l.get("id")] = {"verdict": "no exit_gate "
+                                               "declared — not requalifiable"}
+                continue
             reds = [g for g in gates if requal["commands"][g]["rc"] != 0]
             if reds:
                 requal["lots"][l.get("id")] = {"verdict": "still blocked",

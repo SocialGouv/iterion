@@ -34,6 +34,12 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	if task.Permission.Enabled() {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
+			"delegate: codex cannot enforce this node's permission: %s gate; refusing to run ungated",
+			task.Permission.Mode,
+		)
+	}
 	if task.Sandbox != nil && task.Sandbox.Driver() != "noop" {
 		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
 			"delegate: codex cannot run inside Iterion %s sandbox with the pinned SDK; "+

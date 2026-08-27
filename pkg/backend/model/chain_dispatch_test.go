@@ -160,6 +160,386 @@ func TestChainAccumulatesFailedElementSpend(t *testing.T) {
 	}
 }
 
+// TestChainCooldownSkipsRefusedRouteAcrossNodes is the regression for #468:
+// once one node learns that a subscription window is shut, later nodes on
+// the same executor must enter the chain at the accepting fallback without
+// spawning the refused primary again.
+func TestChainCooldownSkipsRefusedRouteAcrossNodes(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			Detail:   "You've hit your session limit",
+			ResetAt:  reset,
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendCodex}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendCodex, tail)
+	rec := &fallbackRecorder{}
+	e := newFallbackExecutor(reg, rec.hook())
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "codex", Backend: delegate.BackendCodex},
+	}
+
+	dispatch := func(nodeID string) chainOutcome {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		out, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		if err != nil {
+			t.Fatalf("dispatch %s: %v", nodeID, err)
+		}
+		return out
+	}
+
+	dispatch("first")
+	out := dispatch("second")
+	if got := len(head.tasks); got != 1 {
+		t.Errorf("primary spawned %d times, want 1: the second node must use the cooldown", got)
+	}
+	if got := len(tail.tasks); got != 2 {
+		t.Errorf("fallback spawned %d times, want once per node", got)
+	}
+	if !out.FellThrough || out.ServedBy != "codex" {
+		t.Errorf("second outcome = fell_through:%v served_by:%q, want cooldown route to codex", out.FellThrough, out.ServedBy)
+	}
+	if len(rec.events) != 2 {
+		t.Fatalf("fallback events = %d, want refusal then cooldown skip", len(rec.events))
+	}
+	skip := rec.events[1]
+	if !skip.Cooldown || skip.Attempts != 0 || !skip.CooldownUntil.Equal(reset) {
+		t.Errorf("cooldown event = %+v, want attempts=0 and reset %s", skip, reset)
+	}
+	if skip.Err != nil || skip.Reason != string(delegate.FallbackUsageWindow) {
+		t.Errorf("cooldown event error/reason = %v/%q", skip.Err, skip.Reason)
+	}
+
+	// Expiry is checked at dispatch; no sweeper is required. The primary is
+	// attempted again as soon as the reset instant has passed.
+	now = reset
+	dispatch("third")
+	if got := len(head.tasks); got != 2 {
+		t.Errorf("primary spawned %d times after reset, want 2", got)
+	}
+}
+
+// ITERION_ROUTE_COOLDOWN=off is the operator escape hatch for an uncertain
+// provider reset. With the ledger disabled, dispatch deliberately pays the
+// historical refused spawn on every node instead of silently keeping a route
+// dark until the remembered instant.
+func TestChainCooldownCanBeDisabled(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendCodex}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendCodex, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.routeCooldowns.disabled = true
+	e.now = func() time.Time { return now }
+	chain := []chainElement{{Label: "primary"}, {Label: "codex", Backend: delegate.BackendCodex}}
+
+	for _, nodeID := range []string{"first", "second"} {
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		if _, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build); err != nil {
+			t.Fatalf("dispatch %s: %v", nodeID, err)
+		}
+	}
+	if got := len(head.tasks); got != 2 {
+		t.Errorf("primary spawned %d times, want once per node with cooldown disabled", got)
+	}
+	if got := len(tail.tasks); got != 2 {
+		t.Errorf("fallback spawned %d times, want once per node", got)
+	}
+}
+
+func TestChainCooldownFailsOpenWithoutResetOrAcceptingFallback(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		chain []chainElement
+		reset time.Time
+		want  int
+	}{
+		{
+			name: "provider omitted reset",
+			chain: []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex},
+			},
+			want: 2,
+		},
+		{
+			name:  "no fallback configured",
+			chain: []chainElement{{Label: "primary"}},
+			reset: now.Add(time.Hour),
+			want:  4,
+		},
+		{
+			name: "fallback rejects usage window",
+			chain: []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex, On: []delegate.FallbackCategory{delegate.FallbackUnavailable}},
+			},
+			reset: now.Add(time.Hour),
+			want:  4,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			head := &backendScriptedBackend{
+				name: delegate.BackendClaudeCode,
+				fail: &delegate.ErrRateLimited{
+					Provider: delegate.BackendClaudeCode,
+					Kind:     delegate.RateLimitKindUsageWindow,
+					ResetAt:  tt.reset,
+				},
+			}
+			tail := &backendScriptedBackend{name: delegate.BackendCodex}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, head)
+			reg.Register(delegate.BackendCodex, tail)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.now = func() time.Time { return now }
+
+			for n := 0; n < 2; n++ {
+				build := e.newElementBuilder("node", delegate.BackendClaudeCode, nil,
+					func(_ context.Context, _ string) (*delegate.Task, error) {
+						return &delegate.Task{NodeID: "node"}, nil
+					})
+				_, _ = e.dispatchChain(context.Background(), "node", tt.chain, "", build)
+			}
+			if got := len(head.tasks); got != tt.want {
+				t.Errorf("primary attempts = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// What a provider refused is a property of the ROUTE, not of the node that
+// happened to hit it first. A node with no fallback — or with one whose `on:`
+// refuses the category — cannot USE the cooldown, but it must still ARM it,
+// or the next node with a richer chain pays for the same refused spawn.
+func TestChainCooldownLearnsFromANodeThatCannotUseIt(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	tests := []struct {
+		name    string
+		teacher []chainElement
+	}{
+		{
+			name:    "no fallback configured",
+			teacher: []chainElement{{Label: "primary"}},
+		},
+		{
+			name: "fallback refuses the category",
+			teacher: []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex, On: []delegate.FallbackCategory{delegate.FallbackUnavailable}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			head := &backendScriptedBackend{
+				name: delegate.BackendClaudeCode,
+				fail: &delegate.ErrRateLimited{
+					Provider: delegate.BackendClaudeCode,
+					Kind:     delegate.RateLimitKindUsageWindow,
+					ResetAt:  reset,
+				},
+			}
+			tail := &backendScriptedBackend{name: delegate.BackendCodex}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, head)
+			reg.Register(delegate.BackendCodex, tail)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.now = func() time.Time { return now }
+			dispatch := func(nodeID string, chain []chainElement) {
+				build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+					func(_ context.Context, _ string) (*delegate.Task, error) {
+						return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+					})
+				_, _ = e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+			}
+
+			dispatch("teacher", tt.teacher)
+			spentByTeacher := len(head.tasks)
+			if spentByTeacher == 0 {
+				t.Fatal("precondition: the teaching node never reached the primary")
+			}
+			dispatch("learner", []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex},
+			})
+			if got := len(head.tasks); got != spentByTeacher {
+				t.Errorf("primary spawned %d times, want %d: the learner must reuse the teacher's cooldown",
+					got, spentByTeacher)
+			}
+			if len(tail.tasks) != 1 {
+				t.Errorf("fallback served %d times, want 1", len(tail.tasks))
+			}
+		})
+	}
+}
+
+// delegate.parseResetHint trusts an absolute provider datetime verbatim, so a
+// garbled notice can carry an instant years out. Believing it would keep the
+// primary dark for the whole run and stamp every later node `_fallback_used`.
+// The ledger declines the entry instead and dispatch stays fail-open.
+func TestChainCooldownRefusesAnImplausibleReset(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name  string
+		reset time.Time
+		want  int
+	}{
+		{name: "plausible weekly window", reset: now.Add(6 * 24 * time.Hour), want: 1},
+		{name: "garbled far-future instant", reset: now.AddDate(100, 0, 0), want: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			head := &backendScriptedBackend{
+				name: delegate.BackendClaudeCode,
+				fail: &delegate.ErrRateLimited{
+					Provider: delegate.BackendClaudeCode,
+					Kind:     delegate.RateLimitKindUsageWindow,
+					ResetAt:  tt.reset,
+				},
+			}
+			tail := &backendScriptedBackend{name: delegate.BackendCodex}
+			reg := delegate.NewRegistry()
+			reg.Register(delegate.BackendClaudeCode, head)
+			reg.Register(delegate.BackendCodex, tail)
+			e := newFallbackExecutor(reg, EventHooks{})
+			e.now = func() time.Time { return now }
+			chain := []chainElement{
+				{Label: "primary"},
+				{Label: "codex", Backend: delegate.BackendCodex},
+			}
+			for _, nodeID := range []string{"first", "second"} {
+				build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+					func(_ context.Context, _ string) (*delegate.Task, error) {
+						return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+					})
+				if _, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build); err != nil {
+					t.Fatalf("dispatch %s: %v", nodeID, err)
+				}
+			}
+			if got := len(head.tasks); got != tt.want {
+				t.Errorf("primary spawned %d times, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChainCooldownSupportsResettableUnavailable(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrModelUnavailable{
+			Provider: delegate.BackendClaudeCode,
+			Model:    "claude-opus-5",
+			ResetAt:  now.Add(30 * time.Minute),
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendCodex}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendCodex, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{{Label: "primary"}, {Label: "codex", Backend: delegate.BackendCodex}}
+
+	for n := 0; n < 2; n++ {
+		build := e.newElementBuilder("node", delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) { return &delegate.Task{}, nil })
+		if _, err := e.dispatchChain(context.Background(), "node", chain, "", build); err != nil {
+			t.Fatalf("dispatch %d: %v", n, err)
+		}
+	}
+	if got := len(head.tasks); got != 1 {
+		t.Errorf("temporarily unavailable primary spawned %d times, want 1", got)
+	}
+}
+
+// A cooldown avoids the repeated provider call, not the provider condition.
+// If the serving fallback then fails, downstream run-level recovery must still
+// see the remembered usage-window cause and park until its reset instant.
+func TestChainCooldownPreservesRememberedCauseWhenFallbackFails(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  reset,
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw},
+	}
+	dispatch := func(nodeID string) error {
+		t.Helper()
+		build := e.newElementBuilder(nodeID, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: nodeID, Model: "claude-opus-5"}, nil
+			})
+		_, err := e.dispatchChain(context.Background(), nodeID, chain, "claude-opus-5", build)
+		return err
+	}
+
+	if err := dispatch("learn-window"); err != nil {
+		t.Fatalf("learning dispatch: %v", err)
+	}
+	tail.fail = &delegate.ErrAuthFailed{Provider: "claw", Detail: "no API key"}
+	err := dispatch("cooled-primary")
+	if err == nil {
+		t.Fatal("expected the fallback failure to exhaust the chain")
+	}
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+	var rl *delegate.ErrRateLimited
+	if !errors.As(err, &rl) || rl.Kind != delegate.RateLimitKindUsageWindow || !rl.ResetAt.Equal(reset) {
+		t.Errorf("remembered usage-window cause lost from terminal error: %v", err)
+	}
+	var auth *delegate.ErrAuthFailed
+	if !errors.As(err, &auth) {
+		t.Errorf("fallback auth cause lost from terminal error: %v", err)
+	}
+	var exhausted *ErrChainExhausted
+	if !errors.As(err, &exhausted) || len(exhausted.Errs) != 2 {
+		t.Errorf("terminal error = %#v, want two-cause ErrChainExhausted", err)
+	}
+}
+
 // TestErrChainExhaustedPreservesEveryCause is the decision that keeps the
 // surrounding machinery alive. The run-level usage-window retry and the
 // credential-pool donor cooldown both errors.As on a node's terminal
@@ -349,6 +729,59 @@ func TestChainEvictsNodeSessionOnFallThrough(t *testing.T) {
 	}
 	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
 		t.Errorf("the failed element's conversation survived the fall-through: %s", snap)
+	}
+}
+
+// A remembered fall-through is still a route change. A prior failed attempt
+// of this node may have left provider-specific messages in the session store,
+// even though the cooled primary is not called during this dispatch.
+func TestChainEvictsNodeSessionOnCooldownFallThrough(t *testing.T) {
+	const runID, nodeID = "run-1", "review"
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	head := &backendScriptedBackend{
+		name: delegate.BackendClaudeCode,
+		fail: &delegate.ErrRateLimited{
+			Provider: delegate.BackendClaudeCode,
+			Kind:     delegate.RateLimitKindUsageWindow,
+			ResetAt:  now.Add(time.Hour),
+		},
+	}
+	tail := &backendScriptedBackend{name: delegate.BackendClaw}
+	reg := delegate.NewRegistry()
+	reg.Register(delegate.BackendClaudeCode, head)
+	reg.Register(delegate.BackendClaw, tail)
+	e := newFallbackExecutor(reg, EventHooks{})
+	e.now = func() time.Time { return now }
+	chain := []chainElement{
+		{Label: "primary"},
+		{Label: "api", Backend: delegate.BackendClaw},
+	}
+	build := func(id string) elementBuilder {
+		return e.newElementBuilder(id, delegate.BackendClaudeCode, nil,
+			func(_ context.Context, _ string) (*delegate.Task, error) {
+				return &delegate.Task{NodeID: id, Model: "claude-opus-5"}, nil
+			})
+	}
+
+	if _, err := e.dispatchChain(context.Background(), "learn-window", chain,
+		"claude-opus-5", build("learn-window")); err != nil {
+		t.Fatalf("learning dispatch: %v", err)
+	}
+
+	sessions := newNodeSessionStore()
+	sessions.SaveSnapshot(runID, nodeID, []byte(`[{"role":"assistant"}]`))
+	if sessions.LoadSnapshot(runID, nodeID) == nil {
+		t.Fatal("precondition: snapshot not stored")
+	}
+	ctx := withRuntimeContext(context.Background(), runID, sessions)
+	if _, err := e.dispatchChain(ctx, nodeID, chain, "claude-opus-5", build(nodeID)); err != nil {
+		t.Fatalf("cooled dispatch: %v", err)
+	}
+	if got := len(head.tasks); got != 1 {
+		t.Fatalf("primary spawned %d times, want 1: second dispatch should use cooldown", got)
+	}
+	if snap := sessions.LoadSnapshot(runID, nodeID); snap != nil {
+		t.Errorf("the prior attempt's conversation survived the cooldown route change: %s", snap)
 	}
 }
 

@@ -104,6 +104,32 @@ describe("ChatDockShell right-edge reservation", () => {
   });
 });
 
+describe("ChatDockShell left-edge reservation", () => {
+  // Grow the panel far past any clamp via the handle's keyboard path
+  // (Shift+ArrowLeft = +64px per press from the 420px default).
+  const growPast = (el: Element, steps = 20) => {
+    for (let i = 0; i < steps; i++) {
+      fireEvent.keyDown(el, { key: "ArrowLeft", shiftKey: true });
+    }
+  };
+
+  it("stops an enlarging floating panel at the sidebar's right edge", () => {
+    renderShell({ dock: "floating", leftInset: 220 });
+    growPast(screen.getByRole("separator", { name: /resize the assistant panel/i }));
+    const dialog = screen.getByRole("dialog", { name: "Assistant" });
+    // jsdom's 1024px viewport − 220 sidebar − 16 lane − 16 margin: the panel
+    // must not slide over the nav, however hard it is grown.
+    expect((dialog as HTMLElement).style.width).toBe("772px");
+  });
+
+  it("keeps the viewport clamp when no left chrome is reserved (focus mode)", () => {
+    renderShell({ dock: "floating", leftInset: 0 });
+    growPast(screen.getByRole("separator", { name: /resize the assistant panel/i }));
+    const dialog = screen.getByRole("dialog", { name: "Assistant" });
+    expect((dialog as HTMLElement).style.width).toBe("992px");
+  });
+});
+
 describe("ChatDockShell chrome", () => {
   it("offers dock-right while floating and undock while docked", () => {
     const { onDockChange } = renderShell({ dock: "floating" });

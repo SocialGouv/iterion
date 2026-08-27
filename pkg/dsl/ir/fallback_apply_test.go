@@ -74,14 +74,15 @@ func TestApplyRunFallback_AuthoredRoutesWin(t *testing.T) {
 }
 
 // TestApplyRunFallback_RefusesUngatedRoute is the security half of the
-// screen: without it, `--fallback kimi:…` would run a `permission: deny`
+// screen: without it, `--fallback codex:…` would run a `permission: deny`
 // node UNGATED on fall-through — the precise crossing the compiler
-// refuses in the .bot, reached through a flag.
+// refuses in the .bot, reached through a flag. codex is the witness: it has
+// no enforcement seam at all, where grok and kimi now hold a proven deny gate.
 func TestApplyRunFallback_RefusesUngatedRoute(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "deny", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "kimi", Model: "kimi-code/kimi-for-coding"})
+	refusals := ApplyRunFallback(w, Fallback{Backend: "codex", Model: "gpt-5.4"})
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "UNGATED") {
 		t.Fatalf("expected an ungated-crossing refusal, got %v", refusals)
 	}
@@ -101,7 +102,7 @@ func TestApplyRunFallback_RefusesUngatedRouteFromWorkflowGate(t *testing.T) {
 		Nodes:      map[string]Node{"work": agent},
 	}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "grok", Model: "grok-code"})
+	refusals := ApplyRunFallback(w, Fallback{Backend: "codex", Model: "gpt-5.4"})
 	if len(refusals) != 1 {
 		t.Fatalf("a workflow-level gate must refuse the same crossing, got %v", refusals)
 	}

@@ -708,6 +708,37 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 	return nil
 }
 
+// The pod workspace is a COPY of the host clone: it must travel back
+// (exporter) and its final state must be verifiable (head capturer) —
+// the pair is what lets the runner tell "no commits" from "the export
+// lost them".
+var (
+	_ sandbox.WorkspaceExporter     = (*Run)(nil)
+	_ sandbox.WorkspaceHeadCapturer = (*Run)(nil)
+)
+
+// CaptureWorkspaceHead implements [sandbox.WorkspaceHeadCapturer]: it
+// reads the git HEAD of the pod-side workspace — the exact tree
+// ExportWorkspace archives — so the engine can verify the export
+// delivered the run's final state before the pod is destroyed.
+func (r *Run) CaptureWorkspaceHead(ctx context.Context) (string, error) {
+	if r.info.WorkspacePath == "" {
+		return "", nil // workspace-less run — nothing was populated
+	}
+	res, err := r.Exec(ctx, []string{"git", "-C", r.prepared.workspace, "rev-parse", "HEAD"}, sandbox.ExecOpts{})
+	if err != nil {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD: exit %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	head := strings.TrimSpace(string(res.Stdout))
+	if head == "" {
+		return "", fmt.Errorf("pod-side git rev-parse HEAD printed nothing")
+	}
+	return head, nil
+}
+
 // exportExcludes are the tar --exclude patterns for [Run.ExportWorkspace]
 // (member names start with "./" because the in-pod tar archives "."):
 //   - .git/config was re-pointed at POD paths by fixupWorkspaceGit — the
@@ -716,6 +747,36 @@ func (r *Run) populateWorkspace(ctx context.Context, hostSrc, podDst string) err
 //     runner's rotation refresher — the pod copy may be staler and must
 //     never overwrite it.
 var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
+
+// clearHostLooseRefs deletes the host clone's loose ref files so the
+// pod's ref state arrives authoritative through the export extract.
+//
+// The tar overlay adds and overwrites but never deletes — and a pod-side
+// `git gc` / `git pack-refs --all --prune` MOVES refs from loose files
+// into .git/packed-refs. Git resolves loose before packed, so a stale
+// host loose ref left in place would shadow the pod's packed value: the
+// exported clone then reads a pre-run HEAD even though every object
+// arrived, and the run's work is unreachable by ref. The pod copy always
+// carries the authoritative refs (loose or packed, it was populated from
+// this very clone), so the extract restores them; if the extract fails
+// after this, the clone is loudly broken rather than silently stale —
+// the banking guard refuses either way.
+func clearHostLooseRefs(gitDir string) error {
+	refsDir := filepath.Join(gitDir, "refs")
+	entries, err := os.ReadDir(refsDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(refsDir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ExportWorkspace implements [sandbox.WorkspaceExporter]: it streams the
 // pod workspace back onto the host workspace it was populated from — the
@@ -726,16 +787,21 @@ var exportExcludes = []string{"./.git/config", "./.git/iterion-credentials"}
 // Commits/Files diff capture) see the launch-time state.
 //
 // The overlay adds/overwrites — a file DELETED inside the pod's working
-// tree keeps its host copy (tar has no delete semantics). Git-level
-// truth is exact regardless: `.git` (commits, refs, index) is exported,
-// so committed deletions are fully represented; only an uncommitted
-// working-tree deletion is left behind, as an untracked leftover.
+// tree keeps its host copy (tar has no delete semantics). For git REFS
+// that would be a lie (see clearHostLooseRefs), so loose refs are
+// cleared first and the pod's ref state lands authoritative; committed
+// deletions are fully represented via the exported `.git`; only an
+// uncommitted working-tree deletion is left behind, as an untracked
+// leftover.
 func (r *Run) ExportWorkspace(ctx context.Context) error {
 	if r.info.WorkspacePath == "" {
 		return nil // workspace-less run — nothing was populated
 	}
 	hostDst := resolveCloneRoot(ctx, r.info.WorkspacePath)
 	r.driver.logger.Info("sandbox: exporting workspace from pod %s:%s back to %s", r.podName, r.prepared.workspace, hostDst)
+	if err := clearHostLooseRefs(filepath.Join(hostDst, ".git")); err != nil {
+		return fmt.Errorf("clear host loose refs before export extract: %w", err)
+	}
 
 	kubectlArgs := []string{"--namespace", r.namespace,
 		"exec", r.podName, "--container", "workload", "--",

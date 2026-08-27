@@ -9,7 +9,7 @@ export type RefContextKind =
 
 export interface RefContext {
   kind: RefContextKind;
-  /** Source node of an edge — used by edge-with to resolve target input schema. */
+  /** Source node of an edge — used by edge-with to resolve {{input.*}} from the source output schema. */
   edgeFrom?: string;
   /** Target node of an edge. */
   edgeTo?: string;
@@ -41,6 +41,51 @@ function findNodeInputSchema(doc: IterDocument, nodeName: string): string {
   for (const t of doc.tools) if (t.name === nodeName) return t.input ?? "";
   for (const c of doc.computes ?? []) if (c.name === nodeName) return c.input ?? "";
   return "";
+}
+
+function findNodeOutputSchema(doc: IterDocument, nodeName: string): string {
+  for (const a of doc.agents) if (a.name === nodeName) return a.output ?? "";
+  for (const j of doc.judges) if (j.name === nodeName) return j.output ?? "";
+  for (const h of doc.humans) if (h.name === nodeName) return h.output ?? "";
+  for (const t of doc.tools) if (t.name === nodeName) return t.output ?? "";
+  for (const c of doc.computes ?? []) if (c.name === nodeName) return c.output ?? "";
+  return "";
+}
+
+function findRouter(doc: IterDocument, name: string) {
+  return (doc.routers ?? []).find((r) => r.name === name);
+}
+
+/** Keys a router copies onto its output — mirrors ir.routerPassThroughKeys. */
+function routerPassThroughFields(
+  doc: IterDocument,
+  wf: WorkflowDecl | undefined,
+  routerName: string,
+): string[] {
+  const router = findRouter(doc, routerName);
+  if (!router || !wf) return [];
+  const keys = new Set<string>();
+  for (const e of wf.edges ?? []) {
+    if (e.to !== routerName) continue;
+    for (const w of e.with ?? []) {
+      if (w.key) keys.add(w.key);
+    }
+  }
+  if (wf.entry === routerName) {
+    for (const v of doc.vars?.fields ?? []) if (v.name) keys.add(v.name);
+    for (const v of wf.vars?.fields ?? []) if (v.name) keys.add(v.name);
+  }
+  if (router.mode === "llm") {
+    keys.add("reasoning");
+    keys.add(router.multi ? "selected_routes" : "selected_route");
+  }
+  if (router.mode === "fan_out_each") {
+    keys.add(router.as || "item");
+    keys.add("item");
+    keys.add("index");
+    keys.add("count");
+  }
+  return [...keys];
 }
 
 interface NodeRef {
@@ -93,10 +138,25 @@ export function computeRefs(
   if (!doc) return [];
   const refs: RefSuggestion[] = [];
 
-  // {{input.*}} from the input schema in scope.
+  // {{input.*}}: in a prompt, the consuming node's input schema; in an
+  // edge with-mapping, the SOURCE node's output — schema fields for
+  // agents/tools, pass-through keys for routers (incoming with + mode
+  // bindings). Destination input fields belong in the mapping KEYS.
   let inputSchemaName = "";
-  if (ctx.kind === "edge-with" && ctx.edgeTo) {
-    inputSchemaName = findNodeInputSchema(doc, ctx.edgeTo);
+  if (ctx.kind === "edge-with" && ctx.edgeFrom) {
+    const wf = activeWorkflow(doc, activeWorkflowName);
+    if (findRouter(doc, ctx.edgeFrom)) {
+      for (const name of routerPassThroughFields(doc, wf, ctx.edgeFrom)) {
+        refs.push({
+          label: name,
+          value: `{{input.${name}}}`,
+          group: "input",
+          detail: "router pass-through",
+        });
+      }
+    } else {
+      inputSchemaName = findNodeOutputSchema(doc, ctx.edgeFrom);
+    }
   } else if (ctx.kind === "node-prompt" && ctx.nodeId) {
     inputSchemaName = findNodeInputSchema(doc, ctx.nodeId);
   }

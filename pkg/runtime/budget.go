@@ -33,6 +33,10 @@ type SharedBudget struct {
 	// warnTokens is advisory-only: crossing it emits a single
 	// budget_warning (advisory=true) but never hard-limits the run.
 	warnTokens int
+	// capImposed mirrors ir.Budget.CapImposed: at least one limit was
+	// clamped by an external authority, so the exit grace is refused.
+	// Immutable after construction.
+	capImposed bool
 
 	// Consumed.
 	tokensUsed     int
@@ -47,6 +51,10 @@ type SharedBudget struct {
 	// everRaised records that at least one live raise_budget landed —
 	// the trigger for persisting the (absolute) caps on the run record.
 	everRaised bool
+
+	// exceeded holds an overrun measured AFTER a node completed, pending
+	// the next node boundary where the run stops on it. See noteExceeded.
+	exceeded *budgetCheckResult
 
 	// Unpriced spend — nodes that burned tokens while no price could be
 	// resolved for their model. Their cost is unknown, NOT zero, so it can
@@ -77,6 +85,11 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		parsed, err := time.ParseDuration(ir.ExpandEnvWithDefault(b.MaxDuration))
 		if err == nil {
 			maxDur = parsed
+		} else if logger != nil {
+			// An unparseable max_duration must not silently ship a run
+			// with NO time budget — a "2h3Om" typo would otherwise
+			// disable the cap without a trace.
+			logger.Warn("budget: max_duration %q does not parse (%v) — the duration cap is NOT ENFORCED for this run", b.MaxDuration, err)
 		}
 	}
 
@@ -94,6 +107,7 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		maxCostUSD:      b.MaxCostUSD,
 		maxIterations:   b.MaxIterations,
 		maxDuration:     maxDur,
+		capImposed:      b.CapImposed,
 		startedAt:       time.Now(),
 		warningsEmitted: make(map[string]bool),
 	}
@@ -238,6 +252,32 @@ type budgetCheckResult struct {
 // Because budget enforcement is soft (pre-check and post-record are not
 // atomic), concurrent branches may push usage past the limit. When overage
 // exceeds 20% of the limit, a warning is logged to aid debugging.
+// noteExceeded records that a completed node took the run past a hard
+// limit. The first overrun wins: it is the one that ends the run, and a
+// later dimension tripping in a parallel branch does not overwrite the
+// reason the operator is shown.
+func (b *SharedBudget) noteExceeded(exc *budgetCheckResult) {
+	if exc == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.exceeded == nil {
+		v := *exc
+		b.exceeded = &v
+	}
+}
+
+// takeExceeded returns and clears a pending overrun, so exactly one node
+// boundary acts on it.
+func (b *SharedBudget) takeExceeded() *budgetCheckResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	exc := b.exceeded
+	b.exceeded = nil
+	return exc
+}
+
 func (b *SharedBudget) RecordUsage(tokens int, costUSD float64) []budgetCheckResult {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -361,6 +401,37 @@ func (b *SharedBudget) Axes() map[string]budgetAxis {
 	add("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
 
 	return axes
+}
+
+// exitGraceRoom reports whether every enforced dimension is still under
+// (1 + ratio) x its limit — the bounded allowance a run may spend to
+// reach its own exit path once the cap is gone. It returns the FIRST
+// dimension already past its plain limit, so the caller can name what is
+// being graced; ok is false as soon as any dimension is past the graced
+// ceiling too, because a run that cannot afford its exit path is simply
+// over.
+func (b *SharedBudget) exitGraceRoom(ratio float64) (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	graced := ""
+	room := func(dimension string, used, limit float64) bool {
+		if limit <= 0 {
+			return true
+		}
+		if used >= limit*(1+ratio) {
+			return false
+		}
+		if used >= limit && graced == "" {
+			graced = dimension
+		}
+		return true
+	}
+	ok := room("iterations", float64(b.iterationsUsed), float64(b.maxIterations)) &&
+		room("tokens", float64(b.tokensUsed), float64(b.maxTokens)) &&
+		room("cost_usd", b.costUsed, b.maxCostUSD) &&
+		room("duration", float64(time.Since(b.startedAt)), float64(b.maxDuration))
+	return graced, ok && graced != ""
 }
 
 func (b *SharedBudget) checkLocked() []budgetCheckResult {
@@ -523,9 +594,11 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 	}
 	checks := rs.budget.Check()
 
-	// Hard exceeded (100%+).
+	// Hard exceeded (100%+) — unless this node is how the run DELIVERS
+	// what it already paid for. See budget_exit_grace.go: the allowance
+	// is bounded, offered only on the exit path, and loud.
 	if exc := findExceeded(checks); exc != nil {
-		return e.failBudgetExceeded(rs, nodeID, exc)
+		return e.graceOrFailBudget(rs, nodeID, exc)
 	}
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
@@ -557,7 +630,26 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
+// recordAndCheckBudget keeps the IMMEDIATE contract: an overrun fails the
+// run at this node. Used by every caller that does not return through
+// execLoopAfterExec (the LLM router, the resume paths) — those never
+// reach the node boundary that consumes a deferred overrun, and the
+// remaining path may be special-dispatch nodes that run no pre-exec
+// check at all, so deferring there would let a run finish with the cap
+// blown.
 func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, false)
+}
+
+// recordAndDeferBudget records usage and DEFERS a hard overrun to the
+// next node boundary — see the deferral rationale below. Only the
+// standard node path may use it: it is the one that computes a
+// successor to anchor the checkpoint on.
+func (e *Engine) recordAndDeferBudget(rs *runState, nodeID string, output map[string]any) error {
+	return e.recordBudget(rs, nodeID, output, true)
+}
+
+func (e *Engine) recordBudget(rs *runState, nodeID string, output map[string]any, deferExceeded bool) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -582,12 +674,58 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, budgetWarningData(w))
 	}
 
-	// Fail on exceeded.
+	// Exceeded by a node that ALREADY SUCCEEDED: note it and let the
+	// caller stop the run at the next node boundary. Failing right here
+	// anchors the checkpoint on the node that just produced a valid,
+	// stored output, so a resume re-executes it — for an agent node that
+	// means paying its entire cost again to reach a result the store
+	// already holds (observed: a campaign node overran 442/400, and its
+	// resume would have re-run the whole pass). Stopping one edge later
+	// keeps the run failing exactly as before, on the same error and
+	// event, but anchored on a NOT-YET-EXECUTED node — the doctrine the
+	// daily spend cap already follows two blocks above.
 	if exc := findExceeded(checks); exc != nil {
-		return e.failBudgetExceeded(rs, nodeID, exc)
+		if !deferExceeded {
+			// Non-deferrable callers (LLM router, resume re-entry) must
+			// still honour the grace: their PRE-exec check graces the
+			// node into starting, so killing it here right after it has
+			// spent converts "stop without spending" into "spend, then
+			// stop anyway" — the exact waste the grace exists to avoid.
+			return e.graceOrFailBudget(rs, nodeID, exc)
+		}
+		rs.budget.noteExceeded(exc)
 	}
 
 	return nil
+}
+
+// graceOrFailBudget decides what a hard overrun does at a node boundary:
+// let the run walk forward inside the bounded grace (see
+// budget_exit_grace.go), or end it. Both budget stop-paths go through
+// here — the pre-exec check and the deferred overrun taken after a node
+// that succeeded — so a run cannot be graced on one and killed on the
+// other.
+func (e *Engine) graceOrFailBudget(rs *runState, nodeID string, exc *budgetCheckResult) error {
+	if _, ok := e.withinBudgetGrace(rs); ok {
+		// The event names the axis whose used/limit pair it publishes —
+		// exc's own — never the axis withinBudgetGrace happened to see
+		// first: consumption is monotonic, so another axis can cross its
+		// cap between the two reads, and a mixed triple would put one
+		// dimension's ratio under another dimension's name in the sole
+		// audit record of a deliberate overspend.
+		if rs.lastGraceNode != nodeID || rs.lastGraceDim != exc.dimension {
+			rs.lastGraceNode, rs.lastGraceDim = nodeID, exc.dimension
+			_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExitGrace, nodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			})
+			e.logger.Warn("budget %s is spent (%.0f/%.0f) — %q runs anyway, within the %.0f%% grace: the run is spending past its declared cap to deliver work it has already paid for. No further ITERATION can start, the loop guard declines every back-edge on a spent budget.",
+				exc.dimension, exc.used, exc.limit, nodeID, budgetExitGraceRatio()*100)
+		}
+		return nil
+	}
+	return e.failBudgetExceeded(rs, nodeID, exc)
 }
 
 // failBudgetExceeded emits a budget_exceeded event for a hard-exceeded

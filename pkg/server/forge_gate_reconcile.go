@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -18,10 +19,10 @@ import (
 // who knows to re-trigger the bot can unstick it.
 //
 // It is not a rare path. Observed in production twice in one day: a rolling
-// deploy drained a review mid-flight (the lame-duck drain is not deployed, so
-// a rollout cancels in-flight runs), and separately a bot bug made the publish
-// step skip on every run. Both left pull requests blocked for hours with every
-// other check green.
+// deploy drained a review mid-flight (whenever the lame-duck drain is not
+// active — or a run outlives its drain window — a rollout cancels in-flight
+// runs), and separately a bot bug made the publish step skip on every run.
+// Both left pull requests blocked for hours with every other check green.
 //
 // So the last thing a gating run does, whether it succeeded or not, is leave a
 // verdict the PR can display. When the run ends without one, this posts a
@@ -43,6 +44,19 @@ const (
 // to carry the remedy: whoever finds it has no other clue about what happened.
 const gateInterruptedDescription = "review ended without a verdict — push again or comment the bot's command to re-run"
 
+// gateReasonWrappers are mechanical prefixes the queue and the runner wrap
+// around the actual cause of death. The 60-rune budget below cannot survive
+// them: the wrapped form of a runner reject reads "max deliveries exhausted:
+// runner: prepare repo workspace for 01a0…: runner: reject repo ref: …" and
+// truncates before the only part an operator can act on. Stripping is
+// cosmetic — the full error stays on the run the status links to.
+var gateReasonWrappers = []*regexp.Regexp{
+	regexp.MustCompile(`^max deliveries exhausted: `),
+	regexp.MustCompile(`^runner: prepare repo workspace for [^:]*: `),
+	regexp.MustCompile(`^runner: `),
+	regexp.MustCompile(`^git: `),
+}
+
 // gateInterruptedDescriptionFor prefixes the remedy with WHY the run died when
 // the run doc can say (budget exceeded, provider error, …). GitHub truncates
 // commit-status descriptions at 140 characters, so the reason is bounded and
@@ -54,6 +68,14 @@ func gateInterruptedDescriptionFor(run *store.Run) string {
 	}
 	if i := strings.IndexByte(reason, '\n'); i >= 0 {
 		reason = strings.TrimSpace(reason[:i])
+	}
+	for stripped := true; stripped; {
+		stripped = false
+		for _, re := range gateReasonWrappers {
+			if next := re.ReplaceAllString(reason, ""); next != reason {
+				reason, stripped = next, true
+			}
+		}
 	}
 	if reason == "" {
 		return gateInterruptedDescription
@@ -338,12 +360,9 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		}
 
 	default: // a synthetic interruption
-		// It deliberately does NOT stand this repair down in general: when a
-		// relaunched run dies too, the second death must still be answered and
-		// escalated rather than mistake the first death's marker for an
-		// answer. That argument is about a DIFFERENT run on the same head. The
-		// same run offered twice — the event and the sweep racing, or the sweep
-		// re-reading its window every minute for an hour — is already answered.
+		// The same run offered twice — the event and the sweep racing, or the
+		// sweep re-reading its window every minute for an hour — is already
+		// answered.
 		if gateStatusSpeaksFor(gate, runURL) {
 			return nil
 		}
@@ -357,6 +376,21 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			return abstain("a synthetic failure is already on %s@%s and PublicURL is unset, so it cannot be told from this run's own — set PublicURL to enable second-death escalation",
 				repo, shortSHA(pr.HeadSHA))
 		}
+		// ANOTHER dead run's synthetic failure already marks this head. One
+		// marker is enough: re-posting would only re-point the status's target
+		// URL at THIS run, and the next sweep pass on the other run would
+		// point it back — observed in production as 116 status writes on one
+		// head in 15 minutes, two dead runs alternating every sweep tick
+		// (buildkit-operator#21, 2026-08-17). The relaunch tail still runs,
+		// because a second death on the head must escalate rather than
+		// mistake the first death's marker for an answer; its idempotency
+		// claim and the board card's (PR, head) dedup make repeat offers
+		// no-ops.
+		s.relaunchDeadGateRun(ctx, deadGateRun{
+			run: run, grant: grant, conn: conn, gc: gc,
+			repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
+		})
+		return nil
 	}
 
 	st := forge.CommitStatus{

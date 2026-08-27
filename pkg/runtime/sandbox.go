@@ -300,7 +300,8 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 		}
 		return err
 	}
-	spec, source, skipReason, err := resolveSandboxSpec(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, resolveDefaultSandboxImage(p.DefaultImage))
+	defaultImage, defaultImageFallback := resolveDefaultSandboxImageWithFallback(p.DefaultImage)
+	spec, source, skipReason, err := resolveSandboxSpecWithFallback(p.Workflow, p.RepoRoot, p.CLIOverride, p.GlobalDefault, defaultImage, defaultImageFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -835,6 +836,16 @@ func resolveSandboxSpec(
 	wf *ir.Workflow,
 	repoRoot, cliOverride, globalDefault, defaultImage string,
 ) (*sandbox.Spec, string, string, error) {
+	return resolveSandboxSpecWithFallback(wf, repoRoot, cliOverride, globalDefault, defaultImage, "")
+}
+
+// resolveSandboxSpecWithFallback carries the registry fallback for a
+// version-pinned built-in image (see resolveDefaultSandboxImageWithFallback)
+// down to the spec the driver receives.
+func resolveSandboxSpecWithFallback(
+	wf *ir.Workflow,
+	repoRoot, cliOverride, globalDefault, defaultImage, defaultImageFallback string,
+) (*sandbox.Spec, string, string, error) {
 	mode, source := pickMode(wf, cliOverride, globalDefault)
 	if mode == "" || mode == string(sandbox.ModeNone) {
 		return nil, source, "", nil
@@ -866,6 +877,7 @@ func resolveSandboxSpec(
 					}
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
+					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + " (default image: " + defaultImage + ")", "", nil
 				}
@@ -887,6 +899,7 @@ func resolveSandboxSpec(
 					}
 					spec.Mode = sandbox.ModeAuto
 					spec.Image = defaultImage
+					spec.ImageFallback = defaultImageFallback
 					expandSandboxSpec(&spec, repoRoot)
 					return &spec, source + fmt.Sprintf(" (devcontainer unusable — %v — default image: %s)", err, defaultImage), "", nil
 				}
@@ -1588,6 +1601,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 			return
 		}
 		if active.run != nil {
+			e.captureSandboxWorkspaceIntegrity(active.run)
 			exportSandboxWorkspaceOnCleanup(active.run, e.logger, emitForSandbox)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1601,6 +1615,67 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 // export (a tar stream of the whole workspace — sized for large repos,
 // distinct from the 30s teardown bound).
 const sandboxWorkspaceExportTimeout = 5 * time.Minute
+
+// sandboxHeadCaptureTimeout bounds the single pod-side `git rev-parse`
+// that records the workspace HEAD before the export.
+const sandboxHeadCaptureTimeout = 30 * time.Second
+
+// WorkspaceIntegrity is the sandbox-side git truth captured at teardown
+// for export-based drivers (kubernetes), BEFORE ExportWorkspace streams
+// the tree back to the host. Post-run consumers that read the HOST
+// workspace (the cloud runner's banking and git-meta recording) hold it
+// against what they see: a host tree whose HEAD is not PodHead means
+// the export did not deliver the run's final state, and treating that
+// as "no work" would silently lose the run (run 01a02a4b finished
+// converged with its host clone still at the baseline — banked
+// nothing, said nothing).
+//
+// The zero value (Applicable=false) means no export-based sandbox ran:
+// the host tree IS the live tree and there is nothing to verify.
+type WorkspaceIntegrity struct {
+	Applicable bool   // an export-based sandbox ran; the host tree is a copy that must be verified
+	PodHead    string // git HEAD inside the sandbox right before export ("" when the capture failed)
+	CaptureErr string // why the capture failed; non-empty means PodHead is UNKNOWN, not "no commits"
+}
+
+// captureSandboxWorkspaceIntegrity records the sandbox-side workspace
+// HEAD before the export runs, so post-run consumers can tell "the run
+// made no commits" apart from "the export lost them". Only export-based
+// drivers implement the capturer — bind-mount and noop drivers share
+// the host tree and stay out of scope. A capture failure is recorded as
+// unverifiable (CaptureErr), never silently skipped.
+func (e *Engine) captureSandboxWorkspaceIntegrity(run sandbox.Run) {
+	capturer, ok := run.(sandbox.WorkspaceHeadCapturer)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxHeadCaptureTimeout)
+	defer cancel()
+	head, err := capturer.CaptureWorkspaceHead(ctx)
+	switch {
+	case err != nil:
+		e.workspaceIntegrity = WorkspaceIntegrity{Applicable: true, CaptureErr: err.Error()}
+		if e.logger != nil {
+			e.logger.Warn("runtime: sandbox-side workspace HEAD capture failed — the export cannot be verified against the run's final state: %v", err)
+		}
+	case head == "":
+		// Workspace-less sandbox: nothing was populated, nothing to verify.
+	default:
+		e.workspaceIntegrity = WorkspaceIntegrity{Applicable: true, PodHead: head}
+		if e.logger != nil {
+			e.logger.Info("runtime: sandbox-side workspace HEAD %.12s captured for export verification", head)
+		}
+	}
+}
+
+// SandboxWorkspaceIntegrity reports the sandbox-side workspace state
+// captured at teardown. Zero value when the run used no export-based
+// sandbox (bind-mount, noop, or none) — the host workspace is then the
+// live tree. Valid once Run/Resume has returned: the capture happens in
+// the deferred sandbox cleanup, on the same goroutine.
+func (e *Engine) SandboxWorkspaceIntegrity() WorkspaceIntegrity {
+	return e.workspaceIntegrity
+}
 
 // exportSandboxWorkspaceOnCleanup performs the pod→host workspace
 // write-back (ADR-082 Phase 3 blocker 1) at sandbox teardown: copy-based

@@ -24,6 +24,7 @@ See [cli-reference.md `#iterion-studio`](cli-reference.md#iterion-studio) for th
 - **Bot builder (`/bots/new`)** — Guided creation of a new bot, from template gallery to first test run (see below)
 - **Canvas** — Drag-and-drop node graph with auto-layout, zoom, search, and keyboard shortcuts
 - **Node library** — Drag pre-built node types (agent, judge, router, human, tool, compute) onto the canvas
+- **Model + fallback labels on the card** — An agent/judge node names the model spec it will actually use, and the `fallbacks:` routes behind it. A `${VAR:-default}` spec renders its authored default rather than the word "env", so the card distinguishes one deployment's model from another's; a bare `${FOO}` compacts to `$FOO` to fit the node ([studio/src/lib/modelLabel.ts](../studio/src/lib/modelLabel.ts))
 - **Property editor** — Edit node properties, schemas, prompts, and edge conditions in a side panel
 - **Source view** — Split-pane view showing the raw workflow source (`.bot`) alongside the visual graph
 - **Bundle file drawer (cloud team bots)** — Add, edit, save, or delete `manifest.yaml`, skills, prompts, and other bundle files without leaving the editor (`main.bot` is the required entry and cannot be deleted)

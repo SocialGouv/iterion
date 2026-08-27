@@ -195,9 +195,15 @@ const (
 	EventEdgeSelected   EventType = "edge_selected"
 	EventBudgetWarning  EventType = "budget_warning"
 	EventBudgetExceeded EventType = "budget_exceeded"
-	EventRunFinished    EventType = "run_finished"
-	EventRunFailed      EventType = "run_failed"
-	EventRunCancelled   EventType = "run_cancelled"
+	// EventBudgetExitGrace records that a node ran on a SPENT budget
+	// because it sits on the run's exit path — data: {dimension, used,
+	// limit, node}. A run that emits it has, deliberately, spent past
+	// what it declared: the operator must be able to see that in the
+	// events, not only in the invoice.
+	EventBudgetExitGrace EventType = "budget_exit_grace"
+	EventRunFinished     EventType = "run_finished"
+	EventRunFailed       EventType = "run_failed"
+	EventRunCancelled    EventType = "run_cancelled"
 	// EventAlert is an in-process-only run-health alert (stall, budget,
 	// failure) fanned out to studio browser sessions via the event
 	// broker. It is NEVER persisted to events.jsonl — the alert Manager
@@ -208,7 +214,14 @@ const (
 	// runs during shutdown (SIGTERM, watchexec rebuild, etc). The companion
 	// run.json status flips to failed_resumable so the next boot can offer
 	// one-click resume — distinct from EventRunCancelled (user-initiated).
-	EventRunInterrupted   EventType = "run_interrupted"
+	EventRunInterrupted EventType = "run_interrupted"
+	// EventDelegateStarted / Finished / Error / Retry are the CLI-backend
+	// lifecycle. Unlike llm_request (claw-only), these fire for every
+	// delegate backend. Data always carries `backend`. Started also
+	// carries `declared_model` when the node asked for one. Finished /
+	// Error additionally carry `effective_model` (what the provider
+	// reported), `context_window`, `max_output_tokens`, `context_used`
+	// — omitted when unknown, so absence ≠ zero.
 	EventDelegateStarted  EventType = "delegate_started"
 	EventDelegateFinished EventType = "delegate_finished"
 	EventDelegateError    EventType = "delegate_error"
@@ -222,12 +235,28 @@ const (
 	// Data keys: from_backend, to_backend, from_model, to_model,
 	// from_provider, to_provider (the credential hints, "" = auto),
 	// reason (delegate.FallbackCategory), attempts (budget spent on the
-	// failed element), error.
+	// failed element), error. A reactive skip additionally carries cooldown
+	// (true) and cooldown_until, with attempts=0 and no error.
 	//
-	// This is the only record that a run was served by something other
-	// than what it asked for; without it a degraded run is
-	// indistinguishable from a clean one after the fact.
+	// This is the record that a fallback *chain* fired. Proxy / env
+	// overrides that rewrite the model without changing backend are
+	// EventModelDrift instead; a chain fall-through that also changes
+	// the model emits both.
 	EventModelFallback EventType = "model_fallback"
+
+	// EventModelDrift is emitted when a backend reports an effective
+	// model that is not the workflow-declared `model:` (ignoring a
+	// `provider/` routing prefix). The CLI backends already logged this
+	// as "requested X resolved to Y"; without a store event the drift
+	// was invisible in the studio and unrecoverable from events.jsonl.
+	//
+	// Distinct from EventModelFallback: drift is "what ran ≠ what was
+	// asked", whatever the cause (proxy, ANTHROPIC_MODEL, a fallback
+	// route, pi fuzzy-matching a typo). Fallback is specifically a
+	// chain fall-through.
+	//
+	// Data keys: backend, declared_model, effective_model.
+	EventModelDrift EventType = "model_drift"
 
 	// EventSandboxSkipped is emitted at run start when the workflow or a
 	// node requested an active sandbox mode (auto/inline) but the
@@ -238,6 +267,17 @@ const (
 	//   - mode: the requested mode ("auto" or "inline")
 	//   - reason: human-readable explanation
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSkillsInjected fires at run start when the OPERATOR added
+	// skill-library skills to this run on top of the workflow's own
+	// (`--skill <name>`, or the ITERION_SKILLS machine default).
+	//
+	// Emitted because otherwise the addition is invisible state that changes
+	// how a bot answers: the run would carry knowledge its `.bot` does not
+	// mention, and a bug report against that run would be irreproducible.
+	// This is the record that makes it reproducible. Data:
+	//   - skills: []string of the names added (never the workflow's own)
+	//   - origin: "flag" | "env" — where the list came from
+	EventSkillsInjected EventType = "skills_injected"
 	// EventSandboxStarted fires after the active sandbox driver finishes
 	// `Start` (container running, postCreate executed). The data block
 	// makes the resolved spec visible to operators without parsing
@@ -324,6 +364,22 @@ const (
 	// dir, Put failure). The node succeeded; the next visit runs fresh.
 	// Data: reason (short).
 	EventPersistDegraded EventType = "persist_session_degraded"
+	// EventSessionDegraded is the RESTORE-side twin of
+	// EventPersistDegraded: a node whose session is best-effort
+	// (`session: inherit_if_available` / `persist`) resolved an id whose
+	// backing state no longer loads — a cloud resume replaced the sandbox
+	// container and the CLI's session files died with it — so the
+	// executor re-ran the call with the session dropped. The node
+	// SUCCEEDS having lost its upstream (or accumulated) conversation,
+	// which is precisely why it must be loud: without this event the only
+	// trace is a process log line, and nothing in the run record would say
+	// the node started amnesiac. The node's own output carries the
+	// machine-readable half (`_session_degraded`), so a deterministic gate
+	// can fail closed on it.
+	//
+	// Data keys: backend, session_id (the id that failed to serve),
+	// reason (delegate.FallbackCategory), error.
+	EventSessionDegraded EventType = "session_degraded"
 	// EventSandboxBuildStarted fires when the engine calls
 	// [sandbox.Builder.Build] between Prepare and Start (V2-6, docker
 	// driver via `docker buildx build --load`). Data:

@@ -256,6 +256,27 @@ func TestLoad_RunnerDrainDefaults(t *testing.T) {
 	if cfg.Runner.DrainTimeout != 8*time.Hour {
 		t.Errorf("DrainTimeout default = %v, want 8h", cfg.Runner.DrainTimeout)
 	}
+	if cfg.Runner.SchemaMismatchDelay != 30*time.Second {
+		t.Errorf("SchemaMismatchDelay default = %v, want 30s", cfg.Runner.SchemaMismatchDelay)
+	}
+}
+
+func TestLoad_RunnerSchemaMismatchDelayEnv(t *testing.T) {
+	clearITERION(t)
+	t.Setenv("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", "2m")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Runner.SchemaMismatchDelay != 2*time.Minute {
+		t.Errorf("SchemaMismatchDelay = %v, want 2m", cfg.Runner.SchemaMismatchDelay)
+	}
+
+	clearITERION(t)
+	t.Setenv("ITERION_RUNNER_SCHEMA_MISMATCH_DELAY", "-1s")
+	if _, err := Load(LoadOptions{}); err == nil {
+		t.Fatal("negative schema mismatch delay accepted, want validation error")
+	}
 }
 
 func TestLoad_RunnerDrainEnv(t *testing.T) {
@@ -446,6 +467,7 @@ func TestLoad_YAMLValidRunnerDurations(t *testing.T) {
 runner:
   heartbeat: "7s"
   lock_ttl: "3m"
+  schema_mismatch_delay: "2m"
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -459,6 +481,9 @@ runner:
 	}
 	if cfg.Runner.LockTTL != 3*time.Minute {
 		t.Errorf("Runner.LockTTL: got %v want 3m", cfg.Runner.LockTTL)
+	}
+	if cfg.Runner.SchemaMismatchDelay != 2*time.Minute {
+		t.Errorf("Runner.SchemaMismatchDelay: got %v want 2m", cfg.Runner.SchemaMismatchDelay)
 	}
 }
 

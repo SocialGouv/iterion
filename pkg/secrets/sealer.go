@@ -167,8 +167,10 @@ func Last4(secret string) string {
 }
 
 // FingerprintSHA256 returns a stable 16-char hex fingerprint of a
-// secret value. Useful for logs that need to correlate two records
-// using the same key without ever revealing the secret.
+// secret value: the audit identity of WHICH credential a record or a
+// measurement belongs to, without ever revealing it. Correlating logs is
+// one use; the usage-cap meter key is another. See fingerprintHex for
+// what the value may and may not stand in for.
 func FingerprintSHA256(secret string) string {
 	return fingerprintHex(secret)
 }

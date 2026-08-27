@@ -97,10 +97,11 @@ type config struct {
 	thinkingDisplay string
 
 	// Extensions
-	mcpServers map[string]MCPServerConfig
-	hooks      map[HookEvent][]HookMatcher
-	agents     map[string]AgentDefinition
-	plugins    []PluginConfig
+	mcpServers      map[string]MCPServerConfig
+	strictMCPConfig bool
+	hooks           map[HookEvent][]HookMatcher
+	agents          map[string]AgentDefinition
+	plugins         []PluginConfig
 
 	// Session
 	resume               string
@@ -249,6 +250,16 @@ func WithMCPServer(name string, srv MCPServerConfig) Option {
 		}
 		c.mcpServers[name] = srv
 	}
+}
+
+// WithStrictMCPConfig emits --strict-mcp-config so the CLI uses ONLY the
+// servers passed via --mcp-config (WithMCPServer), ignoring MCP servers
+// from every other scope (the operator's user-level ~/.claude.json, project
+// .mcp.json approvals, local overrides). Without it those scopes are MERGED
+// on top of the --mcp-config set, so servers nobody declared boot in the
+// subprocess.
+func WithStrictMCPConfig(v bool) Option {
+	return func(c *config) { c.strictMCPConfig = v }
 }
 
 // WithHook registers a lifecycle hook for the given event.

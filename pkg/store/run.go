@@ -106,6 +106,24 @@ type RunModelOverride struct {
 	Effort   string `json:"effort,omitempty" bson:"effort,omitempty"`
 }
 
+// NodeServed is the (backend, model) that actually served one LLM node.
+// Last write wins per node_id — a loop's last pass is what a finished
+// run.json reports; the event stream is the full history.
+//
+// Model is the provider-reported effective model, distinct from
+// DeclaredModel (the workflow `model:` / launch override the node
+// asked for). They diverge on a fallback chain, an env override
+// (ANTHROPIC_MODEL), or a third-party proxy. Empty Model means the
+// backend did not report one — DeclaredModel is then the only hint,
+// not a substitute for what ran.
+type NodeServed struct {
+	Backend         string `json:"backend" bson:"backend"`
+	Model           string `json:"model,omitempty" bson:"model,omitempty"`
+	DeclaredModel   string `json:"declared_model,omitempty" bson:"declared_model,omitempty"`
+	ContextWindow   int    `json:"context_window,omitempty" bson:"context_window,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty" bson:"max_output_tokens,omitempty"`
+}
+
 // RunBudget is the EFFECTIVE budget cap set captured at launch — the
 // workflow's `budget:` block after recipe/preset/CLI overrides AND (in
 // cloud) the platform ceiling clamp, snapshotted onto the run so the
@@ -233,6 +251,16 @@ type Run struct {
 	// caller having to re-supply it. Empty when no preset was selected
 	// or the workflow declares none.
 	Preset string `json:"preset,omitempty" bson:"preset,omitempty"`
+	// ExtraSkills are skill-library skills the OPERATOR added to this run
+	// (`--skill <name>`, repeatable, or the ITERION_SKILLS machine default),
+	// on top of whatever the workflow declares. ADDITIVE by construction: a
+	// run-level list never removes a skill the bot's author declared.
+	//
+	// Persisted for the same reason as Preset, and it matters more here: a
+	// conversational bot resumes on every turn, so a launch-only list would
+	// silently vanish after the first reply. `iterion resume` re-applies
+	// this without the caller re-typing it.
+	ExtraSkills []string `json:"extra_skills,omitempty" bson:"extra_skills,omitempty"`
 	// PermissionMode is the workflow-declared tool-permission gate mode
 	// ("" | "off" | "ask" | "deny") captured at launch, surfaced in the
 	// studio RunHeader so a gated run reads at a glance. See
@@ -245,6 +273,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// NodesServed maps IR node id → last (backend, model) that served
+	// it. Display-only / post-hoc: makes a finished run self-describing
+	// without replaying events.jsonl. Empty for legacy runs and for
+	// nodes that never delegated (tool/compute/human). Written by
+	// RecordNodeServed from the delegate_finished / delegate_error
+	// hooks; last write wins per node.
+	NodesServed map[string]NodeServed `json:"nodes_served,omitempty" bson:"nodes_served,omitempty"`
 	// Budget is the effective budget cap set captured at launch (after
 	// overrides + cloud ceiling clamp), so the studio Overview draws
 	// budget meters with a denominator. Nil when the workflow declares
@@ -440,6 +475,15 @@ type Run struct {
 	// has been consumed or its sealed secrets bundle has expired. Empty
 	// for plain .bot launches and legacy runs.
 	BotID string `json:"bot_id,omitempty" bson:"bot_id,omitempty"`
+	// BotSourceTenant records WHICH stored-bot tier this run's bundle was
+	// resolved from at launch: the owning team id for a team-authored bot,
+	// botsource.PlatformTenantID for a platform override, empty for a baked
+	// catalog / loose bot. Resume re-resolves the SAME row (fresh version)
+	// instead of re-deriving the tier from a path string — without it, a
+	// team bot's resume silently picked up a same-slug platform override
+	// (or the baked bundle), and a unique-slug team bot could not resume
+	// at all.
+	BotSourceTenant string `json:"bot_source_tenant,omitempty" bson:"bot_source_tenant,omitempty"`
 	// KeyOverrides pins a BYOK key per LLM provider (provider → api_key id)
 	// for this run, persisted so cloud resume re-resolves with the same
 	// keys. Set by webhook launches carrying per-webhook key bindings;
@@ -723,7 +767,15 @@ type Checkpoint struct {
 	// affordability guard exists to prevent.
 	LoopBudgetMarks  map[string]map[string]float64 `json:"loop_budget_marks,omitempty" bson:"loop_budget_marks,omitempty"`
 	ArtifactVersions map[string]int                `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
-	Vars             map[string]any                `json:"vars" bson:"vars"`                           // resolved workflow variables
+	// SelectedIncoming records, per destination node, the incoming edges
+	// that routing actually selected for the current visit of that node.
+	// buildNodeInputRS applies with-mappings only from those edges so an
+	// unselected conditional sibling cannot clobber a selected path
+	// (issue #484). Absent on checkpoints written before the field
+	// existed — the resolver then falls back to "every incoming edge
+	// whose source has produced output".
+	SelectedIncoming map[string][]IncomingEdge `json:"selected_incoming,omitempty" bson:"selected_incoming,omitempty"`
+	Vars             map[string]any            `json:"vars" bson:"vars"` // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
 	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
@@ -775,6 +827,21 @@ type Checkpoint struct {
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
 	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+}
+
+// IncomingEdge identifies a workflow edge that actually fired into a node
+// for the current visit. Identity is the routing shape (from/to plus the
+// guard and loop/foreach marks), not the with-mapping list: two edges
+// between the same pair with different conditions are distinct.
+type IncomingEdge struct {
+	From          string `json:"from" bson:"from"`
+	To            string `json:"to" bson:"to"`
+	Condition     string `json:"condition,omitempty" bson:"condition,omitempty"`
+	Negated       bool   `json:"negated,omitempty" bson:"negated,omitempty"`
+	ExpressionSrc string `json:"expression,omitempty" bson:"expression,omitempty"`
+	IsElse        bool   `json:"else,omitempty" bson:"else,omitempty"`
+	LoopName      string `json:"loop,omitempty" bson:"loop,omitempty"`
+	ForeachName   string `json:"foreach,omitempty" bson:"foreach,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

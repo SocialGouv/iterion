@@ -34,6 +34,14 @@ export default function CreateGitHubAppCard({
   const [githubOrg, setGithubOrg] = useState("");
   const [allowRepoCreation, setAllowRepoCreation] = useState(true);
   const [allowAppDelivery, setAllowAppDelivery] = useState(true);
+  // Off by default: alert data names every vulnerable dependency of every
+  // repo, so the team opts in deliberately.
+  const [allowSecurityRead, setAllowSecurityRead] = useState(false);
+  // Watch-only builds an App that can ONLY read alerts. It is the shape to
+  // install on every repository of an org: the org-wide alerts endpoint
+  // returns just what the installation can see, and widening a write-capable
+  // App to all repositories to get that coverage is the trade this avoids.
+  const [watchOnly, setWatchOnly] = useState(false);
 
   // Fetch failures stay silent (no error surfaced) — the "Pick from
   // GitHub" link below covers the empty case.
@@ -58,8 +66,12 @@ export default function CreateGitHubAppCard({
       const { post_url, manifest } = await startGitHubManifest(teamID, {
         forge_base_url: baseURL.trim() || undefined,
         github_org: githubOrg.trim() || undefined,
-        allow_repo_creation: allowRepoCreation,
-        allow_app_delivery: allowAppDelivery,
+        // The write grants are dropped rather than merely hidden: a stale
+        // checkbox value must not travel and quietly widen a watch-only App.
+        allow_repo_creation: watchOnly ? false : allowRepoCreation,
+        allow_app_delivery: watchOnly ? false : allowAppDelivery,
+        allow_security_read: watchOnly ? false : allowSecurityRead,
+        security_read_only: watchOnly,
         next: RETURN_PATH,
       });
       // Auto-submit the hidden form: GitHub swallows the manifest, creates
@@ -142,6 +154,28 @@ export default function CreateGitHubAppCard({
       </div>
 
       <Checkbox
+        id="wizard-watch-only"
+        checked={watchOnly}
+        onChange={(e) => setWatchOnly(e.target.checked)}
+        label={
+          <span className="text-fg-default text-xs">
+            <span className="font-medium">
+              Watch-only App (Dependabot alerts, read)
+            </span>
+            <span className="block text-caption text-fg-muted mt-0.5">
+              Creates an App that can do nothing but read alerts — Metadata and
+              Dependabot alerts, both read-only. This is the one to install on
+              all repositories of an org: the org-wide alerts endpoint only
+              returns what the installation can see, and this shape buys that
+              coverage without granting write anywhere.
+            </span>
+          </span>
+        }
+      />
+
+      {watchOnly ? null : (
+        <>
+      <Checkbox
         id="wizard-allow-repo-creation"
         checked={allowRepoCreation}
         onChange={(e) => setAllowRepoCreation(e.target.checked)}
@@ -176,13 +210,39 @@ export default function CreateGitHubAppCard({
         }
       />
 
+      <Checkbox
+        id="wizard-allow-security-read"
+        checked={allowSecurityRead}
+        onChange={(e) => setAllowSecurityRead(e.target.checked)}
+        label={
+          <span className="text-fg-default text-xs">
+            <span className="font-medium">
+              Allow iterion to read this org&apos;s Dependabot alerts
+            </span>
+            <span className="block text-caption text-fg-muted mt-0.5">
+              Adds Dependabot alerts: read, so a vulnerability-watch bot can see
+              which repositories are affected. Alert data names every vulnerable
+              dependency of every repository, so it is off by default — and it
+              is only ever minted into a dedicated token, never the one bots
+              push with.
+            </span>
+          </span>
+        }
+      />
+        </>
+      )}
+
       <Button
         variant="primary"
         onClick={() => void create()}
         disabled={busy}
         loading={busy}
       >
-        {busy ? "Opening GitHub…" : "Create a GitHub App"}
+        {busy
+          ? "Opening GitHub…"
+          : watchOnly
+            ? "Create a watch-only App"
+            : "Create a GitHub App"}
       </Button>
     </div>
   );

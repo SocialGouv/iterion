@@ -39,6 +39,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateMemory(w)
 	c.validatePlaywrightMCP(w)
 	c.validateCapabilities(w)
+	c.validateNodeTools(w)
 	c.validateSkillRefs(w)
 	c.validateProviders(w)
 	c.validateCommand(w)

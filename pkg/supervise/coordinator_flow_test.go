@@ -141,9 +141,10 @@ func TestApplyDecision(t *testing.T) {
 		if len(c.monitors) != 1 || c.monitors[0].EventType != "tool_error" {
 			t.Fatalf("monitors = %+v; want the single non-empty one", c.monitors)
 		}
-		// A registered monitor participates in matching.
-		if !c.matchesMonitor(ev(1, store.EventToolError, "n", nil)) {
-			t.Error("registered watch monitor does not match")
+		// A registered monitor participates in matching, flagged as
+		// bot-registered (cooldown-bypassing class).
+		if matched, registered := c.matchesMonitor(ev(1, store.EventToolError, "n", nil)); !matched || !registered {
+			t.Errorf("registered watch monitor: matched=%v registered=%v; want true/true", matched, registered)
 		}
 	})
 
@@ -169,7 +170,7 @@ func TestInjectScopingAndFraming(t *testing.T) {
 	t.Run("node-scoped with supervisor name framing", func(t *testing.T) {
 		inj := &recordInjector{}
 		c := newBareCoordinator(t, Spec{Name: "wd", Watches: []string{"impl"}}, &stubEval{}, inj)
-		c.activeNode = "impl"
+		c.lastWatchedActive = "impl"
 		c.inject("fix the test")
 		got := inj.snapshot()
 		if len(got) != 1 {
@@ -186,7 +187,7 @@ func TestInjectScopingAndFraming(t *testing.T) {
 	t.Run("whole-run supervisor injects run-scoped without framing", func(t *testing.T) {
 		inj := &recordInjector{}
 		c := newBareCoordinator(t, Spec{}, &stubEval{}, inj)
-		c.activeNode = "impl" // active node is ignored for run scope
+		c.lastWatchedActive = "impl" // ignored for run scope
 		c.inject("go on")
 		got := inj.snapshot()
 		if len(got) != 1 || got[0].node != "" {
@@ -202,23 +203,43 @@ func TestIngest(t *testing.T) {
 	t.Run("active node tracking", func(t *testing.T) {
 		c := newBareCoordinator(t, Spec{Watches: []string{"a"}}, &stubEval{}, nil)
 		c.ingest(ev(1, store.EventNodeStarted, "a", nil))
-		if c.activeNode != "a" {
-			t.Fatalf("activeNode = %q; want a", c.activeNode)
+		if c.lastWatchedActive != "a" {
+			t.Fatalf("lastWatchedActive = %q; want a", c.lastWatchedActive)
 		}
 		if !c.armed() {
 			t.Error("watched active node should arm")
 		}
-		// Finishing a DIFFERENT node does not clear the active node.
+		// Finishing a DIFFERENT node does not clear the watched node.
 		c.ingest(ev(2, store.EventNodeFinished, "b", nil))
-		if c.activeNode != "a" {
-			t.Errorf("activeNode = %q after unrelated node_finished; want a", c.activeNode)
+		if c.lastWatchedActive != "a" {
+			t.Errorf("lastWatchedActive = %q after unrelated node_finished; want a", c.lastWatchedActive)
 		}
 		c.ingest(ev(3, store.EventNodeFinished, "a", nil))
-		if c.activeNode != "" {
-			t.Errorf("activeNode = %q after node_finished; want empty", c.activeNode)
+		if c.lastWatchedActive != "" {
+			t.Errorf("lastWatchedActive = %q after node_finished; want empty", c.lastWatchedActive)
 		}
 		if c.armed() {
 			t.Error("disarmed after watched node finished")
+		}
+	})
+
+	t.Run("concurrent sibling does not disarm the watched node", func(t *testing.T) {
+		// A single-slot "active node" was permanently cleared by an
+		// unrelated sibling starting AND finishing while the watched
+		// node still ran — silently disarming every pre-seeded monitor
+		// for the rest of the run. Concurrent nodes only ever exist on
+		// parallel branches, and the engine stamps branch node events
+		// with distinct branch ids (emitBranch) — same-branch nodes are
+		// sequential, which is what the self-heal supersession relies on.
+		c := newBareCoordinator(t, Spec{Watches: []string{"campaign"}}, &stubEval{}, nil)
+		c.ingest(evb(1, store.EventNodeStarted, "campaign", "b1"))
+		c.ingest(evb(2, store.EventNodeStarted, "sibling", "b2"))
+		c.ingest(evb(3, store.EventNodeFinished, "sibling", "b2"))
+		if !c.armed() {
+			t.Fatal("supervisor disarmed by an unrelated node's start+finish while the watched node is still active")
+		}
+		if c.lastWatchedActive != "campaign" {
+			t.Errorf("lastWatchedActive = %q; want campaign", c.lastWatchedActive)
 		}
 	})
 
@@ -338,13 +359,16 @@ func TestCoordinatorClosesOnChannelClose(t *testing.T) {
 	}
 }
 
-// After the bot declares Done, turn activity is ignored, but a monitor
-// match re-arms the supervisor and evaluates immediately.
+// After the bot declares Done, turn activity and SEEDED monitor matches
+// are ignored — done means done — but a monitor the bot itself
+// registered (in the Done decision or earlier) re-arms it and evaluates
+// immediately. "Stop … until a registered monitor fires again" is the
+// Decision schema's contract, and registered means bot-chosen.
 func TestCoordinatorDoneThenMonitorRearm(t *testing.T) {
 	obs := &fakeObserver{ch: make(chan *store.Event, 16)}
 	inj := &recordInjector{}
 	eval := &scriptedEval{decisions: []*Decision{
-		{Done: true},
+		{Done: true, Watch: []Monitor{{EventType: "budget_warning"}}},
 		{Intervene: true, Message: "back to work"},
 	}}
 	spec := Spec{
@@ -364,8 +388,16 @@ func TestCoordinatorDoneThenMonitorRearm(t *testing.T) {
 		t.Fatalf("Done decision injected %d messages; want 0", n)
 	}
 
-	// A second monitor match re-arms and evaluates again.
+	// The SEEDED monitor firing again does not resurrect a done
+	// supervisor.
 	obs.ch <- ev(2, store.EventToolError, "n", nil)
+	time.Sleep(100 * time.Millisecond)
+	if got := eval.calls(); got != 1 {
+		t.Fatalf("seeded match resurrected a done supervisor: evals=%d, want 1", got)
+	}
+
+	// The monitor the bot REGISTERED with its Done decision re-arms it.
+	obs.ch <- ev(3, store.EventBudgetWarning, "n", map[string]any{"used": 5.0})
 	waitFor(t, func() bool { return len(inj.snapshot()) == 1 })
 	if got := inj.snapshot(); !strings.Contains(got[0].text, "back to work") {
 		t.Errorf("text = %q; want the second scripted message", got[0].text)

@@ -44,6 +44,12 @@ type forgeOAuthAppReq struct {
 	// installed org-wide. Empty = the user's personal account (a private App is
 	// then installable only there — the cause of "only your personal account").
 	GitHubOrg string `json:"github_org,omitempty"`
+	// SecurityReadOnly (github-manifest): build a WATCH-ONLY App —
+	// metadata:read + vulnerability_alerts:read and nothing else — meant to be
+	// installed org-wide as the Dependabot-alerts source without granting
+	// write on every repository. Mutually exclusive with the Allow* options,
+	// which only add write grants.
+	SecurityReadOnly bool `json:"security_read_only,omitempty"`
 	// AllowRepoCreation (github-manifest): request administration:write on
 	// the App so iterion can CREATE repositories in the installed org
 	// (opt-in — the connect wizard surfaces it as a visible checkbox;
@@ -56,6 +62,14 @@ type forgeOAuthAppReq struct {
 	// first step. Opt-in: workflows:write means the holder can run arbitrary
 	// code in CI.
 	AllowAppDelivery bool `json:"allow_app_delivery,omitempty"`
+	// AllowSecurityRead (github-manifest): request vulnerability_alerts:read
+	// so a bot can read the org's Dependabot alerts (see
+	// docs/forge-security-read.md). Opt-in: alert data names every
+	// vulnerable dependency of every repo, and at run time it is minted only
+	// into the dedicated security-read token, never the runtime forge one.
+	// Without it here, an existing App has to be edited on GitHub by hand
+	// and re-approved by an org admin.
+	AllowSecurityRead bool `json:"allow_security_read,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
@@ -255,6 +269,10 @@ type githubAppFacts struct {
 	// OwnerLogin is the account the App belongs to — the discriminator once a
 	// tenant holds one App per org.
 	OwnerLogin string
+	// SecurityReadOnly marks the App as watch-only (see
+	// ForgeOAuthApp.SecurityReadOnly); every connection installed from it is
+	// stamped forge.PurposeSecurityRead.
+	SecurityReadOnly bool
 }
 
 // the latter pass the client_id/client_secret they got back from the forge.
@@ -283,7 +301,8 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
 		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
 		AppSlug: appSlug, SealedPrivateKey: sealedKey, OwnerLogin: gh.OwnerLogin,
-		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
+		SecurityReadOnly: gh.SecurityReadOnly,
+		CreatedBy:        userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {
 		return forge.ForgeOAuthApp{}, err

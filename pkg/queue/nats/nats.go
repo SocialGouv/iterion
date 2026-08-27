@@ -2,8 +2,8 @@
 // cloud queue. It owns three concrete responsibilities:
 //
 //  1. Publisher — ensure the JetStream stream exists, then publish a
-//     queue.RunMessage onto `iterion.queue.runs` with `Nats-Msg-Id =
-//     run_id` so JetStream itself dedups republishes.
+//     queue.RunMessage onto `iterion.queue.runs` with a stable
+//     `Nats-Msg-Id`: run_id for launches, and a per-attempt salt for resumes.
 //  2. Consumer  — subscribe to the SHARED durable `iterion-runners`
 //     pull-consumer with AckWait=10min and MaxAckPending=DefaultMaxAckPending
 //     as a fleet-wide in-flight ceiling; each pod holds one in-flight run
@@ -84,6 +84,18 @@ const (
 	// its serial loop), so a high ceiling just removes the artificial cap and
 	// lets KEDA autoscaling be the real capacity lever, as intended.
 	DefaultMaxAckPending = 256
+
+	// SchemaMismatchNakDelay is the redelivery delay a runner applies when it
+	// rejects a message whose schema version it does not recognise (rolling
+	// upgrade in flight). A bare Nak is immediate: with MaxDeliver=8, a single
+	// stale pod can burn the whole redelivery budget in seconds — long before
+	// an upgraded runner is scheduled to take the message — and JetStream
+	// then drops it (issue #481). 30s stretches the 8-delivery budget over
+	// ~4 minutes of wall clock, which covers a rolling restart of the runner
+	// deployment; if the fleet still hasn't caught up, the exhausted message
+	// is parked on the DLQ with an actionable run status (recoverable via
+	// /api/admin/dlq) rather than silently dropped.
+	SchemaMismatchNakDelay = 30 * time.Second
 )
 
 // Config carries the connection settings for the cloud queue.
@@ -97,6 +109,10 @@ type Config struct {
 	DLQMaxAge    time.Duration // default 7d
 	MaxDeliver   int           // default DefaultStreamMaxRetry (8)
 	AckWait      time.Duration // default DefaultAckWait (10m)
+	// SchemaMismatchDelay is the delayed-Nak interval used by runners during
+	// mixed-schema rollouts. It also contributes to RedeliveryWindow so the
+	// orphan sweeper never races a legitimately bouncing message.
+	SchemaMismatchDelay time.Duration // default SchemaMismatchNakDelay (30s)
 	// MaxAckPending caps fleet-wide in-flight (delivered-unacked) runs on the
 	// shared consumer; 0 → DefaultMaxAckPending. Keep ≥ max runner pods.
 	MaxAckPending int
@@ -117,11 +133,17 @@ type Conn struct {
 }
 
 // RedeliveryWindow is the worst-case time a healthy queued message can
-// spend bouncing through redeliveries before parking in the DLQ
-// (MaxDeliver × AckWait). The server's orphan sweeper derives its
-// queued-staleness cutoff from it so the two never drift apart.
+// spend bouncing through redeliveries before parking in the DLQ. Ordinary
+// retries are bounded by AckWait; schema mismatches use an explicit delayed
+// Nak, which an operator may configure above AckWait. The server's orphan
+// sweeper derives its queued-staleness cutoff from the larger interval so it
+// never flips a message that is still legitimately waiting for redelivery.
 func (c *Conn) RedeliveryWindow() time.Duration {
-	return time.Duration(c.cfg.MaxDeliver) * c.cfg.AckWait
+	interval := c.cfg.AckWait
+	if c.cfg.SchemaMismatchDelay > interval {
+		interval = c.cfg.SchemaMismatchDelay
+	}
+	return time.Duration(c.cfg.MaxDeliver) * interval
 }
 
 // Connect opens the NATS connection, pins the stream + DLQ + KV
@@ -263,9 +285,12 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 }
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
-// The Nats-Msg-Id header is set to RunID so that re-publishes within
-// the dedup window are silently absorbed by JetStream — that is what
-// makes the studio-side launch handler safely retryable.
+// Launches use RunID as Nats-Msg-Id so retries inside JetStream's dedup window
+// are absorbed. Resumes must use a distinct id: a schema-mismatch park can
+// happen before that window closes, and reusing bare RunID would make an
+// operator's successful resume response enqueue nothing. PublishedAtRFC is
+// stable when the same message object is retried, yet unique per resume
+// attempt created by SubmitResume.
 func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstream.PubAck, error) {
 	if err := msg.Validate(); err != nil {
 		return nil, fmt.Errorf("queue/nats: invalid RunMessage: %w", err)
@@ -291,7 +316,7 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	}
 
 	headers := nats.Header{}
-	headers.Set("Nats-Msg-Id", msg.RunID)
+	headers.Set("Nats-Msg-Id", runMessageID(msg))
 	headers.Set("iterion-schema-version", fmt.Sprintf("%d", msg.V))
 
 	// Plan §F (T-41): inject W3C traceparent + tracestate from the
@@ -322,6 +347,13 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 		Data:    body,
 		Header:  headers,
 	})
+}
+
+func runMessageID(msg *queue.RunMessage) string {
+	if msg.Resume != nil {
+		return fmt.Sprintf("%s|resume-%s", msg.RunID, msg.PublishedAtRFC)
+	}
+	return msg.RunID
 }
 
 // CancelRun fires the transient `iterion.cancel.<run_id>` Core NATS
@@ -527,11 +559,27 @@ func (d *Delivery) Decode() (*queue.RunMessage, error) {
 	return &msg, nil
 }
 
+// Envelope extracts the stable identity fields (v, run_id, tenant_id,
+// owner_id) WITHOUT validating the schema version. This is the decode path
+// for messages this build rejects: a version-mismatched payload must still be
+// identifiable so it can be parked on the DLQ and its run document flipped to
+// an actionable status (issue #481).
+func (d *Delivery) Envelope() (queue.Envelope, error) {
+	return queue.PeekEnvelope(d.raw.Data())
+}
+
 // Ack marks the delivery as successfully processed. Stops redelivery.
 func (d *Delivery) Ack() error { return d.raw.Ack() }
 
 // Nak schedules a redelivery (after AckWait expires or sooner).
 func (d *Delivery) Nak() error { return d.raw.Nak() }
+
+// NakWithDelay schedules a redelivery no sooner than delay. Use it instead of
+// Nak whenever the redelivery is meant to wait for an EXTERNAL condition —
+// e.g. a schema-version mismatch waiting for the runner fleet to finish
+// rolling. A bare Nak is immediate: MaxDeliver attempts can be burned in
+// seconds, long before the condition had a chance to change (issue #481).
+func (d *Delivery) NakWithDelay(delay time.Duration) error { return d.raw.NakWithDelay(delay) }
 
 // Term tells JetStream to permanently drop the message — used after
 // MaxDeliver attempts when the runner publishes a DLQ copy itself.
@@ -581,6 +629,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.AckWait == 0 {
 		c.AckWait = DefaultAckWait
+	}
+	if c.SchemaMismatchDelay == 0 {
+		c.SchemaMismatchDelay = SchemaMismatchNakDelay
 	}
 	if c.MaxAckPending == 0 {
 		c.MaxAckPending = DefaultMaxAckPending

@@ -133,6 +133,25 @@ vars:
   ## finalize_mr posts the opened PR's URL back as a comment on it.
   source_issue_ref: string = ""
 
+  ## ─── Plan phase (cross-model pair review) ─────────────────────
+  ## Resolved at LAUNCH by pkg/reviewtopology from the run's credentials:
+  ## auto → "on" iff a SECOND model family is credentialed (host
+  ## detection locally, the sealed bundle on cloud), else "off" — the
+  ## v2 plan-in-stride shape, at zero extra cost. "on" forces the phase
+  ## (the peer reviewer then fails loudly on a missing credential).
+  plan_review: string = "auto"
+  ## What a MID-RUN peer failure (forfait window shut, provider down,
+  ## credential revoked) does:
+  ##   wait (default) — the failure stays a failure: the run parks
+  ##     failed_resumable and the run-level usage-window retry resumes
+  ##     it when the window reopens (cloud: durable; local:
+  ##     --auto-resume). The pair review is the point of the phase, so
+  ##     degrading it is a per-run choice, never a silent default.
+  ##   skip — the reviewer's `action: skip` fallback route completes it
+  ##     with a zero-value critique stamped _skipped; the plan proceeds
+  ##     unreviewed, LOUDLY (plan_gate reads the stamp).
+  plan_review_policy: string [enum: "wait", "skip"] = "wait"
+
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted
   ## as a read-only file the gh/glab CLI authenticates from; never read
@@ -259,6 +278,18 @@ prompt campaign_system:
   KEEP GOING, one slice at a time, until the feature is fully shipped
   within your budget. Then STOP and report.
 
+  PERSISTENCE — the durable path, to the end. Never declare a
+  sub-problem infeasible on reasoning alone: instrument it (add debug
+  output, shrink the repro, bisect) and let the evidence decide — most
+  premature verdicts of infeasibility are one experiment away from a
+  small fix. Prefer the durable path over the expedient shortcut: no
+  façade that satisfies the letter of the gate, no silently skipped or
+  weakened test, no temporary patch where the real fix is reachable
+  this pass. If something genuinely stays out of reach, bank your
+  state first — commit what is green, then a precise `work_remaining`
+  note naming the paths you tried and the evidence that closed them —
+  never a silent abandon.
+
   TERMINATION CONTRACT (required structured output — this is how the
   engine detects completion; an under-specified end just gets re-poked):
     - feature_complete: true ONLY when a fresh re-read of the feature
@@ -294,11 +325,81 @@ prompt campaign_user:
   FIX exactly what this shows before continuing the feature):
   {{input.fail_log}}
 
+  PEER-REVIEWED IMPLEMENTATION PLAN (empty = no plan phase ran, plan in
+  stride as usual; on continuation passes read `git log` instead). The
+  plan is a MAP, not a contract — reality wins; note where you diverge:
+  {{input.plan}}
+
+  Peer critique of that plan (cross-model reviewer; the plan author
+  already challenged it and integrated what held — weigh what remains
+  on its merits, empty = none or the review was skipped):
+  {{input.plan_critique}}
+
+  Plan author's responses to the critique (accepted/rejected and why):
+  {{input.plan_responses}}
+
   Ship the feature one slice at a time — locate → smallest coherent
   slice with its tests → build → test → commit — until a fresh re-read
   of the feature prompt finds nothing left to do. Read `git log` first
   to see what earlier passes already landed. Then report the termination
   contract (feature_complete, commits_this_pass, work_remaining).
+
+## ─── supervisor (Persy, the perseverance coach) ─────────────────────
+## Concurrent LLM watcher on the campaign node enforcing the contract's
+## PERSISTENCE clause from outside. Monitors are pre-seeded (armed from
+## the run's first event); see docs/supervisors.md for the knobs and the
+## per-run kill switch.
+
+## Every text marker is pinned to `assistant_text` — the agent's own
+## words. Unpinned, the same substrings match rendered tool inputs and
+## outputs (a grep hit in the repo, a Read of a file mentioning the
+## word), which measured at 5 of 10 evals burned on echoes in a run
+## where the agent never gave up. Pinning also lets the marker set use
+## the same vocabulary as the contract without self-firing on the
+## prompt text.
+supervisor persy:
+  watches: [campaign]
+  system: persy_policy
+  cooldown: "5m"
+  max_evals: 10
+  monitors: ["event_type=assistant_text,text_contains=impossible", "event_type=assistant_text,text_contains=unsolvable", "event_type=assistant_text,text_contains=infeasib", "event_type=assistant_text,text_contains=not feasible", "event_type=assistant_text,text_contains=give up", "event_type=assistant_text,text_contains=giving up", "event_type=assistant_text,text_contains=gave up", "event_type=assistant_text,text_contains=workaround", "event_type=budget_warning", "event_type=budget_exceeded"]
+
+prompt persy_policy:
+  You are Persy, a perseverance coach watching a senior engineer agent
+  (the `campaign` node) ship one feature end to end. Your ONLY job is
+  to keep it on the durable path and moving to completion — the push a
+  good human operator supplies when watching the session live. The
+  agent's own contract already states the policy (its PERSISTENCE
+  clause); you enforce it from outside when the agent drifts.
+
+  STAY SILENT while progress is steady — exploration, edits, passing
+  builds, commits landing. Silence is your default; most wakes end
+  with intervene: false. Your monitors are pre-seeded; register more
+  only when the run shows you a sharper signal.
+
+  INTERVENE with ONE short message (2–4 sentences, specific and
+  actionable, like an operator typing mid-session) only on:
+  1. GIVING UP — a sub-problem declared hopeless, or quietly
+     skipped/reported away. Demand one more INSTRUMENTED attempt (add
+     debug output, shrink the repro, bisect) and name the cheapest
+     next experiment visible in the recent events. Evidence decides,
+     not fatigue.
+  2. EXPEDIENT PATH — a façade, a skipped or weakened test, a
+     temporary patch where the durable fix is reachable this pass.
+     Name the durable alternative and ask for it.
+  3. FAILURE LOOP — the same command failing repeatedly with no change
+     of approach. Ask for a different approach, not another retry.
+  4. PRESSURE — a budget warning or a visibly long pass. Tell it to
+     BANK NOW: commit what is green, write a precise work_remaining,
+     leave the tree clean — before attempting anything else.
+
+  NEVER: contest an honest termination report — feature_complete, or a
+  precise work_remaining with evidence, is a valid outcome (completion
+  is the goal, not perpetual motion); enlarge the scope beyond the
+  feature prompt; re-raise a point the agent already answered with
+  evidence; stack a second message on a signal you already steered.
+  Once the agent reports its structured termination output, you are
+  done.
 
 ## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
 ## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
@@ -468,6 +569,11 @@ prompt finalize_mr_user:
 ## pass (empty on the first pass and on a green-but-more-work continuation).
 schema campaign_input:
   fail_log: string
+  ## Plan-phase hand-off (empty when the phase is off / skipped / on
+  ## continuation passes — git is the durable state there).
+  plan: string
+  plan_critique: string
+  plan_responses: string
 
 ## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
 ## keys convergence on. feature_complete is the done-oracle (a fresh re-read
@@ -556,6 +662,207 @@ schema finalize_mr_output:
   summary: string
 
 ## ─── Nodes ──────────────────────────────────────────────────────
+
+## ─── Plan phase (opt-in cross-model pair review) ────────────────────
+## Active only when `plan_review` resolved "on" at launch. Shape:
+## the plan AUTHOR (claude family, read-only) maps the work → a peer
+## from the OTHER family (claw + gpt) critiques it against the actual
+## repo → the SAME author session challenges the critique and integrates
+## what holds → the campaign implements. ONE revision turn, no loop —
+## the campaign stays the arbiter of reality (asymptote intact). When
+## off, entry routes straight to `campaign`: the v2 shape, unchanged.
+
+prompt plan_system:
+  You are the implementation planner for a feature campaign. You are
+  READ-ONLY: explore the repository and produce a PLAN — change nothing.
+
+  Explore briefly (the implementing agent re-verifies reality): the
+  files involved, the existing patterns to REUSE, the seams the feature
+  attaches to. Then write the plan as a MAP, not a contract — the
+  implementer may diverge where reality disagrees.
+
+  Structured output:
+    - plan: the implementation plan — the slices in order (a slice = a
+      coherent, buildable, testable increment), each naming the
+      files/seams it touches and what it reuses.
+    - assumptions: the load-bearing assumptions the plan rests on.
+    - risks: where the plan is most likely wrong, and what to check.
+
+prompt plan_user:
+  Repository: {{vars.workspace_dir}}
+
+  THE FEATURE to plan:
+  {{vars.feature_prompt}}
+
+prompt plan_review_system:
+  You are a peer reviewer from a DIFFERENT model family, adversarially
+  reviewing an implementation plan against the actual repository. Your
+  value is INDEPENDENT judgment: verify the plan's claims in the code
+  with your read-only tools; do not extend the plan's own reasoning.
+
+  Hunt for: a wrong or missing assumption about the code; a slice that
+  builds a parallel abstraction where an existing seam fits; an
+  integration or test gap the plan does not cover; a materially simpler
+  shape; an understated risk.
+
+  Structured output:
+    - concerns: the defects you can GROUND in the repo (name the
+      file/seam per claim). Empty when the plan holds — do not
+      manufacture concerns to look useful.
+    - suggestions: concrete improvements, most valuable first.
+    - blocking: true ONLY for a defect that would make the implemented
+      feature wrong (not merely improvable).
+
+prompt plan_review_user:
+  Repository: {{vars.workspace_dir}}
+
+  THE FEATURE the plan implements:
+  {{vars.feature_prompt}}
+
+  THE PLAN under review:
+  {{input.plan}}
+
+  Its stated assumptions:
+  {{input.assumptions}}
+
+  Its stated risks:
+  {{input.risks}}
+
+prompt plan_revise_system:
+  You authored the implementation plan earlier in this session. A peer
+  reviewer from another model family has critiqued it. CHALLENGE the
+  critique: verify each concern against the repository, integrate what
+  holds, refuse what does not — with a stated reason. You revise the
+  PLAN only; you change no code.
+
+  Structured output:
+    - plan: the final plan, revised where the critique held.
+    - review_responses: one line per concern — accepted (and how the
+      plan changed) or rejected (and why).
+
+prompt plan_revise_user:
+  Peer critique of your plan:
+  {{input.concerns}}
+
+  Peer suggestions:
+  {{input.suggestions}}
+
+  Blocking: {{input.blocking}}
+
+  Your plan as reviewed:
+  {{input.plan}}
+
+schema plan_topology_state:
+  do_plan: bool
+
+schema plan_output:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_input:
+  plan: string
+  assumptions: string
+  risks: string
+
+schema plan_review_output:
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_gate_state:
+  skipped: bool
+
+schema plan_revise_input:
+  plan: string
+  assumptions: string
+  risks: string
+  concerns: string
+  suggestions: string
+  blocking: bool
+
+schema plan_revised_output:
+  plan: string
+  review_responses: string
+
+## plan_topology lifts the launch-resolved plan_review var into a bool
+## so the entry edges use the C012-exhaustive simple form. No LLM.
+compute plan_topology:
+  description: "Plan phase gate (launch-resolved)"
+  output: plan_topology_state
+  expr:
+    do_plan: "vars.plan_review == 'on'"
+
+## plan — the AUTHOR. Same family/model as the campaign (the peer is the
+## cross-check). readonly is enforced on codex/pi only — on claude_code
+## (bypassPermissions) it is intent, not a guarantee; the deterministic
+## verify gate + the campaign's own review remain the backstop.
+agent plan:
+  description: "Author the implementation plan (read-only)"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  output: plan_output
+  system: plan_system
+  user: plan_user
+  session: fresh
+  readonly: true
+
+## plan_review — the PEER, pinned to the other family. claw because
+## "openai/*" models only resolve there; both knobs env-overridable so a
+## host without OpenAI quota can run the peer elsewhere. Read-only
+## toolset (no write_file/file_edit tools — though bash can write; the
+## restriction is intent + review-pr's shipped posture, not a sandbox).
+judge plan_review:
+  description: "Peer plan review (other model family)"
+  backend: "${ITERION_PLAN_REVIEW_BACKEND_GPT:-claw}"
+  model: "${ITERION_PLAN_REVIEW_MODEL_GPT:-openai/gpt-5.6-sol}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  input: plan_review_input
+  output: plan_review_output
+  system: plan_review_system
+  user: plan_review_user
+  session: fresh
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  fallbacks:
+    ## The plan_review_policy switch, expressed as a route gate:
+    ## policy "skip" arms this terminal route — a peer failure completes
+    ## the node with a zero-value critique stamped _skipped (plan_gate
+    ## routes around the revise turn). policy "wait" leaves NO active
+    ## route: the failure stays failed_resumable and the run-level
+    ## usage-window retry parks the run until the forfait reopens.
+    ## on: [any] — deliberately unfiltered: the operator's `skip` means
+    ## the peer must NEVER block the campaign, whatever killed it. It is
+    ## also load-bearing under the shipped `sandbox: auto`: a sandboxed
+    ## claw failure flattens to a string at the IPC boundary and
+    ## classifies UNCLASSIFIED, which a filtered skip refuses by design.
+    give_up:
+      action: skip
+      when: "vars.plan_review_policy == 'skip'"
+      on: [any]
+
+## plan_gate — did the peer actually serve, or did the skip route fire?
+## Deterministic: reads the _skipped stamp, never an LLM judgment.
+compute plan_gate:
+  description: "Peer review served or skipped?"
+  output: plan_gate_state
+  expr:
+    skipped: "outputs.plan_review._skipped == true"
+
+## plan_revise — the AUTHOR again, SAME session (the `_session_id`
+## carried on the edge), challenging the peer's critique. Read-only.
+agent plan_revise:
+  description: "Author challenges & integrates the critique"
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: plan_revise_input
+  output: plan_revised_output
+  system: plan_revise_system
+  user: plan_revise_user
+  session: inherit_if_available
+  readonly: true
 
 ## campaign — the one adaptive agent. claude_code with the full native
 ## toolset (read/edit/shell/git) so it works exactly like a native Claude
@@ -837,11 +1144,15 @@ if u:
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow feature_dev:
-  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
-  ## (the exploration is the campaign's own first move, not a blocking
-  ## upstream plan node). A re-dispatch's campaign reads `git log` and
-  ## continues from the slices earlier passes banked.
-  entry: campaign
+  ## Entry is the plan-phase gate. When `plan_review` resolved OFF at
+  ## launch (no second model family credentialed, or the operator said
+  ## off) it routes STRAIGHT to the campaign — the mission starts working
+  ## immediately, exploration as its own first move, exactly the v2
+  ## shape. When ON, the plan is authored, peer-reviewed cross-model,
+  ## and author-revised before the campaign implements. A re-dispatch's
+  ## campaign reads `git log` and continues from the slices earlier
+  ## passes banked either way.
+  entry: plan_topology
 
   ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
   ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
@@ -866,6 +1177,45 @@ workflow feature_dev:
   compaction:
     threshold: 0.9
     preserve_recent: 8
+
+  ## Plan phase (skipped whole when plan_review resolved off).
+  plan_topology -> plan when do_plan
+  ## Every campaign_input field is mapped EXPLICITLY empty: an unmapped
+  ## field is not "" but the raw {{input.x}} placeholder leaking into
+  ## the prompt (the engine keeps unresolved refs as-is).
+  plan_topology -> campaign when not do_plan with {
+    fail_log: "", plan: "", plan_critique: "", plan_responses: ""
+  }
+
+  plan -> plan_review with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}"
+  }
+  plan_review -> plan_gate
+  ## Peer served → the plan AUTHOR (same session) challenges the
+  ## critique and integrates what holds; skipped (policy skip + peer
+  ## unavailable) → the unreviewed plan proceeds, loudly.
+  plan_gate -> plan_revise when not skipped with {
+    plan:        "{{outputs.plan.plan}}",
+    assumptions: "{{outputs.plan.assumptions}}",
+    risks:       "{{outputs.plan.risks}}",
+    concerns:    "{{outputs.plan_review.concerns}}",
+    suggestions: "{{outputs.plan_review.suggestions}}",
+    blocking:    "{{outputs.plan_review.blocking}}",
+    _session_id: "{{outputs.plan._session_id}}",
+    _session_fingerprint: "{{outputs.plan._session_fingerprint}}"
+  }
+  plan_gate -> campaign when skipped with {
+    fail_log: "", plan: "{{outputs.plan.plan}}",
+    plan_critique: "", plan_responses: ""
+  }
+  plan_revise -> campaign with {
+    fail_log:       "",
+    plan:           "{{outputs.plan_revise.plan}}",
+    plan_critique:  "{{outputs.plan_review.concerns}}",
+    plan_responses: "{{outputs.plan_revise.review_responses}}"
+  }
 
   ## Each pass: the campaign ships feature slices (committing each in
   ## stride), then the deterministic build/test gate re-checks the tree.
@@ -896,8 +1246,12 @@ workflow feature_dev:
   ## (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
   ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
   ## output on its back-edge, which would read a loop-entry-frozen value).
+  ## The back-edge BLANKS the plan-phase fields: forward-edge mappings
+  ## re-apply on every re-entry (outputs persist), and a stale pass-1
+  ## plan would re-anchor later passes that must read `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
-    fail_log: "{{outputs.gate.fail_log}}"
+    fail_log: "{{outputs.gate.fail_log}}",
+    plan: "", plan_critique: "", plan_responses: ""
   }
   ## continuation_loop exhausted (max_passes hit while work remains) → ship
   ## what is banked anyway (every committed slice is real, landed work).

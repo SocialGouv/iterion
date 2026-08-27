@@ -90,6 +90,17 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	issues := db.Collection(IssuesCollection)
 	_, err := issues.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}}, Options: options.Index().SetName("tenant")},
+		// Serves Coordinator.ListEligible — three cross-tenant queries per
+		// 5s tick per replica, one of them over in_progress+blocked (the
+		// states that only accumulate). Without it each is a COLLSCAN plus
+		// a blocking in-memory sort that trips Mongo's non-indexed-sort
+		// limit at scale. The trailing updatedat key serves BOTH sort
+		// directions (an index walks backwards for free).
+		{Keys: bson.D{
+			{Key: "issue.state", Value: 1},
+			{Key: "issue.claim", Value: 1},
+			{Key: "issue.updatedat", Value: 1},
+		}, Options: options.Index().SetName("eligible_by_updated")},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure issues index: %w", err)
@@ -258,6 +269,7 @@ func (s *Store) List(filter native.ListFilter) ([]*native.Issue, error) {
 
 // replace persists the issue and stamps UpdatedAt.
 func (s *Store) replace(ctx context.Context, iss *native.Issue) error {
+	expireGiveUp(iss)
 	_, err := s.issues.ReplaceOne(ctx, bson.M{"_id": iss.ID, "tenant_id": s.tenant}, issueDoc{ID: iss.ID, Tenant: s.tenant, Issue: *iss})
 	if err != nil {
 		return fmt.Errorf("boardmongo: replace issue: %w", err)
@@ -436,6 +448,103 @@ func (s *Store) SetAwaitingInput(id string, v bool) error {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
+}
+
+// SetGaveUp stamps (nil clears) the dispatcher's give-up on an issue — the
+// record that its current state was written by an exhausted retry budget and
+// not by a human (see native.Issue.GaveUp). Idempotent on the fields that
+// decide behaviour; mirrors SetAwaitingInput: read → set → replace → bump
+// UpdatedAt → emit, here EvtIssueGaveUp.
+func (s *Store) SetGaveUp(id string, g *native.GiveUp) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	want, ok := giveUpToRecord(iss, g)
+	if !ok {
+		return nil
+	}
+	// Compared against what would ACTUALLY be written, so a repeat call is a
+	// real no-op rather than a re-write that churns UpdatedAt.
+	if sameGiveUp(iss.GaveUp, want) {
+		return nil
+	}
+	// stamped is what actually landed on the issue (nil for a clear); the
+	// event reports IT, never the caller's g, which may name a state the
+	// store overrode.
+	var stamped *native.GiveUp
+	if want == nil {
+		iss.GaveUp = nil
+	} else {
+		stamp := *want
+		if stamp.At.IsZero() {
+			stamp.At = time.Now().UTC()
+		}
+		iss.GaveUp = &stamp
+		stamped = &stamp
+	}
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss); err != nil {
+		return err
+	}
+	payload := map[string]any{"gave_up": stamped != nil}
+	if stamped != nil {
+		payload["run_id"] = stamped.RunID
+		// The state that was STAMPED, not the one the caller believed — the
+		// two differ when a give-up raced an operator move, and the audit
+		// record exists to reconstruct what actually happened.
+		payload["state"] = stamped.State
+		payload["attempts"] = stamped.Attempts
+	}
+	return s.emit(native.Event{Type: native.EvtIssueGaveUp, IssueID: id, Payload: payload})
+}
+
+// expireGiveUp drops a stamp that no longer describes the state the issue is
+// being written in, on the ONE write path — the Mongo twin of the filesystem
+// store's rule, which is what makes give-up staleness permanent instead of
+// reversible. See native.Store.expireGiveUp for the full argument.
+func expireGiveUp(iss *native.Issue) {
+	if iss.GaveUp != nil && iss.GaveUp.State != iss.State {
+		iss.GaveUp = nil
+	}
+}
+
+// giveUpToRecord resolves a caller's stamp against the issue as it stands,
+// returning the value to write and whether to write at all.
+//
+// A give-up describes a ticket that is still where the give-up PUT it. When
+// the ticket has already moved — an operator got there between the terminal
+// move and the stamp — the give-up is superseded, and recording it would put
+// the operator's own choice under a "the dispatcher gave up and filed this
+// ticket as …" banner. Nothing is written; the state change already stands in
+// the audit log.
+//
+// A stamp arriving without a state is filled in from the issue, so the value
+// compared for idempotence and the value written are always the same thing.
+func giveUpToRecord(iss *native.Issue, g *native.GiveUp) (*native.GiveUp, bool) {
+	if g == nil {
+		return nil, true
+	}
+	out := *g
+	if out.State == "" {
+		out.State = iss.State
+	}
+	if out.State != iss.State {
+		return nil, false
+	}
+	return &out, true
+}
+
+// sameGiveUp compares two stamps on the fields that decide behaviour (the
+// timestamp is provenance, not identity), so a re-stamp of the same give-up
+// writes nothing. Mirrors the filesystem store's predicate.
+func sameGiveUp(a, b *native.GiveUp) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.RunID == b.RunID && a.State == b.State && a.Attempts == b.Attempts
 }
 
 // AddComment appends a note to the issue's discussion thread and returns

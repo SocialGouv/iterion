@@ -43,6 +43,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -53,6 +54,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	usernotifywebpush "github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -240,17 +242,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}()
 
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:           cfg.NATS.URL,
-		StreamName:    cfg.NATS.Stream,
-		DLQStream:     cfg.NATS.DLQStream,
-		KVBucket:      cfg.NATS.KVBucket,
-		MaxAckPending: cfg.NATS.MaxAckPending,
-		AckWait:       cfg.NATS.AckWait,
-		MaxDeliver:    cfg.NATS.MaxDeliver,
-		MaxAge:        cfg.NATS.MaxAge,
-		DLQMaxAge:     cfg.NATS.DLQMaxAge,
-		MaxPayload:    cfg.NATS.MaxPayload,
-		Logger:        logger,
+		URL:                 cfg.NATS.URL,
+		StreamName:          cfg.NATS.Stream,
+		DLQStream:           cfg.NATS.DLQStream,
+		KVBucket:            cfg.NATS.KVBucket,
+		MaxAckPending:       cfg.NATS.MaxAckPending,
+		AckWait:             cfg.NATS.AckWait,
+		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		MaxDeliver:          cfg.NATS.MaxDeliver,
+		MaxAge:              cfg.NATS.MaxAge,
+		DLQMaxAge:           cfg.NATS.DLQMaxAge,
+		MaxPayload:          cfg.NATS.MaxPayload,
+		Logger:              logger,
 	})
 	if err != nil {
 		return fmt.Errorf("server: connect NATS: %w", err)
@@ -323,6 +326,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Logger:  logger,
 	})
 
+	sandboxResolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -338,8 +342,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
-		BotSources:       stores.botSources,
 		CredPool:         credBroker,
+		// The SAME resolver instance the server's admin PUT invalidates —
+		// publish-time pinning sees a mutation immediately on this replica.
+		SandboxImage: func(ctx context.Context) string {
+			return sandboxResolver.Get(ctx).EffectiveImage()
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -513,6 +521,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
 		PluginSources:          stores.pluginSources,
 		BotSources:             stores.botSources,
+		BotRolesSettings:       stores.botRoles,
+		SandboxSettings:        stores.sandboxCfg,
+		SandboxResolver:        sandboxResolver,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -525,6 +536,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CredPoolLeases:         stores.credLeases,
 		CredPoolLedger:         stores.credLedger,
 		Audit:                  stores.audit,
+		UsageCapSettings:       stores.usageCapSettings,
 		Marketplace:            stores.marketplace,
 		Redis:                  redisClient,
 		PATs:                   stores.pat,
@@ -612,6 +624,9 @@ type cloudStores struct {
 	credLeases       *credpool.MongoLeaseStore
 	credLedger       *credpool.MongoLedger
 	audit            *audit.MongoStore
+	usageCapSettings *usagecap.MongoSettingsStore
+	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
+	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -639,22 +654,25 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
 		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		botSources:       botsource.NewMongoStore(st.DB()),
+		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
+		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
 		// (an OIDC /start on pod A and /callback on pod B), which the per-process
 		// memory store can't guarantee in HA.
-		oidcState:      oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
-		desktopTickets: desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
-		wsTickets:      wsticket.NewMongoStore(st.DB(), time.Minute),
-		orgUsage:       orgusage.NewMongoCounter(st.DB()),
-		credPools:      credpool.NewMongoPoolStore(st.DB()),
-		credPledges:    credpool.NewMongoPledgeStore(st.DB()),
-		credLeases:     credpool.NewMongoLeaseStore(st.DB()),
-		credLedger:     credpool.NewMongoLedger(st.DB()).WithLogger(logger),
-		audit:          audit.NewMongoStore(st.DB()),
-		pat:            pat.NewMongoStore(st.DB()),
-		memory:         mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
+		oidcState:        oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
+		desktopTickets:   desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
+		wsTickets:        wsticket.NewMongoStore(st.DB(), time.Minute),
+		orgUsage:         orgusage.NewMongoCounter(st.DB()),
+		credPools:        credpool.NewMongoPoolStore(st.DB()),
+		credPledges:      credpool.NewMongoPledgeStore(st.DB()),
+		credLeases:       credpool.NewMongoLeaseStore(st.DB()),
+		credLedger:       credpool.NewMongoLedger(st.DB()).WithLogger(logger),
+		audit:            audit.NewMongoStore(st.DB()),
+		usageCapSettings: usagecap.NewMongoSettingsStore(st.DB()),
+		pat:              pat.NewMongoStore(st.DB()),
+		memory:           mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via

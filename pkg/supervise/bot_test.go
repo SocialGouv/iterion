@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -92,14 +93,14 @@ func TestBuildUserPrompt(t *testing.T) {
 func TestResolveModel(t *testing.T) {
 	t.Run("spec pin wins over env", func(t *testing.T) {
 		t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "openai/gpt-5.4-mini")
-		got, err := resolveModel("anthropic/claude-sonnet-4-6")
+		got, err := resolveModel(context.Background(), "anthropic/claude-sonnet-4-6", "")
 		if err != nil || got != "anthropic/claude-sonnet-4-6" {
 			t.Fatalf("resolveModel = (%q, %v); want spec pin", got, err)
 		}
 	})
 	t.Run("env override when no pin", func(t *testing.T) {
 		t.Setenv("ITERION_DEFAULT_SUPERVISOR_MODEL", "openai/gpt-5.4-mini")
-		got, err := resolveModel("")
+		got, err := resolveModel(context.Background(), "", "openai")
 		if err != nil || got != "openai/gpt-5.4-mini" {
 			t.Fatalf("resolveModel = (%q, %v); want env override", got, err)
 		}

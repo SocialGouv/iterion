@@ -14,7 +14,7 @@
 # CI's actions/setup matrix already runs ubuntu-22.04 natively so the
 # Dockerfile is only required for local reproduction.
 
-FROM ubuntu:22.04@sha256:4f838adc7181d9039ac795a7d0aba05a9bd9ecd480d294483169c5def983b64d
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \

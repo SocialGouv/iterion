@@ -71,10 +71,26 @@ describe("modelCapabilityWarning", () => {
 
   it("blocks on a model this host cannot reach, and repeats the server's reason", () => {
     const w = modelCapabilityWarning(
-      entry({ usable: false, unusable_reason: "no credential detected for provider openai" }),
+      entry({
+        usable: false,
+        reachability: "local",
+        unusable_reason: "no credential detected for provider openai",
+      }),
     );
     expect(w?.level).toBe("blocking");
     expect(w?.message).toContain("openai");
+  });
+
+  it("does not block when cloud reachability is unproven", () => {
+    const w = modelCapabilityWarning(
+      entry({
+        usable: false,
+        reachability: "unknown",
+        unusable_reason: "cloud run credentials are not proven for this model",
+      }),
+    );
+    expect(w?.level).toBe("warning");
+    expect(w?.message).toContain("cloud");
   });
 
   // Tool-calling is the capability whose absence breaks the assistant

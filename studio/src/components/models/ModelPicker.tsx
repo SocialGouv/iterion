@@ -50,7 +50,8 @@ function optionLabel(m: ModelEntry): string {
   if (m.context_window > 0) bits.push(formatContextWindow(m.context_window));
   if (m.price_known) bits.push(formatModelPrice(m).replace(" per Mtok", "/Mtok"));
   if (!m.tool_call) bits.push("no tools");
-  if (!m.usable) bits.push("no credential");
+  if (m.reachability === "unknown") bits.push("unproven");
+  else if (!m.usable) bits.push("no credential");
   return bits.length > 0 ? `${m.spec} — ${bits.join(" · ")}` : m.spec;
 }
 
@@ -70,7 +71,13 @@ export default function ModelPicker({
   const selected = models.find((m) => m.spec === value);
   const warning = modelCapabilityWarning(selected, { wantsUltracode });
   const usable = models.filter((m) => m.usable);
-  const unreachable = models.filter((m) => !m.usable);
+  const unproven = models.filter((m) => !m.usable && m.reachability === "unknown");
+  const unreachable = models.filter(
+    (m) => !m.usable && m.reachability !== "unknown",
+  );
+  const cloud = models.some(
+    (m) => m.reachability === "cloud" || m.reachability === "unknown",
+  );
   // A value the list does not carry still needs an option of its own, or the
   // <select> silently falls back to its first entry and the operator reads
   // "bot default" while a model IS set. Two ways to get here, both real: a
@@ -120,7 +127,13 @@ export default function ModelPicker({
           <option value="">{inheritLabel}</option>
           {orphan && <option value={value}>{value}</option>}
           {usable.length > 0 && (
-            <optgroup label="Available on this host">
+            <optgroup
+              label={
+                cloud
+                  ? "Available for this team's runs"
+                  : "Available on this host"
+              }
+            >
               {usable.map((m) => (
                 <option key={m.spec} value={m.spec}>
                   {optionLabel(m)}
@@ -129,11 +142,26 @@ export default function ModelPicker({
               ))}
             </optgroup>
           )}
+          {unproven.length > 0 && (
+            <optgroup label="Not proven for this team's runs">
+              {unproven.map((m) => (
+                <option key={m.spec} value={m.spec}>
+                  {optionLabel(m)}
+                </option>
+              ))}
+            </optgroup>
+          )}
           {unreachable.length > 0 && (
             // Listed, not hidden: seeing that a model exists but needs a
             // credential is what tells an operator which key to set. Selecting
             // one is allowed and warned about, never silently swallowed.
-            <optgroup label="Needs a credential this host does not have">
+            <optgroup
+              label={
+                cloud
+                  ? "Needs a credential this team does not have"
+                  : "Needs a credential this host does not have"
+              }
+            >
               {unreachable.map((m) => (
                 <option key={m.spec} value={m.spec}>
                   {optionLabel(m)}

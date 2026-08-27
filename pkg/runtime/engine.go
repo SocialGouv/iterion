@@ -110,6 +110,8 @@ type Engine struct {
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                   // in-source preset name selected at launch, set via WithPreset
+	extraSkills              []string                 // operator-added skill-library skills (--skill / ITERION_SKILLS), unioned with the workflow's own; set via WithExtraSkills
+	extraSkillsOrigin        string                   // "flag" | "env" — where extraSkills came from, reported on the skills_injected event
 	runName                  string                   // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
 	mergeInto                string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
@@ -123,6 +125,7 @@ type Engine struct {
 	workDirDelegated         bool                     // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
 	repoRoot                 string                   // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
 	containerWorkspace       string                   // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
+	workspaceIntegrity       WorkspaceIntegrity       // sandbox-side HEAD captured at teardown for export-based drivers (zero when not applicable); read via SandboxWorkspaceIntegrity after Run/Resume returns
 	attachmentsContainerDir  string                   // in-container path the run's attachments dir is bind-mounted at; empty when nodes must read them from the host (no sandbox, degraded sandbox, or a driver that drops host binds). Authoritative only once sandboxSettled is true
 	sandboxSettled           bool                     // true once startSandbox has run: attachmentsContainerDir is then a FACT, not a forecast. Before that, attachmentPath falls back to a pre-flight prediction (the resume path resolves file answers before the bootstrap)
 	sandboxOverride          string                   // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
@@ -194,6 +197,14 @@ type SubbotRequest struct {
 	// disambiguates loops). Mongo-field-safe (no '.'/'$'). Empty disables
 	// re-attach (the runner always spawns fresh).
 	ReattachKey string
+	// WorkDir is the parent engine's EFFECTIVE working directory at the moment
+	// the subbot node runs — not the one it was launched with. Under the
+	// default `worktree: auto` the engine swaps its workDir for a fresh per-run
+	// worktree (engine_run.go), so a runner that reused the launch-time path
+	// would point the child at a checkout holding none of the parent's work,
+	// including anything the parent committed. Advisory: empty means "the host
+	// decides".
+	WorkDir string
 }
 
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
@@ -301,6 +312,12 @@ type runState struct {
 	// resumed run keeps measuring across the pause.
 	loopBudgetMarks    map[string]loopBudgetMark
 	roundRobinCounters map[string]int
+	// selectedIncoming records, per destination node, the incoming edges
+	// routing actually selected for the current visit of that node. Fan-out
+	// branches keep a private copy on branchResult so concurrent writers
+	// cannot race this map; the trunk copies the join union at
+	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
+	selectedIncoming map[string][]store.IncomingEdge
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
@@ -308,6 +325,13 @@ type runState struct {
 	artifactVersions map[string]int
 	nodeSessions     map[string]store.NodeSessionSlot
 	pauseSessionRef  string // in-flight CLI ask_user pack (ADR-089)
+	// lastGraceNode/lastGraceDim dedupe the budget_exit_grace event: the
+	// pre-exec check and the post-resource-wait duration gate can route
+	// the SAME overrun through graceOrFailBudget at one node boundary,
+	// and the audit trail must record one deliberate grace per
+	// (node, dimension), not one per checkpoint that happened to look.
+	lastGraceNode string
+	lastGraceDim  string
 	// gateAnchors memoises the review-gate anchor of each (node, iter), so
 	// the companion and the human are handed the SAME range: the companion
 	// runs before the pause, and re-capturing at pause time would move the
@@ -510,6 +534,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 		loopStaleness:      make(map[string]int),
 		loopBudgetMarks:    make(map[string]loopBudgetMark),
 		roundRobinCounters: make(map[string]int),
+		selectedIncoming:   make(map[string][]store.IncomingEdge),
 		artifactVersions:   make(map[string]int),
 		nodeSessions:       make(map[string]store.NodeSessionSlot),
 		preMarked:          make(map[string]bool),

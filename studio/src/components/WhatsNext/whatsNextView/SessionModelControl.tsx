@@ -91,10 +91,19 @@ export default function SessionModelControl({
       if (draft.backend) setDraft((d) => ({ ...d, backend: "" }));
       return;
     }
-    if (derivedBackend && derivedBackend !== draft.backend) {
-      setDraft((d) => ({ ...d, backend: derivedBackend }));
+    if (derivedBackend) {
+      if (derivedBackend !== draft.backend) {
+        setDraft((d) => ({ ...d, backend: derivedBackend }));
+      }
+      return;
     }
-  }, [open, draft.model, draft.backend, derivedBackend]);
+    // The spec resolved but no backend can drive it. Clear the previous
+    // model's pairing: retaining e.g. claude_code beside an OpenAI spec
+    // persists a combination guaranteed to fail at the first node.
+    if (selected && draft.backend) {
+      setDraft((d) => ({ ...d, backend: "" }));
+    }
+  }, [open, draft.model, draft.backend, derivedBackend, selected]);
 
   const warning = modelCapabilityWarning(selected, {
     wantsUltracode: draft.effort === "ultracode",

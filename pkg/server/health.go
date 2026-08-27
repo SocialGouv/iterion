@@ -20,22 +20,33 @@ type healthResponse struct {
 	Version string            `json:"version,omitempty"` // build version
 	Commit  string            `json:"commit,omitempty"`  // build commit
 	Checks  map[string]string `json:"checks,omitempty"`  // per-dependency status (cloud only)
-	// UsageCap echoes the process' usage-cap policy (ITERION_USAGE_CAP_*).
-	// Config, not a secret — a guard nobody can observe is a guard nobody
-	// can trust: this is the only surface where an operator can verify the
-	// cap actually reached the deployment.
+	// UsageCap echoes the EFFECTIVE usage-cap policy — the DB-backed
+	// runtime settings laid over the ITERION_USAGE_CAP_* env defaults
+	// (env-only when no settings store is wired). Config, not a secret —
+	// a guard nobody can observe is a guard nobody can trust: this is
+	// where an operator verifies a runtime cap change actually landed,
+	// without reading the DB.
 	UsageCap string `json:"usage_cap,omitempty"`
+	// UsageCapSource says where the effective percentages came from:
+	// "env", "db" or "db+env". Omitted only when the env policy itself
+	// is invalid (UsageCap then carries the reason).
+	UsageCapSource string `json:"usage_cap_source,omitempty"`
 }
 
-// usageCapSummary renders the env-resolved usage-cap policy for the
-// health envelope. A malformed value is reported, not hidden — the
-// enforcement paths refuse to start on it, so the probe must say why.
-func usageCapSummary() string {
+// usageCapSummary renders the effective usage-cap policy for the health
+// envelope, plus its origin. A malformed env value is reported, not
+// hidden — the enforcement paths refuse to start on it, so the probe
+// must say why.
+func (s *Server) usageCapSummary() (policy, source string) {
 	pol, err := usagecap.FromEnv()
 	if err != nil {
-		return "invalid: " + err.Error()
+		return "invalid: " + err.Error(), ""
 	}
-	return pol.String()
+	if s.usageCapSource == nil {
+		return pol.String(), "env"
+	}
+	eff, origin := s.usageCapSource.EffectiveOrigin(context.Background())
+	return eff.String(), origin.String()
 }
 
 // defaultReadinessTimeout caps each individual readiness check when the
@@ -78,12 +89,14 @@ const readinessWaitGrace = 200 * time.Millisecond
 //
 // Cloud-ready plan §F (T-37).
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	capPolicy, capSource := s.usageCapSummary()
 	writeHealthJSON(w, http.StatusOK, healthResponse{
-		Status:   "ok",
-		Mode:     s.deployMode(),
-		Version:  appinfo.Version,
-		Commit:   appinfo.Commit,
-		UsageCap: usageCapSummary(),
+		Status:         "ok",
+		Mode:           s.deployMode(),
+		Version:        appinfo.Version,
+		Commit:         appinfo.Commit,
+		UsageCap:       capPolicy,
+		UsageCapSource: capSource,
 	})
 }
 
@@ -97,12 +110,14 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 //
 // Cloud-ready plan §F (T-37).
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	capPolicy, capSource := s.usageCapSummary()
 	resp := healthResponse{
-		Status:   "ok",
-		Mode:     s.deployMode(),
-		Version:  appinfo.Version,
-		Commit:   appinfo.Commit,
-		UsageCap: usageCapSummary(),
+		Status:         "ok",
+		Mode:           s.deployMode(),
+		Version:        appinfo.Version,
+		Commit:         appinfo.Commit,
+		UsageCap:       capPolicy,
+		UsageCapSource: capSource,
 	}
 
 	// Lame-duck first, and without touching a single dependency: this pod

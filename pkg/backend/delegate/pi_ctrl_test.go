@@ -239,7 +239,7 @@ func TestPiExtensionEnv(t *testing.T) {
 // silently denied it.
 func TestPiNativeToolNamesMatchRules(t *testing.T) {
 	cases := []struct {
-		rule, piTool, piArgs string
+		rule, nativeTool, nativeArgs string
 	}{
 		{"Edit(**)", "edit", `{"path":"pkg/x.go"}`}, // pi uses `path`, Claude Code `file_path`
 		{"Write(**)", "write", `{"path":"pkg/x.go"}`},
@@ -248,21 +248,30 @@ func TestPiNativeToolNamesMatchRules(t *testing.T) {
 		{"Grep(**)", "grep", `{"pattern":"foo"}`},
 		{"LS(**)", "ls", `{"path":"pkg"}`},
 		{"Glob(**)", "find", `{"pattern":"**/*.go"}`},
+		// Grok Build native names.
+		{"Bash(ls:*)", "run_terminal_command", `{"command":"ls -la"}`},
+		{"Edit(**)", "search_replace", `{"path":"pkg/x.go"}`},
+		{"LS(pkg/**)", "list_dir", `{"path":"pkg/sub"}`},
+		{"Agent", "spawn_subagent", `{}`},
+		{"use_tool", "use_tool", `{}`},
+		// Kimi calls WebFetch FetchURL; its other core names already use the
+		// Claude-style vocabulary directly.
+		{"WebFetch(domain:example.com)", "FetchURL", `{"url":"https://example.com/a"}`},
 	}
 	for _, tc := range cases {
-		t.Run(tc.rule+"/"+tc.piTool, func(t *testing.T) {
+		t.Run(tc.rule+"/"+tc.nativeTool, func(t *testing.T) {
 			pol, err := permission.NewPolicy(permission.ModeDeny, []string{tc.rule}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var input map[string]any
-			if err := json.Unmarshal([]byte(tc.piArgs), &input); err != nil {
+			if err := json.Unmarshal([]byte(tc.nativeArgs), &input); err != nil {
 				t.Fatal(err)
 			}
-			if d, _ := pol.Evaluate(tc.piTool, input); d != permission.Allow {
-				t.Errorf("rule %q does not match pi's %q(%s): got %s — the gate would "+
+			if d, _ := pol.Evaluate(tc.nativeTool, input); d != permission.Allow {
+				t.Errorf("rule %q does not match the native %q(%s): got %s — the gate would "+
 					"reach a different verdict on pi than on claude_code/claw",
-					tc.rule, tc.piTool, tc.piArgs, d)
+					tc.rule, tc.nativeTool, tc.nativeArgs, d)
 			}
 		})
 	}

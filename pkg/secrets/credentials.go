@@ -52,6 +52,24 @@ type Credentials struct {
 	// scope metering or policy per tenant must treat these as the
 	// deployment's own credential, not the tenant's.
 	PlatformSourced map[string]bool
+	// Fingerprints maps a credential slot (a Provider name or an OAuth
+	// kind) to the audit identity of what filled it. Not sensitive (8
+	// hash bytes) and deliberately NOT zeroed by cleanup: it says WHICH
+	// credential a run drew on. The usage-cap meter key composes it, so
+	// a rotated credential opens a fresh ledger instead of inheriting
+	// the readings of the account it replaced.
+	//
+	// The two slot kinds derive it differently, and the difference IS
+	// the contract: an API key is static, so its own hash identifies it,
+	// while an OAuth payload is NOT — the refresh worker rewrites its
+	// tokens every few hours for the same subscription — so an OAuth
+	// slot carries the record's stamped identity
+	// (SubscriptionFingerprint, fixed at connect) rather than a hash of
+	// the blob sitting in the slot. Hashing an OAuth payload here would
+	// rotate the meter with every token and no reading would ever
+	// accumulate. Absent for credentials that predate stamping: those
+	// keep the fingerprint-less meter they always had.
+	Fingerprints map[string]string
 }
 
 // IsPlatformSourced reports whether the named credential slot (a provider
@@ -79,6 +97,16 @@ func WireFamily(slot string) string {
 	default:
 		return slot
 	}
+}
+
+// Fingerprint returns the short audit fingerprint of the credential that
+// filled slot (a Provider name or an OAuth kind), or "" when the slot is
+// empty or predates fingerprinting.
+func (c Credentials) Fingerprint(slot string) string {
+	if c.Fingerprints == nil {
+		return ""
+	}
+	return c.Fingerprints[slot]
 }
 
 // APIKey returns the plaintext API key for the requested provider

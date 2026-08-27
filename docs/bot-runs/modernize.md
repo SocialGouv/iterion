@@ -4,6 +4,22 @@ Carries a repository through a programme of modernisation lots — steps whose
 entry and exit are both deterministic gates — against a behavioural oracle it
 is forbidden to rewrite. See [bots/modernize/](../../bots/modernize/).
 
+## 2026-08-25 — the reader manufactures a red: a scalar exit_gate runs one letter at a time (run 01a033f9)
+
+- Status: **ENGINE DEFECT, fixed.** First lot of a cloud campaign whose
+  contract declared its gates as YAML scalars.
+- `plan_read` joined the field with `"\n".join(gate)` unconditionally: a bare
+  string was iterated character by character, the verifier's first command was
+  the single letter `t` (exit 127: `t: not found`), and the fail_log opened
+  with a failure no declared gate ever rendered. The lot itself had landed its
+  work and reported `blocked` for its own, correct reason — the manufactured
+  red was stacked on top of a real one, which is how it was noticed at all.
+- Fix: scalar → one-command list at read time; any other shape is refused as
+  an unreadable contract (a mapping would survive the join too — as its KEYS).
+  Campaign's blocked-lot requalification reads the same field and got the same
+  normalisation. Pinned by a bot-level test that executes the real `plan_read`
+  against both legitimate contract forms plus the mapping refusal.
+
 ## 2026-07-28 — the modernisation converges: green gate, green net, verified twice (runs 019fa8e7, 019fa8fd)
 
 - Status: **VALIDATED.** Two major build-tool versions and four framework lines

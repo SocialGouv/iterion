@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -147,6 +148,20 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 		Attempts:    1,
 		Err:         usageWindowErr(),
 	})
+	reset := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
+	hooks.OnProviderFallback("implement-next", ProviderFallbackInfo{
+		BackendName:   delegate.BackendClaudeCode,
+		FromBackend:   delegate.BackendClaudeCode,
+		ToBackend:     delegate.BackendClaw,
+		FromModel:     "claude-opus-5",
+		ToModel:       "openai/gpt-5.5",
+		From:          "anthropic",
+		To:            "openai",
+		Reason:        string(delegate.FallbackUsageWindow),
+		Attempts:      0,
+		Cooldown:      true,
+		CooldownUntil: reset,
+	})
 
 	evts, err := st.LoadEvents(ctx, runID)
 	if err != nil {
@@ -181,5 +196,24 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 	// then succeeds.
 	if !bytes.Contains(logBuf.Bytes(), []byte("Model fallback")) {
 		t.Errorf("fall-through absent from run.log:\n%s", logBuf.String())
+	}
+	var cooldown *store.Event
+	for i := range evts {
+		if evts[i].Type == store.EventModelFallback && evts[i].NodeID == "implement-next" {
+			cooldown = evts[i]
+			break
+		}
+	}
+	if cooldown == nil {
+		t.Fatal("cooldown skip absent from timeline")
+	}
+	if got := cooldown.Data["cooldown"]; got != true {
+		t.Errorf("cooldown = %v, want true", got)
+	}
+	if got := cooldown.Data["cooldown_until"]; got != reset.Format(time.RFC3339) {
+		t.Errorf("cooldown_until = %v, want %s", got, reset.Format(time.RFC3339))
+	}
+	if got := cooldown.Data["attempts"]; got != float64(0) && got != 0 {
+		t.Errorf("attempts = %v, want 0", got)
 	}
 }

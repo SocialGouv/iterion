@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -133,20 +134,32 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		return
 	}
 
-	filePath, source, err := s.resolveResumeSource(ref.FilePath, "", "")
+	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "")
 	if err != nil {
+		adm.rollback(s.logger)
+		if errors.Is(err, errResumeResolveTransient) {
+			// A store blip is not "the bot is gone" — re-arm within the
+			// attempt budget instead of permanently discarding a paid
+			// usage-window retry.
+			s.reArmRetry(runCtx, retryStore, ref, err)
+			return
+		}
 		// A bot removed from the catalog will never resolve; re-arming
 		// would just re-fail every 15 minutes forever.
-		adm.rollback(s.logger)
 		s.abandonRetry(runCtx, retryStore, ref.TenantID, ref.ID, fmt.Sprintf("auto-retry abandoned: %v", err))
 		return
 	}
+	defer lb.Cleanup()
 
-	if _, err := resumer.Resume(runCtx, runview.ResumeSpec{
+	retrySpec := runview.ResumeSpec{
 		RunID:    ref.ID,
 		FilePath: filePath,
 		Source:   source,
-	}); err != nil {
+	}
+	if lb != nil {
+		retrySpec.BundleDir, retrySpec.BotBundle = lb.BundleDir, lb.Ref
+	}
+	if _, err := resumer.Resume(runCtx, retrySpec); err != nil {
 		// Could be transient (a publish blip) or permanent (the bot was
 		// redeployed and the workflow hash moved). We do NOT pass Force:
 		// resuming a checkpoint against a workflow that changed underneath

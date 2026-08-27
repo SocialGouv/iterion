@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // Decision is the supervisor bot's structured verdict for one wake. The
@@ -35,6 +36,19 @@ type Decision struct {
 	Done bool `json:"done,omitempty"`
 }
 
+// logSummary renders the decision as one log fragment; nil-safe (a nil
+// decision is a real, silent case) so log call sites need no guards.
+func (d *Decision) logSummary() string {
+	if d == nil {
+		return "no decision"
+	}
+	s := fmt.Sprintf("intervene=%v watch+%d done=%v", d.Intervene, len(d.Watch), d.Done)
+	if d.Reason != "" {
+		s += " reason=" + d.Reason
+	}
+	return s
+}
+
 // decisionSchema is the structured-output contract handed to
 // GenerateObjectDirect's synthetic tool.
 const decisionSchema = `{
@@ -46,11 +60,11 @@ const decisionSchema = `{
     "reason":    {"type": "string", "description": "Short rationale for the decision (logs only)."},
     "watch": {
       "type": "array",
-      "description": "Event patterns to keep watching. When any fires you are woken immediately. Register the few signals you care about so you are not re-consulted on every turn.",
+      "description": "Event patterns to ADD to your watch set (existing ones persist and cannot be removed; re-listing them changes nothing). When a pattern you registered fires you are woken immediately. Register the few precise signals you care about.",
       "items": {
         "type": "object",
         "properties": {
-          "event_type":    {"type": "string", "description": "Event type to match, e.g. tool_error, node_finished, budget_warning."},
+          "event_type":    {"type": "string", "description": "Event type to match, e.g. tool_error, assistant_text, budget_warning. (The watched node's own node_finished is not observable — the supervisor disarms on it.)"},
           "node_id":       {"type": "string"},
           "tool_name":     {"type": "string", "description": "Match a tool by name, e.g. Bash, Edit."},
           "text_contains": {"type": "string", "description": "Case-insensitive substring matched against the rendered event."},
@@ -106,30 +120,90 @@ func NewLLMEvaluator() *LLMEvaluator {
 }
 
 // resolveModel picks the model spec: the spec's pin wins, then the
-// ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the detector's
-// suggested claw model. Returns ErrNoSupervisorModel when none resolve.
-func resolveModel(specModel string) (string, error) {
+// ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the provider
+// family the supervised nodes run on (Spec.ProviderHint — when the env
+// detector sees it OR the run's ctx credentials fund it), then the
+// detector's first suggestion. Returns ErrNoSupervisorModel when none
+// resolve.
+func resolveModel(ctx context.Context, specModel, providerHint string) (string, error) {
 	if specModel != "" {
 		return specModel, nil
 	}
 	if env := os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
 		return env, nil
 	}
-	report := detect.Detect(context.Background())
-	if spec := detect.SuggestedModel(detect.BackendClaw, report.Providers); spec != "" {
+	report := detect.Detect(ctx)
+	ctxFunded := func(string) bool { return false }
+	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
+		ctxFunded = ctxFundsProvider(creds)
+	}
+	return resolveModelWith("", providerHint, report.Providers, ctxFunded)
+}
+
+// resolveModelWith is resolveModel's pure tail (pin/env already
+// consulted by the caller when empty is passed): hinted provider first —
+// the credential the supervised run itself uses beats whatever key sits
+// first in the host environment, which on the prod pods was a dead
+// OPENAI key 429-ing every eval — then the detector's order. The env
+// detector alone cannot gate the hint: on a runner pod the run's
+// credentials are ctx-sealed (or OAuth-forfait files), invisible to an
+// os.Getenv probe, while the claw registry resolves them from ctx at
+// call time — so ctx funding honours the hint too. detect populates
+// SuggestedModel regardless of availability, which is what makes the
+// ctx-funded branch resolvable.
+func resolveModelWith(specModel, providerHint string, providers []detect.ProviderStatus, ctxFunded func(provider string) bool) (string, error) {
+	if specModel != "" {
+		return specModel, nil
+	}
+	if providerHint != "" {
+		for _, p := range providers {
+			if p.Name == providerHint && p.SuggestedModel != "" && (p.Available || ctxFunded(p.Name)) {
+				return p.SuggestedModel, nil
+			}
+		}
+	}
+	if spec := detect.SuggestedModel(detect.BackendClaw, providers); spec != "" {
 		return spec, nil
 	}
 	return "", ErrNoSupervisorModel
 }
 
+// ctxFundsProvider maps the run's ctx credentials onto claw providers: a
+// per-provider API key funds its provider (ResolveWithContext →
+// providersWithKey), and the codex ChatGPT forfait funds openai
+// (Registry.openAIFromCtxForfait reads OAuthDir("codex")), mirroring
+// that path's env kill-switches. Anthropic's OAuth forfait is
+// deliberately NOT mapped: it is usable only by the claude_code CLI —
+// claw's anthropic factory reads env vars alone and ResolveWithContext
+// has no anthropic OAuth-dir branch — so claiming it funds the
+// anthropic provider would resolve an unauthenticated client.
+func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
+	return func(provider string) bool {
+		if creds.APIKeys[secrets.Provider(provider)] != "" {
+			return true
+		}
+		if provider == "openai" &&
+			os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" &&
+			os.Getenv("OPENAI_BASE_URL") == "" {
+			return creds.OAuthCredentialFiles["codex"] != ""
+		}
+		return false
+	}
+}
+
 // Evaluate implements Evaluator.
 func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, EvalUsage, error) {
 	if e.client == nil {
-		spec, err := resolveModel(in.Spec.Model)
+		spec, err := resolveModel(ctx, in.Spec.Model, in.Spec.ProviderHint)
 		if err != nil {
 			return nil, EvalUsage{}, err
 		}
-		client, err := e.registry.Resolve(spec)
+		// ResolveWithContext, not Resolve: on a runner pod the run's
+		// credentials are ctx-sealed and never in this process's env, and
+		// only the ctx-aware path builds a client from them — which is
+		// exactly what the ctx-funded ProviderHint branch above assumes.
+		// It falls back to Resolve when ctx carries no credentials.
+		client, err := e.registry.ResolveWithContext(ctx, spec)
 		if err != nil {
 			return nil, EvalUsage{}, fmt.Errorf("supervise: resolve model %q: %w", spec, err)
 		}

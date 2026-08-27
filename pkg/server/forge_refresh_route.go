@@ -48,8 +48,9 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadGateway, "probe installation: %v", err)
 		return
 	}
-	// Re-sync the stored grant with the live one (the mint reads it).
-	s.syncGrantedPermissions(r.Context(), conn, inst.Permissions)
+	// Re-sync the stored grant AND the installation account with the live
+	// ones (the mint reads the first, the security-read key the second).
+	s.syncGrantedPermissions(r.Context(), conn, inst.Permissions, inst.Login)
 
 	out := forgeConnectionHealth{
 		Status:              string(conn.Status),
@@ -62,7 +63,7 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 		InstallationAccount: inst.Login,
 		ManageInstallURL:    inst.HTMLURL,
 		GrantedPermissions:  inst.Permissions,
-		MissingPermissions:  forgegithub.MissingDeliveryPermissions(inst.Permissions),
+		MissingPermissions:  missingDeliveryFor(conn, inst.Permissions),
 	}
 	// Force a fresh token mint so the observability reflects the new grants
 	// (forgeAdminFor builds a fresh client → rest() mints on first use).
@@ -73,7 +74,7 @@ func (s *Server) handleForgeConnectionRefresh(w http.ResponseWriter, r *http.Req
 	}
 	if tokenPerms, ok := forgegithub.LastMintedPermissions(conn.InstallationID); ok {
 		out.TokenPermissions = tokenPerms
-		out.TokenMissingPermissions = forgegithub.MissingDeliveryPermissions(tokenPerms)
+		out.TokenMissingPermissions = missingDeliveryFor(conn, tokenPerms)
 	}
 	writeJSON(w, out)
 }

@@ -40,7 +40,8 @@ Walk top-to-bottom; first match wins.
 | "review this branch / PR AND fix AND commit" | `branch-improve-loop` |
 | "review this PR / branch and just REPORT the issues" — read-only, findings only | `review-pr` |
 | "upgrade dependencies", "patch CVEs", "bump versions" — MUTATING manifests/lockfiles | `secured-renovacy` |
-| "audit the docs", "code↔doc drift", "outdated README" | `docs-refresh` |
+| "document what the product does for its users", "doc produit", "the user guide is out of date" — NON-TECHNICAL audience, dedicated docs repo, sources named by a product catalog | `product-docs` |
+| "audit the docs", "code↔doc drift", "outdated README" — TECHNICAL docs living next to the code | `docs-refresh` |
 | "audit the source for vulns" — DETECTION (findings, not fixes) | `sec-audit-source` |
 | "audit dependencies for malware / typosquats / supply-chain" — DETECTION | `sec-audit-deps` |
 | architectural choice, prioritisation, alignment, meetings | no fit |
@@ -115,6 +116,7 @@ dispatcher routes on it), never the persona.
 | Morphy | `modernize` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
+| Prody | `product-docs` |
 | Revi (converse) | `revi-converse` |
 | Envy | `review-env` |
 | Revi | `review-pr` |
@@ -126,6 +128,7 @@ dispatcher routes on it), never the persona.
 | Vulny | `supply-shield-cve` |
 | Testy | `test-coverage` |
 | Ally | `ultra11y` |
+| Senti | `vuln-watch` |
 | Nexie | `whats-next` |
 | Willy | `whole-improve-loop` |
 | Wikky | `wiki-gen` |
@@ -206,7 +209,7 @@ pull request (PR; merge request on GitLab).
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
-- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
 
 ### `arbitrate` — Themis
@@ -291,7 +294,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `forge_publish_token` (string), `forge_publish_url` (string), `gate_context` (string), `gate_enabled` (bool), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pilot` (string), `plan_review` (string), `plan_review_policy` (string), `pr_url` (string), `prior_review` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `campaign` — Campy
@@ -583,7 +586,7 @@ pull request (PR; merge request on GitLab).
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
@@ -810,6 +813,68 @@ human / subbot only — no API keys, runs in seconds.
   produced-elements aggregation (image/audio preview) across the whole run
   tree. Not a production workflow.
 - **Path**: `examples/pipeline-board-demo/main.bot`
+
+### `product-docs` — Prody
+
+Functional documentation bot — one capable agent writes and maintains
+the BUSINESS-AUDIENCE documentation of a product ("what it does for
+its users") inside a DEDICATED documentation repository, grounded in
+the source code of the N repositories a product catalog names.
+
+It resolves the product from a catalog YAML (`catalog_path` +
+`product_id`), shallow-clones every source repo out of the docs
+worktree, redacts secret-bearing files from those clones, then reads
+what the sources actually implement — user-facing templates, i18n
+catalogs, form and validation rules, routes, API contracts, any
+framework — and writes the product's pages: a hub per user role or
+journey, one sub-page per step. Every page lands as its own
+`docs(...)` commit carrying a `Bot: product-docs` trailer and a
+`Product-Docs-Sources: <repo>@<sha>` trailer recording exactly which
+source commits it was written against.
+
+Sourced facts or `[à confirmer]` — never an invented business rule.
+Human-validated prose is preserved and touched only where the code
+contradicts it. A repository it could not clone is declared as a hole
+in the report, never documented from inference.
+
+The determinism is TRUTH-only: a scope gate fails the run if anything
+outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
+it if a published page still carries working notes, and convergence
+is those two gates ∧ the campaign's honest `docs_aligned` contract —
+nothing else. A deterministic scan runs each pass as an ADVISORY
+hints producer (dead links, orphan pages, catalog surfaces no page
+covers): help the agent is free to contradict, never an obligation.
+
+EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
+skills in French (documentary model, GitBook blocks, glossary, tone),
+but when the docs repo publishes its own `.product-docs/*.md` those
+are authoritative and override the defaults. The product team owns
+its editorial line; the bot brings a default, not a house style.
+
+Opt-in delivery: open_mr=true pushes the page series and opens ONE
+pull request at the end of the run — as a DRAFT by default, because
+functional documentation is validated by the product owners on the
+forge and marking it ready is their act, not the bot's.
+
+- **Use when**:
+  Use to generate or maintain the FUNCTIONAL, non-technical
+  documentation of a product — what it does for its users, role by
+  role and journey by journey — when that documentation lives in its
+  OWN repository and the code lives in one or more OTHER repositories
+  named by a product catalog. Run it in the docs repo with
+  `catalog_path` + `product_id`. It writes `.md` under the product's
+  directory only, and never touches the source repositories.
+  
+  NOT for technical documentation living next to the code (that is
+  docs-refresh / Doki, which aligns a repo's own README / docs/ in
+  place), and NOT for a technical knowledge wiki (that is wiki-gen /
+  Wikky, which owns a `wiki/` tree in the code repo). The
+  distinguisher is the AUDIENCE first — a product's users, not its
+  developers — and the topology second: docs repo here, N source
+  repos there.
+- **Triggers**: product-docs, functional-docs, doc-produit
+- **Vars**: `catalog_path` (string), `clone_depth` (int), `diff_since` (string), `dismissed_path` (string), `editorial_dir` (string), `extra_forbidden_headings` (string), `lint_rules` (string), `max_hints` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `mr_draft` (bool), `open_mr` (bool), `product_id` (string), `publish` (bool), `publish_base_url` (string), `publish_s3_bucket` (string), `publish_s3_prefix` (string), `publish_site` (string), `publish_tools_ref` (string), `scope_notes` (string), `scratch_dir` (string), `secret_globs` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Path**: `bots/product-docs/main.bot`
 
 ### `revi-converse` — Revi (converse)
 
@@ -1152,6 +1217,50 @@ launched; nothing is fixed or committed.
 - **Capabilities**: board.create, board.label, board.read
 - **Path**: `bots/ultra11y/main.bot`
 
+### `vuln-watch` — Senti
+
+Inventory-scoped vulnerability sentinel (hourly watch, zero LLM). One
+deterministic run mode over a git-versioned state in the target
+workspace: poll the security sources, match them against the
+workspace's technology inventory, and post an actionable alert to
+chat (Mattermost/Slack incoming webhooks) within the hour — for
+exactly the vulnerabilities that are EXPLOITED and that touch a
+technology the inventory says you run.
+
+Three detection lanes, all structured (no LLM anywhere — the
+compiled workflow contains no agent/judge node, so a run can neither
+spend a token nor show a project name to a model):
+- GitHub org Dependabot alerts (library-level, per repo): new alerts
+  grouped by advisory, repos joined to inventory projects.
+- Advisory feeds (CERT-FR-style): new publications matched
+  word-boundary against the inventory technologies; CERT-FR's
+  structured per-publication JSON (cves + affected systems) is used
+  when available.
+- Exploitation signals: CISA KEV (diff + join) and EPSS scores — the
+  anti-noise core. The default policy alerts ONLY on an exploitation
+  signal (KEV entry, alert-class advisory, EPSS ≥ threshold); an
+  ordinary new critical stays silent, recorded in an observation
+  window, and RE-FIRES the day its exploitation signal lights up.
+
+Dedup is deterministic (CVE/GHSA alias sets in a seen state), alerts
+carry the affected projects/repos joined from the inventory, message
+wording is label-templated (any language via config), and source
+failures are explicit: a configured org without a usable token fails
+the run, a source silent for too long is announced on the sinks.
+
+- **Use when**:
+  Use to watch published vulnerabilities (CVE/GHSA/CERT-style
+  advisories) against a maintained inventory of the technologies and
+  projects an organisation actually runs, with hourly deterministic
+  alerting to chat and exploitation-driven noise control. Requires the
+  target workspace to carry a vuln-watch.json config + an
+  inventory.json (see skills/senti-config.md). Not an editorial news
+  digest (use feed-watch), not a PR dependency gate (use
+  supply-shield-cve), not a code audit (use sec-audit-*); it never
+  edits code.
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/vuln-watch/main.bot`
+
 ### `whats-next` — Nexie
 
 Conversational co-CTO. ONE adaptive agent (claude_code + opus, full
@@ -1217,7 +1326,7 @@ docs/references/productive-session-patterns.md.
   always leave landed, reviewable commits. For an open-ended "find whatever is
   wrong" production-readiness audit (no single axis), point a review-loop bot
   at the tree instead — this bot needs an axis to sweep.
-- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `plan_review` (string), `plan_review_policy` (string), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 ### `wiki-gen` — Wikky

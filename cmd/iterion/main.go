@@ -40,30 +40,42 @@ func init() {
 }
 
 func main() {
-	// Auto-load `.env` from the working directory (and walk up to
-	// the closest one) before subcommands run, so iterion behaves
-	// like every other modern CLI tool when API keys / model env
-	// vars live in a `.env` next to a project. Pre-existing env
-	// vars take precedence; .env only fills in missing keys.
-	loadDotEnvFromCwd()
+	// The permission hook is the grok/kimi anti-prompt-injection
+	// boundary. Both CLIs spawn it with cwd = the gated workspace and
+	// re-execute it on every tool call; a timeout is an ALLOW. So this
+	// process must not read anything the gated agent can write —
+	// loadDotEnvFromCwd walks up from cwd applying an unbounded `.env`
+	// line by line (a 37 MB file was measured at 5.4 s, past grok's
+	// hook timeout), and errtrack.Init then honours a SENTRY_DSN that
+	// same file just planted (#498 review, R6fa6d2). The hook needs
+	// neither. Detected from argv, not cobra, so it runs before any
+	// of that work.
+	if !isPermissionHookInvocation() {
+		// Auto-load `.env` from the working directory (and walk up to
+		// the closest one) before subcommands run, so iterion behaves
+		// like every other modern CLI tool when API keys / model env
+		// vars live in a `.env` next to a project. Pre-existing env
+		// vars take precedence; .env only fills in missing keys.
+		loadDotEnvFromCwd()
 
-	// Error tracking is opt-in: with SENTRY_DSN unset this is a no-op
-	// and iterion behaves exactly as it did. Init sits after the .env
-	// load so a project can carry its DSN there, and before anything
-	// else runs so the very first panic is already covered.
-	// The root has no logger of its own yet; NewFromEnv honours
-	// ITERION_LOG_FORMAT so a failed init does not break the JSON
-	// stream of a server/runner/dispatch process.
-	errtrack.Init(errtrack.Config{Logger: iterlog.NewFromEnv(os.Stderr), ServerName: invokedCommand()})
-	defer errtrack.Flush()
-	defer func() {
-		if r := recover(); r != nil {
-			errtrack.CapturePanic(r)
-			// Re-panic: the tracker observes the crash, it does not
-			// change how the process dies.
-			panic(r)
-		}
-	}()
+		// Error tracking is opt-in: with SENTRY_DSN unset this is a no-op
+		// and iterion behaves exactly as it did. Init sits after the .env
+		// load so a project can carry its DSN there, and before anything
+		// else runs so the very first panic is already covered.
+		// The root has no logger of its own yet; NewFromEnv honours
+		// ITERION_LOG_FORMAT so a failed init does not break the JSON
+		// stream of a server/runner/dispatch process.
+		errtrack.Init(errtrack.Config{Logger: iterlog.NewFromEnv(os.Stderr), ServerName: invokedCommand()})
+		defer errtrack.Flush()
+		defer func() {
+			if r := recover(); r != nil {
+				errtrack.CapturePanic(r)
+				// Re-panic: the tracker observes the crash, it does not
+				// change how the process dies.
+				panic(r)
+			}
+		}()
+	}
 
 	rejectUnknownSubcommands(rootCmd)
 
@@ -102,6 +114,22 @@ func invokedCommand() string {
 		return rootCmd.Name()
 	}
 	return cmd.CommandPath()
+}
+
+// isPermissionHookInvocation reports whether this process is the grok/kimi
+// PreToolUse hook. First positional argv, flags skipped: cobra is not
+// consulted because the caller has to decide this BEFORE loadDotEnvFromCwd.
+func isPermissionHookInvocation() bool {
+	for _, a := range os.Args[1:] {
+		if a == "--" {
+			return false
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a == "__permission-hook"
+	}
+	return false
 }
 
 // rejectUnknownSubcommands makes every GROUP command — one that only

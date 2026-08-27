@@ -55,6 +55,30 @@ func settingSourcesFromEnv() []claudesdk.SettingSource {
 	return out
 }
 
+// strictMCPFromEnv reports whether claude_code nodes should run with
+// --strict-mcp-config. Default TRUE: the MCP set iterion resolves for the
+// node (the .bot's `mcp_server:`/`mcp:` blocks, the target repo's .mcp.json
+// via autoload_project, plus iterion's own ask_user/board servers — all
+// passed via --mcp-config) is the complete truth, and the operator's
+// personal user-scope servers (~/.claude.json) do NOT boot inside bot
+// nodes. Without it the CLI merges those on top: undeclared tools reach
+// the agent, per-visit npx/server boots spike CPU on loop-heavy bots, and
+// personal API keys land on the subprocess argv (issue #506).
+// ITERION_CLAUDE_CODE_STRICT_MCP=0 (or false/off/no) is the escape hatch
+// that restores host-config inheritance.
+func strictMCPFromEnv() bool {
+	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_STRICT_MCP")
+	if !ok {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 // anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
 // the spawned Claude Code subprocess at the right credentials.
 //

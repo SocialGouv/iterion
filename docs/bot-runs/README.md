@@ -64,6 +64,7 @@ first bilan for a bot lands.
 | Endy | `e2e-coverage` | matrix-anchored e2e coverage completion (claims-verified gate) | [e2e-coverage.md](e2e-coverage.md) |
 | Doki | `docs-refresh` | docs↔code convergence loop | [docs-refresh.md](docs-refresh.md) |
 | Wikky | `wiki-gen` | navigable OKF wiki generator/maintainer | [wiki-gen.md](wiki-gen.md) |
+| Prody | `product-docs` | functional (business-audience) product docs, docs repo ← N source repos | [product-docs.md](product-docs.md) |
 | Revi | `review-pr` | read-only reviewer (mono default; cross-family dual opt-in) | [review-pr.md](review-pr.md) |
 | Revi (converse) | `revi-converse` | conversational PR follow-up | _not yet_ |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |
@@ -80,8 +81,12 @@ first bilan for a bot lands.
 | Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
 | Ally | `ultra11y` | engine-backed WCAG 2.2 AA / RGAA audit + PR diff mode (read-only) | [ultra11y.md](ultra11y.md) |
 | Vigie | `feed-watch` | feed watch + LLM digest to chat (Huginn-style veille) | [feed-watch.md](feed-watch.md) |
+| Senti | `vuln-watch` | inventory-scoped vulnerability sentinel (KEV/EPSS-driven, zero LLM) | [vuln-watch.md](vuln-watch.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
 | Goldy | `golden-master` | behavioural non-regression net, falsifiable both ways | [golden-master.md](golden-master.md) |
 | Morphy | `modernize` | gate-to-gate modernisation lots, oracle-protected | [modernize.md](modernize.md) |
+| Campy | `campaign` | modernisation-programme supervisor (runs `modernize` as a subbot; progress judged by git, not self-report) | [campaign.md](campaign.md) |
+| Themis | `arbitrate` | doctrine-bound judge for the divergence cases a programme leaves blocked | _not yet_ |
+| Envy | `review-env` | live review environment — deploys the current commit, hands back a real https URL | _not yet_ |
 | — | `examples/keepalive` | always-on (`overlap: keepalive`) demo + feature dogfood | [keepalive.md](keepalive.md) |

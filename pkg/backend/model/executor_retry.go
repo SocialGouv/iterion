@@ -308,6 +308,45 @@ func providerFallbackEligible(backendName string) bool {
 	return backendName == delegate.BackendClaudeCode
 }
 
+// sessionResumeBackends are the backends that actually CONSUME
+// Task.SessionID to resume a conversation. Membership is a property of
+// the code, verified per backend, not a guess:
+//
+//	claude_code — claudesdk.WithResume(task.SessionID)
+//	codex       — codexsdk.WithResume(task.SessionID)
+//	pi          — `--session-id` / `--fork <id>`
+//
+// Everyone else only ever REPORTS a session id and never resumes one:
+// claw never mentions Task.SessionID at all (its conversation lives in
+// the host's (runID, nodeID) store and is replayed independently), and
+// the generic CLI-agent path behind kimi/grok parses an id out of the
+// CLI's output without ever passing one back in.
+//
+// Deliberately its own set rather than a reuse of
+// providerFallbackEligible: that one answers "does this backend honour
+// the provider HINT", a different question with a different answer.
+var sessionResumeBackends = map[string]bool{
+	delegate.BackendClaudeCode: true,
+	delegate.BackendCodex:      true,
+	delegate.BackendPi:         true,
+}
+
+// sessionResumeEligible reports whether dropping Task.SessionID can
+// plausibly change the outcome of a retry on this backend.
+//
+// It gates the optional-session degrade for the same reason
+// collapseHintOnlyChain trims a hint-only chain: on a backend that
+// ignores the id, the "fresh" retry is a byte-identical call that will
+// fail identically, so the degrade would be a whole wasted agentic turn
+// — and it would evict the node's accumulated conversation on the way,
+// destroying real state for a failure the session had no part in. Under
+// the shipped `sandbox: auto` that is not a corner case: a sandboxed
+// claw failure flattens to a string at the __claw-runner IPC boundary
+// and classifies UNCLASSIFIED, so EVERY such failure would qualify.
+func sessionResumeEligible(backendName string) bool {
+	return sessionResumeBackends[backendName]
+}
+
 // chainIsHintOnly reports whether every element defers to the node's
 // resolved backend — i.e. the chain can only swap a credential, never
 // re-shape the task. That is exactly the legacy `provider:` chain
@@ -322,7 +361,9 @@ func elementIsHintOnly(el chainElement) bool {
 	// declared a distinct route on purpose. Even one that only varies
 	// the model is meaningful on claw, which derives its provider from
 	// the model-spec prefix — so a named element is never collapsed away.
-	return el.Backend == "" && el.Label == ""
+	// A skip element is likewise never a credential hint, whatever its
+	// name — the AST-JSON path (studio saves) can produce a nameless one.
+	return !el.Skip && el.Backend == "" && el.Label == ""
 }
 
 // chainIsHintOnly reports whether every element is a pure provider-hint
@@ -377,7 +418,17 @@ func collapseHintOnlyChain(chain []chainElement, backendName string) []chainElem
 // string at the IPC boundary, and kimi/grok have no error channel at
 // all — turning a missing classifier into a dead end rather than a
 // fall-through.
+//
+// A SKIP element is the one exception: routing an indescribable failure
+// to another backend is a safety net, but CONVERTING it into a success
+// is a lie — a CLI exit 1 or a provider 400 would silently become a
+// zero-value verdict. A filtered skip therefore accepts only what its
+// `on:` names; the author who wants everything writes `on: [any]`
+// (which resolves to an empty filter).
 func elementAccepts(el chainElement, cat delegate.FallbackCategory) bool {
+	if el.Skip && cat == delegate.FallbackUnclassified {
+		return len(el.On) == 0
+	}
 	if len(el.On) == 0 || cat == delegate.FallbackUnclassified {
 		return true
 	}
@@ -644,6 +695,19 @@ type chainOutcome struct {
 	// run would record why.
 	ServedBy    string
 	FellThrough bool
+	// Skipped reports that the chain ended on an `action: skip` terminal
+	// route: nothing served, and the caller must synthesize the node's
+	// zero-value output (only the caller knows the schema). Result carries
+	// the failed routes' accumulated spend, never content.
+	Skipped bool
+	// SessionDegraded reports that the element that served did so only
+	// after its best-effort session (`session: inherit_if_available` /
+	// `persist`) failed to load and was dropped — the node completed
+	// WITHOUT the conversation it asked for. It exists for the same
+	// reason as FellThrough: a deterministic gate must be able to fail
+	// closed on a degraded input, and an amnesiac node's output is
+	// well-formed in every other respect.
+	SessionDegraded bool
 }
 
 // dispatchChain walks a node's fallback chain, building each element
@@ -682,6 +746,21 @@ func (e *ClawExecutor) dispatchChain(
 		spent       chainSpend
 		causes      []error
 		nextAllowed int // first index the walk may execute (skip filter)
+		// lastCat is the most recent EXECUTE failure's classification. A
+		// later build error must route on it, not on Unclassified: a
+		// usage_window outage followed by an unbuildable rescue route
+		// would otherwise disarm a usage_window-filtered skip and turn
+		// the operator's `skip` policy into `wait`.
+		lastCat = delegate.FallbackUnclassified
+		// lastBackend is the backend of the most recently EXECUTED route —
+		// the spend's origin. The skip outcome must carry it: an empty
+		// BackendName falls back to the node's REQUESTED backend at the
+		// event layer, and the runner's cost accumulator keys its claw
+		// double-count exclusion on that name — a metered route's real
+		// spend mislabelled "claw" is erased from the org cap and the
+		// credpool donor ledger. (Known limit: a chain that burned on TWO
+		// backends keeps one label — the last one.)
+		lastBackend string
 	)
 	effModel := func(el chainElement) string {
 		if el.Model != "" {
@@ -698,6 +777,23 @@ func (e *ClawExecutor) dispatchChain(
 		rest := chain[i+1:]
 		fallbackRemains := len(rest) > 0
 
+		// An `action: skip` terminal route: the walk arrived here through a
+		// failure its `on:` filter accepted (a skip element is never first —
+		// chain[0] is always the node's own route, C173 pins skip last).
+		// Complete the node with a skip outcome carrying only the failed
+		// routes' spend; the caller synthesizes the zero-value output.
+		if el.Skip {
+			res := spent.applyTo(delegate.Result{Output: map[string]any{}})
+			return chainOutcome{
+				Result: res,
+				// The route that EXECUTED and spent — see lastBackend.
+				BackendName: lastBackend,
+				ServedBy:    stepLabel(el),
+				FellThrough: true,
+				Skipped:     true,
+			}, nil
+		}
+
 		backendName, backend, task, buildErr := build(ctx, i, el)
 		if buildErr != nil {
 			// A build failure is this element's failure, not the node's:
@@ -713,9 +809,65 @@ func (e *ClawExecutor) dispatchChain(
 			if !fallbackRemains {
 				break
 			}
-			next := chain[i+1]
-			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), effModel(next), buildErr)
+			// A build error carries no classification of its own; route on
+			// the last EXECUTE failure's category (Unclassified when none
+			// yet) through the same acceptance walk as an execute failure —
+			// a FILTERED skip is never reached by an unclassified build
+			// error, and a usage_window-filtered skip still fires when the
+			// original outage WAS a usage window.
+			j := firstAcceptingFrom(chain, i+1, lastCat)
+			if j < 0 {
+				if e.logger != nil {
+					e.logger.Warn("[%s#%d/%s] %q failed to build; no remaining route accepts an unclassified failure — stopping the chain",
+						nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(el))
+				}
+				break
+			}
+			next := chain[j]
+			toModel := effModel(next)
+			if next.Skip {
+				toModel = ""
+			}
+			e.noteFallback(ctx, nodeID, el, next, backendName, effModel(el), toModel, buildErr)
+			nextAllowed = j
 			continue
+		}
+		key := cooldownKey(backendName, task)
+		if fallbackRemains {
+			if cd, cooled := e.routeCooldowns.active(key, e.cooldownNow()); cooled {
+				// A remembered failure obeys the same per-route `on:` filters
+				// as a fresh one. If nothing later accepts it, fail open by
+				// attempting this element normally — especially important for
+				// a node whose authored fallback does not cover this category.
+				j := firstAcceptingFrom(chain, i+1, cd.Category)
+				if j >= 0 {
+					next := chain[j]
+					toModel := effModel(next)
+					if next.Skip {
+						toModel = ""
+					}
+					e.noteCooldownFallback(ctx, nodeID, el, next, backendName,
+						effModel(el), toModel, cd)
+					// The call was skipped, but the condition that caused the
+					// skip is still active. Preserve its typed cause so a later
+					// fallback failure cannot hide a usage-window wall from the
+					// run-level durable retry or credential-pool donor rest.
+					if cd.Cause != nil {
+						causes = append(causes, cd.Cause)
+					}
+					// A route change drops the node's session even when no call
+					// was made on this dispatch. The store has no provider
+					// fingerprint, so a prior failed attempt's messages must not
+					// be replayed into the fallback element.
+					e.evictNodeSessionForFallback(ctx, nodeID)
+					// A remembered failure must route a later build error exactly
+					// like a fresh one. Otherwise a usage_window-filtered terminal
+					// skip becomes unreachable after an unbuildable rescue route.
+					lastCat = cd.Category
+					nextAllowed = j
+					continue
+				}
+			}
 		}
 		// Whether ANY remaining route would take a given failure — the
 		// carve-out must not strip a retry budget the chain will not
@@ -727,28 +879,103 @@ func (e *ClawExecutor) dispatchChain(
 				return anyElementAccepts(rest, delegate.ClassifyFallback(failure, isDelegateRetryable(failure)))
 			}
 		}
+		lastBackend = backendName
 		result, err = e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
 			return backend.Execute(ctx, *task)
 		})
+		// Best-effort session degrade (inherit_if_available / persist): the
+		// upstream session id resolved, but its backing state can be gone —
+		// a cloud resume replaces the sandbox container and a CLI backend's
+		// session files die with it, after which every resume of this node
+		// fails identically (lived on branch-improve-loop's plan_revise:
+		// error_during_execution in ~2.6s, forever). "If available" covers
+		// that too: retry ONCE with the session dropped, loudly.
+		//
+		// UNCLASSIFIED only. That is where a dead session lands — the
+		// backend refused to load it and said nothing typed about why —
+		// and, being non-retryable, it makes the fresh attempt a single
+		// extra call. Every other category names a cause the session is
+		// not: auth / usage_window / unavailable are credential- or
+		// model-level (a fresh session hits the same wall), and
+		// transient_exhausted is by construction "isDelegateRetryable
+		// said yes and the budget ran out" — a throttle, a 5xx, a TCP
+		// blip, none of which the session id caused. Degrading there
+		// would buy a SECOND full retry budget (backoff included) under
+		// a provider outage and silently discard continuity for an
+		// unrelated cause (R1486ff).
+		sessionDegraded := false
+		if err != nil && ctx.Err() == nil && task.SessionOptional && task.SessionID != "" &&
+			sessionResumeEligible(backendName) {
+			switch cat := delegate.ClassifyFallback(err, isDelegateRetryable(err)); cat {
+			case delegate.FallbackUnclassified:
+				e.noteSessionDegrade(ctx, nodeID, backendName, task.SessionID, cat, err)
+				sessionDegraded = true
+				spent.add(result)
+				// Dropping task.SessionID is not, by itself, enough to
+				// make the retry fresh. The (runID, nodeID) claw store is
+				// replayed independently of the id (claw_backend's
+				// session_replay envelope), and it is keyed by NODE, not
+				// by element or iteration — so a node that ran on claw
+				// earlier in its chain, or in an earlier loop pass, can
+				// still hold messages that would be replayed into the call
+				// this event just announced as FRESH. sessionResumeEligible
+				// keeps the degrade off claw itself, so this is the guard
+				// for that residue, on the same terms the route-change path
+				// evicts for.
+				e.evictNodeSessionForFallback(ctx, nodeID)
+				fresh := *task
+				fresh.SessionID = ""
+				fresh.ForkSession = false
+				fresh.SessionFingerprint = ""
+				freshResult, freshErr := e.retryDelegateLoopChain(ctx, nodeID, backendName, accepts, func() (delegate.Result, error) {
+					return backend.Execute(ctx, fresh)
+				})
+				if freshErr == nil {
+					task = &fresh
+				}
+				result, err = freshResult, freshErr
+			}
+		}
 		if err == nil {
 			return chainOutcome{
-				Result:      spent.applyTo(result),
-				BackendName: backendName,
-				Backend:     backend,
-				Task:        task,
-				ServedBy:    stepLabel(el),
-				FellThrough: i > 0,
+				Result:          spent.applyTo(result),
+				BackendName:     backendName,
+				Backend:         backend,
+				Task:            task,
+				ServedBy:        stepLabel(el),
+				FellThrough:     i > 0,
+				SessionDegraded: sessionDegraded,
 			}, nil
 		}
 		causes = append(causes, err)
 
 		if ctx.Err() != nil {
-			return chainOutcome{Result: result, BackendName: backendName}, err
+			// Cancellation is terminal for the node, but it does not
+			// un-spend what the abandoned attempts already burned: fold
+			// `spent` in here exactly as the exhausted-chain tail does.
+			// Dropping it under-reported an abandoned route's tokens and
+			// cost to max_cost_usd, the org monthly cap and a lending
+			// donor's ledger — and the optional-session degrade made that
+			// reachable on a SINGLE-route node, where `spent` used to be
+			// provably empty at this point.
+			return chainOutcome{Result: spent.applyTo(result), BackendName: backendName}, err
 		}
+		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
+		lastCat = cat
+		// Remember only typed failures whose provider supplied a future
+		// reset. Missing or stale reset data deliberately leaves the route
+		// hot, so bookkeeping uncertainty cannot suppress a healthy call.
+		//
+		// Recorded BEFORE the chain-shape checks below, because what the
+		// provider refused is a property of the ROUTE, not of this node's
+		// fallback chain: a node with no fallback at all — or none whose
+		// `on:` accepts the category — still teaches the ledger, so the
+		// next node whose chain DOES have somewhere to go skips the spawn
+		// this one had to pay for.
+		e.routeCooldowns.record(key, cooldownForFailure(err, cat), e.cooldownNow())
 		if !fallbackRemains {
 			break
 		}
-		cat := delegate.ClassifyFallback(err, isDelegateRetryable(err))
 		// `on:` is a per-route filter, not a chain terminator (Re50c7d).
 		// A middle route that refuses the category is SKIPPED so a later
 		// route that accepts it (e.g. the shipped example's gpt route
@@ -789,7 +1016,13 @@ func (e *ClawExecutor) dispatchChain(
 			fromModel = effModel(el)
 		}
 		next := chain[j]
-		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, effModel(next), err)
+		toModel := effModel(next)
+		if next.Skip {
+			// A skip route runs no model; inheriting the baseline here
+			// would report a model that will never execute.
+			toModel = ""
+		}
+		e.noteFallback(ctx, nodeID, el, next, backendName, fromModel, toModel, err)
 		nextAllowed = j
 	}
 
@@ -804,6 +1037,65 @@ func (e *ClawExecutor) dispatchChain(
 	return chainOutcome{Result: result}, err
 }
 
+// fallbackRouteEnds resolves the two ends of a route change for the event
+// layer: an element that pins no backend of its own inherits the node's, and
+// a terminal `action: skip` names NO backend — inheriting one would report a
+// bascule to a backend that will never run.
+//
+// Shared by both note* paths on purpose: a fresh refusal and a remembered
+// cooldown skip describe the same route change, so they must not be able to
+// describe it differently.
+func fallbackRouteEnds(from, to chainElement, backendName string) (fromBackend, toBackend string) {
+	fromBackend = from.Backend
+	if fromBackend == "" {
+		fromBackend = backendName
+	}
+	if to.Skip {
+		return fromBackend, ""
+	}
+	toBackend = to.Backend
+	if toBackend == "" {
+		toBackend = backendName
+	}
+	return fromBackend, toBackend
+}
+
+// noteCooldownFallback exposes a route change that cost no delegate attempt.
+// It remains a model_fallback timeline event, but attempts=0 and the cooldown
+// metadata distinguish it from the refusal that originally armed the entry.
+func (e *ClawExecutor) noteCooldownFallback(
+	ctx context.Context,
+	nodeID string,
+	from, to chainElement,
+	backendName string,
+	fromModel, toModel string,
+	cd routeCooldown,
+) {
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
+	if e.logger != nil {
+		e.logger.Info("[%s#%d/%s] skipping %q: %s cooldown active until %s; routing to %q",
+			nodeID, LoopIterationFromContext(ctx), backendName, stepLabel(from),
+			cd.Category, cd.Until.UTC().Format(time.RFC3339), stepLabel(to))
+	}
+	if e.hooks.OnProviderFallback == nil {
+		return
+	}
+	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
+		BackendName:   backendName,
+		From:          from.Provider,
+		To:            to.Provider,
+		FromModel:     fromModel,
+		ToModel:       toModel,
+		FromBackend:   fromBackend,
+		ToBackend:     toBackend,
+		Reason:        string(cd.Category),
+		Attempts:      0,
+		Cooldown:      true,
+		CooldownUntil: cd.Until,
+		ToSkip:        to.Skip,
+	})
+}
+
 // noteFallback emits the one log line and the one hook that make a
 // route change visible.
 func (e *ClawExecutor) noteFallback(
@@ -814,14 +1106,7 @@ func (e *ClawExecutor) noteFallback(
 	fromModel, toModel string,
 	err error,
 ) {
-	fromBackend := from.Backend
-	if fromBackend == "" {
-		fromBackend = backendName
-	}
-	toBackend := to.Backend
-	if toBackend == "" {
-		toBackend = backendName
-	}
+	fromBackend, toBackend := fallbackRouteEnds(from, to, backendName)
 	if e.logger != nil {
 		e.logger.Warn("[%s#%d/%s] %q failed beyond retry budget; falling through to %q: %v",
 			nodeID, LoopIterationFromContext(ctx), backendName,
@@ -840,6 +1125,37 @@ func (e *ClawExecutor) noteFallback(
 		ToBackend:   toBackend,
 		Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
 		Attempts:    e.retry.maxAttempts(),
+		Err:         err,
+		ToSkip:      to.Skip,
+	})
+}
+
+// noteSessionDegrade emits the one log line and the one hook that make a
+// dropped best-effort session visible.
+//
+// A degrade is not a route change — the same backend, model and
+// credential serve the retry — so it is deliberately NOT a
+// model_fallback: what changed is the node's INPUT, which now lacks the
+// conversation its `session:` field asked for. That is the whole reason
+// it needs a record of its own; the node goes on to complete
+// successfully and would otherwise read as a clean pass.
+func (e *ClawExecutor) noteSessionDegrade(
+	ctx context.Context,
+	nodeID, backendName, sessionID string,
+	cat delegate.FallbackCategory,
+	err error,
+) {
+	if e.logger != nil {
+		e.logger.Warn("[%s#%d/%s] optional session %s failed to serve (%v) — retrying once with a FRESH session; the node will not see the upstream conversation",
+			nodeID, LoopIterationFromContext(ctx), backendName, sessionID, err)
+	}
+	if e.hooks.OnSessionDegraded == nil {
+		return
+	}
+	e.hooks.OnSessionDegraded(nodeID, SessionDegradedInfo{
+		BackendName: backendName,
+		SessionID:   sessionID,
+		Reason:      string(cat),
 		Err:         err,
 	})
 }

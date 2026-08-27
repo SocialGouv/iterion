@@ -35,6 +35,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
@@ -55,6 +56,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -414,6 +416,13 @@ type Config struct {
 	HeartbeatInterval time.Duration // how often to refresh the NATS KV lease
 	PendingPoll       time.Duration // how often to refresh nats_pending_messages (0 = 15s)
 	FetchWait         time.Duration // long-poll wait per fetch
+	// SchemaMismatchDelay is the redelivery delay applied when this runner
+	// rejects a delivery whose schema version it does not recognise (mixed
+	// fleet during a rolling schema bump). Must be long enough that the
+	// MaxDeliver budget stretches over the duration of a rolling restart —
+	// an immediate Nak burns it in seconds (issue #481). 0 →
+	// natsq.SchemaMismatchNakDelay.
+	SchemaMismatchDelay time.Duration
 	// DrainMode governs SIGTERM handling. "complete" (default, the
 	// lame-duck posture): stop fetching new runs but let the in-flight run
 	// finish naturally before exiting — a rolling deploy interrupts
@@ -454,11 +463,14 @@ type Config struct {
 	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
 	GenericSecrets secrets.GenericSecretStore
 
-	// UsageCapPolicy is the operator's ceiling on the LLM subscription's
-	// own usage windows (pkg/usagecap), resolved machine-wide at startup.
-	// The zero value caps nothing, which leaves runs bounded only by the
-	// provider's wall — the historical behaviour.
-	UsageCapPolicy usagecap.Policy
+	// UsageCapSource answers the operator's ceiling on the LLM
+	// subscription's own usage windows (pkg/usagecap) — consulted per
+	// evaluation, so a DB-backed source (usagecap.Resolver) makes a
+	// runtime cap change effective on live runs within its TTL. Wrap a
+	// fixed policy in usagecap.StaticPolicy for the env-only shape. nil
+	// caps nothing, which leaves runs bounded only by the provider's
+	// wall — the historical behaviour.
+	UsageCapSource usagecap.PolicySource
 	// UsageCaps is where readings of those windows are shared across
 	// replicas, so a pod can park a run before spending anything on
 	// rediscovering a ceiling another pod already hit. nil disables the
@@ -493,6 +505,14 @@ type Config struct {
 	// without it, system prompts referencing `.claude/skills/<x>.md`
 	// point at nothing in cloud runs. Empty → no bundle resolution.
 	BotsPaths []string
+
+	// BotSources resolves STORED bot bundles (team-authored bots and
+	// platform overrides — pkg/botsource rows) when a RunMessage carries a
+	// BotBundle ref: the runner fetches the row, verifies the version, and
+	// materializes it as the run's bundle instead of the baked BotsPaths
+	// one. nil → a ref-carrying message fails explicitly (the runner must
+	// never silently substitute the stale baked bundle).
+	BotSources botsource.Store
 
 	// SandboxDefault / SandboxHostState carry the operator's
 	// ITERION_SANDBOX_DEFAULT / ITERION_SANDBOX_HOST_STATE (cfg.Sandbox.*) into
@@ -1346,7 +1366,22 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		runLogger = r.cfg.Logger.WithWriter(io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
-	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
+	// DSL-declared supervisors run on the pod alongside the engine —
+	// this path builds its engine directly (no runview.Launch), so it
+	// wires the hub + coordinators itself, exactly like the CLI. The hub
+	// is created BEFORE the executor so it also rides the backend-hook
+	// seam (the only one carrying assistant_text / tool events). The
+	// run-level override travels on the queue (msg.Supervisors); the
+	// pod's ITERION_SUPERVISORS is the layer below.
+	var superviseHub *supervise.EventHub
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(msg.Supervisors, len(wf.Supervisors), runLogger) {
+		superviseHub = supervise.NewEventHub()
+	}
+	var hookObservers []func(store.Event)
+	if superviseHub != nil {
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger, hookObservers)
 	if err != nil {
 		return err
 	}
@@ -1369,6 +1404,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// dropped and a bot's `sandbox: auto` hard-errors on the kubernetes
 		// driver (host_state=auto has no host filesystem to bind).
 		runtime.WithSandboxDefault(r.cfg.SandboxDefault),
+		// The publish-time platform-resolved `sandbox: auto` fallback image
+		// (schema v9). Empty leaves the engine's own env/built-in resolution.
+		// Reading it from the MESSAGE, not a live setting, is what keeps a
+		// redelivery or checkpoint re-claim in the same environment.
+		runtime.WithSandboxDefaultImage(msg.SandboxImage),
 		runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
 		// CLI-strength override (ITERION_SANDBOX_OVERRIDE): "none" on a
 		// runner that is itself the isolation boundary beats a bot's inline
@@ -1405,10 +1445,27 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// engine mirrors skills/ into <workspace>/.claude/skills AND
 	// provisions the bot's devbox.json (host devbox provisioning — the
 	// runner pod is the isolation boundary, no sandbox starts here),
-	// exactly like a local `iterion run bots/<bot>` does. Best-effort:
-	// an unresolvable bot id or a loose .bot just skips the bundle with
-	// a warning — the run proceeds without skills or devbox tools.
-	if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
+	// exactly like a local `iterion run bots/<bot>` does.
+	//
+	// A STORED bot (BotBundle ref — team-authored or platform override) is
+	// rebuilt from the DB and REPLACES the baked lookup entirely: the baked
+	// bundle is by definition the code the override exists to supersede, and
+	// its skills would shadow the shipped ones by mirror precedence. That
+	// path is strict where the baked one is best-effort — a ref the runner
+	// cannot honor fails the attempt loudly (nak → redelivery → DLQ with an
+	// actionable status) rather than running the run against stale
+	// resources; a resume re-resolves the ref fresh and self-heals.
+	if msg.BotBundle != nil {
+		b, cleanupBundle, berr := r.materializeBotBundle(ctx, msg.BotBundle)
+		if berr != nil {
+			return fmt.Errorf("runner: bot bundle %s/%s@%d: %w", msg.BotBundle.TenantID, msg.BotBundle.Slug, msg.BotBundle.Version, berr)
+		}
+		defer cleanupBundle()
+		engineOpts = append(engineOpts, runtime.WithBundle(b))
+	} else if msg.BotID != "" && len(r.cfg.BotsPaths) > 0 {
+		// Best-effort: an unresolvable bot id or a loose .bot just skips the
+		// bundle with a warning — the run proceeds without skills or devbox
+		// tools.
 		if mainFile, rerr := botregistry.ResolveBotPath(msg.BotID, r.cfg.BotsPaths); rerr == nil {
 			if b, berr := bundle.OpenDir(filepath.Dir(mainFile)); berr == nil {
 				engineOpts = append(engineOpts, runtime.WithBundle(b))
@@ -1446,6 +1503,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// type-assertion probes inside the engine — silently, since each one
 	// degrades rather than errors.
 	engineOpts = append(engineOpts, runtime.WithEventObserver(usage.observe))
+	if superviseHub != nil {
+		engineOpts = append(engineOpts, runtime.WithEventObserver(superviseHub.Publish))
+		stopSup := supervise.StartDeclared(ctx, superviseHub, &supervise.StoreInjector{Store: r.cfg.Store},
+			msg.RunID, supervise.SpecsFromWorkflow(wf, runLogger), runLogger)
+		defer stopSup()
+	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
 	// this run's monotonic active elapsed; drop it when the run returns.
@@ -1465,13 +1528,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the Commits/Files panels have for a finished cloud run. Best-effort:
 	// a recording failure must never change the run's outcome.
 	if workDir != r.cfg.WorkDir {
-		r.recordRunGitMeta(ctx, msg, workDir, gitBase)
+		// On an export-based sandbox (kubernetes) the clone at workDir is a
+		// COPY streamed back from the pod — hold it against the pod-side
+		// HEAD the engine captured, so a lost export can never read as a
+		// clean "no commits" (run 01a02a4b).
+		integ := engine.SandboxWorkspaceIntegrity()
+		r.recordRunGitMeta(ctx, msg, workDir, gitBase, integ)
 		// Bank a SUCCESSFUL repo-targeted run to the forge before the
 		// clone is wiped: the worktree-finalization path never fires
 		// here, so without this push a finished run's commits exist
 		// nowhere the server can reach (runs merge: "nothing to merge").
 		if runErr == nil {
-			r.bankRepoWorkspace(ctx, msg, workDir, gitBase)
+			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
 		}
 	}
 
@@ -1550,6 +1618,7 @@ func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *ite
 		MaxDuration:         b.MaxDuration,
 		MaxIterations:       b.MaxIterations,
 		MaxParallelBranches: b.MaxParallelBranches,
+		CapImposed:          b.CapImposed,
 	}
 	if o.IsZero() {
 		return nil
@@ -1640,10 +1709,27 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runtime.NodeExecutor, *metricsEmitter, error) {
+	spec, usage, err := r.executorSpec(ctx, msg, wf, logger, hookObservers)
+	if err != nil {
+		return nil, nil, err
+	}
+	exec, err := runview.BuildExecutor(spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	return exec, usage, nil
+}
+
+// executorSpec assembles the pod's ExecutorSpec. Split from
+// buildExecutor so the wiring is assertable: a binder missing here is a
+// capability that silently dies on every cloud run (the supervisor-steer
+// and operator-chat inbox was exactly that).
+func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger, hookObservers []func(store.Event)) (runview.ExecutorSpec, *metricsEmitter, error) {
+	var zero runview.ExecutorSpec
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
-		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
+		return zero, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
 	}
 	// Wrap the emitter so LLM step + delegate events update the
 	// iterion_llm_tokens_total / iterion_llm_cost_usd_total counters
@@ -1653,14 +1739,17 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
 	vars, err := stringifyVars(msg.Vars)
 	if err != nil {
-		return nil, nil, err
+		return zero, nil, err
 	}
-	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+	spec := runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: wf,
 		Vars:     vars,
 		Store:    usage,
 		RunID:    msg.RunID,
+		// Backend-hook events (assistant_text, tool_*, llm_*) fire only
+		// this seam — the declared-supervisor hub rides it.
+		EventObservers: hookObservers,
 		// The run-scoped logger (teed into the RunLogStore) — the executor
 		// emits the `[node#iter/backend]` agent-stream lines the studio's
 		// per-node Logs tab filters on; on the raw pod logger they would
@@ -1683,11 +1772,16 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
-	})
-	if err != nil {
-		return nil, nil, err
+		// Inbox/AsyncAsk drain the run's queued messages into the agent's
+		// live turn — supervisor steering and operator chat both ride
+		// them. Every other launch surface binds these; without them the
+		// pod's supervisors evaluate and inject but nothing ever delivers
+		// (and ask_user_async has no store to post to). Publish stays nil
+		// on cloud: the Mongo change-stream surfaces the transitions.
+		Inbox:    &model.StoreInboxBinder{Store: r.cfg.Store},
+		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
 	}
-	return exec, usage, nil
+	return spec, usage, nil
 }
 
 // modelOverridesFromWire lifts the queue's override rows back into the

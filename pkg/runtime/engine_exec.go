@@ -316,10 +316,19 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 	defer releaseResources()
 	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+		// Same grace as every other axis: checkBudgetBeforeExec above
+		// already graced (or failed) a pre-existing duration overrun,
+		// and this re-check only exists for time spent WAITING on a
+		// busy resource slot. Killing here unconditionally made the
+		// grace inert on the one axis a long campaign trips most — the
+		// run emitted budget_exit_grace and then died on the very next
+		// statement. graceOrFailBudget dedupes the event.
 		used, limit, _ := rs.budget.DurationStatus()
-		return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
+		if err := e.graceOrFailBudget(rs, currentNodeID, &budgetCheckResult{
 			exceeded: true, dimension: "duration", used: used, limit: limit,
-		})
+		}); err != nil {
+			return nil, false, err
+		}
 	}
 	if len(leases) > 0 {
 		nodeInput[leaseInputKey] = leases // surface leased instance ids to the node
@@ -378,7 +387,24 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// a resumable BUDGET_EXCEEDED(duration) failure. Recompute after resource
 	// acquisition so time spent waiting for a busy slot cannot exhaust the
 	// run's max_duration and then start execution with no deadline.
-	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem > 0 {
+	if rem, bounded := rs.budget.RemainingDuration(); bounded {
+		if rem <= 0 {
+			// Inside the duration grace (the gate above let this node
+			// through): bound it by the GRACED ceiling instead of
+			// running deadline-less — an unbounded stall is exactly
+			// what the deadline exists to terminate, grace or not.
+			rem, _ = rs.budget.GracedRemainingDuration(budgetExitGraceRatio())
+			if rem <= 0 {
+				// The sliver of graced room the gate saw was consumed
+				// between there and here (span start, template build):
+				// fail on the budget rather than run with NO deadline.
+				used, limit, _ := rs.budget.DurationStatus()
+				span.End()
+				return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
+					exceeded: true, dimension: "duration", used: used, limit: limit,
+				})
+			}
+		}
 		var cancel context.CancelFunc
 		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))
 		defer cancel()
@@ -563,7 +589,7 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	}
 
 	// Record budget usage and check limits.
-	if err := e.recordAndCheckBudget(rs, currentNodeID, output); err != nil {
+	if err := e.recordAndDeferBudget(rs, currentNodeID, output); err != nil {
 		return "", err
 	}
 
@@ -593,9 +619,41 @@ func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNod
 	// fork-rewind capability for THIS node).
 	e.snapshotAtNodeBoundary(rs, currentNodeID)
 
-	nextNodeID, err := e.selectEdgeRS(rs, currentNodeID, output)
-	if err != nil {
-		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, err)
+	nextNodeID, edgeErr := e.selectEdgeRS(rs, currentNodeID, output)
+
+	// A hard overrun measured after THIS node ends the run here, one edge
+	// later than the measurement — anchored on the node that has NOT run,
+	// so a resume with a raised cap continues from there instead of
+	// re-executing the node whose output is already stored.
+	//
+	// Taken BEFORE any edge error is surfaced: a node that blew the cap
+	// and then found no matching edge must still die as BUDGET_EXCEEDED.
+	// That error is what the cloud runner's terminal-ack carve-out
+	// matches; a naked NO_OUTGOING_EDGE goes back to JetStream and is
+	// redelivered onto the same spent budget. With no successor the run
+	// has nowhere to go, so it stops where it stands.
+	if rs.budget != nil {
+		if exc := rs.budget.takeExceeded(); exc != nil {
+			anchor := nextNodeID
+			if edgeErr != nil || anchor == "" {
+				anchor = currentNodeID
+			}
+			// An edge error leaves no successor to walk to: the grace
+			// has nothing to deliver, and letting it swallow the
+			// overrun would surface the edge error naked below — a
+			// NO_OUTGOING_EDGE carries neither ErrBudgetExceeded nor
+			// its code, so the cloud runner naks the message back onto
+			// the same spent budget instead of acking it terminal.
+			if edgeErr != nil {
+				return "", e.failBudgetExceeded(rs, anchor, exc)
+			}
+			if err := e.graceOrFailBudget(rs, anchor, exc); err != nil {
+				return "", err
+			}
+		}
+	}
+	if edgeErr != nil {
+		return "", e.failRunErrWithCheckpoint(rs, currentNodeID, edgeErr)
 	}
 	return nextNodeID, nil
 }
@@ -870,6 +928,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		e.logger.Warn("failed to emit edge_selected: %v", err)
 	}
 
+	rs.setIncoming(selected)
 	return selected.To, nil
 }
 

@@ -26,6 +26,9 @@ on GitLab — the issue-label → PR lineage).
 ## Shape (v2 — one agent, minimal framing)
 
 ```
+plan_topology → plan → plan_review → plan_gate → plan_revise ┐   (only when
+plan_topology ─────────────────────────────────────────────→ ┤   plan_review
+                                                             ▼   resolved on)
 campaign → verify_probe → verify_build → verify_run → review → gate
 gate → mr_gate         when converged (green AND feature_complete AND review.clean)
 gate → campaign        as continuation_loop(max_passes), carrying fail_log
@@ -37,6 +40,16 @@ mr_gate → done         when not open_mr
 (`verify_probe` reuses a valid `verify.sh` on passes 2+, skipping the LLM
 `verify_build`; `forge_auth_probe` is a ~100ms credential pre-flight before the
 `finalize_mr` agent.)
+
+**Plan phase (ADR-091).** `plan_review: auto` resolves at launch from the
+run's credentials: when a SECOND model family is available, the plan is
+authored (claude, read-only), critiqued by a cross-family peer
+(`claw` + `openai/gpt-5.6-sol` by default), and revised by the SAME
+author session before the campaign implements; otherwise the phase is
+bypassed whole (the v2 shape, unchanged). `plan_review_policy` picks the
+mid-run peer-unavailability behaviour: `wait` (default — the run parks
+failed_resumable, the usage-window retry resumes it) or `skip` (the
+reviewer's `action: skip` route — continue unreviewed, loudly stamped).
 
 - `campaign` — one adaptive claude_code agent: brief exploration, living
   todo of slices, one verified commit per slice, ADR obligation and

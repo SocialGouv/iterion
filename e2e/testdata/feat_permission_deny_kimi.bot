@@ -1,0 +1,28 @@
+## Live feature fixture: Kimi's native PreToolUse permission seam.
+
+schema out:
+  ran_bash: bool
+  note: string
+
+prompt run_sys:
+  Use your Bash tool to run exactly:
+  `touch permission-hook-must-not-create`
+  Then report whether the command actually executed in ran_bash and explain
+  the tool result in note. Do not create the file by any other means.
+
+prompt run_user:
+  Run the requested Bash command now.
+
+agent runner:
+  backend: "kimi"
+  model: "kimi-code/kimi-for-coding"
+  system: run_sys
+  user: run_user
+  output: out
+
+workflow main:
+  sandbox: none
+  permission: deny
+  deny: ["Bash"]
+  entry: runner
+  runner -> done

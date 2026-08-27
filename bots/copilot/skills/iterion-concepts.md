@@ -64,7 +64,7 @@ and per-project, referenced from a workflow's `skills:` field.
 | `claw` | in-process multi-provider API client; iterion owns the message list |
 | `pi` | the pi agent CLI, ~36 providers, provider-computed cost |
 | `kimi`, `grok` | vendor CLIs through the generic CLI-agent seam |
-| `codex` | **deprecated and frozen** — emits `C030`, do not adopt |
+| `codex` | **legacy** — native tool set not narrowable via `tools:`, and its pinned SDK refuses iterion's outer sandbox; do not adopt |
 
 Two behavioural differences worth knowing by heart:
 
@@ -159,9 +159,9 @@ Iterion is large and moves, and **you cannot run anything** — no shell.
 So when asked about a flag, an endpoint or a field you are not certain
 of, do one of two things, never a third:
 
-1. **Read for it.** The workspace usually holds the answer: `Glob` and
-   `Grep` over the bot bundles, the `.bot` sources, the docs the repo
-   ships. A quoted line from a real file beats a recollection.
+1. **Read for it.** The workspace usually holds the answer: use `Glob` to
+   locate bot bundles, `.bot` sources and docs, then `Read` the likely files.
+   A quoted line from a real file beats a recollection.
 2. **Hand the operator the check.** `iterion <command> --help`,
    `iterion models`, `iterion bots list`, `iterion version` — say what
    you expect it to show and ask them to paste it back.

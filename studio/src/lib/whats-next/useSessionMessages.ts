@@ -56,7 +56,29 @@ export function useSessionMessages(opts: {
     // Return a fresh array reference so memo consumers see a new value
     // when new events land. (Mutating `out` in place wouldn't propagate
     // through React.)
-    return out.slice();
+    const withSeed = out.slice();
+
+    // The operator's OPENING message is not an event — it rides in as a launch
+    // VAR (the bot's `chat.seed_var`), so a transcript folded from events
+    // alone starts at the assistant's reply and the question it answers is
+    // nowhere on screen. Read it back off the run's persisted inputs rather
+    // than from the launch call, so a reattached session (reload, another
+    // tab, days later) shows it too.
+    const seedVar = bot.seedVar;
+    const seedRaw = seedVar ? snapshot?.run?.inputs?.[seedVar] : undefined;
+    const seed = typeof seedRaw === "string" ? seedRaw.trim() : "";
+    if (seed) {
+      withSeed.unshift({
+        kind: "user-message",
+        id: "seed",
+        text: seed,
+        // `consumed`, not `delivered`: the run READ this one — it is the launch
+        // var the first node ran on. Claiming an in-flight state it never went
+        // through is what made the opening message render unlike the rest.
+        status: "consumed",
+      });
+    }
+    return withSeed;
   }, [bot, events, snapshot]);
 
   // Track the latest pending human message id so submitHumanAnswer

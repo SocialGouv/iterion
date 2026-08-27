@@ -74,6 +74,21 @@ func TestIsMutatingNode_AgentWithOnlyReadOnlyTools(t *testing.T) {
 	}
 }
 
+// TestIsMutatingNode_ClawReadOnlyToolsAreReadOnly pins the claw half of
+// readOnlyTools. The names a claw node MUST use (C135 rejects the phantom
+// ones) have to classify the same way, or renaming `list_files` → `glob` in a
+// read-only reviewer silently tightens parallel-branch admission — a
+// behaviour change for a rename that alters nothing about what the node does.
+func TestIsMutatingNode_ClawReadOnlyToolsAreReadOnly(t *testing.T) {
+	n := &ir.AgentNode{
+		BaseNode: ir.BaseNode{ID: "a"},
+		Tools:    []string{"read_file", "glob", "grep", "web_fetch"},
+	}
+	if isMutatingNode(n) {
+		t.Error("claw's read-only trio (glob/grep/read_file, plus web_fetch) must not be classified as mutating")
+	}
+}
+
 func TestIsMutatingNode_AgentWithOneMutatingTool(t *testing.T) {
 	n := &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: "a"},

@@ -107,7 +107,12 @@ function PushToForgeDialog({
     queryKey: ["forge-connections", teamID],
     queryFn: () => listForgeConnections(teamID),
   });
-  const connections = connectionsQuery.data ?? null;
+  // Watch-only connections (Dependabot alerts, read) cannot push: their App
+  // holds no contents/issues grant. They must not appear here at all — the
+  // picker below defaults to the FIRST connection, so a team that connected
+  // its watch-only App first would push through it by default and take a 403.
+  const connections =
+    connectionsQuery.data?.filter((c) => c.purpose !== "security_read") ?? null;
   const loadError = connectionsQuery.error
     ? errorMessage(connectionsQuery.error)
     : null;

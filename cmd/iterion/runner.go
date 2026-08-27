@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
@@ -91,18 +92,19 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:           cfg.NATS.URL,
-		StreamName:    cfg.NATS.Stream,
-		DLQStream:     cfg.NATS.DLQStream,
-		KVBucket:      cfg.NATS.KVBucket,
-		MaxAckPending: cfg.NATS.MaxAckPending,
-		AckWait:       cfg.NATS.AckWait,
-		MaxDeliver:    cfg.NATS.MaxDeliver,
-		MaxAge:        cfg.NATS.MaxAge,
-		DLQMaxAge:     cfg.NATS.DLQMaxAge,
-		MaxPayload:    cfg.NATS.MaxPayload,
-		LockTTL:       cfg.Runner.LockTTL,
-		Logger:        logger,
+		URL:                 cfg.NATS.URL,
+		StreamName:          cfg.NATS.Stream,
+		DLQStream:           cfg.NATS.DLQStream,
+		KVBucket:            cfg.NATS.KVBucket,
+		MaxAckPending:       cfg.NATS.MaxAckPending,
+		AckWait:             cfg.NATS.AckWait,
+		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		MaxDeliver:          cfg.NATS.MaxDeliver,
+		MaxAge:              cfg.NATS.MaxAge,
+		DLQMaxAge:           cfg.NATS.DLQMaxAge,
+		MaxPayload:          cfg.NATS.MaxPayload,
+		LockTTL:             cfg.Runner.LockTTL,
+		Logger:              logger,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: connect NATS: %w", err)
@@ -212,16 +214,26 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	// five-hour / weekly windows. A malformed policy stops the runner
 	// here — every wrong answer downstream fails open, and a fleet that
 	// silently stopped honouring its cap is what this guards against.
-	usageCapPolicy, err := usagecap.FromEnv()
+	// The env values are the DEFAULTS; the platform runtime-settings
+	// record (mutable through the server's admin API) overrides the
+	// percentages live, TTL-cached, so both deployments enforce the same
+	// number without a restart.
+	usageCapEnvPolicy, err := usagecap.FromEnv()
 	if err != nil {
 		return fmt.Errorf("runner: %w", err)
 	}
 	usageCapStore := usagecap.NewMongoStore(st.DB())
-	if usageCapPolicy.Enabled() {
-		if err := usagecap.EnsureSchema(rootCtx, st.DB()); err != nil {
-			return fmt.Errorf("runner: ensure usage_windows schema: %w", err)
-		}
-		logger.Info("runner: usage cap armed — %s", usageCapPolicy)
+	usageCapSource := usagecap.NewResolver(
+		usagecap.NewMongoSettingsStore(st.DB()), usageCapEnvPolicy,
+		usagecap.WithWarnLogger(logger.Warn))
+	// The schema is ensured unconditionally: a cap disabled in env can be
+	// armed at runtime through the settings record, and the readings
+	// ledger must exist by then.
+	if err := usagecap.EnsureSchema(rootCtx, st.DB()); err != nil {
+		return fmt.Errorf("runner: ensure usage_windows schema: %w", err)
+	}
+	if effective := usageCapSource.Effective(rootCtx); effective.Enabled() {
+		logger.Info("runner: usage cap armed — %s", effective)
 	}
 
 	// Bots: where bot-qualified runs resolve their bundle so skills/
@@ -243,25 +255,27 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
-		NATS:              natsConn,
-		Events:            eventsBus,
-		Store:             st,
-		RunnerID:          runnerID,
-		WorkDir:           cfg.Runner.WorkDir,
-		HeartbeatInterval: cfg.Runner.Heartbeat,
-		DrainMode:         cfg.Runner.DrainMode,
-		DrainTimeout:      cfg.Runner.DrainTimeout,
-		Logger:            logger,
-		Metrics:           mreg,
-		RunSecrets:        runSecretsStore,
-		Sealer:            sealer,
-		GenericSecrets:    secrets.NewMongoGenericSecretStore(st.DB()),
-		MemoryStore:       memStore,
-		OrgUsage:          orgUsageCounter,
-		CredPool:          credBroker,
-		UsageCapPolicy:    usageCapPolicy,
-		UsageCaps:         usageCapStore,
-		BotsPaths:         botsPaths,
+		NATS:                natsConn,
+		Events:              eventsBus,
+		Store:               st,
+		RunnerID:            runnerID,
+		WorkDir:             cfg.Runner.WorkDir,
+		HeartbeatInterval:   cfg.Runner.Heartbeat,
+		DrainMode:           cfg.Runner.DrainMode,
+		DrainTimeout:        cfg.Runner.DrainTimeout,
+		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,
+		Logger:              logger,
+		Metrics:             mreg,
+		RunSecrets:          runSecretsStore,
+		Sealer:              sealer,
+		GenericSecrets:      secrets.NewMongoGenericSecretStore(st.DB()),
+		MemoryStore:         memStore,
+		OrgUsage:            orgUsageCounter,
+		CredPool:            credBroker,
+		UsageCapSource:      usageCapSource,
+		UsageCaps:           usageCapStore,
+		BotsPaths:           botsPaths,
+		BotSources:          botsource.NewMongoStore(st.DB()),
 		// Sandbox-by-default: the runner is a product entry point like
 		// `iterion run` — an unset ITERION_SANDBOX_DEFAULT resolves to
 		// auto. Discovered live (run 019f8a05): lifting the chart's

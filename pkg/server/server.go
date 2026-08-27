@@ -31,11 +31,13 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -143,9 +145,15 @@ type Server struct {
 	credPoolLeases    credpool.LeaseStore
 	credPoolLedger    credpool.Ledger
 	auditStore        audit.Store
-	pats              pat.Store
-	queue             QueueBackend
-	botBindings       secrets.BotSecretBindingStore
+	// usageCapSettings + usageCapSource are the platform runtime-settings
+	// store and its TTL-cached resolver (nil in env-only deployments):
+	// the admin settings routes mutate the former, /healthz and the
+	// launch preflight read the latter.
+	usageCapSettings usagecap.SettingsStore
+	usageCapSource   *usagecap.Resolver
+	pats             pat.Store
+	queue            QueueBackend
+	botBindings      secrets.BotSecretBindingStore
 	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
 	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
 	// restart re-derives instead of silently dropping the plugin from runs.
@@ -153,7 +161,16 @@ type Server struct {
 	// botSources holds team-authored bot bundles (pkg/botsource) — the writable,
 	// tenant-scoped counterpart to the read-only baked catalog. Non-nil enables
 	// cloud bot editing (/api/teams/:id/bot-sources + bot_editing_enabled).
-	botSources     botsource.Store
+	botSources botsource.Store
+	// botRoles / sandboxCfg are TTL resolvers over the platform settings
+	// families; the *Store fields are the write surfaces of the admin routes.
+	botRoles        *platformcfg.Resolver[platformcfg.BotRoles]
+	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
+	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
+	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	// platformBots caches the platform-override entry set per replica
+	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
+	platformBots   *platformcfg.Resolver[platformBotSet]
 	configShares   configshare.Store
 	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
@@ -167,6 +184,11 @@ type Server struct {
 	authorTrustOnce   sync.Once
 	forgeOrchestrator *forge.Orchestrator
 	forgeStates       forgeStateBackend
+	// forgeSecurityMint mints a connection's org-wide security-read token.
+	// A field rather than a direct method call so the enable endpoint can be
+	// driven without a live GitHub App (the mint is the one step that needs
+	// one, and the endpoint's guards/rollback are what matter).
+	forgeSecurityMint func(context.Context, forge.Connection) (string, time.Time, error)
 	forgeOAuthApps    forge.OAuthAppStore
 	forgeGitHubApp    ForgeGitHubAppConfig
 	orgSSO            orgsso.Store
@@ -421,12 +443,15 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		credPoolLeases:    cfg.CredPoolLeases,
 		credPoolLedger:    cfg.CredPoolLedger,
 		auditStore:        cfg.Audit,
+		usageCapSettings:  cfg.UsageCapSettings,
 		pats:              cfg.PATs,
 		queue:             cfg.Queue,
 		botBindings:       cfg.BotBindings,
 		forgeConnections:  cfg.ForgeConnections,
 		pluginSources:     cfg.PluginSources,
 		botSources:        cfg.BotSources,
+		botRolesStore:     cfg.BotRolesSettings,
+		sandboxCfgStore:   cfg.SandboxSettings,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,
@@ -437,6 +462,35 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		locCache:          newRunLOCCache(),
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
+	}
+	// Platform settings families (bot_roles + sandbox): TTL resolvers over
+	// the stores. A nil store keeps them nil-safe — Get returns nil and
+	// every consumer falls back to its hardcoded/env default.
+	s.botRoles = platformcfg.NewResolver(cfg.BotRolesSettings, logger.Warn)
+	if cfg.SandboxResolver != nil {
+		// Shared with the cloud publisher (cmd wiring): ONE resolver
+		// instance, so the admin PUT's Invalidate reaches publish-time
+		// pinning too — the mutating replica's own publishes see the write
+		// immediately, not after the TTL.
+		s.sandboxCfg = cfg.SandboxResolver
+	} else {
+		s.sandboxCfg = platformcfg.NewResolver(cfg.SandboxSettings, logger.Warn)
+	}
+	// Built unconditionally (the fetch no-ops without a bot-source store):
+	// tests wire s.botSources after New, and the resolver must already
+	// exist for them — same reason the roles/sandbox resolvers are.
+	s.platformBots = s.newPlatformBotsResolver()
+	// Runtime usage-cap resolver: env defaults + the DB record, TTL-cached.
+	// A malformed env policy leaves it nil — the health echo reports the
+	// invalid value (existing behaviour) instead of a resolver quietly
+	// built over a policy the enforcement paths refused.
+	if cfg.UsageCapSettings != nil {
+		if envPol, err := usagecap.FromEnv(); err == nil {
+			s.usageCapSource = usagecap.NewResolver(cfg.UsageCapSettings, envPol,
+				usagecap.WithWarnLogger(logger.Warn))
+		} else {
+			logger.Warn("server: usage-cap runtime settings disabled — env policy invalid: %v", err)
+		}
 	}
 	// Local mode wires a *LayeredGenericSecretStore; keep the concrete type so
 	// the /api/local/secrets handlers use its scope-aware ops directly. Cloud
@@ -489,7 +543,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		} else {
 			s.forgeStates = newForgeStateStore(10 * time.Minute)
 		}
+		s.forgeSecurityMint = s.forgeSecurityTokenMinter
 		s.forgeOrchestrator = &forge.Orchestrator{
+			LogWarn:         s.forgeLogWarn,
 			Connections:     s.forgeConnections,
 			Integrations:    s.forgeIntegrations,
 			Webhooks:        s.webhookConfigs,
@@ -550,6 +606,13 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.Alerts != nil {
 			opts = append(opts, runview.WithAlerts(*cfg.Alerts))
 		}
+		if s.usageCapSource != nil {
+			opts = append(opts, runview.WithUsageCapSource(s.usageCapSource))
+		}
+		// Resume surfaces that carry no source (answer-human HTTP/WS, the
+		// async auto-resume) re-derive it from the run's persisted origin —
+		// same tiers as an explicit resume, never the pod's baked twin.
+		opts = append(opts, runview.WithResumeSourceFiller(s.resumeSourceFiller))
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)
@@ -575,6 +638,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		}
+		if s.usageCapSource != nil {
+			svcOpts = append(svcOpts, runview.WithUsageCapSource(s.usageCapSource))
 		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {

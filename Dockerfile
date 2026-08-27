@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # Iterion container image. Multi-stage:
 #   1. studio-builder — vite build of the React studio → dist/
 #   2. go-builder     — go build (vendor mode, CGO disabled, ldflags
@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/app/studio/node_modules/.vite \
 # --platform=$BUILDPLATFORM: run the Go toolchain on the builder's native arch and
 # CROSS-compile to the target (CGO is off, so this is free) — never emulate the Go
 # compile for an arm64 target. TARGETOS/TARGETARCH are injected by buildx.
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS go-builder
 WORKDIR /src
 ARG VERSION=0.0.0
 ARG COMMIT=unknown
@@ -100,7 +100,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
 # ---------------------------------------------------------------------
-FROM debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
+FROM debian:12-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
 
 # NOTE: the VERSION/COMMIT ARGs are consumed at the BOTTOM of this stage (just
 # above the iterion binary COPY). COMMIT changes on every push; declaring it

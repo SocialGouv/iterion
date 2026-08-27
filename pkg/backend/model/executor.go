@@ -142,6 +142,15 @@ type ClawExecutor struct {
 	// the windows it watches are the credential's, not a node's.
 	usageGuard *usagecap.Guard
 
+	// routeCooldowns remembers fallback-chain elements that a provider has
+	// refused until a known reset instant. It is executor-local (therefore
+	// shared by every node in the run) and concurrency-safe for parallel
+	// branches. Unknown reset instants are never recorded: dispatch stays
+	// fail-open when the provider did not say when the route revives.
+	routeCooldowns routeCooldownLedger
+	// now is a test seam for cooldown expiry. Nil means time.Now.
+	now func() time.Time
+
 	// sandbox is the live [sandbox.Run] for the current iterion run,
 	// or nil when the workflow doesn't activate a sandbox. The engine
 	// calls SetSandbox after the run starts; backends and tool nodes
@@ -569,7 +578,15 @@ func (e *ClawExecutor) bindInboxDrain(ctx context.Context) func() []string {
 	if hook == nil {
 		return nil
 	}
-	return func() []string { return hook.Drain(ctx) }
+	return func() []string {
+		// The previous batch reached the model on the turn in between —
+		// promote it delivered → consumed before draining the next, the
+		// same cadence claw's consumeAndDrainInbox keeps. Without this,
+		// claude_code/pi messages park at "delivered" forever and the
+		// studio chat never shows them consumed.
+		hook.Consume(ctx)
+		return hook.Drain(ctx)
+	}
 }
 
 // bindAsyncAsk threads the per-(run,node) async-question closures onto
@@ -690,9 +707,12 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		wfCapabilities:       wf.Capabilities,
 		wfSkills:             wf.Skills,
 		botID:                wf.Name,
-		sessions:             newNodeSessionStore(),
-		vars:                 seed,
-		detector:             detect.NewCachedDetector(5 * time.Minute),
+		routeCooldowns: routeCooldownLedger{
+			disabled: routeCooldownDisabled(os.Getenv(routeCooldownModeEnv)),
+		},
+		sessions: newNodeSessionStore(),
+		vars:     seed,
+		detector: detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)

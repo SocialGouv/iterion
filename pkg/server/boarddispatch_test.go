@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,20 +26,35 @@ type fakeBoardCoord struct {
 	claimed  map[string]string
 	states   map[string]string
 	claimErr map[string]error
+	stateErr map[string]error
 }
 
 func newFakeBoardCoord(cands ...boardmongo.Candidate) *fakeBoardCoord {
-	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}}
+	return &fakeBoardCoord{cands: cands, claimed: map[string]string{}, states: map[string]string{}, claimErr: map[string]error{}, stateErr: map[string]error{}}
 }
 
-func (f *fakeBoardCoord) ListEligible(_ context.Context, _ []string, _ int) ([]boardmongo.Candidate, error) {
+// ListEligible honours the real coordinator's contract — unclaimed cards in
+// one of the requested states, capped — so a caller sweeping the wrong state
+// list (or ignoring the claim filter) fails here instead of passing
+// vacuously. The UpdatedAt ordering (newestFirst) is exercised against the
+// real store in boardmongo's conformance suite, not here: the fake carries
+// no timestamps.
+func (f *fakeBoardCoord) ListEligible(_ context.Context, states []string, limit int, _ bool) ([]boardmongo.Candidate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []boardmongo.Candidate
 	for _, c := range f.cands {
-		if f.claimed[c.Issue.ID] == "" {
-			out = append(out, c)
+		state := c.Issue.State
+		if moved, ok := f.states[c.Issue.ID]; ok {
+			state = moved // a SetState since construction wins, like the real store
 		}
+		if f.claimed[c.Issue.ID] != "" || !slices.Contains(states, state) {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -58,8 +74,11 @@ func (f *fakeBoardCoord) Claim(_ context.Context, _, id, marker string) error {
 
 func (f *fakeBoardCoord) SetState(_ context.Context, _, id, state string) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.stateErr[id]; err != nil {
+		return err
+	}
 	f.states[id] = state
-	f.mu.Unlock()
 	return nil
 }
 
@@ -393,18 +412,34 @@ func TestProcessBoardCardCarriesPRLaunchContext(t *testing.T) {
 	// Wait for the run to SETTLE, not merely to exist: reading run.json the
 	// moment it appears leaves the engine's goroutines writing into the temp
 	// store while cleanup removes it.
-	var inputs map[string]any
+	var settled *store.Run
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
 		if ids, lerr := rs.ListRuns(ctx); lerr == nil && len(ids) > 0 {
 			if run, rerr := rs.LoadRun(ctx, ids[0]); rerr == nil && run.Status.IsTerminal() {
-				inputs = run.Inputs
+				settled = run
 				break
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if inputs == nil {
+	if settled == nil {
 		t.Fatal("no run settled from the card")
+	}
+	inputs := settled.Inputs
+
+	// The run must persist its card as SourceRef (Rf72821): the fork-adoption
+	// sweep resolves an issue's runs through the indexed ListRunsBySourceIssue
+	// reverse edge, which exists only if the board launch stamps
+	// Source.IssueID — the card→run SetLastRun stamp alone leaves the sweep's
+	// search empty forever.
+	if settled.Source == nil || settled.Source.IssueID != "card1" {
+		t.Fatalf("run.Source = %+v, want the dispatched card stamped (IssueID=card1)", settled.Source)
+	}
+	if settled.Source.Kind != store.RunSourceKindDispatcher {
+		t.Errorf("run.Source.Kind = %q, want %q (the cloud board dispatcher IS a dispatcher launch)", settled.Source.Kind, store.RunSourceKindDispatcher)
+	}
+	if ids, err := rs.ListRunsBySourceIssue(ctx, "card1"); err != nil || len(ids) != 1 || ids[0] != settled.ID {
+		t.Errorf("ListRunsBySourceIssue(card1) = %v, %v — the sweep's reverse edge must resolve the board-dispatched run", ids, err)
 	}
 
 	if got, _ := inputs["gate_context"].(string); got != "iterion/review" {
@@ -514,5 +549,401 @@ func TestApplyPRLaunchContextPrecedence(t *testing.T) {
 	}
 	if _, ok := out["gate_context"]; ok {
 		t.Error("no pr_url: no repo policy to apply")
+	}
+}
+
+// TestBoardDispatcher_SweepAdoptsFinishedFork: a cloud card stranded on a
+// DEAD pointer — in_progress because its dispatcher replica died mid-run and
+// nothing ever moved it on, or blocked because the run failed — is never
+// touched again: tick only claims Ready cards, and a recovery fork never
+// becomes LastRunID on its own. The projection already lets the finished
+// fork replace its parent on the card (#377); the sweep must converge the
+// TICKET with that view: adopt the issue's newest fork that ACTUALLY
+// finished (FinishedAt != nil — a parked shell delivered nothing), then file
+// the card done. A card whose own pointer finished cleanly is filed
+// outright. Live pointers, pointer-less cards and forkless failures stay
+// put. Cloud parity with the local reconcileFinishedTickets (#379).
+func TestBoardDispatcher_SweepAdoptsFinishedFork(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(50 * time.Minute)
+	card := func(id, state, runID string) boardmongo.Candidate {
+		return boardmongo.Candidate{Tenant: "t1", Issue: native.Issue{ID: id, State: state, LastRunID: runID}}
+	}
+	src := func(issueID string) *store.RunSource { return &store.RunSource{IssueID: issueID} }
+	f := newFakeBoardCoord(
+		card("native:stuck", native.StateInProgress, "run-dead"),
+		card("native:blocked", native.StateBlocked, "run-dead2"),
+		card("native:live", native.StateInProgress, "run-live"),
+		card("native:forkless", native.StateInProgress, "run-dead3"),
+		card("native:finished", native.StateInProgress, "run-fin"),
+		// blocked + finished pointer: an operator dragged a done card to
+		// Blocked to flag a bad outcome — the direct-file branch must not
+		// override that placement (R751dc1); only in_progress is the
+		// dispatcher's own orphan window.
+		card("native:blockedfin", native.StateBlocked, "run-fin2"),
+		card("native:noptr", native.StateInProgress, ""),
+	)
+	statuses := map[string]store.RunStatus{
+		"run-dead":  store.RunStatusFailed,
+		"run-dead2": store.RunStatusFailed,
+		"run-dead3": store.RunStatusFailed,
+		"run-live":  store.RunStatusRunning,
+		"run-fin":   store.RunStatusFinished,
+		"run-fin2":  store.RunStatusFinished,
+	}
+	pointers := map[string]*store.Run{
+		"run-dead":  {ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older},
+		"run-dead2": {ID: "run-dead2", Status: store.RunStatusFailed, CreatedAt: older},
+		"run-dead3": {ID: "run-dead3", Status: store.RunStatusFailed, CreatedAt: older},
+	}
+	byIssue := map[string][]*store.Run{
+		"native:stuck": {
+			{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:stuck")},
+			{ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(30 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead", WorkDir: "/wt/fork", Source: src("native:stuck")},
+			// Newer but parked: cancelled via Fork()'s initial SaveRun, no
+			// FinishedAt — must not win over the fork that really finished.
+			{ID: "run-fork-parked", Status: store.RunStatusCancelled, CreatedAt: older.Add(40 * time.Minute),
+				ForkedFrom: "run-fork", Source: src("native:stuck")},
+		},
+		"native:blocked": {
+			{ID: "run-dead2", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:blocked")},
+			{ID: "run-fork2", Status: store.RunStatusFinished, CreatedAt: older.Add(20 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead2", Source: src("native:blocked")},
+		},
+		"native:forkless": {
+			{ID: "run-dead3", Status: store.RunStatusFailed, CreatedAt: older, Source: src("native:forkless")},
+		},
+	}
+
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(_ context.Context, _, runID string) (store.RunStatus, error) {
+		return statuses[runID], nil
+	}
+	d.runFor = func(_ context.Context, _, runID string) (*store.Run, error) {
+		r, ok := pointers[runID]
+		if !ok {
+			return nil, fmt.Errorf("run %s not found", runID)
+		}
+		return r, nil
+	}
+	var searches int
+	d.issueRuns = func(_ context.Context, _, issueID string) ([]*store.Run, error) {
+		searches++
+		return byIssue[issueID], nil
+	}
+	var amu sync.Mutex
+	adopted := map[string][2]string{}
+	d.adoptRun = func(_, cardID, runID, workdir string) error {
+		amu.Lock()
+		adopted[cardID] = [2]string{runID, workdir}
+		amu.Unlock()
+		return nil
+	}
+
+	d.sweepForkAdoptions(context.Background())
+
+	for _, id := range []string{"native:stuck", "native:blocked", "native:finished"} {
+		if got := f.states[id]; got != native.StateDone {
+			t.Errorf("card %s state = %q, want %q", id, got, native.StateDone)
+		}
+	}
+	if got := adopted["native:stuck"]; got != [2]string{"run-fork", "/wt/fork"} {
+		t.Errorf("native:stuck adoption = %v, want the finished fork with its workdir", got)
+	}
+	if got := adopted["native:blocked"]; got != [2]string{"run-fork2", ""} {
+		t.Errorf("native:blocked adoption = %v, want run-fork2", got)
+	}
+	// A card whose own pointer finished is filed without an adoption.
+	if _, ok := adopted["native:finished"]; ok {
+		t.Errorf("native:finished must be filed outright, not adopted: %v", adopted["native:finished"])
+	}
+	// Live pointer, missing pointer, forkless failure — and a BLOCKED card
+	// whose pointer finished (an operator placement, not a dispatcher
+	// orphan; R751dc1) — stay put.
+	for _, id := range []string{"native:live", "native:noptr", "native:forkless", "native:blockedfin"} {
+		if got, moved := f.states[id]; moved {
+			t.Errorf("card %s must stay put, was moved to %q", id, got)
+		}
+	}
+	if searches != 3 {
+		t.Errorf("fork searches = %d, want 3 (stuck, blocked, forkless — one per stuck card)", searches)
+	}
+
+	// A second sweep within the TTL must not re-search an issue that turned
+	// up nothing to adopt — an abandoned failure is the RESTING state of a
+	// board, not a reason to pay an indexed query per card per tick.
+	d.sweepForkAdoptions(context.Background())
+	if searches != 3 {
+		t.Errorf("fork searches after a 2nd sweep = %d, want 3 (negative results memoized for the TTL)", searches)
+	}
+
+	// Nil wiring (sweep disabled) must be a hard no-op, not a panic.
+	d2 := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d2.sweepForkAdoptions(context.Background())
+}
+
+// TestBoardDispatcher_SweepMemoizesUnreadablePointer: a card whose LastRunID
+// no longer resolves (the run was pruned or deleted) fails statusFor on
+// every tick — permanently. The memo must be written BEFORE the read, or
+// exactly the cards it exists to bound pay one run load per 5s tick forever
+// (R08601b).
+func TestBoardDispatcher_SweepMemoizesUnreadablePointer(t *testing.T) {
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:pruned", State: native.StateBlocked, LastRunID: "run-gone"},
+	})
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	var reads int
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		reads++
+		return "", errors.New("run run-gone not found (pruned)")
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) { return nil, errors.New("gone") }
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+
+	d.sweepForkAdoptions(context.Background())
+	d.sweepForkAdoptions(context.Background())
+
+	if reads != 1 {
+		t.Errorf("statusFor reads across two sweeps = %d, want 1 (an unreadable pointer must be memoized for the TTL, not re-read per tick)", reads)
+	}
+	if got, moved := f.states["native:pruned"]; moved {
+		t.Errorf("unreadable pointer must leave the card in place, was moved to %q", got)
+	}
+}
+
+// TestBoardDispatcher_SweepSaturationWarnDedups: the listing-cap warning
+// fires once per condition EDGE, not per 5s tick (~17k identical lines/day
+// otherwise), and re-arms when the board drops back under the cap (R0544a9).
+func TestBoardDispatcher_SweepSaturationWarnDedups(t *testing.T) {
+	cands := make([]boardmongo.Candidate, sweepCardLimit)
+	for i := range cands {
+		cands[i] = boardmongo.Candidate{
+			Tenant: "t1",
+			Issue:  native.Issue{ID: fmt.Sprintf("native:%d", i), State: native.StateBlocked},
+		}
+	}
+	f := newFakeBoardCoord(cands...)
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) { return "", errors.New("x") }
+	d.runFor = func(context.Context, string, string) (*store.Run, error) { return nil, errors.New("x") }
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) { return nil, nil }
+	d.adoptRun = func(string, string, string, string) error { return nil }
+
+	d.sweepForkAdoptions(context.Background())
+	if !d.saturationWarned {
+		t.Fatal("a full listing window must flag saturation")
+	}
+	d.sweepForkAdoptions(context.Background())
+	if !d.saturationWarned {
+		t.Fatal("saturation must stay flagged while the condition holds")
+	}
+
+	// Drop under the cap: the flag resets so the next saturation warns again.
+	f.mu.Lock()
+	f.cands = f.cands[:sweepCardLimit-1]
+	f.mu.Unlock()
+	d.sweepForkAdoptions(context.Background())
+	if d.saturationWarned {
+		t.Fatal("dropping under the cap must reset the saturation flag")
+	}
+}
+
+// TestBoardDispatcher_SweepRevertsAdoptionOnFilingFailure: adoptRun then
+// SetState(done) are two writes; if the second fails the card would be
+// HALF-adopted — blocked, pointer reading finished — and the
+// operator-placement guard would skip it on every later pass, stranding it
+// forever with a mutated pointer (R716c91). The sweep must revert the
+// pointer to the dead parent so the next TTL retries the adoption as a
+// unit.
+func TestBoardDispatcher_SweepRevertsAdoptionOnFilingFailure(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(30 * time.Minute)
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:stuck", State: native.StateBlocked, LastRunID: "run-dead", LastWorkdir: "/wt/dead"},
+	})
+	f.stateErr["native:stuck"] = errors.New("transition rejected: no done column")
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		return store.RunStatusFailed, nil
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) {
+		return &store.Run{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older}, nil
+	}
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) {
+		return []*store.Run{
+			{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older,
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+			{ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(10 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead", WorkDir: "/wt/fork",
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+		}, nil
+	}
+	var stamps [][2]string
+	d.adoptRun = func(_, _, runID, workdir string) error {
+		stamps = append(stamps, [2]string{runID, workdir})
+		return nil
+	}
+
+	d.sweepForkAdoptions(context.Background())
+
+	want := [][2]string{{"run-fork", "/wt/fork"}, {"run-dead", "/wt/dead"}}
+	if len(stamps) != 2 || stamps[0] != want[0] || stamps[1] != want[1] {
+		t.Errorf("stamps = %v, want adopt-then-revert %v", stamps, want)
+	}
+	if got, moved := f.states["native:stuck"]; moved {
+		t.Errorf("filing failed — the card must not move, was set to %q", got)
+	}
+}
+
+// TestBoardDispatcher_SweepSkipsFilingOnStampFailure: done is terminal for
+// the sweep ({in_progress, blocked} is all it lists), so a card filed done
+// while SetLastRun failed would show a Done card pointing at the FAILED
+// parent forever — no later tick revisits it. A stamp error must therefore
+// skip the SetState, mirroring the local twin's guard
+// (pipeline_admission.go). Re9efb2.
+func TestBoardDispatcher_SweepSkipsFilingOnStampFailure(t *testing.T) {
+	older := time.Now().Add(-time.Hour)
+	ended := older.Add(30 * time.Minute)
+	f := newFakeBoardCoord(boardmongo.Candidate{
+		Tenant: "t1",
+		Issue:  native.Issue{ID: "native:stuck", State: native.StateInProgress, LastRunID: "run-dead"},
+	})
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("the fork-adoption sweep must never dispatch a card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(context.Context, string, string) (store.RunStatus, error) {
+		return store.RunStatusFailed, nil
+	}
+	d.runFor = func(context.Context, string, string) (*store.Run, error) {
+		return &store.Run{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older}, nil
+	}
+	d.issueRuns = func(context.Context, string, string) ([]*store.Run, error) {
+		return []*store.Run{
+			{ID: "run-dead", Status: store.RunStatusFailed, CreatedAt: older,
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+			{ID: "run-fork", Status: store.RunStatusFinished, CreatedAt: older.Add(10 * time.Minute),
+				FinishedAt: &ended, ForkedFrom: "run-dead",
+				Source: &store.RunSource{IssueID: "native:stuck"}},
+		}, nil
+	}
+	d.adoptRun = func(string, string, string, string) error {
+		return errors.New("mongo blip")
+	}
+
+	d.sweepForkAdoptions(context.Background())
+
+	if got, moved := f.states["native:stuck"]; moved {
+		t.Errorf("stamp failed but the card was filed to %q — it now points at the dead parent and can never self-heal", got)
+	}
+}
+
+// TestBoardIssueRuns: the fork-adoption sweep reads an issue's runs through
+// the indexed card←run reverse edge (ListRunsBySourceIssue), tenant-scoped
+// like every other cloud board read — never a full run-store scan.
+func TestBoardIssueRuns(t *testing.T) {
+	rs, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := runview.NewService("", runview.WithStore(rs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.runs = svc
+
+	ctx := context.Background()
+	ended := time.Now()
+	for _, r := range []*store.Run{
+		{ID: "run-a", WorkflowName: "wf", Status: store.RunStatusFailed, Source: &store.RunSource{IssueID: "native:1"}},
+		{ID: "run-b", WorkflowName: "wf", Status: store.RunStatusFinished, FinishedAt: &ended,
+			ForkedFrom: "run-a", Source: &store.RunSource{IssueID: "native:1"}},
+		{ID: "run-c", WorkflowName: "wf", Status: store.RunStatusFinished, FinishedAt: &ended,
+			Source: &store.RunSource{IssueID: "native:2"}},
+	} {
+		if err := rs.SaveRun(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runs, err := s.boardIssueRuns(ctx, "t1", "native:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range runs {
+		got[r.ID] = true
+	}
+	if !got["run-a"] || !got["run-b"] || got["run-c"] || len(runs) != 2 {
+		t.Errorf("boardIssueRuns(native:1) = %v, want exactly run-a and run-b", got)
+	}
+
+	// boardRun serves the full record (CreatedAt orders fork candidates).
+	full, err := s.boardRun(ctx, "t1", "run-b")
+	if err != nil || full == nil || full.ForkedFrom != "run-a" {
+		t.Errorf("boardRun(run-b) = %+v, %v", full, err)
+	}
+
+	// Unwired server: an error, not a panic.
+	if _, err := (&Server{}).boardIssueRuns(ctx, "t1", "native:1"); err == nil {
+		t.Error("boardIssueRuns without a run service should error")
+	}
+	if _, err := (&Server{}).boardRun(ctx, "t1", "run-b"); err == nil {
+		t.Error("boardRun without a run service should error")
+	}
+}
+
+// TestAdoptCardRun: the fork-adoption stamp goes through the same
+// CloudBoardFor seam as stampCardLastRun but keeps the fork's workdir (the
+// run has already executed; LastWorkdir feeds the studio's inspect-the-diff
+// link — cf. R26faf1 on the local twin).
+func TestAdoptCardRun(t *testing.T) {
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := boardStore.Create(native.Issue{Title: "x", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+
+	if err := s.adoptCardRun("t1", iss.ID, "run-fork", "/wt/fork"); err != nil {
+		t.Fatalf("adoptCardRun: %v", err)
+	}
+	got, err := boardStore.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastRunID != "run-fork" || got.LastWorkdir != "/wt/fork" {
+		t.Fatalf("card pointer = (%q, %q), want (run-fork, /wt/fork)", got.LastRunID, got.LastWorkdir)
+	}
+	// A failed stamp must SURFACE (the sweep skips the done filing on it) —
+	// and so must a missing seam: a wiring that sweeps without the board
+	// seam must not file cards it cannot stamp. Only an empty run id is a
+	// no-op (nothing to stamp).
+	if err := s.adoptCardRun("t1", "native:no-such-card", "run-y", ""); err == nil {
+		t.Error("stamping a missing card must return the store error, got nil")
+	}
+	if err := (&Server{}).adoptCardRun("t1", iss.ID, "run-x", ""); err == nil {
+		t.Error("a missing CloudBoardFor seam must surface as an error, got nil")
+	}
+	if err := (&Server{}).adoptCardRun("t1", iss.ID, "", ""); err != nil {
+		t.Errorf("an empty run id is a no-op, got %v", err)
 	}
 }

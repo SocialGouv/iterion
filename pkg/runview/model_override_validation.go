@@ -30,7 +30,7 @@ func ValidateModelOverridePermissions(wf *ir.Workflow, overrides model.ModelOver
 			continue
 		}
 		permission := firstPermission(runPermission, llm.GetPermission(), wf.Permission, os.Getenv("ITERION_PERMISSION"))
-		if reason := ir.UngatedCrossingReason(backend, permission); reason != "" {
+		if reason := ir.UngatedCrossingReason(backend, permission, len(wf.PermissionAsk) > 0); reason != "" {
 			return fmt.Errorf("runview: model override for %s %q %s", llm.NodeKind(), llm.NodeID(), reason)
 		}
 	}

@@ -201,9 +201,7 @@ which tickets are being worked on right now. Behaviour:
 | Workspace create / runID mint fails    | Revert state, release claim                         |
 | Run cancelled (`context.Canceled`)     | Revert state, release claim, keep workspace         |
 | Run failed (non-cancel)                | Revert state, release claim, schedule retry         |
-| Run finished cleanly (`err == nil`)    | **No revert.** The workflow has either moved the   |
-|                                        | state itself (e.g. docs-refresh → `review`) or the     |
-|                                        | operator wants to inspect it in `running_state`.    |
+| Run finished cleanly (`err == nil`)    | **No revert.** If the workflow moved the state itself (docs-refresh → `review`), that is honoured. If it left the card in `running_state`, the dispatcher moves it to `agent.completed_state` (default `review`) — see `maybeTransitionToCompleted`. |
 | Daemon shutdown (Ctrl+C, SIGTERM)      | Revert each in-flight ticket's transition           |
 
 Every revert is **best-effort** and protected by a `RefreshStates`
@@ -277,6 +275,51 @@ The timer callback posts `cmdRetryDue{issueID}` on the actor channel
 and the next tick reconsiders the candidate (which may by then have
 moved out of the eligible set — fine, the dispatcher releases without
 re-dispatching).
+
+### Terminal-state keys
+
+Three `agent.*` keys decide where a ticket lands, each with a `none`
+opt-out:
+
+| Key | Default | When it applies |
+|---|---|---|
+| `completed_state` | `review` | The run finished cleanly and the workflow left the card in `running_state`. |
+| `merged_state` | `done` | The run's branch is merged from the studio — the canonical lifecycle is `review → merged → done`. Without it, merged issues sit in `completed_state` forever and the operator closes each one by hand. |
+| `failed_state` | `blocked` | `max_attempts` was reached (below). |
+
+A board that does not define the target state refuses the move; the
+failure is logged and non-fatal, so custom boards degrade rather than
+break, and no operator is forced to opt out explicitly.
+
+### Giving up (`agent.max_attempts`)
+
+`agent.max_attempts` defaults to **10** — with the 5-minute backoff cap
+that is on the order of tens of minutes of retries, enough to ride out a
+transient provider outage. A **negative** value retries forever.
+
+Once `agent.max_attempts` is reached the dispatcher **gives up**: it moves the
+issue to `agent.failed_state` (default `blocked`) and drops the retry, so a
+doomed ticket stops burning model spend. If the board cannot represent that
+state the move is refused and the unbounded retry is kept instead — a ticket is
+never frozen in place.
+
+A successful give-up also **stamps** the issue (`Issue.gave_up` — the run, the
+state written, the attempt count — plus an `issue_gave_up` event). The stamp
+exists because the give-up's target and the board's own Close target are the
+same terminal state: without it, readers cannot tell a dispatcher that ran out
+of attempts from an operator who filed the ticket, and the /pipelines board
+buries the failure in Closed instead of raising it in **Needs attention**
+([native tracker](native-tracker.md#pipeline-board-the-second-board)). It is not stamped when
+the terminal move was refused — a give-up that fell back to retrying has not
+given up.
+
+The stamp expires on its own and for good: it names a run and a state, and each
+store drops it on any write in a different state. Since a retry resumes the
+*same* run id, a merely-stale stamp would otherwise revive when a human filed
+the ticket back into that state. Closing a ticket that is already sitting in
+the give-up's state changes nothing, so the three close surfaces — the pipeline
+board's Close, `iterion issue close`, and the board tool `close_issue` — clear
+the stamp explicitly.
 
 ## Workspace lifecycle
 
@@ -754,10 +797,15 @@ and refuses to dispatch issues marked by anyone else.
 - Hot-reload is your friend during workflow iteration: tweak
   `dispatch.vars`, save, watch the next dispatch pick up the new
   prompt without restarting the daemon.
-- The dispatcher does not auto-transition issues on success. Your
-  workflow should call `iterion issue move <id> --to done` (or
-  equivalent for external trackers) if you want the issue to leave
-  the eligible set.
+- The dispatcher **does** auto-transition on success. If the workflow
+  left the card in `running_state`, the dispatcher moves it to
+  `agent.completed_state` (default `review`). This is load-bearing, not
+  a convenience: `running_state` is `eligible: true` on the default
+  board so a crash can be recovered, and without the transition a
+  workflow that never moves the card would be re-picked on every poll
+  and burn model spend indefinitely. A workflow that moves the state
+  itself (`iterion issue move <id> --to done`, or a board-capable bot)
+  is left alone. Opt out with `completed_state: none`.
 
 ## Deferred to v2
 

@@ -153,6 +153,16 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 	if err != nil {
 		return fmt.Errorf("secrets: unseal: %w", err)
 	}
+	// Legacy records predate the subscription fingerprint: stamp it from
+	// the CURRENT payload once — every later refresh preserves it, so the
+	// identity is stable from here on. Records stamped at connect time
+	// are left untouched: a refresh is the same subscription. Same
+	// derivation as the connect path, so a self-healed record and a
+	// re-connected one land on the SAME meter wherever the payload names
+	// an account.
+	if rec.Fingerprint == "" {
+		rec.Fingerprint = SubscriptionFingerprint(rec.Kind, payload)
+	}
 	now := time.Now().UTC()
 	switch rec.Kind {
 	case OAuthKindClaudeCode:

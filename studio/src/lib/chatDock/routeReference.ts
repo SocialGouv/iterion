@@ -39,6 +39,15 @@ export interface TypedReference {
   // Short human label for the pinned chip. The operator must be able to
   // read what the assistant is assumed to be looking at.
   label: string;
+  // Set when the route ADDRESSES an entity but its id did not survive
+  // minting, so this is the surrounding view instead. The distinction is
+  // invisible on screen — the page still shows the run — which is exactly
+  // why it is recorded: it is the one case where what the assistant was
+  // told is coarser than what the operator is looking at.
+  //
+  // Only the route path sets it. A dropped reference has no "route that
+  // meant something more specific" to fall short of.
+  degraded?: true;
 }
 
 // A reference reaches the assistant inside ONE delimited line — see
@@ -229,6 +238,22 @@ function viewRef(id: string, label: string): TypedReference {
   return { kind: "view", ref: `view/${id}`, label };
 }
 
+// orView is the fallback every entity route takes when its id does not
+// mint — and the ONE place that marks the result degraded.
+//
+// Written as a helper rather than repeated `?? viewRef(…)` because the
+// mark is easy to forget and impossible to notice: the operator sees the
+// run they are on either way, and only the pointer quietly loses it.
+// Reserve it for a route that genuinely aimed at an entity — bare
+// /editor is the picker, which points at nothing by design, not by
+// failure.
+function orView(
+  entity: TypedReference | null,
+  fallback: TypedReference,
+): TypedReference {
+  return entity ?? { ...fallback, degraded: true };
+}
+
 // Run ids are long; the chip shows a recognisable head.
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
@@ -269,18 +294,22 @@ const ROUTE_RULES: readonly RouteRule[] = [
   {
     path: "/runs/:id",
     build: (p) =>
-      ref("run", p("id"), `Run ${shortId(p("id"))}`) ??
-      viewRef("runs", "Runs"),
+      orView(
+        ref("run", p("id"), `Run ${shortId(p("id"))}`),
+        viewRef("runs", "Runs"),
+      ),
   },
   { path: "/runs", build: viewRef("runs", "Runs") },
 
   {
     path: "/pipelines/cards/:kind/:id",
     build: (p) =>
-      (p("kind") === "run"
-        ? ref("run", p("id"), `Run ${shortId(p("id"))}`)
-        : ref("card", p("id"), `Card ${shortId(p("id"))}`)) ??
-      viewRef("pipelines", "Pipelines"),
+      orView(
+        p("kind") === "run"
+          ? ref("run", p("id"), `Run ${shortId(p("id"))}`)
+          : ref("card", p("id"), `Card ${shortId(p("id"))}`),
+        viewRef("pipelines", "Pipelines"),
+      ),
   },
   { path: "/pipelines", build: viewRef("pipelines", "Pipelines") },
 
@@ -293,8 +322,9 @@ const ROUTE_RULES: readonly RouteRule[] = [
     path: "/bots/:name",
     build: (p) => {
       const name = p("name");
-      if (!BOT_SLUG.test(name)) return viewRef("bots", "Bots");
-      return ref("bot", name, name) ?? viewRef("bots", "Bots");
+      const fallback = viewRef("bots", "Bots");
+      if (!BOT_SLUG.test(name)) return orView(null, fallback);
+      return orView(ref("bot", name, name), fallback);
     },
   },
   { path: "/bots", build: viewRef("bots", "Bots") },
@@ -305,14 +335,21 @@ const ROUTE_RULES: readonly RouteRule[] = [
     path: "/editor",
     build: (_p, search) => {
       const file = search.get("file");
+      // Bare /editor is not a failure: the picker points at nothing
+      // because there is nothing to point at. Only a ?file= that did not
+      // mint is a pointer the operator lost without seeing it.
       if (!file) return viewRef("editor", "Editor");
-      return ref("bot", file, basename(file)) ?? viewRef("editor", "Editor");
+      return orView(
+        ref("bot", file, basename(file)),
+        viewRef("editor", "Editor"),
+      );
     },
   },
 
   {
     path: "/repos/:key",
-    build: (p) => ref("repo", p("key"), p("key")) ?? viewRef("repos", "Repository"),
+    build: (p) =>
+      orView(ref("repo", p("key"), p("key")), viewRef("repos", "Repository")),
   },
 
   { path: "/skills", build: viewRef("skills", "Skills") },
@@ -343,6 +380,18 @@ export const ASSISTANT_ROUTE = "/whats-next";
 
 export function isAssistantOwnRoute(path: string): boolean {
   return path === ASSISTANT_ROUTE;
+}
+
+// The single answer to "does the dock render here". Every surface that
+// reserves or insets layout for the dock MUST ask this and not
+// isAssistantOwnRoute directly, or the shell reserves a column nothing fills.
+//
+// Only /whats-next today, and for a structural reason: that route already
+// renders this very session full-width, so the dock would be a second composer
+// over one conversation. A route the assistant is merely inconvenient on does
+// not belong here — the operator can close or dock it.
+export function dockStandsDown(path: string): boolean {
+  return isAssistantOwnRoute(path);
 }
 
 // matchPath returns the captured params, or null when the pattern
@@ -411,3 +460,46 @@ export function referenceForRoute(
   }
   return null;
 }
+
+// The reverse direction: from a reference back to the page it names.
+//
+// Used by the conversation strip to offer "back to what this is about". It is
+// an ALLOWLIST, not a formatter: a reference is attacker-influenceable (it can
+// come from a crafted URL the operator opened), and here it would become a
+// destination. Only the kinds with a known route are honoured, and the id is
+// re-encoded on the way out; anything else returns null and the offer is
+// simply not made.
+export function hrefForReference(reference: string): string | null {
+  const slash = reference.indexOf("/");
+  const kind = slash === -1 ? reference : reference.slice(0, slash);
+  const id = slash === -1 ? "" : reference.slice(slash + 1);
+  switch (kind) {
+    case "run":
+      return id ? `/runs/${encodeURIComponent(id)}` : null;
+    case "card":
+      return id ? `/board?card=${encodeURIComponent(id)}` : null;
+    case "bot":
+      return id ? `/editor?file=${encodeURIComponent(id)}` : null;
+    case "view":
+      // The view kinds the dock mints, and only those.
+      if (!Object.prototype.hasOwnProperty.call(VIEW_HREFS, id)) return null;
+      return VIEW_HREFS[id] ?? null;
+    default:
+      // `node/…` and `repo/…` have no page of their own to return to.
+      return null;
+  }
+}
+
+const VIEW_HREFS: Record<string, string> = {
+  board: "/board",
+  runs: "/runs",
+  bots: "/bots",
+  editor: "/editor",
+  pipelines: "/pipelines",
+  dispatcher: "/dispatcher",
+  marketplace: "/marketplace",
+  plugins: "/plugins",
+  skills: "/skills",
+  secrets: "/secrets",
+  automations: "/triggers",
+};

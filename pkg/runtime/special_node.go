@@ -229,6 +229,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
 		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		WorkDir:     e.workDir,
 	})
 	if err != nil {
 		return nil, &RuntimeError{

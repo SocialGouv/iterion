@@ -12,7 +12,7 @@ import (
 // set — which t.Setenv scopes to the test.
 func recordLocal(t *testing.T, util float64) {
 	t.Helper()
-	if err := processUsageStore().Record(t.Context(), usagecap.Key("", usagecap.ScopeLocal), usagecap.Reading{
+	if err := processUsageStore().Record(t.Context(), usagecap.Key("", usagecap.ScopeLocal, ""), usagecap.Reading{
 		Window:      usagecap.WindowSevenDay,
 		Utilization: util,
 		Status:      usagecap.StatusWarning,

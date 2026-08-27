@@ -369,6 +369,9 @@ function BotCard({
               {triggerCount} trigger{triggerCount === 1 ? "" : "s"}
             </Badge>
           )}
+          {bot.origin === "platform" && (
+            <Badge variant="warning">platform override</Badge>
+          )}
           {!bot.is_bundle && <Badge>single file</Badge>}
         </div>
       </button>

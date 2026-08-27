@@ -153,6 +153,24 @@ type WorkspaceExporter interface {
 	ExportWorkspace(ctx context.Context) error
 }
 
+// WorkspaceHeadCapturer is an optional interface a [Run] implements
+// ALONGSIDE [WorkspaceExporter] to report the git HEAD of the
+// sandbox-side workspace — the exact tree ExportWorkspace archives.
+//
+// It exists because the export is a copy, and a failed or stale copy
+// reads exactly like "nothing happened": a host workspace left at its
+// launch-time baseline is indistinguishable from a run that made no
+// commits. Capturing the sandbox-side HEAD just before the export gives
+// the post-run consumers (banking, git-meta recording) a truth to hold
+// the host tree against, so a lost export surfaces as a loud mismatch
+// instead of a silent no-op.
+//
+// Returns ("", nil) for a workspace-less run — nothing was populated,
+// so there is nothing an export could lose.
+type WorkspaceHeadCapturer interface {
+	CaptureWorkspaceHead(ctx context.Context) (string, error)
+}
+
 // WorkspaceFileRefresher is an optional interface a [Run] may implement
 // to rewrite a file INSIDE the sandbox workspace mid-run, addressed
 // relative to the workspace root.

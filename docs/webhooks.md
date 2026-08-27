@@ -92,11 +92,23 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   flag) deliberately do **not** re-trigger — auto-review on every push was
   found too noisy; cf.
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
-- **`Note Hook`** — on-demand re-review. Only acts when the note hangs
-  off an open MR **and** its first non-whitespace token is exactly
-  `/revi`. Quoting "please run /revi" mid-text does not trigger
-  (anti-oscillation guard;
+- **`Note Hook`** — the generic slash-command and conversation surface.
+  A note's first non-whitespace token is the command; quoting "please run
+  /revi" mid-text never triggers (anti-oscillation guard;
   [pkg/webhooks/gitlab/note.go:IsReviewCommand](../pkg/webhooks/gitlab/note.go)).
+  Four routes, in the order the handler tries them
+  ([pkg/server/webhooks_gitlab.go:259-345](../pkg/server/webhooks_gitlab.go)):
+  1. a `/command` on an **open issue** → the generic command handler
+     with `surface="issue"`, so the bot opens an MR back-linking the
+     issue. A non-command issue note is filtered.
+  2. any command **other than** `/revi` on an open MR → resolved through
+     the command registry to a bot + execution mode; an unknown command
+     is filtered.
+  3. `/revi` on an open MR → on-demand re-review. `/revi <question>`
+     routes to the conversation bot instead.
+  4. a plain reply **in a thread Revi is part of**, with no command at
+     all, when `revi-converse` is enabled — so "just replying" to Revi
+     works.
 - **`Issue Hook`** — adding a trigger label (e.g. `implement`) launches the
   webhook's bot, same as GitHub `issues` (below). GitLab has no `labeled`
   action, so the parser diffs `changes.labels` (previous→current) and fires
@@ -121,6 +133,10 @@ event paths trigger; ping / push / everything else is silently filtered
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
 - **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
+  — **plus `synchronize` when the webhook sets `review_on_sync`**, so a push
+  to the head re-reviews and the `revi/review` status re-evaluates on the new
+  head SHA (this is what makes a required check track the fixed revision; see
+  [merge-gate.md](merge-gate.md))
   → PR auto-**review** (Revi / `review-pr`). This lane is **review-only**: a
   PR-open NEVER auto-launches the mutating branch-improve loop (Billy) — see
   *PR auto-lane: review, not mutate* below. A **draft PR never auto-launches**
@@ -457,7 +473,7 @@ team admin (`canManageTeam`) for mutations; team membership
 | `GET` | `/api/teams/{id}/webhooks` | team member | List webhooks for the team |
 | `POST` | `/api/teams/{id}/webhooks` | team admin | Create + mint token (returned once) |
 | `GET` | `/api/teams/{id}/webhooks/{webhook_id}` | team member | Read a single webhook |
-| `PATCH` | `/api/teams/{id}/webhooks/{webhook_id}` | team admin | Update name/enabled/scope/rate/quota/vars/key_overrides |
+| `PATCH` | `/api/teams/{id}/webhooks/{webhook_id}` | team admin | Update name/enabled/scope/rate/quota/vars/key_overrides and the config keys below |
 | `DELETE` | `/api/teams/{id}/webhooks/{webhook_id}` | team admin | Remove (deliveries kept for audit) |
 | `POST` | `/api/teams/{id}/webhooks/{webhook_id}/rotate` | team admin | Rotate token + re-seal HMAC secret |
 | `GET` | `/api/teams/{id}/webhooks/{webhook_id}/deliveries` | team member | List recent deliveries (default 100) |
@@ -496,6 +512,25 @@ the handler-derived vars, so the operator's keys always win. Useful for:
 e.g. forcing `severity_threshold=high` on a security webhook, or pinning
 `pr_review_mode=summary` regardless of what the forge said (the review-pr
 enum is `inline|summary`, default `inline`).
+
+### Other `Config` keys settable through the CRUD API
+
+All live on [pkg/webhooks/types.go:Config](../pkg/webhooks/types.go) and
+are accepted by `POST` / `PATCH`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `review_on_sync` | `false` | Re-review on each push to a PR head, so a required status re-evaluates on the revision that fixed it. Required for a blocking [merge gate](merge-gate.md). |
+| `overlap` | *(empty = allow)* | Concurrency policy for runs this webhook launches, keyed on (webhook, subject, bot) — one PR's reviews, not the whole repo's. `allow` / `skip` / `supersede`. **Empty means allow**, not `pkg/schedgate`'s `skip` default: a webhook is event-driven and every delivery has always launched, so the gate applies only when explicitly set. `supersede` is the one worth setting alongside `review_on_sync` — three pushes in two minutes otherwise launch three runs, two of which review dead commits. |
+| `operator_launch_vars` | — | Vars layered **between** the handler-derived base and a bot's own rule vars (precedence: base < bot rule vars < these). Kept separate from `launch_vars` so co-enabling two bots that declare the same key does not make them share whichever value won. |
+| `secret_overrides` | — | Pins a stored secret per workflow-secret name, so several webhooks for the same bot can post under different forge tokens / bot identities. The secret twin of `key_overrides`. |
+| `retry_usage_window`, `retry_max_attempts`, `retry_max_wait`, `retry_jitter` | *(bot manifest, then machine default)* | The launch-surface layer of the [retry policy](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted) for a run that dies on an exhausted provider usage window. Only what is set here overrides the layers below. A webhook-launched run is often one an author is waiting on, so a shorter `max_wait` than a nightly's is usually right. |
+| `forge_base_url` | *(derived)* | Explicit forge base URL for a self-hosted instance. |
+| `block_fork_prs` | `false` | Persisted but **never read** by any launch path — see [merge-gate.md](merge-gate.md) for what actually guards fork PRs, which differs by provider. |
+
+`authorized_repliers` / `min_replier_role` gate who may talk back to a
+bot in a note thread — see
+[forge-conversations.md](forge-conversations.md).
 
 ### `branch_improve_as_pr` — how the branch-improvement bot lands its work
 

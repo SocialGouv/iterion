@@ -27,18 +27,31 @@ and it is still docked on `/runs`.
 `Escape` closes the floating panel. It is deliberately not a focus trap:
 the dock is a helper you consult while working, not a modal.
 
-## One session, everywhere
+## One session per correspondent, everywhere
 
-The dock and `/whats-next` are two views onto **one** session. Navigating
-between routes cannot start a second run or lose the transcript — the
-session is mounted above the route tree, so it is never unmounted by
-navigation.
+The session is mounted **above** the route tree, so navigating cannot start a
+second run or lose a transcript — that part is unconditional.
 
-The draft you are typing is shared too: start a sentence in the dock,
-open `/whats-next`, and it is still there.
+What the session is *pointed at* is the route's business, because there are
+**two lanes**:
+
+| Where | Who answers |
+| --- | --- |
+| `/whats-next` | **Nexie**, always — she is that tab's co-CTO and is not substitutable there |
+| every other route | the **dock's** correspondent: the general iterion assistant (Copi by default) |
+
+So a correspondent is not lost by navigating away: leave `/board` for
+`/whats-next` and back, and Copi's conversation is still the one in the dock.
+Each bot keeps its own run, and the draft you are typing is per session too.
+
+This is deliberately **not** one shared bot across both surfaces. That shape
+was wrong in both directions: Nexie occupied the dock on `/board` and `/runs`
+by default, and picking Copi for the dock made the "What's Next" tab answer as
+Copi. Pinned by
+[`AssistantRouteLane.test.tsx`](../studio/src/components/ChatDock/AssistantRouteLane.test.tsx).
 
 On `/whats-next` itself the dock stands down — that route already renders
-the same conversation full-width.
+Nexie's conversation full-width.
 
 If no session exists yet, the composer is still live: your first message
 starts one.
@@ -51,7 +64,14 @@ second one over it.
 
 ## Which bot answers
 
-The dock's correspondent is **discovered**, not hard-coded. A bot becomes
+The dock's correspondent is **discovered**, not hard-coded — with one
+structural exception: the bot that owns `/whats-next` is refused there, so a
+persisted selection naming it (or one left over from before the two lanes)
+resolves to the dock's default instead of putting Nexie back on `/board`
+(`resolveDockBot`). When Nexie is the only conversational bot a workspace has,
+the dock stands down rather than resurrect her; her own tab still works.
+
+A bot becomes
 a conversational bot by declaring a `chat:` block in its
 `manifest.yaml` — which node speaks, which one takes the reply, what the
 session launcher asks first:
@@ -160,11 +180,45 @@ Two things about it matter:
   crafted 200-character value was only recoverable from the tooltip.
   (Trade-off taken knowingly: a filename containing a space loses its
   chip and degrades to the plain view reference.)
-- **It is always visible.** The chip above the composer names what the
-  assistant is assumed to be looking at. Dismiss it with the ✕ and that
-  reference stops being sent — including if you navigate away and back —
-  while other pages still contribute their own. "Use this page as
-  context" puts it back.
+- **It is answerable on demand, and it speaks up when it is news.** The
+  reference used to be pinned open in a strip above the composer. That
+  was retired: you can already see what page you are on, so a permanent
+  line repeating it bought nothing — the same reasoning that already made
+  `/whats-next` contribute no reference at all ("you are looking at the
+  conversation" is noise), applied consistently.
+
+  What replaces it is an **eye in the composer row**
+  ([`ContextEye`](../studio/src/components/ChatDock/ContextEye.tsx)),
+  sitting beside the box you type in and costing no vertical space. Its
+  tooltip and accessible name carry the **wire form** — `Sending this
+  page as context: view/board` — so "what exactly is going out with this
+  message?" stays answerable, and clicking it stops that reference being
+  sent, including if you navigate away and back, while other pages still
+  contribute their own.
+
+  The strip
+  ([`ContextChip`](../studio/src/components/ChatDock/ContextChip.tsx))
+  still renders in the two cases the screen cannot tell you about on its
+  own, and `stripSpeaks` is the single predicate deciding which — the eye
+  is its exact complement, so only one control is ever on screen:
+
+  - **dismissed** — the absence of context is invisible by nature, so the
+    way back ("Use this page as context") has to be shown.
+  - **degraded** — the route addressed an entity and the pointer fell
+    back to the surrounding view. The page still shows you the run;
+    only the assistant lost it. The strip says so: *Couldn't identify
+    this page — the assistant only has `VIEW Runs`.*
+
+  Note where those two land relative to the paragraph above: a crafted
+  `/runs/<prose>` is exactly a *degraded* reference, so the surface that
+  used to truncate a hostile value inside a 380px column now **names the
+  refusal outright**. Visibility on the attacker path went up, not down;
+  what moved into a tooltip is the benign case, where the operator is
+  looking at the page anyway.
+
+  The mark itself is set in one place — `orView()` in `routeReference.ts`,
+  the fallback every entity route takes — rather than at each `??`, where
+  it is both easy to forget and impossible to notice.
 
 A route nobody mapped contributes **no** context rather than a guess.
 Home and `/whats-next` deliberately contribute none.
@@ -179,7 +233,7 @@ param), so it only arrives when something is dropped in explicitly.
 
 ## Dropping something in
 
-The page chip says where you are standing. Dragging says what you are
+The page reference says where you are standing. Dragging says what you are
 asking **about** — and the two travel as separate lines, because they
 mean different things to the bot:
 
@@ -210,8 +264,8 @@ draft and its pointers.
 **The pipeline board is deliberately partial.** Its rule is that card
 position is server-derived and launch-now is its only drag gesture, so
 only the cards that already drag carry a reference. A running or failed
-card is reached through the route's own context chip instead — opening
-its drawer puts `card/<id>` on the chip.
+card is reached through the route's own page reference instead — opening
+its drawer makes the page `card/<id>`.
 
 Adding a source is one helper, never a bespoke handler:
 

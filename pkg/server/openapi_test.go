@@ -99,7 +99,7 @@ func TestOpenAPITypedSchemas(t *testing.T) {
 	if ref, _ := schema["$ref"].(string); ref != "#/components/schemas/loginReq" {
 		t.Errorf("login requestBody $ref = %q, want loginReq", ref)
 	}
-	// 200 response schema present (authResponse).
+	// 200 response schema present (AuthMeResponse).
 	resp200, ok := login["responses"].(map[string]any)["200"].(map[string]any)
 	if !ok {
 		t.Fatalf("login has no 200 response: %+v", login["responses"])
@@ -114,7 +114,7 @@ func TestOpenAPITypedSchemas(t *testing.T) {
 		t.Fatalf("no components emitted")
 	}
 	schemas := comps["schemas"].(map[string]any)
-	for _, want := range []string{"loginReq", "authResponse", "createOrgReq", "orgView"} {
+	for _, want := range []string{"loginReq", "AuthMeResponse", "createOrgReq", "orgView"} {
 		if _, ok := schemas[want]; !ok {
 			t.Errorf("components.schemas missing %q", want)
 		}

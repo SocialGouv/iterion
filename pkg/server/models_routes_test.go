@@ -1,18 +1,28 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
-func getModels(t *testing.T, srv *Server, query string) (*httptest.ResponseRecorder, modelcatalog.Catalog) {
+func getModels(t *testing.T, srv *Server, query string, ctxs ...context.Context) (*httptest.ResponseRecorder, modelcatalog.Catalog) {
 	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/models"+query, nil)
+	if len(ctxs) > 0 && ctxs[0] != nil {
+		req = req.WithContext(ctxs[0])
+	}
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/models"+query, nil))
+	srv.mux.ServeHTTP(rec, req)
 	var cat modelcatalog.Catalog
 	if rec.Code == http.StatusOK {
 		if err := json.Unmarshal(rec.Body.Bytes(), &cat); err != nil {
@@ -155,5 +165,183 @@ func TestDedupeSpecs(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func newCloudModelsServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
+	t.Helper()
+	keys := secrets.NewMemoryApiKeyStore()
+	oauth := secrets.NewMemoryOAuthStore()
+	srv := New(Config{
+		WorkDir:                 t.TempDir(),
+		SkipProjectRegistration: true,
+		DisableAuth:             true,
+		Mode:                    "cloud",
+		ApiKeys:                 keys,
+		OAuthForfait:            oauth,
+	}, iterlog.New(iterlog.LevelError, os.Stderr))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv, keys, oauth
+}
+
+func cloudIdentity(team, user string) context.Context {
+	return auth.WithIdentity(context.Background(), auth.Identity{
+		UserID: user,
+		TeamID: team,
+	})
+}
+
+func seedTeamKey(t *testing.T, store *secrets.MemoryApiKeyStore, team, user string, p secrets.Provider, secret string) {
+	t.Helper()
+	id := secrets.NewApiKeyID()
+	if err := store.Create(context.Background(), secrets.ApiKey{
+		ID:           id,
+		TenantID:     team,
+		ScopeTeamID:  team,
+		ScopeUserID:  user,
+		Provider:     p,
+		Name:         "test",
+		SealedSecret: []byte("sealed:" + secret),
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+}
+
+func seedOAuthKind(t *testing.T, st *secrets.MemoryOAuthStore, owner string, kind secrets.OAuthKind, token string) {
+	t.Helper()
+	if err := st.Upsert(context.Background(), secrets.OAuthRecord{
+		UserID:        owner,
+		Kind:          kind,
+		SealedPayload: []byte("sealed:" + token),
+	}); err != nil {
+		t.Fatalf("upsert oauth: %v", err)
+	}
+}
+
+// A tenant BYOK that the control-plane process does not hold must still
+// show as reachable. The picker used to read the server env and emit a
+// blocking "unreachable" that a cloud run would not hit.
+func TestGetModels_CloudTenantBYOKIsNotAFalseUnreachable(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-control-plane-only")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	srv, keys, _ := newCloudModelsServer(t)
+	const tenantSecret = "sk-tenant-openai-never-on-the-server"
+	seedTeamKey(t, keys, "team-a", "", secrets.ProviderOpenAI, tenantSecret)
+
+	rec, cat := getModels(t, srv, "?spec=openai/gpt-5.5&spec=anthropic/claude-opus-5", cloudIdentity("team-a", "alice"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if cat.Reachability != modelcatalog.ReachabilityCloud {
+		t.Errorf("catalog reachability = %q, want cloud", cat.Reachability)
+	}
+	gpt, ok := cat.Find("openai/gpt-5.5")
+	if !ok {
+		t.Fatal("missing openai/gpt-5.5")
+	}
+	if !gpt.Usable || gpt.Reachability != modelcatalog.ReachabilityCloud {
+		t.Errorf("tenant OpenAI BYOK must be cloud-proven usable: %+v", gpt)
+	}
+	if gpt.CredentialSource != "OPENAI_API_KEY" {
+		t.Errorf("credential_source = %q, want the env-var name", gpt.CredentialSource)
+	}
+	claude, _ := cat.Find("anthropic/claude-opus-5")
+	if claude.Usable {
+		t.Errorf("control-plane ANTHROPIC_API_KEY must not make claude usable for this tenant: %+v", claude)
+	}
+	if claude.Reachability != modelcatalog.ReachabilityUnknown {
+		t.Errorf("claude reachability = %q, want unknown (not host-unreachable)", claude.Reachability)
+	}
+	body := rec.Body.String()
+	if contains(body, tenantSecret) || contains(body, "sk-ant-control-plane-only") {
+		t.Fatalf("response leaked a credential value:\n%s", body)
+	}
+}
+
+// A user/org OAuth forfait absent from the server env must not produce a
+// false unreachable on Claude models — the publisher injects that blob.
+func TestGetModels_CloudTenantOAuthIsNotAFalseUnreachable(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	srv, _, oauth := newCloudModelsServer(t)
+	const oat = "sk-ant-oat-user-forfait"
+	seedOAuthKind(t, oauth, "alice", secrets.OAuthKindClaudeCode, oat)
+
+	rec, cat := getModels(t, srv, "?spec=anthropic/claude-opus-5", cloudIdentity("team-a", "alice"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	claude, _ := cat.Find("anthropic/claude-opus-5")
+	if !claude.Usable || claude.Reachability != modelcatalog.ReachabilityCloud {
+		t.Errorf("user claude_code forfait must be cloud-proven: %+v", claude)
+	}
+	if contains(rec.Body.String(), oat) {
+		t.Fatalf("response leaked the forfait token:\n%s", rec.Body.String())
+	}
+}
+
+// A server-process credential that the publisher will not inject must not
+// make the model look reachable to that tenant.
+func TestGetModels_CloudIgnoresControlPlaneEnv(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-control-plane-only")
+	t.Setenv("OPENAI_API_KEY", "sk-openai-control-plane-only")
+	srv, _, _ := newCloudModelsServer(t)
+
+	rec, cat := getModels(t, srv, "", cloudIdentity("team-empty", "bob"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, m := range cat.Models {
+		if m.Usable {
+			t.Errorf("%s is usable from control-plane env for a tenant with no keys: %+v", m.Spec, m)
+		}
+		if m.Reachability != modelcatalog.ReachabilityUnknown {
+			t.Errorf("%s reachability = %q, want unknown", m.Spec, m.Reachability)
+		}
+	}
+	body := rec.Body.String()
+	if contains(body, "sk-ant-control-plane-only") || contains(body, "sk-openai-control-plane-only") {
+		t.Fatalf("response leaked a control-plane credential:\n%s", body)
+	}
+}
+
+func TestGetModels_CloudWithoutIdentityStaysUnknown(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-control-plane-only")
+	srv, keys, _ := newCloudModelsServer(t)
+	seedTeamKey(t, keys, "team-a", "", secrets.ProviderAnthropic, "sk-tenant")
+
+	_, cat := getModels(t, srv, "?spec=anthropic/claude-opus-5")
+	claude, _ := cat.Find("anthropic/claude-opus-5")
+	if claude.Usable {
+		t.Errorf("unauthenticated cloud catalog must not use tenant or host creds: %+v", claude)
+	}
+	if claude.Reachability != modelcatalog.ReachabilityUnknown {
+		t.Errorf("reachability = %q, want unknown", claude.Reachability)
+	}
+}
+
+func TestGetModels_CloudPlatformKeyIsProven(t *testing.T) {
+	srv, keys, _ := newCloudModelsServer(t)
+	if err := keys.Create(context.Background(), secrets.ApiKey{
+		ID:           secrets.NewApiKeyID(),
+		TenantID:     secrets.PlatformTenantID,
+		ScopeTeamID:  secrets.PlatformTenantID,
+		Provider:     secrets.ProviderXAI,
+		Name:         "platform",
+		SealedSecret: []byte("sealed:platform-xai"),
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("platform key: %v", err)
+	}
+
+	_, cat := getModels(t, srv, "?spec=xai/grok-3", cloudIdentity("team-a", "alice"))
+	grok, _ := cat.Find("xai/grok-3")
+	if !grok.Usable || grok.Reachability != modelcatalog.ReachabilityCloud {
+		t.Errorf("platform xAI key is injected into the run, so grok must be cloud-proven: %+v", grok)
 	}
 }

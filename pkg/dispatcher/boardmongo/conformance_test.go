@@ -141,6 +141,47 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("SetAwaitingInput(false) not cleared: %+v", got)
 	}
 
+	// SetGaveUp records / clears the dispatcher's give-up stamp — the record
+	// that distinguishes an automatic give-up from an operator filing the
+	// same terminal state by hand. Both stores must round-trip the nested
+	// value, or the pipeline board's needs-attention lane is cloud-blind.
+	current, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get before SetGaveUp: %v", err)
+	}
+	if err := store.SetGaveUp(created.ID, &native.GiveUp{RunID: "run-1", State: current.State, Attempts: 3}); err != nil {
+		t.Errorf("SetGaveUp: %v", err)
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Errorf("Get after SetGaveUp: %v", err)
+	} else if got.GaveUp == nil || got.GaveUp.RunID != "run-1" || got.GaveUp.Attempts != 3 || got.GaveUp.At.IsZero() {
+		t.Errorf("give-up stamp not persisted: %+v", got.GaveUp)
+	} else if !got.GaveUp.Current(got.State, "run-1") {
+		t.Errorf("stamp does not describe the issue it was written on: state=%q stamp=%+v", got.State, got.GaveUp)
+	}
+	// Moving the ticket expires the stamp for good — both stores enforce it
+	// on their write path, or a returning ticket would resurrect a give-up.
+	if _, err := store.SetState(created.ID, native.StateBlocked); err != nil {
+		t.Errorf("SetState(blocked): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("stamp survived the ticket moving: %+v", got.GaveUp)
+	}
+	if _, err := store.SetState(created.ID, current.State); err != nil {
+		t.Errorf("SetState(back): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("stamp came back when the ticket returned to its state: %+v", got.GaveUp)
+	}
+	// And an explicit clear is a no-op on an unstamped issue.
+	if err := store.SetGaveUp(created.ID, nil); err != nil {
+		t.Errorf("SetGaveUp(nil): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.GaveUp != nil {
+		t.Errorf("SetGaveUp(nil) did not clear: %+v", got.GaveUp)
+	}
+
 	// List: filter by state + assignee; sort by priority.
 	_, _ = store.Create(native.Issue{Title: "second", State: native.StateReady, Priority: 9})
 	ready, err := store.List(native.ListFilter{States: []string{native.StateReady}})
@@ -536,7 +577,7 @@ func TestMongoStore_Conformance(t *testing.T) {
 			}
 		}
 	}
-	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50)
+	elig, eerr := coord.ListEligible(ctx, []string{native.StateReady}, 50, false)
 	if eerr != nil {
 		t.Fatalf("ListEligible: %v", eerr)
 	}
@@ -552,6 +593,27 @@ func TestMongoStore_Conformance(t *testing.T) {
 	}
 	if _, ok := gotTitles["claimed"]; ok {
 		t.Error("claimed card must not be eligible")
+	}
+
+	// Ordering contract: the dispatch tick lists oldest-updated first (FIFO
+	// fairness); the stranded-card sweep lists NEWEST first, so a capped
+	// window always contains the freshest strandings on a saturated board
+	// (R0544a9). ready-a was created before ready-b, so their UpdatedAt
+	// order is creation order. The count is FATAL: a stray ready+unclaimed
+	// card leaked by an earlier suite would otherwise silently void the
+	// ordering assertions below.
+	if len(elig) != 2 {
+		t.Fatalf("cross-tenant eligible count = %d (%v), want exactly ready-a + ready-b", len(elig), gotTitles)
+	}
+	if elig[0].Issue.Title != "ready-a" || elig[1].Issue.Title != "ready-b" {
+		t.Errorf("oldest-first order = [%s, %s], want [ready-a, ready-b]", elig[0].Issue.Title, elig[1].Issue.Title)
+	}
+	desc, derr := coord.ListEligible(ctx, []string{native.StateReady}, 1, true)
+	if derr != nil {
+		t.Fatalf("ListEligible newest-first: %v", derr)
+	}
+	if len(desc) != 1 || desc[0].Issue.Title != "ready-b" {
+		t.Errorf("newest-first capped window = %v, want the freshest card ready-b", desc)
 	}
 }
 

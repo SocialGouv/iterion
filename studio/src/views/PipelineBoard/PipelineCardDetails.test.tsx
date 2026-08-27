@@ -197,6 +197,30 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain('data-run-ids="run-ko"');
   });
 
+  it("a given-up card names the dispatcher as the one who filed the ticket", () => {
+    // The ticket reads terminal ("blocked") while the card sits in Needs
+    // attention. Without naming who filed it, the operator reads that state
+    // as somebody's decision and stops looking.
+    const html = render(
+      makeCard({
+        column_id: "needs_attention",
+        run_id: "run-dead",
+        issue_id: "iss-9",
+        issue_state: "blocked",
+        status: "failed_resumable",
+        failed: true,
+        error: "kaboom",
+        gave_up: { run_id: "run-dead", state: "blocked", attempts: 3 },
+      }),
+    );
+    expect(html).toContain("The dispatcher gave up after 3 attempts");
+    expect(html).toContain("kaboom"); // the underlying reason stays
+    // Retry must not be sold as "starts it over": a live dispatcher resumes
+    // the same dead run unless the last-run pointer is cleared first.
+    expect(html).toContain("--clear-last-run");
+    expect(html).not.toContain("Retry starts it over");
+  });
+
   it("successful Closed card shows inputs + result + produced elements", () => {
     const html = render(
       makeCard({

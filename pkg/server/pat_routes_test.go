@@ -124,6 +124,35 @@ func TestPATExpiryAndPins(t *testing.T) {
 		}
 	})
 
+	t.Run("team pin states the team's org", func(t *testing.T) {
+		if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{
+			ID: "t2", Name: "t2", Slug: "t2-slug", OrgID: "org-9", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.authStore().UpsertMembership(context.Background(), identity.Membership{
+			UserID: "u1", TeamID: "t2", Role: identity.RoleMember,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		s.handleCreatePAT(w, orgReq(ctx, "POST", "/api/me/tokens", `{"name":"org-stated","team_id":"t2"}`, ""))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create status = %d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			OrgID string `json:"org_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		// The server owns the team→org fact; clients (teams switch) align
+		// their org scope on this instead of re-deriving it client-side.
+		if resp.OrgID != "org-9" {
+			t.Fatalf("org_id = %q, want org-9", resp.OrgID)
+		}
+	})
+
 	t.Run("membership removal kills the PAT", func(t *testing.T) {
 		_, plaintext := createPAT(t, s, ctx, `{"name":"member-bound"}`)
 		if err := s.authStore().DeleteMembership(context.Background(), "u1", "t1"); err != nil {

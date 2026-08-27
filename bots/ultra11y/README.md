@@ -44,7 +44,9 @@ be reproducible without a model in the loop, or when you want a per-PR check.
 
 ## The pipeline
 
-One agent step. Everything that decides, counts or gates is a `tool` node.
+One *deciding* agent step. Everything that counts or gates is a `tool`
+node; the second agent, `publish`, only transcribes an issue set the
+engine already produced, de-duplicated and capped.
 
 ```
 prepare        DETERMINISTIC  resolve the PINNED engine — hard-fail if absent or
@@ -79,8 +81,10 @@ like.
 |---|---|---|
 | `engine_version` | `2.32.0` | the engine, **pinned**. `npx` would otherwise resolve `latest` and what runs could change with no commit anywhere |
 | `standard` | `""` | `""` = WCAG 2.2 AA core; `rgaa` = the French référentiel. A new country is an engine pack, not a DSL edit |
+| `scope_notes` | `""` | free-text scope hint from the operator or the dispatched issue |
 | `scope_globs` | `""` | empty = the whole workspace |
 | `pr_url` / `base_ref` | `""` | set by iterion for any bot launched on a PR; both non-empty ⇒ diff mode |
+| `prior_pushback` | `""` | an earlier fixer's reply to a previous review of the same PR (the `consumes: review_ledger` hand-off below). Read by `adjudicate` so a contested finding is not re-litigated blind |
 | `force_jsx` | `false` | force JSX parsing for inputs of any extension |
 | `report_dir` | `${PROJECT_DIR}/audits` | where the dated report lands |
 | `post_to_board` | `true` | `false` = report only |

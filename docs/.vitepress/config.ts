@@ -247,6 +247,7 @@ const sidebar = [
       { text: 'Cloud REST API', link: '/cloud-rest-api' },
       { text: 'Cloud LLM credentials', link: '/cloud-llm-credentials' },
       { text: 'Cloud deployment', link: '/cloud-deployment' },
+      { text: 'Queue schema rollout runbook', link: '/cloud-queue-schema-rollout' },
       { text: 'Cloud architecture', link: '/cloud-architecture' },
       { text: 'Cloud admin guide', link: '/cloud-admin-guide' },
       { text: 'Cloud admin bootstrap', link: '/cloud-admin' },

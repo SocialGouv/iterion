@@ -59,15 +59,74 @@ allowed (each watching a different node set).
 ```
 supervisor watchdog:
   watches: [implement, fix]            # agent node(s) to steer (omit = whole run)
-  model: "anthropic/claude-opus-5"  # default: auto-detect / ITERION_DEFAULT_SUPERVISOR_MODEL
+  model: "anthropic/claude-opus-5"  # optional pin; resolution below
   system: watchdog_policy              # a prompt: ref — the supervision policy
   cooldown: "45s"                      # min between turn-boundary evals (default 30s)
   max_evals: 12                        # hard eval cap (default 20)
+  monitors: ["event_type=tool_error,tool_name=Bash"]  # pre-seeded patterns (CLI --monitor grammar)
 
 prompt watchdog_policy:
   Intervene only if the implementer edits files outside src/, or a Bash
   test fails twice in a row. Keep messages short and actionable.
 ```
+
+**Model resolution** (unpinned supervisors): `model:` pin →
+`ITERION_DEFAULT_SUPERVISOR_MODEL` → **the provider family the watched
+nodes themselves run on** (their `provider:` routing, a `provider/`
+model prefix, or the backend's family — claude_code → anthropic,
+codex → openai), honoured when that provider is detected in the env OR
+funded by the run's own ctx credentials (a per-provider API key, or the
+codex ChatGPT forfait for openai; the anthropic OAuth forfait does NOT
+count — it is usable only by the claude_code CLI, never by claw) → the
+detector's first available provider. The family
+preference is what keeps the coach on the credential the run already
+proved working: without it, a dead key sitting first in the host
+environment (a platform OPENAI key with no credits, on the prod runner
+pods) 429-ed every eval while the supervised campaign ran fine on
+Anthropic.
+
+`monitors:` pre-seeds event patterns at coordinator construction, armed
+as soon as a watched node becomes active (immediately, for a supervisor
+with no `watches:`) — the supervisor bot can still register more at
+runtime, but anything it registers only exists after its first eval (a
+measured blind window when the marker you care about appears early).
+Each entry uses the CLI `--monitor` grammar (`key=val,key=val`); a
+malformed entry gets a `C191` warning at validate and is dropped at
+spawn. A value cannot contain a comma — split into two monitors.
+
+Semantics that matter when choosing the set:
+- **Pin `text_contains` to an event type** (usually
+  `event_type=assistant_text`, the agent's own words). An unpinned
+  substring is matched against EVERY rendered event — tool inputs and
+  outputs included — so a `grep` hit in the repo or a Read of a file
+  mentioning the word wakes an eval.
+- **Pre-seeded matches honour the `cooldown`** — a match inside the
+  window is DEFERRED to the cooldown's expiry (the trigger event rides
+  the wake reason, so it survives even if evicted from the recent
+  ring), never dropped; if the watched node finishes first, the
+  deferred wake re-arms when the node comes back (the next pass of a
+  loop). One deferral slot: further suppressed matches in the same
+  window coalesce into it. Only monitors the bot registers itself (via
+  its decision's `watch`) bypass the cooldown, and re-listing a seeded
+  pattern does not promote it. A seeded match also never resurrects a
+  supervisor whose bot declared `done` — re-arming is the job of a
+  bot-registered monitor or a fresh watched `node_started`.
+- **The coordinator is one goroutine**: an eval in flight blocks its
+  own wake processing (never the run — the hub drops rather than
+  stalls), so under a very short `cooldown` the supervisor lags the
+  run by up to one eval. Invisible at the shipped cooldowns.
+- **A failed evaluation does not consume `max_evals`** — but three
+  consecutive failures (no reachable model, auth) park supervision with
+  a logged warning instead of burning the budget on transport errors.
+- **Budget events are node-scoped like everything else**: a supervisor
+  watching `campaign` never sees a `budget_warning` raised while
+  another node (a verifier, a reviewer) is the active one.
+- The supervisor's own steering messages (the `user_message_*` event
+  family) are never matched — an intervention cannot re-trigger its
+  author.
+- On **resume**, the catch-up replay of pre-attach history is
+  observational: it reconstructs state but never fires monitors or
+  evals; supervision acts on activity after the attach.
 
 Launch the workflow normally (`iterion run`); the supervisor is
 auto-spawned, observes the run, and is torn down when the run ends. The
@@ -76,6 +135,64 @@ and `system:` must reference a declared prompt (`C193`). Monitors aren't
 declared in the DSL — the supervisor bot registers the patterns it cares
 about at runtime; use the CLI `--monitor` flag to pre-seed them when
 attaching externally.
+
+### Disabling declared supervisors (kill switch)
+
+Declared supervisors spawn by default. The escape hatch, resolved
+run-level override → env → on:
+
+- `iterion run --supervisors off` (and `iterion resume --supervisors
+  off` — like the other run-level overrides it is NOT persisted on the
+  run, so a launch-time `off` must be re-stated on resume);
+- the launch API field `supervisors` /
+  `runview.LaunchSpec.Supervisors` / `ResumeSpec.Supervisors` for
+  programmatic launches — forwarded to detached runners as
+  `--supervisors` AND onto the cloud queue (`RunMessage.supervisors`,
+  schema v8), so a pod never re-decides an operator's `off` from its
+  own env. The studio Launch modal does not expose it yet;
+- `ITERION_SUPERVISORS=off` machine-wide (the layer below the run-level
+  override).
+
+The skip is loud (a `supervisors: N declared supervisor(s) disabled by
+…` warning) — a declared capability never disappears in silence. Use it
+for cost control, or to isolate a supervisor suspected of steering a
+run astray.
+
+## The perseverance-coach pattern
+
+The first shipped use of the DSL block is **Persy**, feature-dev's
+perseverance coach ([bots/feature-dev/main.bot](../bots/feature-dev/main.bot)
+— `supervisor persy:` + `prompt persy_policy:`): a supervisor that
+reproduces, agent-side, the push a good operator supplies when watching
+a coding session live. Its policy is a reference for authoring similar
+coaches:
+
+- **monitors-first, pre-seeded, pinned** — the give-up markers
+  (`impossible`, `unsolvable`, `infeasib…`, `giving/gave/give up`,
+  `workaround`) are declared in the DSL `monitors:` list, each pinned
+  `event_type=assistant_text` so they fire on the agent's own words,
+  never on tool output or prompt echoes (unpinned, 5 of 10 evals were
+  measured burned on echoes); `budget_warning` + `budget_exceeded`
+  cover the pressure lane. The 5m `cooldown` debounces both the seeded
+  matches and turn-boundary evals so the budget survives to the late,
+  hard stretch of a campaign. Deliberately NO `tool_error` monitor: a
+  red test is routine in a build loop — the FAILURE LOOP class needs
+  repetition, which turn-boundary wakes surface via recent events;
+- **four intervention classes** — premature impossibility (demand one
+  more *instrumented* attempt: debug output, smaller repro, bisect),
+  the expedient path (name the durable alternative), a failure loop
+  (change of approach, not another retry), and budget/context pressure
+  (bank now: commit what is green + a precise remaining-work note);
+- **an asymptote guard** — never contest an honest termination report,
+  never enlarge the scope, never re-raise an answered point. The coach
+  pushes toward *completion*, not perpetual motion, so it composes with
+  the convergence contract (ADR-058) instead of fighting it.
+
+This matches what the 2025–26 steering literature converged on
+(deterministic monitors + an advisor LLM consulted on detection;
+explicit anti-give-up prompting in production harnesses), and the
+failure mode it targets — an agent declaring a solvable problem
+impossible until pushed — is well documented in the wild.
 
 ## Attaching a supervisor to a running run (CLI)
 
@@ -171,14 +288,24 @@ main token-saver.
 
 - **Next turn, not now.** A message lands at the next tool/stop boundary
   of the supervised node; an in-flight LLM call is never interrupted.
-- **Local store / broker mode.** `ObserveRun` is wired for the local
-  broker path; cloud event-source mode is a follow-up.
+- **Local store / broker mode for `iterion supervise` attach.**
+  `ObserveRun` is wired for the local broker path; cloud event-source
+  mode is a follow-up. Declared (`supervisor NAME:`) supervisors are
+  unaffected: every launch surface — CLI run/resume, studio/runview,
+  the dispatcher's direct engine path, and the cloud runner pod —
+  spawns them in-process next to the engine.
+- **Subbot children are not supervised.** A child `.bot` declaring
+  `supervisor NAME:` is silently unsupervised on every surface today;
+  declare the supervisor in the parent (watching the subbot node's
+  activity is not equivalent, but the parent's own agent nodes are
+  coverable).
 
 ## Roadmap
 
-- **Inline `monitors:` in the DSL block** — today monitors are registered
-  by the bot at runtime or pre-seeded via the CLI `--monitor` flag.
 - **Session-scoped raw inbox by default** — disambiguate concurrent
   `claude` sessions in the same repo (currently project-keyed with a
   session-id refinement).
 - **Cloud event-source mode** for `ObserveRun` (today local broker mode).
+- **Studio Launch-modal toggle** for the per-run kill switch (the
+  `LaunchSpec.Supervisors` seam is wired; only the UI control is
+  missing).

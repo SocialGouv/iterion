@@ -66,22 +66,24 @@ func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *ClawEx
 func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output:       map[string]any{"result": "ok"},
-			Tokens:       100,
-			Duration:     500 * time.Millisecond,
-			BackendName:  "test_backend",
-			RawOutputLen: 42,
+			Output:          map[string]any{"result": "ok"},
+			Tokens:          100,
+			Duration:        500 * time.Millisecond,
+			BackendName:     "test_backend",
+			RawOutputLen:    42,
+			EffectiveModel:  "glm-4.6",
+			ContextWindow:   200_000,
+			MaxOutputTokens: 8192,
 		}},
 	}
 
 	var startedCalls, finishedCalls int
-	var startedBackend string
-	var finishedInfo DelegateInfo
+	var startedInfo, finishedInfo DelegateInfo
 
 	hooks := EventHooks{
-		OnDelegateStarted: func(nodeID string, backendName string) {
+		OnDelegateStarted: func(nodeID string, info DelegateInfo) {
 			startedCalls++
-			startedBackend = backendName
+			startedInfo = info
 		},
 		OnDelegateFinished: func(nodeID string, info DelegateInfo) {
 			finishedCalls++
@@ -93,7 +95,7 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 
 	node := &ir.AgentNode{
 		BaseNode:  ir.BaseNode{ID: "test_node"},
-		LLMFields: ir.LLMFields{Backend: "test_backend"},
+		LLMFields: ir.LLMFields{Backend: "test_backend", Model: "anthropic/claude-opus-5"},
 	}
 
 	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
@@ -104,8 +106,11 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	if startedCalls != 1 {
 		t.Errorf("expected 1 OnDelegateStarted call, got %d", startedCalls)
 	}
-	if startedBackend != "test_backend" {
-		t.Errorf("expected backend 'test_backend', got %q", startedBackend)
+	if startedInfo.BackendName != "test_backend" {
+		t.Errorf("expected backend 'test_backend', got %q", startedInfo.BackendName)
+	}
+	if startedInfo.DeclaredModel != "anthropic/claude-opus-5" {
+		t.Errorf("started DeclaredModel = %q, want anthropic/claude-opus-5", startedInfo.DeclaredModel)
 	}
 	if finishedCalls != 1 {
 		t.Errorf("expected 1 OnDelegateFinished call, got %d", finishedCalls)
@@ -118,6 +123,15 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	}
 	if finishedInfo.RawOutputLen != 42 {
 		t.Errorf("expected raw output len 42, got %d", finishedInfo.RawOutputLen)
+	}
+	if finishedInfo.DeclaredModel != "anthropic/claude-opus-5" {
+		t.Errorf("finished DeclaredModel = %q", finishedInfo.DeclaredModel)
+	}
+	if finishedInfo.EffectiveModel != "glm-4.6" {
+		t.Errorf("finished EffectiveModel = %q, want glm-4.6 (captured then dropped before #474)", finishedInfo.EffectiveModel)
+	}
+	if finishedInfo.ContextWindow != 200_000 || finishedInfo.MaxOutputTokens != 8192 {
+		t.Errorf("window fields dropped: window=%d max_out=%d", finishedInfo.ContextWindow, finishedInfo.MaxOutputTokens)
 	}
 
 	// Verify metadata is attached to output.
@@ -205,7 +219,7 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 	var errorInfo DelegateInfo
 
 	hooks := EventHooks{
-		OnDelegateStarted: func(nodeID string, backendName string) {},
+		OnDelegateStarted: func(nodeID string, info DelegateInfo) {},
 		OnDelegateError: func(nodeID string, info DelegateInfo) {
 			errorCalls++
 			errorInfo = info
@@ -253,7 +267,7 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 	var retryInfo DelegateInfo
 
 	hooks := EventHooks{
-		OnDelegateStarted:  func(nodeID string, backendName string) {},
+		OnDelegateStarted:  func(nodeID string, info DelegateInfo) {},
 		OnDelegateFinished: func(nodeID string, info DelegateInfo) {},
 		OnDelegateRetry: func(nodeID string, info DelegateInfo) {
 			retryCalls++
@@ -300,7 +314,7 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 	var finishedInfo DelegateInfo
 
 	hooks := EventHooks{
-		OnDelegateStarted: func(nodeID string, backendName string) {},
+		OnDelegateStarted: func(nodeID string, info DelegateInfo) {},
 		OnDelegateFinished: func(nodeID string, info DelegateInfo) {
 			finishedInfo = info
 		},

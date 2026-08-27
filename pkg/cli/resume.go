@@ -12,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
 // forceStaleStaleAfter is the minimum time since the last events.jsonl
@@ -67,6 +68,11 @@ type ResumeOptions struct {
 	// resume, for the same reason AutoMemory does: it is not persisted, so a
 	// resume that says nothing falls back to the workflow's value.
 	LoopBudgetGuard string
+	// Supervisors re-states the run-level supervisors override on resume
+	// ("", "on", "off"; "" inherits ITERION_SUPERVISORS then on). Like the
+	// other run-level overrides it is not persisted on the run, so a
+	// launch-time `off` must be repeated here.
+	Supervisors string
 
 	// RepoDevbox re-states the run-level repo_devbox override on resume;
 	// like LoopBudgetGuard it is not persisted on the run, so a launch-time
@@ -115,6 +121,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		return err
 	}
 	logger := iterlog.New(level, os.Stderr)
+
+	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
+		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
 
 	// Same anchor as run: a run must be resumable from the directory it was
 	// launched in, whether or not --file names the bot.
@@ -240,12 +250,24 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 	applyBudgetOverrides(wf, opts.Budget)
 
-	executor, err := buildResumeExecutor(opts, wf, s, storeDir, logger, r)
+	// DSL-declared supervisors resume with the run: the resumed stretch is
+	// the same campaign the supervisor was declared to watch. Same wiring
+	// and kill switch as the run path (run.go). Created BEFORE the
+	// executor so the hub also rides the backend-hook seam (the only one
+	// carrying assistant_text / tool events).
+	resumeOpts := []runtime.EngineOption{}
+	var superviseHub *supervise.EventHub
+	var hookObservers []func(store.Event)
+	if len(wf.Supervisors) > 0 && supervise.DeclaredEnabledOrWarn(opts.Supervisors, len(wf.Supervisors), logger) {
+		superviseHub = supervise.NewEventHub()
+		resumeOpts = append(resumeOpts, runtime.WithEventObserver(superviseHub.Publish))
+		hookObservers = []func(store.Event){superviseHub.Publish}
+	}
+
+	executor, err := buildResumeExecutor(opts, wf, s, storeDir, logger, r, hookObservers)
 	if err != nil {
 		return err
 	}
-
-	resumeOpts := []runtime.EngineOption{}
 	// Keep capturing across a resume: stopping here would leave a hole in
 	// the workspace history exactly where the operator is iterating.
 	if tracker := runview.WorkspaceTrackerFor(storeDir); tracker != nil {
@@ -263,6 +285,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithRepoDevbox(opts.RepoDevbox),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
+		// Re-applied from the run record, like Preset. Load-bearing for a
+		// conversational bot: every turn is a resume, so a launch-only list
+		// would vanish after the first reply.
+		runtime.WithExtraSkills(r.ExtraSkills, "resume"),
 		// Wire the subbot runner, mirroring the run path (run.go). Without
 		// it, ANY resumed run whose remaining graph contains a subbot node
 		// died with "no SubbotRunner is wired" — runs with subbots were
@@ -336,6 +362,11 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		}
 		p.KV("Log Level", level.String())
 		p.Blank()
+	}
+
+	if superviseHub != nil {
+		stop := startCLISupervisors(ctx, superviseHub, s, opts.RunID, wf, logger)
+		defer stop()
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)

@@ -599,6 +599,32 @@ func (s *Store) PatchRunPermissionGrants(ctx context.Context, id string, grants 
 	return nil
 }
 
+// RecordNodeServed persists the last (backend, model) that served
+// nodeID with a per-key $set, so concurrent nodes writing distinct
+// keys do not clobber each other. Empty nodeID is a no-op.
+// Display-only last-write-wins patch; no $inc on version so a later
+// checkpoint CAS cannot be invalidated by this stamp (same as
+// PatchRunSteering / PatchRunPermissionGrants).
+func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served store.NodeServed) error {
+	if nodeID == "" {
+		return nil
+	}
+	set := bson.M{
+		"updated_at":             time.Now().UTC(),
+		"nodes_served." + nodeID: served,
+	}
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{
+		"$set": set,
+	})
+	if err != nil {
+		return fmt.Errorf("store/mongo: record node served: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{
@@ -610,6 +636,9 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
+	case store.RunStatusQueued:
+		set["queued_at"] = now
+		unset["finished_at"] = ""
 	case store.RunStatusRunning:
 		// Resume must clear FinishedAt or the elapsed-time ticker
 		// freezes mid-run (mirrors FilesystemRunStore).
@@ -647,6 +676,9 @@ func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.R
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
+	case store.RunStatusQueued:
+		set["queued_at"] = now
+		unset["finished_at"] = ""
 	case store.RunStatusRunning:
 		set["error"] = ""
 		unset["finished_at"] = ""
@@ -667,6 +699,43 @@ func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.R
 	}
 	return res.MatchedCount > 0, nil
 }
+
+// FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the
+// status-only CAS above. queued_at and status are matched in the SAME Mongo
+// update so a concurrent resume cannot slip a newer queued attempt between a
+// read and the failure write.
+func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, publishedAt time.Time) (bool, error) {
+	if publishedAt.IsZero() {
+		return false, fmt.Errorf("store/mongo: fail queued attempt %s without published_at", id)
+	}
+	now := time.Now().UTC()
+	filter := notDeleted(withTenantFilter(ctx, bson.M{
+		"_id":    id,
+		"status": store.RunStatusQueued,
+		"$or": bson.A{
+			bson.M{"queued_at": bson.M{"$lte": publishedAt}},
+			// Legacy queued documents predate QueuedAt. They have no newer
+			// attempt marker, so the delivery is the best available identity.
+			bson.M{"queued_at": bson.M{"$exists": false}},
+			bson.M{"queued_at": nil},
+		},
+	}))
+	res, err := s.runs.UpdateOne(ctx, filter, bson.M{
+		"$set": bson.M{
+			"status":      store.RunStatusFailedResumable,
+			"updated_at":  now,
+			"finished_at": now,
+			"error":       runErr,
+		},
+		"$inc": bson.M{"version": 1},
+	})
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
+var _ store.QueuedAttemptStore = (*Store)(nil)
 
 // SaveCheckpoint writes the checkpoint document and bumps CAS. Plan
 // §F T-33 layers an explicit version-conditional update on top; this

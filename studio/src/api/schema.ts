@@ -38,6 +38,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/bots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/bots */
+        get: operations["getAdminBots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/bots/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/admin/bots/{slug} */
+        get: operations["getAdminBotsBySlug"];
+        /** PUT /api/admin/bots/{slug} */
+        put: operations["putAdminBotsBySlug"];
+        post?: never;
+        /** DELETE /api/admin/bots/{slug} */
+        delete: operations["deleteAdminBotsBySlug"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/bots/{slug}/files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/admin/bots/{slug}/files/{path...} */
+        put: operations["putAdminBotsBySlugFilesByPath"];
+        post?: never;
+        /** DELETE /api/admin/bots/{slug}/files/{path...} */
+        delete: operations["deleteAdminBotsBySlugFilesByPath"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/bots/{slug}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/bots/{slug}/fork */
+        post: operations["postAdminBotsBySlugFork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/llm/api-keys": {
         parameters: {
             query?: never;
@@ -296,6 +374,60 @@ export interface paths {
         /** GET /api/admin/orgs/{id}/usage */
         get: operations["getAdminOrgsByIdUsage"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings/bot-roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/bot-roles */
+        get: operations["getAdminSettingsBotRoles"];
+        /** PUT /api/admin/settings/bot-roles */
+        put: operations["putAdminSettingsBotRoles"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings/sandbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/sandbox */
+        get: operations["getAdminSettingsSandbox"];
+        /** PUT /api/admin/settings/sandbox */
+        put: operations["putAdminSettingsSandbox"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings/usage-caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/usage-caps */
+        get: operations["getAdminSettingsUsageCaps"];
+        /** PUT /api/admin/settings/usage-caps */
+        put: operations["putAdminSettingsUsageCaps"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3075,6 +3207,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/bot-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/bot-sources */
+        get: operations["getTeamsByIdBotSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/bot-sources/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/bot-sources/{slug} */
+        get: operations["getTeamsByIdBotSourcesBySlug"];
+        /** PUT /api/teams/{id}/bot-sources/{slug} */
+        put: operations["putTeamsByIdBotSourcesBySlug"];
+        post?: never;
+        /** DELETE /api/teams/{id}/bot-sources/{slug} */
+        delete: operations["deleteTeamsByIdBotSourcesBySlug"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/bot-sources/{slug}/files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /api/teams/{id}/bot-sources/{slug}/files/{path...} */
+        put: operations["putTeamsByIdBotSourcesBySlugFilesByPath"];
+        post?: never;
+        /** DELETE /api/teams/{id}/bot-sources/{slug}/files/{path...} */
+        delete: operations["deleteTeamsByIdBotSourcesBySlugFilesByPath"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/bot-sources/{slug}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/teams/{id}/bot-sources/{slug}/fork */
+        post: operations["postTeamsByIdBotSourcesBySlugFork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/bots/{bot_id}/bindings": {
         parameters: {
             query?: never;
@@ -3316,7 +3531,8 @@ export interface paths {
         delete: operations["deleteTeamsByIdForgeConnectionsByConnId"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/teams/{id}/forge/connections/{conn_id} */
+        patch: operations["patchTeamsByIdForgeConnectionsByConnId"];
         trace?: never;
     };
     "/api/teams/{id}/forge/connections/{conn_id}/health": {
@@ -4805,6 +5021,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthMeResponse: {
+            access_token?: string;
+            active_org_id?: string;
+            active_org_role?: string;
+            active_role?: string;
+            active_team_id?: string;
+            expires_at?: string;
+            orgs: components["schemas"]["OrgTreeView"][];
+            user: components["schemas"]["UserView"];
+        };
         BackendStatus: {
             auth: string;
             available: boolean;
@@ -4834,6 +5060,7 @@ export interface components {
             backends?: components["schemas"]["BackendStatus"][];
             invalid_specs?: components["schemas"]["InvalidSpec"][];
             models: components["schemas"]["Entry"][];
+            reachability?: string;
             recommended_spec?: string;
             refresh_error?: string;
             refreshed?: boolean;
@@ -4895,6 +5122,9 @@ export interface components {
             round_robin_counters?: {
                 [key: string]: number;
             };
+            selected_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
             vars: {
                 [key: string]: unknown;
             };
@@ -4921,6 +5151,7 @@ export interface components {
                 [key: string]: string;
             };
             id: string;
+            installation_account?: string;
             installation_id?: number;
             kind: string;
             /** Format: date-time */
@@ -4928,7 +5159,9 @@ export interface components {
             namespace?: string;
             oauth_app_id?: string;
             provider: string;
+            purpose?: string;
             scopes?: string[];
+            security_read_enabled?: boolean;
             status: string;
             status_reason?: string;
             tenant_id: string;
@@ -4982,6 +5215,7 @@ export interface components {
             output_cost_per_m?: number;
             price_known: boolean;
             provider: string;
+            reachability: string;
             reasoning: boolean;
             recommended?: boolean;
             source: string;
@@ -5023,6 +5257,7 @@ export interface components {
             model?: string;
             node_id: string;
             served_by?: string;
+            skipped?: boolean;
         };
         ForgeOAuthApp: {
             app_manage_url?: string;
@@ -5040,9 +5275,27 @@ export interface components {
             provider_app_id?: string;
             redirect_uri?: string;
             scopes?: string[];
+            security_read_only?: boolean;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        GiveUp: {
+            /** Format: date-time */
+            at: string;
+            attempts?: number;
+            run_id?: string;
+            state?: string;
+        };
+        IncomingEdge: {
+            condition?: string;
+            else?: boolean;
+            expression?: string;
+            foreach?: string;
+            from: string;
+            loop?: string;
+            negated?: boolean;
+            to: string;
         };
         InvalidSpec: {
             reason: string;
@@ -5065,6 +5318,7 @@ export interface components {
             fields?: {
                 [key: string]: unknown;
             };
+            gave_up?: components["schemas"]["GiveUp"];
             id: string;
             labels?: string[];
             last_run_id?: string;
@@ -5077,12 +5331,34 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        MembershipView: {
+            personal?: boolean;
+            role: string;
+            team_id: string;
+            team_name: string;
+            team_slug: string;
+        };
+        NodeServed: {
+            backend: string;
+            context_window?: number;
+            declared_model?: string;
+            max_output_tokens?: number;
+            model?: string;
+        };
         NodeSessionSlot: {
             backend: string;
             conversation_ref?: string;
             fingerprint?: string;
             session_id?: string;
             state_ref?: string;
+        };
+        OrgTreeView: {
+            org_id: string;
+            org_name: string;
+            org_role: string;
+            org_slug: string;
+            personal?: boolean;
+            teams: components["schemas"]["MembershipView"][];
         };
         PipelineBoardAttempt: {
             /** Format: date-time */
@@ -5109,6 +5385,7 @@ export interface components {
             executed_nodes: number;
             external?: components["schemas"]["ExternalRef"];
             failed?: boolean;
+            gave_up?: components["schemas"]["GiveUp"];
             id: string;
             issue_id?: string;
             issue_state?: string;
@@ -5253,6 +5530,9 @@ export interface components {
             merged_into?: string;
             model_overrides?: components["schemas"]["RunModelOverride"][];
             name?: string;
+            nodes_served?: {
+                [key: string]: components["schemas"]["NodeServed"];
+            };
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
@@ -5356,6 +5636,14 @@ export interface components {
             token_last4: string;
             user_id: string;
         };
+        UserView: {
+            created_at?: string;
+            email: string;
+            id: string;
+            is_super_admin: boolean;
+            name?: string;
+            status: string;
+        };
         WireEdge: {
             condition?: string;
             expression?: string;
@@ -5400,15 +5688,48 @@ export interface components {
             provider: string;
             scope_user_id?: string;
         };
-        authResponse: {
-            access_token?: string;
-            active_org_id?: string;
-            active_org_role?: string;
-            active_role?: string;
-            active_team_id?: string;
-            expires_at?: string;
-            orgs: components["schemas"]["orgTreeView"][];
-            user: components["schemas"]["userView"];
+        botSourceForkReq: {
+            from: string;
+        };
+        botSourceMetaView: {
+            /** Format: date-time */
+            created_at: string;
+            created_by?: string;
+            digest?: string;
+            files: {
+                [key: string]: string;
+            };
+            id: string;
+            origin?: string;
+            slug: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+            version: number;
+        };
+        botSourcePutReq: {
+            files: {
+                [key: string]: string;
+            };
+            version?: number;
+        };
+        botSourceView: {
+            /** Format: date-time */
+            created_at: string;
+            created_by?: string;
+            files: {
+                [key: string]: string;
+            };
+            id: string;
+            origin?: string;
+            slug: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+            updated_by?: string;
+            version: number;
+            warnings?: string[];
         };
         createApiKeyReq: {
             is_default?: boolean;
@@ -5453,8 +5774,10 @@ export interface components {
             live_error?: string;
             manage_install_url?: string;
             missing_permissions?: string[];
+            missing_security_permissions?: string[];
             provider: string;
             provisioned_repo_count: number;
+            security_read_enabled: boolean;
             status: string;
             status_reason?: string;
             token_missing_permissions?: string[];
@@ -5475,6 +5798,7 @@ export interface components {
             admin_token?: string;
             allow_app_delivery?: boolean;
             allow_repo_creation?: boolean;
+            allow_security_read?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;
@@ -5483,6 +5807,7 @@ export interface components {
             mode?: string;
             next?: string;
             provider: string;
+            security_read_only?: boolean;
         };
         forgeTeamRepo: {
             bot_ids: string[];
@@ -5499,13 +5824,6 @@ export interface components {
             email: string;
             password: string;
         };
-        membershipView: {
-            personal?: boolean;
-            role: string;
-            team_id: string;
-            team_name: string;
-            team_slug: string;
-        };
         modelPrefRequest: {
             backend?: string;
             effort?: string;
@@ -5518,14 +5836,6 @@ export interface components {
             key: string;
             model?: string;
             set: boolean;
-        };
-        orgTreeView: {
-            org_id: string;
-            org_name: string;
-            org_role: string;
-            org_slug: string;
-            personal?: boolean;
-            teams: components["schemas"]["membershipView"][];
         };
         orgView: {
             created_at?: string;
@@ -5619,14 +5929,6 @@ export interface components {
             name?: string;
             slug?: string;
         };
-        userView: {
-            created_at?: string;
-            email: string;
-            id: string;
-            is_super_admin: boolean;
-            name?: string;
-            status: string;
-        };
     };
     responses: never;
     parameters: never;
@@ -5669,6 +5971,164 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getAdminBots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        bot_sources: components["schemas"]["botSourceMetaView"][];
+                    };
+                };
+            };
+        };
+    };
+    getAdminBotsBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
+            };
+        };
+    };
+    putAdminBotsBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourcePutReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
+            };
+        };
+    };
+    deleteAdminBotsBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminBotsBySlugFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAdminBotsBySlugFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminBotsBySlugFork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["botSourceForkReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["botSourceView"];
+                };
             };
         };
     };
@@ -6086,6 +6546,114 @@ export interface operations {
             };
         };
     };
+    getAdminSettingsBotRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBotRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsSandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsSandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsUsageCaps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAdminUsers: {
         parameters: {
             query?: never;
@@ -6217,7 +6785,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };
@@ -6255,7 +6823,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["authResponse"];
+                    "application/json": components["schemas"]["AuthMeResponse"];
                 };
             };
         };
@@ -9563,6 +10131,154 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdBotSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdBotSourcesBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdBotSourcesBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdBotSourcesBySlug: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTeamsByIdBotSourcesBySlugFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdBotSourcesBySlugFilesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdBotSourcesBySlugFork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdBotsByBotIdBindings: {
         parameters: {
             query?: never;
@@ -9928,6 +10644,27 @@ export interface operations {
         };
     };
     deleteTeamsByIdForgeConnectionsByConnId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdForgeConnectionsByConnId: {
         parameters: {
             query?: never;
             header?: never;

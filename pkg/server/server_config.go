@@ -28,12 +28,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
 	"github.com/SocialGouv/iterion/pkg/valkey"
@@ -167,6 +169,12 @@ type Config struct {
 	// status, secrets/bindings/webhooks CRUD, member changes…) and
 	// enables GET /api/teams/{id}/audit + /api/admin/audit.
 	Audit audit.Store
+	// UsageCapSettings, when non-nil, is the platform runtime-settings
+	// store (usage-cap percentages, DB-backed over the ITERION_USAGE_CAP_*
+	// env defaults). Enables the super-admin
+	// GET/PUT /api/admin/settings/usage-caps routes and switches the
+	// /healthz usage_cap echo to the EFFECTIVE (db-or-env) values.
+	UsageCapSettings usagecap.SettingsStore
 	// OrgDefaults are the platform-wide launch limits applied when a
 	// team has no per-org override. Zero values mean "no limit".
 	OrgDefaults OrgLimitDefaults
@@ -222,6 +230,18 @@ type Config struct {
 	// (server_info.bot_editing_enabled); nil answers 501 there. The writable,
 	// tenant-scoped counterpart to the read-only catalog baked into the image.
 	BotSources botsource.Store
+
+	// BotRolesSettings / SandboxSettings are the platform runtime-settings
+	// family stores (pkg/platformcfg): role→bot-id overrides for the
+	// webhook lanes, and the runtime-mutable sandbox default image. Nil
+	// keeps the hardcoded/env defaults (local mode).
+	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
+	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
+	// SandboxResolver, when non-nil, is the SHARED TTL resolver over
+	// SandboxSettings, also handed to the cloud publisher — one instance,
+	// so the admin PUT's Invalidate reaches publish-time pinning on the
+	// same replica. Nil (tests/local) builds a private one.
+	SandboxResolver *platformcfg.Resolver[platformcfg.Sandbox]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

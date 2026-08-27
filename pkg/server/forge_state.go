@@ -33,7 +33,13 @@ type forgePending struct {
 	// holds one app per owning org. Empty for non-app flows and for installs
 	// started before the picker existed.
 	OAuthAppID string
-	IssuedAt   time.Time
+	// SecurityReadOnly carries the watch-only choice from the manifest /start
+	// to its /callback, which is the only place that can stamp it on the
+	// created App record. It must survive the hop across replicas — the
+	// Valkey backend marshals this struct wholesale, so an exported field is
+	// enough.
+	SecurityReadOnly bool
+	IssuedAt         time.Time
 }
 
 // forgeStateBackend stores forgePending CSRF state keyed by State, with a

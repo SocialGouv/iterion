@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/toolcatalog"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -169,9 +170,20 @@ func TestAssembleEffectiveTools_GrantsFileToolsForAutoMemory(t *testing.T) {
 	f := backendFields{id: "n", tools: []string{"bash"}}
 
 	got := e.assembleEffectiveTools(f, delegate.BackendClaw, nil, false)
-	for _, want := range []string{"read_file", "write_file", "list_files"} {
+	for _, want := range []string{"read_file", "write_file", "glob"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("auto_memory: on must grant %q to a restricted claw node, got %v", want, got)
+		}
+	}
+
+	// Every name the executor grants must be one claw actually HAS. The list
+	// is what resolveToolsForNode resolves against the registry, so a name
+	// that is not registered does not degrade the node — it fails it before
+	// the first token, which is how `list_files` (never a claw tool) broke
+	// every restricted claw node that turned auto-memory on.
+	for _, name := range got {
+		if !toolcatalog.IsBuiltin(name) {
+			t.Errorf("granted tool %q is not a claw built-in — the node would fail on `unknown tool`", name)
 		}
 	}
 

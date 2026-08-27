@@ -31,6 +31,10 @@ type branchResult struct {
 	// diverge to distinct terminals).
 	terminatedAtDone bool
 	terminalNodeID   string // the *ir.DoneNode ID when terminatedAtDone
+	// selectedIncoming is this branch's private copy of the edges that
+	// fired into each node it executed (or the join it stopped at).
+	// Concurrent branches must not write the trunk runState map.
+	selectedIncoming map[string][]store.IncomingEdge
 }
 
 // execBranch runs a single parallel branch starting from the target of
@@ -40,6 +44,7 @@ type branchResult struct {
 // if unknown; in that case, AwaitMode on individual nodes is checked).
 func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]any, parentArtifacts map[string]map[string]any, convergenceNodeID string, slot *branchSlot) *branchResult {
 	result := initBranchResult(rs, branchID)
+	recordIncoming(result.selectedIncoming, startEdge, true)
 	runID := rs.runID
 
 	// branchCostUSD is this branch's cumulative LLM spend, recorded into the
@@ -138,7 +143,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Select next edge (branch-local, no loop counters needed in branches).
-		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output)
+		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result)
 		if err != nil {
 			result.err = err
 			return result
@@ -161,6 +166,7 @@ func initBranchResult(rs *runState, branchID string) *branchResult {
 		outputs:          make(map[string]map[string]any),
 		artifacts:        make(map[string]map[string]any),
 		artifactVersions: branchArtifactVersions,
+		selectedIncoming: make(map[string][]store.IncomingEdge),
 	}
 }
 
@@ -194,16 +200,32 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 	}
 	checks := rs.budget.Check()
 	if exc := findExceeded(checks); exc != nil {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
-			"dimension": exc.dimension,
-			"used":      exc.used,
-			"limit":     exc.limit,
-		}); err != nil {
-			e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
-			result.eventErrors++
+		// Same grace as the sequential path (graceOrFailBudget): a run
+		// graced past its cap that then walks into a fan-out must not
+		// die at the first branch. No lastGrace dedupe here — branches
+		// run concurrently and those fields are unsynchronized; one
+		// grace event per branch boundary is the honest audit anyway.
+		if _, ok := e.withinBudgetGrace(rs); ok {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
+				result.eventErrors++
+			}
+		} else {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
+				result.eventErrors++
+			}
+			result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
+			return true
 		}
-		result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
-		return true
 	}
 	if hl := findHardLimited(checks); hl != nil {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
@@ -232,11 +254,12 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
 	branchScope := resolveScope{
-		vars:      rs.vars,
-		outputs:   merged,
-		runInputs: rs.runInputs,
-		artifacts: mergedArt,
-		rs:        rs,
+		vars:           rs.vars,
+		outputs:        merged,
+		runInputs:      rs.runInputs,
+		artifacts:      mergedArt,
+		rs:             rs,
+		incomingByNode: result.selectedIncoming,
 	}
 
 	// Executor-less special nodes (compute / subbot / emit / wait) are
@@ -288,6 +311,14 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 		return nil, true
 	}
 
+	// Nested llm routers skip execLLMRouter (trunk only) and hit the
+	// executor directly. Overlay the selection onto the payload the
+	// router received so {{input.x}} on outgoing edges matches the
+	// trunk contract.
+	if rn, ok := node.(*ir.RouterNode); ok && rn.RouterMode == ir.RouterLLM {
+		output = mergeRouterPassThrough(nodeInput, output)
+	}
+
 	result.outputs[currentNodeID] = output
 
 	if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
@@ -326,6 +357,20 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	}
 
 	if exc := findExceeded(checks); exc != nil {
+		// Post-exec twin of the pre-exec grace above: the node already
+		// spent — killing the branch here converts "stop without
+		// spending" into "spend, then stop anyway".
+		if _, ok := e.withinBudgetGrace(rs); ok {
+			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
+				"dimension": exc.dimension,
+				"used":      exc.used,
+				"limit":     exc.limit,
+			}); err != nil {
+				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
+				result.eventErrors++
+			}
+			return false
+		}
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,
@@ -376,7 +421,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 
 // selectEdgeBranch picks the next node for a branch. It is simpler than
 // selectEdge: no loop counter enforcement, events carry a branch ID.
-func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any) (string, error) {
+func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult) (string, error) {
 	selected := e.evaluateEdges(fromNodeID, fmt.Sprintf("branch %s", branchID), output)
 	if selected == nil {
 		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
@@ -389,6 +434,9 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 		e.logger.Warn("branch %s: failed to emit edge_selected: %v", branchID, err)
 	}
 
+	if result != nil {
+		recordIncoming(result.selectedIncoming, selected, true)
+	}
 	return selected.To, nil
 }
 

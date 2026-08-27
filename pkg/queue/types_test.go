@@ -3,6 +3,7 @@ package queue
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -172,10 +173,51 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=7 (2026-08-11) added LoopBudgetGuard for the same reason one layer
 	// down: dropped, the pod re-decides whether a loop stops early or dies at
 	// its ceiling, overruling the operator who said otherwise.
-	// v=8 (2026-08-22) added ModelOverrides so a launch-time model/backend/
-	// effort choice reaches the pod instead of being dropped at the queue.
-	if SchemaVersion != 8 {
-		t.Errorf("SchemaVersion = %d, want 8 (bump intentionally)", SchemaVersion)
+	// v=8 (2026-08-25) added Supervisors. ModelOverrides had already shipped
+	// inside v7 without a bump; types.go records that known historical debt.
+	// v=9 (2026-08-26) added BotBundle + SandboxImage — dropped, the runner
+	// silently attaches the STALE baked bundle for an overridden bot, the
+	// exact façade the platform-override feature exists to prevent. First
+	// bump with a dual-accept window (MinSchemaVersion=8): the change is
+	// purely additive, so consumers take both and a rolling deploy has no
+	// rollout-ordering hazard.
+	// v=10 (2026-08-27) added ModelOverride.Effort so a stale runner
+	// rejects the message rather than silently dropping the operator's
+	// reasoning_effort pin.
+	if SchemaVersion != 10 {
+		t.Errorf("SchemaVersion = %d, want 10 (bump intentionally)", SchemaVersion)
+	}
+	if MinSchemaVersion != 8 {
+		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
+	}
+}
+
+// TestValidate_DualAcceptWindow pins the rollout guarantee the v9 bump
+// relies on: a v8 payload (published by a not-yet-upgraded server, or
+// queued before the deploy) still validates on a v9 consumer, while
+// anything outside [MinSchemaVersion, SchemaVersion] is rejected as the
+// TRANSIENT ErrSchemaVersion.
+func TestValidate_DualAcceptWindow(t *testing.T) {
+	base := func(v int) *RunMessage {
+		return &RunMessage{
+			V:            v,
+			RunID:        "r1",
+			WorkflowName: "w",
+			IRCompiled:   json.RawMessage(`{}`),
+			TenantID:     "t1",
+		}
+	}
+	if err := base(SchemaVersion).Validate(); err != nil {
+		t.Fatalf("current version must validate: %v", err)
+	}
+	if err := base(MinSchemaVersion).Validate(); err != nil {
+		t.Fatalf("previous version must validate (dual-accept): %v", err)
+	}
+	for _, v := range []int{MinSchemaVersion - 1, SchemaVersion + 1} {
+		err := base(v).Validate()
+		if !errors.Is(err, ErrSchemaVersion) {
+			t.Errorf("v=%d: want ErrSchemaVersion, got %v", v, err)
+		}
 	}
 }
 
@@ -263,5 +305,41 @@ func TestModelOverridesOmittedWhenEmpty(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte("model_overrides")) {
 		t.Errorf("empty overrides should be omitted, got %s", raw)
+	}
+}
+
+// TestRunMessage_SupervisorsSurvivesTheWire is the same composition for
+// the supervisors kill switch: a pod re-deciding it from its own env
+// would spawn LLM watchers the operator explicitly declined.
+func TestRunMessage_SupervisorsSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "on", ""} {
+		in := RunMessage{
+			V:              SchemaVersion,
+			RunID:          "r1",
+			WorkflowName:   "w",
+			WorkflowHash:   "h",
+			IRCompiled:     json.RawMessage(`{}`),
+			TenantID:       "t1",
+			PublishedAtRFC: "2026-08-25T00:00:00Z",
+
+			Supervisors: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if want == "" && bytes.Contains(blob, []byte("supervisors")) {
+			t.Error("an unset supervisors override was serialised — the receiver would read a choice nobody made")
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Supervisors != want {
+			t.Errorf("Supervisors = %q after the round trip, want %q", out.Supervisors, want)
+		}
+		if err := out.Validate(); err != nil {
+			t.Errorf("validate: %v", err)
+		}
 	}
 }

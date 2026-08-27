@@ -189,8 +189,10 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 	}
 }
 
-// stampFallbackMeta records, on the node's own output, that the run was
-// served by something other than its first choice.
+// stampFallbackMeta records, on the node's own output, that the node ran
+// DEGRADED — served by something other than its first choice
+// (`_fallback_used` / `_served_by`), or served by its first choice
+// without the session it asked for (`_session_degraded`).
 //
 // This is the half of ADR-087's judge guardrail that a bot can act on.
 // A reviewer served by a weaker model still emits a well-formed verdict
@@ -202,12 +204,62 @@ func stampDelegateOutputMeta(output map[string]any, result delegate.Result, back
 // Nothing is written on the happy path, so an output that carries these
 // keys always means something actually happened.
 func stampFallbackMeta(output map[string]any, out chainOutcome) {
-	if output == nil || !out.FellThrough {
+	if output == nil {
+		return
+	}
+	// A dropped best-effort session is a degraded INPUT, not a route
+	// change: the node's first-choice backend/model/credential served it
+	// — it just served it amnesiac. So it gets its own key rather than
+	// `_fallback_used`, which a gate reads as "something other than what
+	// I asked for produced this". Both are the same posture though: an
+	// output that carries either key means the node ran degraded, and a
+	// deterministic gate can fail closed on it (see the session_degraded
+	// event for the human-readable half).
+	if out.SessionDegraded {
+		output["_session_degraded"] = true
+	}
+	if !out.FellThrough {
 		return
 	}
 	output["_fallback_used"] = true
 	if out.ServedBy != "" {
 		output["_served_by"] = out.ServedBy
+	}
+}
+
+// fillZeroValues writes the schema's zero value for every field absent
+// from output — the synthesized shape an `action: skip` route serves.
+// Zero values, not nulls: downstream computes and templates read the
+// fields positionally ("" / false / 0 / empty list), the same contract a
+// merge compute already applies to an absent branch via if() guards.
+func fillZeroValues(output map[string]any, schema *ir.Schema) {
+	if schema == nil {
+		return
+	}
+	for _, fld := range schema.Fields {
+		if fld == nil {
+			continue
+		}
+		if _, exists := output[fld.Name]; exists {
+			continue
+		}
+		switch fld.Type {
+		case ir.FieldTypeString:
+			output[fld.Name] = ""
+		case ir.FieldTypeBool:
+			output[fld.Name] = false
+		case ir.FieldTypeInt:
+			// float64, not int: the JSON-shaped contract everywhere else
+			// (ValidateOutput's int case accepts ONLY float64, and a store
+			// round-trip would produce float64 anyway).
+			output[fld.Name] = float64(0)
+		case ir.FieldTypeFloat:
+			output[fld.Name] = 0.0
+		case ir.FieldTypeStringArray:
+			output[fld.Name] = []any{}
+		default: // json: an empty object is the least-surprising zero
+			output[fld.Name] = map[string]any{}
+		}
 	}
 }
 
@@ -232,20 +284,31 @@ func (e *ClawExecutor) dispatchWithObservability(
 	build elementBuilder,
 ) (chainOutcome, error) {
 	if e.hooks.OnDelegateStarted != nil {
-		e.hooks.OnDelegateStarted(nodeID, backendName)
+		e.hooks.OnDelegateStarted(nodeID, DelegateInfo{
+			BackendName:   backendName,
+			DeclaredModel: baseModel,
+		})
 	}
 	out, err := e.dispatchChain(ctx, nodeID, chain, baseModel, build)
 	if err != nil {
 		if e.hooks.OnDelegateError != nil {
 			bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
 			di := delegateInfoFromResult(bn, out.Result)
+			di.DeclaredModel = baseModel
 			di.Error = err
 			e.hooks.OnDelegateError(nodeID, di)
 		}
 		return out, fmt.Errorf("%s %q: backend %q failed: %w", errPrefix, nodeID, backendName, err)
 	}
 	if e.hooks.OnDelegateFinished != nil {
-		e.hooks.OnDelegateFinished(nodeID, delegateInfoFromResult(out.Result.BackendName, out.Result))
+		bn := firstNonEmpty(out.Result.BackendName, out.BackendName, backendName)
+		di := delegateInfoFromResult(bn, out.Result)
+		di.DeclaredModel = baseModel
+		// A skip outcome finished nothing: keep BackendName (the spend's
+		// origin — the metrics claw-exclusion keys on it) but flag it so
+		// recordServed and the event do not claim a backend SERVED.
+		di.Skipped = out.Skipped
+		e.hooks.OnDelegateFinished(nodeID, di)
 	}
 	return out, nil
 }
@@ -396,6 +459,33 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	out, err := e.dispatchWithObservability(ctx, f.id, backendName, "model: node", chain, task.Model, build)
 	if err != nil {
 		return nil, err
+	}
+	// An `action: skip` terminal route completed the node without serving
+	// it: synthesize the zero-value output here — the one place the schema
+	// is known — on top of the spend the failed routes accumulated, and
+	// stamp the degradation loudly. Schema validation is bypassed on
+	// purpose: the synthesized shape is conformant by construction, and
+	// there is no backend to retry against.
+	if out.Skipped {
+		output := out.Result.Output
+		if output == nil {
+			output = map[string]any{}
+		}
+		if f.outputSchema != "" {
+			if schema, ok := e.schemas[f.outputSchema]; ok {
+				fillZeroValues(output, schema)
+			}
+		}
+		output["_skipped"] = true
+		output["_fallback_used"] = true
+		if out.ServedBy != "" {
+			output["_served_by"] = out.ServedBy
+		}
+		if e.logger != nil {
+			e.logger.Warn("[%s#%d/%s] node SKIPPED by fallback route %q — zero-value output served, downstream gates should read _skipped",
+				f.id, task.Iteration, backendName, out.ServedBy)
+		}
+		return output, nil
 	}
 	// Everything below acts on the element that SERVED, which is the
 	// node's own backend unless the chain fell through.
@@ -558,6 +648,7 @@ func (e *ClawExecutor) validateAndRetry(
 	// transient errors, not schema-shape failures.
 	if e.hooks.OnDelegateRetry != nil {
 		di := delegateInfoFromResult(backendName, result)
+		di.DeclaredModel = task.Model
 		di.Error = err
 		di.Attempt = 1
 		e.hooks.OnDelegateRetry(f.id, di)
@@ -1139,8 +1230,15 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	// these; but a claw node that restricts `tools:` would be told to keep a
 	// MEMORY.md it has no way to read or write. Grant exactly the three the
 	// instructions call for.
+	//
+	// The names must be claw's OWN (toolcatalog is the catalog): the grant
+	// lands in the list resolveToolsForNode resolves against the registry, so
+	// a name claw does not have does not degrade — it fails the node before
+	// its first token. `glob` is how claw lists a directory; it read
+	// `list_files` until 2026-08, which turned `auto_memory: on` into a hard
+	// failure on every claw node that restricted its tools.
 	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 && e.autoMemoryMode(f).Enabled() {
-		for _, name := range []string{"read_file", "write_file", "list_files"} {
+		for _, name := range []string{"read_file", "write_file", "glob"} {
 			effectiveTools = ensureToolPresent(effectiveTools, name)
 		}
 	}
@@ -1212,6 +1310,13 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 		task.SessionID = sid
 		if f.session == ir.SessionFork {
 			task.ForkSession = true
+		}
+		// Best-effort modes: the id resolved, but its backing state may be
+		// gone (a cloud resume replaced the sandbox container and the CLI's
+		// session files with it). Mark the session droppable so the
+		// executor can degrade to fresh instead of failing the node forever.
+		if f.session == ir.SessionInheritIfAvailable || f.session == ir.SessionPersist {
+			task.SessionOptional = true
 		}
 		// Forward the provider fingerprint that produced the parent
 		// session so the backend can detect cross-provider forks
