@@ -1875,14 +1875,31 @@ tool confirm_versions:
         adv_cache[cve] = res
         return res
 
-    def alerts_for(org, eco, names):
+    def alerts_for(org, names):
+        ## Returns (alerts, checked). `checked` is False whenever NO answer was
+        ## obtained — no token for the org, no budget left, an HTTP error. An
+        ## org that was never asked is not an org where nothing was found, and
+        ## only this flag can tell the two apart downstream.
+        ##
+        ## NO `ecosystem` parameter, deliberately: the advisory database's
+        ## vocabulary is WIDER than this endpoint's (it returns `actions`,
+        ## `erlang`, `other`, `swift`, none of which the alerts endpoint
+        ## accepts), so forwarding one verbatim 422s — and a swallowed 422
+        ## reads as an all-clear. The `package` filter narrows server-side on
+        ## its own (measured: `package=uuid` -> 78), one request per org
+        ## instead of one per ecosystem, and the (ecosystem, name) pair is
+        ## re-checked on the way back so nothing is lost by dropping it.
+        ##
+        ## NO `state` parameter either — see the GOTCHA in this node's header.
         token = tokens.get(org) or tokens.get('*')
         if not token:
-            return []
-        ## NO state parameter — see the GOTCHA in this node's header.
-        url = (api_base + '/orgs/' + quote(org, safe='') + '/dependabot/alerts?per_page=100&ecosystem=' +
-               quote(eco, safe='') + '&package=' + quote(','.join(sorted(names)), safe=','))
-        return budgeted(lambda: get(url, token), 'alerts ' + org + '/' + eco) or []
+            return ([], False)
+        url = (api_base + '/orgs/' + quote(org, safe='') + '/dependabot/alerts?per_page=100&package=' +
+               quote(','.join(sorted(names)), safe=','))
+        data = budgeted(lambda: get(url, token), 'alerts ' + org)
+        if not isinstance(data, list):
+            return ([], False)
+        return (data, True)
 
     confirmable = 0
     confirmed = 0
@@ -1907,35 +1924,54 @@ tool confirm_versions:
                                   else 'unavailable')
             continue
         confirmable += 1
-        by_eco = {}
-        for eco, name in pkgs:
-            by_eco.setdefault(eco, set()).add(name)
+        names = set(n for _, n in pkgs)
         cveset = set(cves)
         hits = {}
+        ## An advisory read that failed leaves the package set incomplete, so
+        ## whatever the alert lane then finds cannot be a COMPLETE answer.
+        checked, complete = False, ('failed' not in adv_status)
         for org in orgs:
-            for eco, names in by_eco.items():
-                for al in alerts_for(org, eco, names):
-                    adv = (al.get('security_advisory') or {})
-                    if cveset and (adv.get('cve_id') or '') not in cveset:
-                        continue
-                    repo = ((al.get('repository') or {}).get('full_name') or '')
-                    if not repo:
-                        continue
-                    sv = (al.get('security_vulnerability') or {})
-                    rec = hits.setdefault(repo, {'repo': repo, 'state': al.get('state') or '',
-                                                 'package': ((al.get('dependency') or {}).get('package') or {}).get('name') or '',
-                                                 'fix': ((sv.get('first_patched_version') or {}) or {}).get('identifier') or '',
-                                                 'since': (al.get('created_at') or '')[:10],
-                                                 'until': (al.get('fixed_at') or '')[:10]})
-                    ## An open alert always wins over a fixed one for the same
-                    ## repo: still-vulnerable is the actionable truth.
-                    if (al.get('state') or '') == 'open':
-                        rec['state'] = 'open'
-                        rec['until'] = ''
+            got, ok = alerts_for(org, names)
+            checked = checked or ok
+            complete = complete and ok
+            for al in got:
+                if not isinstance(al, dict):
+                    continue
+                adv = (al.get('security_advisory') or {})
+                if cveset and (adv.get('cve_id') or '') not in cveset:
+                    continue
+                pk = ((al.get('dependency') or {}).get('package') or {})
+                ## The ecosystem is no longer filtered server-side (see
+                ## alerts_for), so the pair is re-checked here: a package name
+                ## can collide across ecosystems.
+                if ((pk.get('ecosystem') or '').lower(), pk.get('name') or '') not in pkgs:
+                    continue
+                repo = ((al.get('repository') or {}).get('full_name') or '')
+                if not repo:
+                    continue
+                sv = (al.get('security_vulnerability') or {})
+                rec = hits.setdefault(repo, {'repo': repo, 'state': al.get('state') or '',
+                                             'package': pk.get('name') or '',
+                                             'fix': ((sv.get('first_patched_version') or {}) or {}).get('identifier') or '',
+                                             'since': (al.get('created_at') or '')[:10],
+                                             'until': (al.get('fixed_at') or '')[:10]})
+                ## An open alert always wins over a fixed one for the same
+                ## repo: still-vulnerable is the actionable truth.
+                if (al.get('state') or '') == 'open':
+                    rec['state'] = 'open'
+                    rec['until'] = ''
         a['confirmed_repos'] = sorted(hits.values(), key=lambda r: (r['state'] != 'open', r['repo']))
-        a['version_check'] = 'confirmed' if hits else 'none_found'
         if hits:
+            a['version_check'] = 'confirmed'
             confirmed += 1
+        else:
+            ## An empty result is an ALL-CLEAR only where a check actually ran
+            ## to completion. No org configured, no token for one, a spent
+            ## budget, an HTTP error, a partial advisory resolution — every one
+            ## of them yields the same empty set, and rendering that as "no
+            ## vulnerable dependency found in the watched orgs" is a false
+            ## all-clear on a security message.
+            a['version_check'] = 'none_found' if (checked and complete) else 'unavailable'
 
     parts = [str(confirmed) + '/' + str(confirmable) + ' unit(s) version-confirmed',
              str(lookups[0]) + ' lookup(s)']

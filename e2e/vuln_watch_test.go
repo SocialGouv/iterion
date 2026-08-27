@@ -83,6 +83,11 @@ type vulnWatchHarness struct {
 	// the shape that gives urllib's default opener its chance to carry the
 	// Authorization header off the API origin.
 	redirectAdvisoriesTo atomic.Value
+	// rejectEcosystem makes the alerts endpoint 422 on any `ecosystem` filter,
+	// as the real one does for a value outside its own narrower vocabulary
+	// (`actions`, `erlang`, `other`, `swift` come back from /advisories and are
+	// all refused here).
+	rejectEcosystem atomic.Bool
 	// depQueries records every query string the alerts endpoint received, so a
 	// test can assert HOW it was asked — the `state=all` trap is invisible in
 	// the response (GitHub answers 200 + empty list, never an error).
@@ -136,6 +141,10 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 		h.depQueryMu.Lock()
 		h.depQueries = append(h.depQueries, r.URL.RawQuery)
 		h.depQueryMu.Unlock()
+		if h.rejectEcosystem.Load() && r.URL.Query().Get("ecosystem") != "" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
 		alerts, _ := h.depAlerts.Load().([]map[string]any)
 		// Mirror the REAL endpoint: `state=all` is not a valid value and
 		// GitHub answers an EMPTY list rather than erroring. A confirmation
@@ -2056,5 +2065,102 @@ func TestVulnWatch_FailedAdvisoryReadIsNotADeployedProductClaim(t *testing.T) {
 	}
 	if hits.Load() < 2 {
 		t.Fatalf("the failed read was cached (%d attempts): one blip would mis-stamp every later unit on that CVE", hits.Load())
+	}
+}
+
+// "no vulnerable dependency found in the watched orgs" is an ALL-CLEAR, and an
+// all-clear on a security message is only honest when a check actually ran.
+// The same empty result comes back when no org is configured, when no token
+// covers one, when the lookup budget is spent, and when the API errors — and
+// every one of those used to render as the all-clear.
+func TestVulnWatch_UncheckedIsNeverRenderedAsAnAllClear(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	unit := func() []map[string]any {
+		return []map[string]any{{"key": "kev:CVE-2026-7030", "cves": []string{"CVE-2026-7030"},
+			"title": "all-clear probe", "severity": "critical", "project_names": []string{"proj"}}}
+	}
+	adv := map[string][]map[string]string{"CVE-2026-7030": {{"ecosystem": "npm", "name": "acme-lib"}}}
+
+	for _, tc := range []struct {
+		name  string
+		apply func(t *testing.T, h *vulnWatchHarness) (orgs []string, maxLookups int)
+	}{
+		// No org to ask: a feed+KEV-only deployment is a valid configuration
+		// (plan only fails when orgs AND feeds AND kev_url are all empty).
+		{"no org configured", func(t *testing.T, h *vulnWatchHarness) ([]string, int) {
+			return []string{}, 40
+		}},
+		// A token map that covers no configured org: alerts_for used to return
+		// an empty list before making any request at all.
+		{"no token for the org", func(t *testing.T, h *vulnWatchHarness) ([]string, int) {
+			if err := os.WriteFile(h.tokensFile, []byte(`{"otherorg":"tok-other"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"testorg"}, 40
+		}},
+		// Budget spent on the advisory read, nothing left for the alert read.
+		{"lookup budget spent", func(t *testing.T, h *vulnWatchHarness) ([]string, int) {
+			return []string{"testorg"}, 1
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newVulnWatchHarness(t)
+			h.setAdvisoryPkgs(adv)
+			orgs, maxLookups := tc.apply(t, h)
+			out, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
+				"alerts": unit(), "github_orgs": orgs, "github_api_base": h.srv.URL,
+				"timeout_secs": 5, "allow_private": true, "max_lookups": maxLookups,
+			}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
+			if err != nil {
+				t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+			}
+			got, _ := out["alerts"].([]any)
+			vc, _ := got[0].(map[string]any)["version_check"].(string)
+			if vc == "none_found" {
+				t.Fatal("nothing was checked, yet the unit is stamped none_found — the message would read \"no vulnerable dependency found in the watched orgs\"")
+			}
+			if vc != "unavailable" {
+				t.Fatalf("an unchecked unit must read as unverified, got %q", vc)
+			}
+		})
+	}
+}
+
+// The advisory database's ecosystem vocabulary is WIDER than the Dependabot
+// alerts endpoint's: /advisories returns `actions`, `erlang`, `other` and
+// `swift`, and the alerts endpoint accepts none of them. Forwarding one
+// verbatim 422s, budgeted() swallows it, and the unit renders as an all-clear.
+// GitHub Actions advisories are not exotic.
+func TestVulnWatch_EcosystemOutsideTheAlertsVocabularyStillConfirms(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7031": {{"ecosystem": "actions", "name": "acme/checkout"}},
+	})
+	// The real endpoint 422s on an ecosystem it does not know; reproduce that
+	// rather than papering over it.
+	h.rejectEcosystem.Store(true)
+	h.depAlerts.Store([]map[string]any{vwAlert("acme/site", "acme/checkout", "actions",
+		"CVE-2026-7031", "open", "2026-08-01T00:00:00Z", "", "v4.2.0")})
+
+	alerts := []map[string]any{{"key": "kev:CVE-2026-7031", "cves": []string{"CVE-2026-7031"},
+		"title": "actions advisory", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	vc, _ := got[0].(map[string]any)["version_check"].(string)
+	if vc == "none_found" {
+		t.Fatal("a 422 on the ecosystem filter rendered as an all-clear")
+	}
+	if vc != "confirmed" {
+		t.Fatalf("the actions advisory is confirmable without the ecosystem filter, got %q", vc)
 	}
 }
