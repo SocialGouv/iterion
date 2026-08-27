@@ -487,12 +487,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					continue
 				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
-				if rec.Fingerprint != "" {
-					if bundle.OAuthFingerprints == nil {
-						bundle.OAuthFingerprints = map[string]string{}
-					}
-					bundle.OAuthFingerprints[string(rec.Kind)] = rec.Fingerprint
-				}
+				bundle.SetOAuthFingerprint(string(rec.Kind), rec.Fingerprint)
 				p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
 			}
 		}
@@ -513,6 +508,15 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 			switch grant.Source {
 			case credpool.SourceOAuth:
 				bundle.OAuthCredentials[grant.Ref] = grant.Payload
+				// The PLEDGE is the identity of a lent subscription — one
+				// per donated credential, and stable across the donor's own
+				// token refreshes, which a payload hash would not be. Without
+				// it two donors serving one tenant at different times share
+				// the slot-shaped meter, and donor A's measured exhaustion
+				// parks the run donor B is funding. (A lent API key needs no
+				// stamp here: the runner fingerprints the key itself, which
+				// is static.)
+				bundle.SetOAuthFingerprint(grant.Ref, secrets.FingerprintSHA256("credpool-pledge:"+grant.PledgeID))
 			case credpool.SourceAPIKey:
 				bundle.APIKeys[secrets.Provider(grant.Ref)] = string(grant.Payload)
 			}
@@ -686,9 +690,15 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 				continue
 			}
 			bundle.OAuthCredentials[string(rec.Kind)] = payload
+			// The platform forfait is ONE subscription shared by every run
+			// that falls through to it, so its meter is the platform key —
+			// but a super-admin rotating it (`iterion remote admin llm`, the
+			// documented one-call rotation) must not leave the replaced
+			// account's seven-day reading parking the whole deployment.
+			bundle.SetOAuthFingerprint(string(rec.Kind), rec.Fingerprint)
 			bundle.PlatformSourced[string(rec.Kind)] = true
 			taken[secrets.WireFamily(string(rec.Kind))] = true
-			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s", runID, rec.Kind)
+			p.logger.Info("cloudpublisher: platform credential used run=%s slot=%s fp=%s", runID, rec.Kind, rec.Fingerprint)
 		}
 	}
 }

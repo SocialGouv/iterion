@@ -73,6 +73,23 @@ type RunBundle struct {
 	PlatformSourced map[string]bool `json:"platform_sourced,omitempty"`
 }
 
+// SetOAuthFingerprint records the audit identity of the credential that
+// filled an OAuth slot, allocating the map on first use. Every tier that
+// writes OAuthCredentials must call it: a slot left without an identity
+// falls back to the historical slot-shaped meter key, where the credential
+// that REPLACED an exhausted one inherits its readings — the failure this
+// field exists to close. An empty fp is a no-op (a record that predates
+// stamping keeps the key it always had).
+func (b *RunBundle) SetOAuthFingerprint(kind, fp string) {
+	if fp == "" {
+		return
+	}
+	if b.OAuthFingerprints == nil {
+		b.OAuthFingerprints = map[string]string{}
+	}
+	b.OAuthFingerprints[kind] = fp
+}
+
 // RunSecretsRecord is the persisted form of a sealed bundle. _id is
 // the SecretsRef the publisher writes into the queue.RunMessage; the
 // runner uses that ref to fetch + decrypt right before executing the
