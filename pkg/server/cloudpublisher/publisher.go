@@ -1123,6 +1123,13 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 // runner picks it up and dispatches to engine.Resume which threads
 // the answers in.
 //
+// A JetStream redelivery of the ORIGINAL launch message is a different
+// resume path (the runner converts it in place, keeping the message's
+// launch-time budget — the figure clamped against the launch grant):
+// only this explicit republication re-clamps the persisted budget ask
+// against the CURRENT grant. Two resumes of the same run can therefore
+// carry different caps, each honest about its own grant.
+//
 // On publish failure the run is reverted to its prior resumable status
 // so the studio surfaces an actionable error instead of leaving a
 // "queued" row that no runner will ever pick up. Mirrors the rollback
