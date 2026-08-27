@@ -110,7 +110,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
 		// the runner applies them after loading the workflow, under its
 		// multitenant cloud ceiling.
-		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +136,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// …unless this workflow cannot call a model at all, in which case
 		// the cap guards nothing it could spend. The compile is paid ONLY
 		// on the blocked path, so the common case stays free.
-		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil || wf.AlwaysReachesLLM() {
+		if wf, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); err != nil || wf.AlwaysReachesLLM() {
 			return nil, fmt.Errorf("%w: %s", runtime.ErrUsageCapped, reason)
 		}
 	}
@@ -185,7 +185,7 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 // existing queued doc (the engine's runResolveDoc transitions it
 // queued→running), used when the concurrency gate deferred the launch.
 func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +341,7 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers); err != nil {
 		return err
 	}
-	_, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
 	}
@@ -399,6 +399,20 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	// A bare spec (answer-human HTTP/WS, the async auto-resume) carries no
+	// source: re-derive it from the persisted run so a stored-bot run
+	// resumes on ITS bundle, not the pod's baked twin. Callers that already
+	// resolved (the resume handler, the retry sweeper) are left untouched.
+	if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
+		cleanup, ferr := s.resumeFiller(parent, r, &spec)
+		if ferr != nil {
+			return nil, fmt.Errorf("runview: resolve resume source: %w", ferr)
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+
 	// Compile and compare synchronously before handing the resume to any
 	// asynchronous execution mode. Without this preflight, in-process runs
 	// returned from spawnRun before Engine.Resume checked the hash, while
@@ -410,7 +424,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	//
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
-	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
+	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}

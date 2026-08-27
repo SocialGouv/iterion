@@ -9,6 +9,10 @@ import (
 )
 
 func TestLocalSkills_CRUD(t *testing.T) {
+	// Isolate the GLOBAL skill layer: without this the store's global dir is
+	// the operator's real ~/.iterion/skills, and any skill installed there
+	// leaks into the list assertion below.
+	t.Setenv("ITERION_HOME", t.TempDir())
 	_, hs := newTestServer(t)
 
 	// Create (POST).

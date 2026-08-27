@@ -3,6 +3,7 @@ package queue
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -174,8 +175,46 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// its ceiling, overruling the operator who said otherwise.
 	// v=8 (2026-08-25) added Supervisors. ModelOverrides had already shipped
 	// inside v7 without a bump; types.go records that known historical debt.
-	if SchemaVersion != 8 {
-		t.Errorf("SchemaVersion = %d, want 8 (bump intentionally)", SchemaVersion)
+	// v=9 (2026-08-26) added BotBundle + SandboxImage — dropped, the runner
+	// silently attaches the STALE baked bundle for an overridden bot, the
+	// exact façade the platform-override feature exists to prevent. First
+	// bump with a dual-accept window (MinSchemaVersion=8): the change is
+	// purely additive, so consumers take both and a rolling deploy has no
+	// rollout-ordering hazard.
+	if SchemaVersion != 9 {
+		t.Errorf("SchemaVersion = %d, want 9 (bump intentionally)", SchemaVersion)
+	}
+	if MinSchemaVersion != 8 {
+		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
+	}
+}
+
+// TestValidate_DualAcceptWindow pins the rollout guarantee the v9 bump
+// relies on: a v8 payload (published by a not-yet-upgraded server, or
+// queued before the deploy) still validates on a v9 consumer, while
+// anything outside [MinSchemaVersion, SchemaVersion] is rejected as the
+// TRANSIENT ErrSchemaVersion.
+func TestValidate_DualAcceptWindow(t *testing.T) {
+	base := func(v int) *RunMessage {
+		return &RunMessage{
+			V:            v,
+			RunID:        "r1",
+			WorkflowName: "w",
+			IRCompiled:   json.RawMessage(`{}`),
+			TenantID:     "t1",
+		}
+	}
+	if err := base(SchemaVersion).Validate(); err != nil {
+		t.Fatalf("current version must validate: %v", err)
+	}
+	if err := base(MinSchemaVersion).Validate(); err != nil {
+		t.Fatalf("previous version must validate (dual-accept): %v", err)
+	}
+	for _, v := range []int{MinSchemaVersion - 1, SchemaVersion + 1} {
+		err := base(v).Validate()
+		if !errors.Is(err, ErrSchemaVersion) {
+			t.Errorf("v=%d: want ErrSchemaVersion, got %v", v, err)
+		}
 	}
 }
 

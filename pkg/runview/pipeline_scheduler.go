@@ -24,7 +24,7 @@ const pipelineSchedulerInterval = 5 * time.Second
 func (s *Service) enqueuePipeline(parent context.Context, runID string, spec LaunchSpec, position int) (*LaunchResult, error) {
 	if qc := store.AsQueuedRunCreator(s.store); qc != nil {
 		wfName := ""
-		if wf, _, cErr := compileForLaunch(spec.FilePath, spec.Source); cErr == nil {
+		if wf, _, cErr := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir); cErr == nil {
 			wfName = wf.Name
 		}
 		created, err := qc.CreateQueuedRun(parent, runID, wfName, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))

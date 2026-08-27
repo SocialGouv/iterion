@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -11,43 +10,8 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/bots"
-	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
-
-// tenantBotSource resolves an inline source for a TEAM-AUTHORED bot (pkg/botsource)
-// referenced by an explicit bot id or a catalog-shaped file path, scoped to the
-// caller's active team. It returns the bundle's main.bot and the resolved slug;
-// the bundle's skills reach the runner separately via the publisher's
-// Contributions channel. ok=false when no store, no active team, or no matching
-// tenant bot — the caller then falls back to the baked catalog. A tenant bot of
-// the same slug as a catalog bot therefore overrides it.
-func (s *Server) tenantBotSource(ctx context.Context, botID, filePath string) (source, slug string, ok bool) {
-	if s.botSources == nil {
-		return "", "", false
-	}
-	id, _ := auth.FromContext(ctx)
-	if id.TeamID == "" {
-		return "", "", false
-	}
-	slug = strings.TrimSpace(botID)
-	if slug == "" {
-		slug = inferCatalogBotID(filePath)
-	}
-	if slug == "" {
-		return "", "", false
-	}
-	bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, id.TeamID), id.TeamID, slug)
-	if err != nil {
-		return "", "", false
-	}
-	main := bs.Files[botsource.MainBotFile]
-	if strings.TrimSpace(main) == "" {
-		return "", "", false
-	}
-	return main, slug, true
-}
 
 // resolveWorkflowPath returns the absolute path the engine should
 // associate with a launch / resume / answer call.
@@ -97,41 +61,13 @@ func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
 	return "", err
 }
 
-// catalogBotSource resolves an inline source for a catalog bot referenced by
-// an explicit bot id or a catalog-shaped file path. It reads the bundle's
-// main.bot off the server pod's own bots/ tree (the same FS-read the
-// webhook/scheduler/board/trigger launchers use via resolveBotSource) and
-// returns the source, its absolute path, and the resolved bot id.
-//
-// This is what lets a CLOUD launch/resume reference a catalog bundle
-// (whats-next, review-pr, …) without the client uploading its bytes: the
-// bundle is present on both the server and runner pod images, and returning
-// the bot id lets the caller set LaunchSpec.BotID so the runner mirrors the
-// bundle's skills. ok=false when the id/path does not resolve to a real
-// catalog bundle — the caller then keeps the strict cloud "source required"
-// gate, so an arbitrary operator/workspace path is never read off the pod.
-func (s *Server) catalogBotSource(botID, filePath string) (source, path, resolvedID string, ok bool) {
-	id := strings.TrimSpace(botID)
-	if id == "" {
-		id = inferCatalogBotID(filePath)
-	}
-	if id == "" {
-		return "", "", "", false
-	}
-	p, src, err := s.resolveBotSource(id)
-	if err != nil {
-		return "", "", "", false
-	}
-	return src, p, id, true
-}
-
 // inferCatalogBotID extracts a catalog bot name from a workflow file path:
 // "bots/whats-next/main.bot", "/opt/iterion/bots/whats-next/main.bot",
 // "examples/foo/main.bot", "whats-next/main.bot", "whats-next", and
 // "hello.bot" all map to their bundle-dir / basename. Returns "" for an
 // absolute path with no bots|examples segment (an arbitrary workspace file
 // that must still carry inline source in cloud). The returned id is only a
-// candidate — catalogBotSource confirms it against the real catalog.
+// candidate — resolveBotTiered confirms it against the tiered stores + catalog.
 func inferCatalogBotID(filePath string) string {
 	fp := filepath.ToSlash(strings.TrimSpace(filePath))
 	if fp == "" {

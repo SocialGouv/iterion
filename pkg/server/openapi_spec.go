@@ -9,10 +9,12 @@ import (
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -73,6 +75,9 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		CredPoolLedger:    credpool.NewMemoryLedger(),
 		Audit:             audit.NewMemoryStore(),
 		UsageCapSettings:  usagecap.NewMemorySettingsStore(),
+		BotSources:        botsource.NewMemoryStore(),
+		BotRolesSettings:  platformcfg.NewMemoryStore[platformcfg.BotRoles](),
+		SandboxSettings:   platformcfg.NewMemoryStore[platformcfg.Sandbox](),
 		Store:             runStore,
 	}
 

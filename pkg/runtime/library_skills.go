@@ -91,7 +91,7 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 		}
 		destPath := filepath.Join(skillDir, "SKILL.md")
 		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
-		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, logger)
+		outcome, err := reconcileSkillFile(srcPath, destPath, markerPath, skillTierLibrary, logger)
 		if err != nil {
 			return nil, nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
 		}

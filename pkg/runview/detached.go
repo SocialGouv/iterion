@@ -287,7 +287,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// point (see server.resolveWorkflowPath), so the spawned subprocess
 	// can read it from disk; we use the inline copy here to avoid an
 	// extra ReadFile for the pre-flight compile.
-	wf, _, err := compileForLaunch(spec.FilePath, spec.Source)
+	wf, _, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return nil, err
 	}

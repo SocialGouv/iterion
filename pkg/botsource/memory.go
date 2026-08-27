@@ -2,11 +2,14 @@ package botsource
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // MemoryStore is an in-process Store for tests and local mode.
@@ -53,9 +56,14 @@ func (m *MemoryStore) Get(_ context.Context, id string) (BotSource, error) {
 	return s, nil
 }
 
-func (m *MemoryStore) GetBySlug(_ context.Context, tenantID, slug string) (BotSource, error) {
+func (m *MemoryStore) GetBySlug(ctx context.Context, tenantID, slug string) (BotSource, error) {
 	if tenantID == "" {
 		return BotSource{}, ErrTenantMissing
+	}
+	// Same sentinel-scoping defense as MongoStore (the stores must not
+	// diverge): a mismatched scoped read sees a foreign row as absent.
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return BotSource{}, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q: %w", ctxTenant, tenantID, ErrNotFound)
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -109,9 +117,12 @@ func (m *MemoryStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *MemoryStore) ListByTenant(_ context.Context, tenantID string) ([]BotSource, error) {
+func (m *MemoryStore) ListByTenant(ctx context.Context, tenantID string) ([]BotSource, error) {
 	if tenantID == "" {
 		return nil, ErrTenantMissing
+	}
+	if ctxTenant, ok := store.TenantFromContext(ctx); ok && ctxTenant != "" && ctxTenant != tenantID {
+		return nil, fmt.Errorf("botsource: tenant mismatch: ctx=%q arg=%q", ctxTenant, tenantID)
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

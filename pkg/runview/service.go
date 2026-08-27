@@ -172,6 +172,18 @@ type LaunchSpec struct {
 	// The cloud publisher uses it to resolve bot-secret bindings during
 	// credential sealing. Empty for plain .bot launches.
 	BotID string
+	// BundleDir, when set, is the launch-materialized directory of a STORED
+	// bot bundle (a team-authored bot or a platform override): compile merges
+	// its prompts/ into the AST exactly like a baked bundle's, so they
+	// participate in IR validation and the workflow hash. Server-owned temp
+	// dir, cleaned up by the launch surface after Launch returns; never
+	// persisted.
+	BundleDir string
+	// BotBundle is the stored-bundle ref the cloud publisher stamps on the
+	// queue message so the runner rebuilds the SAME bundle from the store
+	// (skills/, devbox.json, attachments) instead of attaching the stale
+	// baked one. Nil for baked catalog bots and plain .bot launches.
+	BotBundle *BotBundleRef
 	// KeyOverrides pins a specific BYOK key per LLM provider for this run
 	// (provider name → api_key id), overriding the org/user default in
 	// secrets.Resolve. Set by webhook launches that carry per-webhook key
@@ -310,6 +322,19 @@ func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride 
 	return out
 }
 
+// BotBundleRef identifies a STORED bot bundle (pkg/botsource row) by its
+// tenant scope — a team id, or botsource.PlatformTenantID for a
+// deployment-wide override — plus slug and the row version resolved at
+// launch. The runner fetches the row, VERIFIES the version still matches
+// (a push racing the launch fails the run loudly instead of pairing this
+// launch's IR with newer resources), and materializes it as the run's
+// bundle.
+type BotBundleRef struct {
+	TenantID string `json:"tenant_id"`
+	Slug     string `json:"slug"`
+	Version  int    `json:"version"`
+}
+
 // ResumeSpec describes a resume request.
 type ResumeSpec struct {
 	RunID    string
@@ -317,10 +342,16 @@ type ResumeSpec struct {
 	// Source mirrors LaunchSpec.Source: cloud-mode callers can supply
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
-	Source  string
-	Answers map[string]any // answers for human nodes; ignored for failed_resumable
-	Force   bool           // skip workflow hash check
-	Timeout time.Duration  // 0 disables
+	Source string
+	// BundleDir / BotBundle mirror LaunchSpec's fields: a cloud resume of a
+	// stored bot re-resolves the bundle fresh (like credentials are
+	// re-sealed), so the compile merge and the runner-side materialization
+	// stay consistent with THIS resume's source.
+	BundleDir string
+	BotBundle *BotBundleRef
+	Answers   map[string]any // answers for human nodes; ignored for failed_resumable
+	Force     bool           // skip workflow hash check
+	Timeout   time.Duration  // 0 disables
 	// AutoMemory re-states the run-level auto-memory override ("", "on",
 	// "off"). It is not inherited from the original launch: overrides are not
 	// persisted on the run, so a resume that said nothing would silently fall
@@ -559,6 +590,9 @@ type Service struct {
 	// the engine in-process (local mode). See LaunchPublisher and
 	// WithLaunchPublisher.
 	publisher LaunchPublisher
+	// resumeFiller re-derives a bare ResumeSpec's source/bundle from the
+	// persisted run (see WithResumeSourceFiller). Nil = no-op.
+	resumeFiller ResumeSourceFiller
 
 	// localSecrets + localSealer are the local (non-cloud) sealed secret
 	// store and its AES-GCM sealer. When set (local studio / desktop),
@@ -727,6 +761,21 @@ func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// ResumeSourceFiller re-derives a resume's Source/BundleDir/BotBundle from
+// the persisted run when the caller supplied none. Resume invokes it for
+// every bare ResumeSpec, so surfaces that answer a run without carrying
+// source (answer-human HTTP/WS, the ADR-081 async auto-resume) resolve the
+// same stored-bot tiers as an explicit resume — never the pod's baked twin.
+// The returned cleanup (may be nil) releases any materialized bundle dir
+// once the resume has been handed off.
+type ResumeSourceFiller func(ctx context.Context, run *store.Run, spec *ResumeSpec) (func(), error)
+
+// WithResumeSourceFiller wires the server-side resume-source resolution
+// into every Resume call that arrives without an explicit source.
+func WithResumeSourceFiller(fn ResumeSourceFiller) ServiceOption {
+	return func(s *Service) { s.resumeFiller = fn }
 }
 
 // WithForgeTokenResolver wires the forge-credential lookup used to merge

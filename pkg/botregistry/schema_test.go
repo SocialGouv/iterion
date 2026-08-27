@@ -144,3 +144,47 @@ func TestListWithSchema_FoldsVars(t *testing.T) {
 		t.Errorf("unexpected SchemaError: %s", e.SchemaError)
 	}
 }
+
+// A caller that materializes bundles into a fresh temp dir per pass must be
+// able to purge its path-keyed entries — otherwise every pass leaks them
+// into the process-global cache for the replica's lifetime.
+func TestPurgeSchemaCacheUnder(t *testing.T) {
+	ClearSchemaCache()
+	inside := t.TempDir()
+	outside := t.TempDir()
+	mk := func(dir string) Entry {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "main.bot"), []byte(sampleBot), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return Entry{Path: dir}
+	}
+	for _, e := range []Entry{mk(inside), mk(outside)} {
+		if _, _, err := LoadSchema(e); err != nil {
+			t.Fatalf("LoadSchema: %v", err)
+		}
+	}
+	count := func() (n int) {
+		schemaCache.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	if got := count(); got != 2 {
+		t.Fatalf("cache primed with %d entries, want 2", got)
+	}
+	PurgeSchemaCacheUnder(inside)
+	if got := count(); got != 1 {
+		t.Fatalf("purge left %d entries, want 1 (only the outside dir)", got)
+	}
+	if _, ok := schemaCache.Load(mustAbs(t, filepath.Join(outside, "main.bot"))); !ok {
+		t.Fatal("purge removed an entry OUTSIDE the target dir")
+	}
+}
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}

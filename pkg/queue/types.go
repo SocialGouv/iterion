@@ -63,12 +63,29 @@ import (
 // reaches the runner. Same failure direction as v=6/v=7: dropping the field
 // makes the pod re-decide from its own env and spawn LLM watchers the operator
 // explicitly declined — spend outside the run's own budget.
+// v=9 (2026-08-26): added BotBundle (the stored-bot bundle ref a runner
+// rebuilds from the DB instead of attaching the stale baked bundle) and
+// SandboxImage (the platform-resolved default sandbox image, pinned at
+// publish so redelivery reruns in the same environment). Dropping either
+// silently serves STALE code/skills for an overridden bot — the exact façade
+// the platform-override feature exists to prevent. Consumers accept BOTH v8
+// and v9 (MinSchemaVersion): the change is purely additive, so a NEW runner
+// consumes old queued v8 messages. (The reverse still holds the standard
+// policy: a pre-bump runner rejects v9, so the server-first ordering — or a
+// same-release roll of both — remains required; dual-accept removes only
+// the stranded-v8-message half of the window.)
 //
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 8
+const SchemaVersion = 9
+
+// MinSchemaVersion is the oldest wire version a consumer still accepts.
+// v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
+// bundle, env-default image"), so a v8 payload decodes into exactly the
+// pre-v9 behaviour.
+const MinSchemaVersion = 8
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -124,7 +141,19 @@ type RunMessage struct {
 	// supervisor watchers — the wire half of that knob's strongest
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
-	Supervisors    string        `json:"supervisors,omitempty"`
+	Supervisors string `json:"supervisors,omitempty"`
+	// BotBundle, when set, points at the STORED bot bundle (a team-authored
+	// bot or a platform override — a pkg/botsource row) this run was
+	// resolved from. The runner fetches the row, verifies Version still
+	// matches (a racing push fails the run loudly rather than pairing this
+	// message's IR with newer resources), and materializes it as the run's
+	// bundle INSTEAD of the baked BotsPaths one. Nil = baked/loose bot.
+	BotBundle *BotBundleRef `json:"bot_bundle,omitempty"`
+	// SandboxImage is the effective `sandbox: auto` fallback image resolved
+	// by the PUBLISHER (platform runtime setting over the env default) and
+	// pinned here so a redelivery or checkpoint re-claim reruns in the same
+	// environment. Empty = the runner's own env/default resolution.
+	SandboxImage   string        `json:"sandbox_image,omitempty"`
 	BackendConfig  BackendConfig `json:"backend"`
 	Resume         *ResumeSpec   `json:"resume,omitempty"`
 	Trace          TraceContext  `json:"trace"`
@@ -168,6 +197,15 @@ type RunMessage struct {
 	CallbackURL        string `json:"callback_url,omitempty"`
 	CallbackToken      string `json:"callback_token,omitempty"`
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// BotBundleRef is the wire mirror of runview.BotBundleRef (kept local so
+// this schema package stays dependency-free — the BudgetOverrides pattern):
+// the (tenant scope, slug, version) of a stored bot-bundle row.
+type BotBundleRef struct {
+	TenantID string `json:"tenant_id"`
+	Slug     string `json:"slug"`
+	Version  int    `json:"version"`
 }
 
 // Contributions is the wire mirror of runtime.Contributions: the plugin
@@ -298,8 +336,8 @@ func (m *RunMessage) Validate() error {
 	if m == nil {
 		return fmt.Errorf("queue: nil RunMessage")
 	}
-	if m.V != SchemaVersion {
-		return fmt.Errorf("%w: %d unsupported (want %d)", ErrSchemaVersion, m.V, SchemaVersion)
+	if m.V < MinSchemaVersion || m.V > SchemaVersion {
+		return fmt.Errorf("%w: %d unsupported (want %d–%d)", ErrSchemaVersion, m.V, MinSchemaVersion, SchemaVersion)
 	}
 	if m.RunID == "" {
 		return fmt.Errorf("queue: RunID required")

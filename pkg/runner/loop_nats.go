@@ -36,7 +36,7 @@ func (r *Runner) decodeOrTerm(delivery *natsq.Delivery) (*queue.RunMessage, bool
 		// type), so the version is also peeked from the raw envelope —
 		// otherwise such a message takes the malformed branch below and
 		// is Termed away, which is exactly the loss #481 closes.
-		if env, envErr := delivery.Envelope(); envErr == nil && env.V > 0 && env.V != queue.SchemaVersion {
+		if env, envErr := delivery.Envelope(); envErr == nil && env.V > 0 && (env.V < queue.MinSchemaVersion || env.V > queue.SchemaVersion) {
 			r.handleSchemaMismatch(delivery, fmt.Errorf("%w: %d unsupported (want %d)", queue.ErrSchemaVersion, env.V, queue.SchemaVersion))
 			return nil, false
 		}

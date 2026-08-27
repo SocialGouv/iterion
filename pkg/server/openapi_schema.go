@@ -67,6 +67,17 @@ func routeSchemas() map[string]routeOp {
 		"PATCH /api/admin/llm/api-keys/{key_id}":  {request: updateApiKeyReq{}, response: apiKeyView{}},
 		"DELETE /api/admin/llm/api-keys/{key_id}": {},
 
+		// Platform bot overrides (super-admin) — the DB-backed bot catalog.
+		"GET /api/admin/bots": {
+			response: struct {
+				BotSources []botSourceMetaView `json:"bot_sources"`
+			}{},
+		},
+		"GET /api/admin/bots/{slug}":       {response: botSourceView{}},
+		"PUT /api/admin/bots/{slug}":       {request: botSourcePutReq{}, response: botSourceView{}},
+		"DELETE /api/admin/bots/{slug}":    {},
+		"POST /api/admin/bots/{slug}/fork": {request: botSourceForkReq{}, response: botSourceView{}},
+
 		// Forge integrations (connections + self-service OAuth/GitHub apps).
 		"GET /api/teams/{id}/forge/connections": {
 			response: struct {
