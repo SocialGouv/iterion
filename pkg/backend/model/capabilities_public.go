@@ -1,6 +1,10 @@
 package model
 
-import "context"
+import (
+	"context"
+
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
+)
 
 // Public, operator-facing view over the capability resolver.
 //
@@ -53,7 +57,7 @@ type ResolvedCapabilities struct {
 func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 	caps := capabilitiesForModel(provider, modelID)
 	src := SourceCurated
-	if specs.contributes(provider, modelID) {
+	if _, ok := modelspecs.Default().Lookup(provider, modelID); ok {
 		src = SourceAggregator
 	}
 	return ResolvedCapabilities{
@@ -87,10 +91,7 @@ func ResolveSpec(spec string) (ResolvedCapabilities, error) {
 // failure the prior cache is left untouched and the error is returned. This is
 // the `iterion models --refresh` path.
 func RefreshModelSpecs(ctx context.Context) error {
-	if specs == nil {
-		return nil
-	}
-	return specs.refresh(ctx)
+	return modelspecs.Default().Refresh(ctx)
 }
 
 // KnownModelSpecs returns a representative set of model specs to list when the
@@ -113,17 +114,4 @@ func KnownModelSpecs() []string {
 		"openai/gpt-5.4-mini",
 		"openai/o3",
 	}
-}
-
-// contributes reports whether the dynamic aggregator currently has a spec for
-// (provider, modelID) that merge() would overlay onto the curated fallback. It
-// lazily loads the disk cache (and may trigger a background refresh) exactly
-// like the hot path, so the answer matches what a run would resolve.
-func (r *specRegistry) contributes(provider, modelID string) bool {
-	if r == nil || !r.enabled {
-		return false
-	}
-	r.ensureFresh()
-	_, ok := r.lookup(provider, modelID)
-	return ok
 }
