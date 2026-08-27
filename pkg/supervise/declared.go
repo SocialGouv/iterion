@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -141,12 +142,22 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 // providerHintFromWatched derives the provider family the watched nodes
 // run on, so an unpinned evaluator can prefer the credential the run
 // itself uses (see Spec.ProviderHint). Sources, per node, strongest
-// first: the node's explicit provider: routing (first of the chain), a
-// "provider/" prefix on its model, then the backend's own family
-// (claude_code → anthropic, codex → openai). CLI backends whose
-// credential claw cannot reuse (pi, kimi, grok) yield no hint.
+// first: the node's explicit provider: routing (walked to the first
+// claw-routable entry), a "provider/" prefix on its model, then the
+// backend's own family (claude_code → anthropic, codex → openai). CLI
+// backends whose credential claw cannot reuse (pi, kimi, grok) yield no
+// hint. A supervisor with no watches supervises the whole run, so its
+// hint derives from ALL the workflow's agent/judge nodes (sorted for
+// determinism — Nodes is a map).
 func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
-	for _, id := range watches {
+	ids := watches
+	if len(ids) == 0 {
+		for id := range wf.Nodes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
+	for _, id := range ids {
 		node, ok := wf.Nodes[id]
 		if !ok {
 			continue
@@ -161,8 +172,10 @@ func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
 			continue
 		}
 		if p := ir.ExpandEnvWithDefault(llm.Provider); p != "" {
-			if first, _, _ := strings.Cut(p, ","); strings.TrimSpace(first) != "" {
-				return strings.TrimSpace(first)
+			for _, entry := range strings.Split(p, ",") {
+				if entry = strings.TrimSpace(entry); clawProviders[entry] {
+					return entry
+				}
 			}
 		}
 		// A slash in a model string is only a provider prefix for claw

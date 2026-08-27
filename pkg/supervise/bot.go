@@ -169,19 +169,22 @@ func resolveModelWith(specModel, providerHint string, providers []detect.Provide
 }
 
 // ctxFundsProvider maps the run's ctx credentials onto claw providers: a
-// per-provider API key funds its provider, and an OAuth-forfait
-// credential dir funds the provider its CLI belongs to (claude_code →
-// anthropic, codex → openai) — the registry builds clients from both at
-// call time (credentialsLookup / oauthDirLookup).
+// per-provider API key funds its provider (ResolveWithContext →
+// providersWithKey), and the codex ChatGPT forfait funds openai
+// (Registry.openAIFromCtxForfait reads OAuthDir("codex")), mirroring
+// that path's env kill-switches. Anthropic's OAuth forfait is
+// deliberately NOT mapped: it is usable only by the claude_code CLI —
+// claw's anthropic factory reads env vars alone and ResolveWithContext
+// has no anthropic OAuth-dir branch — so claiming it funds the
+// anthropic provider would resolve an unauthenticated client.
 func ctxFundsProvider(creds secrets.Credentials) func(provider string) bool {
 	return func(provider string) bool {
 		if creds.APIKeys[secrets.Provider(provider)] != "" {
 			return true
 		}
-		switch provider {
-		case "anthropic":
-			return creds.OAuthCredentialFiles["claude_code"] != ""
-		case "openai":
+		if provider == "openai" &&
+			os.Getenv("ITERION_OPENAI_USE_OAUTH") != "0" &&
+			os.Getenv("OPENAI_BASE_URL") == "" {
 			return creds.OAuthCredentialFiles["codex"] != ""
 		}
 		return false
@@ -195,7 +198,12 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 		if err != nil {
 			return nil, EvalUsage{}, err
 		}
-		client, err := e.registry.Resolve(spec)
+		// ResolveWithContext, not Resolve: on a runner pod the run's
+		// credentials are ctx-sealed and never in this process's env, and
+		// only the ctx-aware path builds a client from them — which is
+		// exactly what the ctx-funded ProviderHint branch above assumes.
+		// It falls back to Resolve when ctx carries no credentials.
+		client, err := e.registry.ResolveWithContext(ctx, spec)
 		if err != nil {
 			return nil, EvalUsage{}, fmt.Errorf("supervise: resolve model %q: %w", spec, err)
 		}

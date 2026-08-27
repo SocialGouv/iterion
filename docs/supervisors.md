@@ -74,8 +74,11 @@ prompt watchdog_policy:
 `ITERION_DEFAULT_SUPERVISOR_MODEL` → **the provider family the watched
 nodes themselves run on** (their `provider:` routing, a `provider/`
 model prefix, or the backend's family — claude_code → anthropic,
-codex → openai), taken only when that provider's credential is actually
-detected → the detector's first available provider. The family
+codex → openai), honoured when that provider is detected in the env OR
+funded by the run's own ctx credentials (a per-provider API key, or the
+codex ChatGPT forfait for openai; the anthropic OAuth forfait does NOT
+count — it is usable only by the claude_code CLI, never by claw) → the
+detector's first available provider. The family
 preference is what keeps the coach on the credential the run already
 proved working: without it, a dead key sitting first in the host
 environment (a platform OPENAI key with no credits, on the prod runner

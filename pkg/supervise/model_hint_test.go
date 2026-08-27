@@ -1,9 +1,11 @@
 package supervise
 
 import (
+	"context"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -154,24 +156,78 @@ func TestResolveModelWithHonoursCtxFundedHint(t *testing.T) {
 	}
 }
 
-// ctxFundsProvider maps the run's ctx credentials onto claw providers:
-// a per-provider API key funds its provider; an OAuth-forfait file funds
-// the provider its CLI belongs to (claude_code → anthropic,
-// codex → openai).
+// ctxFundsProvider: a per-provider API key funds its provider; the codex
+// ChatGPT forfait funds openai (the only OAuth path ResolveWithContext
+// actually has). The claude_code OAuth forfait does NOT fund anthropic —
+// claw's anthropic factory is env-only, so claiming it would resolve an
+// unauthenticated client.
 func TestCtxFundsProvider(t *testing.T) {
 	f := ctxFundsProvider(secrets.Credentials{
 		APIKeys:              map[secrets.Provider]string{"zai": "zk"},
-		OAuthCredentialFiles: map[string]string{"claude_code": "/tmp/cc"},
+		OAuthCredentialFiles: map[string]string{"claude_code": "/tmp/cc", "codex": "/tmp/cx"},
 	})
 	for provider, want := range map[string]bool{
 		"zai":       true,
-		"anthropic": true,
-		"openai":    false,
+		"anthropic": false,
+		"openai":    true,
 		"xai":       false,
 	} {
 		if got := f(provider); got != want {
 			t.Errorf("ctxFundsProvider(%q) = %v, want %v", provider, got, want)
 		}
+	}
+}
+
+// The composition the pod runs: a ctx-sealed BYOK key with an empty env
+// must yield a working evaluator client for that provider (Resolve alone
+// — the env-only path — cannot build it). The runner wires the
+// credentials lookup at boot; the test wires the same canonical closure.
+func TestEvaluatorClientResolvesFromCtxCredentials(t *testing.T) {
+	model.SetCredentialsLookup(func(ctx context.Context) (func(provider string) string, bool) {
+		creds, ok := secrets.CredentialsFromContext(ctx)
+		if !ok {
+			return nil, false
+		}
+		return func(provider string) string { return creds.APIKeys[secrets.Provider(provider)] }, true
+	})
+	e := NewLLMEvaluator()
+	ctx := secrets.WithCredentials(context.Background(),
+		secrets.Credentials{APIKeys: map[secrets.Provider]string{"anthropic": "sk-test"}})
+	client, err := e.registry.ResolveWithContext(ctx, "anthropic/claude-opus-5")
+	if err != nil || client == nil {
+		t.Fatalf("ResolveWithContext with a ctx BYOK key = (%v, %v); want a client", client, err)
+	}
+}
+
+// A whole-run supervisor (no watches:) supervises every node — its hint
+// derives from the workflow's agent/judge nodes generally, in
+// deterministic (sorted) order.
+func TestProviderHintWholeRunDerivesFromAllNodes(t *testing.T) {
+	wf := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"a-tool":     &ir.ToolNode{},
+			"b-campaign": &ir.AgentNode{LLMFields: ir.LLMFields{Backend: "claude_code", Model: "claude-opus-5"}},
+		},
+		Supervisors: []*ir.Supervisor{{Name: "persy"}},
+	}
+	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
+		t.Fatalf("whole-run supervisor must derive its hint from the workflow's LLM nodes, got %+v", specs)
+	}
+}
+
+// A provider: chain is walked until an entry claw can route — the first
+// element is not returned verbatim when it is not a claw provider.
+func TestProviderHintWalksProviderChain(t *testing.T) {
+	wf := &ir.Workflow{
+		Nodes: map[string]ir.Node{
+			"campaign": &ir.AgentNode{LLMFields: ir.LLMFields{Provider: "not-a-provider,anthropic", Backend: "claude_code"}},
+		},
+		Supervisors: []*ir.Supervisor{{Name: "persy", Watches: []string{"campaign"}}},
+	}
+	specs := SpecsFromWorkflow(wf, iterlog.Nop())
+	if len(specs) != 1 || specs[0].ProviderHint != "anthropic" {
+		t.Fatalf("provider chain must be walked to the first claw-routable entry, got %+v", specs)
 	}
 }
 
