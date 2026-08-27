@@ -35,14 +35,15 @@ type Store interface {
 // ScopePlatform, and merging THOSE is not a compromise but the point — they
 // really are one subscription.
 //
-// credFP, when known, is the audit fingerprint of the credential itself
-// (secrets.FingerprintHex). It is what makes the meter follow the
-// CREDENTIAL and not the slot: a rotated token opens a fresh key, so a
-// seven-day reading recorded against the old account — legitimately fresh
-// until its own reset instant — cannot park runs that no longer draw on
-// it. Mesure : une clé neuve posée sur une team est restée bloquée des
-// jours par le reading à 95% de la clé qu'elle remplaçait. Readings
-// recorded under a fingerprint-less key simply expire in place.
+// credFP, when known, is the audit identity of the credential itself —
+// secrets.OAuthIdentityFingerprint for a forfait, secrets.FingerprintSHA256
+// of the key for BYOK. It is what makes the meter follow the CREDENTIAL and
+// not the slot: a rotated token opens a fresh key, so a seven-day reading
+// recorded against the old account — legitimately fresh until its own reset
+// instant — cannot park runs that no longer draw on it. Measured: a fresh
+// key posted on a team stayed blocked for days by the 95% reading of the
+// key it replaced. Readings recorded under a fingerprint-less key simply
+// expire in place, collected by the store's own retention TTL.
 func Key(backend, scope, credFP string) string {
 	backend = strings.TrimSpace(backend)
 	scope = strings.TrimSpace(scope)
