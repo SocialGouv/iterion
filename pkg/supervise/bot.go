@@ -119,9 +119,11 @@ func NewLLMEvaluator() *LLMEvaluator {
 }
 
 // resolveModel picks the model spec: the spec's pin wins, then the
-// ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the detector's
-// suggested claw model. Returns ErrNoSupervisorModel when none resolve.
-func resolveModel(specModel string) (string, error) {
+// ITERION_DEFAULT_SUPERVISOR_MODEL env override, then the provider
+// family the supervised nodes run on (Spec.ProviderHint — only when
+// that provider is detected available), then the detector's first
+// suggestion. Returns ErrNoSupervisorModel when none resolve.
+func resolveModel(specModel, providerHint string) (string, error) {
 	if specModel != "" {
 		return specModel, nil
 	}
@@ -129,7 +131,26 @@ func resolveModel(specModel string) (string, error) {
 		return env, nil
 	}
 	report := detect.Detect(context.Background())
-	if spec := detect.SuggestedModel(detect.BackendClaw, report.Providers); spec != "" {
+	return resolveModelWith("", providerHint, report.Providers)
+}
+
+// resolveModelWith is resolveModel's pure tail (pin/env already
+// consulted by the caller when empty is passed): hinted provider first —
+// the credential the supervised run itself uses beats whatever key sits
+// first in the host environment, which on the prod pods was a dead
+// OPENAI key 429-ing every eval — then the detector's order.
+func resolveModelWith(specModel, providerHint string, providers []detect.ProviderStatus) (string, error) {
+	if specModel != "" {
+		return specModel, nil
+	}
+	if providerHint != "" {
+		for _, p := range providers {
+			if p.Name == providerHint && p.Available && p.SuggestedModel != "" {
+				return p.SuggestedModel, nil
+			}
+		}
+	}
+	if spec := detect.SuggestedModel(detect.BackendClaw, providers); spec != "" {
 		return spec, nil
 	}
 	return "", ErrNoSupervisorModel
@@ -138,7 +159,7 @@ func resolveModel(specModel string) (string, error) {
 // Evaluate implements Evaluator.
 func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, EvalUsage, error) {
 	if e.client == nil {
-		spec, err := resolveModel(in.Spec.Model)
+		spec, err := resolveModel(in.Spec.Model, in.Spec.ProviderHint)
 		if err != nil {
 			return nil, EvalUsage{}, err
 		}

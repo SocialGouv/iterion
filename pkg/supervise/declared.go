@@ -120,17 +120,63 @@ func SpecsFromWorkflow(wf *ir.Workflow, logger *iterlog.Logger) []Spec {
 			}
 			monitors = append(monitors, parsed...)
 		}
+		hint := ""
+		if sup.Model == "" {
+			hint = providerHintFromWatched(wf, sup.Watches)
+		}
 		specs = append(specs, Spec{
-			Name:     sup.Name,
-			Model:    sup.Model,
-			System:   system,
-			Watches:  sup.Watches,
-			Monitors: monitors,
-			Cooldown: sup.Cooldown,
-			MaxEvals: sup.MaxEvals,
+			Name:         sup.Name,
+			Model:        sup.Model,
+			ProviderHint: hint,
+			System:       system,
+			Watches:      sup.Watches,
+			Monitors:     monitors,
+			Cooldown:     sup.Cooldown,
+			MaxEvals:     sup.MaxEvals,
 		})
 	}
 	return specs
+}
+
+// providerHintFromWatched derives the provider family the watched nodes
+// run on, so an unpinned evaluator can prefer the credential the run
+// itself uses (see Spec.ProviderHint). Sources, per node, strongest
+// first: the node's explicit provider: routing (first of the chain), a
+// "provider/" prefix on its model, then the backend's own family
+// (claude_code → anthropic, codex → openai). CLI backends whose
+// credential claw cannot reuse (pi, kimi, grok) yield no hint.
+func providerHintFromWatched(wf *ir.Workflow, watches []string) string {
+	for _, id := range watches {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			continue
+		}
+		var llm *ir.LLMFields
+		switch n := node.(type) {
+		case *ir.AgentNode:
+			llm = &n.LLMFields
+		case *ir.JudgeNode:
+			llm = &n.LLMFields
+		default:
+			continue
+		}
+		if p := ir.ExpandEnvWithDefault(llm.Provider); p != "" {
+			if first, _, _ := strings.Cut(p, ","); strings.TrimSpace(first) != "" {
+				return strings.TrimSpace(first)
+			}
+		}
+		model := ir.ExpandEnvWithDefault(llm.Model)
+		if provider, _, found := strings.Cut(model, "/"); found && provider != "" && !strings.ContainsAny(provider, "${") {
+			return provider
+		}
+		switch ir.ExpandEnvWithDefault(llm.Backend) {
+		case "claude_code":
+			return "anthropic"
+		case "codex":
+			return "openai"
+		}
+	}
+	return ""
 }
 
 // StartDeclared spawns one Coordinator per spec, each observing runID

@@ -43,6 +43,15 @@ type Spec struct {
 	// "anthropic/claude-opus-4-8"). Empty => auto-detect a reachable
 	// provider (see resolveModel).
 	Model string
+	// ProviderHint names the provider family the SUPERVISED nodes run
+	// on (derived from their provider:/model:/backend: by
+	// SpecsFromWorkflow). With no Model pin and no env override, the
+	// evaluator prefers this family over the detector's first pick —
+	// so the coach speaks through the credential the run itself proved
+	// working, instead of whatever key happens to sit first in the host
+	// environment. Consulted only when that provider is detected
+	// available; never a hard requirement.
+	ProviderHint string
 	// System is the resolved system-prompt text: the supervision policy
 	// (what to watch for, when to intervene, how forcefully).
 	System string

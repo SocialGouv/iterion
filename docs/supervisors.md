@@ -59,7 +59,7 @@ allowed (each watching a different node set).
 ```
 supervisor watchdog:
   watches: [implement, fix]            # agent node(s) to steer (omit = whole run)
-  model: "anthropic/claude-opus-5"  # default: auto-detect / ITERION_DEFAULT_SUPERVISOR_MODEL
+  model: "anthropic/claude-opus-5"  # optional pin; resolution below
   system: watchdog_policy              # a prompt: ref — the supervision policy
   cooldown: "45s"                      # min between turn-boundary evals (default 30s)
   max_evals: 12                        # hard eval cap (default 20)
@@ -69,6 +69,18 @@ prompt watchdog_policy:
   Intervene only if the implementer edits files outside src/, or a Bash
   test fails twice in a row. Keep messages short and actionable.
 ```
+
+**Model resolution** (unpinned supervisors): `model:` pin →
+`ITERION_DEFAULT_SUPERVISOR_MODEL` → **the provider family the watched
+nodes themselves run on** (their `provider:` routing, a `provider/`
+model prefix, or the backend's family — claude_code → anthropic,
+codex → openai), taken only when that provider's credential is actually
+detected → the detector's first available provider. The family
+preference is what keeps the coach on the credential the run already
+proved working: without it, a dead key sitting first in the host
+environment (a platform OPENAI key with no credits, on the prod runner
+pods) 429-ed every eval while the supervised campaign ran fine on
+Anthropic.
 
 `monitors:` pre-seeds event patterns at coordinator construction, armed
 as soon as a watched node becomes active (immediately, for a supervisor
