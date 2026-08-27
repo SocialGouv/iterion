@@ -64,6 +64,7 @@ first bilan for a bot lands.
 | Endy | `e2e-coverage` | matrix-anchored e2e coverage completion (claims-verified gate) | [e2e-coverage.md](e2e-coverage.md) |
 | Doki | `docs-refresh` | docs↔code convergence loop | [docs-refresh.md](docs-refresh.md) |
 | Wikky | `wiki-gen` | navigable OKF wiki generator/maintainer | [wiki-gen.md](wiki-gen.md) |
+| Prody | `product-docs` | functional (business-audience) product docs, docs repo ← N source repos | [product-docs.md](product-docs.md) |
 | Revi | `review-pr` | read-only reviewer (mono default; cross-family dual opt-in) | [review-pr.md](review-pr.md) |
 | Revi (converse) | `revi-converse` | conversational PR follow-up | _not yet_ |
 | Seki | `sec-audit-source` | source SAST audit | [sec-audit-source.md](sec-audit-source.md) |

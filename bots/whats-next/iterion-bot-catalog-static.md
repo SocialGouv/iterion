@@ -85,6 +85,7 @@ Walk top-to-bottom; first match wins.
 | "review this PR / branch and just REPORT the issues" — read-only review, posts findings to the board, does NOT fix or commit | `review-pr` |
 | "upgrade dependencies", "patch CVEs", "bump versions", "renovate" — MUTATING (writes package.json / go.mod / lockfiles) | `secured-renovacy` |
 | "audit the docs", "find code↔doc drift", "doc/code alignment", "fix outdated README/CLAUDE.md" | `docs-refresh` |
+| "document what the product does for its users", "functional / business documentation", "doc produit", "the user guide is out of date" — for a NON-TECHNICAL audience, in a DEDICATED docs repo, from one or more source repos named by a product catalog | `product-docs` |
 | "audit the source for vulns", "find injection / SSRF / IDOR / secrets", "OWASP source scan" — DETECTION (writes findings, not fixes) | `sec-audit-source` |
 | "audit dependencies for malware / typosquats / install hooks", "supply-chain check", "post-`npm install` triage" — DETECTION across installed deps | `sec-audit-deps` |
 | "migrate the framework major", "modernise the legacy app", "the runtime moved and everything with it" — behaviour-preserving, gate to gate | `modernize` for ONE lot; `campaign` to supervise the whole programme |
@@ -210,6 +211,36 @@ before you walk the table on a new roadmap item.
   whole-improve-loop / etc. When an operator asks you for a long-horizon
   vision on a mature repo, the right move is often to route to `evolve`
   rather than answer at your own altitude.
+
+### `docs-refresh` (Doki) vs `wiki-gen` (Wikky) vs `product-docs` (Prody) — the three documentation bots
+
+All three write `.md` and commit. They differ on **who reads the
+result**, and secondarily on **where the pages live relative to the
+code**. Settle the audience first; the topology follows.
+
+- `docs-refresh` / Doki: a **developer** audience. It aligns the repo's
+  OWN existing technical docs (README, CLAUDE.md, `docs/**`) against
+  the code, IN PLACE, in the same repo. Repairs stale prose and writes
+  what is missing.
+- `wiki-gen` / Wikky: a **developer** audience too, but it OWNS a
+  parallel artifact — a navigable OKF `wiki/` tree it generates and
+  maintains in the code repo. Reach for it when the repo needs a
+  navigable knowledge base it does not have, not when existing docs
+  need fixing.
+- `product-docs` / Prody: a **business / end-user** audience. It writes
+  what the product does for the people who USE it — role by role,
+  journey by journey, in French — in a **dedicated documentation
+  repository**, grounded in the source code of the N **other**
+  repositories a product catalog names. It never touches those source
+  repos, and it publishes no technical content at all.
+- Tie-break — **audience**: "could a non-developer act on this page?"
+  Yes → Prody. No → Doki or Wikky.
+- Tie-break — **topology**: docs and code in the SAME repo → Doki or
+  Wikky. Docs in their own repo, code in one or more others, with a
+  catalog naming them → Prody (it is the only one that clones sources).
+- Prody needs two inputs with no default: `catalog_path` and
+  `product_id`. If the operator cannot name a product catalog, the work
+  is probably not Prody's — ask before routing.
 
 ### `ultra11y` (Ally) vs `rgaa-audit` (Acci) — who FINDS the non-conformity
 

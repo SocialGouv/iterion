@@ -1,0 +1,117 @@
+name: product-docs
+display_name: Prody
+icon: 🧭
+version: 1.0.0
+## 1.0.0 — Functional (business-audience) product documentation,
+## generated and maintained in a DEDICATED docs repository from a
+## MULTI-REPO product catalog. Mirrors docs-refresh v3's topology (one
+## capable claude_code agent + a mission + TRUTH gates only) with three
+## deltas that make the cross-repo, non-technical case work:
+##   - catalog_ingest, a deterministic front door that resolves the
+##     product from a catalog YAML, shallow-clones its N source repos
+##     OUT of the docs worktree, redacts secret-bearing files from the
+##     clones, and reports a repo it could not read as an explicit
+##     `degraded` inventory entry (never a silent skip);
+##   - page_lint, a deterministic EDITORIAL gate — a published page
+##     carries no working notes (no HTML comments, no "Sources" box, no
+##     "Points à clarifier", no "Correspondance technique" annex);
+##   - EDITORIAL SOVEREIGNTY: the docs repo's own `.product-docs/*.md`
+##     override the bundle's default editorial skills wherever the two
+##     disagree (ADR-092).
+## Source deltas are git-native: every commit carries a
+## `Product-Docs-Sources: <repo>@<sha>,…` trailer, so "what changed in
+## the sources since we last documented them" survives a crashed run
+## and a wiped scratch dir with no side-car state file.
+description: |
+  Functional documentation bot — one capable agent writes and maintains
+  the BUSINESS-AUDIENCE documentation of a product ("what it does for
+  its users") inside a DEDICATED documentation repository, grounded in
+  the source code of the N repositories a product catalog names.
+
+  It resolves the product from a catalog YAML (`catalog_path` +
+  `product_id`), shallow-clones every source repo out of the docs
+  worktree, redacts secret-bearing files from those clones, then reads
+  what the sources actually implement — user-facing templates, i18n
+  catalogs, form and validation rules, routes, API contracts, any
+  framework — and writes the product's pages: a hub per user role or
+  journey, one sub-page per step. Every page lands as its own
+  `docs(...)` commit carrying a `Bot: product-docs` trailer and a
+  `Product-Docs-Sources: <repo>@<sha>` trailer recording exactly which
+  source commits it was written against.
+
+  Sourced facts or `[à confirmer]` — never an invented business rule.
+  Human-validated prose is preserved and touched only where the code
+  contradicts it. A repository it could not clone is declared as a hole
+  in the report, never documented from inference.
+
+  The determinism is TRUTH-only: a scope gate fails the run if anything
+  outside `<product_dir>/**/*.md` changed, an EDITORIAL LINT gate fails
+  it if a published page still carries working notes, and convergence
+  is those two gates ∧ the campaign's honest `docs_aligned` contract —
+  nothing else. A deterministic scan runs each pass as an ADVISORY
+  hints producer (dead links, orphan pages, catalog surfaces no page
+  covers): help the agent is free to contradict, never an obligation.
+
+  EDITORIAL SOVEREIGNTY: the bundle ships generic default editorial
+  skills in French (documentary model, GitBook blocks, glossary, tone),
+  but when the docs repo publishes its own `.product-docs/*.md` those
+  are authoritative and override the defaults. The product team owns
+  its editorial line; the bot brings a default, not a house style.
+
+  Opt-in delivery: open_mr=true pushes the page series and opens ONE
+  pull request at the end of the run — as a DRAFT by default, because
+  functional documentation is validated by the product owners on the
+  forge and marking it ready is their act, not the bot's.
+when_to_use: |
+  Use to generate or maintain the FUNCTIONAL, non-technical
+  documentation of a product — what it does for its users, role by
+  role and journey by journey — when that documentation lives in its
+  OWN repository and the code lives in one or more OTHER repositories
+  named by a product catalog. Run it in the docs repo with
+  `catalog_path` + `product_id`. It writes `.md` under the product's
+  directory only, and never touches the source repositories.
+
+  NOT for technical documentation living next to the code (that is
+  docs-refresh / Doki, which aligns a repo's own README / docs/ in
+  place), and NOT for a technical knowledge wiki (that is wiki-gen /
+  Wikky, which owns a `wiki/` tree in the code repo). The
+  distinguisher is the AUDIENCE first — a product's users, not its
+  developers — and the topology second: docs repo here, N source
+  repos there.
+author: SocialGouv (devthejo) — product-docs/main.bot
+schema_version: 1
+
+triggers:
+  - product-docs
+  - functional-docs
+  - doc-produit
+
+## The catalog vars have no sensible default (see main.bot): a board
+## dispatch that omits them fails LOUDLY in catalog_ingest rather than
+## documenting the wrong product. Per-ticket `bot_args` supply them.
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+invocations:
+  - kind: command
+    mode: direct
+    args_var: scope_notes
+    command: { name: prody, aliases: [product-docs, doc-produit], scope: any, min_replier_role: developer }
+  - kind: schedule
+    mode: board
+    ## A weekly reconciliation is INCREMENTAL by construction: it aligns
+    ## the pages against the source commits landed since the last run,
+    ## not the whole corpus. Declared here so the scheduled run actually
+    ## carries it — a var only a human can pass is not a schedule.
+    schedule: { suggested_cron: "0 5 * * 1", default_vars: { mode: incremental } }
+  - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [catalog_path, product_id, scope_notes, open_mr]
+  hidden: [workspace_dir, dismissed_path, scratch_dir, max_hints]
