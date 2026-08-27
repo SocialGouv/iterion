@@ -181,8 +181,11 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// bump with a dual-accept window (MinSchemaVersion=8): the change is
 	// purely additive, so consumers take both and a rolling deploy has no
 	// rollout-ordering hazard.
-	if SchemaVersion != 9 {
-		t.Errorf("SchemaVersion = %d, want 9 (bump intentionally)", SchemaVersion)
+	// v=10 (2026-08-27) added ModelOverride.Effort so a stale runner
+	// rejects the message rather than silently dropping the operator's
+	// reasoning_effort pin.
+	if SchemaVersion != 10 {
+		t.Errorf("SchemaVersion = %d, want 10 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 8 {
 		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)

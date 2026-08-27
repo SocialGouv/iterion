@@ -58,6 +58,12 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra
 	var owned []string
 	dirsReady := false
 	for _, name := range refs {
+		if err := skilllib.ValidName(name); err != nil {
+			if logger != nil {
+				logger.Warn("skill %q skipped: %v", name, err)
+			}
+			continue
+		}
 		srcPath, ok := store.Resolve(name)
 		if !ok {
 			// The reference may already be satisfied: this mirror runs AFTER the
@@ -188,6 +194,9 @@ func ResolveExtraSkills(projectStoreDir string, names []string) error {
 	store := skilllib.LocalStoreForProject(projectStoreDir)
 	var missing []string
 	for _, n := range names {
+		if err := skilllib.ValidName(n); err != nil {
+			return fmt.Errorf("skill %q: %w", n, err)
+		}
 		if _, ok := store.Resolve(n); !ok {
 			missing = append(missing, n)
 		}

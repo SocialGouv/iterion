@@ -51,9 +51,11 @@ export async function getArtifact(
   runId: string,
   nodeId: string,
   version: number,
+  opts?: { signal?: AbortSignal },
 ): Promise<Artifact> {
   return request(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(nodeId)}/${version}`,
+    { signal: opts?.signal },
   );
 }
 
@@ -198,7 +200,7 @@ export async function lookupDraft(
     if (opts?.signal?.aborted) return { source: null, designing };
     let art: Artifact;
     try {
-      art = await getArtifact(runId, s.node_id, s.version);
+      art = await getArtifact(runId, s.node_id, s.version, opts);
     } catch {
       // One unreadable artifact must not hide a draft published by another
       // node — keep looking rather than failing the whole lookup.

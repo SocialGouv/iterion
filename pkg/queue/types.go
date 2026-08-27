@@ -78,9 +78,12 @@ import (
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
-// later bump; the additive-intent rule above prevents repeating it. Effort
-// rides the same field (additive, no bump).
-const SchemaVersion = 9
+// later bump; the additive-intent rule above prevents repeating it.
+// v=10 (2026-08-27): ModelOverride.Effort. Dropping it makes a stale runner
+// accept the message as v9 and run each node at its DSL reasoning_effort —
+// an operator who pinned ultracode gets the bot's declared effort with no
+// signal. MinSchemaVersion stays 8: a new runner still consumes queued v8/v9.
+const SchemaVersion = 10
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored

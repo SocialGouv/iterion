@@ -1842,26 +1842,3 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 	}
 	return out, nil
 }
-
-// modelOverridesFromMsg folds the wire pins into the executor's override
-// set — the runner-side twin of runview's launch-entry fold, so a cloud
-// run resolves per-node models exactly like a local launch with the same
-// flags.
-func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
-		if e.Effort != "" {
-			o.SetEffort(e.Selector, e.Effort)
-		}
-	}
-	return o
-}

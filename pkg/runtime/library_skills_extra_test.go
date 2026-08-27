@@ -123,3 +123,13 @@ func TestResolveExtraSkillsIsANoOpWithNoNames(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestResolveExtraSkillsRefusesAPathEscapingName(t *testing.T) {
+	err := ResolveExtraSkills(t.TempDir(), []string{"../../tmp/x"})
+	if err == nil {
+		t.Fatal("expected an error for a path-shaped skill name")
+	}
+	if !strings.Contains(err.Error(), "invalid skill name") && !strings.Contains(err.Error(), "../../tmp/x") {
+		t.Errorf("the error must name the bad skill: %v", err)
+	}
+}

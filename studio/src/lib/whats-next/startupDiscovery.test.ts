@@ -85,7 +85,9 @@ describe("attachSessionRun", () => {
       loadEventHistoryIfMissing: vi.fn(() => history),
     };
     const store = { getState: () => state } as unknown as RunStore;
-    api.getRunWithRetry.mockResolvedValueOnce({ run: { id: "run-a" } });
+    api.getRunWithRetry.mockResolvedValueOnce({
+      run: { id: "run-a", workflow_name: "whats-next" },
+    });
     let cancelled = false;
 
     const attaching = attachSessionRun({
@@ -103,5 +105,29 @@ describe("attachSessionRun", () => {
     finishHistory();
 
     await expect(attaching).resolves.toBe(false);
+  });
+
+  it("rejects a run whose workflow is not this bot's", async () => {
+    const state = {
+      reset: vi.fn(),
+      applySnapshot: vi.fn(),
+      setRunId: vi.fn(),
+      loadEventHistoryIfMissing: vi.fn(),
+    };
+    const store = { getState: () => state } as unknown as RunStore;
+    api.getRunWithRetry.mockResolvedValueOnce({
+      run: { id: "run-nexie", workflow_name: "whats-next" },
+    });
+
+    const attached = await attachSessionRun({
+      store,
+      runId: "run-nexie",
+      botId: "copilot",
+      scopeKey: "project-a",
+      signal: new AbortController().signal,
+      isCancelled: () => false,
+    });
+    expect(attached).toBe(false);
+    expect(state.applySnapshot).not.toHaveBeenCalled();
   });
 });

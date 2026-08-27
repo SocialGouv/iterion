@@ -145,6 +145,15 @@ function findExistingTab(
   kind: TabKind,
   params: Record<string, string>,
 ): Tab | undefined {
+  // A draft tab starts as `{draft}` and later gains `file` on Save As.
+  // Exact paramsEqual would miss it and open a duplicate "Draft" tab
+  // that steals focus from the saved file (R11c8b3).
+  if (kind === "editor" && params.draft) {
+    const byDraft = tabs.find(
+      (t) => t.kind === "editor" && t.params.draft === params.draft,
+    );
+    if (byDraft) return byDraft;
+  }
   return tabs.find((t) => t.kind === kind && paramsEqual(t.params, params));
 }
 

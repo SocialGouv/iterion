@@ -77,6 +77,14 @@ export async function attachSessionRun(opts: {
   // listing by a beat. See getRunWithRetry for the race rationale.
   const snap = await getRunWithRetry(opts.runId, { signal: opts.signal });
   if (opts.isCancelled()) return false;
+  const workflow = snap.run.workflow_name ?? "";
+  if (!candidateWorkflows(opts.botId).includes(workflow)) {
+    // attachRunId is conversation-owned, not bot-owned. After a bot
+    // switch the previous bot's runId can still be sitting on the
+    // conversation; hydrating it would fold that transcript through
+    // the new bot's nodeMap and queue messages into the wrong run.
+    return false;
+  }
   // Continuity is the central whats-next promise: when the user
   // returns to /whats-next after a previous session ended, they
   // expect to see the full transcript of that exchange, not a

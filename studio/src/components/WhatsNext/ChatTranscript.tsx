@@ -117,6 +117,15 @@ export default function ChatTranscript({
     return messages.filter((m) => !hiddenIds.has(m.id));
   }, [messages]);
 
+  // bubbleSlot only renders on a human-question row. Anchoring it to the
+  // last visible message dropped the CTA whenever a banner or narration
+  // landed after the question, or the moment the operator answered
+  // (AnsweredTurn used to ignore the slot). Last hostable row, answered
+  // or not (R98e430).
+  const lastHostableId = [...visible]
+    .reverse()
+    .find((m) => m.kind === "human-question")?.id;
+
   return (
     <div
       ref={scrollContainerRef}
@@ -127,7 +136,7 @@ export default function ChatTranscript({
         <MessageRow
           key={m.id}
           message={m}
-          bubbleSlot={m.id === visible[visible.length - 1]?.id ? bubbleSlot : undefined}
+          bubbleSlot={m.id === lastHostableId ? bubbleSlot : undefined}
           bot={bot}
           onHumanSubmit={onHumanSubmit}
           busy={m.kind === "human-question" && busyMessageId === m.id}

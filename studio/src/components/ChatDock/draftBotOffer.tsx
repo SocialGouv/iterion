@@ -2,11 +2,13 @@
 // answers it. Extracted from ChatDock so both halves are testable on their own —
 // the click path was reported broken from a real session and had no test.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowRightIcon, Pencil2Icon } from "@radix-ui/react-icons";
 import { Link, useLocation } from "wouter";
 
 import { useDraftState } from "@/hooks/useDraftBot";
+
+const openedDraftRuns = new Set<string>();
 
 // What the "Open the editor" button says on the operator's behalf. The click
 // is a CONSENT event — the assistant asked to move, the operator agreed — so it
@@ -85,11 +87,13 @@ export function DraftBotOffer({
   // in step across later turns is the tab's own job (EditorTabHost subscribes
   // to the draft), because re-navigating to the same URL would change nothing:
   // same params, same tab.
-  const openedRef = useRef<string | null>(null);
+  // Module-level, not a component ref: DraftBotOffer is ChatTranscript's
+  // bubbleSlot and remounts onto every new last-message row. A ref would
+  // reset and yank the operator back onto `?draft=` on every turn (R0c4339).
   useEffect(() => {
     if (!runId || !hasDraft || !onEditor) return;
-    if (openedRef.current === runId) return;
-    openedRef.current = runId;
+    if (openedDraftRuns.has(runId)) return;
+    openedDraftRuns.add(runId);
     // `replace` — this is not a place the operator navigated to, so it must
     // not cost them a Back press to leave.
     setLocation(`/editor?draft=${encodeURIComponent(runId)}`, { replace: true });

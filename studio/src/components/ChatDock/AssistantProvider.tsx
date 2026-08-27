@@ -317,8 +317,13 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
     (id: string) => {
       writeStringFlag(ASSISTANT_BOT_KEY, id);
       if (!active) return;
+      // Drop runId: the conversation's previous run belongs to the previous
+      // bot. Keeping it makes attachRunId hydrate that transcript under the
+      // new bot's name and queue the next message into the wrong session.
       persist(
-        ensured.map((c) => (c.id === active.id ? { ...c, botId: id } : c)),
+        ensured.map((c) =>
+          c.id === active.id ? { ...c, botId: id, runId: undefined } : c,
+        ),
         active.id,
       );
     },
@@ -403,9 +408,10 @@ function AssistantSessionHost({ children }: { children: ReactNode }) {
         />
       ))}
       <ActiveConversation
-        // Keyed on the conversation AND the bot: switching either is a
-        // different session, and a stale transcript must not bleed across.
-        key={`${active?.id ?? "none"}:${activeBot?.id ?? "none"}`}
+        // Not keyed. A key here remounts `{children}` — AppShell, the
+        // route tree, dialogs — because this wraps the authenticated
+        // app. Session identity is the hook's bot/scope reset plus
+        // selectBot dropping runId (R39dd84).
         bot={activeBot}
         bots={registry.dockBots}
         selectBot={selectBot}

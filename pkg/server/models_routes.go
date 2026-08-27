@@ -61,6 +61,24 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
+	// Cloud runs never execute in this process: credentials are sealed per
+	// run (BYOK → forfait → pool → platform) and consumed in a runner pod.
+	// Advertising THIS pod's detect.Report as Usable would file a team's
+	// own BYOK under "no credential" and leak the platform's credential
+	// SOURCE names cross-tenant (Rfdd627).
+	if s.queue != nil {
+		const reason = "cloud runs resolve credentials at launch, not from this API pod"
+		cat.RecommendedSpec = ""
+		cat.ResolvedDefaultBackend = ""
+		cat.Backends = nil
+		for i := range cat.Models {
+			cat.Models[i].Usable = false
+			cat.Models[i].UnusableReason = reason
+			cat.Models[i].Backends = nil
+			cat.Models[i].CredentialSource = ""
+			cat.Models[i].Recommended = false
+		}
+	}
 	s.writeJSONFor(w, r, cat)
 }
 

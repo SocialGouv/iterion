@@ -169,7 +169,10 @@ export default function EditorTabHost({ tabId, file, draft }: Props) {
     queryFn: ({ signal }) => findDraftBotSource(draft as string, { signal }),
     enabled: !!draft && !file,
     staleTime: Infinity,
-    refetchInterval: DRAFT_FALLBACK_REFETCH_MS,
+    // Stop polling once the lookup has failed — a pruned/cancelled run
+    // would otherwise walk the whole artifact list every 30s for the
+    // tab's lifetime (R0bb32f).
+    refetchInterval: (q) => (q.state.status === "error" ? false : DRAFT_FALLBACK_REFETCH_MS),
     retry: false,
   });
 

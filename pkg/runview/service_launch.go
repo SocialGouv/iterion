@@ -221,6 +221,17 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		ir.ApplyBudgetOverrides(wf, *spec.Budget)
 	}
 
+	// Same dual screen as the cloud path: a run-level `off` over a
+	// workflow `ask`/`deny` plus a backend that cannot enforce the gate
+	// would be admitted here and refused on every Resume (resume does
+	// not carry spec.Permission). Screening both resolutions fail-closes
+	// that strand (R2edfc5).
+	for _, mode := range []string{spec.Permission, ""} {
+		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), mode); err != nil {
+			return nil, err
+		}
+	}
+
 	_, runLogger := s.prepareRunLog(runID)
 
 	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO

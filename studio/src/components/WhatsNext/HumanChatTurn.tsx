@@ -114,7 +114,9 @@ export default function HumanChatTurn({
   const disabled = busy || localSubmitting;
 
   if (message.status === "answered") {
-    return <AnsweredTurn message={message} persona={persona} />;
+    return (
+      <AnsweredTurn message={message} persona={persona} slot={bubbleSlot} />
+    );
   }
 
   const hasActions = (message.actions?.length ?? 0) > 0;
@@ -364,13 +366,15 @@ function AssistantBubble({
 function AnsweredTurn({
   message,
   persona,
+  slot,
 }: {
   message: HumanQuestionMessage;
   persona: string;
+  slot?: ReactNode;
 }) {
   return (
     <div className="space-y-2">
-      <AssistantBubble text={message.prompt} persona={persona} />
+      <AssistantBubble text={message.prompt} persona={persona} slot={slot} />
       <OperatorBubble
         text={message.userReply ?? ""}
         empty={
