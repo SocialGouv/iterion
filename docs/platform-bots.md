@@ -54,8 +54,11 @@ is CLI-first.
   devbox.json.
 - **Version drift**: a push racing an in-flight launch fails that attempt
   loudly (`version drift: store has vN+1, launch resolved vN`) rather than
-  pairing the launch's IR with newer resources; a resume re-resolves the
-  current version end-to-end and self-heals. Same for a deleted row.
+  pairing the launch's IR with newer resources. A resume re-resolves the
+  current row, so a skills-or-manifest-only push self-heals — but a push
+  that changed `main.bot` or `prompts/` moves the workflow hash, so the
+  resume is REFUSED until you force it (and the auto-retry sweeper, which
+  never forces, re-arms then abandons). Same for a deleted row.
 - **Resume re-resolves by ORIGIN, not by path**: the launch persists which
   tier served the run (`bot_source_tenant` on the run doc — the team, the
   `platform:` sentinel, or empty for baked). A resume/auto-retry reloads
@@ -88,6 +91,12 @@ review the diff first (`admin bots pull` + `git diff` against the repo).
 - **Binary files** cannot ride an override (the store carries JSON text);
   `push` refuses them explicitly. A bot with binary attachments keeps its
   baked form. Content-addressed blob storage is the follow-up.
+- **File modes are dropped**: the store carries path→content only, and
+  materialization writes every file `0644` — an executable helper loses
+  its `+x` bit, so a step invoking it directly fails with permission
+  denied on the override while the baked bundle worked. `push` warns per
+  executable file; call helpers through their interpreter
+  (`python3 script.py`, not `./script.py`) in an overridable bot.
 - **Provisioned webhook projections** (`CommandMap`/`BotRules` stored on a
   forge repo integration at provision time) are not rebuilt on a push; an
   override that changes `invocations:` routes correctly through live

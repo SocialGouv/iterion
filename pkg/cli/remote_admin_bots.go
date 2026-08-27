@@ -50,6 +50,9 @@ func RemoteAdminBotsPush(ctx context.Context, c *RemoteClient, p *Printer, dir, 
 	if strings.TrimSpace(files[botsource.MainBotFile]) == "" {
 		return fmt.Errorf("bundle dir %q has no %s", dir, botsource.MainBotFile)
 	}
+	for _, p := range botsource.ExecutableFiles(dir) {
+		fmt.Fprintf(os.Stderr, "warning: %s is executable — the override drops file modes (materialized 0644), so a step invoking it directly will fail; call it through its interpreter instead\n", p)
+	}
 	body, err := json.Marshal(map[string]any{"files": files})
 	if err != nil {
 		return err

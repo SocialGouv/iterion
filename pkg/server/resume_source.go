@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -13,6 +14,31 @@ import (
 // clear on its own (a store blip) — the retry sweeper re-arms on it instead
 // of abandoning the retry, and callers must not treat it as "bot deleted".
 var errResumeResolveTransient = errors.New("resume: stored-bot resolution transiently failed")
+
+// resumeSourceFiller is the runview.ResumeSourceFiller the server wires into
+// the run service: it covers every Resume call that arrives WITHOUT a
+// resolved source — answer-human (HTTP + WS) and the ADR-081 async
+// auto-resume — so a stored-bot run resumes on its own tiers instead of the
+// pod's baked twin. Cloud-only: a local resume never touches the bot-source
+// store, and its path semantics stay byte-identical to the pre-seam code.
+func (s *Server) resumeSourceFiller(ctx context.Context, run *store.Run, spec *runview.ResumeSpec) (func(), error) {
+	if s.cfg.Mode != "cloud" {
+		return nil, nil
+	}
+	filePath := spec.FilePath
+	if filePath == "" {
+		filePath = run.FilePath
+	}
+	absPath, source, lb, err := s.resolveResumeSource(ctx, run.BotSourceTenant, filePath, spec.Source, run.WorkflowSource)
+	if err != nil {
+		return nil, err
+	}
+	spec.FilePath, spec.Source = absPath, source
+	if lb != nil {
+		spec.BundleDir, spec.BotBundle = lb.BundleDir, lb.Ref
+	}
+	return lb.Cleanup, nil
+}
 
 // resolveResumeSource turns a run's persisted file path (plus any inline
 // source the caller already has) into the (absolute path, source) pair
@@ -30,11 +56,12 @@ var errResumeResolveTransient = errors.New("resume: stored-bot resolution transi
 // launch snapshot; it is only used when an implicit local resume cannot
 // safely resolve the recorded path.
 //
-// Shared by the operator-initiated resume handler and the retry sweeper so
-// the cloud-mode rule lives in one place: a server pod has no operator
-// filesystem, so a resume must carry inline source UNLESS it names a bot
-// the pod can resolve itself. Duplicating that rule is how the automated
-// path would quietly diverge from the manual one.
+// Shared by the operator-initiated resume handler, the retry sweeper, and
+// (through resumeSourceFiller) every bare runview.Resume, so the cloud-mode
+// rule lives in one place: a server pod has no operator filesystem, so a
+// resume must carry inline source UNLESS it names a bot the pod can resolve
+// itself. Duplicating that rule is how the automated path would quietly
+// diverge from the manual one.
 func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, filePath, source, persistedSource string) (string, string, *launchBot, error) {
 	if filePath == "" && source == "" {
 		return "", "", nil, fmt.Errorf("file_path or source is required (run has no persisted FilePath)")
@@ -58,6 +85,13 @@ func (s *Server) resolveResumeSource(ctx context.Context, botSourceTenant, fileP
 		if lb != nil && source == "" {
 			source = lb.Source
 			filePath = lb.Path
+		}
+		if source == "" && persistedSource != "" {
+			// Not a resolvable bot and the caller brought nothing — an
+			// inline-source cloud launch. The persisted launch snapshot is
+			// the trusted source to resume on (same rationale as the
+			// dispatcher-worktree fallback below).
+			source = persistedSource
 		}
 		if source == "" {
 			return "", "", nil, fmt.Errorf("cloud mode: source or a catalog bot is required (file_path is not portable across the server pod's filesystem)")

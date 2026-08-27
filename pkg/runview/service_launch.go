@@ -399,6 +399,20 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		return nil, err
 	}
 
+	// A bare spec (answer-human HTTP/WS, the async auto-resume) carries no
+	// source: re-derive it from the persisted run so a stored-bot run
+	// resumes on ITS bundle, not the pod's baked twin. Callers that already
+	// resolved (the resume handler, the retry sweeper) are left untouched.
+	if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
+		cleanup, ferr := s.resumeFiller(parent, r, &spec)
+		if ferr != nil {
+			return nil, fmt.Errorf("runview: resolve resume source: %w", ferr)
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+
 	// Compile and compare synchronously before handing the resume to any
 	// asynchronous execution mode. Without this preflight, in-process runs
 	// returned from spawnRun before Engine.Resume checked the hash, while

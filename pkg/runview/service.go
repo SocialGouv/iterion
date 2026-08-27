@@ -590,6 +590,9 @@ type Service struct {
 	// the engine in-process (local mode). See LaunchPublisher and
 	// WithLaunchPublisher.
 	publisher LaunchPublisher
+	// resumeFiller re-derives a bare ResumeSpec's source/bundle from the
+	// persisted run (see WithResumeSourceFiller). Nil = no-op.
+	resumeFiller ResumeSourceFiller
 
 	// localSecrets + localSealer are the local (non-cloud) sealed secret
 	// store and its AES-GCM sealer. When set (local studio / desktop),
@@ -758,6 +761,21 @@ func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// ResumeSourceFiller re-derives a resume's Source/BundleDir/BotBundle from
+// the persisted run when the caller supplied none. Resume invokes it for
+// every bare ResumeSpec, so surfaces that answer a run without carrying
+// source (answer-human HTTP/WS, the ADR-081 async auto-resume) resolve the
+// same stored-bot tiers as an explicit resume — never the pod's baked twin.
+// The returned cleanup (may be nil) releases any materialized bundle dir
+// once the resume has been handed off.
+type ResumeSourceFiller func(ctx context.Context, run *store.Run, spec *ResumeSpec) (func(), error)
+
+// WithResumeSourceFiller wires the server-side resume-source resolution
+// into every Resume call that arrives without an explicit source.
+func WithResumeSourceFiller(fn ResumeSourceFiller) ServiceOption {
+	return func(s *Service) { s.resumeFiller = fn }
 }
 
 // WithForgeTokenResolver wires the forge-credential lookup used to merge

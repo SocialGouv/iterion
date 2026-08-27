@@ -609,6 +609,10 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if s.usageCapSource != nil {
 			opts = append(opts, runview.WithUsageCapSource(s.usageCapSource))
 		}
+		// Resume surfaces that carry no source (answer-human HTTP/WS, the
+		// async auto-resume) re-derive it from the run's persisted origin —
+		// same tiers as an explicit resume, never the pod's baked twin.
+		opts = append(opts, runview.WithResumeSourceFiller(s.resumeSourceFiller))
 		svc, svcErr := runview.NewService("", opts...)
 		if svcErr != nil {
 			logger.Warn("run console disabled: %v", svcErr)

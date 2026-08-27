@@ -89,6 +89,42 @@ func ReadBundleDir(dir string) (map[string]string, error) {
 	return files, nil
 }
 
+// ExecutableFiles lists the bundle-relative paths (same walk + skip rules
+// as ReadBundleDir) whose mode carries an execute bit. The path→content
+// map drops file modes — Materialize writes everything 0o644 — so a bundle
+// shipping an executable helper round-trips with the +x bit gone and a
+// tool node invoking it fails on permission denied. Push surfaces warn
+// from this list instead of failing silently at run time.
+func ExecutableFiles(dir string) []string {
+	var out []string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".devbox", ".iterion", "node_modules", "__pycache__":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil //nolint:nilerr // advisory walk: an unreadable entry just isn't listed
+		}
+		if info.Mode()&0o111 != 0 {
+			if rel, rerr := filepath.Rel(dir, p); rerr == nil {
+				out = append(out, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+	return out
+}
+
 // Digest returns the sha256 hex digest of the bundle content, computed
 // over the sorted (path, content) pairs — the provenance record the audit
 // log and `admin bots show` carry so "what exactly is deployed" has a
