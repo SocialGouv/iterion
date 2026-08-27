@@ -77,8 +77,15 @@ type vulnWatchHarness struct {
 	feedItems                atomic.Value // []vwFeedItem
 	enrichBroken             atomic.Bool  // when set, <link>/json/ answers 503
 	epssScores               atomic.Value // map[string]string served by /epss
-	srv                      *httptest.Server
-	sinkHits                 atomic.Int64
+	// advisoryPkgs feeds GET /advisories?cve_id=… : cve -> [{ecosystem,name}].
+	advisoryPkgs atomic.Value
+	// depQueries records every query string the alerts endpoint received, so a
+	// test can assert HOW it was asked — the `state=all` trap is invisible in
+	// the response (GitHub answers 200 + empty list, never an error).
+	depQueryMu sync.Mutex
+	depQueries []string
+	srv        *httptest.Server
+	sinkHits   atomic.Int64
 	// sinkBodies is appended from HTTP handler goroutines and read from the
 	// test goroutine — guard it, or the race detector is right to complain.
 	sinkMu     sync.Mutex
@@ -114,6 +121,7 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 	h.depAlerts.Store([]map[string]any{})
 	h.feedItems.Store([]vwFeedItem{})
 	h.epssScores.Store(map[string]string{})
+	h.advisoryPkgs.Store(map[string][]map[string]string{})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/orgs/testorg/dependabot/alerts", func(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +129,54 @@ func newVulnWatchHarness(t *testing.T) *vulnWatchHarness {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(h.depAlerts.Load())
+		h.depQueryMu.Lock()
+		h.depQueries = append(h.depQueries, r.URL.RawQuery)
+		h.depQueryMu.Unlock()
+		alerts, _ := h.depAlerts.Load().([]map[string]any)
+		// Mirror the REAL endpoint: `state=all` is not a valid value and
+		// GitHub answers an EMPTY list rather than erroring. A confirmation
+		// built on it would be silently, permanently empty — so the fake has
+		// to reproduce the trap, not paper over it.
+		if r.URL.Query().Get("state") == "all" {
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		if want := r.URL.Query().Get("package"); want != "" {
+			names := map[string]bool{}
+			for _, n := range strings.Split(want, ",") {
+				names[strings.TrimSpace(n)] = true
+			}
+			var kept []map[string]any
+			for _, a := range alerts {
+				dep, _ := a["dependency"].(map[string]any)
+				pkg, _ := dep["package"].(map[string]any)
+				if name, _ := pkg["name"].(string); names[name] {
+					kept = append(kept, a)
+				}
+			}
+			if kept == nil {
+				kept = []map[string]any{}
+			}
+			_ = json.NewEncoder(w).Encode(kept)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(alerts)
+	})
+	mux.HandleFunc("/advisories", func(w http.ResponseWriter, r *http.Request) {
+		byCVE, _ := h.advisoryPkgs.Load().(map[string][]map[string]string)
+		pkgs := byCVE[r.URL.Query().Get("cve_id")]
+		var vulns []map[string]any
+		for _, pk := range pkgs {
+			vulns = append(vulns, map[string]any{"package": map[string]any{
+				"ecosystem": pk["ecosystem"], "name": pk["name"]}})
+		}
+		if vulns == nil {
+			// A deployed product (Metabase, GitLab, a WordPress install) has
+			// no package in any manifest — an empty answer is a real answer.
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"vulnerabilities": vulns}})
 	})
 	mux.HandleFunc("/alerte/feed/", func(w http.ResponseWriter, r *http.Request) {
 		items := h.feedItems.Load().([]vwFeedItem)
@@ -401,8 +456,21 @@ func (h *vulnWatchHarness) runWatchOpts(t *testing.T, wf *ir.Workflow, dryRun bo
 		t.Fatalf("match_policy failed: %v\nstderr: %s", err, stderr)
 	}
 
+	// The version confirmation sits between the policy and the message: it is
+	// what turns "these projects declare this technology" into "this repo runs
+	// an affected version". The harness drives nodes by hand, so a node added
+	// to the graph has to be added HERE too or it silently never runs.
+	confirm, stderr, err := runPy(t, h.ws, vwSub(t, vwTool(t, wf, "confirm_versions").Script, map[string]any{
+		"alerts": match["alerts"], "github_orgs": plan["github_orgs"],
+		"github_api_base": plan["github_api_base"], "timeout_secs": 5,
+		"allow_private": true, "max_lookups": 40,
+	}, nil, map[string]string{"dependabot_tokens": h.tokensFile}))
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+
 	notify, stderr, err = runPy(t, h.ws, vwSub(t, vwTool(t, wf, "notify").Script, map[string]any{
-		"alerts": match["alerts"], "overflow_count": match["overflow_count"],
+		"alerts": confirm["alerts"], "overflow_count": match["overflow_count"],
 		"stale_sources": match["stale_sources"], "sinks": plan["sinks"],
 		"labels": plan["labels"], "dry_run": dryRun,
 	}, nil, map[string]string{"webhooks": h.webhooksFile}))
@@ -1693,5 +1761,149 @@ func TestVulnWatch_EPSSLaneAndSeverityFloor(t *testing.T) {
 	}
 	if msg := h2.lastBody(t); !strings.Contains(msg, "severity floor") {
 		t.Fatalf("the message must say what qualified it:\n%s", msg)
+	}
+}
+
+// setAdvisoryPkgs declares which packages the advisory database attributes to
+// a CVE — the authority the version confirmation consults first.
+func (h *vulnWatchHarness) setAdvisoryPkgs(m map[string][]map[string]string) {
+	h.advisoryPkgs.Store(m)
+}
+
+// queries snapshots how the alerts endpoint was asked.
+func (h *vulnWatchHarness) queries() []string {
+	h.depQueryMu.Lock()
+	defer h.depQueryMu.Unlock()
+	return append([]string(nil), h.depQueries...)
+}
+
+// The inventory match is keyword-based and VERSION-BLIND: it answers "who
+// declares this technology", not "who is vulnerable". Measured on the first
+// live tick, a React Server Components advisory named 53 projects while
+// exactly ONE repository carried an affected package. An alert that over-names
+// by 53x is the kind operators stop reading — which is the failure this bot
+// exists to prevent. So a confirmed repo must be named FIRST, with its fix,
+// and the keyword list demoted to explicitly-unverified context.
+func TestVulnWatch_ConfirmedVersionsOutrankTheKeywordList(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7001": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	h.depAlerts.Store([]map[string]any{vwAlert("acme/site", "acme-lib", "npm",
+		"CVE-2026-7001", "open", "2026-08-01T00:00:00Z", "", "2.0.1")})
+
+	h.setKEV([]map[string]any{{"cveID": "CVE-2000-0001", "vendorProject": "x",
+		"product": "x", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false) // bootstrap arms the cursors
+
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2000-0001", "vendorProject": "x", "product": "x", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7001", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "Metabase SQL injection", "dateAdded": "2026-08-25"},
+	})
+	if _, _ = h.runWatch(t, wf, false); true {
+		msg := h.lastBody(t)
+		if !strings.Contains(msg, "Vulnerable — confirmed") {
+			t.Fatalf("no confirmed section — the keyword list is standing in for verification:\n%s", msg)
+		}
+		if !strings.Contains(msg, "acme/site") || !strings.Contains(msg, "2.0.1") {
+			t.Fatalf("the confirmed repo and its fixed version must be named:\n%s", msg)
+		}
+		if !strings.Contains(msg, "Declares this technology — to verify") {
+			t.Fatalf("the keyword list must be demoted, not dropped or promoted:\n%s", msg)
+		}
+	}
+}
+
+// THE CANARY for a trap that costs nothing to fall into and everything to
+// miss: `state=all` is not a valid value for the Dependabot alerts endpoint,
+// and GitHub answers 200 with an EMPTY list instead of an error. Measured on
+// the real API: `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0,
+// no state parameter -> 78. A confirmation built on `state=all` is silently
+// and permanently empty — and every message would fall back to the keyword
+// list while claiming to have checked.
+func TestVulnWatch_VersionCheckNeverAsksForStateAll(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7002": {{"ecosystem": "npm", "name": "acme-lib"}},
+	})
+	h.depAlerts.Store([]map[string]any{vwAlert("acme/site", "acme-lib", "npm",
+		"CVE-2026-7002", "open", "2026-08-01T00:00:00Z", "", "2.0.1")})
+	h.setKEV([]map[string]any{{"cveID": "CVE-2000-0002", "vendorProject": "x",
+		"product": "x", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false)
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2000-0002", "vendorProject": "x", "product": "x", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7002", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "Metabase SQL injection", "dateAdded": "2026-08-25"},
+	})
+	h.runWatch(t, wf, false)
+
+	saw := false
+	for _, q := range h.queries() {
+		if strings.Contains(q, "state=all") {
+			t.Fatalf("the version check asked for state=all — GitHub answers an empty list, so it would never confirm anything: %q", q)
+		}
+		if strings.Contains(q, "package=") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatal("no package-filtered query was made — the version check never ran")
+	}
+	if msg := h.lastBody(t); !strings.Contains(msg, "acme/site") {
+		t.Fatalf("the confirmation produced nothing:\n%s", msg)
+	}
+}
+
+// A deployed product — Metabase, GitLab, a WordPress install — has no package
+// in any dependency manifest, so it can NEVER be confirmed this way. Saying
+// "no vulnerable dependency found" there would read as "you are safe", which
+// is the opposite of the truth. The two facts must not collapse into one.
+func TestVulnWatch_UnverifiableTechnologySaysSoInsteadOfLookingClean(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{}) // no package for any CVE
+	h.setKEV([]map[string]any{{"cveID": "CVE-2000-0003", "vendorProject": "x",
+		"product": "x", "dateAdded": "2026-01-01"}})
+	h.runWatch(t, wf, false)
+	h.setKEV([]map[string]any{
+		{"cveID": "CVE-2000-0003", "vendorProject": "x", "product": "x", "dateAdded": "2026-01-01"},
+		{"cveID": "CVE-2026-7003", "vendorProject": "Metabase", "product": "Metabase",
+			"vulnerabilityName": "Metabase SQL injection", "dateAdded": "2026-08-25"},
+	})
+	h.runWatch(t, wf, false)
+	msg := h.lastBody(t)
+	if !strings.Contains(msg, "not verifiable automatically") {
+		t.Fatalf("an unverifiable technology must say so:\n%s", msg)
+	}
+	if strings.Contains(msg, "no vulnerable dependency found") {
+		t.Fatalf("'nothing found' must not stand in for 'cannot be checked':\n%s", msg)
+	}
+}
+
+// vwAlert builds one Dependabot alert record in the shape the endpoint returns.
+func vwAlert(repo, pkg, eco, cve, state, created, fixedAt, patched string) map[string]any {
+	return map[string]any{
+		"state":      state,
+		"created_at": created,
+		"fixed_at":   fixedAt,
+		"repository": map[string]any{"full_name": repo},
+		"dependency": map[string]any{"package": map[string]any{"name": pkg, "ecosystem": eco}},
+		"security_advisory": map[string]any{"cve_id": cve, "ghsa_id": "GHSA-" + cve,
+			"summary": cve + " summary", "severity": "critical"},
+		"security_vulnerability": map[string]any{
+			"first_patched_version": map[string]any{"identifier": patched}},
 	}
 }
