@@ -77,12 +77,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
-	// Cloud runs never execute in this process: credentials are sealed per
-	// run (BYOK → forfait → pool → platform) and consumed in a runner pod.
-	// Advertising THIS pod's detect.Report as Usable would file a team's
-	// own BYOK under "no credential" and leak the platform's credential
-	// SOURCE names cross-tenant (Rfdd627).
-	if s.queue != nil {
+	// A non-cloud server can still publish runs to a remote queue. In that
+	// hybrid shape, credentials are sealed per run and consumed in a runner
+	// pod, so advertising THIS process's detect.Report would be misleading.
+	// Cloud mode is different: the catalog above already comes from the
+	// authenticated tenant's launch tiers and must retain that reachability.
+	if s.queue != nil && s.cfg.Mode != "cloud" {
 		const reason = "cloud runs resolve credentials at launch, not from this API pod"
 		cat.RecommendedSpec = ""
 		cat.ResolvedDefaultBackend = ""

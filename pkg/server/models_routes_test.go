@@ -168,10 +168,14 @@ func TestDedupeSpecs(t *testing.T) {
 	}
 }
 
-func newCloudModelsServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
+func newCloudModelsServer(t *testing.T, queue ...QueueBackend) (*Server, *secrets.MemoryApiKeyStore, *secrets.MemoryOAuthStore) {
 	t.Helper()
 	keys := secrets.NewMemoryApiKeyStore()
 	oauth := secrets.NewMemoryOAuthStore()
+	var queueBackend QueueBackend
+	if len(queue) > 0 {
+		queueBackend = queue[0]
+	}
 	srv := New(Config{
 		WorkDir:                 t.TempDir(),
 		SkipProjectRegistration: true,
@@ -179,6 +183,7 @@ func newCloudModelsServer(t *testing.T) (*Server, *secrets.MemoryApiKeyStore, *s
 		Mode:                    "cloud",
 		ApiKeys:                 keys,
 		OAuthForfait:            oauth,
+		Queue:                   queueBackend,
 	}, iterlog.New(iterlog.LevelError, os.Stderr))
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -230,7 +235,9 @@ func TestGetModels_CloudTenantBYOKIsNotAFalseUnreachable(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-control-plane-only")
 	t.Setenv("OPENAI_API_KEY", "")
 
-	srv, keys, _ := newCloudModelsServer(t)
+	// Production cloud servers always wire a queue. Keep that shape in the
+	// regression: it must not erase the tenant-scoped presence report.
+	srv, keys, _ := newCloudModelsServer(t, newFakeDLQQueue())
 	const tenantSecret = "sk-tenant-openai-never-on-the-server"
 	seedTeamKey(t, keys, "team-a", "", secrets.ProviderOpenAI, tenantSecret)
 
