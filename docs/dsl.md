@@ -476,6 +476,25 @@ workflow review:
 
 Workflow controls are `vars`, `attachments`, `entry`, `default_backend`, `tool_policy`, `capabilities`, `skills`, `mcp`, `budget`, `resources`, `compaction`, `interaction`, `worktree`, `compress`, `permission`, `allow`, `ask`, `deny`, and `sandbox`.
 
+#### Budget fields
+
+`max_duration` is a Go duration **string**, and the only budget field
+resolved through `${VAR:-default}` — `max_duration: "${RUN_BUDGET:-30m}"`
+lets a bot be re-timed per environment without editing the `.bot`. Two
+consequences worth knowing:
+
+- A value that does not parse is **not** a compile diagnostic. The
+  runtime logs `the duration cap is NOT ENFORCED for this run` at WARN
+  and carries on with no time limit, so a `"2h3Om"` typo costs the cap
+  silently unless you read the log.
+- If `max_duration` was the *only* limit declared, that same typo drops
+  the whole budget tracker (no cost, token, or iteration accounting
+  either) — the tracker is only built when at least one limit resolved.
+
+The numeric fields (`max_cost_usd`, `max_tokens`, `max_iterations`,
+`warn_tokens`) are typed, so they fail at compile time instead
+(`C046` for a malformed `max_cost_usd`).
+
 #### Budget and loop back-edges
 
 A loop's back-edge is declined when the budget can no longer fund another
@@ -532,8 +551,8 @@ persisted on the run, so `iterion resume --loop-budget-guard` must
 re-state it.
 
 **Exit grace.** Once a cap is *spent* (100%+), the run may still walk
-**forward** — never around a loop — spending up to **10% beyond the
-declared cap** to reach a terminal node, so work it has already paid for
+**forward** — never around a declared `loop` — spending up to **10%
+beyond the declared cap** to reach a terminal node, so work it has already paid for
 gets delivered (the PR opened, the report written) instead of dying on
 disk. Every graced node is recorded as a `budget_exit_grace` event naming
 the exceeded axis and its own used/limit pair. The allowance is
@@ -553,6 +572,12 @@ The grace is **refused** in two cases:
 - **the loop budget guard is off** — the "no further iteration" half of the
   safety argument belongs to that guard, and with it lifted a graced run
   could take a back-edge and keep looping on a spent budget;
+
+  The guard prices `loop`-named back-edges. A `foreach` back-edge is
+  bounded by its collection rather than by affordability, so a graced run
+  inside a `foreach` body keeps iterating until the proportional ceiling
+  stops it — the spend bound holds either way, but "it cannot iterate
+  again" is a promise only the declared-`loop` form makes.
 - **the cap was imposed from outside the run** — a limit clamped by the
   platform ceiling or by a credential-pool donor's remaining allowance is an
   absolute promise to a third party, so the declared figure *is* the wall.
