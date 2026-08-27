@@ -660,9 +660,13 @@ It does not use claw's `web_search` implementation, an MCP server, or shell
 network access. Hosted search remains available with Codex's `read-only`
 sandbox, so `full_access: true` is neither needed nor implied.
 
-The backend verifies the Codex CLI version before starting a search-enabled
-task. A CLI older than the pinned Agent SDK minimum fails with an actionable
-error naming the missing `web_search` capability and the required version.
+The backend verifies the Codex CLI version before starting any Codex task,
+because every run sends an explicit `web_search` mode (`live` or `disabled`).
+A CLI older than the capability-specific minimum fails with an actionable
+error naming the missing mode and required version. Operators can set
+`CODEX_CLI_SKIP_VERSION_CHECK=1` to bypass the probe when a compatible wrapper
+does not expose a conventional version string; doing so assumes responsibility
+for support of the top-level `web_search` mode.
 Search calls are emitted as `WebSearch` tool lifecycle events; `Bash` remains
 separate. The SDK currently provides a count and best-effort action/source
 payload, but no per-call monetary amount, so Iterion's `_cost_usd` does not
