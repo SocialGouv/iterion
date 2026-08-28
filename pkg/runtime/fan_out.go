@@ -281,6 +281,10 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 					cancelBranches()
 				}
 			}
+			// Whatever the exit, siblings parked on this branch's resume
+			// barrier must not outlive it (a no-op unless it was the
+			// answered branch and it never reached its successor cursor).
+			parallel.releaseResumeWaiters(branchID)
 			resultsCh <- result
 		}(edge, branchID)
 	}

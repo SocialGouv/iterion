@@ -219,10 +219,16 @@ func (p *parallelExecutionState) waitResumeTurn(ctx context.Context, branchID st
 	}
 }
 
-// releaseResumeWaiters prevents a panic in the answered branch from leaving
-// every sibling parked forever. The caller cancels the invocation immediately
-// afterwards; the durable pending identity is intentionally retained so the
-// resulting resumable failure still names the branch that was being resumed.
+// releaseResumeWaiters closes the resume barrier once the answered branch has
+// exited by any path. checkpointResumedBranch already closed it on the happy
+// path (this call is then a no-op); every other exit — a panic, an artifact
+// or interaction write failure, an answer that satisfies no outgoing edge, a
+// C245 guard on an edited source — would otherwise leave the siblings parked
+// in waitResumeTurn forever, because best_effort never cancels them and
+// collectBranches only arms its grace timer after a cancellation. The
+// launchers call it AFTER deciding on sibling cancellation, so a parked
+// sibling observes ctx.Done() rather than starting work that is about to be
+// cancelled.
 func (p *parallelExecutionState) releaseResumeWaiters(branchID string) {
 	if p == nil {
 		return
@@ -322,6 +328,35 @@ func (p *parallelExecutionState) updateBranch(branch *store.BranchCheckpoint) bo
 		return false
 	}
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
+	return true
+}
+
+// abandonResume gives a gate back after the answered branch exited without
+// reaching its successor cursor. The pending identity is cleared and the
+// branch parks at the gate WITHOUT its consumed answers, so the next resume
+// asks the question again (the schema-invalid re-pause precedent) instead of
+// replaying a payload that already failed once — and a sibling under
+// best_effort can elect its own gate instead of losing the election to a
+// branch nobody is waiting on (beginPause would return false, and that branch
+// would report ErrRunPaused with no interaction and no PauseRun behind it).
+// The in-memory barrier is deliberately left to releaseResumeWaiters, which
+// the launcher calls after the cancellation decision.
+func (p *parallelExecutionState) abandonResume(branch *store.BranchCheckpoint) bool {
+	if p == nil || branch == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retired || p.cp.PendingBranchID != branch.BranchID {
+		return false
+	}
+	branch.ResumeAnswers = nil
+	branch.ResumeAnswered = false
+	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
+	p.cp.PendingBranchID = ""
+	p.cp.PendingNodeID = ""
+	p.cp.PendingInteractionID = ""
+	p.cp.PendingInteractionQuestions = nil
 	return true
 }
 

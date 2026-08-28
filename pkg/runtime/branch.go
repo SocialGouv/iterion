@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"time"
 
@@ -93,6 +94,19 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	// started/finished pair tracks in-flight concurrency for observers.
 	defer e.emitBranchFinishedDefer(ctx, runID, branchID, startEdge.To, result)
 
+	// resumeGate names the human gate whose durable answers this pass consumed.
+	// It stays set until checkpointResumedBranch lands the successor cursor;
+	// an error exit in between (artifact write, no satisfiable outgoing edge,
+	// a guard on an edited source, a cancel mid-node) hands the gate back so
+	// the pending identity never outlives the branch that held it. A re-pause
+	// (ErrRunPaused) re-elected the gate itself and keeps it.
+	resumeGate := ""
+	defer func() {
+		if resumeGate != "" && result.err != nil && !errors.Is(result.err, ErrRunPaused) {
+			e.abandonBranchResume(rs, branchRS, result, resumeGate, parallel)
+		}
+	}()
+
 	currentNodeID := startEdge.To
 	if branchCP != nil && branchCP.CurrentNodeID != "" {
 		currentNodeID = branchCP.CurrentNodeID
@@ -182,6 +196,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				} else {
 					result.outputs[currentNodeID] = output
 					resumedHuman = true
+					resumeGate = currentNodeID
 				}
 			} else {
 				done = true
@@ -227,6 +242,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			// Persist the successor and clear the old pending identity in one
 			// snapshot before releasing siblings.
 			e.checkpointResumedBranch(rs, branchRS, result, currentNodeID, parallel)
+			resumeGate = ""
 		} else {
 			e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
 		}
@@ -317,6 +333,35 @@ func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResu
 
 func (e *Engine) checkpointResumedBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, parallel *parallelExecutionState) {
 	e.checkpointBranchState(parent, branchRS, result, currentNodeID, false, parallel, true)
+}
+
+// abandonBranchResume parks the branch back at gateNodeID with no consumed
+// answers and no pending identity (see parallelExecutionState.abandonResume),
+// and persists that snapshot so a restart cannot resurrect the stale gate. The
+// write is best-effort like every branch checkpoint: under wait_all the trunk's
+// failure checkpoint snapshots the same in-memory state right after.
+func (e *Engine) abandonBranchResume(parent, branchRS *runState, result *branchResult, gateNodeID string, parallel *parallelExecutionState) {
+	if parallel == nil || branchRS == nil {
+		return
+	}
+	// The gate's output was the consumed answer; the re-ask produces a new one.
+	delete(result.outputs, gateNodeID)
+	delete(branchRS.outputs, gateNodeID)
+	parallel.saveMu.Lock()
+	defer parallel.saveMu.Unlock()
+	branch := branchCheckpointFromState(branchRS, result, gateNodeID, false)
+	if !parallel.abandonResume(branch) {
+		return
+	}
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
+		e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
+	}
 }
 
 func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState, completeResume bool) {

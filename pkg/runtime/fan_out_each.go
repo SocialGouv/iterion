@@ -205,12 +205,17 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot, parallel)
 	}
 
-	// finishBranch applies the shared post-branch cancellation policy.
+	// finishBranch applies the shared post-branch cancellation policy, then
+	// frees any sibling parked on this branch's resume barrier — a no-op unless
+	// it was the answered branch and it exited before its successor cursor.
 	finishBranch := func(result *branchResult) {
 		if result != nil && result.err != nil {
 			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
 				cancelBranches()
 			}
+		}
+		if result != nil {
+			parallel.releaseResumeWaiters(result.branchID)
 		}
 		resultsCh <- result
 	}

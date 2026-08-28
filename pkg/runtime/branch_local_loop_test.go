@@ -751,3 +751,200 @@ func TestFanOutEachBranchLocalForeachUsesPrivateIndex(t *testing.T) {
 		t.Fatalf("foreach values = %s, want [a b c]", got)
 	}
 }
+
+// resumeWithinDeadline runs Resume on a fresh engine and fails the test when it
+// does not return before the deadline — the shape of a leaked resume barrier.
+func resumeWithinDeadline(t *testing.T, wf *ir.Workflow, runStore store.RunStore, exec NodeExecutor, runID string, answers map[string]any) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- New(wf, runStore, exec).Resume(ctx, runID, answers) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		t.Fatal("resume hung: answered branch exit did not release the sibling resume barrier")
+		return nil
+	}
+}
+
+// A plain (non-pause, non-budget) error in the answered branch — here an
+// answer that satisfies no outgoing edge — must not wedge the fan-out: under
+// best_effort nothing cancels the siblings, so they only leave the resume
+// barrier if the answered branch's exit releases it. The failed branch also
+// hands its gate back (no pending identity, no consumed answers), so a sibling
+// can elect its own gate and the next resume re-asks the failed branch's
+// question instead of replaying the payload that already failed.
+func TestFanOutEachPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
+	wf := branchFirstHumanLoopWorkflow()
+	wf.Nodes["collect"].(*ir.AgentNode).AwaitMode = ir.AwaitBestEffort
+	for _, edge := range wf.Edges {
+		if edge.From == "gate" && edge.To == "work" {
+			edge.Condition = "approved"
+		}
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"items": []any{map[string]any{"id": "first"}, map[string]any{"id": "second"}},
+		}, nil
+	})
+	var mu sync.Mutex
+	workCalls := map[string]int{}
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		mu.Lock()
+		workCalls[input["id"].(string)]++
+		mu.Unlock()
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	runStore := tmpStore(t)
+	runID := "branch-resume-plain-error"
+	if err := New(wf, runStore, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want pause", err)
+	}
+	run, err := runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedBranch := run.Checkpoint.Parallel.PendingBranchID
+	if failedBranch == "" {
+		t.Fatalf("checkpoint = %+v, want an elected pending branch", run.Checkpoint.Parallel)
+	}
+
+	// The unsatisfiable answer fails the answered branch with a plain error;
+	// its sibling must still run to its own gate and pause the run.
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": false}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("resume after unsatisfiable answer = %v, want the sibling's pause", err)
+	}
+	run, err = runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunStatusPausedWaitingHuman {
+		t.Fatalf("status = %s, want paused_waiting_human", run.Status)
+	}
+	ps := run.Checkpoint.Parallel
+	if ps == nil || ps.PendingBranchID == "" || ps.PendingBranchID == failedBranch {
+		t.Fatalf("parallel checkpoint = %+v, want the sibling elected, not %s", ps, failedBranch)
+	}
+	if run.Checkpoint.InteractionID != ps.PendingInteractionID {
+		t.Fatalf("checkpoint interaction %q != pending %q", run.Checkpoint.InteractionID, ps.PendingInteractionID)
+	}
+	failed := ps.Branches[failedBranch]
+	if failed == nil || failed.CurrentNodeID != "gate" || failed.Completed || failed.ResumeAnswered || len(failed.ResumeAnswers) != 0 {
+		t.Fatalf("failed branch checkpoint = %+v, want parked at gate without consumed answers", failed)
+	}
+
+	// Answer the sibling: it advances, and the failed branch re-asks its gate.
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("second resume = %v, want the failed branch to re-ask", err)
+	}
+	run, err = runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Checkpoint.Parallel.PendingBranchID != failedBranch {
+		t.Fatalf("pending = %q, want the re-asked branch %s", run.Checkpoint.Parallel.PendingBranchID, failedBranch)
+	}
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("final resume = %v, want completion", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if workCalls["first"] == 0 || workCalls["second"] == 0 {
+		t.Fatalf("work calls = %#v, want both items to complete", workCalls)
+	}
+}
+
+// The fan_out_all launcher has its own post-branch policy; cover it too.
+func TestFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "fanout_gate_error",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":   &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"gate_a":  &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate_a"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"gate_b":  &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate_b"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"work_a":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work_a"}},
+			"work_b":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work_b"}},
+			"collect": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitBestEffort},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "gate_a"},
+			{From: "router", To: "gate_b"},
+			{From: "gate_a", To: "work_a", Condition: "approved"},
+			{From: "gate_b", To: "work_b", Condition: "approved"},
+			{From: "work_a", To: "collect"},
+			{From: "work_b", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+		Schemas:   map[string]*ir.Schema{},
+		Prompts:   map[string]*ir.Prompt{},
+		Vars:      map[string]*ir.Var{},
+		Loops:     map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{},
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+	var mu sync.Mutex
+	workCalls := map[string]int{}
+	work := func(id string) func(map[string]any) (map[string]any, error) {
+		return func(map[string]any) (map[string]any, error) {
+			mu.Lock()
+			workCalls[id]++
+			mu.Unlock()
+			return map[string]any{"id": id}, nil
+		}
+	}
+	exec.on("work_a", work("a"))
+	exec.on("work_b", work("b"))
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	runStore := tmpStore(t)
+	runID := "fanout-all-resume-plain-error"
+	if err := New(wf, runStore, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want pause", err)
+	}
+	run, err := runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedBranch := run.Checkpoint.Parallel.PendingBranchID
+	if failedBranch == "" {
+		t.Fatalf("checkpoint = %+v, want an elected pending branch", run.Checkpoint.Parallel)
+	}
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": false}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("resume after unsatisfiable answer = %v, want the sibling's pause", err)
+	}
+	run, err = runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := run.Checkpoint.Parallel
+	if run.Status != store.RunStatusPausedWaitingHuman || ps == nil || ps.PendingBranchID == "" || ps.PendingBranchID == failedBranch {
+		t.Fatalf("status=%s parallel=%+v, want the sibling elected, not %s", run.Status, ps, failedBranch)
+	}
+	if failed := ps.Branches[failedBranch]; failed == nil || failed.Completed || failed.ResumeAnswered || len(failed.ResumeAnswers) != 0 {
+		t.Fatalf("failed branch checkpoint = %+v, want parked without consumed answers", failed)
+	}
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true}); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("second resume = %v, want the failed branch to re-ask", err)
+	}
+	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("final resume = %v, want completion", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if workCalls["a"] == 0 || workCalls["b"] == 0 {
+		t.Fatalf("work calls = %#v, want both branches to complete", workCalls)
+	}
+}
