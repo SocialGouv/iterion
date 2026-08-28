@@ -74,7 +74,7 @@ workflow example:
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
 
-A bounded loop or `as foreach` wholly contained in one branch runs with branch-local counters and outputs. Different branches may consume different numbers of iterations; `wait_all` and `best_effort` do not converge until each relevant local lifecycle finishes. **C244** still rejects iteration on the router itself, collector-to-body re-entry, sibling-crossing cycles, and other shapes without one unambiguous branch owner. A loop that re-enters the *router* from the join is on the trunk and remains allowed.
+A bounded loop or `as foreach` wholly contained in one branch runs with branch-local counters and outputs. Different branches may consume different numbers of iterations; `wait_all` and `best_effort` do not converge until each relevant local lifecycle finishes. Plain human gates pause and resume in that same branch scope; `interaction: review` and `interaction: llm_or_human` remain trunk-only (**C245**) and belong after the collector. **C244** still rejects iteration on the router itself, collector-to-body re-entry, sibling-crossing cycles, and other shapes without one unambiguous branch owner. A loop that re-enters the *router* from the join is on the trunk and remains allowed.
 
 ---
 
@@ -122,6 +122,8 @@ router dispatch:
 ```
 
 Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A bounded loop or `as foreach` may be inlined in the template: each item gets its own counters, output history, checkpoint cursor, and human-gate resume scope. Use a `subbot` for a genuine capability/isolation boundary; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
+
+When item paths reconverge into one collector, declare `await: wait_all` or `await: best_effort` on that collector. A bounded back-edge is local to each item branch and does not prove convergence; without an explicit await marker, a single-predecessor node remains part of every item replay.
 
 ---
 

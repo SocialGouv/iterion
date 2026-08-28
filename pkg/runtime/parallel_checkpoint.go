@@ -31,7 +31,7 @@ func (e *Engine) parallelInvocationKey(routerNodeID string, counters map[string]
 	return routerNodeID + "@" + branchCounterPath(counters)
 }
 
-func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, starts map[string]string) *parallelExecutionState {
+func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, starts map[string]string) (*parallelExecutionState, error) {
 	ids := make([]string, 0, len(starts))
 	for id := range starts {
 		ids = append(ids, id)
@@ -42,7 +42,13 @@ func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, sta
 	key := e.parallelInvocationKey(routerNodeID, rs.loopCounters)
 	if rs.parallel != nil && rs.parallel.matches(routerNodeID, key, ids) {
 		rs.parallel.captureBase(rs)
-		return rs.parallel
+		return rs.parallel, nil
+	}
+	if rs.parallel != nil {
+		persisted := rs.parallel.snapshot()
+		if persisted != nil && persisted.RouterNodeID == routerNodeID && persisted.InvocationKey == key {
+			return nil, fmt.Errorf("runtime: parallel invocation %q branch set changed across restart; rewind the router before resuming", routerNodeID)
+		}
 	}
 	rs.parallel = newParallelInvocation(routerNodeID, key, starts, rs.artifactVersions)
 	rs.parallel.captureBase(rs)
@@ -50,16 +56,17 @@ func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, sta
 	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, cp); err != nil && e.logger != nil {
 		e.logger.Error("failed to initialize parallel checkpoint for %q: %v", routerNodeID, err)
 	}
-	return rs.parallel
+	return rs.parallel, nil
 }
 
 // parallelExecutionState is the synchronized in-memory owner of the durable
 // fan-out checkpoint. Branches never mutate a store.BranchCheckpoint obtained
 // from it; updates and snapshots deep-copy the JSON-shaped state.
 type parallelExecutionState struct {
-	mu     sync.Mutex
-	saveMu sync.Mutex // orders durable writes so an older snapshot cannot win last
-	cp     *store.ParallelCheckpoint
+	mu      sync.Mutex
+	saveMu  sync.Mutex // orders durable writes so an older snapshot cannot win last
+	cp      *store.ParallelCheckpoint
+	retired bool // collector returned; late abandoned branches may no longer persist
 	// base is captured by the trunk before goroutines start. Copying a live
 	// runState inside a branch would race its atomic branchLedgerSeq with a
 	// sibling's Add; branches clone this immutable snapshot instead.
@@ -68,6 +75,24 @@ type parallelExecutionState struct {
 	// before incomplete siblings resume. Completed dependencies may pass it.
 	resumeBarrier chan struct{}
 	resumePending string
+}
+
+func (p *parallelExecutionState) retire() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.retired = true
+	p.mu.Unlock()
+}
+
+func (p *parallelExecutionState) isRetired() bool {
+	if p == nil {
+		return true
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.retired
 }
 
 func (p *parallelExecutionState) captureBase(rs *runState) {
@@ -110,25 +135,25 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		loopProgressSig:       parent.loopProgressSig,
 		loopStaleness:         parent.loopStaleness,
 		loopBudgetMarks:       parent.loopBudgetMarks,
-		roundRobinCounters:    parent.roundRobinCounters,
+		roundRobinCounters:    cloneMap(parent.roundRobinCounters),
 		selectedIncoming:      parent.selectedIncoming,
 		parallel:              parent.parallel,
 		events:                parent.events,
 		artifactVersions:      parent.artifactVersions,
-		nodeSessions:          parent.nodeSessions,
+		nodeSessions:          cloneNodeSessions(parent.nodeSessions),
 		pauseSessionRef:       parent.pauseSessionRef,
 		lastGraceNode:         parent.lastGraceNode,
 		lastGraceDim:          parent.lastGraceDim,
-		gateAnchors:           parent.gateAnchors,
+		gateAnchors:           cloneMap(parent.gateAnchors),
 		lastWorkspaceSnapshot: parent.lastWorkspaceSnapshot,
 		lastSnapshotCommit:    parent.lastSnapshotCommit,
-		preMarked:             parent.preMarked,
-		stopCaptured:          parent.stopCaptured,
+		preMarked:             cloneMap(parent.preMarked),
+		stopCaptured:          cloneMap(parent.stopCaptured),
 		resumed:               parent.resumed,
 		budget:                parent.budget,
 		resourceSemaphores:    parent.resourceSemaphores,
 		costUSDTotal:          parent.costUSDTotal,
-		nodeAttempts:          parent.nodeAttempts,
+		nodeAttempts:          cloneNodeAttempts(parent.nodeAttempts),
 		attachments:           parent.attachments,
 		resumeBackend:         parent.resumeBackend,
 		isWorktree:            parent.isWorktree,
@@ -162,6 +187,25 @@ func (p *parallelExecutionState) waitResumeTurn(ctx context.Context, branchID st
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// releaseResumeWaiters prevents a panic in the answered branch from leaving
+// every sibling parked forever. The caller cancels the invocation immediately
+// afterwards; the durable pending identity is intentionally retained so the
+// resulting resumable failure still names the branch that was being resumed.
+func (p *parallelExecutionState) releaseResumeWaiters(branchID string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.resumePending != branchID || p.resumeBarrier == nil {
+		p.mu.Unlock()
+		return
+	}
+	barrier := p.resumeBarrier
+	p.resumeBarrier = nil
+	p.mu.Unlock()
+	close(barrier)
 }
 
 func (e *Engine) completeParallelResume(parent *runState, p *parallelExecutionState, branchID string, result *branchResult) {
@@ -275,6 +319,9 @@ func (p *parallelExecutionState) updateBranch(branch *store.BranchCheckpoint) bo
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.retired {
+		return false
+	}
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
 	return true
 }
@@ -333,9 +380,26 @@ func (p *parallelExecutionState) artifactVersion(nodeID, executionKey string, fl
 	if next < floor {
 		next = floor
 	}
+	if p.cp.ArtifactAllocations == nil {
+		p.cp.ArtifactAllocations = make(map[string]int)
+	}
+	if p.cp.NextArtifactVersion == nil {
+		p.cp.NextArtifactVersion = make(map[string]int)
+	}
 	p.cp.ArtifactAllocations[executionKey] = next
 	p.cp.NextArtifactVersion[nodeID] = next + 1
 	return next
+}
+
+func cloneNodeAttempts(src map[string]map[ErrorCode]int) map[string]map[ErrorCode]int {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]map[ErrorCode]int, len(src))
+	for nodeID, attempts := range src {
+		dst[nodeID] = cloneMap(attempts)
+	}
+	return dst
 }
 
 func cloneParallelCheckpoint(src *store.ParallelCheckpoint) *store.ParallelCheckpoint {

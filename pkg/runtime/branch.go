@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -53,6 +54,9 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		result.startNodeID = branchCP.StartNodeID
 	}
 	branchRS := newBranchRunState(parallel.branchBase(rs), branchCP, result)
+	// Branch-local helpers must observe cancellation when this invocation is
+	// abandoned; the parallel epoch separately rejects its late durable writes.
+	branchRS.ctx = ctx
 	branchRS.outputs = mergeOutputs(parentOutputs, result.outputs)
 	branchRS.artifacts = mergeOutputs(parentArtifacts, result.artifacts)
 	if branchCP == nil || len(branchCP.SelectedIncoming) == 0 {
@@ -151,7 +155,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		var done bool
 		resumedHuman := false
 		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM {
-			if branchCP != nil && len(branchCP.ResumeAnswers) > 0 {
+			if human.Interaction == ir.InteractionReview || human.Interaction == ir.InteractionLLMOrHuman {
+				result.err = fmt.Errorf("C245: human interaction %q is not supported inside an execution branch", human.Interaction)
+				done = true
+			} else if branchCP != nil && len(branchCP.ResumeAnswers) > 0 {
+				e.markPreNodeBoundary(branchRS, currentNodeID)
 				output = deepCopyAnyMap(branchCP.ResumeAnswers)
 				result.outputs[currentNodeID] = output
 				branchCP.ResumeAnswers = nil
@@ -168,6 +176,10 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
 		}
 		if done {
+			return result
+		}
+		if parallel.isRetired() {
+			result.err = e.wrapContextErr(context.Canceled)
 			return result
 		}
 		branchRS.outputs[currentNodeID] = output
@@ -227,7 +239,9 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		if cp.ArtifactVersions != nil {
 			result.artifactVersions = cloneMap(cp.ArtifactVersions)
 		}
-		result.selectedIncoming = cloneIncoming(cp.SelectedIncoming)
+		if incoming := cloneIncoming(cp.SelectedIncoming); incoming != nil {
+			result.selectedIncoming = incoming
+		}
 	}
 	return result
 }
@@ -247,6 +261,9 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.parallel = nil
 	if cp != nil {
 		local.loopCounters = cloneMap(cp.LoopCounters)
+		if local.loopCounters == nil {
+			local.loopCounters = make(map[string]int)
+		}
 		local.loopPreviousOutput = copyOutputs(cp.LoopPreviousOutput)
 		local.loopCurrentOutput = copyOutputs(cp.LoopCurrentOutput)
 		restoreLoopBudgetMarks(local, cp.LoopBudgetMarks)
@@ -278,7 +295,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 // trunk anchored on the router. SaveCheckpoint is best-effort, matching the
 // sequential node-boundary path; the next completed branch boundary retries.
 func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState) {
-	if parallel == nil {
+	if parallel == nil || branchRS == nil {
 		return
 	}
 	parallel.saveMu.Lock()
@@ -318,6 +335,13 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 		rs:             branchRS,
 		incomingByNode: result.selectedIncoming,
 	})
+	e.capturePauseBoundary(branchRS, nodeID)
+	if queuedTexts := e.drainOperatorMessagesForPause(parent.ctx, parent.runID, nodeID); len(queuedTexts) > 0 {
+		if questions == nil {
+			questions = make(map[string]any)
+		}
+		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
+	}
 	scopeID := base64.RawURLEncoding.EncodeToString([]byte(branchID + ";" + branchCounterPath(branchRS.loopCounters)))
 	interactionID := e.interactionIDForPause(parent.runID, nodeID, branchRS.loopCounters) + "_branch_" + scopeID
 	parallel.setPendingInteraction(interactionID, questions)
@@ -331,10 +355,14 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	if err := e.store.WriteInteraction(parent.ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write branch interaction: %w", err)
 	}
-	if err := e.emitBranch(parent.ctx, parent.runID, branchID, store.EventHumanInputRequested, nodeID, map[string]any{
+	eventData := map[string]any{
 		"interaction_id": interactionID,
 		"questions":      questions,
-	}); err != nil {
+	}
+	for key, value := range e.humanPauseExtra(nodeID, questions, branchRS) {
+		eventData[key] = value
+	}
+	if err := e.emitBranch(parent.ctx, parent.runID, branchID, store.EventHumanInputRequested, nodeID, eventData); err != nil {
 		return err
 	}
 	if err := e.emit(parent.ctx, parent.runID, store.EventRunPaused, nodeID, map[string]any{"branch_id": branchID}); err != nil {

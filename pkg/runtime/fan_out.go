@@ -51,7 +51,10 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	for _, edge := range plan.edges {
 		starts[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)] = edge.To
 	}
-	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	parallel, err := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	if err != nil {
+		return "", err
+	}
 
 	// Derive a cancellable context for the whole fan-out. When any branch
 	// trips the budget (or the parent ctx is cancelled — Ctrl-C), cancelling
@@ -63,6 +66,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan, parallel)
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "fan_out")
+	parallel.retire()
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
@@ -234,6 +238,8 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// would be unrecoverable.
 			defer func() {
 				if r := recover(); r != nil {
+					parallel.releaseResumeWaiters(branchID)
+					cancelBranches()
 					resultsCh <- &branchResult{
 						branchID: branchID,
 						outputs:  make(map[string]map[string]any),

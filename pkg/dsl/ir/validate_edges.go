@@ -49,6 +49,26 @@ func (c *compiler) validatePersistNotInFanOut(w *Workflow) {
 	}
 }
 
+// validateHumanModesInExecBranch rejects orchestration modes whose runtime
+// helpers are trunk-only. Plain human gates have a durable branch pause path;
+// review and llm_or_human require companion/auto-answer dispatch that cannot
+// be reproduced by treating them as unconditional branch pauses.
+func (c *compiler) validateHumanModesInExecBranch(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	for id, node := range w.Nodes {
+		human, ok := node.(*HumanNode)
+		if !ok || !body[id] {
+			continue
+		}
+		if human.Interaction != InteractionReview && human.Interaction != InteractionLLMOrHuman {
+			continue
+		}
+		c.errorfAt(DiagHumanModeInExecBranch, id, "",
+			"human %q uses interaction: %s inside a fan_out_all/fan_out_each/llm-multi body; this orchestration mode is trunk-only (C245)",
+			id, human.Interaction)
+	}
+}
+
 // findConvergenceNodes returns the set of node IDs that are convergence points.
 // A node is a convergence point if it has AwaitMode != AwaitNone OR
 // if it receives unconditional edges from multiple distinct sources.

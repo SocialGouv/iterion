@@ -111,7 +111,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 		ps := rs.parallel.snapshot()
 		if ps != nil && ps.RouterNodeID == routerNodeID && ps.InvocationKey == e.parallelInvocationKey(routerNodeID, rs.loopCounters) {
 			if output := rs.outputs[routerNodeID]; output != nil {
-				return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
+				return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates, false)
 			}
 		}
 	}
@@ -157,7 +157,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 
 	// Dispatch based on single/multi mode.
 	if rn.RouterMulti {
-		return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
+		return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates, true)
 	}
 	return e.execLLMRouterSingle(rs, routerNodeID, output, candidates)
 }
@@ -232,7 +232,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 
 // execLLMRouterMulti handles multi-route LLM selection by fanning out
 // to the LLM-selected subset of outgoing edges.
-func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNodeID string, output map[string]any, candidates []string) (string, error) {
+func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNodeID string, output map[string]any, candidates []string, emitRouterFinished bool) (string, error) {
 	selectedRaw, ok := output["selected_routes"]
 	if !ok {
 		return "", &RuntimeError{
@@ -292,12 +292,16 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 
 	reasoning, _ := output["reasoning"].(string)
 
-	// Emit node_finished.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
-		"selected_routes": selected,
-		"reasoning":       reasoning,
-	}); err != nil {
-		return "", err
+	// The initial route selection owns the router node_finished event. A
+	// restart reuses that durable selection and must not emit a second finish
+	// without a matching node_started.
+	if emitRouterFinished {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
+			"selected_routes": selected,
+			"reasoning":       reasoning,
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	// Filter workflow edges to only the LLM-selected targets.
@@ -322,9 +326,13 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	for _, edge := range plan.edges {
 		starts[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)] = edge.To
 	}
-	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	parallel, err := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	if err != nil {
+		return "", err
+	}
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan, parallel)
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "llm_router_multi")
+	parallel.retire()
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}

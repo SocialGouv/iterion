@@ -1350,4 +1350,11 @@ func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
 		t.Fatal("run hung: abandoned-branch continuation deadlocked the main loop")
 	}
 	waitBranchFinished(t, s, "run-abandoned-race", "branch_router_agent_b")
+	run, err := s.LoadRun(context.Background(), "run-abandoned-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Checkpoint != nil {
+		t.Fatalf("late abandoned branch restored stale checkpoint: %+v", run.Checkpoint)
+	}
 }

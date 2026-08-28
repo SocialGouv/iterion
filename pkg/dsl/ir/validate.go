@@ -17,6 +17,7 @@ func (c *compiler) validate(w *Workflow) {
 
 	c.validateInheritAtConvergence(w)
 	c.validatePersistNotInFanOut(w)
+	c.validateHumanModesInExecBranch(w)
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
 	c.validateLLMRouterEdges(w)

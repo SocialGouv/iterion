@@ -165,7 +165,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	for i := range items {
 		starts[fmt.Sprintf("branch_%s_%d", routerNodeID, i)] = tmplEdge.To
 	}
-	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	parallel, err := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	if err != nil {
+		return "", err
+	}
 
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
@@ -221,6 +224,8 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 				defer func() {
 					if r := recover(); r != nil {
+						parallel.releaseResumeWaiters(branchID)
+						cancelBranches()
 						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
 					}
 				}()
@@ -245,6 +250,8 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				closeDone := func() { once.Do(func() { close(done[i]) }) }
 				defer func() {
 					if r := recover(); r != nil {
+						parallel.releaseResumeWaiters(branchID)
+						cancelBranches()
 						atomic.StoreInt32(&failed[i], 1)
 						closeDone()
 						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
@@ -293,6 +300,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		expectedIDs[i] = fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 	}
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, expectedIDs, rs, routerNodeID, "fan_out_each")
+	parallel.retire()
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
