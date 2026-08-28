@@ -585,3 +585,60 @@ func TestParseLsRemoteHeadIgnoresStderrNoise(t *testing.T) {
 		})
 	}
 }
+
+// The richer-chain guard is a read-compare-write — ls-remote, compare,
+// force-push — with nothing making it atomic. A sibling attempt that
+// advances the branch in between is clobbered anyway, which is exactly
+// the loss the guard exists to prevent. The lease moves the decision
+// into the push itself.
+func TestBankPushArgsLeaseTheComparedRefState(t *testing.T) {
+	const branch, head, old = "iterion/run-x", "aaaa1111", "bbbb2222"
+	t.Run("a known prior head is leased", func(t *testing.T) {
+		got := strings.Join(bankPushArgs(branch, head, old), " ")
+		want := "push --force-with-lease=refs/heads/" + branch + ":" + old + " origin " + head + ":refs/heads/" + branch
+		if got != want {
+			t.Fatalf("args = %q, want %q", got, want)
+		}
+	})
+	t.Run("an unknown prior head keeps failing OPEN, never leases absence", func(t *testing.T) {
+		// "" as the lease <expect> means "the ref must not exist": it would
+		// break the first bank and turn bankedBranchHead's documented
+		// unreadable-remote degradation into a hard failure.
+		got := strings.Join(bankPushArgs(branch, head, ""), " ")
+		if strings.Contains(got, "force-with-lease") {
+			t.Fatalf("args = %q, want a plain force push when the prior head is unknown", got)
+		}
+		if want := "push --force origin " + head + ":refs/heads/" + branch; got != want {
+			t.Fatalf("args = %q, want %q", got, want)
+		}
+	})
+}
+
+// The lease's teeth, against real git: a push whose expectation no longer
+// matches the remote must be REFUSED, and the branch left alone. This is
+// also what pins that the lease is not quietly overridden — a `--force`
+// alongside it, or a git that ranked force above the lease, shows up here.
+func TestBankPushLeaseRejectsAStaleExpectation(t *testing.T) {
+	_, msg, work, origin, _ := bankFixture(t)
+	branch := "iterion/run-" + msg.RunID
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1")
+	first := gitOut(t, work, "rev-parse", "HEAD")
+	gitOut(t, work, "push", "--force", "origin", first+":refs/heads/"+branch)
+
+	// A sibling attempt advances the branch after our ls-remote read it.
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the sibling's work")
+	sibling := gitOut(t, work, "rev-parse", "HEAD")
+	gitOut(t, work, "push", "--force", "origin", sibling+":refs/heads/"+branch)
+
+	// Our push still carries the stale expectation.
+	gitOut(t, work, "checkout", "-q", first)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "our divergent head")
+	ours := gitOut(t, work, "rev-parse", "HEAD")
+	args := append([]string{"-C", work}, bankPushArgs(branch, ours, first)...)
+	if out, err := exec.Command("git", args...).CombinedOutput(); err == nil {
+		t.Fatalf("the stale-lease push succeeded and clobbered the sibling: %s", out)
+	}
+	if got, _ := bankedBranch(t, origin, msg.RunID); got != sibling {
+		t.Fatalf("branch = %q, want the sibling's head %s untouched", got, sibling)
+	}
+}

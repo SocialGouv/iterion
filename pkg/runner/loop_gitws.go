@@ -664,7 +664,8 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// the new head, or at most as long; refuse loudly when this chain is
 	// strictly poorer and leave the branch (and the run doc that already
 	// points at it) alone.
-	if oldHead := r.bankedBranchHead(ctx, workDir, tok, branch); oldHead != "" && oldHead != head {
+	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
+	if oldHead != "" && oldHead != head {
 		if !r.bankSupersedes(ctx, workDir, tok, msg.RunID, branch, oldHead, head) {
 			return
 		}
@@ -678,7 +679,7 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// a paused-and-resumed run can end far later, and the bank push then
 	// died on a dead credential while a live one sat in the store. The
 	// claim-time token stays only as the redaction key for error output.
-	pushErr := r.runGit(ctx, workDir, tok, "push", "--force", "origin", head+":refs/heads/"+branch)
+	pushErr := r.runGit(ctx, workDir, tok, bankPushArgs(branch, head, oldHead)...)
 
 	// Persist on a background ctx carrying the run's tenant identity (the
 	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
@@ -727,6 +728,30 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
 	}
+}
+
+// bankPushArgs builds the bank's push, binding it to the ref state the
+// richer-chain guard actually compared against.
+//
+// bankedBranchHead → bankSupersedes → push is a read-compare-write with
+// nothing making it atomic: a sibling attempt that advances the branch
+// in between is clobbered anyway, which is precisely the loss the guard
+// exists to prevent. --force-with-lease=<ref>:<expect> moves the
+// decision into the push itself, so the update lands only if the branch
+// is still where we read it. (The lease authorises the non-fast-forward
+// update on its own once satisfied — no --force alongside it, which
+// would only muddy which of the two is doing the deciding.)
+//
+// The lease is applied ONLY when oldHead is known. An empty <expect>
+// means "the ref must not exist", which would break the very first bank
+// and would silently convert an unreadable remote — the documented
+// fail-OPEN degradation of bankedBranchHead — into a hard failure.
+func bankPushArgs(branch, head, oldHead string) []string {
+	refspec := head + ":refs/heads/" + branch
+	if oldHead == "" {
+		return []string{"push", "--force", "origin", refspec}
+	}
+	return []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + oldHead, "origin", refspec}
 }
 
 // bankedBranchHead reads the forge's current tip of the run's storage
