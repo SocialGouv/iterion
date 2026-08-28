@@ -112,7 +112,8 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					SelectedIncoming: map[string][]store.IncomingEdge{
 						"gate": {{From: "work", To: "gate", Condition: "ready"}},
 					},
-					ResumeAnswers: map[string]any{"approved": true},
+					ResumeAnswers:  map[string]any{"approved": true},
+					ResumeAnswered: true,
 				},
 			},
 		},
@@ -135,7 +136,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	if branch == nil || branch.CurrentNodeID != "gate" || branch.Outputs["work"]["result"] != "ok" || branch.LoopCounters["retry"] != 1 {
 		t.Fatalf("branch checkpoint after round-trip = %+v", branch)
 	}
-	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true {
+	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
 		t.Fatalf("branch nested state after round-trip = %+v", branch)
 	}
 }

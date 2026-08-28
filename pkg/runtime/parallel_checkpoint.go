@@ -132,7 +132,7 @@ func (p *parallelExecutionState) captureBase(rs *runState) {
 	p.base.parallel = nil
 	p.mu.Lock()
 	if p.cp != nil && p.cp.PendingBranchID != "" {
-		if branch := p.cp.Branches[p.cp.PendingBranchID]; branch != nil && len(branch.ResumeAnswers) > 0 {
+		if branch := p.cp.Branches[p.cp.PendingBranchID]; branch != nil && branch.ResumeAnswered {
 			p.resumeBarrier = make(chan struct{})
 			p.resumePending = p.cp.PendingBranchID
 		}
@@ -398,6 +398,7 @@ func (p *parallelExecutionState) setResumeAnswers(branchID string, answers map[s
 		return fmt.Errorf("parallel checkpoint branch %q is missing", branchID)
 	}
 	branch.ResumeAnswers = deepCopyAnyMap(answers)
+	branch.ResumeAnswered = true
 	// The interaction has been answered. Keeping the pending identity until
 	// the human node advances prevents sibling progress from racing ahead.
 	return nil
@@ -479,6 +480,7 @@ func cloneBranchCheckpoint(src *store.BranchCheckpoint) *store.BranchCheckpoint 
 		Completed:          src.Completed,
 		TerminatedAtDone:   src.TerminatedAtDone,
 		ResumeAnswers:      deepCopyAnyMap(src.ResumeAnswers),
+		ResumeAnswered:     src.ResumeAnswered,
 	}
 }
 

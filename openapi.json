@@ -168,6 +168,9 @@
             },
             "type": "object"
           },
+          "resume_answered": {
+            "type": "boolean"
+          },
           "resume_answers": {
             "additionalProperties": {},
             "type": "object"

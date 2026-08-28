@@ -167,10 +167,11 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			if human.Interaction == ir.InteractionReview || human.Interaction == ir.InteractionLLMOrHuman {
 				result.err = fmt.Errorf("C245: human interaction %q is not supported inside an execution branch", human.Interaction)
 				done = true
-			} else if branchCP != nil && len(branchCP.ResumeAnswers) > 0 {
+			} else if branchCP != nil && branchCP.ResumeAnswered {
 				e.markPreNodeBoundary(branchRS, currentNodeID)
 				output = deepCopyAnyMap(branchCP.ResumeAnswers)
 				branchCP.ResumeAnswers = nil
+				branchCP.ResumeAnswered = false
 				if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
 					// The interaction was already recorded as answered before the
 					// branch restarted. Re-pause with a checkpoint that omits the bad

@@ -363,6 +363,37 @@ func TestBranchInvalidHumanAnswerRepromptsWithoutDurableAnswer(t *testing.T) {
 	}
 }
 
+func TestBranchEmptyHumanAnswerAdvances(t *testing.T) {
+	wf := branchFirstHumanLoopWorkflow()
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	var workCalls int
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		workCalls++
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	runStore := tmpStore(t)
+	const runID = "branch-empty-human-answer"
+	if err := New(wf, runStore, exec).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want pause", err)
+	}
+	if err := New(wf, runStore, exec).Resume(context.Background(), runID, map[string]any{}); err != nil {
+		t.Fatalf("empty answer resume = %v, want completed run", err)
+	}
+	if workCalls != 1 {
+		t.Fatalf("work calls = %d, want 1", workCalls)
+	}
+}
+
 func TestBranchNodeIterationComposesEnclosingAndLocalCounters(t *testing.T) {
 	wf := branchLocalLoopWorkflow()
 	wf.Loops["outer"] = &ir.Loop{Name: "outer", Body: map[string]bool{"work": true}}

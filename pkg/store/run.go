@@ -904,7 +904,8 @@ type BranchCheckpoint struct {
 	// ResumeAnswers is populated transiently from the answered interaction.
 	// It is persisted before the resumed runner is claimed, so another crash
 	// in that window still has the answer needed to finish the human node.
-	ResumeAnswers map[string]any `json:"resume_answers,omitempty" bson:"resume_answers,omitempty"`
+	ResumeAnswers  map[string]any `json:"resume_answers,omitempty" bson:"resume_answers,omitempty"`
+	ResumeAnswered bool           `json:"resume_answered,omitempty" bson:"resume_answered,omitempty"`
 }
 
 // IncomingEdge identifies a workflow edge that actually fired into a node

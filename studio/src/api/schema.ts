@@ -5049,6 +5049,7 @@ export interface components {
                     [key: string]: unknown;
                 };
             };
+            resume_answered?: boolean;
             resume_answers?: {
                 [key: string]: unknown;
             };
