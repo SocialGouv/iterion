@@ -30,6 +30,7 @@
 
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -525,6 +526,23 @@ function ActiveConversation({
 }) {
   const [sessionValue, setSessionValue] =
     useState<AssistantSessionContextValue | null>(null);
+  // Publishing a session updates this parent. Keep both the callback and the
+  // engine stable so that update does not render the engine again solely
+  // because its parent rendered: useWhatsNextSession returns a fresh facade,
+  // which would otherwise publish again and form an infinite effect loop.
+  // Internal engine updates still render it normally and publish the new
+  // session value.
+  const handleSession = useCallback((value: AssistantSessionContextValue) => {
+    setSessionValue((prev) =>
+      prev &&
+      prev.bot === value.bot &&
+      prev.session === value.session &&
+      prev.bots === value.bots &&
+      prev.selectBot === value.selectBot
+        ? prev
+        : value,
+    );
+  }, []);
   return (
     <>
       <RunStoreProvider store={store}>
@@ -536,17 +554,7 @@ function ActiveConversation({
           discover={discover}
           attachRunId={attachRunId}
           onLaunched={onLaunched}
-          onSession={(value) =>
-            setSessionValue((prev) =>
-              prev &&
-              prev.bot === value.bot &&
-              prev.session === value.session &&
-              prev.bots === value.bots &&
-              prev.selectBot === value.selectBot
-                ? prev
-                : value,
-            )
-          }
+          onSession={handleSession}
         />
       </RunStoreProvider>
       <AssistantSessionContext.Provider
@@ -567,7 +575,7 @@ function ActiveConversation({
 // reason AssistantSessionHost is split from AssistantProvider. Keyed by
 // sessionKey in the parent; publishes the session as context rather than
 // wrapping the app in the keyed node.
-function ActiveConversationEngine({
+const ActiveConversationEngine = memo(function ActiveConversationEngine({
   bot,
   bots,
   selectBot,
@@ -602,7 +610,7 @@ function ActiveConversationEngine({
     onSession(sessionValue);
   }, [sessionValue, onSession]);
   return null;
-}
+});
 
 // AssistantStoreScope re-enters the assistant's run store. Any surface
 // rendering the assistant's transcript or composer needs it, because

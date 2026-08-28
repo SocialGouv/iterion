@@ -62,7 +62,10 @@ const idleSession = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/whats-next/useWhatsNextSession", () => ({
-  useWhatsNextSession: () => idleSession,
+  // The real hook returns a fresh facade on every render. Preserve that
+  // behavior here so a parent/engine publication loop fails this suite
+  // instead of surfacing as an endless Suspense fallback in production.
+  useWhatsNextSession: () => ({ ...idleSession }),
 }));
 
 const FAKE_BOT = {
