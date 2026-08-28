@@ -472,7 +472,7 @@ candidate MUST NOT be promoted.
 | `parallel_safe: true` | `fan_out_each` with disjoint item-keyed outputs | safety if keys overlap |
 | `await: wait_all` | convergence barrier | a unique writer |
 
-`fan_out_all`: known independent branches.  
+`fan_out_all`: known independent branches.
 `fan_out_each`: one piece per item. Object items use a stable `key`. Scalar
 content-addressed items omit `key` because Iterion resolves named keys only on
 objects; their producer MUST emit a deterministic order and the scalar value
@@ -693,4 +693,3 @@ Checklist before merging a `.bot`:
       the same producer re-enters fresh from artifact paths, hashes, and delta
 - [ ] proofs of the categories the contract requires, from the project’s
       verifiers
-
