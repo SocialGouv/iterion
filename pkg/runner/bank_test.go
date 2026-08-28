@@ -677,3 +677,42 @@ func TestBankPushLeaseRejectsAStaleExpectation(t *testing.T) {
 		t.Fatalf("branch = %q, want the sibling's head %s untouched", got, sibling)
 	}
 }
+
+// The integrity refusal has the same cross-attempt hazard as the push
+// arm: recordBankFailure's invariant ("FinalCommit is set but no
+// persistent branch guards it") held only while the bank ran once, on
+// success. Now a bankable death naks, so a clean attempt can be followed
+// by one whose export fails the integrity check — and overwriting
+// FinalBranchError there would raise an alarming branch failure over the
+// valid, forge-backed pair the first attempt banked.
+func TestBankIntegrityRefusalKeepsAnEarlierAttemptsPair(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1")
+	banked := gitOut(t, work, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	// Attempt 2 is an export-based sandbox whose copy never delivered the
+	// pod's final tree.
+	work2 := filepath.Join(t.TempDir(), "attempt2")
+	gitOut(t, filepath.Dir(work2), "clone", origin, work2)
+	r.bankRepoWorkspace(context.Background(), msg, work2, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: "feedfacefeedfacefeedfacefeedfacefeedface"})
+
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranch != "iterion/run-"+msg.RunID || run.FinalCommit != banked {
+		t.Fatalf("branch %q / commit %q, want attempt 1's forge-backed pair %s intact", run.FinalBranch, run.FinalCommit, banked)
+	}
+	if run.FinalBranchError != "" {
+		t.Fatalf("FinalBranchError = %q — a refusal for THIS attempt must not report a branch failure over a branch that exists and merges", run.FinalBranchError)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+	if ev == nil {
+		t.Fatal("the integrity refusal left no run_bank_refused — it became a silent no-op, which is what recordBankFailure exists to prevent")
+	}
+	if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "bank refused") {
+		t.Errorf("event cause = %q, want the integrity refusal named", cause)
+	}
+	if got := ev.Data["kept_head"]; got != banked {
+		t.Errorf("kept_head = %v, want %s", got, banked)
+	}
+}

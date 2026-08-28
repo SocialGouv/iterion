@@ -815,7 +815,13 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 	}
 	r.cfg.Logger.Warn("runner: run %s: bank REFUSED: an earlier attempt banked a richer chain at %s (%.12s, %d exclusive commits) than this outcome carries (%.12s, %d) — keeping the richer branch",
 		runID, branch, oldHead, oldCount, head, newCount)
-	r.recordBankRefused(msg, branch, oldHead, head, oldCount, newCount)
+	r.recordBankRefused(msg, map[string]any{
+		"branch":          branch,
+		"kept_head":       oldHead,
+		"kept_commits":    oldCount,
+		"dropped_head":    head,
+		"dropped_commits": newCount,
+	})
 	return false
 }
 
@@ -837,33 +843,47 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 // Best-effort, on the identity ctx rather than the run ctx (which may
 // already be dead): a store that refuses the append must never change
 // the run's outcome.
-func (r *Runner) recordBankRefused(msg *queue.RunMessage, branch, keptHead, droppedHead string, keptCommits, droppedCommits int) {
+func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
 	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunBankRefused,
-		Data: map[string]any{
-			"branch":          branch,
-			"kept_head":       keptHead,
-			"kept_commits":    keptCommits,
-			"dropped_head":    droppedHead,
-			"dropped_commits": droppedCommits,
-		},
+		Data: data,
 	}); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_refused: %v", msg.RunID, err)
 	}
 }
 
-// recordBankFailure persists why a finished run's work could NOT be
-// banked into FinalBranchError — the field `runs merge` surfaces — so an
-// integrity refusal is exactly as loud as a failed push, never a silent
-// no-op. FinalBranch stays empty: there is no branch to merge, and the
-// recorded cause is the truth the operator acts on.
+// recordBankFailure persists why a run's work could NOT be banked into
+// FinalBranchError — the field `runs merge` surfaces — so an integrity
+// refusal is exactly as loud as a failed push, never a silent no-op.
+//
+// It writes that field only when no branch is recorded yet, which is the
+// condition its invariant assumes ("FinalCommit is set but no persistent
+// branch guards it"). That used to be unconditionally true: the bank ran
+// once, on success only. Now a bankable death naks and the redelivered
+// attempt banks into the SAME doc, so an attempt that banked cleanly can
+// be followed by one the integrity check refuses — a
+// kubernetes-export mismatch on the retry, say. Overwriting the field
+// there would raise an alarming branch failure over the valid,
+// forge-backed, mergeable pair the earlier attempt left, and make this
+// function's own "FinalBranch stays empty" false. The refusal is still
+// recorded, on the timeline, exactly like a refused chain comparison.
 func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 	r.cfg.Logger.Error("runner: run %s: %s", msg.RunID, cause)
 	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
 	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record refusal: %v", msg.RunID, lerr)
+		return
+	}
+	if run.FinalBranch != "" {
+		r.cfg.Logger.Error("runner: run %s: bank refused for THIS attempt while the doc keeps an earlier attempt's branch %s @ %.12s — not overwriting a valid pair with this refusal: %s",
+			msg.RunID, run.FinalBranch, run.FinalCommit, cause)
+		r.recordBankRefused(msg, map[string]any{
+			"branch":    run.FinalBranch,
+			"kept_head": run.FinalCommit,
+			"cause":     cause,
+		})
 		return
 	}
 	run.FinalBranchError = cause

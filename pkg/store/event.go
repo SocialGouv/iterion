@@ -141,8 +141,10 @@ const (
 	//   - repo_url / repo_sha: what the clone was re-anchored on
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
-	// runner's death bank, because an earlier attempt of the same run had
-	// already banked a strictly richer chain onto the storage branch.
+	// runner's death bank while an EARLIER attempt of the same run keeps
+	// the storage branch — either because that attempt banked a strictly
+	// richer chain, or because this attempt's workspace failed the
+	// integrity check.
 	//
 	// It exists because the refusal is otherwise invisible outside the pod
 	// log: FinalBranch/FinalCommit keep naming a valid, forge-backed,
@@ -152,8 +154,12 @@ const (
 	// that field's documented meaning is "FinalCommit has no persistent
 	// branch guarding it", which is exactly not the case here. Data:
 	//   - branch: the storage branch that was left alone
-	//   - kept_head / kept_commits: the banked head and its exclusive count
-	//   - dropped_head / dropped_commits: this attempt's, and its count
+	//   - kept_head: the head that branch stays on
+	//   - kept_commits / dropped_head / dropped_commits: the two chains'
+	//     exclusive counts and this attempt's head — the chain-comparison
+	//     refusal only
+	//   - cause: why this attempt's workspace was refused — the
+	//     integrity-check refusal only
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
