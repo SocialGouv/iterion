@@ -140,6 +140,21 @@ const (
 	//     resume publish) or "redelivery" (a checkpoint with no resume spec)
 	//   - repo_url / repo_sha: what the clone was re-anchored on
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
+	// EventRunBankRefused marks THIS attempt's head being dropped by the
+	// runner's death bank, because an earlier attempt of the same run had
+	// already banked a strictly richer chain onto the storage branch.
+	//
+	// It exists because the refusal is otherwise invisible outside the pod
+	// log: FinalBranch/FinalCommit keep naming a valid, forge-backed,
+	// mergeable pair — just a DIFFERENT attempt's — so the operator sees a
+	// head their run's own artifacts and gate never cite, and `runs merge`
+	// merges that other attempt's tree. FinalBranchError cannot carry it:
+	// that field's documented meaning is "FinalCommit has no persistent
+	// branch guarding it", which is exactly not the case here. Data:
+	//   - branch: the storage branch that was left alone
+	//   - kept_head / kept_commits: the banked head and its exclusive count
+	//   - dropped_head / dropped_commits: this attempt's, and its count
+	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from

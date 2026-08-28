@@ -393,9 +393,44 @@ func TestBankRefusesToClobberRicherAttempt(t *testing.T) {
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != richHead {
 		t.Fatalf("branch = %q (present=%v), want the richer attempt-1 head %s kept", got, ok, richHead)
 	}
-	if run := loadRun(t, r, msg.RunID); run.FinalCommit != richHead {
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalCommit != richHead {
 		t.Fatalf("FinalCommit = %q, want the richer head %s kept", run.FinalCommit, richHead)
 	}
+	// The refusal must not be log-only: the doc now names a head THIS
+	// attempt never produced, and nothing else on it says the two diverge.
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+	if ev == nil {
+		t.Fatal("a refused bank left no run_bank_refused on the timeline — the dropped head is invisible outside the pod log")
+	}
+	poorHead := gitOut(t, work2, "rev-parse", "HEAD")
+	if got := ev.Data["kept_head"]; got != richHead {
+		t.Errorf("kept_head = %v, want the richer banked head %s", got, richHead)
+	}
+	if got := ev.Data["dropped_head"]; got != poorHead {
+		t.Errorf("dropped_head = %v, want this attempt's head %s", got, poorHead)
+	}
+	// FinalBranchError stays empty on purpose: its documented meaning is
+	// "FinalCommit has no persistent branch guarding it", and here the pair
+	// is valid and mergeable — just a different attempt's. Overloading it
+	// would raise an alarming branch failure over a perfectly good branch.
+	if run.FinalBranchError != "" {
+		t.Errorf("FinalBranchError = %q, want the field pair left coherent and the divergence carried by the event", run.FinalBranchError)
+	}
+}
+
+func findEvent(t *testing.T, r *Runner, runID string, typ store.EventType) *store.Event {
+	t.Helper()
+	evs, err := r.cfg.Store.LoadEvents(store.WithIdentity(context.Background(), "team-a", ""), runID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, e := range evs {
+		if e.Type == typ {
+			return e
+		}
+	}
+	return nil
 }
 
 // A resume that carried the banked work FORWARD (descendant head)

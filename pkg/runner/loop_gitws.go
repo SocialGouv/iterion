@@ -666,7 +666,7 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// points at it) alone.
 	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
 	if oldHead != "" && oldHead != head {
-		if !r.bankSupersedes(ctx, workDir, tok, msg.RunID, branch, oldHead, head) {
+		if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
 			return
 		}
 	}
@@ -789,10 +789,12 @@ func parseLsRemoteHead(out, branch string) string {
 // branch an earlier attempt banked at oldHead. True when the new head
 // contains the old one (a resume that carried the work forward), or when
 // its chain is at least as long — later wins only when it is not
-// strictly poorer. On the refusal path it logs the loss it prevented;
-// on unverifiable ground (fetch failed, no common baseline) it lets the
-// push through, which is exactly the pre-check-less behaviour.
-func (r *Runner) bankSupersedes(ctx context.Context, workDir, tok, runID, branch, oldHead, head string) bool {
+// strictly poorer. On the refusal path it RECORDS the loss it prevented,
+// on the run's timeline as well as in the pod log; on unverifiable
+// ground (fetch failed, no common baseline) it lets the push through,
+// which is exactly the pre-check-less behaviour.
+func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) bool {
+	runID := msg.RunID
 	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: bank: fetch prior banked head %.12s: %v — pushing without the comparison", runID, oldHead, err)
 		return true
@@ -813,7 +815,42 @@ func (r *Runner) bankSupersedes(ctx context.Context, workDir, tok, runID, branch
 	}
 	r.cfg.Logger.Warn("runner: run %s: bank REFUSED: an earlier attempt banked a richer chain at %s (%.12s, %d exclusive commits) than this outcome carries (%.12s, %d) — keeping the richer branch",
 		runID, branch, oldHead, oldCount, head, newCount)
+	r.recordBankRefused(msg, branch, oldHead, head, oldCount, newCount)
 	return false
+}
+
+// recordBankRefused puts a refused bank on the RUN's timeline, not only
+// in the pod log.
+//
+// Without it the refusal is invisible to the operator: pushBank returns
+// without touching the run doc, so FinalBranch/FinalCommit keep naming a
+// valid forge-backed pair produced by a DIFFERENT attempt, and `runs
+// merge` merges that attempt's tree — a head this run's own artifacts
+// and gate never cite, with nothing anywhere saying the two diverge.
+// That silence is what the surrounding code already refuses elsewhere
+// ("an integrity refusal is exactly as loud as a failed push, never a
+// silent no-op"). FinalBranchError is deliberately NOT the carrier: its
+// documented meaning is "FinalCommit has no persistent branch guarding
+// it", so writing it here would break the invariant and raise an
+// alarming branch failure over a perfectly good branch.
+//
+// Best-effort, on the identity ctx rather than the run ctx (which may
+// already be dead): a store that refuses the append must never change
+// the run's outcome.
+func (r *Runner) recordBankRefused(msg *queue.RunMessage, branch, keptHead, droppedHead string, keptCommits, droppedCommits int) {
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankRefused,
+		Data: map[string]any{
+			"branch":          branch,
+			"kept_head":       keptHead,
+			"kept_commits":    keptCommits,
+			"dropped_head":    droppedHead,
+			"dropped_commits": droppedCommits,
+		},
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_refused: %v", msg.RunID, err)
+	}
 }
 
 // recordBankFailure persists why a finished run's work could NOT be
