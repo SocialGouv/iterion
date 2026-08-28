@@ -399,7 +399,8 @@ func bankableStatus(finalStatus string) bool {
 // this blocks is someone quietly reverting the gate to success-only,
 // which every direct bankRepoWorkspace test is blind to.
 func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
-	if !bankableStatus(classifyExecResult(runErr, msg.RunID).finalStatus) {
+	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
+	if !bankableStatus(finalStatus) {
 		return
 	}
 	bankCtx, ok := bankContext(ctx)
@@ -407,7 +408,7 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved. The redelivery banks.", msg.RunID, context.Cause(ctx))
 		return
 	}
-	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ)
+	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
 }
 
 // bankContext decides whether the bank may outlive the run ctx.
@@ -1616,10 +1617,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// never fires here, so an unbanked death leaves its commits only
 		// in the git-meta snapshot above, and turning that snapshot back
 		// into a branch takes a manual replay every time (measured: nine
-		// manual recoveries in three days of one campaign). Pauses resume
-		// in place, an interrupted delivery re-clones and banks on its
-		// next attempt, and a cancel is the operator saying the work is
-		// not wanted — none of those bank.
+		// manual recoveries in three days of one campaign). An interrupted
+		// delivery re-clones and banks on its next attempt, and a cancel
+		// is the operator saying the work is not wanted. Paused runs do
+		// not bank either — NOT because the work is safe (a cloud resume
+		// re-clones at the base, so a paused run's committed work is as
+		// stranded as a death's until it ends) but because FinalBranch on
+		// a half-done run would make it merge-eligible mid-flight; that
+		// trade-off is a product decision deferred, not an oversight.
 		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 

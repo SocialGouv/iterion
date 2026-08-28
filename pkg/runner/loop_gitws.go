@@ -589,7 +589,7 @@ func injectGitToken(rawURL, token string) string {
 // is recorded on the run's timeline (run_bank_refused) instead — never
 // by overwriting the pair or the field whose meaning is "this commit has
 // no branch guarding it".
-func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
+func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, finalStatus string) {
 	head, headErr := gitlib.RevParseHead(workDir)
 	if integ.Applicable {
 		// The workspace is a pod-side COPY streamed back at sandbox
@@ -621,7 +621,7 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 			// finished on. Otherwise refuse loudly.
 			if headErr == nil && r.hostHasCommit(ctx, workDir, integ.PodHead) {
 				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", msg.RunID, head, integ.PodHead)
-				r.pushBank(ctx, msg, workDir, integ.PodHead)
+				r.pushBank(ctx, msg, workDir, integ.PodHead, finalStatus)
 				return
 			}
 			r.recordBankFailure(msg, fmt.Sprintf(
@@ -642,7 +642,7 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", msg.RunID, confirmed)
 		return
 	}
-	r.pushBank(ctx, msg, workDir, head)
+	r.pushBank(ctx, msg, workDir, head, finalStatus)
 }
 
 // hostHasCommit reports whether sha resolves to a commit object present
@@ -656,7 +656,7 @@ func (r *Runner) hostHasCommit(ctx context.Context, workDir, sha string) bool {
 // FinalBranchError when the forge refused the push. head is a resolved
 // SHA — the normal path banks the exported HEAD, the ref-shadowing
 // recovery banks the pod-side commit directly.
-func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head string) {
+func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, head, finalStatus string) {
 	branch := "iterion/run-" + msg.RunID
 	tok := ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
@@ -673,7 +673,17 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// points at it) alone.
 	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
 	if oldHead != "" && oldHead != head {
-		if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
+		// A FINISHED outcome is the run's converged final state and
+		// supersedes whatever an earlier dead attempt banked, however
+		// long that chain was: a resume re-clones at the base and only
+		// re-does the remaining nodes, so the finished chain is
+		// legitimately SHORTER than the dead one it completes — refusing
+		// it would make `runs merge` land the dead attempt's tree over
+		// the finished run's. The chain comparison protects dead
+		// attempts from poorer dead attempts, nothing else.
+		if finalStatus == "finished" {
+			r.cfg.Logger.Info("runner: run %s: bank: finished outcome supersedes the chain banked at %.12s", msg.RunID, oldHead)
+		} else if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
 			return
 		}
 	}
@@ -713,14 +723,25 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// BuildSquashMessage resolves FinalCommit in a clone that only fetched
 	// the branch).
 	if pushErr != nil {
-		// This attempt's head is NOT on the forge. Recording it would leave
-		// FinalCommit naming a SHA the merge clone cannot resolve while
-		// FinalBranch still points at the branch an earlier attempt banked
-		// at its own head — so only claim FinalCommit when no earlier
-		// attempt's branch is on the doc to disagree with.
-		if run.FinalBranch == "" {
-			run.FinalCommit = head
+		// This attempt's head is NOT on the forge. When an earlier attempt
+		// already banked a valid pair, this failure must not TOUCH it:
+		// writing FinalBranchError over it would hide the good branch from
+		// the studio (it renders the branch row only when the error field
+		// is empty) and break the field's contract ("FinalCommit is set
+		// but has no branch guarding it"). The failure goes on the run's
+		// timeline instead, and the doc keeps telling the truth about the
+		// branch that exists.
+		if run.FinalBranch != "" {
+			r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — keeping the earlier attempt's banked pair (%s @ %.12s): %v", msg.RunID, branch, run.FinalBranch, run.FinalCommit, pushErr)
+			r.recordBankRefused(msg, map[string]any{
+				"branch":    branch,
+				"kept_head": run.FinalCommit,
+				"reason":    "push_failed",
+				"error":     pushErr.Error(),
+			})
+			return
 		}
+		run.FinalCommit = head
 		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
 		r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — the work exists only in this pod's clone: %v", msg.RunID, branch, pushErr)
 	} else {

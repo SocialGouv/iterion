@@ -71,7 +71,7 @@ func TestBankRepoWorkspacePushesAndRecords(t *testing.T) {
 	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
 	head := gitOut(t, work, "rev-parse", "HEAD")
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	branchHead := gitOut(t, origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID)
 	if branchHead != head {
@@ -89,7 +89,7 @@ func TestBankRepoWorkspacePushesAndRecords(t *testing.T) {
 func TestBankRepoWorkspaceNoWorkIsNoop(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	if out, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/iterion/run-"+msg.RunID).CombinedOutput(); err == nil {
 		t.Errorf("a workless run banked a branch anyway: %s", out)
@@ -106,7 +106,7 @@ func TestBankRepoWorkspacePushFailureIsNamed(t *testing.T) {
 	// THAT to exercise the refusal path.
 	gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	run := loadRun(t, r, msg.RunID)
 	if run.FinalBranch != "" {
@@ -136,7 +136,7 @@ func TestBankRepoWorkspaceExportMismatchRefusesStaleTree(t *testing.T) {
 	podHead := "feedfacefeedfacefeedfacefeedfacefeedface"
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead})
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
 		t.Errorf("a stale exported tree was banked anyway at %s", got)
@@ -153,7 +153,7 @@ func TestBankRepoWorkspaceNoopRefusedWhenPodHeadUnknown(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod-side git rev-parse HEAD: pod gone"})
+		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod-side git rev-parse HEAD: pod gone"}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
 		t.Errorf("an unverifiable baseline tree was banked anyway at %s", got)
@@ -170,7 +170,7 @@ func TestBankRepoWorkspaceVerifiedNoopStaysClean(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base})
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); ok {
 		t.Errorf("a pod-confirmed no-op banked a branch at %s", got)
@@ -187,7 +187,7 @@ func TestBankRepoWorkspaceVerifiedWorkBanksNormally(t *testing.T) {
 	head := gitOut(t, work, "rev-parse", "HEAD")
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, PodHead: head})
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: head}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 		t.Errorf("banked branch = %q (present=%v), want %s", got, ok, head)
@@ -206,7 +206,7 @@ func TestBankRepoWorkspaceUnverifiedWorkStillBanks(t *testing.T) {
 	head := gitOut(t, work, "rev-parse", "HEAD")
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod gone"})
+		runtime.WorkspaceIntegrity{Applicable: true, CaptureErr: "pod gone"}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 		t.Errorf("banked branch = %q (present=%v), want %s", got, ok, head)
@@ -229,7 +229,7 @@ func TestBankRepoWorkspaceRefShadowRecoversBySHA(t *testing.T) {
 	gitOut(t, work, "checkout", "-q", "--detach", base)
 
 	r.bankRepoWorkspace(context.Background(), msg, work, base,
-		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead})
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != podHead {
 		t.Errorf("recovered branch = %q (present=%v), want the pod-side commit %s", got, ok, podHead)
@@ -256,7 +256,7 @@ func TestBankPushesThroughOriginNotClaimTimeURL(t *testing.T) {
 	head := gitOut(t, work, "rev-parse", "HEAD")
 	msg.RepoURL = filepath.Join(t.TempDir(), "dead-claim-url.git")
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 		t.Fatalf("bank landed %q (present=%v) on origin, want %s — the push must resolve through origin's live credential, not the claim-time URL", got, ok, head)
@@ -318,10 +318,11 @@ func TestBankOnBudgetDeathLandsTheBranch(t *testing.T) {
 	head := gitOut(t, work, "rev-parse", "HEAD")
 
 	deathErr := fmt.Errorf("%w: duration (14401/14400)", runtime.ErrBudgetExceeded)
-	if !bankableStatus(classifyExecResult(deathErr, msg.RunID).finalStatus) {
+	status := classifyExecResult(deathErr, msg.RunID).finalStatus
+	if !bankableStatus(status) {
 		t.Fatal("a budget death must be bankable")
 	}
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, status)
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 		t.Fatalf("banked %q (present=%v), want %s on the forge", got, ok, head)
@@ -385,10 +386,10 @@ func TestBankRefusesToClobberRicherAttempt(t *testing.T) {
 	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: one")
 	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: two")
 	richHead := gitOut(t, work, "rev-parse", "HEAD")
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
 
 	gitOut(t, work2, "commit", "--allow-empty", "-m", "attempt 2: poorer divergent retry")
-	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{}, "failed")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != richHead {
 		t.Fatalf("branch = %q (present=%v), want the richer attempt-1 head %s kept", got, ok, richHead)
@@ -438,11 +439,11 @@ func findEvent(t *testing.T, r *Runner, runID string, typ store.EventType) *stor
 func TestBankDescendantSupersedes(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	gitOut(t, work, "commit", "--allow-empty", "-m", "first outcome")
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	gitOut(t, work, "commit", "--allow-empty", "-m", "resume carried it further")
 	newHead := gitOut(t, work, "rev-parse", "HEAD")
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != newHead {
 		t.Fatalf("branch = %q (present=%v), want advanced to %s", got, ok, newHead)
@@ -461,7 +462,7 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 		t.Fatalf("flip to cancelled: %v", err)
 	}
 
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "failed")
 
 	if _, present := bankedBranch(t, origin, msg.RunID); !present {
 		t.Fatalf("the push itself precedes the doc check and should have landed")
@@ -546,20 +547,24 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 		r, msg, work, _, base := bankFixture(t)
 		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1")
 		bankedHead := gitOut(t, work, "rev-parse", "HEAD")
-		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 		// Attempt 2 produces a head that never reaches the forge.
 		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 2, unreachable forge")
 		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
-		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 		run := loadRun(t, r, msg.RunID)
 		if run.FinalBranch != "iterion/run-"+msg.RunID || run.FinalCommit != bankedHead {
 			t.Fatalf("branch %q / commit %q — want attempt 1's forge-backed pair %s intact, not a SHA the merge clone cannot resolve",
 				run.FinalBranch, run.FinalCommit, bankedHead)
 		}
-		if !strings.Contains(run.FinalBranchError, "bank push") {
-			t.Fatalf("FinalBranchError = %q, want the failed second push named", run.FinalBranchError)
+		// The failure goes on the timeline, NOT on FinalBranchError: the
+		// studio hides the branch row whenever the error field is set, so
+		// naming this attempt's failure there would hide a branch that
+		// exists on the forge and merges.
+		if run.FinalBranchError != "" {
+			t.Fatalf("FinalBranchError = %q — a later attempt's push failure must not mask the valid banked pair", run.FinalBranchError)
 		}
 	})
 
@@ -568,7 +573,7 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1, unreachable forge")
 		good := gitOut(t, work, "remote", "get-url", "origin")
 		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
-		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 		if run := loadRun(t, r, msg.RunID); run.FinalBranchError == "" {
 			t.Fatal("precondition: the first attempt must have recorded a bank failure")
 		}
@@ -576,7 +581,7 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 		gitOut(t, work, "remote", "set-url", "origin", good)
 		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 2 lands")
 		head := gitOut(t, work, "rev-parse", "HEAD")
-		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 			t.Fatalf("branch %q (present=%v), want %s", got, ok, head)
@@ -689,14 +694,14 @@ func TestBankIntegrityRefusalKeepsAnEarlierAttemptsPair(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1")
 	banked := gitOut(t, work, "rev-parse", "HEAD")
-	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
 
 	// Attempt 2 is an export-based sandbox whose copy never delivered the
 	// pod's final tree.
 	work2 := filepath.Join(t.TempDir(), "attempt2")
 	gitOut(t, filepath.Dir(work2), "clone", origin, work2)
 	r.bankRepoWorkspace(context.Background(), msg, work2, base,
-		runtime.WorkspaceIntegrity{Applicable: true, PodHead: "feedfacefeedfacefeedfacefeedfacefeedface"})
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: "feedfacefeedfacefeedfacefeedfacefeedface"}, "failed")
 
 	run := loadRun(t, r, msg.RunID)
 	if run.FinalBranch != "iterion/run-"+msg.RunID || run.FinalCommit != banked {
@@ -714,5 +719,37 @@ func TestBankIntegrityRefusalKeepsAnEarlierAttemptsPair(t *testing.T) {
 	}
 	if got := ev.Data["kept_head"]; got != banked {
 		t.Errorf("kept_head = %v, want %s", got, banked)
+	}
+}
+
+
+// The flagship scenario of the outcome-aware supersede: attempt 1 dies
+// at the budget cap holding a LONGER chain; the manual resume re-clones
+// at base, completes the remaining work in fewer commits, and FINISHES.
+// The finished outcome must supersede the dead attempt's longer chain —
+// a count-only comparison would keep the dead tree and `runs merge`
+// would land it over the finished run's.
+func TestBankFinishedResumeSupersedesLongerDeadAttempt(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	work2 := filepath.Join(t.TempDir(), "resume")
+	gitOut(t, filepath.Dir(work2), "clone", work, work2)
+	gitOut(t, work2, "config", "user.email", "t@test.invalid")
+	gitOut(t, work2, "config", "user.name", "t")
+	gitOut(t, work2, "remote", "set-url", "origin", origin)
+
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: one")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: two")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: three")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
+
+	gitOut(t, work2, "commit", "--allow-empty", "-m", "finished resume: the remaining unit")
+	finishedHead := gitOut(t, work2, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != finishedHead {
+		t.Fatalf("branch = %q (present=%v), want the FINISHED head %s superseding the dead attempt's longer chain", got, ok, finishedHead)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalCommit != finishedHead {
+		t.Fatalf("FinalCommit = %q, want the finished head %s", run.FinalCommit, finishedHead)
 	}
 }
