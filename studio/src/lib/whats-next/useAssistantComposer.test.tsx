@@ -92,6 +92,43 @@ describe("useAssistantComposer routing", () => {
     });
   });
 
+  it("answers a custom delegate pause through its sole question key", async () => {
+    const customBot = { ...bot, nodeMap: {} } as FirstClassBot;
+    const s = session({
+      runStatus: "paused_waiting_human",
+      messages: [
+        {
+          kind: "human-question",
+          id: "question-1",
+          nodeId: "copi",
+          prompt: "Reply",
+          status: "pending",
+          questions: {
+            active_editor_document: "Send the active editor document.",
+          },
+        },
+      ],
+    });
+    const { result } = renderHook(() =>
+      useAssistantComposer({
+        bot: customBot,
+        session: s,
+        decorate: (text) =>
+          `<active-editor-document>{}</active-editor-document>\n${text}`,
+      }),
+    );
+
+    await act(() =>
+      result.current.onComposerSend("corrige le buffer", { skills: [] }),
+    );
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      active_editor_document:
+        "<active-editor-document>{}</active-editor-document>\ncorrige le buffer",
+    });
+    expect(api.queueMessage).not.toHaveBeenCalled();
+  });
+
   it("submits an approval-only turn as a boolean under the declared field", async () => {
     const approvalBot: FirstClassBot = {
       ...bot,
@@ -204,7 +241,9 @@ describe("useAssistantComposer routing", () => {
 
   it("queues into a live run with the selected skills", async () => {
     const s = session();
-    const { result } = renderHook(() => useAssistantComposer({ bot, session: s }));
+    const { result } = renderHook(() =>
+      useAssistantComposer({ bot, session: s }),
+    );
 
     await act(() =>
       result.current.onComposerSend("inspect this", { skills: ["review"] }),
@@ -214,6 +253,19 @@ describe("useAssistantComposer routing", () => {
       skills: ["review"],
     });
     expect(s.launch).not.toHaveBeenCalled();
+  });
+
+  it("never buffers an answer behind an unresolved human pause", async () => {
+    const s = session({ runStatus: "paused_waiting_human", messages: [] });
+    const { result } = renderHook(() => useAssistantComposer({ bot, session: s }));
+
+    await act(async () => {
+      await expect(
+        result.current.onComposerSend("do not strand this", { skills: [] }),
+      ).rejects.toThrow("waiting for a direct answer");
+    });
+
+    expect(api.queueMessage).not.toHaveBeenCalled();
   });
 
   it("re-seeds a closed session without dropping its scope vars", async () => {

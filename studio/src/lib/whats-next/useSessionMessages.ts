@@ -21,6 +21,23 @@ import {
   type MessagesFoldCache,
 } from "./messagesFromEvents";
 
+function pendingPrompt(questions: Record<string, unknown> | undefined): string {
+  if (!questions) return "Reply to continue.";
+  for (const key of ["ask_user_response", "acknowledge_recovery"]) {
+    const value = questions[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  // Delegate interaction envelopes may use a task-specific answer key (for
+  // example `active_editor_document`) rather than ask_user_response. The
+  // value is still the operator-facing question; underscore-prefixed fields
+  // are presentation/runtime plumbing and must not become the prompt.
+  for (const [key, value] of Object.entries(questions)) {
+    if (key.startsWith("_")) continue;
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "Reply to continue.";
+}
+
 export function useSessionMessages(opts: {
   bot: FirstClassBot;
   runId: string | null;
@@ -78,8 +95,34 @@ export function useSessionMessages(opts: {
         status: "consumed",
       });
     }
+
+    // A paused checkpoint is the durable source of truth. The event stream
+    // can have a gap after a reconnect/redeploy: previously we only scheduled
+    // a tail refetch, which cannot recover a missing event that sits BEFORE
+    // the local tail. In that state the transcript had no pending question,
+    // so the composer treated the operator's answer as an inbox message and
+    // buffered it forever behind the pause. Materialise the current blocking
+    // interaction from the checkpoint until its event is present.
+    if (pendingHuman?.node_id) {
+      const alreadyPending = withSeed.some(
+        (message) =>
+          message.kind === "human-question" && message.status === "pending",
+      );
+      if (!alreadyPending) {
+        withSeed.push({
+          kind: "human-question",
+          id:
+            pendingHuman.interaction_id ??
+            `${pendingHuman.node_id}:checkpoint:question`,
+          nodeId: pendingHuman.node_id,
+          prompt: pendingPrompt(pendingHuman.questions),
+          status: "pending",
+          questions: pendingHuman.questions,
+        });
+      }
+    }
     return withSeed;
-  }, [bot, events, snapshot]);
+  }, [bot, events, snapshot, pendingHuman]);
 
   // Track the latest pending human message id so submitHumanAnswer
   // can route to the right turn without the caller having to look it

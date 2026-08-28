@@ -36,6 +36,7 @@ function snapshotWith(inputs: Record<string, unknown>): RunSnapshot {
 function render(opts: {
   bot?: FirstClassBot;
   snapshot: RunSnapshot | null;
+  pendingHuman?: Parameters<typeof useSessionMessages>[0]["pendingHuman"];
 }) {
   return renderHook(() =>
     useSessionMessages({
@@ -44,7 +45,7 @@ function render(opts: {
       runStatus: "paused_waiting_human",
       events: [],
       snapshot: opts.snapshot,
-      pendingHuman: null,
+      pendingHuman: opts.pendingHuman ?? null,
     }),
   );
 }
@@ -87,5 +88,31 @@ describe("the operator's opening message", () => {
     const { result } = render({ snapshot: snapshotWith({}) });
     expect(result.current).toHaveLength(0);
     expect(render({ snapshot: null }).result.current).toHaveLength(0);
+  });
+});
+
+describe("paused checkpoint fallback", () => {
+  it("materialises a missing custom delegate question so the answer is not queued", () => {
+    const { result } = render({
+      snapshot: snapshotWith({}),
+      pendingHuman: {
+        interaction_id: "run-1_copi_2",
+        node_id: "copi",
+        questions: {
+          active_editor_document: "Send the active editor document.",
+        },
+      },
+    });
+
+    expect(result.current).toContainEqual({
+      kind: "human-question",
+      id: "run-1_copi_2",
+      nodeId: "copi",
+      prompt: "Send the active editor document.",
+      status: "pending",
+      questions: {
+        active_editor_document: "Send the active editor document.",
+      },
+    });
   });
 });

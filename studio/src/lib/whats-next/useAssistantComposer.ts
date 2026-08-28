@@ -108,7 +108,9 @@ export function useAssistantComposer({
       : undefined;
   const pendingAnswerKey = pendingIsAskUser
     ? ASK_USER_RESPONSE_KEY
-    : pendingNode?.textField ?? "message";
+    : pendingNode?.textField ??
+      soleInteractionAnswerKey(pendingHumanQuestion?.questions) ??
+      "message";
 
   const options = pendingIsAskUser
     ? askUserOptions(pendingHumanQuestion?.questions)
@@ -161,6 +163,16 @@ export function useAssistantComposer({
       if (pendingHumanQuestion) {
         await submitPending(decorated);
         return;
+      }
+      // A paused run cannot consume its inbox. If the durable checkpoint says
+      // it is waiting but the transcript has not reconstructed the question
+      // yet, queueing here strands the operator's answer behind that pause.
+      // Fail visibly and preserve the draft; useSessionMessages normally
+      // synthesises the missing turn from the checkpoint before this branch.
+      if (session.runStatus === "paused_waiting_human") {
+        throw new Error(
+          "The assistant is waiting for a direct answer, but that question has not finished loading. Refresh the conversation and try again.",
+        );
       }
       const status = session.runStatus;
       const closed =
@@ -230,6 +242,19 @@ export function useAssistantComposer({
     submitApproval,
     onComposerSend,
   };
+}
+
+/**
+ * Delegate interaction envelopes may name the requested capability instead
+ * of using ask_user_response. When there is exactly one non-plumbing field,
+ * its key is also the answer key expected by the runtime on resume.
+ */
+function soleInteractionAnswerKey(
+  questions: Record<string, unknown> | undefined,
+): string | null {
+  if (!questions) return null;
+  const keys = Object.keys(questions).filter((key) => !key.startsWith("_"));
+  return keys.length === 1 ? keys[0] ?? null : null;
 }
 
 /** Build the defensive inline-turn payload with the same manifest routing as
