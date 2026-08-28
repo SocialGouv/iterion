@@ -698,12 +698,30 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
 		return
 	}
-	run.FinalCommit = head
+	// The three fields must stay mutually consistent ACROSS ATTEMPTS. A
+	// bankable death naks, so the redelivered attempt banks into this same
+	// doc — and `runs merge` reads FinalBranch and FinalCommit TOGETHER
+	// (PerformDeferredMerge takes BranchToMerge + FinalSHA, and
+	// BuildSquashMessage resolves FinalCommit in a clone that only fetched
+	// the branch).
 	if pushErr != nil {
+		// This attempt's head is NOT on the forge. Recording it would leave
+		// FinalCommit naming a SHA the merge clone cannot resolve while
+		// FinalBranch still points at the branch an earlier attempt banked
+		// at its own head — so only claim FinalCommit when no earlier
+		// attempt's branch is on the doc to disagree with.
+		if run.FinalBranch == "" {
+			run.FinalCommit = head
+		}
 		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
 		r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — the work exists only in this pod's clone: %v", msg.RunID, branch, pushErr)
 	} else {
+		run.FinalCommit = head
 		run.FinalBranch = branch
+		// A later attempt that banks cleanly clears an earlier attempt's
+		// recorded failure: leaving it would make a perfectly banked run
+		// report a bank failure forever on the field `runs merge` surfaces.
+		run.FinalBranchError = ""
 		r.cfg.Logger.Info("runner: run %s banked: %s @ %.12s", msg.RunID, branch, head)
 	}
 	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {

@@ -500,3 +500,58 @@ func TestBankDetachesOnlyFromOurOwnDeadline(t *testing.T) {
 		})
 	}
 }
+
+// A bankable death naks, so a redelivered attempt banks into the SAME run
+// doc — and `runs merge` reads FinalBranch and FinalCommit TOGETHER
+// (PerformDeferredMerge takes BranchToMerge + FinalSHA; BuildSquashMessage
+// resolves FinalCommit in a clone that only fetched the branch). The two
+// orders a second attempt can arrive in must each leave the trio coherent.
+func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
+	t.Run("a failed second push never orphans the first attempt's pair", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1")
+		bankedHead := gitOut(t, work, "rev-parse", "HEAD")
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+		// Attempt 2 produces a head that never reaches the forge.
+		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 2, unreachable forge")
+		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+		run := loadRun(t, r, msg.RunID)
+		if run.FinalBranch != "iterion/run-"+msg.RunID || run.FinalCommit != bankedHead {
+			t.Fatalf("branch %q / commit %q — want attempt 1's forge-backed pair %s intact, not a SHA the merge clone cannot resolve",
+				run.FinalBranch, run.FinalCommit, bankedHead)
+		}
+		if !strings.Contains(run.FinalBranchError, "bank push") {
+			t.Fatalf("FinalBranchError = %q, want the failed second push named", run.FinalBranchError)
+		}
+	})
+
+	t.Run("a clean bank clears an earlier attempt's recorded failure", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1, unreachable forge")
+		good := gitOut(t, work, "remote", "get-url", "origin")
+		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+		if run := loadRun(t, r, msg.RunID); run.FinalBranchError == "" {
+			t.Fatal("precondition: the first attempt must have recorded a bank failure")
+		}
+
+		gitOut(t, work, "remote", "set-url", "origin", good)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 2 lands")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+			t.Fatalf("branch %q (present=%v), want %s", got, ok, head)
+		}
+		run := loadRun(t, r, msg.RunID)
+		if run.FinalBranchError != "" {
+			t.Fatalf("FinalBranchError = %q, want a clean bank to clear the earlier refusal", run.FinalBranchError)
+		}
+		if run.FinalCommit != head || run.FinalBranch != "iterion/run-"+msg.RunID {
+			t.Fatalf("branch %q / commit %q, want the freshly banked pair", run.FinalBranch, run.FinalCommit)
+		}
+	})
+}
