@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -441,6 +442,14 @@ func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) er
 // baseline (later entries win) — network git ops use it to route through the
 // clone-guard proxy via HTTPS_PROXY.
 func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) error {
+	_, err := r.runGitOutEnv(ctx, dir, tok, extraEnv, args...)
+	return err
+}
+
+// runGitOutEnv is runGitEnv returning the command's combined output —
+// for the callers that need to READ git (ls-remote, rev-list), with the
+// same timeout, cancellation hardening and token redaction.
+func (r *Runner) runGitOutEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) (string, error) {
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
@@ -470,11 +479,11 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 			shown = strings.ReplaceAll(shown, tok, "***")
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
-			return fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
+			return "", fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
 		}
-		return fmt.Errorf("git %s: %w: %s", shown, err, detail)
+		return "", fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}
-	return nil
+	return string(out), nil
 }
 
 // gitCredentialFile is where the clone's live forge token lives, in git's
@@ -646,6 +655,20 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 	}
+	// An earlier attempt of this run may have banked a RICHER chain than
+	// this outcome carries: a redelivered failure re-clones from base,
+	// and its retry can legitimately end with fewer commits. "A later
+	// attempt that ends better simply overwrites" — so a blind force-push
+	// here would enforce "later" without "better", orphaning the richer
+	// branch. Push when the branch is absent, unchanged, an ancestor of
+	// the new head, or at most as long; refuse loudly when this chain is
+	// strictly poorer and leave the branch (and the run doc that already
+	// points at it) alone.
+	if oldHead := r.bankedBranchHead(ctx, workDir, tok, branch); oldHead != "" && oldHead != head {
+		if !r.bankSupersedes(ctx, workDir, tok, msg.RunID, branch, oldHead, head) {
+			return
+		}
+	}
 	// Push through `origin` so git resolves the credential from the
 	// clone's live store (installGitCredentialStore wired
 	// `credential.helper store --file=.git/iterion-credentials`, and
@@ -665,6 +688,16 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
 		return
 	}
+	// Re-read just before the write: an operator cancel that landed while
+	// the push was in flight must not become merge-eligible through this
+	// SaveRun — the branch may exist on the forge, but the doc is what
+	// `runs merge` trusts, and a cancel is the operator refusing the
+	// work. (The remaining load→save window is the same one the success
+	// path has always had.)
+	if run.Status == store.RunStatusCancelled {
+		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
+		return
+	}
 	run.FinalCommit = head
 	if pushErr != nil {
 		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
@@ -676,6 +709,54 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
 	}
+}
+
+// bankedBranchHead reads the forge's current tip of the run's storage
+// branch ("" when the branch does not exist, or when the read itself
+// fails — an unreadable remote must not block the bank, it degrades to
+// the pre-check-less push).
+func (r *Runner) bankedBranchHead(ctx context.Context, workDir, tok, branch string) string {
+	out, err := r.runGitOutEnv(ctx, workDir, tok, nil, "ls-remote", "origin", "refs/heads/"+branch)
+	if err != nil {
+		r.cfg.Logger.Warn("runner: bank: ls-remote %s: %v — pushing without the prior-attempt check", branch, err)
+		return ""
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// bankSupersedes says whether this outcome's head may overwrite the
+// branch an earlier attempt banked at oldHead. True when the new head
+// contains the old one (a resume that carried the work forward), or when
+// its chain is at least as long — later wins only when it is not
+// strictly poorer. On the refusal path it logs the loss it prevented;
+// on unverifiable ground (fetch failed, no common baseline) it lets the
+// push through, which is exactly the pre-check-less behaviour.
+func (r *Runner) bankSupersedes(ctx context.Context, workDir, tok, runID, branch, oldHead, head string) bool {
+	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: fetch prior banked head %.12s: %v — pushing without the comparison", runID, oldHead, err)
+		return true
+	}
+	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {
+		return true
+	}
+	newOut, nerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", oldHead+".."+head)
+	oldOut, oerr := r.runGitOutEnv(ctx, workDir, "", nil, "rev-list", "--count", head+".."+oldHead)
+	newCount, ncErr := strconv.Atoi(strings.TrimSpace(newOut))
+	oldCount, ocErr := strconv.Atoi(strings.TrimSpace(oldOut))
+	if nerr != nil || oerr != nil || ncErr != nil || ocErr != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: cannot compare diverged chains (%v/%v/%v/%v) — pushing, later wins", runID, nerr, oerr, ncErr, ocErr)
+		return true
+	}
+	if newCount >= oldCount {
+		return true
+	}
+	r.cfg.Logger.Warn("runner: run %s: bank REFUSED: an earlier attempt banked a richer chain at %s (%.12s, %d exclusive commits) than this outcome carries (%.12s, %d) — keeping the richer branch",
+		runID, branch, oldHead, oldCount, head, newCount)
+	return false
 }
 
 // recordBankFailure persists why a finished run's work could NOT be

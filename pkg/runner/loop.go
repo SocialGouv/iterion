@@ -393,6 +393,18 @@ func bankableStatus(finalStatus string) bool {
 	return false
 }
 
+// bankIfBankable is the single gate between a run's outcome and the
+// forge push. Kept as one method so the decision and the action are
+// testable TOGETHER against a real bare remote — the measured regression
+// this blocks is someone quietly reverting the gate to success-only,
+// which every direct bankRepoWorkspace test is blind to.
+func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
+	if !bankableStatus(classifyExecResult(runErr, msg.RunID).finalStatus) {
+		return
+	}
+	r.bankRepoWorkspace(ctx, msg, workDir, base, integ)
+}
+
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
@@ -1560,9 +1572,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// in place, an interrupted delivery re-clones and banks on its
 		// next attempt, and a cancel is the operator saying the work is
 		// not wanted — none of those bank.
-		if bankableStatus(classifyExecResult(runErr, msg.RunID).finalStatus) {
-			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
-		}
+		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 
 	// Upload any tool-produced artifact files (run reports, SBOMs) from

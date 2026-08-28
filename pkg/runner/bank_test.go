@@ -330,3 +330,108 @@ func TestBankOnBudgetDeathLandsTheBranch(t *testing.T) {
 		t.Fatalf("run doc = branch %q commit %q err %q, want the banked branch recorded clean", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
 	}
 }
+
+// The gate and the bank, tested TOGETHER against a real bare remote —
+// the adversarial pass proved by mutation that every direct
+// bankRepoWorkspace test is blind to the gate (both `if false` and a
+// revert to success-only passed the whole package). This table is the
+// one that goes red.
+func TestBankGateWiredToOutcome(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantBanked bool
+	}{
+		{"finished banks", nil, true},
+		{"budget death banks", fmt.Errorf("%w: duration (14401/14400)", runtime.ErrBudgetExceeded), true},
+		{"generic failure banks", errors.New("boom"), true},
+		{"paused does not bank", runtime.ErrRunPaused, false},
+		{"interrupted does not bank", runtime.ErrRunInterrupted, false},
+		{"cancelled does not bank", runtime.ErrRunCancelled, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, msg, work, origin, base := bankFixture(t)
+			gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+			head := gitOut(t, work, "rev-parse", "HEAD")
+
+			r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, c.err)
+
+			got, present := bankedBranch(t, origin, msg.RunID)
+			if c.wantBanked && (!present || got != head) {
+				t.Fatalf("outcome %v must bank: branch %q (present=%v), want %s", c.err, got, present, head)
+			}
+			if !c.wantBanked && present {
+				t.Fatalf("outcome %v must NOT bank, yet the branch exists at %q", c.err, got)
+			}
+		})
+	}
+}
+
+// A redelivered attempt that ends with a strictly poorer chain must not
+// force-push over the richer branch an earlier attempt banked: attempt 1
+// banks two commits; attempt 2 re-clones from base, produces one
+// divergent commit, and its bank is refused — branch and run doc keep
+// pointing at the richer chain.
+func TestBankRefusesToClobberRicherAttempt(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	work2 := filepath.Join(t.TempDir(), "attempt2")
+	gitOut(t, filepath.Dir(work2), "clone", work, work2)
+	gitOut(t, work2, "config", "user.email", "t@test.invalid")
+	gitOut(t, work2, "config", "user.name", "t")
+	gitOut(t, work2, "remote", "set-url", "origin", origin)
+
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: one")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: two")
+	richHead := gitOut(t, work, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	gitOut(t, work2, "commit", "--allow-empty", "-m", "attempt 2: poorer divergent retry")
+	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != richHead {
+		t.Fatalf("branch = %q (present=%v), want the richer attempt-1 head %s kept", got, ok, richHead)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalCommit != richHead {
+		t.Fatalf("FinalCommit = %q, want the richer head %s kept", run.FinalCommit, richHead)
+	}
+}
+
+// A resume that carried the banked work FORWARD (descendant head)
+// supersedes: the branch advances.
+func TestBankDescendantSupersedes(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "first outcome")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	gitOut(t, work, "commit", "--allow-empty", "-m", "resume carried it further")
+	newHead := gitOut(t, work, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != newHead {
+		t.Fatalf("branch = %q (present=%v), want advanced to %s", got, ok, newHead)
+	}
+}
+
+// An operator cancel that lands while the bank is in flight must not
+// become merge-eligible: the branch may reach the forge, but the run doc
+// — the surface `runs merge` trusts — stays unrecorded.
+func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work the operator then refused")
+	run := loadRun(t, r, msg.RunID)
+	run.Status = store.RunStatusCancelled
+	if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+		t.Fatalf("flip to cancelled: %v", err)
+	}
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	if _, present := bankedBranch(t, origin, msg.RunID); !present {
+		t.Fatalf("the push itself precedes the doc check and should have landed")
+	}
+	after := loadRun(t, r, msg.RunID)
+	if after.FinalBranch != "" || after.FinalCommit != "" {
+		t.Fatalf("cancelled run recorded FinalBranch=%q FinalCommit=%q, want both empty (not merge-eligible)", after.FinalBranch, after.FinalCommit)
+	}
+}
