@@ -5013,6 +5013,52 @@ export interface components {
             id: string;
             title?: string;
         };
+        BranchCheckpoint: {
+            artifact_versions?: {
+                [key: string]: number;
+            };
+            artifacts?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            branch_id: string;
+            completed?: boolean;
+            current_node_id?: string;
+            join_node_id?: string;
+            loop_budget_marks?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            loop_counters?: {
+                [key: string]: number;
+            };
+            loop_current_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            loop_previous_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            outputs?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            resume_answers?: {
+                [key: string]: unknown;
+            };
+            selected_incoming?: {
+                [key: string]: components["schemas"]["IncomingEdge"][];
+            };
+            start_node_id: string;
+            terminal_node_id?: string;
+            terminated_at_done?: boolean;
+        };
         Checkpoint: {
             artifact_versions: {
                 [key: string]: number;
@@ -5066,6 +5112,7 @@ export interface components {
                     [key: string]: unknown;
                 };
             };
+            parallel?: components["schemas"]["ParallelCheckpoint"];
             round_robin_counters?: {
                 [key: string]: number;
             };
@@ -5281,6 +5328,25 @@ export interface components {
             org_slug: string;
             personal?: boolean;
             teams: components["schemas"]["MembershipView"][];
+        };
+        ParallelCheckpoint: {
+            artifact_allocations?: {
+                [key: string]: number;
+            };
+            branches: {
+                [key: string]: components["schemas"]["BranchCheckpoint"];
+            };
+            invocation_key: string;
+            next_artifact_version?: {
+                [key: string]: number;
+            };
+            pending_branch_id?: string;
+            pending_interaction_id?: string;
+            pending_interaction_questions?: {
+                [key: string]: unknown;
+            };
+            pending_node_id?: string;
+            router_node_id: string;
         };
         PipelineBoardAttempt: {
             /** Format: date-time */
