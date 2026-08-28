@@ -86,6 +86,15 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// ITERION_LOOP_BUDGET_GUARD). With it lifted a graced run can take a
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
+	//
+	// A parallel branch never gets it either — every branch, not only one
+	// carrying a branch-local loop. The allowance is a run-wide ratio and
+	// sibling spend lands on the same shared budget concurrently, so no
+	// branch can tell whether its own next node still fits inside it
+	// (the same reason predictive loop pricing is disabled there).
+	// Refused branches surface as budget_exceeded events and failed
+	// branch results; wait_all fails the run, best_effort tolerates them
+	// by declaration.
 	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
 		return "", false
 	}
