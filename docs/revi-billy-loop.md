@@ -26,11 +26,21 @@ repo (`min_replier_role` on the command — verified live via the forge
 permission API, not from the payload).
 
 There is deliberately **no PR-open auto-launch for Billy**: opening a PR only
-ever auto-REVIEWS it (Revi). Billy runs on a deliberate command. The zero-touch
-lane (`auto_fix_on_gate_failure` — a red gate launches the fixer by itself,
-[merge-gate.md#autofix](merge-gate.md#autofix)) is intentionally **not enabled
-on this repo yet**; enabling it is one PATCH on the integration once the manual
-habit has proven smooth here.
+ever auto-REVIEWS it (Revi). Billy runs on a deliberate command — and, since
+2026-08-28, on a **red gate**: the zero-touch lane (`auto_fix_on_gate_failure`
+— a red gate launches the fixer by itself,
+[merge-gate.md#autofix](merge-gate.md#autofix)) is **enabled on this repo**,
+the manual habit having proven smooth. A red `revi/review` relaunches the
+fixer without a comment, bounded by the lane's own brakes (one attempt per
+head sha, five unattended passes per PR, the hold label). `/billy` remains
+the way to start a pass when the gate is green or the lane's passes are
+spent. One gotcha when flipping the flag: the `repo-bots` PATCH requires the
+FULL `bot_ids` list in the payload (omitting it is a 400, not "keep as is").
+
+**Corollary of the lane**: before hand-fixing a red PR, check no fixer run is
+already in flight on it (`iterion remote runs list` or the gate's `pending`
+link) — a manual push while the fixer works recreates the mid-run-push
+collision the session discipline below warns about.
 
 ## What the command seeds — you type nothing else
 
