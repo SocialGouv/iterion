@@ -739,11 +739,25 @@ func (r *Runner) bankedBranchHead(ctx context.Context, workDir, tok, branch stri
 		r.cfg.Logger.Warn("runner: bank: ls-remote %s: %v — pushing without the prior-attempt check", branch, err)
 		return ""
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		return ""
+	return parseLsRemoteHead(out, branch)
+}
+
+// parseLsRemoteHead picks the sha ls-remote advertised for
+// refs/heads/<branch>. It takes the line that actually NAMES the ref,
+// not the first token of the output, because runGitOutEnv returns
+// COMBINED output: on a network ls-remote any stderr line git emits
+// first (a redirect warning, a `remote:` banner) would otherwise become
+// the "prior head" — a non-sha token whose fetch then fails, collapsing
+// the anti-clobber guard into the blind force-push it exists to
+// prevent, exactly when the output is not pristine. Returns "" when the
+// branch is not advertised.
+func parseLsRemoteHead(out, branch string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == "refs/heads/"+branch {
+			return f[0]
+		}
 	}
-	return fields[0]
+	return ""
 }
 
 // bankSupersedes says whether this outcome's head may overwrite the

@@ -555,3 +555,33 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 		}
 	})
 }
+
+// runGitOutEnv returns COMBINED output, so the ls-remote parse has to
+// survive whatever git writes to stderr on a network read. Taking the
+// first token of the output turns a redirect warning into the "prior
+// head", whose fetch then fails and collapses the anti-clobber guard
+// into the blind force-push it exists to prevent.
+func TestParseLsRemoteHeadIgnoresStderrNoise(t *testing.T) {
+	const sha = "9a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+	branch := "iterion/run-run-bank-1"
+	cases := []struct {
+		name, out, want string
+	}{
+		{"clean advertisement", sha + "\trefs/heads/" + branch + "\n", sha},
+		{"redirect warning first",
+			"warning: redirecting to https://forge.example/org/repo.git/\n" + sha + "\trefs/heads/" + branch + "\n", sha},
+		{"remote banner first",
+			"remote: Announcing a scheduled maintenance window\n" + sha + "\trefs/heads/" + branch + "\n", sha},
+		{"branch absent, noise only", "warning: redirecting to https://forge.example/x\n", ""},
+		{"a different ref is not this branch",
+			sha + "\trefs/heads/iterion/run-someone-else\n", ""},
+		{"empty output", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseLsRemoteHead(c.out, branch); got != c.want {
+				t.Errorf("parseLsRemoteHead = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
