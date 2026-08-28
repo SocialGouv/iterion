@@ -577,11 +577,18 @@ func injectGitToken(rawURL, token string) string {
 // and the deaths — budget_exceeded, failed — whose successor would
 // otherwise restart from the base commit with the work stranded in the
 // git-meta snapshot. The push is force-to-own-branch and the branch name
-// is per-run, so a later attempt that ends better simply overwrites. A
-// push failure never changes the run's outcome — but it is never silent
-// either: the cause lands in FinalBranchError and FinalBranch stays
-// empty, so merge keeps refusing with the truth instead of a bare
-// "nothing to merge".
+// is per-run, so a later attempt that ends better simply overwrites —
+// and only a better one does: pushBank's guard refuses a strictly poorer
+// chain, and leases the ref state it compared against.
+//
+// A push failure never changes the run's outcome — but it is never
+// silent either: on the FIRST bank the cause lands in FinalBranchError
+// while FinalBranch stays empty, so merge keeps refusing with the truth
+// instead of a bare "nothing to merge". Once an earlier attempt HAS
+// banked, that pair is valid and mergeable, so a later attempt's refusal
+// is recorded on the run's timeline (run_bank_refused) instead — never
+// by overwriting the pair or the field whose meaning is "this commit has
+// no branch guarding it".
 func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
 	head, headErr := gitlib.RevParseHead(workDir)
 	if integ.Applicable {
