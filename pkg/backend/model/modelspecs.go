@@ -111,6 +111,11 @@ type specRegistry struct {
 	loadedAt  time.Time              // last successful load/refresh or failed refresh attempt for TTL gating
 	diskTried bool                   // disk cache lazily loaded once
 	inFlight  bool                   // a background refresh is running
+	// refreshDone/refreshErr turn an explicit refresh into a process-wide
+	// singleflight. Every caller joins the same fetch+parse+cache rewrite;
+	// its own context may stop waiting without cancelling the shared work.
+	refreshDone chan struct{}
+	refreshErr  error
 }
 
 // specs is the process-wide registry consulted by capabilitiesForModel().
@@ -219,7 +224,7 @@ func (r *specRegistry) ensureFresh() {
 	stale := r.force || r.loadedAt.IsZero() || time.Since(r.loadedAt) >= r.ttl
 	trigger := stale && r.autoFetch && !r.inFlight
 	if trigger {
-		r.inFlight = true
+		r.startRefreshLocked()
 		// A force refresh is an explicit request to bypass initial cache
 		// freshness, not permission to fetch on every hot-path call forever.
 		r.force = false
@@ -227,9 +232,7 @@ func (r *specRegistry) ensureFresh() {
 	r.mu.Unlock()
 
 	if trigger {
-		go func() {
-			_ = r.refresh(context.Background())
-		}()
+		go r.runRefresh(context.Background())
 	}
 }
 
@@ -249,18 +252,62 @@ func (r *specRegistry) loadDiskCacheLocked() {
 	r.loadedAt = cf.FetchedAt
 }
 
-// refresh performs the synchronous fetch+parse+cache+swap. Every failure path
-// (DNS, timeout, non-2xx, malformed JSON, write error) is swallowed so a run is
-// never blocked or failed by spec resolution. It always clears inFlight and
-// advances loadedAt (even on failure) so we never fetch more than once per TTL.
+// refresh joins or starts the process-wide synchronous fetch+parse+cache+swap.
+// Concurrent callers share one outbound request and one cache rewrite. A
+// caller cancellation stops only that caller's wait: the shared refresh keeps
+// running under the registry timeout so another request cannot inherit the
+// first HTTP request's disconnect.
 func (r *specRegistry) refresh(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	start := !r.inFlight
+	if start {
+		r.startRefreshLocked()
+	}
+	done := r.refreshDone
+	r.mu.Unlock()
+
+	if start {
+		go r.runRefresh(context.Background())
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		r.mu.Lock()
+		err := r.refreshErr
+		r.mu.Unlock()
+		return err
+	}
+}
+
+// startRefreshLocked claims ownership for a future runRefresh call. Caller
+// holds r.mu and has already established !r.inFlight.
+func (r *specRegistry) startRefreshLocked() {
+	r.inFlight = true
+	r.refreshDone = make(chan struct{})
+	r.refreshErr = nil
+}
+
+// runRefresh owns one claimed refresh. Every failure path leaves the prior
+// in-memory/on-disk table untouched. Completion always advances loadedAt so a
+// failed offline refresh is TTL-gated instead of retried on every hot-path
+// lookup.
+func (r *specRegistry) runRefresh(ctx context.Context) (err error) {
 	defer func() {
 		r.mu.Lock()
-		r.inFlight = false
-		// Arm the TTL gate even on failure. This is intentionally unconditional:
-		// a stale disk cache leaves loadedAt old, and without advancing it every
-		// post-failure merge would spawn another background refresh until online.
+		r.refreshErr = err
+		// Arm the TTL gate even on failure. A stale disk cache leaves loadedAt
+		// old; without this, every merge would immediately start another fetch.
 		r.loadedAt = time.Now()
+		done := r.refreshDone
+		// Close the claimed generation before exposing !inFlight. Otherwise a
+		// racing caller could install the NEXT generation's channel between the
+		// unlock and close and the old refresh would close the wrong channel.
+		close(done)
+		r.inFlight = false
 		r.mu.Unlock()
 	}()
 

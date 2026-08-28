@@ -252,6 +252,13 @@ type Server struct {
 	// /api/backends/detect. Lazily constructed on first request.
 	detector     *detect.CachedDetector
 	detectorOnce sync.Once
+	// modelsRefresh* coalesces overlapping /api/models?refresh=1 requests.
+	// Extra spec sets are still built per request, but the expensive shared
+	// credential probe, aggregator fetch and cache rewrite run once per burst.
+	modelsRefreshMu sync.Mutex
+	modelsRefresh   *modelsRefreshFlight
+	// modelSpecsRefresh is a test seam; nil uses model.RefreshModelSpecs.
+	modelSpecsRefresh func(context.Context) error
 	// OnForceRefresh runs (if non-nil) before the cache is invalidated on
 	// a `?force=1` call. The iterion-desktop binary registers a hook here
 	// that re-sources ~/.iterion/env so commenting out a key in that file

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 )
 
@@ -37,7 +39,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	refresh := r.URL.Query().Get("refresh") == "1"
 	opts := modelcatalog.Options{
 		ExtraSpecs: dedupeSpecs(r.URL.Query()["spec"]),
-		Refresh:    refresh,
+	}
+	var refreshErr error
+	if refresh {
+		refreshErr = s.refreshModels(r.Context())
 	}
 
 	if s.cfg.Mode == "cloud" {
@@ -53,14 +58,6 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		s.detectorOnce.Do(func() {
 			s.detector = detect.NewCachedDetector(backendDetectTTL)
 		})
-		if refresh {
-			// Same ordering as handleBackendsDetect: the hook may (un)set env
-			// vars, so it has to fire before the cache is dropped.
-			if s.OnForceRefresh != nil {
-				s.OnForceRefresh()
-			}
-			s.detector.Invalidate()
-		}
 		report := s.detector.Get(r.Context())
 		opts.Reachability = modelcatalog.ReachabilityLocal
 		opts.Report = &report
@@ -76,6 +73,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		// on the host.
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
+	}
+	if refresh {
+		cat.Refreshed = true
+		if refreshErr != nil {
+			cat.RefreshError = refreshErr.Error()
+		}
 	}
 	// A non-cloud server can still publish runs to a remote queue. In that
 	// hybrid shape, credentials are sealed per run and consumed in a runner
@@ -96,6 +99,63 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.writeJSONFor(w, r, cat)
+}
+
+// refreshModels runs the refresh work that is independent of a request's
+// extra model specs once per overlapping burst. Waiter cancellation affects
+// only that request; the shared refresh continues for the other waiters.
+type modelsRefreshFlight struct {
+	done    chan struct{}
+	err     error
+	waiters int
+}
+
+func (s *Server) refreshModels(ctx context.Context) error {
+	s.modelsRefreshMu.Lock()
+	flight := s.modelsRefresh
+	if flight == nil {
+		flight = &modelsRefreshFlight{done: make(chan struct{})}
+		s.modelsRefresh = flight
+		go s.runModelsRefresh(flight)
+	}
+	flight.waiters++
+	s.modelsRefreshMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-flight.done:
+		return flight.err
+	}
+}
+
+func (s *Server) runModelsRefresh(flight *modelsRefreshFlight) {
+	if s.cfg.Mode != "cloud" {
+		s.detectorOnce.Do(func() {
+			s.detector = detect.NewCachedDetector(backendDetectTTL)
+		})
+		// The desktop hook may mutate env, so it must precede invalidation and
+		// the one forced probe shared by every waiter.
+		if s.OnForceRefresh != nil {
+			s.OnForceRefresh()
+		}
+		s.detector.Invalidate()
+		s.detector.Get(context.Background())
+	}
+	refreshFn := s.modelSpecsRefresh
+	if refreshFn == nil {
+		refreshFn = model.RefreshModelSpecs
+	}
+	flight.err = refreshFn(context.Background())
+
+	s.modelsRefreshMu.Lock()
+	// Close this generation while holding the lock, before allowing a later
+	// request to install a new channel.
+	close(flight.done)
+	if s.modelsRefresh == flight {
+		s.modelsRefresh = nil
+	}
+	s.modelsRefreshMu.Unlock()
 }
 
 // dedupeSpecs trims, drops empties and removes duplicates while preserving the

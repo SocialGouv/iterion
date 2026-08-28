@@ -3,9 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +135,65 @@ func TestGetModels_NeverLeaksCredentialValues(t *testing.T) {
 	}
 	if body := rec.Body.String(); contains(body, "sk-ant-supersecret-test-value") {
 		t.Fatalf("response leaked a credential value:\n%s", body)
+	}
+}
+
+func TestGetModels_ConcurrentForcedRefreshesAreCoalesced(t *testing.T) {
+	srv, _ := newTestServer(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var refreshCalls atomic.Int32
+	var hookCalls atomic.Int32
+	srv.OnForceRefresh = func() { hookCalls.Add(1) }
+	srv.modelSpecsRefresh = func(context.Context) error {
+		if refreshCalls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return nil
+	}
+
+	const n = 12
+	var wg sync.WaitGroup
+	wg.Add(n)
+	statuses := make(chan int, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet,
+				fmt.Sprintf("/api/models?refresh=1&spec=vendor/model-%d", i), nil)
+			rec := httptest.NewRecorder()
+			srv.mux.ServeHTTP(rec, req)
+			statuses <- rec.Code
+		}(i)
+	}
+	<-started
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		srv.modelsRefreshMu.Lock()
+		waiters := srv.modelsRefresh.waiters
+		srv.modelsRefreshMu.Unlock()
+		if waiters == n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d requests joined the refresh flight", waiters, n)
+		}
+		runtime.Gosched()
+	}
+	close(release)
+	wg.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusOK {
+			t.Errorf("refresh status = %d, want 200", status)
+		}
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Errorf("model-spec refresh calls = %d, want 1", got)
+	}
+	if got := hookCalls.Load(); got != 1 {
+		t.Errorf("credential refresh hooks = %d, want 1", got)
 	}
 }
 
