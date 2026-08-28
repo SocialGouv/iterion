@@ -255,10 +255,12 @@ function AssistantDock({
 
   // Tell an open editor tab when there is something new to read.
   //
-  // The draft is a node OUTPUT — written at `artifact_written`, when the turn
-  // ends — so this is the earliest instant anything could have changed, and
-  // the tab needs no clock of its own. The conversation drives the canvas
-  // instead of the canvas guessing.
+  // The draft is a node OUTPUT — written at `artifact_written` when the
+  // agent node finishes, which is BEFORE the optional cross-review and the
+  // chat pause — so this is the earliest instant anything could have
+  // changed, and the tab needs no clock of its own. The conversation drives
+  // the canvas instead of the canvas guessing. A refresh of an already-open
+  // tab is a read; the offers below, which can WRITE, wait for the pause.
   const queryClient = useQueryClient();
   const turnCount = session.messages.length;
   useEffect(() => {
@@ -280,6 +282,22 @@ function AssistantDock({
   }, []);
 
   const unread = useUnreadWhileClosed(dock, session.messages.length);
+  // An offer belongs to a reply. The offers are built from the latest run
+  // artifact carrying their field, and the agent node publishes that
+  // artifact BEFORE the optional cross-review runs and before the chat node
+  // pauses — on run 01a04999 the artifact landed at 18:20:03, the reviewer
+  // wrote until 18:20:26, and the action card was clickable (or, under an
+  // `auto` policy, self-executing) the whole time, i.e. before the critique
+  // the reviewer exists to put in front of the operator. So the offers
+  // render only once the turn is parked on its chat pause. Not on an
+  // `ask_user` pause mid-turn: the artifact of that moment is the previous
+  // turn's, and its offers would be stale. This assumes a chat bot parks its
+  // turn on a `human` node (Copi's and Nexie's `chat`), never on `ask_user`.
+  // Corollary, deliberate: a turn that never reaches its pause (the run
+  // failed or was cancelled between the agent node and `chat`) offers
+  // nothing — an action nobody reviewed must not be executable.
+  const turnParked =
+    !!composer.pendingHumanQuestion && !composer.pendingIsAskUser;
   const needsAttention =
     !!composer.pendingHumanQuestion ||
     session.runStatus === "paused_waiting_human" ||
@@ -368,28 +386,30 @@ function AssistantDock({
             // contract as the /whats-next route.
             composerHandlesId={composer.pendingHumanQuestion?.id}
             bubbleSlot={
-              <>
-                <DraftBotOffer
-                  runId={session.runId}
-                  revision={session.messages.length}
-                />
-                {bot.editor?.proposals === true && (
-                  <>
-                    <EditorChangeOffer
-                      runId={session.runId}
-                      revision={session.messages.length}
-                    />
-                    <AssistantFileChangeOffer
-                      runId={session.runId}
-                      revision={session.messages.length}
-                    />
-                  </>
-                )}
-                <AssistantActionOffer
-                  runId={session.runId}
-                  revision={session.messages.length}
-                />
-              </>
+              turnParked ? (
+                <>
+                  <DraftBotOffer
+                    runId={session.runId}
+                    revision={session.messages.length}
+                  />
+                  {bot.editor?.proposals === true && (
+                    <>
+                      <EditorChangeOffer
+                        runId={session.runId}
+                        revision={session.messages.length}
+                      />
+                      <AssistantFileChangeOffer
+                        runId={session.runId}
+                        revision={session.messages.length}
+                      />
+                    </>
+                  )}
+                  <AssistantActionOffer
+                    runId={session.runId}
+                    revision={session.messages.length}
+                  />
+                </>
+              ) : null
             }
             onHumanSubmit={(messageId, outcome) => {
               const m = session.messages.find((x) => x.id === messageId);
