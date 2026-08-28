@@ -616,22 +616,26 @@ compute seed:
     reviewer:         "vars.reviewer"
 
 agent copi:
-  ## Claude Code is the primary so Copi can use the operator's Claude OAuth
-  ## forfait. Every fallback route stays on that backend. That is required by
-  ## the chain below:
+  ## claw, not a CLI agent, and every fallback route stays on claw. That
+  ## is not a preference — it is what the chain below costs:
   ##
   ##  - the `grok` and `kimi` CLI backends CANNOT enforce this workflow's
   ##    `permission: deny` gate, so routing to them is a C176 compile
-  ##    error ("the run would fall back UNGATED").
+  ##    error ("the run would fall back UNGATED"). The same MODELS reach
+  ##    us through claw's provider adapters, which do enforce it.
   ##  - a chain that never changes backend also never trips C176's
   ##    session-continuity rule, so `session: inherit_if_available`
-  ##    survives the fall-through. A claw fallback here would cost the
-  ##    verbatim thread, so GPT remains the reviewer's primary instead.
+  ##    survives the fall-through. A claude_code primary with claw
+  ##    fallbacks would have cost the verbatim thread.
   ##
-  ## The workflow permission gate below remains the binding read-only
-  ## boundary: claude_code enforces it through its PreToolUse hook.
-  backend: "claude_code"
-  model: "${ITERION_COPILOT_MODEL:-claude-fable-5}"
+  ## What changes versus the old claude_code primary: `tools:` below is
+  ## now a REAL restriction (on claw the list is enforced; under
+  ## claude_code's bypassPermissions it was inert), and the agentic
+  ## posture comes from iterion's authored base rather than Claude
+  ## Code's native prompt. The read-only boundary gets stronger, not
+  ## weaker: two independent layers now say no to a shell.
+  backend: "claw"
+  model: "${ITERION_COPILOT_MODEL:-openai/gpt-5.6-sol}"
   reasoning_effort: "${ITERION_COPILOT_EFFORT:-medium}"
   input: turn_input
   output: copi_turn
@@ -640,9 +644,17 @@ agent copi:
   publish: copi_draft
   system: copi_system
   user: copi_user
-  ## The declared read-only toolset documents intent. On claude_code the
-  ## binding restriction is the permission policy below; Bash, writes and
-  ## content search remain denied there even though the native CLI knows them.
+  ## The read-only toolset, and on claw this list BINDS. `bash`,
+  ## `run_command` and `write_file` are absent by construction — the
+  ## permission gate denies them too, but here they simply are not
+  ## registered.
+  ## The registered claw builtins minus everything that writes, shells or
+  ## searches content:
+  ## RegisterClawBuiltins registers read_file, write_file, glob, grep,
+  ## file_edit, web_fetch and bash; `skill` comes with the skills: block.
+  ## Only names the registry knows may appear — an unknown one is a RUN
+  ## failure, not a compile error (`iterion validate` does not check tool
+  ## names against the registry).
   tools: [read_file, glob, skill]
   ## interaction: human arms the ask_user MCP tool — mid-turn
   ## questions pause the run and resume the SAME session.
@@ -661,19 +673,28 @@ agent copi:
   ## A design turn (read the workspace, draft a .bot, validate, revise)
   ## is the heaviest shape; ordinary info turns use a fraction.
   tool_max_steps: 40
-  ## Session continuity requires one backend across this ladder. Opus is the
-  ## same-provider fallback; cross-provider diversity is supplied by the
-  ## fresh reviewer rather than by silently dropping Copi's live transcript.
+  ## The operator's model ladder: a different PROVIDER on each rung, so
+  ## one provider's outage or shut window cannot end the conversation.
   ## `on:` is omitted, so every route takes the default
   ## [usage_window, unavailable] — never `auth`, which would paper over
   ## a misconfigured credential instead of reporting it.
+  ##
+  ## grok and kimi are deliberately ABSENT, and that is a decision on
+  ## record rather than an oversight. Their CLI backends carry the
+  ## forfait credentials an operator would actually want here, but
+  ## neither can enforce this workflow's `permission: deny` gate, so
+  ## C176 refuses them. Reaching the same models through claw works and
+  ## compiles — it just bills the metered API instead of the forfait,
+  ## which answers a different question than the one asked. They come
+  ## back as `backend: "grok"` / `"kimi"` once #476 gives those CLIs the
+  ## permission seam pi already has.
   ##
   ## A fall-through is loud by design: a `model_fallback` event fires and
   ## `_backend`/`_model` name what actually served the turn.
   fallbacks:
     opus:
-      backend: "claude_code"
-      model: "claude-opus-5"
+      backend: "claw"
+      model: "anthropic/claude-opus-5"
 
 ## VERIFY, DON'T ASSERT — the deterministic half of design posture.
 ##
@@ -766,12 +787,23 @@ compute gate:
 ## A reviewer that shares the answering model's blind spots is a
 ## rubber stamp: it agrees for the same reasons the answer was wrong.
 ##
+## Every route stays on claw for the same reason the main chain does:
+## the `grok` and `kimi` CLI backends cannot enforce `permission: deny`.
 judge review:
-  ## GPT deliberately starts on a different family from Copi. The reviewer is
-  ## session:fresh, but its lowercase claw tools list must remain binding on
-  ## every fallback. GPT 5.5 therefore provides the same-backend outage rung.
-  backend: "claw"
-  model: "${ITERION_COPILOT_REVIEWER_MODEL:-openai/gpt-5.6-sol}"
+  ## claude_code, not claw, and the reason is empirical: on a host whose
+  ## only Anthropic credential is the Claude Code OAuth forfait,
+  ## `anthropic/…` on claw is NOT usable (`iterion models` reports the
+  ## Anthropic rows usable via claude_code alone). The reviewer's primary
+  ## would have failed on every turn and fallen through to the openai
+  ## rung — the SAME family as Copi — turning cross-review into a mirror,
+  ## silently, which is the exact failure the family rule exists to stop.
+  ##
+  ## It is legal here where it would not be on `copi`: claude_code is one
+  ## of the three gate-enforcing backends (a PreToolUse hook evaluating
+  ## the same permission.Policy), and `session: fresh` means the
+  ## backend-crossing fallback below trips no session-continuity rule.
+  backend: "claude_code"
+  model: "${ITERION_COPILOT_REVIEWER_MODEL:-claude-fable-5}"
   reasoning_effort: "${ITERION_COPILOT_REVIEWER_EFFORT:-medium}"
   input: review_in
   output: review_out
@@ -790,9 +822,9 @@ judge review:
   ## matters (the reviewer must not share the answering model's blind
   ## spots), and the grok/kimi rungs wait on #476.
   fallbacks:
-    gpt55:
+    gpt:
       backend: "claw"
-      model: "openai/gpt-5.5"
+      model: "openai/gpt-5.6-sol"
 
 ## Deterministic merge. The reviewer hands back only its critique; this
 ## node decides where it lands and how it is labelled, so the answer the

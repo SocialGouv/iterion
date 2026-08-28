@@ -220,29 +220,36 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !ok {
 		t.Fatal("copi agent node missing from copilot/main.bot")
 	}
-	// Claude Code, and the WHOLE chain stays there. Copi inherits its live
-	// session between turns, so crossing to claw on fallback would silently
-	// drop the verbatim conversation (C176). The workflow-level deny gate is
-	// enforced through claude_code's PreToolUse hook.
-	if copi.Backend != "claude_code" {
-		t.Errorf("copi backend = %q, want \"claude_code\" — Fable uses the operator's Claude OAuth session", copi.Backend)
+	// claw, and the WHOLE chain stays on claw. Two independent compile-time
+	// rules make that load-bearing rather than stylistic, and both were
+	// verified against the compiler:
+	//   - the `grok` and `kimi` CLI backends cannot enforce this
+	//     workflow's `permission: deny` gate (C176, "the run would fall
+	//     back UNGATED"), so the operator's model ladder can only reach
+	//     those models through claw's provider adapters;
+	//   - a chain that never changes backend never trips C176's
+	//     session-continuity rule, which is what lets the node keep
+	//     `inherit_if_available` below.
+	// A route that quietly moves off claw breaks one or both.
+	if copi.Backend != "claw" {
+		t.Errorf("copi backend = %q, want \"claw\" — a CLI backend cannot enforce the deny gate its fallbacks would need", copi.Backend)
 	}
 	for _, fb := range copi.Fallbacks {
-		if fb.Backend != "claude_code" {
-			t.Errorf("copi fallback %q runs on backend %q: leaving claude_code kills inherited session continuity", fb.Name, fb.Backend)
+		if fb.Backend != "claw" {
+			t.Errorf("copi fallback %q runs on backend %q: leaving claw either drops the permission gate or kills session continuity", fb.Name, fb.Backend)
 		}
 	}
-	// The list documents the intended read surface; the binding restriction on
-	// claude_code is the workflow policy asserted above and behaviour-tested
-	// below. Keep write/shell-shaped names out so a backend change cannot widen
-	// the node by accident.
+	// On claw the tools: list BINDS (under claude_code's bypassPermissions
+	// it was inert). An empty list here would mean zero tools — a
+	// schema-shaped narrator that can read nothing — and a list that grew
+	// a shell would undo the deny gate's whole point from the other side.
 	if len(copi.Tools) == 0 {
-		t.Error("copi declares no intended read tools")
+		t.Error("copi declares no tools: on claw that means NO tools at all, so it could not read a run or a .bot")
 	}
 	for _, tool := range copi.Tools {
 		switch tool {
 		case "bash", "run_command", "write_file", "edit_file", "grep":
-			t.Errorf("copi tools: includes %q — the declared surface must stay aligned with the deny gate", tool)
+			t.Errorf("copi tools: includes %q — on claw this list is enforced, so it is a second way to hand the bot a shell the deny list refuses", tool)
 		}
 	}
 	if copi.Interaction != ir.InteractionHuman {
