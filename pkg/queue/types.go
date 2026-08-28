@@ -83,7 +83,10 @@ import (
 // accept the message as v9 and run each node at its DSL reasoning_effort —
 // an operator who pinned ultracode gets the bot's declared effort with no
 // signal. MinSchemaVersion stays 8: a new runner still consumes queued v8/v9.
-const SchemaVersion = 10
+// v=11 (2026-08-28): added Permission so the operator's run-level tool gate
+// override reaches the cloud runner. Dropping `deny` is a silent security
+// downgrade; dropping `off` makes the documented escape hatch inert.
+const SchemaVersion = 11
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
@@ -146,6 +149,10 @@ type RunMessage struct {
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
 	Supervisors string `json:"supervisors,omitempty"`
+	// Permission is the operator's run-level tool-permission-gate override.
+	// It must remain distinct from the workflow permission because it sits
+	// ABOVE node declarations in the precedence chain.
+	Permission string `json:"permission,omitempty"`
 	// BotBundle, when set, points at the STORED bot bundle (a team-authored
 	// bot or a platform override — a pkg/botsource row) this run was
 	// resolved from. The runner fetches the row, verifies Version still

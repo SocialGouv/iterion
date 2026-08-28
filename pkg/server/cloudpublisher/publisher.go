@@ -855,6 +855,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
+		// The override is authoritative run intent, not display metadata: the
+		// resume publisher replays it onto every later queue attempt.
+		PermissionOverride: spec.Permission,
+		PermissionMode:     spec.Permission,
 		// Same display parity a local launch gets from the engine: the
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
@@ -870,6 +874,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackURL:        spec.CallbackURL,
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
+	}
+	if r.PermissionMode == "" {
+		r.PermissionMode = wf.Permission
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -976,6 +983,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:        tenantID,
@@ -1226,6 +1234,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      prior.PermissionOverride,
 		// A resumed attempt must honour the SAME pins the launch declared —
 		// replayed from the run doc, the single source the launch stamped.
 		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),

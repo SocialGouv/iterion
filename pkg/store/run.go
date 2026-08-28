@@ -261,11 +261,13 @@ type Run struct {
 	// silently vanish after the first reply. `iterion resume` re-applies
 	// this without the caller re-typing it.
 	ExtraSkills []string `json:"extra_skills,omitempty" bson:"extra_skills,omitempty"`
-	// PermissionMode is the workflow-declared tool-permission gate mode
-	// ("" | "off" | "ask" | "deny") captured at launch, surfaced in the
-	// studio RunHeader so a gated run reads at a glance. See
-	// docs/permissions.md.
+	// PermissionMode is the effective run-level tool-permission gate mode
+	// surfaced in the studio RunHeader.
 	PermissionMode string `json:"permission_mode,omitempty" bson:"permission_mode,omitempty"`
+	// PermissionOverride is the operator's launch-time mode. It is persisted
+	// separately because it outranks node and workflow declarations and must
+	// be replayed verbatim on every local or cloud resume.
+	PermissionOverride string `json:"permission_override,omitempty" bson:"permission_override,omitempty"`
 	// ModelOverrides captures launch-time per-node/-group backend+model+
 	// provider pins (studio dropdowns / CLI --model/--backend / HTTP
 	// model_overrides) so the run's Overview can show what it was

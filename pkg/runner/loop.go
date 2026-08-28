@@ -1762,6 +1762,9 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
 		AutoMemory: msg.AutoMemory,
+		// Keep this as the ExecutorSpec's run-level override: folding it into
+		// wf.Permission would let a node-level `off` beat an operator `deny`.
+		Permission: msg.Permission,
 		// The launch-time model/backend/provider/effort choice. Without this
 		// the pod silently runs the bot's DSL defaults while the run record
 		// advertises the model the operator picked — see

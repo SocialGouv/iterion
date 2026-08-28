@@ -184,8 +184,10 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// v=10 (2026-08-27) added ModelOverride.Effort so a stale runner
 	// rejects the message rather than silently dropping the operator's
 	// reasoning_effort pin.
-	if SchemaVersion != 10 {
-		t.Errorf("SchemaVersion = %d, want 10 (bump intentionally)", SchemaVersion)
+	// v=11 (2026-08-28) added the run-level Permission override so a stale
+	// runner cannot silently execute an operator-requested deny as off.
+	if SchemaVersion != 11 {
+		t.Errorf("SchemaVersion = %d, want 11 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 8 {
 		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
@@ -340,6 +342,29 @@ func TestRunMessage_SupervisorsSurvivesTheWire(t *testing.T) {
 		}
 		if err := out.Validate(); err != nil {
 			t.Errorf("validate: %v", err)
+		}
+	}
+}
+
+func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "ask", "deny", ""} {
+		in := RunMessage{
+			V: SchemaVersion, RunID: "r1", WorkflowName: "w",
+			IRCompiled: json.RawMessage(`{}`), Permission: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == "" && bytes.Contains(blob, []byte(`"permission"`)) {
+			t.Errorf("unset permission was serialised: %s", blob)
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Permission != want {
+			t.Errorf("Permission = %q after round trip, want %q", out.Permission, want)
 		}
 	}
 }

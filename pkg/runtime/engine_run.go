@@ -298,11 +298,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if len(e.extraSkills) > 0 {
 			run.ExtraSkills = e.extraSkills
 		}
-		// Persist the workflow-declared tool-permission mode so the studio
-		// RunHeader can badge a gated run (off|ask|deny). This is the bot's
-		// declared posture; a run-level --permission override refines it per
-		// node but isn't reflected here.
-		run.PermissionMode = e.workflow.Permission
+		// Keep the operator's strongest-precedence gate choice durable. On a
+		// cloud attempt the publisher has already stamped it; on a local launch
+		// the engine option does. A resume with no new option must preserve it.
+		if e.permissionOverride != "" {
+			run.PermissionOverride = e.permissionOverride
+		}
+		if run.PermissionOverride != "" {
+			run.PermissionMode = run.PermissionOverride
+		} else {
+			run.PermissionMode = e.workflow.Permission
+		}
 		// Guard on len>0 so a resume (which never re-supplies overrides)
 		// preserves the value persisted at the original launch instead of
 		// clobbering it with nil.

@@ -117,25 +117,10 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// Fail before persisting/publishing a queued run. The runner repeats
 		// this check in BuildExecutor, but discovering an unsafe backend only
 		// after queue admission would leave a paid launch to fail remotely.
-		//
-		// Screened against BOTH resolutions, because on this path they can
-		// disagree: the run-level mode is not on the queue wire (#493), so the
-		// pod resolves node -> workflow -> ITERION_PERMISSION while the
-		// operator's `permission:` only exists here. Each direction is a real
-		// launch:
-		//   - run-level "off" over a `deny` workflow admits here and is
-		//     refused by the pod — the remote post-admission failure this
-		//     check exists to prevent;
-		//   - run-level "deny" over an ungated workflow is the operator asking
-		//     for a gate the pod will not apply, so admitting it would run the
-		//     override UNGATED behind a gate the operator believes is on.
-		// Refusing on either keeps the check fail-closed both ways. Screening
-		// with the pod's resolution alone would fix the first and open the
-		// second.
-		for _, mode := range []string{spec.Permission, ""} {
-			if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), mode); err != nil {
-				return nil, err
-			}
+		// Admission and the runner receive the same run-level permission
+		// override, so one authoritative resolution is sufficient.
+		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+			return nil, err
 		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
 		if err != nil {
@@ -221,15 +206,9 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		ir.ApplyBudgetOverrides(wf, *spec.Budget)
 	}
 
-	// Same dual screen as the cloud path: a run-level `off` over a
-	// workflow `ask`/`deny` plus a backend that cannot enforce the gate
-	// would be admitted here and refused on every Resume (resume does
-	// not carry spec.Permission). Screening both resolutions fail-closes
-	// that strand (R2edfc5).
-	for _, mode := range []string{spec.Permission, ""} {
-		if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), mode); err != nil {
-			return nil, err
-		}
+	// Local launch and resume both replay the same persisted override.
+	if err := ValidateModelOverridePermissions(wf, toModelOverrides(spec.ModelOverrides), spec.Permission); err != nil {
+		return nil, err
 	}
 
 	_, runLogger := s.prepareRunLog(runID)
@@ -338,7 +317,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, RunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors, permission: spec.Permission},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -514,7 +493,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		// r.ExtraSkills, re-read from the run record, is what makes an
 		// operator-added skill survive the SECOND turn of a conversation:
 		// the dock drives one resume per message.
-		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume", supervisors: spec.Supervisors},
+		launchExtras{loopBudgetGuard: spec.LoopBudgetGuard, extraSkills: r.ExtraSkills, extraSkillsOrigin: "resume", supervisors: spec.Supervisors, permission: r.PermissionOverride},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -573,6 +552,7 @@ func (s *Service) resumeExecutorSpec(wf *ir.Workflow, r *store.Run, runLogger *i
 	if r != nil {
 		spec.RunID = r.ID
 		spec.ModelOverrides = ModelOverridesFromRun(r.ModelOverrides)
+		spec.Permission = r.PermissionOverride
 	}
 	return spec
 }
@@ -895,6 +875,9 @@ type launchExtras struct {
 	// run-level kill switch for DSL-declared supervisor watchers,
 	// resolved above ITERION_SUPERVISORS.
 	supervisors string
+	// permission is the strongest-precedence run-level gate choice. It is
+	// supplied on launch and replayed from the run document on resume.
+	permission string
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -922,6 +905,9 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	if ex.loopBudgetGuard != "" {
 		opts = append(opts, runtime.WithLoopBudgetGuard(ex.loopBudgetGuard))
+	}
+	if ex.permission != "" {
+		opts = append(opts, runtime.WithPermissionOverride(ex.permission))
 	}
 	// Per-launch WorkDir (ADR-046) overrides the service default; the
 	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}

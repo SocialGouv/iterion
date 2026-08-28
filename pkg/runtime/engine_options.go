@@ -333,6 +333,13 @@ func WithModelOverrides(o []store.RunModelOverride) EngineOption {
 	return func(e *Engine) { e.modelOverrides = o }
 }
 
+// WithPermissionOverride records the operator's run-level gate mode on the
+// run document. Executor enforcement is wired separately; this option makes
+// the choice durable across resumes and visible as the effective header mode.
+func WithPermissionOverride(mode string) EngineOption {
+	return func(e *Engine) { e.permissionOverride = mode }
+}
+
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
 // instead of causing an error.
