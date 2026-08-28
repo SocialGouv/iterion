@@ -74,6 +74,26 @@ my-bot/
 
 ## Manifest schema
 
+### Assistant authoring perimeter
+
+Project bots may expose an explicit companion-file write perimeter to a
+conversational assistant:
+
+```yaml
+authoring:
+  editable_files:
+    - {scope: bundle, path: checks/review.bot}
+    - {scope: workspace, path: scripts/review.py}
+```
+
+Paths are explicit, relative, normalized and unique; absolute paths,
+traversal and globs are rejected. `bundle` is relative to the manifest;
+`workspace` is relative to the active project and is forbidden for the
+universal catalog under `bots/`. This declaration grants no model tool and no
+read access. It only bounds Studio-owned preview/commit requests, which still
+require optimistic-concurrency checks and the operator's Assistant action
+policy. See [The assistant dock](assistant-dock.md#editing-files-that-belong-to-the-open-bot).
+
 ```yaml
 name: my-bot              # human-friendly identifier (display only)
 version: 0.1.0            # free-form, semver recommended

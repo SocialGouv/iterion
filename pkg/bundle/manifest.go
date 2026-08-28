@@ -187,6 +187,13 @@ type Manifest struct {
 	// hard-coded const with a bot id in it.
 	Chat *ChatSurface `yaml:"chat,omitempty"`
 
+	// Authoring declares the files a conversational authoring assistant may
+	// propose changing alongside this bot. It is an EDIT boundary, not a read
+	// boundary: local agents may already read their workspace according to the
+	// workflow permission policy, while every write still passes through the
+	// Studio-owned preview/commit protocol.
+	Authoring *AuthoringSpec `json:"authoring,omitempty" yaml:"authoring,omitempty"`
+
 	// Produces / Consumes declare the RUN-TO-RUN hand-off: what a bot leaves
 	// behind that a later run can start from, and what a bot wants handed to it
 	// at launch. They are matched BY KIND — a shared vocabulary, never a bot id
@@ -216,6 +223,23 @@ type Manifest struct {
 	// late: a weekly digest is (retry it after the reset), a "what changed
 	// in the last hour" report is not (usage_window: off).
 	Retry *RetrySpec `yaml:"retry,omitempty"`
+}
+
+const (
+	AuthoringScopeBundle    = "bundle"
+	AuthoringScopeWorkspace = "workspace"
+)
+
+// AuthoringSpec is intentionally an explicit path list. Globs would make the
+// authority change when an unrelated file appears, and make the review UI
+// unable to state the exact write perimeter captured for a turn.
+type AuthoringSpec struct {
+	EditableFiles []AuthoringEditableFile `json:"editable_files,omitempty" yaml:"editable_files,omitempty"`
+}
+
+type AuthoringEditableFile struct {
+	Scope string `json:"scope" yaml:"scope"`
+	Path  string `json:"path" yaml:"path"`
 }
 
 // RetrySpec is the manifest shape of a retrypolicy.Policy. It is declared
@@ -972,6 +996,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateChatSurface(m.Chat); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateAuthoring(m.Authoring); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	if err := validateRepoRequirement(m.Repo); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
@@ -985,6 +1012,70 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	return &m, nil
+}
+
+func validateAuthoring(a *AuthoringSpec) error {
+	if a == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(a.EditableFiles))
+	for i := range a.EditableFiles {
+		f := &a.EditableFiles[i]
+		f.Scope = strings.ToLower(strings.TrimSpace(f.Scope))
+		rawPath := strings.ReplaceAll(strings.TrimSpace(f.Path), "\\", "/")
+		switch f.Scope {
+		case AuthoringScopeBundle, AuthoringScopeWorkspace:
+		default:
+			return fmt.Errorf("authoring.editable_files[%d]: unknown scope %q (known: %s, %s)", i, f.Scope, AuthoringScopeBundle, AuthoringScopeWorkspace)
+		}
+		if rawPath == "" || rawPath == "." {
+			return fmt.Errorf("authoring.editable_files[%d]: path is required", i)
+		}
+		if filepath.IsAbs(rawPath) || strings.HasPrefix(rawPath, "/") || (len(rawPath) >= 3 && rawPath[1] == ':' && rawPath[2] == '/') {
+			return fmt.Errorf("authoring.editable_files[%d]: path must be relative, got %q", i, rawPath)
+		}
+		for _, part := range strings.Split(rawPath, "/") {
+			if part == ".." {
+				return fmt.Errorf("authoring.editable_files[%d]: path escapes its %s root (%q)", i, f.Scope, rawPath)
+			}
+		}
+		if strings.IndexByte(rawPath, 0) >= 0 {
+			return fmt.Errorf("authoring.editable_files[%d]: path contains NUL", i)
+		}
+		if strings.ContainsAny(rawPath, "*?[") {
+			return fmt.Errorf("authoring.editable_files[%d]: globs are not allowed; declare an exact path (%q)", i, rawPath)
+		}
+		f.Path = filepath.ToSlash(filepath.Clean(rawPath))
+		if authoringSensitivePath(f.Path) {
+			return fmt.Errorf("authoring.editable_files[%d]: secret-bearing path is not allowed (%q)", i, f.Path)
+		}
+		key := f.Scope + ":" + f.Path
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("authoring.editable_files[%d]: duplicate %s", i, key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func authoringSensitivePath(path string) bool {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(lower)
+	if base == ".env" || strings.HasPrefix(base, ".env.") {
+		return true
+	}
+	if base == ".netrc" || base == ".git-credentials" || base == "secrets.json" || base == "secrets.key" || base == "auth.json" {
+		return true
+	}
+	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasPrefix(base, "id_rsa") || strings.HasPrefix(base, "id_ed25519") {
+		return true
+	}
+	for _, dir := range []string{"/.ssh/", "/.aws/", "/.gnupg/"} {
+		if strings.Contains("/"+lower+"/", dir) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateHandoff rejects an unusable produces:/consumes: declaration at parse

@@ -457,6 +457,13 @@ func (s *Server) catalogBundleFiles(botID string) (map[string]string, string, er
 // oracle the pure structural botsource.Validate deliberately leaves to the
 // route, where the full bundle context is available.
 func validateBundleCompile(files map[string]string) []string {
+	return validateBundleCompileSelected(files, nil)
+}
+
+// validateBundleCompileSelected compiles main.bot plus every explicitly
+// modified companion .bot. A bundle may contain independently-invoked subbots;
+// compiling only main.bot would let an assistant batch persist a broken one.
+func validateBundleCompileSelected(files map[string]string, modified []string) []string {
 	dir, err := os.MkdirTemp("", "botsource-validate-*")
 	if err != nil {
 		return []string{"internal: " + err.Error()}
@@ -467,28 +474,43 @@ func validateBundleCompile(files map[string]string) []string {
 		return []string{err.Error()}
 	}
 
-	mainPath := filepath.Join(dir, botsource.MainBotFile)
-	src, err := os.ReadFile(mainPath)
-	if err != nil {
-		return []string{"internal: " + err.Error()}
-	}
 	var diags []string
-	pr := parser.Parse(mainPath, string(src))
-	for _, d := range pr.Diagnostics {
-		if d.Severity == parser.SeverityError {
-			diags = append(diags, d.Error())
+	paths := []string{botsource.MainBotFile}
+	seen := map[string]bool{botsource.MainBotFile: true}
+	for _, rel := range modified {
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if !strings.HasSuffix(strings.ToLower(rel), ".bot") || seen[rel] {
+			continue
 		}
+		seen[rel] = true
+		paths = append(paths, rel)
 	}
-	if pr.File == nil || len(pr.File.Workflows) == 0 {
-		return append(diags, "no workflow found in main.bot")
-	}
-	if b, berr := bundle.OpenDir(dir); berr == nil && b != nil {
-		_ = runview.MergeBundlePrompts(pr.File, b)
-	}
-	cr := ir.Compile(pr.File)
-	for _, d := range cr.Diagnostics {
-		if d.Severity == ir.SeverityError {
-			diags = append(diags, d.Error())
+	b, _ := bundle.OpenDir(dir)
+	for _, rel := range paths {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		src, err := os.ReadFile(path)
+		if err != nil {
+			diags = append(diags, rel+": internal: "+err.Error())
+			continue
+		}
+		pr := parser.Parse(path, string(src))
+		for _, d := range pr.Diagnostics {
+			if d.Severity == parser.SeverityError {
+				diags = append(diags, rel+": "+d.Error())
+			}
+		}
+		if pr.File == nil || len(pr.File.Workflows) == 0 {
+			diags = append(diags, rel+": no workflow found")
+			continue
+		}
+		if b != nil {
+			_ = runview.MergeBundlePrompts(pr.File, b)
+		}
+		cr := ir.Compile(pr.File)
+		for _, d := range cr.Diagnostics {
+			if d.Severity == ir.SeverityError {
+				diags = append(diags, rel+": "+d.Error())
+			}
 		}
 	}
 	return diags

@@ -171,6 +171,43 @@ secret name, but its value never crosses the model or this action protocol.
 Nexie's board MCP capability is read-only; its writes use this same Studio
 boundary, so the global settings are enforcement rather than decoration.
 
+### Editing files that belong to the open bot
+
+The live `.bot` keeps its editor-session protocol: Copi receives the unsaved
+buffer, returns a complete replacement, and the Studio can apply it without
+saving. Companion files have no live buffer, so they use a narrower persistent
+protocol declared by the target bot:
+
+```yaml
+authoring:
+  editable_files:
+    - {scope: bundle, path: subbots/review.bot}
+    - {scope: workspace, path: scripts/pipeline.py}
+```
+
+At every message the Studio asks the server for a fresh snapshot of those
+exact paths (`scope`, `path`, size, SHA-256 and botsource version). Copi never
+returns the hash and never receives a write tool. It may return only bounded
+exact replacements (`before` → `after`) tied to the active editor session and
+revision. The server rejects an undeclared path before reading it, requires
+each `before` to match exactly once, checks the captured hashes again, and
+compiles `main.bot` plus every changed companion `.bot` before preview and
+commit.
+
+The single action **Save declared bot companion files** defaults to *Always
+ask*. Its confirmation opens a real Monaco diff. Local multi-file writes are
+pre-checked together, written atomically per file, and rolled back best-effort
+if a later write fails; cloud bundles use their store version CAS. This is not
+advertised as a filesystem transaction. Python or other script tests are not
+run in V1 and the dock says so explicitly.
+
+`scope: workspace` is for project-local bots and is unavailable to a cloud
+botsource unless a repository is connected. Cloud bundle content is not copied
+into every turn: the snapshot carries metadata only. Dragging a file from the
+bundle drawer attaches a typed `bot-file/<team>/<slug>/<path>` reference; only
+a declared file matching the open bot is then inlined, under a cumulative
+64-KiB cap. Catalog bots under `bots/` may not declare workspace paths.
+
 ## The context chip
 
 The dock reports the page you are on as a **typed reference**:

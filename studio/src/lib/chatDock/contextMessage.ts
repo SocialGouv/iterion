@@ -18,6 +18,7 @@ import type {
   AssistantPageContextSnapshot,
   PageContextValue,
 } from "./pageContext";
+import type { AssistantAuthoringSnapshot } from "@/api/assistantAuthoring";
 
 export const CONTEXT_PREFIX = "[page context:";
 export const VISIBLE_PAGE_PREFIX = "<visible-page-context>";
@@ -32,6 +33,7 @@ export interface ActiveEditorDocumentSnapshot {
   complete: boolean;
   sourceLength: number;
   source?: string;
+  authoring?: AssistantAuthoringSnapshot;
 }
 
 // The EXPLICIT half (#333). A separate prefix rather than more entries on the

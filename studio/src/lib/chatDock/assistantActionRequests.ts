@@ -157,6 +157,7 @@ export function validateAssistantActionRequest(
   switch (request.id) {
     case "editor.apply":
     case "editor.save":
+    case "editor.files.save":
       throw new Error("Editor actions use the live editor-session protocol");
 
     case "board.issue.create": {
@@ -328,6 +329,7 @@ export async function executeAssistantAction(
   switch (request.id) {
     case "editor.apply":
     case "editor.save":
+    case "editor.files.save":
       throw new Error("Editor actions require a live editor session");
     case "board.issue.create": {
       const issue = await nativeApi.createIssue(args as unknown as nativeApi.NativeIssueCreate);

@@ -113,6 +113,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+	// Assistant companion-file authoring. The model only proposes exact
+	// replacements; these host-owned endpoints resolve the manifest perimeter,
+	// check optimistic-concurrency tokens, preview, and persist.
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/snapshot", s.handleAuthoringSnapshot)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/preview", s.handleAuthoringPreview)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/commit", s.handleAuthoringCommit)
 
 	// Project registry — lets the SPA list MRU projects, switch
 	// between them, and add/remove entries. The same on-disk file

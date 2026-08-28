@@ -88,6 +88,11 @@ type Entry struct {
 	// hard-coded const, and a second chat bot needs a studio release.
 	Chat *bundle.ChatSurface `json:"chat,omitempty" yaml:"chat,omitempty"`
 
+	// Authoring mirrors the manifest's bounded companion-file edit surface.
+	// The Studio uses this declaration only as metadata; server-side snapshot
+	// and commit handlers re-load and enforce the manifest independently.
+	Authoring *bundle.AuthoringSpec `json:"authoring,omitempty" yaml:"authoring,omitempty"`
+
 	// Produces / Consumes mirror the manifest's run-to-run hand-off blocks:
 	// what this bot leaves behind for a later run, and what it wants handed to
 	// it at launch. Carried by discovery because the hand-off is resolved AT
@@ -590,6 +595,7 @@ func parseBundle(dir string) (*Entry, error) {
 		ConfigShare:     m.ConfigShare,
 		Launch:          m.Launch,
 		Chat:            m.Chat,
+		Authoring:       m.Authoring,
 		Produces:        m.Produces,
 		Consumes:        m.Consumes,
 		Invocations:     bundle.EffectiveInvocations(m),

@@ -13,6 +13,7 @@ import {
   lookupAssistantActions,
   lookupDraft,
   lookupEditorProposal,
+  lookupFileChangeProposal,
 } from "./runs/artifacts";
 
 afterEach(() => {
@@ -301,6 +302,68 @@ describe("lookupAssistantActions", () => {
     );
     await expect(lookupAssistantActions("run1")).resolves.toEqual({
       requests: [],
+    });
+  });
+});
+
+describe("lookupFileChangeProposal", () => {
+  it("accepts bounded exact replacements bound to the editor turn", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 4, written_at: "2026-08-28T13:00:00Z" }],
+      {
+        "copi/4": {
+          mode: "design",
+          editor_session_id: "session",
+          editor_revision: 9,
+          file_changes_intent: "explicit",
+          file_changes: [
+            {
+              scope: "workspace",
+              path: "film_pipeline/matter.py",
+              replacements: [{ before: "return 41", after: "return 42" }],
+            },
+          ],
+        },
+      },
+    );
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [
+        {
+          scope: "workspace",
+          path: "film_pipeline/matter.py",
+          replacements: [{ before: "return 41", after: "return 42" }],
+        },
+      ],
+      sessionId: "session",
+      revision: 9,
+      intent: "explicit",
+    });
+  });
+
+  it("fails closed on full-file/create and unbound proposals", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 4, written_at: "2026-08-28T13:00:00Z" }],
+      {
+        "copi/4": {
+          mode: "design",
+          editor_session_id: "",
+          editor_revision: 0,
+          file_changes_intent: "explicit",
+          file_changes: [
+            {
+              scope: "bundle",
+              path: "new.py",
+              replacements: [{ before: "", after: "whole file" }],
+            },
+          ],
+        },
+      },
+    );
+    await expect(lookupFileChangeProposal("run1")).resolves.toEqual({
+      changes: [],
+      sessionId: null,
+      revision: null,
+      intent: "none",
     });
   });
 });

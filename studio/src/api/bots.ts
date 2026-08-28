@@ -81,6 +81,18 @@ export interface BotEntry {
    *  on bots the studio hosts in the assistant dock; absent on every
    *  ordinary bot, which is what makes this list the chat registry. */
   chat?: BotChatSurface;
+  /** Files this bundle explicitly exposes to the assistant authoring bridge.
+   *  This is a write perimeter; it does not grant the model a file tool. */
+  authoring?: BotAuthoringSpec;
+}
+
+export interface BotAuthoringSpec {
+  editable_files?: BotAuthoringEditableFile[];
+}
+
+export interface BotAuthoringEditableFile {
+  scope: "bundle" | "workspace";
+  path: string;
 }
 
 /** BotChatSurface mirrors the manifest `chat:` block (pkg/bundle/chat.go).

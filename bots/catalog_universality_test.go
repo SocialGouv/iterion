@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/bundle"
 )
 
 // Catalog bots (the *.bot bundles `iterion bots list` discovers — the
@@ -130,6 +132,31 @@ func TestCatalogBotsAreRepoAgnostic(t *testing.T) {
 					"%s: var %q default %q hardcodes iterion target-repo pattern %q — catalog bots must be repo-agnostic (see CLAUDE.md \"Catalog bots are repo-agnostic\"). Default to a language/layout-agnostic value and make the iterion-specific scope a per-run --var override.",
 					botPath, varName, value, pat,
 				)
+			}
+		}
+	}
+}
+
+// A shipped catalog bot cannot declare workspace-relative authoring files:
+// those paths would describe iterion's checkout, not an arbitrary target repo.
+// Project-local bots outside bots/ may use the scope deliberately.
+func TestCatalogBotsDoNotDeclareWorkspaceAuthoringFiles(t *testing.T) {
+	manifests, err := filepath.Glob("*/manifest.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, manifest := range manifests {
+		m, err := bundle.LoadManifest(manifest)
+		if err != nil {
+			t.Errorf("%s: load: %v", manifest, err)
+			continue
+		}
+		if m == nil || m.Authoring == nil {
+			continue
+		}
+		for _, file := range m.Authoring.EditableFiles {
+			if file.Scope == bundle.AuthoringScopeWorkspace {
+				t.Errorf("%s: catalog bots must not declare authoring editable_files with scope workspace; use scope bundle or keep project-specific authoring in the target repository", manifest)
 			}
 		}
 	}
