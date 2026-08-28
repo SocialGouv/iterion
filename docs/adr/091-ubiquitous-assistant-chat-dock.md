@@ -212,6 +212,14 @@ an explicit request, or always allow. Every new catalogue entry defaults to
 ask. Server-side identity, tenant permissions and domain validation remain in
 force after the Studio decision. Secrets are not an action argument type.
 
+When an offer appears is part of the boundary too: only once the turn is
+parked on its chat pause, i.e. after the optional cross-review has been
+composed into the reply the offer sits under. The artifact carrying the
+requests is published when the agent node finishes, earlier than that, and
+rendering from it directly put an executable card in front of the operator
+while the reviewer was still writing (run 01a04999, 2026-08-28). A turn that
+never reaches its pause offers nothing.
+
 This also closes an architectural inconsistency in Nexie: board reads remain
 capability-gated MCP calls, while board writes no longer happen inside the
 model's tool loop and therefore cannot bypass the global Assistant settings.

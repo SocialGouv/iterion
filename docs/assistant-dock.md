@@ -164,6 +164,17 @@ invalid request, server permissions still apply, and a key derived from the
 run/node/artifact version prevents a remount or reload from repeating a write.
 Destructive actions stay visibly labelled and use a danger confirmation.
 
+An offer belongs to a reply. The turn artifact is published when the agent
+node finishes — before the optional cross-review and before the chat pause —
+so the Studio renders an offer, and fires an *Always allow* policy, only once
+the turn is parked on its chat pause, with the reviewed reply above it. Without
+that gate the action card was clickable (or self-executing) for the whole time
+the reviewer was still writing the critique it exists to put in front of you.
+Corollary: a turn that never reaches its pause — the run failed or was
+cancelled between the agent node and the chat node — offers nothing; an action
+nobody reviewed is not executable. Mid-turn `ask_user` pauses show no offers
+either: the artifact of that moment is the previous turn's.
+
 The catalogue covers the live editor, board issues, pipeline tasks, run
 lifecycle, dispatcher lifecycle, bot creation/install and plugin management.
 Secret values are deliberately absent: an assistant can reason about a missing

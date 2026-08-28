@@ -116,11 +116,17 @@ function WhatsNextConversation({
                 // onHumanSubmit fallback only fires for a pending card
                 // the composer somehow doesn't own (defensive).
                 composerHandlesId={pendingHumanQuestion?.id}
+                // Same rule as the dock (see ChatDock's `turnParked`): an
+                // offer belongs to a reply, so it renders only once the turn
+                // is parked on its chat pause — never during the agent's
+                // turn, whose artifact already carries next turn's requests.
                 bubbleSlot={
-                  <AssistantActionOffer
-                    runId={session.runId}
-                    revision={session.messages.length}
-                  />
+                  pendingHumanQuestion && !pendingIsAskUser ? (
+                    <AssistantActionOffer
+                      runId={session.runId}
+                      revision={session.messages.length}
+                    />
+                  ) : null
                 }
                 onHumanSubmit={(messageId, outcome) => {
                   const m = session.messages.find((x) => x.id === messageId);
