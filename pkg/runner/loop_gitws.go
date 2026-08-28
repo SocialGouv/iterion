@@ -791,8 +791,10 @@ func parseLsRemoteHead(out, branch string) string {
 // its chain is at least as long — later wins only when it is not
 // strictly poorer. On the refusal path it RECORDS the loss it prevented,
 // on the run's timeline as well as in the pod log; on unverifiable
-// ground (fetch failed, no common baseline) it lets the push through,
-// which is exactly the pre-check-less behaviour.
+// ground (fetch failed, no common baseline) it lets the push through —
+// the chain comparison is skipped, but the push still carries
+// bankPushArgs' lease on the head that was read, so "unverifiable" costs
+// the comparison and never the anti-clobber guarantee.
 func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) bool {
 	runID := msg.RunID
 	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
