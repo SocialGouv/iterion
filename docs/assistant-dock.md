@@ -113,6 +113,14 @@ The kinds a `chat:` block may name are closed (`banner`, `human`,
 the failure it prevents is a chat window that looks alive and swallows
 every message.
 
+A human node may be text-only (`text_field`), approval-only
+(`approved_field`), or hybrid with both. Approval turns use the same shared
+Approve/Reject controls in the dock and `/whats-next`; hybrid rejection also
+collects a revision note. The boolean and optional text are submitted under
+the exact manifest field names. Bundle validation cross-checks those names
+against the compiled human node's output schema (`boolean` for
+`approved_field`, `string` for `text_field`) before the bot is listed.
+
 A rejected block costs the bundle its catalog entry, not the workspace:
 discovery skips the malformed bundle and keeps listing its valid
 siblings, reporting the skip as a `discovery_errors` entry on

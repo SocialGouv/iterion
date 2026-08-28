@@ -61,6 +61,28 @@ describe("chatBotFromEntry", () => {
     expect(bot.nodeMap.copi).toEqual({ kind: "banner", label: "Copi is thinking" });
   });
 
+  it("maps approval and hybrid contracts into explicit actions and fields", () => {
+    const bot = mustConvert(
+      entry({
+        chat: {
+          nodes: {
+            review: {
+              kind: "human",
+              approved_field: "accepted",
+              text_field: "revision_note",
+            },
+          },
+        },
+      }),
+    );
+    expect(bot.nodeMap.review).toEqual({
+      kind: "human",
+      approvedField: "accepted",
+      textField: "revision_note",
+      actions: ["approve", "request_revision"],
+    });
+  });
+
   it("resolves the workflow path a launch can actually use", () => {
     // rel_path is workspace-relative (what the run API resolves); the
     // absolute path is the fallback for a server that computed no root.

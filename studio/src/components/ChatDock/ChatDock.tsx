@@ -43,6 +43,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
+import AssistantApprovalComposer from "@/components/WhatsNext/AssistantApprovalComposer";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
 import { withPageContext } from "@/lib/chatDock/contextMessage";
@@ -54,9 +55,11 @@ import { ASSISTANT_HINT, ASSISTANT_LANE, ASSISTANT_TITLE } from "@/lib/chatDock/
 import { dockStandsDown } from "@/lib/chatDock/routeReference";
 import { useRouteReference } from "@/lib/chatDock/useRouteReference";
 import { useUnreadWhileClosed } from "@/lib/chatDock/useUnreadWhileClosed";
-import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
-import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
+import {
+  assistantHumanAnswer,
+  useAssistantComposer,
+} from "@/lib/whats-next/useAssistantComposer";
 import { useNewSessionAction } from "@/lib/whats-next/useNewSessionAction";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -334,13 +337,11 @@ function AssistantDock({
             onHumanSubmit={(messageId, outcome) => {
               const m = session.messages.find((x) => x.id === messageId);
               if (!m || m.kind !== "human-question") return;
-              const isAsk =
-                !!m.questions && ASK_USER_RESPONSE_KEY in m.questions;
-              const key = isAsk
-                ? ASK_USER_RESPONSE_KEY
-                : bot.nodeMap[m.nodeId]?.textField ?? "message";
               void session
-                .submitHumanAnswer(messageId, { [key]: outcome.text })
+                .submitHumanAnswer(
+                  messageId,
+                  assistantHumanAnswer(bot, m, outcome),
+                )
                 .catch(() => {});
             }}
           />
@@ -403,9 +404,16 @@ function AssistantDock({
               ))}
             </div>
           )}
-          {/* ask_user with options may disallow free text — the chips above
-              are then the only input. */}
-          {(!composer.pendingIsAskUser ||
+          {composer.pendingApproval ? (
+            <AssistantApprovalComposer
+              hasTextField={!!composer.pendingApproval.textField}
+              busy={composer.busyPending}
+              onSubmit={composer.submitApproval}
+            />
+          ) : (
+            /* ask_user with options may disallow free text — the chips above
+               are then the only input. */
+            (!composer.pendingIsAskUser ||
             composer.allowFreeText ||
             composer.options.length === 0) && (
             <div className="px-3 py-2 flex items-end gap-1">
@@ -443,6 +451,7 @@ function AssistantDock({
               />
               </div>
             </div>
+            )
           )}
         </div>
       )}

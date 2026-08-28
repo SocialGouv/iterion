@@ -79,7 +79,10 @@ function nodeMapEntry(node: BotChatNode): WhatsNextNodeMapEntry {
   if (node.summary_field) out.summaryField = node.summary_field;
   if (node.prompt) out.prompt = node.prompt;
   if (node.text_field) out.textField = node.text_field;
-  if (node.approved_field) out.approvedField = node.approved_field;
+  if (node.approved_field) {
+    out.approvedField = node.approved_field;
+    out.actions = ["approve", "request_revision"];
+  }
   return out;
 }
 

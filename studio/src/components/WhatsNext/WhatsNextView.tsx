@@ -2,13 +2,16 @@ import {
   AssistantStoreScope,
   useAssistantSession,
 } from "@/components/ChatDock/AssistantProvider";
-import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
-import { useAssistantComposer } from "@/lib/whats-next/useAssistantComposer";
+import {
+  assistantHumanAnswer,
+  useAssistantComposer,
+} from "@/lib/whats-next/useAssistantComposer";
 import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import { Button } from "@/components/ui/Button";
+import AssistantApprovalComposer from "./AssistantApprovalComposer";
 import ChatTranscript from "./ChatTranscript";
 import PreFlightPanel from "./PreFlightPanel";
 import SessionLauncher from "./SessionLauncher";
@@ -65,12 +68,14 @@ function WhatsNextConversation({
   const {
     pendingHumanQuestion,
     pendingIsAskUser,
+    pendingApproval,
     options,
     quickReplies,
     allowFreeText,
     busyPending,
     launchPending,
     submitPending,
+    submitApproval,
     onComposerSend,
   } = useAssistantComposer({ bot, session });
 
@@ -113,13 +118,11 @@ function WhatsNextConversation({
                 onHumanSubmit={(messageId, outcome) => {
                   const m = session.messages.find((x) => x.id === messageId);
                   if (!m || m.kind !== "human-question") return;
-                  const isAsk =
-                    !!m.questions && ASK_USER_RESPONSE_KEY in m.questions;
-                  const key = isAsk
-                    ? ASK_USER_RESPONSE_KEY
-                    : bot.nodeMap[m.nodeId]?.textField ?? "message";
                   void session
-                    .submitHumanAnswer(messageId, { [key]: outcome.text })
+                    .submitHumanAnswer(
+                      messageId,
+                      assistantHumanAnswer(bot, m, outcome),
+                    )
                     .catch(() => {});
                 }}
               />
@@ -172,9 +175,16 @@ function WhatsNextConversation({
                       ))}
                     </div>
                   )}
-                  {/* ask_user with options may disallow free text — the
-                      chips above are then the only input. */}
-                  {(!pendingIsAskUser || allowFreeText || options.length === 0) && (
+                  {pendingApproval ? (
+                    <AssistantApprovalComposer
+                      hasTextField={!!pendingApproval.textField}
+                      busy={busyPending}
+                      onSubmit={submitApproval}
+                    />
+                  ) : (
+                    /* ask_user with options may disallow free text — the
+                       chips above are then the only input. */
+                    (!pendingIsAskUser || allowFreeText || options.length === 0) && (
                     <AgentChatbox
                       runId={session.runId}
                       embedded
@@ -192,6 +202,7 @@ function WhatsNextConversation({
                       }
                       onSend={onComposerSend}
                     />
+                    )
                   )}
                 </div>
               )

@@ -36,6 +36,11 @@ type PendingQuestion = Extract<WhatsNextMessage, { kind: "human-question" }>;
 export interface AssistantComposer {
   pendingHumanQuestion: PendingQuestion | undefined;
   pendingIsAskUser: boolean;
+  // A manifest-declared boolean approval turn. When present, the regular
+  // text composer stands down for the shared approval controls.
+  pendingApproval:
+    | { approvedField: string; textField?: string }
+    | undefined;
   // Structured ask_user options (chips). Empty on a plain chat pause.
   options: AskUserOption[];
   // Nexie's suggested next messages on a chat pause.
@@ -53,6 +58,9 @@ export interface AssistantComposer {
   launchPending: boolean;
   // Answer the pending pause with a literal value (a chip click).
   submitPending: (value: string) => Promise<void>;
+  // Submit the approval boolean and, for a hybrid turn, its optional text
+  // under the exact field names declared by the bot manifest.
+  submitApproval: (approved: boolean, text?: string) => Promise<void>;
   // The unified composer submit. `decorate` runs on the trimmed text
   // before it is sent — the dock uses it to prepend the page-context
   // pointer, the route view passes nothing.
@@ -79,9 +87,17 @@ export function useAssistantComposer({
   const pendingIsAskUser =
     !!pendingHumanQuestion?.questions &&
     ASK_USER_RESPONSE_KEY in pendingHumanQuestion.questions;
+  const pendingNode = bot.nodeMap[pendingHumanQuestion?.nodeId ?? ""];
+  const pendingApproval =
+    !pendingIsAskUser && pendingNode?.approvedField
+      ? {
+          approvedField: pendingNode.approvedField,
+          ...(pendingNode.textField ? { textField: pendingNode.textField } : {}),
+        }
+      : undefined;
   const pendingAnswerKey = pendingIsAskUser
     ? ASK_USER_RESPONSE_KEY
-    : bot.nodeMap[pendingHumanQuestion?.nodeId ?? ""]?.textField ?? "message";
+    : pendingNode?.textField ?? "message";
 
   const options = pendingIsAskUser
     ? askUserOptions(pendingHumanQuestion?.questions)
@@ -106,6 +122,20 @@ export function useAssistantComposer({
       });
     },
     [pendingHumanQuestion, pendingAnswerKey, session],
+  );
+
+  const submitApproval = useCallback(
+    async (approved: boolean, text = "") => {
+      if (!pendingHumanQuestion || !pendingApproval) return;
+      const answer: Record<string, unknown> = {
+        [pendingApproval.approvedField]: approved,
+      };
+      if (pendingApproval.textField) {
+        answer[pendingApproval.textField] = text.trim();
+      }
+      await session.submitHumanAnswer(pendingHumanQuestion.id, answer);
+    },
+    [pendingApproval, pendingHumanQuestion, session],
   );
 
   const onComposerSend = useCallback(
@@ -176,6 +206,7 @@ export function useAssistantComposer({
   return {
     pendingHumanQuestion,
     pendingIsAskUser,
+    pendingApproval,
     options,
     quickReplies,
     allowFreeText,
@@ -185,8 +216,35 @@ export function useAssistantComposer({
       session.busyMessageId === pendingHumanQuestion.id,
     launchPending: session.status === "launching" && !session.runId,
     submitPending,
+    submitApproval,
     onComposerSend,
   };
+}
+
+/** Build the defensive inline-turn payload with the same manifest routing as
+ * the shared composer. This path is normally hidden, but must not silently
+ * turn a boolean approval into a string if it is ever reached. */
+export function assistantHumanAnswer(
+  bot: FirstClassBot,
+  message: PendingQuestion,
+  outcome: {
+    text: string;
+    approved?: boolean;
+    formAnswer?: Record<string, unknown>;
+  },
+): Record<string, unknown> {
+  if (outcome.formAnswer) return outcome.formAnswer;
+  if (message.questions && ASK_USER_RESPONSE_KEY in message.questions) {
+    return { [ASK_USER_RESPONSE_KEY]: outcome.text };
+  }
+  const node = bot.nodeMap[message.nodeId];
+  const answer: Record<string, unknown> = {};
+  if (node?.approvedField && typeof outcome.approved === "boolean") {
+    answer[node.approvedField] = outcome.approved;
+  }
+  if (node?.textField) answer[node.textField] = outcome.text;
+  if (!node?.approvedField && !node?.textField) answer.message = outcome.text;
+  return answer;
 }
 
 // readQuickReplies lifts Nexie's suggested next messages off the chat

@@ -92,6 +92,52 @@ describe("useAssistantComposer routing", () => {
     });
   });
 
+  it("submits an approval-only turn as a boolean under the declared field", async () => {
+    const approvalBot: FirstClassBot = {
+      ...bot,
+      nodeMap: { chat: { kind: "human", approvedField: "accepted" } },
+    };
+    const s = session({ messages: [pending()] });
+    const { result } = renderHook(() =>
+      useAssistantComposer({ bot: approvalBot, session: s }),
+    );
+
+    expect(result.current.pendingApproval).toEqual({
+      approvedField: "accepted",
+    });
+    await act(() => result.current.submitApproval(false));
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      accepted: false,
+    });
+  });
+
+  it("submits hybrid approval and text under both declared fields", async () => {
+    const approvalBot: FirstClassBot = {
+      ...bot,
+      nodeMap: {
+        chat: {
+          kind: "human",
+          approvedField: "is_approved",
+          textField: "revision_note",
+        },
+      },
+    };
+    const s = session({ messages: [pending()] });
+    const { result } = renderHook(() =>
+      useAssistantComposer({ bot: approvalBot, session: s }),
+    );
+
+    await act(() =>
+      result.current.submitApproval(false, "  tighten the summary  "),
+    );
+
+    expect(s.submitHumanAnswer).toHaveBeenCalledWith("question-1", {
+      is_approved: false,
+      revision_note: "tighten the summary",
+    });
+  });
+
   it("does not decorate a constrained ask_user option", async () => {
     const s = session({
       messages: [

@@ -30,7 +30,7 @@ func TestValidateChatSurface_NodeRules(t *testing.T) {
 			chat: &ChatSurface{Nodes: map[string]ChatNode{
 				"chat": {Kind: ChatNodeHuman},
 			}},
-			wantErr: "names no text_field",
+			wantErr: "neither text_field nor approved_field",
 		},
 		{
 			name: "no human node",
@@ -52,11 +52,16 @@ func TestValidateChatSurface_NodeRules(t *testing.T) {
 			}},
 		},
 		{
-			name: "approval conversation is not yet supported",
+			name: "valid approval conversation",
 			chat: &ChatSurface{Nodes: map[string]ChatNode{
 				"chat": {Kind: ChatNodeHuman, ApprovedField: "approved"},
 			}},
-			wantErr: "currently submit text answers only",
+		},
+		{
+			name: "valid hybrid conversation",
+			chat: &ChatSurface{Nodes: map[string]ChatNode{
+				"chat": {Kind: ChatNodeHuman, TextField: "feedback", ApprovedField: "accepted"},
+			}},
 		},
 	}
 

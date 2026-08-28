@@ -224,16 +224,11 @@ func validateChatSurface(c *ChatSurface) error {
 		}
 		if n.Kind == ChatNodeHuman {
 			humans++
-			// Both assistant chat surfaces route a pending turn through the
-			// unified text composer. They do not render the transcript's
-			// approve/reject buttons for that turn, so admitting an
-			// approved_field would make the bundle look interactive while no
-			// boolean can ever be submitted.
-			if n.ApprovedField != "" {
-				return fmt.Errorf("chat: node %q declares approved_field %q, but assistant chat surfaces currently submit text answers only", id, n.ApprovedField)
-			}
-			if n.TextField == "" {
-				return fmt.Errorf("chat: node %q is the operator's turn but names no text_field — its answers would have nowhere to land", id)
+			// A human turn may be text-only, approval-only, or hybrid. The
+			// compiled-workflow consistency pass verifies the declared field
+			// types; here we only reject a turn with nowhere to put an answer.
+			if n.TextField == "" && n.ApprovedField == "" {
+				return fmt.Errorf("chat: node %q is the operator's turn but names neither text_field nor approved_field — its answers would have nowhere to land", id)
 			}
 		}
 	}
