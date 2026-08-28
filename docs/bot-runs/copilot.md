@@ -5,6 +5,73 @@ semantics, backends. Read-only by construction. Newest run first.
 
 ---
 
+## 2026-08-28 — cross-review without memory, reviewer probing the Studio API (runs `01a04999`, `01a049e1`, `01a049e4`)
+
+- **Status**: validated — two fixes to the reviewer's input and prompt, measured on two follow-up runs.
+- **Versions**: bot 0.1.1 → 0.1.2 · iterion `fbd56fc6` (worktree on `feat/assistant-authoring-files`; the fix lands on `fix/copi-reviewer-context` → `feat/assistant-epic`).
+- **Method**: studio shorts (`:4894`, Copi loaded from the worktree via
+  `--bots-path`), `reviewer: on`, Copi on `claw` + `openai/gpt-5.6-sol`,
+  reviewer on `claude_code` + `claude-fable-5` (Claude Code 2.1.251). Two-turn
+  scenario in the leading-question shape: « Je vais relancer la tâche pipeline
+  native:… avec un reset, c'est bien ça ? » then « ok go ». Launched with the
+  dock's own request shapes (`POST /api/runs` with `bot_id` + `vars`, then
+  `POST /api/runs/{id}/resume` with `{answers: {message}, force: true}`), so
+  the runs sit in the studio's store.
+- **Result**:
+  - before (`01a04999`, operator-reported): reviewer $0.93/turn; one denied
+    `Bash curl http://127.0.0.1:4894/api/v1/…` per turn; critique opening with
+    "I can't reach the Studio API from here"; at turn 2 « "ok go" ne porte
+    aucun contexte » — it had been handed only the last message.
+  - after v1 (`01a049e1`: brief on the edge + boundary stated in the prompt):
+    $0.53 / $0.22; the turn-2 critique is contextual (« l'opérateur a déjà
+    dit ok go … le brief lui-même dit que la confirmation a eu lieu »);
+    still one denied call per turn — `ToolSearch select:Glob,Grep`, then a
+    `Bash ls` on turn 2.
+  - after v2 (`01a049e4`: `ToolSearch` allow-listed, `assistant_actions`
+    passed): $0.80 / $0.15; turn 2 is an EMPTY critique ("Nothing to
+    contest") — the reviewer saw the explicit `pipeline.task.reset` request
+    matching the confirmed ask. No Bash attempt on either turn.
+- **Value**: the reviewer now judges the answer as one message of the thread
+  and can tell a typed proposal from an omission. Silence at turn 2 is the
+  whole point: a reviewer that manufactures critique on a confirmed action
+  trains the operator to skip it.
+- **Findings / misses**:
+  - `session: fresh` + an edge carrying only `operator_message`/`reply` is a
+    reviewer with no memory. Copi's own `context_brief`, rewritten the same
+    turn, held exactly the missing context — it now rides the edge. Assumed
+    structural limit: the brief is authored by the model under review, so a
+    shared misunderstanding is ratified, not caught. A raw bounded transcript
+    is the follow-up if that ever bites.
+  - Under `claude_code` the node's `tools:` list is inert; the deny gate is
+    the only boundary, and a prompt that does not state it gets probed every
+    turn. Stated, Fable 5 stopped curling the API.
+  - Claude Code 2.1.251 ships NO Glob/Grep (`ToolSearch` answers "No matching
+    deferred tools found"), so the workflow's `Glob` allow is inert on that
+    backend — the reviewer can only `Read` exact paths. The prompt now gives
+    the store layout (`<workspace>/.iterion/` or
+    `~/.iterion/projects/<encoded-workdir>/`, cards at
+    `dispatcher/issues/native__<uuid>.json`) so a Read is a lookup, not a
+    guess — the v2 reviewer lost four Reads guessing `issues/<uuid>.json`.
+    `ToolSearch` is allow-listed because a denied loader makes the model
+    conclude the tool is gone and reach for Bash.
+  - Copi (`gpt-5.6-sol`) emitted `run.reset` on `01a04999` turn 1 — not in
+    the catalogue; the Studio would have rejected it. One line in the
+    Host-actions catalogue ("there is NO `run.reset`"); both follow-up runs
+    used `pipeline.task.reset`.
+  - Scrubber side-effect worth knowing: the shorts project's
+    `POSTGRES_PASSWORD` equals its directory name, so every path the reviewer
+    touched reads `…/video/__ITERION_SECRET_env_POSTGRES_PASSWORD__/…` in the
+    events. The masking works; the password should be rotated.
+- **Engine hardening**: none needed — everything sat in the bot. Candidate:
+  expose the resolved store dir to prompts (a `{{vars.store_dir}}` or an
+  engine-provided ref) so a chat bot stops inferring it from the cwd.
+- **Lessons for next run**: the leading-question test (22/08 below) needs a
+  SECOND turn of the « ok go » shape — that is what exposes a reviewer without
+  memory, and an empty turn-2 critique is the pass condition, not a failure
+  to engage. Reviewer cost is dominated by its reads ($0.80 when it reads
+  skills and probes paths, $0.15 when it has what it needs), so the
+  store-layout hint is a cost lever as much as a correctness one.
+
 ## 2026-08-22 — first dogfood, with cross-review on (runs `01a02a31`, `01a02a32`, `01a02a39`)
 
 - **Status**: validated — after three attempts, two of which failed on real defects the bot's tests could not have caught.
