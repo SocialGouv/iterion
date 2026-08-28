@@ -170,6 +170,9 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 
 	cp := r.Checkpoint
 	humanNodeID := cp.NodeID
+	if cp.Parallel != nil && cp.Parallel.PendingBranchID != "" && cp.Parallel.PendingNodeID != "" {
+		return e.resumeParallelPause(ctx, r, cp, answers)
+	}
 
 	// A review gate (interaction: review) resumes through a dedicated path:
 	// the answers carry a __review_action (reply / approve_merge /
@@ -341,6 +344,64 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Resumed worktree runs need the same persistent-branch + FF step
 	// fresh launches get; without this the GC guard never lands and
 	// commits are reachable only via reflog. See F-RT-1.
+	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
+		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
+	}
+	return loopErr
+}
+
+// resumeParallelPause answers a human node owned by one fan-out branch, then
+// restarts at the router. The durable branch cursors make completed siblings
+// return immediately and the answered branch consumes ResumeAnswers exactly
+// once before continuing with its private loop counters.
+func (e *Engine) resumeParallelPause(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any) error {
+	runID := r.ID
+	humanNodeID := cp.Parallel.PendingNodeID
+	branchID := cp.Parallel.PendingBranchID
+	answers = e.coerceAnswersToSchema(humanNodeID, answers)
+	e.seedRepoRootForResume(r)
+	e.resolveFileAnswers(ctx, runID, answers)
+
+	answerCP := *cp
+	answerCP.NodeID = humanNodeID
+	if err := e.recordHumanAnswers(ctx, r, &answerCP, answers); err != nil {
+		return err
+	}
+
+	parallel := newParallelExecutionState(cp.Parallel)
+	if err := parallel.setResumeAnswers(branchID, answers); err != nil {
+		return err
+	}
+	persisted := *cp
+	persisted.Parallel = parallel.snapshot()
+	// Persist the consumed answer while the run is still paused. If the
+	// process dies immediately after the subsequent claim, orphan recovery
+	// still resumes the exact branch instead of asking the question again.
+	if err := e.store.PauseRun(ctx, runID, &persisted); err != nil {
+		return fmt.Errorf("runtime: persist parallel resume answer: %w", err)
+	}
+	if err := e.claimForResume(ctx, runID, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
+		return err
+	}
+
+	e.restampWorkflowSource(ctx, r)
+	outputs := copyOutputs(persisted.Outputs)
+	if outputs == nil {
+		outputs = make(map[string]map[string]any)
+	}
+	artifactVersions := cloneMap(persisted.ArtifactVersions)
+	if artifactVersions == nil {
+		artifactVersions = make(map[string]int)
+	}
+	rs, sandboxCleanup, err := e.resumeRebuildState(ctx, r, &persisted, outputs, artifactVersions)
+	if err != nil {
+		return err
+	}
+	defer sandboxCleanup()
+	rs.ctx = ctx
+
+	loopErr := e.execLoop(ctx, rs, persisted.Parallel.RouterNodeID)
+	e.evictRunSessions(runID, loopErr)
 	if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
 		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
 	}
@@ -583,6 +644,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
 	rs.pauseSessionRef = cp.BackendSessionStateRef
+	if cp.Parallel != nil {
+		rs.parallel = newParallelExecutionState(cp.Parallel)
+	}
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
 	restoreSelectedIncoming(rs, cp)
@@ -821,6 +885,9 @@ func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
 		rs.nodeSessions = make(map[string]store.NodeSessionSlot)
 	}
 	rs.pauseSessionRef = cp.BackendSessionStateRef
+	if cp.Parallel != nil {
+		rs.parallel = newParallelExecutionState(cp.Parallel)
+	}
 }
 
 // pinBackendRehydration pins a checkpoint's backend conversation (claw) or

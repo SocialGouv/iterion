@@ -316,6 +316,10 @@ type runState struct {
 	// cannot race this map; the trunk copies the join union at
 	// processConvergence. Re-seeded at resume from Checkpoint.SelectedIncoming.
 	selectedIncoming map[string][]store.IncomingEdge
+	// parallel is non-nil while the trunk is parked on a fan-out router.
+	// Branch goroutines mutate it only through its mutex-protected helpers;
+	// the trunk clears/replaces it at router invocation boundaries.
+	parallel *parallelExecutionState
 	// events is the run-scoped reliable event registry backing the emit/wait
 	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
 	// still observes it. Distinct from the lossy cross-run pkg/eventbus.

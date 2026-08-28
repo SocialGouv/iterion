@@ -203,12 +203,18 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		case ir.RouterFanOutAll:
 			nextNodeID, fErr := e.execFanOut(ctx, rs, currentNodeID)
 			if fErr != nil {
+				if errors.Is(fErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
 		case ir.RouterFanOutEach:
 			nextNodeID, fErr := e.execFanOutEach(ctx, rs, currentNodeID)
 			if fErr != nil {
+				if errors.Is(fErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
@@ -221,6 +227,9 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		case ir.RouterLLM:
 			nextNodeID, lErr := e.execLLMRouter(ctx, rs, currentNodeID)
 			if lErr != nil {
+				if errors.Is(lErr, ErrRunPaused) {
+					return true, true, "", ErrRunPaused
+				}
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, lErr)
 			}
 			return true, false, nextNodeID, nil

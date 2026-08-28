@@ -287,26 +287,21 @@ func (c *compiler) validateFanOutEachEdges(w *Workflow) {
 	}
 }
 
-// validateBoundedIterationInExecBranch refuses loop/foreach edges whose
-// source sits in a subgraph executed by execBranch (C244). Those branches
-// share no local loop counters; the branch edge selector skips
-// IsBoundedIteration() edges, so a declared loop would compile and then
-// silently not run (and a foreach would be taken as an unguarded
-// unconditional back-edge). A loop whose source is the fan-out / llm-multi
-// router itself is the same class: launchBranches never applies loop
-// bookkeeping to those outgoing edges. A back-edge from the join into a
-// body node is also C244 (it elects the branch head as the join). A loop
-// that wraps the router from the join is on the trunk and is allowed.
+// validateBoundedIterationInExecBranch accepts a bounded cycle only when both
+// endpoints are owned by exactly one parallel branch. C244 remains the guard
+// for router edges, collector re-entry, sibling crossings, and any ambiguous
+// shared node: those shapes have no single durable branch scope to own them.
 func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	body := execBranchBodyNodes(w)
+	owners := execBranchNodeOwners(w)
 	for _, e := range w.Edges {
 		if !e.IsBoundedIteration() {
 			continue
 		}
-		// Source in the body (or the fan-out router) — skipped at run time.
-		// Target in the body — join -> branch-head as more elects the head
-		// as the join and the sibling swallows wait_all (Ra060bd).
-		if !body[e.From] && !body[e.To] && !edgeFromExecBranchRouter(w, e) {
+		if !body[e.From] && !body[e.To] && len(owners[e.From]) == 0 && len(owners[e.To]) == 0 && !edgeFromExecBranchRouter(w, e) {
+			continue
+		}
+		if !edgeFromExecBranchRouter(w, e) && hasSingleCommonBranchOwner(owners[e.From], owners[e.To]) {
 			continue
 		}
 		kind, name := "loop", e.LoopName
@@ -314,9 +309,71 @@ func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 			kind, name = "foreach", e.ForeachName
 		}
 		c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
-			"edge %s -> %s is a %s edge (%s) inside a fan_out_all/fan_out_each/llm-multi body; branches have no local loop counters (C244)",
+			"edge %s -> %s is a %s edge (%s) that crosses or ambiguously re-enters a fan_out_all/fan_out_each/llm-multi boundary; bounded iteration must be wholly owned by one branch (C244)",
 			e.From, e.To, kind, name)
 	}
+}
+
+func hasSingleCommonBranchOwner(left, right map[string]bool) bool {
+	if len(left) != 1 || len(right) != 1 {
+		return false
+	}
+	for owner := range left {
+		return right[owner]
+	}
+	return false
+}
+
+// execBranchNodeOwners walks each router target independently until a real
+// collector. Bounded back-edges do not create collectors; they stay inside
+// the owner walk and therefore form a legal local cycle.
+func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
+	out := make(map[string][]string)
+	nonIterIn := make(map[string]map[string]bool)
+	for _, edge := range w.Edges {
+		out[edge.From] = append(out[edge.From], edge.To)
+		if edge.IsBoundedIteration() {
+			continue
+		}
+		if nonIterIn[edge.To] == nil {
+			nonIterIn[edge.To] = make(map[string]bool)
+		}
+		nonIterIn[edge.To][edge.From] = true
+	}
+	isJoin := func(id string) bool {
+		node := w.Nodes[id]
+		return node != nil && (NodeAwaitMode(node) != AwaitNone || len(nonIterIn[id]) > 1)
+	}
+	owners := make(map[string]map[string]bool)
+	for _, node := range w.Nodes {
+		router, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(router) {
+			continue
+		}
+		for _, edge := range w.Edges {
+			if edge.From != router.ID {
+				continue
+			}
+			owner := router.ID + "/" + edge.To
+			seen := make(map[string]bool)
+			var walk func(string)
+			walk = func(id string) {
+				if id == "" || seen[id] || isJoin(id) || w.Nodes[id] == nil {
+					return
+				}
+				seen[id] = true
+				if owners[id] == nil {
+					owners[id] = make(map[string]bool)
+				}
+				owners[id][owner] = true
+				for _, next := range out[id] {
+					walk(next)
+				}
+			}
+			walk(edge.To)
+		}
+	}
+	return owners
 }
 
 func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
@@ -324,27 +381,18 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 	return ok && routerSpawnsExecBranch(r)
 }
 
-// execBranchBodyNodes is the set of nodes a parallel branch runs before
-// it hits a join. Shared by C243 (persist) and C244 (loop/foreach). For
-// each fan_out_all / fan_out_each / llm-multi router we walk from every
-// outgoing target and stop at any structural join: await != none, or
-// >1 non-iteration predecessors.
+// execBranchBodyNodes approximates the nodes a parallel branch runs before
+// it hits a structural join. C243 uses the complete union; C244 combines it
+// with the more precise per-target ownership map above.
 //
 // On a multi-edge fan (fan_out_all / llm multi) we do not stop at a
-// node findConvergencePoint elects only because of a loop back-edge:
-// that election swallows the real wait_all join in the sibling
-// (a -> a as refine, impl→review→impl). Structural joins still keep
-// trunk loops after a real join and catalog bots like evolve legal.
+// node that has an extra loop predecessor (a -> a as refine or
+// impl→review→impl). Structural joins still keep trunk nodes after a real
+// collector out of the body.
 //
-// On a single-edge fan (fan_out_each) every replay is the same path,
-// so electing a downstream loop head as the join is correct — the
-// walk stops there (allIn > 1, matching findConvergencePoint) and a
-// trunk loop after the implicit collector is not C244. The template
-// head itself stays in the body even when its own back-edge elects
-// it: stopping there would skip the per-item work.
-//
-// Loops after a non-elected await are a remaining execBranch hole, not
-// claimed by C244.
+// On a single-edge fan_out_each the template head always remains in the body.
+// C244's ownership pass independently treats bounded predecessors as local,
+// so safe template and downstream cycles are accepted.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
 	allIn := map[string]map[string]bool{}

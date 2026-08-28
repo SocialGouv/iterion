@@ -78,9 +78,8 @@ func runSkipCase(t *testing.T, runID string, wf *ir.Workflow) (agentA, dummy int
 	return agentACalls.Load(), dummyCalls.Load()
 }
 
-// TestExecBranch_SkipsLoopEdge is defence in depth for C244: a hand-built
-// IR with a loop inside a fan_out_all branch must take the fallback.
-func TestExecBranch_SkipsLoopEdge(t *testing.T) {
+// TestExecBranch_RunsBoundedLoopEdge covers branch-local loop selection.
+func TestExecBranch_RunsBoundedLoopEdge(t *testing.T) {
 	wf := skipWorkflow(&ir.Edge{From: "agent_a", To: "dummy", LoopName: "refine", Condition: "retry"})
 	wf.Loops["refine"] = &ir.Loop{Name: "refine", MaxIterations: 5}
 
@@ -88,15 +87,14 @@ func TestExecBranch_SkipsLoopEdge(t *testing.T) {
 	if agentA != 1 {
 		t.Fatalf("agent_a calls = %d, want 1", agentA)
 	}
-	if dummy != 0 {
-		t.Fatalf("dummy calls = %d, want 0 (loop edge must be skipped)", dummy)
+	if dummy != 1 {
+		t.Fatalf("dummy calls = %d, want 1 (bounded branch loop must run)", dummy)
 	}
 }
 
-// TestExecBranch_SkipsForeachEdge covers the sibling hole: a foreach
-// back-edge has no LoopName, so the old skip (LoopName != "") treated it
-// as an unconditional edge and would take it. IsBoundedIteration() must skip it.
-func TestExecBranch_SkipsForeachEdge(t *testing.T) {
+// TestExecBranch_ExhaustedForeachFallsThrough covers the empty-collection
+// guard: the local foreach edge is skipped and the branch reaches its join.
+func TestExecBranch_ExhaustedForeachFallsThrough(t *testing.T) {
 	wf := skipWorkflow(&ir.Edge{From: "agent_a", To: "dummy", ForeachName: "scan"})
 	wf.Foreaches["scan"] = &ir.Foreach{Name: "scan", Item: "item", CollectionRaw: "{{outputs.entry.items}}"}
 

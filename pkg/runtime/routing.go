@@ -93,6 +93,28 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 	if !ok {
 		return "", fmt.Errorf("runtime: node %q is not a RouterNode", routerNodeID)
 	}
+	// Collect outgoing edge targets as candidates. Order follows declaration
+	// order and is therefore the same on launch and resume.
+	var candidates []string
+	for _, edge := range e.workflow.Edges {
+		if edge.From == routerNodeID {
+			candidates = append(candidates, edge.To)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("llm router %q has no outgoing edges", routerNodeID)
+	}
+	// A multi-router with an in-flight durable invocation already paid for
+	// and persisted its selection. Reuse it on restart instead of asking the
+	// model again (which could choose a different branch set).
+	if rn.RouterMulti && rs.parallel != nil {
+		ps := rs.parallel.snapshot()
+		if ps != nil && ps.RouterNodeID == routerNodeID && ps.InvocationKey == e.parallelInvocationKey(routerNodeID, rs.loopCounters) {
+			if output := rs.outputs[routerNodeID]; output != nil {
+				return e.execLLMRouterMulti(ctx, rs, routerNodeID, output, candidates)
+			}
+		}
+	}
 
 	// Emit node_started.
 	iter := e.currentLoopIteration(routerNodeID, rs.loopCounters)
@@ -106,20 +128,6 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 
 	// Build router input.
 	routerInput := e.buildNodeInputRS(routerNodeID, rs.scope())
-
-	// Collect outgoing edge targets as candidates.
-	// NOTE: order follows edge declaration order in the .bot file, which the
-	// LLM sees in its prompt. This is deterministic but may introduce ordering
-	// bias in the LLM's selection.
-	var candidates []string
-	for _, edge := range e.workflow.Edges {
-		if edge.From == routerNodeID {
-			candidates = append(candidates, edge.To)
-		}
-	}
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("llm router %q has no outgoing edges", routerNodeID)
-	}
 
 	// Inject candidates into input for the executor.
 	routerInput["_route_candidates"] = candidates
@@ -310,10 +318,22 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	}
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
-	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
+	starts := make(map[string]string, len(plan.edges))
+	for _, edge := range plan.edges {
+		starts[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)] = edge.To
+	}
+	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
+	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan, parallel)
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "llm_router_multi")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
-	return e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err := pausedBranchError(results); err != nil {
+		return "", err
+	}
+	next, err := e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err == nil {
+		rs.parallel = nil
+	}
+	return next, err
 }

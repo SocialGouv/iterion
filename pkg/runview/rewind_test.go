@@ -529,6 +529,15 @@ func TestRewind_PromotesFanOutBodyToRouter(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "merge",
 		Outputs: outputsOf("survey", "split", "branch_a", "branch_b", "merge"),
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:    "split",
+			InvocationKey:   "split@root",
+			PendingBranchID: "branch_split_branch_a",
+			PendingNodeID:   "branch_a",
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_split_branch_a": {BranchID: "branch_split_branch_a", CurrentNodeID: "branch_a"},
+			},
+		},
 	}
 	svc, st, runID := seedRun(t, fanOutBot, cp, store.RunStatusFailedResumable)
 
@@ -558,6 +567,9 @@ func TestRewind_PromotesFanOutBodyToRouter(t *testing.T) {
 	}
 	if run.Checkpoint.NodeID != "split" {
 		t.Errorf("checkpoint anchored on %q, want split", run.Checkpoint.NodeID)
+	}
+	if run.Checkpoint.Parallel != nil {
+		t.Errorf("parallel checkpoint survived fan-out rewind: %+v", run.Checkpoint.Parallel)
 	}
 }
 

@@ -161,6 +161,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	parentArtifacts := copyOutputs(rs.artifacts)
+	starts := make(map[string]string, len(items))
+	for i := range items {
+		starts[fmt.Sprintf("branch_%s_%d", routerNodeID, i)] = tmplEdge.To
+	}
+	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
 
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
@@ -173,6 +178,9 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	runBranch := func(i int) *branchResult {
 		item := items[i]
 		branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
+		if err := parallel.waitResumeTurn(branchCtx, branchID); err != nil {
+			return &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: e.wrapContextErr(err)}
+		}
 		perBranchOutputs := copyOutputs(rs.outputs)
 		if perBranchOutputs[routerNodeID] == nil {
 			perBranchOutputs[routerNodeID] = make(map[string]any)
@@ -191,13 +199,15 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 			}
 		}
 		defer slot.release()
-		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot)
+		result := e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot, parallel)
+		e.completeParallelResume(rs, parallel, branchID, result)
+		return result
 	}
 
 	// finishBranch applies the shared post-branch cancellation policy.
 	finishBranch := func(result *branchResult) {
 		if result != nil && result.err != nil {
-			if errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
+			if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || cancelOnFirstFailure {
 				cancelBranches()
 			}
 		}
@@ -286,6 +296,9 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
+	if err := pausedBranchError(results); err != nil {
+		return "", err
+	}
 
 	// Determine convergence (prefer branch-reported join; mirror execFanOut).
 	convergenceNodeID := ""
@@ -311,7 +324,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 	if convergenceNodeID == "" {
 		if isBestEffort && allTerminatedAtDone(results) {
-			return e.processConvergenceTerminal(rs, results)
+			next, err := e.processConvergenceTerminal(rs, results)
+			if err == nil {
+				rs.parallel = nil
+			}
+			return next, err
 		}
 		convergenceNodeID = convergence
 		if convergenceNodeID == "" {
@@ -319,7 +336,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 
-	return e.processConvergence(rs, convergenceNodeID, results)
+	next, err := e.processConvergence(rs, convergenceNodeID, results)
+	if err == nil {
+		rs.parallel = nil
+	}
+	return next, err
 }
 
 // buildFanOutDAG resolves the per-item dependency graph for DAG scheduling.

@@ -582,6 +582,11 @@ func applyRewind(cp *store.Checkpoint, nodeID string, dropped, invalidated []str
 	// asked.
 	cp.InteractionID = ""
 	cp.InteractionQuestions = nil
+	// A pivot inside a fan-out is promoted to its router so every branch is
+	// replayed as one unit. Keeping its durable branch cursors would turn that
+	// replay into an immediate cache hit (and could retain an obsolete human
+	// interaction), so rewind always starts a fresh parallel invocation.
+	cp.Parallel = nil
 	// Drop backend rehydration so the pivot restarts from a clean
 	// conversation. Fork pins these from a turn checkpoint because it
 	// resumes mid-turn; a rewind wants the node re-run from scratch

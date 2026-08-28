@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -16,6 +18,7 @@ import (
 // branchResult holds the outcome of a single parallel branch.
 type branchResult struct {
 	branchID         string
+	startNodeID      string
 	outputs          map[string]map[string]any
 	artifacts        map[string]map[string]any // publish name → output
 	artifactVersions map[string]int
@@ -42,9 +45,19 @@ type branchResult struct {
 // convergence point, a terminal node, or encounters an error.
 // convergenceNodeID is the pre-computed convergence point (may be empty
 // if unknown; in that case, AwaitMode on individual nodes is checked).
-func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]any, parentArtifacts map[string]map[string]any, convergenceNodeID string, slot *branchSlot) *branchResult {
-	result := initBranchResult(rs, branchID)
-	recordIncoming(result.selectedIncoming, startEdge, true)
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]any, parentArtifacts map[string]map[string]any, convergenceNodeID string, slot *branchSlot, parallel *parallelExecutionState) *branchResult {
+	branchCP := parallel.branch(branchID)
+	result := initBranchResult(rs, branchID, branchCP)
+	result.startNodeID = startEdge.To
+	if branchCP != nil && branchCP.StartNodeID != "" {
+		result.startNodeID = branchCP.StartNodeID
+	}
+	branchRS := newBranchRunState(parallel.branchBase(rs), branchCP, result)
+	branchRS.outputs = mergeOutputs(parentOutputs, result.outputs)
+	branchRS.artifacts = mergeOutputs(parentArtifacts, result.artifacts)
+	if branchCP == nil || len(branchCP.SelectedIncoming) == 0 {
+		recordIncoming(result.selectedIncoming, startEdge, true)
+	}
 	runID := rs.runID
 
 	// branchCostUSD is this branch's cumulative LLM spend, recorded into the
@@ -68,6 +81,15 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	defer e.emitBranchFinishedDefer(ctx, runID, branchID, startEdge.To, result)
 
 	currentNodeID := startEdge.To
+	if branchCP != nil && branchCP.CurrentNodeID != "" {
+		currentNodeID = branchCP.CurrentNodeID
+	}
+	if branchCP != nil && branchCP.Completed {
+		result.joinNodeID = branchCP.JoinNodeID
+		result.terminatedAtDone = branchCP.TerminatedAtDone
+		result.terminalNodeID = branchCP.TerminalNodeID
+		return result
+	}
 
 	for {
 		select {
@@ -87,6 +109,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		// pre-computed node where parallel branches reconverge.
 		if convergenceNodeID != "" && currentNodeID == convergenceNodeID {
 			result.joinNodeID = currentNodeID
+			e.checkpointBranch(rs, branchRS, result, currentNodeID, true, parallel)
 			return result
 		}
 
@@ -95,6 +118,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		case *ir.DoneNode:
 			result.terminatedAtDone = true
 			result.terminalNodeID = currentNodeID
+			e.checkpointBranch(rs, branchRS, result, currentNodeID, true, parallel)
 			return result
 		case *ir.FailNode:
 			result.err = fmt.Errorf("branch %s reached fail node %q", branchID, currentNodeID)
@@ -102,34 +126,57 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		// Check budget before execution.
-		if e.checkPreExecBudget(ctx, rs, runID, branchID, currentNodeID, result) {
+		if e.checkPreExecBudget(ctx, branchRS, runID, branchID, currentNodeID, result) {
 			return result
 		}
 
-		// Bounded-iteration edges inside execBranch are skipped (see
-		// edges.go / C244), so iteration here reflects the parent loop
-		// counters only.
-		iter := e.currentLoopIteration(currentNodeID, rs.loopCounters)
+		iter := e.currentLoopIteration(currentNodeID, branchRS.loopCounters)
+		// Branch execution keys include foreach indices as well as named loop
+		// counters. The trunk helper intentionally reports loops only, while a
+		// branch may execute the same node once per local foreach element.
+		iterPath := branchCounterPath(branchRS.loopCounters)
 
 		// Emit node_started.
-		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, map[string]any{
+		startedData := map[string]any{
 			"kind":      node.NodeKind().String(),
 			"iteration": iter,
-		}); err != nil {
+		}
+		startedData["iteration_path"] = iterPath
+		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, startedData); err != nil {
 			e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
 			result.eventErrors++
 		}
 
-		output, done := e.executeNodeForBranch(ctx, rs, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
+		var output map[string]any
+		var done bool
+		resumedHuman := false
+		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM {
+			if branchCP != nil && len(branchCP.ResumeAnswers) > 0 {
+				output = deepCopyAnyMap(branchCP.ResumeAnswers)
+				result.outputs[currentNodeID] = output
+				branchCP.ResumeAnswers = nil
+				resumedHuman = true
+				if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
+					result.err = err
+					done = true
+				}
+			} else {
+				done = true
+				result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel)
+			}
+		} else {
+			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
+		}
 		if done {
 			return result
 		}
+		branchRS.outputs[currentNodeID] = output
 
-		if e.recordBranchUsage(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, &branchCostUSD, result) {
+		if e.recordBranchUsage(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, output, &branchCostUSD, result) {
 			return result
 		}
 
-		if e.publishBranchArtifact(ctx, runID, branchID, currentNodeID, node, output, result) {
+		if e.publishBranchArtifact(ctx, runID, branchID, currentNodeID, node, output, result, branchRS, parallel) {
 			return result
 		}
 
@@ -142,32 +189,166 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			e.onNodeFinished(runID, currentNodeID, output)
 		}
 
-		// Select next edge (branch-local, no loop counters needed in branches).
-		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result)
+		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result, branchRS)
 		if err != nil {
 			result.err = err
 			return result
 		}
 
 		currentNodeID = nextNodeID
+		e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
+		if resumedHuman {
+			// The answered gate is durable at its successor. Release siblings
+			// now so this branch may encounter another gate during the same
+			// invocation without the old pending identity blocking it.
+			e.completeParallelResume(rs, parallel, branchID, result)
+		}
 	}
 }
 
 // initBranchResult allocates a branch's result accumulator, copying the
 // parent's artifact versions so the branch keeps incrementing from the
 // correct version instead of resetting to 0 each fan-out cycle.
-func initBranchResult(rs *runState, branchID string) *branchResult {
+func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint) *branchResult {
 	branchArtifactVersions := make(map[string]int, len(rs.artifactVersions))
 	for k, v := range rs.artifactVersions {
 		branchArtifactVersions[k] = v
 	}
-	return &branchResult{
+	result := &branchResult{
 		branchID:         branchID,
 		outputs:          make(map[string]map[string]any),
 		artifacts:        make(map[string]map[string]any),
 		artifactVersions: branchArtifactVersions,
 		selectedIncoming: make(map[string][]store.IncomingEdge),
 	}
+	if cp != nil {
+		result.outputs = copyOutputs(cp.Outputs)
+		result.artifacts = copyOutputs(cp.Artifacts)
+		if cp.ArtifactVersions != nil {
+			result.artifactVersions = cloneMap(cp.ArtifactVersions)
+		}
+		result.selectedIncoming = cloneIncoming(cp.SelectedIncoming)
+	}
+	return result
+}
+
+func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *branchResult) *runState {
+	local := cloneRunStateForBranch(parent)
+	local.outputs = result.outputs
+	local.artifacts = result.artifacts
+	local.artifactVersions = result.artifactVersions
+	local.selectedIncoming = result.selectedIncoming
+	local.loopCounters = make(map[string]int)
+	local.loopPreviousOutput = make(map[string]map[string]any)
+	local.loopCurrentOutput = make(map[string]map[string]any)
+	local.loopProgressSig = make(map[string]string)
+	local.loopStaleness = make(map[string]int)
+	local.loopBudgetMarks = make(map[string]loopBudgetMark)
+	local.parallel = nil
+	if cp != nil {
+		local.loopCounters = cloneMap(cp.LoopCounters)
+		local.loopPreviousOutput = copyOutputs(cp.LoopPreviousOutput)
+		local.loopCurrentOutput = copyOutputs(cp.LoopCurrentOutput)
+		restoreLoopBudgetMarks(local, cp.LoopBudgetMarks)
+	}
+	return local
+}
+
+func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID string, completed bool) *store.BranchCheckpoint {
+	return &store.BranchCheckpoint{
+		BranchID:           result.branchID,
+		StartNodeID:        result.startNodeID,
+		CurrentNodeID:      currentNodeID,
+		Outputs:            copyOutputs(result.outputs),
+		Artifacts:          copyOutputs(result.artifacts),
+		ArtifactVersions:   cloneMap(result.artifactVersions),
+		LoopCounters:       cloneMap(rs.loopCounters),
+		LoopPreviousOutput: copyOutputs(rs.loopPreviousOutput),
+		LoopCurrentOutput:  copyOutputs(rs.loopCurrentOutput),
+		LoopBudgetMarks:    snapshotLoopBudgetMarks(rs),
+		SelectedIncoming:   cloneIncoming(result.selectedIncoming),
+		JoinNodeID:         result.joinNodeID,
+		TerminalNodeID:     result.terminalNodeID,
+		Completed:          completed,
+		TerminatedAtDone:   result.terminatedAtDone,
+	}
+}
+
+// checkpointBranch persists a complete branch-local cursor while keeping the
+// trunk anchored on the router. SaveCheckpoint is best-effort, matching the
+// sequential node-boundary path; the next completed branch boundary retries.
+func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState) {
+	if parallel == nil {
+		return
+	}
+	parallel.saveMu.Lock()
+	defer parallel.saveMu.Unlock()
+	branch := branchCheckpointFromState(branchRS, result, currentNodeID, completed)
+	if !parallel.updateBranch(branch) {
+		return
+	}
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	if ps.PendingInteractionID != "" {
+		cp.InteractionID = ps.PendingInteractionID
+		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
+	}
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
+		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+	}
+}
+
+func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID string, _ ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, result *branchResult, parallel *parallelExecutionState) error {
+	parallel.saveMu.Lock()
+	defer parallel.saveMu.Unlock()
+	branch := branchCheckpointFromState(branchRS, result, nodeID, false)
+	if !parallel.beginPause(branchID, nodeID, branch) {
+		return ErrRunPaused
+	}
+	merged := mergeOutputs(parentOutputs, result.outputs)
+	mergedArtifacts := mergeOutputs(parentArtifacts, result.artifacts)
+	questions := e.buildNodeInputRS(nodeID, resolveScope{
+		vars:           branchRS.vars,
+		outputs:        merged,
+		artifacts:      mergedArtifacts,
+		rs:             branchRS,
+		incomingByNode: result.selectedIncoming,
+	})
+	scopeID := base64.RawURLEncoding.EncodeToString([]byte(branchID + ";" + branchCounterPath(branchRS.loopCounters)))
+	interactionID := e.interactionIDForPause(parent.runID, nodeID, branchRS.loopCounters) + "_branch_" + scopeID
+	parallel.setPendingInteraction(interactionID, questions)
+	interaction := &store.Interaction{
+		ID:          interactionID,
+		RunID:       parent.runID,
+		NodeID:      nodeID,
+		RequestedAt: time.Now().UTC(),
+		Questions:   questions,
+	}
+	if err := e.store.WriteInteraction(parent.ctx, interaction); err != nil {
+		return fmt.Errorf("runtime: write branch interaction: %w", err)
+	}
+	if err := e.emitBranch(parent.ctx, parent.runID, branchID, store.EventHumanInputRequested, nodeID, map[string]any{
+		"interaction_id": interactionID,
+		"questions":      questions,
+	}); err != nil {
+		return err
+	}
+	if err := e.emit(parent.ctx, parent.runID, store.EventRunPaused, nodeID, map[string]any{"branch_id": branchID}); err != nil {
+		return err
+	}
+	ps := parallel.snapshot()
+	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	cp.InteractionID = interactionID
+	cp.InteractionQuestions = questions
+	if err := e.store.PauseRun(parent.ctx, parent.runID, cp); err != nil {
+		return fmt.Errorf("runtime: pause branch: %w", err)
+	}
+	return ErrRunPaused
 }
 
 // emitBranchFinishedDefer emits branch_finished (with the branch's terminal
@@ -391,12 +572,16 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // aborts the branch (returns true); an event-emit failure is best-effort. The
 // persisted artifact records the OLD version while the in-memory map advances
 // to the next.
-func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, currentNodeID string, node ir.Node, output map[string]any, result *branchResult) bool {
+func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, currentNodeID string, node ir.Node, output map[string]any, result *branchResult, branchRS *runState, parallel *parallelExecutionState) bool {
 	pub := nodePublish(node)
 	if pub == "" {
 		return false
 	}
 	version := result.artifactVersions[currentNodeID]
+	if parallel != nil {
+		executionKey := branchID + "/" + currentNodeID + "/" + branchCounterPath(branchRS.loopCounters)
+		version = parallel.artifactVersion(currentNodeID, executionKey, version)
+	}
 	artifact := &store.Artifact{
 		RunID:   runID,
 		NodeID:  currentNodeID,
@@ -409,6 +594,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	}
 	result.artifactVersions[currentNodeID] = version + 1
 	result.artifacts[pub] = output
+	branchRS.artifacts[pub] = output
 	if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]any{
 		"publish": pub,
 		"version": version,
@@ -419,18 +605,63 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	return false
 }
 
-// selectEdgeBranch picks the next node for a branch. It is simpler than
-// selectEdge: no loop counter enforcement, events carry a branch ID.
-func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult) (string, error) {
-	selected := e.evaluateEdges(fromNodeID, fmt.Sprintf("branch %s", branchID), output)
+// selectEdgeBranch is the branch-local twin of selectEdgeRS. It applies the
+// same bounded loop/foreach bookkeeping to a private runState and emits the
+// selection with the branch identity.
+func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult, rs *runState) (string, error) {
+	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
 	if selected == nil {
 		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
 
-	if err := e.emitBranch(ctx, runID, branchID, store.EventEdgeSelected, "", map[string]any{
+	if selected.LoopName == "" {
+		for loopName, loop := range e.workflow.Loops {
+			if loop == nil || len(loop.Entries) == 0 || !loop.Entries[selected.To] || loop.Body[selected.From] {
+				continue
+			}
+			markLoopBudget(rs, loopName)
+			if prior := rs.loopCounters[loopName]; prior > 0 {
+				rs.loopCounters[loopName] = 0
+				delete(rs.loopPreviousOutput, loopName)
+				delete(rs.loopCurrentOutput, loopName)
+				delete(rs.loopProgressSig, loopName)
+				delete(rs.loopStaleness, loopName)
+			}
+		}
+	}
+	if selected.ForeachName != "" {
+		key := foreachCounterKey(selected.ForeachName)
+		rs.loopCounters[key]++
+	}
+	if selected.LoopName != "" {
+		rs.loopCounters[selected.LoopName]++
+		markLoopBudget(rs, selected.LoopName)
+		if staged, ok := rs.loopCurrentOutput[selected.LoopName]; ok {
+			rs.loopPreviousOutput[selected.LoopName] = staged
+		}
+		snap := make(map[string]any, len(output))
+		for k, v := range output {
+			snap[k] = deepCopyValue(v)
+		}
+		rs.loopCurrentOutput[selected.LoopName] = snap
+	}
+
+	data := map[string]any{
 		"from": selected.From,
 		"to":   selected.To,
-	}); err != nil {
+	}
+	if selected.Condition != "" {
+		data["condition"] = selected.Condition
+		data["negated"] = selected.Negated
+	}
+	if selected.ExpressionSrc != "" {
+		data["expression"] = selected.ExpressionSrc
+	}
+	if selected.LoopName != "" {
+		data["loop"] = selected.LoopName
+		data["iteration"] = rs.loopCounters[selected.LoopName]
+	}
+	if err := e.emitBranch(ctx, runID, branchID, store.EventEdgeSelected, "", data); err != nil {
 		e.logger.Warn("branch %s: failed to emit edge_selected: %v", branchID, err)
 	}
 

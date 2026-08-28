@@ -74,7 +74,7 @@ workflow example:
 
 The router itself is a pass-through — it forwards its input unchanged to all targets. The number of concurrent branches is bounded by the `max_parallel_branches` budget setting. For workspace safety, only one mutating branch (an agent or human with tools) is allowed at a time; read-only branches can run freely in parallel.
 
-A bounded loop or `as foreach` **inside** a branch is a compile error (**C244**): parallel bodies have no local loop counters. A back-edge from the join into a body node is the same class. On a multi-edge fan the walk stops at structural joins, not at a loop head elected only by its own back-edge; on `fan_out_each` (one template path) that election is a real join. A loop after a non-elected `await:` in a sibling branch is not claimed. A loop that re-enters the *router* from the join is on the trunk and is allowed.
+A bounded loop or `as foreach` wholly contained in one branch runs with branch-local counters and outputs. Different branches may consume different numbers of iterations; `wait_all` and `best_effort` do not converge until each relevant local lifecycle finishes. **C244** still rejects iteration on the router itself, collector-to-body re-entry, sibling-crossing cycles, and other shapes without one unambiguous branch owner. A loop that re-enters the *router* from the join is on the trunk and remains allowed.
 
 ---
 
@@ -121,7 +121,7 @@ router dispatch:
   depends_on: deps
 ```
 
-Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A loop or `as foreach` inside the template is **C244** — per-item retry belongs in a `subbot`, not inlined in the branch; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
+Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A bounded loop or `as foreach` may be inlined in the template: each item gets its own counters, output history, checkpoint cursor, and human-gate resume scope. Use a `subbot` for a genuine capability/isolation boundary; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
 
 ---
 
@@ -206,7 +206,7 @@ workflow example:
 
 ### Multi route example
 
-With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies are the same `execBranch` path as `fan_out_all`: a loop or `as foreach` inside a selected branch is **C244**.
+With `multi: true`, the LLM can select several routes at once. Selected targets run in parallel and converge at a downstream node that declares `await: wait_all` or `await: best_effort`. Those parallel bodies use the same branch-local bounded-loop semantics as `fan_out_all`; on restart the persisted route selection and branch cursors are reused instead of asking the model to route again.
 
 ```iter
 router fix_router:

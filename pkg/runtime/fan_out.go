@@ -47,6 +47,11 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	if err != nil {
 		return "", err
 	}
+	starts := make(map[string]string, len(plan.edges))
+	for _, edge := range plan.edges {
+		starts[fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To)] = edge.To
+	}
+	parallel := e.ensureParallelInvocation(rs, routerNodeID, starts)
 
 	// Derive a cancellable context for the whole fan-out. When any branch
 	// trips the budget (or the parent ctx is cancelled — Ctrl-C), cancelling
@@ -56,13 +61,20 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
 
-	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
+	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan, parallel)
 	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "fan_out")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
 
-	return e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err := pausedBranchError(results); err != nil {
+		return "", err
+	}
+	next, err := e.resolveConvergence(rs, routerNodeID, results, plan)
+	if err == nil {
+		rs.parallel = nil
+	}
+	return next, err
 }
 
 // fanOutPlan is the resolved launch plan for a fan_out_all router, computed
@@ -209,7 +221,7 @@ func (s *branchSlot) acquire(ctx context.Context) error {
 // doesn't block on a slot held by a doomed sibling). After execBranch it
 // cancels siblings when the branch tripped the budget (always) or failed
 // under wait_all (cancelOnFirstFailure).
-func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches context.CancelFunc, rs *runState, routerNodeID string, plan fanOutPlan) <-chan *branchResult {
+func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches context.CancelFunc, rs *runState, routerNodeID string, plan fanOutPlan, parallel *parallelExecutionState) <-chan *branchResult {
 	sem := make(chan struct{}, plan.maxParallel)
 	resultsCh := make(chan *branchResult, len(plan.edges))
 
@@ -229,6 +241,10 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 					}
 				}
 			}()
+			if err := parallel.waitResumeTurn(branchCtx, branchID); err != nil {
+				resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: e.wrapContextErr(err)}
+				return
+			}
 			// Acquire a slot, but bail if the fan-out is already cancelled
 			// (budget trip, sibling failure with wait_all, or parent cancel)
 			// — otherwise a branch queued behind maxParallel would block on a
@@ -248,14 +264,15 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			}
 			defer slot.release()
 
-			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot)
+			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot, parallel)
+			e.completeParallelResume(rs, parallel, branchID, result)
 			// Cancel siblings (they observe it via the ctx.Done() select at
 			// the top of their per-iteration loop) when this branch tripped
 			// the global budget — every fan_out regardless of await mode — or
 			// failed for any reason under wait_all (their results would be
 			// discarded anyway, so paying for them is pure waste).
 			if result != nil && result.err != nil {
-				if errors.Is(result.err, ErrBudgetExceeded) || plan.cancelOnFirstFailure {
+				if errors.Is(result.err, ErrRunPaused) || errors.Is(result.err, ErrBudgetExceeded) || plan.cancelOnFirstFailure {
 					cancelBranches()
 				}
 			}
@@ -263,6 +280,15 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 		}(edge, branchID)
 	}
 	return resultsCh
+}
+
+func pausedBranchError(results []*branchResult) error {
+	for _, result := range results {
+		if result != nil && errors.Is(result.err, ErrRunPaused) {
+			return ErrRunPaused
+		}
+	}
+	return nil
 }
 
 // collectBranches drains one result per expected branch. It observes both the

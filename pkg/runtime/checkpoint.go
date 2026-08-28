@@ -9,7 +9,7 @@ import (
 // buildCheckpoint creates a Checkpoint from the current runState.
 func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 	tokens, cost, iterations, elapsed, unpricedTokens, unpricedNodes := rs.budget.Snapshot()
-	return &store.Checkpoint{
+	cp := &store.Checkpoint{
 		NodeID:             nodeID,
 		Outputs:            rs.outputs,
 		LoopCounters:       rs.loopCounters,
@@ -33,6 +33,10 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}
+	if rs.parallel != nil {
+		cp.Parallel = rs.parallel.snapshot()
+	}
+	return cp
 }
 
 // cloneMap returns a shallow copy of m (nil in → nil out).

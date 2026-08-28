@@ -151,6 +151,11 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 	// Build in-degree map: count distinct sources per target.
 	inSources := make(map[string]map[string]bool)
 	for _, edge := range e.workflow.Edges {
+		// A branch-local loop back-edge is control flow inside one branch,
+		// never evidence that its head is a cross-branch collector.
+		if edge.IsBoundedIteration() {
+			continue
+		}
 		if _, ok := inSources[edge.To]; !ok {
 			inSources[edge.To] = make(map[string]bool)
 		}

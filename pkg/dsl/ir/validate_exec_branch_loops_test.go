@@ -17,10 +17,9 @@ schema s:
   items: json
 `
 
-func TestValidateLoopInFanOutAllBody_Rejected(t *testing.T) {
-	// Loop target is a distinct dummy so findConvergencePoint still elects
-	// join (a1 has a single incoming source). execBranch runs a1 and would
-	// skip the loop — that is the C244 true positive.
+func TestValidateLoopInFanOutAllBody_Allowed(t *testing.T) {
+	// The bounded edge and its target are owned by the a1 branch; join remains
+	// the structural collector shared with a2.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -53,15 +52,12 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopHeadElectedAsJoin_Rejected(t *testing.T) {
-	// a1 -> a1 as refine gives a1 two incoming sources, so findConvergencePoint
-	// elects a1 as the join and "hoists" the loop onto the trunk. That is not
-	// a legal wrap: the a1 branch starts on the convergence node (runs
-	// nothing), the a2 branch swallows the wait_all join, then the trunk
-	// runs the loop and the join a second time. C244 must refuse it.
+func TestValidateLoopHeadInFanOutBody_Allowed(t *testing.T) {
+	// A bounded self-edge is local control flow, not another structural
+	// predecessor that could elect the branch head as the collector.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -89,13 +85,13 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopImplReviewRetryInFanOut_Rejected(t *testing.T) {
+func TestValidateLoopImplReviewRetryInFanOut_Allowed(t *testing.T) {
 	// The idiomatic per-item retry: impl → review → impl as fix. review is
 	// the loop source and is not a structural join (one non-iteration
-	// predecessor). Same mis-execution as the self-loop head.
+	// predecessor), so the whole cycle has one branch owner.
 	src := execBranchLoopPrompts + `
 tool impl:
   command: ` + "`echo`" + `
@@ -128,10 +124,10 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopInFanOutEachBody_Rejected(t *testing.T) {
+func TestValidateLoopInFanOutEachBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -172,10 +168,10 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateForeachInFanOutBody_Rejected(t *testing.T) {
+func TestValidateForeachInFanOutBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -208,10 +204,10 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopInLLMMultiBody_Rejected(t *testing.T) {
+func TestValidateLoopInLLMMultiBody_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
@@ -246,7 +242,7 @@ workflow test:
   join -> done
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopOnLLMSingle_Allowed(t *testing.T) {
@@ -506,11 +502,9 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopAfterFanOutEachImplicitChain_Allowed(t *testing.T) {
-	// fan_out_each has one template edge, so writer/collect/refine each
-	// have one non-iteration predecessor. The runtime elects refine
-	// (its own back-edge) as the join; every replay stops there and the
-	// loop runs on the trunk. Not the sibling-swallow case.
+func TestValidateLoopInFanOutEachImplicitChain_Allowed(t *testing.T) {
+	// fan_out_each has one template edge, so writer/collect/refine share one
+	// item owner. The refine self-loop runs inside that item scope.
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -547,10 +541,9 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopOnFanOutEachTemplateHead_Rejected(t *testing.T) {
-	// writer is the only fan target. Its self-loop elects it as the join,
-	// so each item branch would run nothing and the loop would fire once
-	// on the trunk. Still C244 — the template head is body.
+func TestValidateLoopOnFanOutEachTemplateHead_Allowed(t *testing.T) {
+	// writer is the only fan target. Its bounded self-loop stays inside each
+	// item scope and does not elect the template head as an implicit collector.
 	src := execBranchLoopPrompts + `
 tool gen:
   command: ` + "`echo`" + `
@@ -574,7 +567,7 @@ workflow test:
   writer -> done else
 `
 	r := compileFile(t, src)
-	expectDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
 func TestValidateLoopNestedFanOutEachInFanOutAll_Rejected(t *testing.T) {
@@ -630,11 +623,10 @@ workflow test:
 	}
 }
 
-func TestValidateLoopAfterNonElectedAwait_NotClaimed(t *testing.T) {
-	// joiner is the elected convergence (first fan edge reaches it). z also
-	// has await: so the structural stop treats it as a join and does not
-	// put w in the body. The skip of w→z inside execBranch is a runtime
-	// hole (execBranch only stops at the elected id), not C244.
+func TestValidateLoopAfterNonElectedAwait_Allowed(t *testing.T) {
+	// joiner is the elected convergence. A second await node on the a2 path
+	// does not stop execBranch, so w -> z remains local to that branch and is
+	// safe to execute with its private counters.
 	src := execBranchLoopPrompts + `
 tool a1:
   command: ` + "`echo`" + `
