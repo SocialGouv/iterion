@@ -40,12 +40,13 @@ type launchRunRequest struct {
 	// filesystem; FilePath is then advisory (used for display + as the
 	// AST parserPath). When both are set, Source wins.
 	Source string `json:"source,omitempty"`
-	// BotID names a catalog bundle (e.g. "whats-next") to launch. In cloud
-	// mode it lets the server resolve the bot's source off the pod's own
-	// bots/ tree (like the webhook/scheduler/board/trigger launchers) so a
-	// client need not upload the bytes, and it is carried on the LaunchSpec
-	// so the runner mirrors the bundle's skills. Optional: a catalog-shaped
-	// FilePath ("bots/<name>/main.bot") is inferred to the same id.
+	// BotID names a catalog bundle (e.g. "whats-next") to launch. The server
+	// resolves it through the configured catalog in both local and cloud mode:
+	// local catalogs may deliberately live outside the active workspace, while
+	// cloud callers need the source loaded from the pod/store. It is carried on
+	// the LaunchSpec so the runner mirrors the bundle's skills. Optional in
+	// cloud: a catalog-shaped FilePath ("bots/<name>/main.bot") is inferred to
+	// the same id.
 	BotID string            `json:"bot_id,omitempty"`
 	RunID string            `json:"run_id,omitempty"`
 	Vars  map[string]string `json:"vars,omitempty"`
@@ -247,18 +248,20 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
-	// Cloud mode has no operator filesystem, so a bare workspace file_path
-	// can't be read. Resolve the bot through the tiered authority instead
-	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a
-	// PLATFORM override, then the baked catalog off the pod FS. Stored bots
-	// run their store content inline, with the materialized bundle merged at
-	// compile and the ref stamped for the runner; catalog bots resolve like
-	// the webhook/scheduler/board/trigger launchers. This is what lets the
-	// studio launch Nexie/Revi/etc. by id or catalog path without uploading
-	// bytes — and what makes an override effective on the very next launch.
+	// Resolve an explicit bot id through the tiered authority in BOTH modes
+	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a PLATFORM
+	// override, then the configured catalog. In local mode a configured catalog
+	// may intentionally live outside WorkDir (the ubiquitous assistant is the
+	// canonical example); treating its path as an ordinary editor file would
+	// make safePath reject it and then misleadingly try WorkDir/bots/<id>.
+	// Cloud additionally infers an id from a catalog-shaped path because it has
+	// no operator filesystem. Stored bots run their store content inline, with
+	// the materialized bundle merged at compile and the ref stamped for the
+	// runner.
 	botID := strings.TrimSpace(req.BotID)
 	var launchLB *launchBot
-	if s.cfg.Mode == "cloud" && req.Source == "" {
+	trustedCatalogPath := ""
+	if req.Source == "" && (botID != "" || s.cfg.Mode == "cloud") {
 		id, _ := auth.FromContext(r.Context())
 		lb, lbErr := s.resolveBotTiered(r.Context(), id.TeamID, req.BotID, req.FilePath)
 		if lbErr != nil {
@@ -269,7 +272,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		if lb != nil {
 			launchLB = lb
 			defer launchLB.Cleanup()
-			req.Source, req.FilePath, botID = lb.Source, lb.Path, lb.BotID
+			req.FilePath, botID = lb.Path, lb.BotID
+			if s.cfg.Mode == "cloud" || lb.Origin != "catalog" {
+				req.Source = lb.Source
+			} else {
+				// ResolveBotPath already constrained this absolute path to a
+				// configured catalog root and read it successfully. Keep the real
+				// file so bundle-relative skills/prompts remain adjacent.
+				trustedCatalogPath = lb.Path
+			}
 		}
 	}
 	// Anything that is not a resolvable bot still requires inline Source in
@@ -279,11 +290,15 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "cloud mode requires source")
 		return
 	}
-	absPath, pathErr := s.resolveWorkflowPath(req.FilePath, req.Source)
-	if pathErr != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
-		span.SetStatus(codes.Error, "invalid file_path")
-		return
+	absPath := trustedCatalogPath
+	if absPath == "" {
+		var pathErr error
+		absPath, pathErr = s.resolveWorkflowPath(req.FilePath, req.Source)
+		if pathErr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid file_path: %v", pathErr)
+			span.SetStatus(codes.Error, "invalid file_path")
+			return
+		}
 	}
 	timeout, err := parseTimeout(req.Timeout)
 	if err != nil {
