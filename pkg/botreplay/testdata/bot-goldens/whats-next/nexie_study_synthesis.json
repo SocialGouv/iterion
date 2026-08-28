@@ -5,7 +5,7 @@
   "backend": "claude_code",
   "model": "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}",
   "recorded_at": "2026-07-16T00:00:00Z",
-  "_note": "Hand-authored seed (v3): a live study turn spawns 3 read-only Task sub-agents over a real repo — recording it costs $10+ and mutates a real board. The fixture freezes the study-turn ENVELOPE against the nexie_turn schema (reply present and non-empty, close/quick_replies/dispatched_ids typed); the reply prose is illustrative and MAY drift from the roadmap-synthesis skill wording without invalidating the golden. dispatched_ids is empty by contract: a synthesis turn never dispatches — board execution happens after the operator's arbitrage.",
+  "_note": "Hand-authored seed (v4): a live study turn spawns 3 read-only Task sub-agents over a real repo — recording it costs $10+ and may propose board actions. The fixture freezes the study-turn ENVELOPE against the nexie_turn schema (reply present and non-empty, close/quick_replies/dispatched_ids/assistant_actions typed); the reply prose is illustrative and MAY drift from the roadmap-synthesis skill wording without invalidating the golden. dispatched_ids and assistant_actions are empty by contract: a synthesis turn never dispatches — board execution happens after the operator's arbitrage.",
   "vars": {
     "initial_message": "Quels sont les prochains chantiers pour ce trimestre ?",
     "scope_notes": ""
@@ -21,6 +21,7 @@
     "_session_fingerprint": "anthropic-env",
     "_session_id": "7f3a2c1e-5b88-4d02-9c41-0aa1e2d43f77",
     "_tokens": 24310,
+    "assistant_actions": [],
     "close": false,
     "dispatched_ids": [],
     "quick_replies": ["1a 2a 3a — go", "Tes recos partout", "Détaille C2 d'abord"],

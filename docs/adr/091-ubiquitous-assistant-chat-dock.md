@@ -198,6 +198,26 @@ On `/whats-next` the dock stands down: that route renders the same
 session full-width, and since both composers write the same store's
 `chatDraft`, a second one would be an echo.
 
+### E. Reads stay autonomous; writes cross a typed Studio action boundary
+
+A chat model never receives a generic Studio API, file or fetch executor. It
+may publish up to eight `{id, intent, args}` requests with its turn. The host
+owns the closed id catalogue, argument projection, risk label, policy decision,
+API call, result link and idempotency key. `intent: explicit` records that the
+current operator message asked for the exact action; it is input to policy,
+not permission.
+
+Policies are global per browser and per action: deny, always ask, auto only for
+an explicit request, or always allow. Every new catalogue entry defaults to
+ask. Server-side identity, tenant permissions and domain validation remain in
+force after the Studio decision. Secrets are not an action argument type.
+
+This also closes an architectural inconsistency in Nexie: board reads remain
+capability-gated MCP calls, while board writes no longer happen inside the
+model's tool loop and therefore cannot bypass the global Assistant settings.
+Approved ready transitions are subscribed to the conversation by the Studio so
+the existing watched-card feedback loop survives the move.
+
 ## Consequences
 
 **Good**

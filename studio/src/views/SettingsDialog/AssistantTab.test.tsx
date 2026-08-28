@@ -22,6 +22,13 @@ describe("Assistant settings actions", () => {
     });
     expect((apply as HTMLSelectElement).value).toBe("ask");
     expect((save as HTMLSelectElement).value).toBe("ask");
+    expect(screen.getByText("Board")).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Delete a run policy" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: "Install a plugin policy" }),
+    ).toBeTruthy();
 
     fireEvent.change(apply, { target: { value: "explicit" } });
     expect(readAssistantActionPolicy("editor.apply")).toBe("explicit");

@@ -721,6 +721,7 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 			"editor_revision":     0,
 			"editor_apply_intent": "none",
 			"editor_save_intent":  "none",
+			"assistant_actions":   []any{},
 		}, nil
 	})
 	exec.on("review", func(input map[string]any) (map[string]any, error) {
@@ -847,6 +848,7 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 						"editor_revision":     0,
 						"editor_apply_intent": "none",
 						"editor_save_intent":  "none",
+						"assistant_actions":   []any{},
 					}, nil
 				}
 				return map[string]any{
@@ -861,6 +863,7 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 					"editor_revision":     0,
 					"editor_apply_intent": "none",
 					"editor_save_intent":  "none",
+					"assistant_actions":   []any{},
 				}, nil
 			})
 			exec.on("validate_draft", func(map[string]any) (map[string]any, error) {

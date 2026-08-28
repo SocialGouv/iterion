@@ -2,6 +2,7 @@ import {
   AssistantStoreScope,
   useAssistantSession,
 } from "@/components/ChatDock/AssistantProvider";
+import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import {
   assistantHumanAnswer,
@@ -115,6 +116,12 @@ function WhatsNextConversation({
                 // onHumanSubmit fallback only fires for a pending card
                 // the composer somehow doesn't own (defensive).
                 composerHandlesId={pendingHumanQuestion?.id}
+                bubbleSlot={
+                  <AssistantActionOffer
+                    runId={session.runId}
+                    revision={session.messages.length}
+                  />
+                }
                 onHumanSubmit={(messageId, outcome) => {
                   const m = session.messages.find((x) => x.id === messageId);
                   if (!m || m.kind !== "human-question") return;

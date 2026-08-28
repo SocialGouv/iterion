@@ -127,6 +127,34 @@ siblings, reporting the skip as a `discovery_errors` entry on
 `GET /api/v1/bots` (a `bots: skipping …` warning on the CLI's stderr, a
 banner in the studio's Bots view).
 
+## Actions and operator autonomy
+
+Assistant reads and navigation do not need an action policy. Writes do. A
+conversational bot emits a bounded `assistant_actions` array in its published
+turn artifact; the Studio accepts only ids from its closed catalogue, rebuilds
+each API payload from allowed fields, and applies the policy saved under
+**Settings → Assistant**:
+
+| Policy | Behaviour |
+| --- | --- |
+| Never allow | Reject the request in the transcript |
+| Always ask | Render the exact host-generated preview and a confirmation button |
+| Allow when explicitly requested | Execute only when the current operator message requested that exact action; otherwise ask |
+| Always allow | Execute after host validation without an extra click |
+
+The model's `intent: explicit|suggested` selects a policy branch but grants no
+authority. Unknown ids are discarded, malformed arguments are shown as an
+invalid request, server permissions still apply, and a key derived from the
+run/node/artifact version prevents a remount or reload from repeating a write.
+Destructive actions stay visibly labelled and use a danger confirmation.
+
+The catalogue covers the live editor, board issues, pipeline tasks, run
+lifecycle, dispatcher lifecycle, bot creation/install and plugin management.
+Secret values are deliberately absent: an assistant can reason about a missing
+secret name, but its value never crosses the model or this action protocol.
+Nexie's board MCP capability is read-only; its writes use this same Studio
+boundary, so the global settings are enforcement rather than decoration.
+
 ## The context chip
 
 The dock reports the page you are on as a **typed reference**:

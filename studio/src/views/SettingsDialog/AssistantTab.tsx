@@ -6,6 +6,7 @@ import {
   ASSISTANT_ACTIONS,
   ASSISTANT_ACTION_POLICY_OPTIONS,
   type AssistantActionDefinition,
+  type AssistantActionGroup,
   type AssistantActionPolicy,
   useAssistantActionPolicy,
   writeAssistantActionPolicy,
@@ -16,6 +17,16 @@ import {
   writeAskBeforeStart,
   writeReviewer,
 } from "@/lib/chatDock/assistantPrefs";
+
+const ACTION_GROUPS: readonly AssistantActionGroup[] = [
+  "Editor",
+  "Board",
+  "Pipelines",
+  "Runs",
+  "Dispatcher",
+  "Bots",
+  "Plugins",
+];
 
 // The home for choices the dock offers before a conversation starts.
 //
@@ -71,9 +82,20 @@ export default function AssistantTab() {
             revision checks, or read-only files.
           </p>
         </div>
-        <div className="divide-y divide-border-subtle rounded-md border border-border-subtle">
-          {ASSISTANT_ACTIONS.map((action) => (
-            <ActionPolicyRow key={action.id} action={action} />
+        <div className="space-y-3">
+          {ACTION_GROUPS.map((group) => (
+            <div key={group}>
+              <h4 className="mb-1.5 text-caption font-medium text-fg-muted">
+                {group}
+              </h4>
+              <div className="divide-y divide-border-subtle rounded-md border border-border-subtle">
+                {ASSISTANT_ACTIONS.filter(
+                  (action) => action.group === group,
+                ).map((action) => (
+                  <ActionPolicyRow key={action.id} action={action} />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
         <p className="text-caption text-fg-subtle">

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   ASSISTANT_ACTION_POLICIES_KEY,
   decideAssistantAction,
+  parseAssistantActionRequests,
   readAssistantActionPolicy,
   useAssistantActionPolicy,
   writeAssistantActionPolicy,
@@ -46,5 +47,27 @@ describe("assistant action policies", () => {
     expect(result.current).toBe("ask");
     act(() => writeAssistantActionPolicy("editor.apply", "explicit"));
     expect(result.current).toBe("explicit");
+  });
+
+  it("accepts only host-known action ids and bounds one turn", () => {
+    const requests = parseAssistantActionRequests(
+      [
+        {
+          id: "board.issue.transition",
+          intent: "explicit",
+          args: { issue_id: "abc", to: "ready" },
+        },
+        { id: "host.shell", intent: "explicit", args: { command: "no" } },
+      ],
+      "run:node:1",
+    );
+    expect(requests).toEqual([
+      {
+        key: "run:node:1:0",
+        id: "board.issue.transition",
+        intent: "explicit",
+        args: { issue_id: "abc", to: "ready" },
+      },
+    ]);
   });
 });

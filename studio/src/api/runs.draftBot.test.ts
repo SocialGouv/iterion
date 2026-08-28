@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   findDraftBotSource,
+  lookupAssistantActions,
   lookupDraft,
   lookupEditorProposal,
 } from "./runs/artifacts";
@@ -251,6 +252,55 @@ describe("lookupEditorProposal", () => {
     await expect(lookupEditorProposal("run1")).resolves.toMatchObject({
       applyIntent: "none",
       saveIntent: "none",
+    });
+  });
+});
+
+describe("lookupAssistantActions", () => {
+  it("returns typed requests from the newest capable turn", async () => {
+    stubApi(
+      [{ node_id: "nexie", version: 3, written_at: "2026-08-28T12:00:00Z" }],
+      {
+        "nexie/3": {
+          assistant_actions: [
+            {
+              id: "board.issue.transition",
+              intent: "explicit",
+              args: { issue_id: "issue-1", to: "ready" },
+            },
+          ],
+        },
+      },
+    );
+    await expect(lookupAssistantActions("run1")).resolves.toEqual({
+      requests: [
+        {
+          key: "run1:nexie:3:0",
+          id: "board.issue.transition",
+          intent: "explicit",
+          args: { issue_id: "issue-1", to: "ready" },
+        },
+      ],
+    });
+  });
+
+  it("lets an empty newest turn retire prior actions", async () => {
+    stubApi(
+      [
+        { node_id: "old", version: 1, written_at: "2026-08-28T10:00:00Z" },
+        { node_id: "new", version: 2, written_at: "2026-08-28T12:00:00Z" },
+      ],
+      {
+        "old/1": {
+          assistant_actions: [
+            { id: "run.cancel", intent: "explicit", args: { run_id: "old" } },
+          ],
+        },
+        "new/2": { assistant_actions: [] },
+      },
+    );
+    await expect(lookupAssistantActions("run1")).resolves.toEqual({
+      requests: [],
     });
   });
 });

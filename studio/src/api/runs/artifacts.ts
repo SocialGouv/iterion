@@ -15,6 +15,10 @@ import type {
   RunArtifactSummary,
   WireWorkflow,
 } from "./types";
+import {
+  parseAssistantActionRequests,
+  type AssistantActionRequest,
+} from "@/lib/chatDock/assistantActions";
 
 // listAllArtifacts returns the latest published artifact per node for a
 // run (node id, version, labels, title) — the data behind the centralized,
@@ -174,6 +178,7 @@ export const EDITOR_SESSION_FIELD = "editor_session_id";
 export const EDITOR_REVISION_FIELD = "editor_revision";
 export const EDITOR_APPLY_INTENT_FIELD = "editor_apply_intent";
 export const EDITOR_SAVE_INTENT_FIELD = "editor_save_intent";
+export const ASSISTANT_ACTIONS_FIELD = "assistant_actions";
 
 export type EditorActionIntent = "none" | "suggested" | "explicit";
 
@@ -197,6 +202,10 @@ export interface EditorProposalLookup {
   revision: number | null;
   applyIntent: EditorActionIntent;
   saveIntent: EditorActionIntent;
+}
+
+export interface AssistantActionsLookup {
+  requests: AssistantActionRequest[];
 }
 
 function editorActionIntent(value: unknown): EditorActionIntent {
@@ -316,6 +325,50 @@ export async function lookupEditorProposal(
     if (Object.prototype.hasOwnProperty.call(data, MODE_FIELD)) return none;
   }
   return none;
+}
+
+/**
+ * Return the newest turn's generic host-action requests. Every capable chat
+ * bot publishes assistant_actions on every turn, including an empty array;
+ * encountering the field therefore retires an older offer deterministically.
+ */
+export async function lookupAssistantActions(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<AssistantActionsLookup> {
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const summary of ordered) {
+    if (opts?.signal?.aborted) return { requests: [] };
+    let artifact: Artifact;
+    try {
+      artifact = await getArtifact(
+        runId,
+        summary.node_id,
+        summary.version,
+        opts,
+      );
+    } catch {
+      continue;
+    }
+    if (
+      artifact.data &&
+      Object.prototype.hasOwnProperty.call(
+        artifact.data,
+        ASSISTANT_ACTIONS_FIELD,
+      )
+    ) {
+      return {
+        requests: parseAssistantActionRequests(
+          artifact.data[ASSISTANT_ACTIONS_FIELD],
+          `${runId}:${summary.node_id}:${summary.version}`,
+        ),
+      };
+    }
+  }
+  return { requests: [] };
 }
 
 /** Back-compat shorthand for callers that only want the source. */

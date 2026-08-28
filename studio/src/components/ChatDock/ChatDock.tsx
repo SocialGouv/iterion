@@ -78,6 +78,7 @@ import {
   useEditorConsent,
 } from "@/components/ChatDock/draftBotOffer";
 import EditorChangeOffer from "@/components/ChatDock/EditorChangeOffer";
+import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
 import {
   ConversationStrip,
   WorkplaceLink,
@@ -372,6 +373,10 @@ function AssistantDock({
                     revision={session.messages.length}
                   />
                 )}
+                <AssistantActionOffer
+                  runId={session.runId}
+                  revision={session.messages.length}
+                />
               </>
             }
             onHumanSubmit={(messageId, outcome) => {
