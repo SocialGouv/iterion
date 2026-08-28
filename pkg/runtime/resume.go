@@ -1469,11 +1469,11 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // answers merged into the node input. It uses the delegate's session ID
 // for session continuity so the backend can resume where it left off.
 //
-// When the prior interaction came from the native ask_user tool, the
-// question text is also relayed via reserved keys so the executor can
-// prepend a "[PRIOR INTERACTION]" block to the user prompt — without
-// this, claw's stateless re-invocation would lose the question and the
-// LLM might call ask_user with the same question again.
+// The prior interaction is also relayed via reserved keys so the executor can
+// prepend it to the user prompt. Native ask_user gets its historical scalar
+// framing; arbitrary `_interaction_questions` maps need the same continuity,
+// otherwise their answers exist in the checkpoint/input but are invisible to
+// a prompt that did not explicitly reference the model-chosen field names.
 func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
 	// CLOSE the stop window before re-invoking. This path does not go
 	// through markPreNodeBoundary — the node never re-enters the dispatch
@@ -1497,6 +1497,9 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		if a, ok := answers[delegate.AskUserQuestionKey]; ok {
 			nodeInput[delegate.PriorAskUserAnswerKey] = a
 		}
+	} else {
+		nodeInput[delegate.PriorInteractionQuestionsKey] = ni.Questions
+		nodeInput[delegate.PriorInteractionAnswersKey] = answers
 	}
 
 	// Tool-permission approval: when the pause carried a permission marker,

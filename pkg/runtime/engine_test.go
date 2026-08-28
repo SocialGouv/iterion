@@ -2305,6 +2305,49 @@ func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
 	}
 }
 
+func TestInteractionCustomAnswerRelayedToExecutorPrompt(t *testing.T) {
+	wf := interactionWorkflow(ir.InteractionHuman)
+
+	exec := newStubExecutor()
+	calls := 0
+	var secondCallInput map[string]any
+	exec.on("worker", func(input map[string]any) (map[string]any, error) {
+		calls++
+		if calls == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID: "worker",
+				Questions: map[string]any{
+					"active_editor_document": "Send the active editor document.",
+				},
+				Backend: "claw",
+			}
+		}
+		secondCallInput = input
+		return map[string]any{"text": "ok", "_tokens": 10}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-custom-interaction", nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("Run: got %v, want ErrRunPaused", err)
+	}
+	answer := "<active-editor-document>{}</active-editor-document>\ncorrige le buffer"
+	if err := eng.Resume(context.Background(), "run-custom-interaction", map[string]any{
+		"active_editor_document": answer,
+	}); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	questions, _ := secondCallInput[delegate.PriorInteractionQuestionsKey].(map[string]any)
+	answers, _ := secondCallInput[delegate.PriorInteractionAnswersKey].(map[string]any)
+	if got := questions["active_editor_document"]; got != "Send the active editor document." {
+		t.Errorf("relayed question = %v", got)
+	}
+	if got := answers["active_editor_document"]; got != answer {
+		t.Errorf("relayed answer = %v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: ask_user pause persists the backend conversation + pending tool_use ID
 // ---------------------------------------------------------------------------
