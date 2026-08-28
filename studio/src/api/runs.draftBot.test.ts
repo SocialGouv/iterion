@@ -8,7 +8,11 @@
 //   the last one.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { findDraftBotSource, lookupDraft } from "./runs/artifacts";
+import {
+  findDraftBotSource,
+  lookupDraft,
+  lookupEditorProposal,
+} from "./runs/artifacts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -125,6 +129,24 @@ describe("lookupDraft — designing vs draft-ready", () => {
     expect(got.designing).toBe(true);
   });
 
+  it("does not turn an editor-bound proposal into a new draft tab", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 1, written_at: "2026-08-23T11:00:00Z" }],
+      {
+        "copi/1": {
+          mode: "design",
+          draft_bot: "workflow changed:\n",
+          editor_session_id: "opaque-session",
+          editor_revision: 3,
+        },
+      },
+    );
+    await expect(lookupDraft("run1")).resolves.toEqual({
+      source: null,
+      designing: true,
+    });
+  });
+
   it("treats a draft as designing even when the mode field is absent", async () => {
     stubApi(
       [{ node_id: "copi", version: 0, written_at: "2026-08-23T10:00:00Z" }],
@@ -160,6 +182,50 @@ describe("lookupDraft — designing vs draft-ready", () => {
     await expect(lookupDraft("run1")).resolves.toEqual({
       source: null,
       designing: false,
+    });
+  });
+});
+
+describe("lookupEditorProposal", () => {
+  it("returns the source only with a complete session/revision binding", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 2, written_at: "2026-08-23T12:00:00Z" }],
+      {
+        "copi/2": {
+          mode: "design",
+          draft_bot: "workflow changed:\n",
+          editor_session_id: "opaque-session",
+          editor_revision: 7,
+        },
+      },
+    );
+    await expect(lookupEditorProposal("run1")).resolves.toEqual({
+      source: "workflow changed:\n",
+      sessionId: "opaque-session",
+      revision: 7,
+    });
+  });
+
+  it("lets a newer ordinary turn retire an older editor proposal", async () => {
+    stubApi(
+      [
+        { node_id: "old", version: 1, written_at: "2026-08-23T10:00:00Z" },
+        { node_id: "new", version: 1, written_at: "2026-08-23T12:00:00Z" },
+      ],
+      {
+        "old/1": {
+          mode: "design",
+          draft_bot: "OLD",
+          editor_session_id: "session",
+          editor_revision: 1,
+        },
+        "new/1": { mode: "info", editor_session_id: "", editor_revision: 0 },
+      },
+    );
+    await expect(lookupEditorProposal("run1")).resolves.toEqual({
+      source: null,
+      sessionId: null,
+      revision: null,
     });
   });
 });

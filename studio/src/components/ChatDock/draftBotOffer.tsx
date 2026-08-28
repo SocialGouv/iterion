@@ -116,6 +116,10 @@ export function DraftBotOffer({
   }, [runId, hasDraft, onEditor, setLocation]);
 
   if (!runId || (!hasDraft && !designing)) return null;
+  // The venue offer exists only to move the operator to the editor. Once
+  // there — including when a live-buffer proposal is being offered beside
+  // this component — a button pointing at the current page is redundant.
+  if (!hasDraft && onEditor) return null;
   // Already on the editor with the draft loaded: the canvas IS the answer, so
   // a button pointing at what is on screen would be noise.
   if (hasDraft && onEditor) return null;

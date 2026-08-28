@@ -47,6 +47,22 @@ type ChatSurface struct {
 	// Launcher is the optional canned-opener form shown instead of a bare
 	// Start button. Its answer is written into SeedVar verbatim.
 	Launcher *ChatLauncher `json:"launcher,omitempty" yaml:"launcher,omitempty"`
+
+	// Editor declares the bounded bridge between a conversational bot and the
+	// studio's live editor buffer. It grants no filesystem tool: Context lets
+	// the studio attach the active in-memory document to an operator message,
+	// while Proposals lets the bot return a candidate replacement that the
+	// studio may validate and offer back to that exact editor session.
+	Editor *ChatEditorSurface `json:"editor,omitempty" yaml:"editor,omitempty"`
+}
+
+// ChatEditorSurface is deliberately capability-shaped rather than bot-shaped:
+// every conversational bot opts into the same editor-session protocol. The
+// fixed artifact fields are `draft_bot`, `editor_session_id`, and
+// `editor_revision`; the studio, never the model, owns applying and saving.
+type ChatEditorSurface struct {
+	Context   bool `json:"context,omitempty" yaml:"context,omitempty"`
+	Proposals bool `json:"proposals,omitempty" yaml:"proposals,omitempty"`
 }
 
 // ChatNodeKind is how one workflow node shows up in a transcript.
@@ -195,8 +211,14 @@ func (c *ChatSurface) normalized() *ChatSurface {
 			out.Launcher = &l
 		}
 	}
+	if c.Editor != nil && (c.Editor.Context || c.Editor.Proposals) {
+		out.Editor = &ChatEditorSurface{
+			Context:   c.Editor.Context,
+			Proposals: c.Editor.Proposals,
+		}
+	}
 	if out.Label == "" && out.Description == "" && out.SeedVar == "" &&
-		len(out.Nodes) == 0 && len(out.LauncherVars) == 0 && out.Launcher == nil {
+		len(out.Nodes) == 0 && len(out.LauncherVars) == 0 && out.Launcher == nil && out.Editor == nil {
 		return nil
 	}
 	return &out
@@ -237,6 +259,9 @@ func validateChatSurface(c *ChatSurface) error {
 	}
 	if c.Launcher != nil && c.SeedVar == "" {
 		return fmt.Errorf("chat: a launcher form was declared but seed_var is empty — the operator's first message would be discarded")
+	}
+	if c.Editor != nil && c.Editor.Proposals && !c.Editor.Context {
+		return fmt.Errorf("chat: editor proposals require editor context — otherwise the bot cannot bind a proposal to the active document revision")
 	}
 	return nil
 }

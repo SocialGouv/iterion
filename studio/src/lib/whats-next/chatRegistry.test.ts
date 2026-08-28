@@ -61,6 +61,18 @@ describe("chatBotFromEntry", () => {
     expect(bot.nodeMap.copi).toEqual({ kind: "banner", label: "Copi is thinking" });
   });
 
+  it("maps the manifest-declared live editor bridge", () => {
+    const bot = mustConvert(
+      entry({
+        chat: {
+          nodes: { chat: { kind: "human", text_field: "message" } },
+          editor: { context: true, proposals: true },
+        },
+      }),
+    );
+    expect(bot.editor).toEqual({ context: true, proposals: true });
+  });
+
   it("maps approval and hybrid contracts into explicit actions and fields", () => {
     const bot = mustConvert(
       entry({

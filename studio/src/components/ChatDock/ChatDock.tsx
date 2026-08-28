@@ -46,7 +46,11 @@ import ChatTranscript from "@/components/WhatsNext/ChatTranscript";
 import AssistantApprovalComposer from "@/components/WhatsNext/AssistantApprovalComposer";
 import ResumeFooter from "@/components/WhatsNext/whatsNextView/ResumeFooter";
 import { composerPlaceholder } from "@/components/WhatsNext/whatsNextView/composerPlaceholder";
-import { withPageContext } from "@/lib/chatDock/contextMessage";
+import {
+  withActiveEditorDocument,
+  withPageContext,
+} from "@/lib/chatDock/contextMessage";
+import { captureActiveEditorDocument } from "@/lib/chatDock/editorSession";
 import {
   ASSISTANT_FLOATING_SIZE_KEY,
   type DockState,
@@ -73,6 +77,7 @@ import {
   DraftBotOffer,
   useEditorConsent,
 } from "@/components/ChatDock/draftBotOffer";
+import EditorChangeOffer from "@/components/ChatDock/EditorChangeOffer";
 import {
   ConversationStrip,
   WorkplaceLink,
@@ -174,8 +179,27 @@ function AssistantDock({
   // assistant the operator is still asking about something they moved on
   // from.
   const decorate = useCallback(
-    (text: string) => withPageContext(text, active, attached, activePage),
-    [active, attached, activePage],
+    async (text: string) => {
+      const withPage = withPageContext(text, active, attached, activePage);
+      if (
+        bot.editor?.context !== true ||
+        !activePage?.route.startsWith("/editor")
+      ) {
+        return withPage;
+      }
+      try {
+        return withActiveEditorDocument(
+          withPage,
+          await captureActiveEditorDocument(),
+        );
+      } catch {
+        // Context is an affordance, not a reason to lose the operator's
+        // message. Copi will see the ordinary page metadata (including dirty)
+        // and, without a session marker, cannot emit an applicable proposal.
+        return withPage;
+      }
+    },
+    [active, attached, activePage, bot.editor?.context],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
   // The chat equivalent of a CLI's `/new`. Lives in the dock's own chrome
@@ -336,11 +360,19 @@ function AssistantDock({
             // contract as the /whats-next route.
             composerHandlesId={composer.pendingHumanQuestion?.id}
             bubbleSlot={
-              <DraftBotOffer
-                runId={session.runId}
-                revision={session.messages.length}
-                onOpenEditor={editorConsent.accept}
-              />
+              <>
+                <DraftBotOffer
+                  runId={session.runId}
+                  revision={session.messages.length}
+                  onOpenEditor={editorConsent.accept}
+                />
+                {bot.editor?.proposals === true && (
+                  <EditorChangeOffer
+                    runId={session.runId}
+                    revision={session.messages.length}
+                  />
+                )}
+              </>
             }
             onHumanSubmit={(messageId, outcome) => {
               const m = session.messages.find((x) => x.id === messageId);
@@ -434,6 +466,7 @@ function AssistantDock({
                 page={page}
                 dismissed={dismissed}
                 onDismiss={dismiss}
+                includesEditorDocument={bot.editor?.context === true}
               />
               <div className="min-w-0 flex-1">
               <AgentChatboxInline

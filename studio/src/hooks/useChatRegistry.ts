@@ -43,6 +43,7 @@ const DEFAULT_DOCK_BOT: FirstClassBot = {
     { name: "reviewer", label: "Cross-review each answer" },
   ],
   seedVar: "initial_message",
+  editor: { context: true, proposals: true },
   nodeMap: {
     seed: { kind: "silent" },
     gate: { kind: "silent" },

@@ -69,6 +69,14 @@ export function chatBotFromEntry(entry: BotEntry): FirstClassBot | null {
     })),
     ...(chat.launcher ? { launcherForm: formSpecFrom(chat.launcher) } : {}),
     ...(chat.seed_var ? { seedVar: chat.seed_var } : {}),
+    ...(chat.editor
+      ? {
+          editor: {
+            context: chat.editor.context === true,
+            proposals: chat.editor.proposals === true,
+          },
+        }
+      : {}),
     nodeMap,
   };
 }

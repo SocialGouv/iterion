@@ -170,6 +170,8 @@ async function blobToBase64(blob: Blob): Promise<string> {
 // bot's node id back into studio code — the same coupling the registry
 // removed. Any node publishing a non-empty `draft_bot` string qualifies.
 export const DRAFT_BOT_FIELD = "draft_bot";
+export const EDITOR_SESSION_FIELD = "editor_session_id";
+export const EDITOR_REVISION_FIELD = "editor_revision";
 
 // The bot's own posture for the turn. A conversational bot that designs
 // workflows announces it here BEFORE it has anything to show, which is what
@@ -183,6 +185,12 @@ export interface DraftLookup {
   source: string | null;
   /** True when the latest turn is designing, draft or not. */
   designing: boolean;
+}
+
+export interface EditorProposalLookup {
+  source: string | null;
+  sessionId: string | null;
+  revision: number | null;
 }
 
 // Newest artifacts first: a draft is the LATEST thing the conversation
@@ -214,19 +222,82 @@ export async function lookupDraft(
       Object.prototype.hasOwnProperty.call(art.data, MODE_FIELD)
     ) {
       const designing = art.data[MODE_FIELD] === DESIGN_MODE;
+      const editorSession = art.data[EDITOR_SESSION_FIELD];
       const source =
-        designing && typeof value === "string" && value.trim() !== ""
+        designing &&
+        !(typeof editorSession === "string" && editorSession.trim() !== "") &&
+        typeof value === "string" &&
+        value.trim() !== ""
           ? value
           : null;
       return { source, designing };
     }
-    if (typeof value === "string" && value.trim() !== "") {
+    if (
+      typeof value === "string" &&
+      value.trim() !== "" &&
+      !(typeof art.data?.[EDITOR_SESSION_FIELD] === "string" &&
+        String(art.data[EDITOR_SESSION_FIELD]).trim() !== "")
+    ) {
       // Backward compatibility for bots that publish a draft but predate
       // `mode`: a non-empty draft itself implies the design posture.
       return { source: value, designing: true };
     }
   }
   return { source: null, designing: false };
+}
+
+/**
+ * Find the newest editor-bound proposal. A newer Copi artifact with an empty
+ * session retires an older offer: editor capabilities are turn-scoped, never
+ * sticky across an unrelated conversation reply.
+ */
+export async function lookupEditorProposal(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<EditorProposalLookup> {
+  const none: EditorProposalLookup = {
+    source: null,
+    sessionId: null,
+    revision: null,
+  };
+  const summaries = await listAllArtifacts(runId, opts);
+  const ordered = [...summaries].sort((a, b) =>
+    (b.written_at ?? "").localeCompare(a.written_at ?? ""),
+  );
+  for (const summary of ordered) {
+    if (opts?.signal?.aborted) return none;
+    let artifact: Artifact;
+    try {
+      artifact = await getArtifact(
+        runId,
+        summary.node_id,
+        summary.version,
+        opts,
+      );
+    } catch {
+      continue;
+    }
+    const data = artifact.data;
+    if (!data) continue;
+    const session = data[EDITOR_SESSION_FIELD];
+    const revision = data[EDITOR_REVISION_FIELD];
+    const source = data[DRAFT_BOT_FIELD];
+    if (
+      typeof session === "string" &&
+      session.trim() !== "" &&
+      typeof revision === "number" &&
+      Number.isInteger(revision) &&
+      revision >= 0 &&
+      typeof source === "string" &&
+      source.trim() !== ""
+    ) {
+      return { source, sessionId: session, revision };
+    }
+    // `mode` exists on every current Copi turn. Reaching it without a valid
+    // proposal means this newest turn intentionally carries no editor action.
+    if (Object.prototype.hasOwnProperty.call(data, MODE_FIELD)) return none;
+  }
+  return none;
 }
 
 /** Back-compat shorthand for callers that only want the source. */

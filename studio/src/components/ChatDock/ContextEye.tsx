@@ -32,11 +32,13 @@ export default function ContextEye({
   page,
   dismissed,
   onDismiss,
+  includesEditorDocument = false,
 }: {
   reference: TypedReference | null;
   page?: AssistantPageContextSnapshot | null;
   dismissed: boolean;
   onDismiss: () => void;
+  includesEditorDocument?: boolean;
 }) {
   if (!reference) return null;
   if (stripSpeaks(reference, dismissed)) return null;
@@ -49,6 +51,9 @@ export default function ContextEye({
     page?.route ? `route ${page.route}` : null,
     page?.section ? `section ${page.section}` : null,
     page?.state?.dirty === true ? "unsaved changes" : null,
+    includesEditorDocument && page?.route.startsWith("/editor")
+      ? "live editor document"
+      : null,
   ].filter(Boolean);
   const said = `Sending this page as context: ${details.join("; ")}`;
   return (

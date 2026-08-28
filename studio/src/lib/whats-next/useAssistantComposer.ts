@@ -74,7 +74,7 @@ export function useAssistantComposer({
 }: {
   bot: FirstClassBot;
   session: UseWhatsNextSession;
-  decorate?: (text: string) => string;
+  decorate?: (text: string) => string | Promise<string>;
 }): AssistantComposer {
   const pendingHumanQuestion = session.messages.find(
     (m): m is PendingQuestion =>
@@ -146,7 +146,7 @@ export function useAssistantComposer({
       // context. Only ask_user with structured options is a constrained value
       // protocol: an option such as "approve" must remain byte-for-byte.
       const decorated =
-        willDecorateMessage && decorate ? decorate(trimmed) : trimmed;
+        willDecorateMessage && decorate ? await decorate(trimmed) : trimmed;
       if (pendingHumanQuestion) {
         await submitPending(decorated);
         return;

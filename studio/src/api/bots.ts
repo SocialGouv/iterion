@@ -97,6 +97,14 @@ export interface BotChatSurface {
   nodes?: Record<string, BotChatNode>;
   launcher_vars?: BotChatLauncherVar[];
   launcher?: BotChatLauncher;
+  /** Bounded access to the active editor session. This never grants a file
+   *  tool: proposals are returned as artifacts and applied by the studio. */
+  editor?: BotChatEditorSurface;
+}
+
+export interface BotChatEditorSurface {
+  context?: boolean;
+  proposals?: boolean;
 }
 
 export interface BotChatNode {

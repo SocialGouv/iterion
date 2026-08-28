@@ -54,6 +54,13 @@ launch:
 ## `chat:` now, so a second chat bot needs no studio code (issue #333).
 chat:
   seed_var: initial_message
+  ## The studio sends the active in-memory editor document with the operator's
+  ## message and may offer Copi's validated replacement back to that exact
+  ## tab/revision. Copi still has no Write/Edit/Bash tool and never chooses a
+  ## path; apply/save remain studio actions.
+  editor:
+    context: true
+    proposals: true
   ## Declared so the studio KNOWS this bot understands cross-review and can
   ## offer the choice before a conversation starts. Without it the studio
   ## would either have to guess, or send `reviewer` to every chat bot —

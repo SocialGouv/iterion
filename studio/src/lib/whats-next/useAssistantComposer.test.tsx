@@ -183,6 +183,25 @@ describe("useAssistantComposer routing", () => {
     expect(result.current.willDecorateMessage).toBe(true);
   });
 
+  it("awaits an asynchronous live-editor decorator before sending", async () => {
+    const s = session();
+    const { result } = renderHook(() =>
+      useAssistantComposer({
+        bot,
+        session: s,
+        decorate: async (text) => `<active-editor-document>{}</active-editor-document>\n${text}`,
+      }),
+    );
+
+    await act(() => result.current.onComposerSend("change it", { skills: [] }));
+
+    expect(api.queueMessage).toHaveBeenCalledWith(
+      "run-1",
+      "<active-editor-document>{}</active-editor-document>\nchange it",
+      { skills: [] },
+    );
+  });
+
   it("queues into a live run with the selected skills", async () => {
     const s = session();
     const { result } = renderHook(() => useAssistantComposer({ bot, session: s }));

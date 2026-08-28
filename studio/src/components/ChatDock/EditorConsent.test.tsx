@@ -132,6 +132,7 @@ describe("accepting the move to the editor", () => {
     route = "/editor";
     render(<Harness />);
     expect(submitPending).not.toHaveBeenCalled();
+    expect(screen.queryByText(/open the editor/i)).toBeNull();
   });
 
   it("asks for no consent when the draft is already in hand", () => {

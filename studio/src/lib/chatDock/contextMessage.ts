@@ -22,6 +22,17 @@ import type {
 export const CONTEXT_PREFIX = "[page context:";
 export const VISIBLE_PAGE_PREFIX = "<visible-page-context>";
 export const VISIBLE_PAGE_SUFFIX = "</visible-page-context>";
+export const ACTIVE_EDITOR_PREFIX = "<active-editor-document>";
+export const ACTIVE_EDITOR_SUFFIX = "</active-editor-document>";
+
+export interface ActiveEditorDocumentSnapshot {
+  sessionId: string;
+  revision: number;
+  file: string | null;
+  complete: boolean;
+  sourceLength: number;
+  source?: string;
+}
 
 // The EXPLICIT half (#333). A separate prefix rather than more entries on the
 // page-context line, because the two mean different things to the bot: the
@@ -80,6 +91,34 @@ export function withPageContext(
 }
 
 /**
+ * Attach the exact in-memory editor source captured for this send. It is a
+ * separate, explicit protocol line rather than part of visible-page-context:
+ * page metadata is aggressively bounded/sanitised, while this payload is the
+ * operator-authorised document the assistant is meant to reason about.
+ */
+export function withActiveEditorDocument(
+  text: string,
+  snapshot: ActiveEditorDocumentSnapshot | null,
+): string {
+  if (!snapshot || text.trim() === "") return text;
+  const json = JSON.stringify(snapshot)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  const line = `${ACTIVE_EDITOR_PREFIX}${json}${ACTIVE_EDITOR_SUFFIX}`;
+  const contextEnd = text.indexOf("\n\n");
+  const hasLeadingPageProtocol =
+    text.startsWith(CONTEXT_PREFIX) ||
+    text.startsWith(VISIBLE_PAGE_PREFIX) ||
+    text.startsWith(ATTACHED_PREFIX);
+  if (!hasLeadingPageProtocol || contextEnd < 0) return `${line}\n${text}`;
+  // withPageContext owns the leading pointer lines. Keep those first, then
+  // place the live document beside them before the operator's prose.
+  return `${text.slice(0, contextEnd)}\n${line}${text.slice(contextEnd)}`;
+}
+
+/**
  * withoutPageContext strips the machine-generated context lines for DISPLAY.
  *
  * They are protocol, not speech. The operator already sees what the assistant
@@ -100,6 +139,7 @@ export function withoutPageContext(text: string): string {
     if (
       line.startsWith(CONTEXT_PREFIX) ||
       line.startsWith(VISIBLE_PAGE_PREFIX) ||
+      line.startsWith(ACTIVE_EDITOR_PREFIX) ||
       line.startsWith(ATTACHED_PREFIX)
     ) {
       start += 1;

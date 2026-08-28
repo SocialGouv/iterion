@@ -150,3 +150,19 @@ func TestValidateChatSurface_LauncherRequiresSeedVar(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateChatSurface_EditorProposalRequiresContext(t *testing.T) {
+	chat := &ChatSurface{
+		Nodes: map[string]ChatNode{
+			"chat": {Kind: ChatNodeHuman, TextField: "message"},
+		},
+		Editor: &ChatEditorSurface{Proposals: true},
+	}
+	if err := validateChatSurface(chat); err == nil || !strings.Contains(err.Error(), "require editor context") {
+		t.Fatalf("validateChatSurface() error = %v, want editor-context dependency", err)
+	}
+	chat.Editor.Context = true
+	if err := validateChatSurface(chat); err != nil {
+		t.Fatalf("validateChatSurface() with context: %v", err)
+	}
+}
