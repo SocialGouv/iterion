@@ -222,6 +222,19 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if !ok {
 		t.Fatal("copi agent node missing from copilot/main.bot")
 	}
+	copiSchema := wf.Schemas["copi_turn"]
+	hasFileChanges := false
+	if copiSchema != nil {
+		for _, field := range copiSchema.Fields {
+			if field.Name == "file_changes" {
+				hasFileChanges = true
+				break
+			}
+		}
+	}
+	if !hasFileChanges {
+		t.Error("copi_turn has no file_changes field — the declared companion-file authoring bridge cannot receive a proposal")
+	}
 	// claw, and the WHOLE chain stays on claw. Two independent compile-time
 	// rules make that load-bearing rather than stylistic, and both were
 	// verified against the compiler:
@@ -775,6 +788,8 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 			"editor_apply_intent": "none",
 			"editor_save_intent":  "none",
 			"assistant_actions":   []any{},
+			"file_changes":        []any{},
+			"file_changes_intent": "none",
 		}, nil
 	})
 	exec.on("review", func(input map[string]any) (map[string]any, error) {
@@ -905,6 +920,8 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 						"editor_apply_intent": "none",
 						"editor_save_intent":  "none",
 						"assistant_actions":   []any{},
+						"file_changes":        []any{},
+						"file_changes_intent": "none",
 					}, nil
 				}
 				return map[string]any{
@@ -920,6 +937,8 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 					"editor_apply_intent": "none",
 					"editor_save_intent":  "none",
 					"assistant_actions":   []any{},
+					"file_changes":        []any{},
+					"file_changes_intent": "none",
 				}, nil
 			})
 			exec.on("validate_draft", func(map[string]any) (map[string]any, error) {

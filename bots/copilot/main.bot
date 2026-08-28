@@ -123,6 +123,12 @@ schema turn_input:
 ##   assistant_actions — 0-8 typed host-action requests. The Studio validates
 ##                    every argument and applies the operator's per-action
 ##                    policy; [] when the turn requests no action.
+##   file_changes   — exact, bounded replacements for companion files declared
+##                    by the open bot's authoring.editable_files manifest block.
+##                    The Studio supplies hashes from its captured snapshot;
+##                    Copi never emits one and never writes a file itself.
+##   file_changes_intent — explicit for a current operator request, suggested
+##                    for an unsolicited proposal, none when file_changes is [].
 schema copi_turn:
   reply:         string
   close:         bool
@@ -136,6 +142,8 @@ schema copi_turn:
   editor_apply_intent: string
   editor_save_intent: string
   assistant_actions: json
+  file_changes: json
+  file_changes_intent: string
 
 ## The draft crosses into the deterministic validator as typed data. The
 ## engine shell-escapes command refs before execution, so even an LLM-authored
@@ -387,6 +395,43 @@ prompt copi_system:
               leave `editor_session_id` empty, `editor_revision: 0`,
               `editor_apply_intent: none`, and `editor_save_intent: none`.
               Never emit a partial replacement from `complete: false`.
+
+              DECLARED COMPANION FILES — the same marker may carry an
+              `authoring` snapshot. Its `files` list is the ONLY write
+              perimeter for this turn. Each entry has scope, path, size,
+              availability/readability and a host-owned sha256; treat the hash as opaque
+              metadata and NEVER copy it into your output.
+              Resolve a bundle path relative to the active editor file's
+              bundle directory; resolve a workspace path from the workspace
+              root. The emitted path remains the manifest path, not the
+              resolved filesystem path.
+                · For an explicit request that requires one of those files,
+                  read the current local file with read_file when readable:true,
+                  or use the inline `source` DATA when complete:true, then emit exact
+                  replacements in `file_changes` as:
+                    [{"scope":"workspace|bundle","path":"declared/path",
+                      "replacements":[{"before":"exact unique text",
+                                       "after":"replacement text"}]}]
+                · Use only files with available:true and reproduce scope/path
+                  exactly. Never propose a new path or file creation.
+                · Every `before` must be non-empty and match exactly once.
+                  Do not normalize indentation. Prefer the smallest stable
+                  block that is unique; the server rejects zero/multi-match.
+                · Bounds: at most 8 files, 16 replacements per file, 64 total,
+                  32 KiB per before/after block, 256 KiB cumulative.
+                · Copy sessionId/editor revision whenever file_changes is
+                  non-empty, even if draft_bot is empty. Set
+                  file_changes_intent: explicit for the current operator's
+                  edit request, suggested only for an unsolicited proposal.
+                · Do not claim tests ran. The host previews, hash-checks,
+                  compiles changed .bot files and asks/executes according to
+                  the operator's editor.files.save policy; script tests are
+                  outside this V1.
+              If authoring is absent, unavailable, or the requested file is
+              not declared/readable, leave file_changes:[] and explain the manifest
+              declaration that is missing. A cloud file whose content was not
+              explicitly attached (complete:true + source) is unavailable to you; never guess it from
+              metadata.
     debug   — diagnose a run, a diagnostic code, a failure. Read the
               evidence before concluding, straight from the run store:
               `<store>/runs/<id>/run.json` (status + checkpoint),
@@ -578,6 +623,11 @@ prompt copi_system:
                      Studio alone decides whether to deny, ask, or execute.
     assistant_actions — the real JSON array of typed host-action requests
                      described above; [] when no action is requested.
+    file_changes   — the real JSON array of declared companion-file exact
+                     replacements described above; [] otherwise. Never emit
+                     hashes, full-file rewrites, undeclared paths or creates.
+    file_changes_intent — one of none, suggested, explicit. Always none when
+                     file_changes is []. A request never grants authority.
 
   Standing scope from the launch: {{vars.scope_notes}}
 

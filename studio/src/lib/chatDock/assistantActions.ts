@@ -25,6 +25,7 @@ export type AssistantActionPolicy =
 export type AssistantActionId =
   | "editor.apply"
   | "editor.save"
+  | "editor.files.save"
   | "board.issue.create"
   | "board.issue.update"
   | "board.issue.transition"
@@ -88,6 +89,15 @@ export const ASSISTANT_ACTIONS: readonly AssistantActionDefinition[] = [
     label: "Save the open bot",
     description:
       "Write the validated live buffer to the file already bound to its editor tab. The assistant never chooses a path.",
+    risk: "persistent",
+    defaultPolicy: "ask",
+  },
+  {
+    id: "editor.files.save",
+    group: "Editor",
+    label: "Save declared bot companion files",
+    description:
+      "Preview and persist exact replacements only in files declared by the open bot manifest, with stale-content checks.",
     risk: "persistent",
     defaultPolicy: "ask",
   },

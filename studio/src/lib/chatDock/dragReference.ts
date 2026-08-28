@@ -155,6 +155,7 @@ const DRAGGABLE_KINDS: ReadonlySet<string> = new Set<ReferenceKind>([
   "node",
   "card",
   "bot",
+  "bot-file",
   "repo",
 ]);
 

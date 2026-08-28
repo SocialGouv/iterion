@@ -18,6 +18,7 @@ import { toastError } from "@/lib/errorHints";
 import { useTabsStore } from "@/store/tabs";
 import { useThemeStore } from "@/store/theme";
 import { useUIStore } from "@/store/ui";
+import { referenceDragProps } from "@/lib/chatDock/dragReference";
 
 interface Props {
   teamID: string;
@@ -230,6 +231,7 @@ export default function BundleFilesDrawer({ teamID, slug, open, onOpenChange }: 
               return (
                 <div
                   key={rel}
+                  {...referenceDragProps("bot-file", `${teamID}/${slug}/${rel}`, rel)}
                   className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-surface-2"
                 >
                   <FileIcon className="h-3.5 w-3.5 shrink-0 text-fg-subtle" />

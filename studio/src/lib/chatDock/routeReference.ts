@@ -27,6 +27,10 @@ export type ReferenceKind =
   | "node"
   | "card"
   | "bot"
+  // bot-file/<team>/<slug>/<path> — an explicitly attached cloud botsource
+  // file. The Studio resolves and inlines it only when the active bot
+  // manifest declared that exact bundle path editable.
+  | "bot-file"
   | "repo"
   // A view with no single entity behind it. Still worth reporting: "I am
   // looking at the board" is real context even without a card selected.
@@ -130,6 +134,7 @@ const REF_SHAPE: Record<ReferenceKind, RegExp | null> = {
   // explicit drag payloads mint through ref() directly and do not pass the
   // narrower /bots/:name route check below.
   bot: /^[A-Za-z0-9._/-]{1,128}$/,
+  "bot-file": /^[A-Za-z0-9._/-]{1,180}$/,
   repo: /^[A-Za-z0-9._:/-]{1,128}$/,
   view: null,
 };
@@ -193,7 +198,7 @@ function looksLikePath(value: string): boolean {
 // operator can see what is actually being sent, and a basename hides
 // exactly the part an attacker controls. CSS truncates it, so a long
 // legitimate path still reads fine and the full value is in the title.
-const SELF_LABELLING: ReadonlySet<ReferenceKind> = new Set(["bot", "repo"]);
+const SELF_LABELLING: ReadonlySet<ReferenceKind> = new Set(["bot", "bot-file", "repo"]);
 
 // ref mints a reference, or null when the id does not have the shape its
 // kind requires — the caller then falls back to the route's plain view

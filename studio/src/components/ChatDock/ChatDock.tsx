@@ -81,6 +81,7 @@ import {
   useNavigationReply,
 } from "@/lib/chatDock/replyNavigation";
 import EditorChangeOffer from "@/components/ChatDock/EditorChangeOffer";
+import AssistantFileChangeOffer from "@/components/ChatDock/AssistantFileChangeOffer";
 import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
 import {
   ConversationStrip,
@@ -194,7 +195,7 @@ function AssistantDock({
       try {
         return withActiveEditorDocument(
           withPage,
-          await captureActiveEditorDocument(),
+          await captureActiveEditorDocument(attached),
         );
       } catch {
         // Context is an affordance, not a reason to lose the operator's
@@ -392,10 +393,16 @@ function AssistantDock({
                     revision={session.messages.length}
                   />
                   {bot.editor?.proposals === true && (
-                    <EditorChangeOffer
-                      runId={session.runId}
-                      revision={session.messages.length}
-                    />
+                    <>
+                      <EditorChangeOffer
+                        runId={session.runId}
+                        revision={session.messages.length}
+                      />
+                      <AssistantFileChangeOffer
+                        runId={session.runId}
+                        revision={session.messages.length}
+                      />
+                    </>
                   )}
                   <AssistantActionOffer
                     runId={session.runId}

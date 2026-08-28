@@ -343,11 +343,14 @@ postures the operator can switch mid-conversation — info (explain
 and orient), design (draft a workflow, which the run compiles with
 `iterion validate` before the reply is shown), debug (diagnose a
 run from its real events).
-Read-only by construction: a `permission: deny` gate denies Bash,
+Read-only agent by construction: a `permission: deny` gate denies Bash,
 Write, Edit and WebFetch outright — an allow-listed shell prefix is
 not a boundary, since the matcher grants everything after it — so
-Copi reads (files, run stores, manifests) and names the bot that does
-the work rather than doing it itself. Every turn ends
+Copi reads files, run stores and manifests. For the active bot it may return
+bounded exact replacements for companion files explicitly declared in that
+bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
+them under the operator's action policy. Copi itself still has no write
+tool. Every turn ends
 at a budget-free chat pause — the session stays reachable for days,
 and a rolling context_brief carries the conversation across server
 restarts, redeploys and cloud pod changes. Only an explicit "close"
@@ -363,8 +366,8 @@ read it — off by default, since it costs a full extra call per turn.
   workflow and a deterministic node compiles it before you read the
   answer, so a draft is never presented as working on the agent's
   word alone. It advises about whatever workspace it is pointed at;
-  it never edits or commits, so pair it with the bot that does the
-  work.
+  it never edits or commits directly; the Studio-owned authoring bridge is the
+  only write path it may request.
 - **Triggers**: copi, copilot
 - **Vars**: `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/copilot/main.bot`
