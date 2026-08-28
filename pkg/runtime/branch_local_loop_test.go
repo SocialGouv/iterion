@@ -158,6 +158,42 @@ func TestParallelInvocationRejectsChangedBranchSetOnResume(t *testing.T) {
 	}
 }
 
+func TestBranchLocalLoopBudgetGuardDoesNotPriceSiblingSpend(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 10_000}
+	engine := New(wf, tmpStore(t), newStubExecutor())
+	shared := newSharedBudget(wf.Budget, engine.logger)
+	parent := &runState{budget: shared, loopBudgetMarks: make(map[string]loopBudgetMark)}
+	result := &branchResult{
+		outputs:          make(map[string]map[string]any),
+		artifacts:        make(map[string]map[string]any),
+		artifactVersions: make(map[string]int),
+		selectedIncoming: make(map[string][]store.IncomingEdge),
+	}
+	branch := newBranchRunState(parent, nil, result)
+	markLoopBudget(branch, "retry")
+	shared.RecordUsage(5_000, 0) // may have been spent by a sibling branch
+	if got := engine.loopBudgetShortfall("retry", branch); got != nil {
+		t.Fatalf("branch loop priced shared sibling spend: %+v", got)
+	}
+
+	trunk := &runState{budget: shared, loopBudgetMarks: make(map[string]loopBudgetMark)}
+	shared.Restore(0, 0, 0, 0, 0, 0)
+	markLoopBudget(trunk, "retry")
+	shared.RecordUsage(5_000, 0)
+	if got := engine.loopBudgetShortfall("retry", trunk); got == nil {
+		t.Fatal("trunk loop budget guard unexpectedly disabled")
+	}
+}
+
+func TestRetiredParallelInvocationRefusesHumanPause(t *testing.T) {
+	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{"branch": "gate"}, nil)
+	parallel.retire()
+	if parallel.beginPause("branch", "gate", &store.BranchCheckpoint{BranchID: "branch"}) {
+		t.Fatal("retired invocation elected a late human pause")
+	}
+}
+
 func TestFanOutEachPendingBranchPanicReleasesResumeBarrier(t *testing.T) {
 	wf := branchFirstHumanLoopWorkflow()
 	exec := newStubExecutor()

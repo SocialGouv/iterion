@@ -81,6 +81,8 @@ func (p *parallelExecutionState) retire() {
 	if p == nil {
 		return
 	}
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
 	p.mu.Lock()
 	p.retired = true
 	p.mu.Unlock()
@@ -333,6 +335,9 @@ func (p *parallelExecutionState) beginPause(branchID, nodeID string, branch *sto
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.retired {
+		return false
+	}
 	if p.cp.PendingBranchID != "" {
 		return p.cp.PendingBranchID == branchID && p.cp.PendingNodeID == nodeID
 	}

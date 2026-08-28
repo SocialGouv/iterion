@@ -415,14 +415,9 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 // so safe template and downstream cycles are accepted.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
-	allIn := map[string]map[string]bool{}
 	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
-		if allIn[e.To] == nil {
-			allIn[e.To] = map[string]bool{}
-		}
-		allIn[e.To][e.From] = true
 		if e.IsBoundedIteration() {
 			continue
 		}
@@ -452,7 +447,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		}
 		// Downstream loop head on a single-path fan — not the template
 		// head, whose election would skip per-item work.
-		if stopOnElected && len(allIn[id]) > 1 && !fanTargets[id] {
+		if stopOnElected && len(nonIterIn[id]) > 1 && !fanTargets[id] {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {

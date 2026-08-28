@@ -258,6 +258,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.loopProgressSig = make(map[string]string)
 	local.loopStaleness = make(map[string]int)
 	local.loopBudgetMarks = make(map[string]loopBudgetMark)
+	local.branchLocal = true
 	local.parallel = nil
 	if cp != nil {
 		local.loopCounters = cloneMap(cp.LoopCounters)

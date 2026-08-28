@@ -121,7 +121,7 @@ router dispatch:
   depends_on: deps
 ```
 
-Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A bounded loop or `as foreach` may be inlined in the template: each item gets its own counters, output history, checkpoint cursor, and human-gate resume scope. Use a `subbot` for a genuine capability/isolation boundary; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
+Workspace safety remains fail-closed. Concurrent template replays may contain read-only agents/judges, an `isolated: true` subbot, or a `parallel_safe: true` tool whose writes are genuinely item-partitioned. Otherwise set `max_parallel_branches: 1` or give each replay an isolated workspace. A bounded loop or `as foreach` may be inlined in the template: each item gets its own counters, output history, checkpoint cursor, and human-gate resume scope. Predictive loop-budget pricing is disabled inside these branches because sibling consumption shares the run budget and cannot price one item's next iteration; the shared pre-execution threshold and hard budget limits still apply. Use a `subbot` for a genuine capability/isolation boundary; see [groups, iteration, resources, and sub-bots](groups-iteration-subbots.md).
 
 When item paths reconverge into one collector, declare `await: wait_all` or `await: best_effort` on that collector. A bounded back-edge is local to each item branch and does not prove convergence; without an explicit await marker, a single-predecessor node remains part of every item replay.
 

@@ -308,7 +308,11 @@ type runState struct {
 	// consumed, per enforced budget dimension, when that loop was entered
 	// or last crossed its back-edge. Persisted on the checkpoint, so a
 	// resumed run keeps measuring across the pause.
-	loopBudgetMarks    map[string]loopBudgetMark
+	loopBudgetMarks map[string]loopBudgetMark
+	// branchLocal disables predictive loop pricing against the shared run
+	// budget. Concurrent sibling spend cannot price one branch's iteration;
+	// the shared 90% pre-exec and hard limits remain authoritative.
+	branchLocal        bool
 	roundRobinCounters map[string]int
 	// selectedIncoming records, per destination node, the incoming edges
 	// routing actually selected for the current visit of that node. Fan-out
