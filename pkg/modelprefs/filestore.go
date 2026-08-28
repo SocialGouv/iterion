@@ -32,6 +32,11 @@ type FileStore struct {
 	logger *iterlog.Logger
 }
 
+type loadResult struct {
+	rows    map[string]Pref
+	corrupt []byte
+}
+
 // SetLogger attaches a logger used to report a corrupt preferences file before
 // degrading to "no preference recorded". Optional — mirrors native.Store.
 func (f *FileStore) SetLogger(l *iterlog.Logger) {
@@ -62,13 +67,13 @@ func NewFileStore(dir string) *FileStore {
 	return &FileStore{path: filepath.Join(dir, "model-prefs.json")}
 }
 
-func (f *FileStore) load() (map[string]Pref, error) {
+func (f *FileStore) load() (loadResult, error) {
 	data, err := os.ReadFile(f.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]Pref{}, nil
+			return loadResult{rows: map[string]Pref{}}, nil
 		}
-		return nil, fmt.Errorf("modelprefs: read %s: %w", f.path, err)
+		return loadResult{}, fmt.Errorf("modelprefs: read %s: %w", f.path, err)
 	}
 	var doc fileDoc
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -77,9 +82,9 @@ func (f *FileStore) load() (map[string]Pref, error) {
 		// so, though — the next Set rewrites the file from what loaded, so
 		// silence here turns a corrupt file into vanished preferences.
 		if f.logger != nil {
-			f.logger.Warn("modelprefs: %s is unreadable (%v); ignoring the recorded preferences — the next save will overwrite the file", f.path, err)
+			f.logger.Warn("modelprefs: %s is unreadable (%v); ignoring the recorded preferences — the next write will preserve it as %s before repair", f.path, err, f.corruptBackupPath())
 		}
-		return map[string]Pref{}, nil
+		return loadResult{rows: map[string]Pref{}, corrupt: data}, nil
 	}
 	out := make(map[string]Pref, len(doc.Prefs))
 	for _, r := range doc.Prefs {
@@ -87,7 +92,27 @@ func (f *FileStore) load() (map[string]Pref, error) {
 		p.TenantID, p.UserID = r.TenantID, r.UserID
 		out[rowKey(r.TenantID, r.UserID, p.Key)] = p
 	}
-	return out, nil
+	return loadResult{rows: out}, nil
+}
+
+func (f *FileStore) corruptBackupPath() string { return f.path + ".corrupt.bak" }
+
+// preserveCorrupt writes one deterministic backup generation BEFORE the
+// repairing write. Overwriting that side file is deliberate: corruption can
+// be read repeatedly without minting unbounded timestamped backups, while the
+// bytes about to be replaced are always the bytes the backup contains.
+func (f *FileStore) preserveCorrupt(data []byte) error {
+	backup := f.corruptBackupPath()
+	if err := os.MkdirAll(filepath.Dir(backup), 0o755); err != nil {
+		return fmt.Errorf("modelprefs: create corrupt-backup dir: %w", err)
+	}
+	if err := store.WriteFileAtomic(backup, data, 0o600); err != nil {
+		return fmt.Errorf("modelprefs: preserve corrupt preferences at %s: %w", backup, err)
+	}
+	if f.logger != nil {
+		f.logger.Warn("modelprefs: preserved unreadable preferences at %s before repairing %s", backup, f.path)
+	}
+	return nil
 }
 
 func (f *FileStore) save(rows map[string]Pref) error {
@@ -123,11 +148,11 @@ func (f *FileStore) Get(_ context.Context, tenantID, userID, key string) (*Pref,
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	rows, err := f.load()
+	loaded, err := f.load()
 	if err != nil {
 		return nil, err
 	}
-	if p, ok := rows[rowKey(tenantID, userID, k)]; ok {
+	if p, ok := loaded.rows[rowKey(tenantID, userID, k)]; ok {
 		cp := p
 		return &cp, nil
 	}
@@ -141,15 +166,23 @@ func (f *FileStore) Set(_ context.Context, p *Pref) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	rows, err := f.load()
+	loaded, err := f.load()
 	if err != nil {
 		return err
+	}
+	if scopeAtLimit(loaded.rows, p.TenantID, p.UserID, k) {
+		return fmt.Errorf("%w: maximum %d keys per tenant/user", ErrTooManyPreferences, MaxPreferencesPerScope)
+	}
+	if loaded.corrupt != nil {
+		if err := f.preserveCorrupt(loaded.corrupt); err != nil {
+			return err
+		}
 	}
 	row := *p
 	row.Key = k
 	row.UpdatedAt = nowUTC()
-	rows[rowKey(p.TenantID, p.UserID, k)] = row
-	return f.save(rows)
+	loaded.rows[rowKey(p.TenantID, p.UserID, k)] = row
+	return f.save(loaded.rows)
 }
 
 func (f *FileStore) Delete(_ context.Context, tenantID, userID, key string) error {
@@ -159,10 +192,15 @@ func (f *FileStore) Delete(_ context.Context, tenantID, userID, key string) erro
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	rows, err := f.load()
+	loaded, err := f.load()
 	if err != nil {
 		return err
 	}
-	delete(rows, rowKey(tenantID, userID, k))
-	return f.save(rows)
+	if loaded.corrupt != nil {
+		if err := f.preserveCorrupt(loaded.corrupt); err != nil {
+			return err
+		}
+	}
+	delete(loaded.rows, rowKey(tenantID, userID, k))
+	return f.save(loaded.rows)
 }

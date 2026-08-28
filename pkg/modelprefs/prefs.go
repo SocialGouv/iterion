@@ -14,6 +14,8 @@ package modelprefs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -44,8 +46,26 @@ func (p Pref) Empty() bool {
 	return p.Model == "" && p.Backend == "" && p.Effort == ""
 }
 
-// ErrInvalidKey is returned for a blank scope key.
-var ErrInvalidKey = errors.New("modelprefs: a preference needs a non-empty key")
+const (
+	// MaxKeyLength bounds one caller-controlled storage/index dimension.
+	MaxKeyLength = 128
+	// MaxPreferencesPerScope bounds distinct keys for one (tenant,user).
+	// Existing keys remain freely updateable once the scope reaches the cap.
+	MaxPreferencesPerScope = 64
+)
+
+var (
+	// ErrInvalidKey is returned for a blank, oversized, or malformed scope key.
+	ErrInvalidKey = errors.New("modelprefs: invalid preference key")
+	// ErrTooManyPreferences is returned only when a NEW key would exceed the
+	// per-(tenant,user) cardinality cap. Updating an existing key still works.
+	ErrTooManyPreferences = errors.New("modelprefs: preference key limit reached")
+)
+
+// Keys are intentionally generic but storage-safe: bot slugs, catalog ids,
+// and namespaced ids such as "catalog/copilot" fit; whitespace/control bytes
+// and arbitrary JSON-like text do not become index keys.
+var keyPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`)
 
 // Store persists preferences per (tenant, user, key).
 type Store interface {
@@ -55,11 +75,17 @@ type Store interface {
 	Delete(ctx context.Context, tenantID, userID, key string) error
 }
 
-// NormalizeKey trims a caller-supplied key and rejects a blank one.
+// NormalizeKey trims and bounds a caller-supplied scope key.
 func NormalizeKey(key string) (string, error) {
 	k := strings.TrimSpace(key)
 	if k == "" {
-		return "", ErrInvalidKey
+		return "", fmt.Errorf("%w: key is required", ErrInvalidKey)
+	}
+	if len(k) > MaxKeyLength {
+		return "", fmt.Errorf("%w: key is %d bytes (maximum %d)", ErrInvalidKey, len(k), MaxKeyLength)
+	}
+	if !keyPattern.MatchString(k) {
+		return "", fmt.Errorf("%w: %q must start with an alphanumeric character and contain only letters, digits, '.', '_', ':', '/', or '-'", ErrInvalidKey, k)
 	}
 	return k, nil
 }
@@ -69,6 +95,19 @@ func nowUTC() time.Time { return time.Now().UTC() }
 
 func rowKey(tenantID, userID, key string) string {
 	return tenantID + "\x00" + userID + "\x00" + key
+}
+
+func scopeAtLimit(rows map[string]Pref, tenantID, userID, key string) bool {
+	if _, exists := rows[rowKey(tenantID, userID, key)]; exists {
+		return false
+	}
+	n := 0
+	for _, p := range rows {
+		if p.TenantID == tenantID && p.UserID == userID {
+			n++
+		}
+	}
+	return n >= MaxPreferencesPerScope
 }
 
 // MemStore is the in-memory Store, used by tests and by any surface that
@@ -104,6 +143,9 @@ func (m *MemStore) Set(_ context.Context, p *Pref) error {
 	row.UpdatedAt = nowUTC()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if scopeAtLimit(m.rows, p.TenantID, p.UserID, k) {
+		return fmt.Errorf("%w: maximum %d keys per tenant/user", ErrTooManyPreferences, MaxPreferencesPerScope)
+	}
 	m.rows[rowKey(p.TenantID, p.UserID, k)] = row
 	return nil
 }

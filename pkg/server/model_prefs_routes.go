@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -122,6 +123,10 @@ func (s *Server) handlePutModelPref(w http.ResponseWriter, r *http.Request) {
 		TenantID: tenantID, UserID: userID, Key: key,
 		Model: req.Model, Backend: req.Backend, Effort: req.Effort,
 	}); err != nil {
+		if errors.Is(err, modelprefs.ErrTooManyPreferences) || errors.Is(err, modelprefs.ErrInvalidKey) {
+			s.httpErrorFor(w, r, http.StatusConflict, "%v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "save model preference: %v", err)
 		return
 	}

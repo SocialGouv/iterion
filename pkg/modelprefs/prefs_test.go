@@ -3,6 +3,8 @@ package modelprefs
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +111,61 @@ func TestBlankKeyIsRejected(t *testing.T) {
 	}
 }
 
+func TestPreferenceKeyBoundsAndShape(t *testing.T) {
+	for _, valid := range []string{"copilot", "catalog/copilot", "team:bot_v2.1"} {
+		if got, err := NormalizeKey(valid); err != nil || got != valid {
+			t.Errorf("NormalizeKey(%q) = %q, %v", valid, got, err)
+		}
+	}
+	for _, invalid := range []string{
+		strings.Repeat("a", MaxKeyLength+1),
+		"two words",
+		"../escape",
+		"line\nbreak",
+	} {
+		if _, err := NormalizeKey(invalid); !errors.Is(err, ErrInvalidKey) {
+			t.Errorf("NormalizeKey(%q) error = %v, want ErrInvalidKey", invalid, err)
+		}
+	}
+}
+
+func TestStoreCardinalityCap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(*testing.T) Store
+	}{
+		{"mem", func(*testing.T) Store { return NewMemStore() }},
+		{"file", func(t *testing.T) Store { return NewFileStore(t.TempDir()) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := tc.make(t)
+			for i := 0; i < MaxPreferencesPerScope; i++ {
+				if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: fmt.Sprintf("bot-%d", i)}); err != nil {
+					t.Fatalf("seed %d: %v", i, err)
+				}
+			}
+			// Existing keys remain editable at the ceiling.
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "bot-0", Model: "openai/gpt-5.5"}); err != nil {
+				t.Fatalf("update at cap: %v", err)
+			}
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "one-too-many"}); !errors.Is(err, ErrTooManyPreferences) {
+				t.Fatalf("new key at cap = %v, want ErrTooManyPreferences", err)
+			}
+			// Another owner has an independent allowance.
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "other", Key: "one-too-many"}); err != nil {
+				t.Fatalf("cap leaked across users: %v", err)
+			}
+			if err := s.Delete(ctx, "team", "user", "bot-1"); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			if err := s.Set(ctx, &Pref{TenantID: "team", UserID: "user", Key: "replacement"}); err != nil {
+				t.Fatalf("slot was not released by delete: %v", err)
+			}
+		})
+	}
+}
+
 func TestPrefEmpty(t *testing.T) {
 	if !(Pref{Key: "k"}).Empty() {
 		t.Error("a preference expressing no choice is Empty")
@@ -140,6 +197,48 @@ func TestFileStoreSurvivesACorruptFile(t *testing.T) {
 	got, _ = s.Get(context.Background(), "", "", "whats-next")
 	if got == nil || got.Model != "openai/gpt-5.5" {
 		t.Errorf("after repair = %+v", got)
+	}
+	backup, err := os.ReadFile(filepath.Join(dir, "model-prefs.json.corrupt.bak"))
+	if err != nil {
+		t.Fatalf("read preserved corrupt bytes: %v", err)
+	}
+	if string(backup) != "{not json" {
+		t.Fatalf("backup = %q, want original corrupt bytes", backup)
+	}
+}
+
+func TestFileStoreBackupFailureDoesNotOverwriteCorruptOriginal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model-prefs.json")
+	original := []byte("{the only copy")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the deterministic backup path makes the atomic rename
+	// fail on every platform without relying on chmod (tests may run as root).
+	if err := os.Mkdir(path+".corrupt.bak", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := NewFileStore(dir)
+	if err := s.Set(context.Background(), &Pref{Key: "copilot", Model: "openai/gpt-5.5"}); err == nil {
+		t.Fatal("repair succeeded despite an unavailable backup path")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("corrupt original changed after backup failure: %q", after)
+	}
+}
+
+func TestFileStoreHealthyWriteCreatesNoCorruptBackup(t *testing.T) {
+	dir := t.TempDir()
+	if err := NewFileStore(dir).Set(context.Background(), &Pref{Key: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "model-prefs.json.corrupt.bak")); !os.IsNotExist(err) {
+		t.Fatalf("healthy write created a corrupt backup: %v", err)
 	}
 }
 

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +131,38 @@ func TestModelPref_RejectsABlankKey(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s %s status = %d, want 400", tc.method, tc.path, rec.Code)
 		}
+	}
+}
+
+func TestModelPref_RejectsOversizedAndMalformedKeys(t *testing.T) {
+	srv := newPrefsServer(t, modelprefs.NewMemStore())
+	for _, key := range []string{strings.Repeat("a", modelprefs.MaxKeyLength+1), "two words"} {
+		rec, _ := prefRequest(t, srv, http.MethodPut, "/api/v1/preferences/model",
+			fmt.Sprintf(`{"key":%q}`, key))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("key %q status = %d, want 400: %s", key, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "key") {
+			t.Errorf("key %q error is not actionable: %s", key, rec.Body.String())
+		}
+	}
+}
+
+func TestModelPref_CardinalityLimitIsAConflict(t *testing.T) {
+	st := modelprefs.NewMemStore()
+	ctx := context.Background()
+	for i := 0; i < modelprefs.MaxPreferencesPerScope; i++ {
+		if err := st.Set(ctx, &modelprefs.Pref{UserID: "dev", Key: fmt.Sprintf("bot-%d", i)}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	srv := newPrefsServer(t, st)
+	rec, _ := prefRequest(t, srv, http.MethodPut, "/api/v1/preferences/model", `{"key":"one-too-many"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "maximum") {
+		t.Errorf("limit error is not actionable: %s", rec.Body.String())
 	}
 }
 

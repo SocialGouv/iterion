@@ -201,7 +201,10 @@ Two things about the API worth knowing:
 interprets it. That is deliberate: iterion the engine must not know that one
 particular catalog bot is "the assistant" ([CLAUDE.md](../CLAUDE.md) — the
 engine stays bot-agnostic), and it means a second conversational bot needs a
-bundle, not an engine change.
+bundle, not an engine change. Storage still bounds this caller-controlled
+namespace: a key is at most **128 bytes**, uses letters/digits plus
+`._:/-`, and each `(tenant, user)` may record at most **64 distinct keys**.
+Existing keys remain updateable at the limit; a new one returns HTTP `409`.
 
 ### Where it is stored
 
@@ -212,8 +215,10 @@ bundle, not an engine change.
 
 A server with neither wired 404s the endpoints; the studio then still offers
 the picker and says the choice applies to that browser tab only. A corrupt
-prefs file degrades to "no preference" (with a warning in the server log) and
-is repaired by the next write — the worst honest outcome is re-picking a model.
+prefs file degrades to "no preference" (with a warning in the server log).
+Before the next write repairs it, the original bytes are atomically preserved
+as `model-prefs.json.corrupt.bak` with mode `0600`; if that backup fails, the
+repair is aborted and the corrupt original is left untouched.
 
 ### Cloud: the choice travels with the run
 
