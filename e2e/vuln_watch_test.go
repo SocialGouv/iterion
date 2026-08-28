@@ -2768,3 +2768,70 @@ func TestVulnWatch_HarnessDrivesEveryNodeInTheGraph(t *testing.T) {
 		}
 	}
 }
+
+// adv_status holds ONE state per CVE, so testing it by MEMBERSHIP answers a
+// different question than the one that matters. A CERT-FR avis routinely
+// carries several CVEs, and GitHub's advisory database only indexes those it
+// can map to a packaging ecosystem — so `{indexed, not_indexed}` is the common
+// case for exactly the multi-CVE units this node exists to disambiguate.
+// Claiming "deployed product" there states a confident fact about the
+// technology on the strength of the CVE GitHub was never asked to explain.
+func TestVulnWatch_MixedIndexedCVEsAreNotADeployedProductClaim(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	// CVE-A resolves to an advisory that names NO package (a deployed
+	// product); CVE-B is not indexed at all. Neither yields a package, but the
+	// two states are not the same epistemic thing.
+	h.setAdvisoryPkgs(map[string][]map[string]string{"CVE-2026-7040": {}})
+
+	alerts := []map[string]any{{"key": "adv:mixed", "cves": []string{"CVE-2026-7040", "CVE-2026-7041"},
+		"title": "mixed", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	vc, _ := got[0].(map[string]any)["version_check"].(string)
+	if vc == "not_a_package" {
+		t.Fatal("a unit mixing an indexed and an unindexed CVE was called a deployed product — the unindexed one was never explained")
+	}
+	if vc != "unavailable" {
+		t.Fatalf("version_check = %q, want unavailable", vc)
+	}
+}
+
+// The same membership bug on the other side: with CVE-A indexed to a package
+// nobody runs and CVE-B unindexed, the lookup legitimately finds nothing — but
+// CVE-B's affected package was never named, so it was never looked for.
+// Printing the explicit all-clear there is a false all-clear on a security
+// message.
+func TestVulnWatch_MixedIndexedCVEsCannotProduceAnAllClear(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "vuln-watch/main.bot")
+	h := newVulnWatchHarness(t)
+	h.setAdvisoryPkgs(map[string][]map[string]string{
+		"CVE-2026-7050": {{"ecosystem": "npm", "name": "nobody-runs-this"}},
+		// CVE-2026-7051 deliberately absent => not_indexed.
+	})
+	h.depAlerts.Store([]map[string]any{}) // the lane finds nothing for that package
+
+	alerts := []map[string]any{{"key": "adv:mixed2", "cves": []string{"CVE-2026-7050", "CVE-2026-7051"},
+		"title": "mixed", "severity": "critical", "project_names": []string{"proj"}}}
+	out, stderr, err := vwConfirm(t, wf, h, h.srv.URL, alerts)
+	if err != nil {
+		t.Fatalf("confirm_versions failed: %v\nstderr: %s", err, stderr)
+	}
+	got, _ := out["alerts"].([]any)
+	vc, _ := got[0].(map[string]any)["version_check"].(string)
+	if vc == "none_found" {
+		t.Fatal("an all-clear was emitted while one CVE's affected package was never named, let alone searched for")
+	}
+	if vc != "unavailable" {
+		t.Fatalf("version_check = %q, want unavailable", vc)
+	}
+}

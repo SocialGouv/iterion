@@ -2044,9 +2044,14 @@ tool confirm_versions:
             ## reached because the CVE list was cut, says nothing at all —
             ## dressing any of those up as "deployed product" states a
             ## confident fact about the technology on no evidence.
+            ## Membership is NOT the test: adv_status is one state per CVE, so
+            ## `'indexed' in ...` is true as soon as ONE of them resolved. A
+            ## unit mixing an indexed CVE with an unindexed one would then be
+            ## called a deployed product on the strength of the CVE GitHub was
+            ## never asked to explain. Require the WHOLE head to be indexed —
+            ## an unindexed CVE is the same epistemic state as a failed read.
             a['version_check'] = ('not_a_package'
-                                  if ('indexed' in adv_status and 'failed' not in adv_status
-                                      and not truncated_cves)
+                                  if (adv_status == {'indexed'} and not truncated_cves)
                                   else 'unavailable')
             continue
         confirmable += 1
@@ -2058,10 +2063,15 @@ tool confirm_versions:
         ## version and its dates, and the message showed ONE fix as though it
         ## covered the repository.
         matches = {}
-        ## An advisory read that failed — or a CVE list cut short — leaves the
-        ## package set incomplete, so whatever the alert lane then finds cannot
-        ## be a COMPLETE answer, and an empty one cannot be an all-clear.
-        checked, complete = False, ('failed' not in adv_status and not truncated_cves)
+        ## An advisory read that failed, a CVE GitHub has no advisory indexed
+        ## for, or a CVE list cut short — each leaves the package set
+        ## incomplete, so whatever the alert lane then finds cannot be a
+        ## COMPLETE answer, and an empty one cannot be an all-clear. An
+        ## unindexed CVE is not a lesser doubt than a failed read: its affected
+        ## package was never named, so it was never looked for.
+        checked, complete = False, ('failed' not in adv_status
+                                    and 'not_indexed' not in adv_status
+                                    and not truncated_cves)
         for org in orgs:
             got, ok = alerts_for(org, names)
             checked = checked or ok
