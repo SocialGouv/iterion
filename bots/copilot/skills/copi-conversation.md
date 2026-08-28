@@ -141,8 +141,20 @@ pick, say what would decide it.
 `quick_replies` are one-click follow-ups, not a menu of everything
 possible. Emit them when there is an obvious next step
 ("Montre-moi les events", "Valide ce .bot", "Lance Revi dessus"), and
-`[]` when they'd be noise. Real JSON array of strings, never a
-stringified one.
+`[]` when they'd be noise. Emit a real JSON array of objects, never a
+stringified one:
+
+```json
+{"label":"short chip label","message":"operator message","navigate_to":"optional typed reference"}
+```
+
+Omit `navigate_to` for an immediate reply. When the reply needs another
+Studio surface, set it to the exact typed reference already present in page
+or attached context. Use `view/editor` for a new untitled workflow and an
+exact received `bot/<path>` for an existing bot. Never emit a URL or invent a
+reference. The Studio navigates first, waits for the destination context, and
+only then sends `message`; do not offer a second context-less reply for the
+same action.
 
 ## Closing
 

@@ -7,7 +7,7 @@ import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 
 import type { FirstClassBot } from "./firstClassBots";
 import type { WhatsNextMessage } from "./messages";
-import { useAssistantComposer } from "./useAssistantComposer";
+import { readQuickReplies, useAssistantComposer } from "./useAssistantComposer";
 import type { UseWhatsNextSession } from "./useWhatsNextSession";
 
 const api = vi.hoisted(() => ({ queueMessage: vi.fn() }));
@@ -240,5 +240,51 @@ describe("useAssistantComposer routing", () => {
     });
     expect(s.launch).not.toHaveBeenCalled();
     expect(api.queueMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("readQuickReplies", () => {
+  it("reads typed navigate-then-send replies without treating the reference as an href", () => {
+    expect(
+      readQuickReplies({
+        quick_replies: [
+          {
+            label: "Modifier ce bot",
+            message: "Modifie le bot ouvert selon notre discussion.",
+            navigate_to: "bot/bots/demo/main.bot",
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        label: "Modifier ce bot",
+        message: "Modifie le bot ouvert selon notre discussion.",
+        navigateTo: "bot/bots/demo/main.bot",
+        legacy: false,
+      },
+    ]);
+  });
+
+  it("keeps old string replies usable while existing conversations drain", () => {
+    expect(readQuickReplies({ quick_replies: '["Modifier le bot"]' })).toEqual([
+      {
+        label: "Modifier le bot",
+        message: "Modifier le bot",
+        navigateTo: null,
+        legacy: true,
+      },
+    ]);
+  });
+
+  it("drops malformed typed replies", () => {
+    expect(
+      readQuickReplies({
+        quick_replies: [
+          { label: "No message", navigate_to: "view/editor" },
+          { message: "" },
+          42,
+        ],
+      }),
+    ).toEqual([]);
   });
 });

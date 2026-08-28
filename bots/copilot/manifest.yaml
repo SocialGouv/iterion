@@ -1,7 +1,7 @@
 name: copilot
 display_name: Copi
 icon: 💬
-version: 0.1.0
+version: 0.1.1
 description: |
   Conversational iterion assistant. ONE adaptive agent (claw, bundled
   skills, a cross-provider model ladder) in a standing chat loop, whose subject is

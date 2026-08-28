@@ -171,13 +171,17 @@ function WhatsNextConversation({
                       ))}
                       {quickReplies.map((q) => (
                         <Button
-                          key={q}
+                          key={`${q.label}:${q.message}`}
                           variant="secondary"
                           size="sm"
                           disabled={busyPending}
-                          onClick={() => void submitPending(q).catch(() => {})}
+                          onClick={() =>
+                            void onComposerSend(q.message, { skills: [] }).catch(
+                              () => {},
+                            )
+                          }
                         >
-                          {q}
+                          {q.label}
                         </Button>
                       ))}
                     </div>

@@ -1,63 +1,80 @@
 // @vitest-environment jsdom
 //
-// Clicking "Open the editor" must ANSWER the paused turn, not merely navigate.
-//
-// Reported from a real session — "j'ai cliqué et rien ne s'est lancé". The
-// assistant had asked to move, the operator agreed, and the run stayed parked
-// at its human node while they waited on a canvas nothing was going to fill.
-// The click is a consent event and has to reach the run as one.
-//
-// The second rule is timing: the composer stamps the page context at SEND
-// time, so the answer waits for the route to settle. Answering from the page
-// they just left would tell the bot they are still there — and it would orient
-// them to the editor a second time.
-import { act, cleanup, render, screen } from "@testing-library/react";
+// A reply that requires the editor must navigate, wait for the authoritative
+// live document, and only then answer the paused assistant turn.
+
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const submitPending = vi.fn().mockResolvedValue(undefined);
-let route = "/board";
-let draftState: { source: string | null; designing: boolean } = {
-  source: null,
-  designing: true,
-};
+const router = vi.hoisted(() => ({
+  route: "/pipelines",
+  setLocation: vi.fn(),
+}));
+const editor = vi.hoisted(() => ({
+  capture: vi.fn(),
+}));
+const draft = vi.hoisted(() => ({
+  state: { source: null as string | null, designing: true },
+}));
+const submit = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("wouter", () => ({
-  useLocation: () => [route, vi.fn()],
+  useLocation: () => [router.route, router.setLocation],
   Link: ({
     children,
-    onClick,
+    href,
   }: {
     children: React.ReactNode;
-    onClick?: () => void;
     href?: string;
   }) => (
-    <button type="button" onClick={onClick}>
+    <a href={href}>
       {children}
-    </button>
+    </a>
   ),
 }));
 
+vi.mock("@/lib/chatDock/editorSession", () => ({
+  captureActiveEditorDocument: editor.capture,
+}));
+
 vi.mock("@/hooks/useDraftBot", () => ({
-  useDraftState: () => draftState,
+  useDraftState: () => draft.state,
 }));
 
 import {
-  DraftBotOffer,
   EDITOR_OPENED_CONFIRMATION,
-  useEditorConsent,
-} from "./draftBotOffer";
+  hrefForAssistantReplyTarget,
+  navigationTargetForReply,
+  useNavigationReply,
+} from "@/lib/chatDock/replyNavigation";
+import { DraftBotOffer } from "./draftBotOffer";
 
-// Exercises the REAL hook — an earlier draft of this test re-implemented the
-// effect in the harness and would have passed with the bug still in place.
-function Harness() {
-  const consent = useEditorConsent(submitPending);
-  return <DraftBotOffer runId="run-1" revision={1} onOpenEditor={consent.accept} />;
+function NavigationHarness({
+  target = "view/editor",
+  message = EDITOR_OPENED_CONFIRMATION,
+}: {
+  target?: string;
+  message?: string;
+}) {
+  const navigation = useNavigationReply(submit);
+  return (
+    <>
+      <button type="button" onClick={() => navigation.submit(message, target)}>
+        Continue
+      </button>
+      {navigation.busy && <span>Loading destination</span>}
+      {navigation.error && <span>{navigation.error}</span>}
+    </>
+  );
 }
 
 beforeEach(() => {
-  submitPending.mockClear();
-  route = "/board";
-  draftState = { source: null, designing: true };
+  router.route = "/pipelines";
+  router.setLocation.mockReset();
+  editor.capture.mockReset();
+  submit.mockReset();
+  submit.mockResolvedValue(undefined);
+  draft.state = { source: null, designing: true };
 });
 
 afterEach(() => {
@@ -65,84 +82,148 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("accepting the move to the editor", () => {
-  it("offers the venue while the turn is designing with nothing to show", () => {
-    render(<Harness />);
-    expect(screen.getByText(/open the editor/i)).toBeTruthy();
+describe("navigate then send", () => {
+  it("fuses a legacy edit reply with the retired editor venue", () => {
+    expect(
+      navigationTargetForReply(
+        {
+          label: "Modifier le bot",
+          message: "Modifier le bot",
+          navigateTo: null,
+          legacy: true,
+        },
+        true,
+        {
+          kind: "bot",
+          ref: "bot/bots/demo/main.bot",
+          label: "Demo",
+        },
+      ),
+    ).toBe("bot/bots/demo/main.bot");
   });
 
-  it("does not answer the turn before the route reaches the editor", () => {
-    render(<Harness />);
-    act(() => {
-      screen.getByText(/open the editor/i).click();
-    });
-    expect(submitPending).not.toHaveBeenCalled();
+  it("does not navigate an immediate typed reply", () => {
+    expect(
+      navigationTargetForReply(
+        {
+          label: "Explique davantage",
+          message: "Explique davantage",
+          navigateTo: null,
+          legacy: false,
+        },
+        true,
+        null,
+      ),
+    ).toBeNull();
   });
 
-  it("answers the turn once the operator is on the editor", () => {
-    const { rerender } = render(<Harness />);
-    act(() => {
-      screen.getByText(/open the editor/i).click();
-    });
-    route = "/editor";
-    act(() => {
-      rerender(<Harness />);
-    });
-    expect(submitPending).toHaveBeenCalledWith(EDITOR_OPENED_CONFIRMATION);
+  it("does not send before the destination route is active", () => {
+    render(<NavigationHarness />);
+    act(() => screen.getByText("Continue").click());
+
+    expect(router.setLocation).toHaveBeenCalledWith("/editor");
+    expect(submit).not.toHaveBeenCalled();
+    expect(screen.getByText("Loading destination")).toBeTruthy();
   });
 
-  it("answers exactly once, not on every later render", () => {
-    const { rerender } = render(<Harness />);
-    act(() => {
-      screen.getByText(/open the editor/i).click();
-    });
-    route = "/editor";
-    act(() => rerender(<Harness />));
-    act(() => rerender(<Harness />));
-    expect(submitPending).toHaveBeenCalledTimes(1);
+  it("sends the selected reply once after generic editor navigation", async () => {
+    const { rerender } = render(<NavigationHarness message="Crée le bot." />);
+    act(() => screen.getByText("Continue").click());
+
+    router.route = "/editor";
+    rerender(<NavigationHarness message="Crée le bot." />);
+
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("Crée le bot."));
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it("retires consent when navigation goes somewhere other than the editor", () => {
-    const { rerender } = render(<Harness />);
-    act(() => {
-      screen.getByText(/open the editor/i).click();
-    });
-    route = "/runs/run-2";
-    act(() => rerender(<Harness />));
-    route = "/editor";
-    act(() => rerender(<Harness />));
-    expect(submitPending).not.toHaveBeenCalled();
-  });
-
-  it("expires consent when the editor link opens outside this tab", () => {
+  it("waits for the exact complete editor document before sending", async () => {
     vi.useFakeTimers();
-    const { rerender } = render(<Harness />);
-    act(() => {
-      screen.getByText(/open the editor/i).click();
+    editor.capture.mockResolvedValue(null);
+    const { rerender } = render(
+      <NavigationHarness
+        target="bot/bots/demo/main.bot"
+        message="Modifie ce bot."
+      />,
+    );
+    act(() => screen.getByText("Continue").click());
+
+    expect(router.setLocation).toHaveBeenCalledWith(
+      "/editor?file=bots%2Fdemo%2Fmain.bot",
+    );
+    router.route = "/editor";
+    rerender(
+      <NavigationHarness
+        target="bot/bots/demo/main.bot"
+        message="Modifie ce bot."
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
     });
-    act(() => {
-      vi.advanceTimersByTime(30_000);
+    expect(submit).not.toHaveBeenCalled();
+
+    editor.capture.mockResolvedValue({
+      sessionId: "session-1",
+      revision: 3,
+      file: "bots/demo/main.bot",
+      complete: true,
+      sourceLength: 42,
+      source: "workflow demo:\n",
     });
-    route = "/editor";
-    act(() => rerender(<Harness />));
-    expect(submitPending).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+      await Promise.resolve();
+    });
+
+    expect(submit).toHaveBeenCalledWith("Modifie ce bot.");
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
-  it("never speaks for the operator on its own — no click, no answer", () => {
-    route = "/editor";
-    render(<Harness />);
-    expect(submitPending).not.toHaveBeenCalled();
-    expect(screen.queryByText(/open the editor/i)).toBeNull();
+  it("does not send a modification request with an incomplete document", async () => {
+    editor.capture.mockResolvedValue({
+      sessionId: "session-1",
+      revision: 3,
+      file: "bots/demo/main.bot",
+      complete: false,
+      sourceLength: 200_000,
+    });
+    const { rerender } = render(
+      <NavigationHarness target="bot/bots/demo/main.bot" />,
+    );
+    act(() => screen.getByText("Continue").click());
+    router.route = "/editor";
+    rerender(<NavigationHarness target="bot/bots/demo/main.bot" />);
+
+    expect(
+      await screen.findByText(/too large to send completely/i),
+    ).toBeTruthy();
+    expect(submit).not.toHaveBeenCalled();
   });
 
-  it("asks for no consent when the draft is already in hand", () => {
-    // A finished draft needs no permission to be looked at; that button only
-    // navigates, so it must not answer the turn.
-    draftState = { source: "workflow demo:\n", designing: true };
-    render(<Harness />);
-    act(() => {
-      screen.getByText(/open this draft/i).click();
-    });
-    expect(submitPending).not.toHaveBeenCalled();
+  it("refuses a model-authored URL or unknown reference", () => {
+    render(<NavigationHarness target="https://evil.example/editor" />);
+    act(() => screen.getByText("Continue").click());
+
+    expect(screen.getByText(/destination is not available/i)).toBeTruthy();
+    expect(router.setLocation).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a typed reference that escapes the workspace", () => {
+    expect(hrefForAssistantReplyTarget("bot/../../etc/passwd")).toBeNull();
+  });
+});
+
+describe("draft offer", () => {
+  it("does not render the old standalone venue button", () => {
+    render(<DraftBotOffer runId="run-1" revision={1} />);
+    expect(screen.queryByText(/^Open the editor$/i)).toBeNull();
+  });
+
+  it("still offers an already-produced draft", () => {
+    draft.state = { source: "workflow demo:\n", designing: true };
+    render(<DraftBotOffer runId="run-1" revision={1} />);
+    expect(screen.getByText(/open this draft in the editor/i)).toBeTruthy();
   });
 });

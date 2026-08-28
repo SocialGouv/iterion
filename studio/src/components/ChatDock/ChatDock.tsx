@@ -73,10 +73,13 @@ import {
 } from "@/components/shared/Sidebar";
 import { useUIStore } from "@/store/ui";
 
+import { DraftBotOffer } from "@/components/ChatDock/draftBotOffer";
 import {
-  DraftBotOffer,
-  useEditorConsent,
-} from "@/components/ChatDock/draftBotOffer";
+  editorTargetForPage,
+  EDITOR_OPENED_CONFIRMATION,
+  navigationTargetForReply,
+  useNavigationReply,
+} from "@/lib/chatDock/replyNavigation";
 import EditorChangeOffer from "@/components/ChatDock/EditorChangeOffer";
 import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
 import {
@@ -203,12 +206,30 @@ function AssistantDock({
     [active, attached, activePage, bot.editor?.context],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
+  const submitComposerMessage = composer.onComposerSend;
+  const decoratesComposerMessage = composer.willDecorateMessage;
+
+  // Consume attachments only after a message really leaves. Suggested
+  // replies use this same path now, so a navigate-then-send reply receives
+  // the destination page context and active editor document exactly like a
+  // typed composer message.
+  const onComposerSend = useCallback(
+    async (text: string, opts: { skills: string[] }) => {
+      await submitComposerMessage(text, opts);
+      if (decoratesComposerMessage) setAttached([]);
+    },
+    [submitComposerMessage, decoratesComposerMessage],
+  );
+  const sendSuggestedReply = useCallback(
+    (message: string) => onComposerSend(message, { skills: [] }),
+    [onComposerSend],
+  );
+  const navigationReply = useNavigationReply(sendSuggestedReply);
   // The chat equivalent of a CLI's `/new`. Lives in the dock's own chrome
   // because a bot that answers ONLY here (Copi) would otherwise have no way
   // to end a conversation — /whats-next's header is Nexie's, not his.
   const newSession = useNewSessionAction({ bot, session });
 
-  const editorConsent = useEditorConsent(composer.submitPending);
   const [route] = useLocation();
   const search = useSearch();
   // Same query key as the draft offer, so this costs nothing extra.
@@ -245,21 +266,6 @@ function AssistantDock({
       queryKey: editorDraftKey(session.runId),
     });
   }, [session.runId, turnCount, queryClient]);
-
-  // Consume the attachments when a message leaves. Wrapping the composer's
-  // send rather than clearing optimistically: a send that throws keeps the
-  // operator's draft, and it must keep what they attached to it too —
-  // otherwise a transient failure silently strips the pointers and the
-  // retried message asks about nothing.
-  const onComposerSend = useCallback(
-    async (text: string, opts: { skills: string[] }) => {
-      await composer.onComposerSend(text, opts);
-      // Option-constrained ask_user answers intentionally skip decoration, so
-      // attached references did not travel and must remain for the next turn.
-      if (composer.willDecorateMessage) setAttached([]);
-    },
-    [composer],
-  );
 
   const onDrop = useCallback((e: ReactDragEvent) => {
     setDragOver(false);
@@ -365,7 +371,6 @@ function AssistantDock({
                 <DraftBotOffer
                   runId={session.runId}
                   revision={session.messages.length}
-                  onOpenEditor={editorConsent.accept}
                 />
                 {bot.editor?.proposals === true && (
                   <EditorChangeOffer
@@ -420,7 +425,12 @@ function AssistantDock({
             currentSearch={search}
           />
           <AttachedReferences references={attached} onDetach={detach} />
-          {(composer.options.length > 0 || composer.quickReplies.length > 0) && (
+          {(composer.options.length > 0 ||
+            composer.quickReplies.length > 0 ||
+            (!!session.runId &&
+              workplaceDraft.designing &&
+              !workplaceDraft.source &&
+              !route.startsWith("/editor"))) && (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
               {/* Chip failures already surface via the session's
                   errorMessage banner — swallow the rethrow that exists for
@@ -438,15 +448,56 @@ function AssistantDock({
               ))}
               {composer.quickReplies.map((q) => (
                 <Button
-                  key={q}
+                  key={`${q.label}:${q.message}`}
                   variant="secondary"
                   size="sm"
-                  disabled={composer.busyPending}
-                  onClick={() => void composer.submitPending(q).catch(() => {})}
+                  disabled={composer.busyPending || navigationReply.busy}
+                  onClick={() => {
+                    // Old string-only replies came from turns that could also
+                    // render the separate editor venue button. While such a
+                    // turn drains, fuse the reply with that venue instead of
+                    // preserving the broken context-less path.
+                    const target = navigationTargetForReply(
+                      q,
+                      workplaceDraft.designing &&
+                        !workplaceDraft.source &&
+                        !route.startsWith("/editor"),
+                      reference,
+                    );
+                    if (target) {
+                      navigationReply.submit(q.message, target);
+                      return;
+                    }
+                    void sendSuggestedReply(q.message).catch(() => {});
+                  }}
                 >
-                  {q}
+                  {q.label}
                 </Button>
               ))}
+              {!!session.runId &&
+                workplaceDraft.designing &&
+                !workplaceDraft.source &&
+                !route.startsWith("/editor") &&
+                !composer.quickReplies.some((q) => !!q.navigateTo || q.legacy) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={composer.busyPending || navigationReply.busy}
+                    onClick={() =>
+                      navigationReply.submit(
+                        EDITOR_OPENED_CONFIRMATION,
+                        editorTargetForPage(reference),
+                      )
+                    }
+                  >
+                    Open the editor
+                  </Button>
+                )}
+            </div>
+          )}
+          {navigationReply.error && (
+            <div className="px-3 pt-2 text-caption text-danger-fg">
+              {navigationReply.error}
             </div>
           )}
           {composer.pendingApproval ? (

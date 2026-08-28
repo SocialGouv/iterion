@@ -43,8 +43,10 @@ export interface AssistantComposer {
     | undefined;
   // Structured ask_user options (chips). Empty on a plain chat pause.
   options: AskUserOption[];
-  // Nexie's suggested next messages on a chat pause.
-  quickReplies: string[];
+  // Suggested next messages on a chat pause. A reply may carry a typed
+  // Studio-owned destination: the UI navigates there, refreshes context, then
+  // sends the message. The model never supplies an href.
+  quickReplies: AssistantQuickReply[];
   // An ask_user pause with options may forbid free text — the chips are
   // then the only input.
   allowFreeText: boolean;
@@ -65,6 +67,15 @@ export interface AssistantComposer {
   // before it is sent — the dock uses it to prepend the page-context
   // pointer, the route view passes nothing.
   onComposerSend: (text: string, opts: { skills: string[] }) => Promise<void>;
+}
+
+export interface AssistantQuickReply {
+  label: string;
+  message: string;
+  /** Typed reference resolved through the Studio allowlist, never a URL. */
+  navigateTo: string | null;
+  /** Compatibility marker for pre-typed string replies. */
+  legacy: boolean;
 }
 
 export function useAssistantComposer({
@@ -107,7 +118,7 @@ export function useAssistantComposer({
     : true;
   const willDecorateMessage =
     !!decorate && (!pendingIsAskUser || options.length === 0);
-  const quickReplies: string[] = !pendingIsAskUser
+  const quickReplies: AssistantQuickReply[] = !pendingIsAskUser
     ? readQuickReplies(pendingHumanQuestion?.questions)
     : [];
 
@@ -247,15 +258,17 @@ export function assistantHumanAnswer(
   return answer;
 }
 
-// readQuickReplies lifts Nexie's suggested next messages off the chat
+// readQuickReplies lifts suggested next messages off the chat
 // pause's questions payload (`quick_replies: json` on the turn output,
-// mapped into the chat node's input). Tolerates absent / malformed
-// payloads — chips are sugar, never load-bearing. A `json`-typed schema
-// field can arrive as the literal TEXT of a JSON array (the LLM emits
-// the array stringified) — parse that shape too.
+// mapped into the chat node's input). New replies are typed objects so a chip
+// can ask the Studio to navigate to a REFERENCE before sending. Old string
+// replies remain readable while an existing conversation drains. Tolerates
+// absent / malformed payloads — chips are sugar, never load-bearing. A
+// `json`-typed schema field can arrive as the literal TEXT of a JSON array (the
+// LLM emits the array stringified) — parse that shape too.
 export function readQuickReplies(
   questions: Record<string, unknown> | undefined,
-): string[] {
+): AssistantQuickReply[] {
   let raw = questions?.quick_replies;
   if (typeof raw === "string" && raw.trim().startsWith("[")) {
     try {
@@ -265,7 +278,25 @@ export function readQuickReplies(
     }
   }
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .slice(0, 4);
+  const replies: AssistantQuickReply[] = [];
+  for (const value of raw) {
+    if (replies.length >= 4) break;
+    if (typeof value === "string") {
+      const message = value.trim();
+      if (!message) continue;
+      replies.push({ label: message, message, navigateTo: null, legacy: true });
+      continue;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const item = value as Record<string, unknown>;
+    const message = typeof item.message === "string" ? item.message.trim() : "";
+    const label = typeof item.label === "string" ? item.label.trim() : message;
+    const navigateTo =
+      typeof item.navigate_to === "string" && item.navigate_to.trim()
+        ? item.navigate_to.trim()
+        : null;
+    if (!message || !label) continue;
+    replies.push({ label, message, navigateTo, legacy: false });
+  }
+  return replies;
 }

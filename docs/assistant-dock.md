@@ -127,6 +127,22 @@ siblings, reporting the skip as a `discovery_errors` entry on
 `GET /api/v1/bots` (a `bots: skipping …` warning on the CLI's stderr, a
 banner in the studio's Bots view).
 
+## Suggested replies that change surface
+
+A suggested reply may carry `navigate_to`, a typed Studio reference rather
+than an href. Clicking it is one transaction: the Studio validates and resolves
+the reference, navigates, waits for the destination context, then sends the
+reply selected by the operator. For `bot/<path>`, reaching `/editor` is not
+enough: the exact file must be active and `<active-editor-document>` must be
+complete before the message leaves. A timeout or oversized document sends
+nothing and reports the error in the dock.
+
+This replaces the separate “Open the editor” venue button. A reply such as
+“Modify this bot” therefore cannot bypass the navigation it requires. Old
+string-only replies are fused with the editor transition while existing
+conversations drain. The model never supplies a URL; unknown, malformed and
+workspace-escaping references are rejected before navigation.
+
 ## Actions and operator autonomy
 
 Assistant reads and navigation do not need an action policy. Writes do. A
