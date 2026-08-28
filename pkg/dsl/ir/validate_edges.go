@@ -1,5 +1,7 @@
 package ir
 
+import "strings"
+
 // ---------------------------------------------------------------------------
 // C009 — session: inherit/fork forbidden on convergence points
 // ---------------------------------------------------------------------------
@@ -332,6 +334,71 @@ func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 			"edge %s -> %s is a %s edge (%s) that crosses or ambiguously re-enters a fan_out_all/fan_out_each/llm-multi boundary; bounded iteration must be wholly owned by one branch (C244)",
 			e.From, e.To, kind, name)
 	}
+	c.validateBoundedIterationScopeIsUnique(w, body, owners)
+}
+
+// validateBoundedIterationScopeIsUnique rejects a loop/foreach NAME whose
+// back-edges live in two different execution scopes — a trunk edge and a
+// branch-local edge, or edges owned by two sibling branches. Every edge may
+// pass the per-edge ownership test above, yet the compiler folds edges sharing
+// a name into ONE Loop, and at run time a branch composes its enclosing trunk
+// counters with its own: a branch-local counter of the same name would shadow
+// the trunk's, collapsing distinct trunk iterations in `iteration_path`, in the
+// human-interaction id of a branch gate, and in the artifact execution key.
+// The runtime has no way to tell the two apart, so the name must be unique to
+// one scope (C244).
+func (c *compiler) validateBoundedIterationScopeIsUnique(w *Workflow, body map[string]bool, owners map[string]map[string]bool) {
+	scopes := map[string]string{} // loop/foreach name → "trunk" or owning branch root
+	for _, e := range w.Edges {
+		if !e.IsBoundedIteration() {
+			continue
+		}
+		name := e.LoopName
+		if e.ForeachName != "" {
+			name = "foreach:" + e.ForeachName
+		}
+		scope, ok := boundedIterationScope(w, e, body, owners)
+		if !ok {
+			continue // already reported by the per-edge check
+		}
+		if prev, seen := scopes[name]; !seen {
+			scopes[name] = scope
+		} else if prev != scope {
+			kind := "loop"
+			if e.ForeachName != "" {
+				kind = "foreach"
+			}
+			c.errorfAt(DiagLoopInExecBranch, e.From, edgeID(e.From, e.To),
+				"edge %s -> %s reuses %s name %q across execution scopes (%s and %s); a branch-local counter would shadow the enclosing one, so a bounded iteration name must belong to a single scope (C244)",
+				e.From, e.To, kind, strings.TrimPrefix(name, "foreach:"), describeIterationScope(prev), describeIterationScope(scope))
+		}
+	}
+}
+
+// boundedIterationScope names the execution scope that owns a bounded edge:
+// "trunk" when neither endpoint sits in a parallel body, else the branch root
+// both endpoints share. ok is false for the shapes C244 rejects per edge.
+func boundedIterationScope(w *Workflow, e *Edge, body map[string]bool, owners map[string]map[string]bool) (string, bool) {
+	if edgeFromExecBranchRouter(w, e) {
+		return "", false
+	}
+	if !body[e.From] && !body[e.To] && len(owners[e.From]) == 0 && len(owners[e.To]) == 0 {
+		return "trunk", true
+	}
+	if !hasSingleCommonBranchOwner(owners[e.From], owners[e.To]) {
+		return "", false
+	}
+	for owner := range owners[e.From] {
+		return owner, true
+	}
+	return "", false
+}
+
+func describeIterationScope(scope string) string {
+	if scope == "trunk" {
+		return "the trunk"
+	}
+	return "the branch rooted at " + scope
 }
 
 // validateImplicitCollectorMigration warns about the execution-shape change

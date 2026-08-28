@@ -693,3 +693,111 @@ workflow test:
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
+
+func TestValidateLoopNameSharedByTrunkAndBranch_Rejected(t *testing.T) {
+	// Each edge passes the per-edge ownership test (a1 -> dummy is owned by
+	// the a1 branch, join -> r1 is on the trunk), but both back-edges share
+	// the loop name, so the compiler folds them into one Loop and the branch's
+	// local counter would shadow the enclosing trunk counter at run time.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool dummy:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> dummy as retry(3) when ok
+  a1 -> join else
+  dummy -> join
+  a2 -> join
+  join -> r1 as retry(3) when ok
+  join -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateLoopNameSharedBySiblingBranches_Rejected(t *testing.T) {
+	// Two sibling branches each own a self-loop under the same name: neither
+	// edge crosses a boundary, but the name would map onto one durable Loop
+	// whose counters the siblings cannot share.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> a1 as retry(3) when ok
+  a1 -> join else
+  a2 -> a2 as retry(3) when ok
+  a2 -> join else
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+func TestValidateDistinctLoopNamesAcrossScopes_Allowed(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> a1 as inner(3) when ok
+  a1 -> join else
+  a2 -> join
+  join -> r1 as outer(3) when ok
+  join -> done else
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
