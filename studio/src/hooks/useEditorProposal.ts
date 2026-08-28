@@ -9,6 +9,8 @@ const EMPTY: EditorProposalLookup = {
   source: null,
   sessionId: null,
   revision: null,
+  applyIntent: "none",
+  saveIntent: "none",
 };
 
 export function editorProposalQueryKey(runId: string, revision: number) {
@@ -29,4 +31,3 @@ export function useEditorProposal(
   });
   return query.data ?? EMPTY;
 }
-

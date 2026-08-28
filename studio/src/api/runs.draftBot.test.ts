@@ -196,6 +196,8 @@ describe("lookupEditorProposal", () => {
           draft_bot: "workflow changed:\n",
           editor_session_id: "opaque-session",
           editor_revision: 7,
+          editor_apply_intent: "explicit",
+          editor_save_intent: "explicit",
         },
       },
     );
@@ -203,6 +205,8 @@ describe("lookupEditorProposal", () => {
       source: "workflow changed:\n",
       sessionId: "opaque-session",
       revision: 7,
+      applyIntent: "explicit",
+      saveIntent: "explicit",
     });
   });
 
@@ -226,6 +230,27 @@ describe("lookupEditorProposal", () => {
       source: null,
       sessionId: null,
       revision: null,
+      applyIntent: "none",
+      saveIntent: "none",
+    });
+  });
+
+  it("does not grant save autonomy for an unknown model value", async () => {
+    stubApi(
+      [{ node_id: "copi", version: 2, written_at: "2026-08-23T12:00:00Z" }],
+      {
+        "copi/2": {
+          mode: "design",
+          draft_bot: "workflow changed:\n",
+          editor_session_id: "opaque-session",
+          editor_revision: 7,
+          editor_save_intent: "always-trust-me",
+        },
+      },
+    );
+    await expect(lookupEditorProposal("run1")).resolves.toMatchObject({
+      applyIntent: "none",
+      saveIntent: "none",
     });
   });
 });

@@ -1,6 +1,15 @@
 import { useState } from "react";
 
 import { Checkbox } from "@/components/ui/Checkbox";
+import { Select } from "@/components/ui/Select";
+import {
+  ASSISTANT_ACTIONS,
+  ASSISTANT_ACTION_POLICY_OPTIONS,
+  type AssistantActionDefinition,
+  type AssistantActionPolicy,
+  useAssistantActionPolicy,
+  writeAssistantActionPolicy,
+} from "@/lib/chatDock/assistantActions";
 import {
   readAskBeforeStart,
   readReviewer,
@@ -53,10 +62,68 @@ export default function AssistantTab() {
         </p>
       </section>
 
+      <section className="space-y-3">
+        <div className="space-y-1">
+          <h3 className="text-label font-medium">Actions</h3>
+          <p className="text-caption text-fg-subtle">
+            Choose how much autonomy the assistant has for each host-controlled
+            action. These settings never bypass your permissions, validation,
+            revision checks, or read-only files.
+          </p>
+        </div>
+        <div className="divide-y divide-border-subtle rounded-md border border-border-subtle">
+          {ASSISTANT_ACTIONS.map((action) => (
+            <ActionPolicyRow key={action.id} action={action} />
+          ))}
+        </div>
+        <p className="text-caption text-fg-subtle">
+          “Explicitly requested” means the action may run automatically only
+          when your current request asks for it. “Always allow” lets the
+          assistant include it as part of a task. Newly added actions always
+          start at “Always ask”.
+        </p>
+      </section>
+
       <p className="text-caption text-fg-subtle">
-        Both are remembered in this browser, and only offered for assistants
-        whose bundle declares that it supports them.
+        These choices are remembered in this browser. Cross-review options are
+        only offered for assistants whose bundle declares that it supports
+        them; action policies are enforced by the Studio for every assistant.
       </p>
+    </div>
+  );
+}
+
+function ActionPolicyRow({ action }: { action: AssistantActionDefinition }) {
+  const policy = useAssistantActionPolicy(action.id);
+  return (
+    <div className="grid gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_14rem] sm:items-center">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="text-label font-medium">{action.label}</p>
+          <span className="rounded-full border border-border-subtle px-1.5 py-0.5 text-micro uppercase tracking-wide text-fg-subtle">
+            {action.risk}
+          </span>
+        </div>
+        <p className="mt-0.5 text-caption text-fg-subtle">
+          {action.description}
+        </p>
+      </div>
+      <Select
+        aria-label={`${action.label} policy`}
+        value={policy}
+        onChange={(event) =>
+          writeAssistantActionPolicy(
+            action.id,
+            event.target.value as AssistantActionPolicy,
+          )
+        }
+      >
+        {ASSISTANT_ACTION_POLICY_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </Select>
     </div>
   );
 }

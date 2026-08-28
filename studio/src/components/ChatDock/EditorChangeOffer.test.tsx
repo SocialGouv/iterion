@@ -15,6 +15,8 @@ const proposal = vi.hoisted(() => ({
     source: string | null;
     sessionId: string | null;
     revision: number | null;
+    applyIntent: "none" | "suggested" | "explicit";
+    saveIntent: "none" | "suggested" | "explicit";
   },
 }));
 
@@ -24,6 +26,7 @@ vi.mock("@/hooks/useEditorProposal", () => ({
 }));
 
 import { createEmptyDocument } from "@/lib/defaults";
+import { writeAssistantActionPolicy } from "@/lib/chatDock/assistantActions";
 import { captureActiveEditorDocument } from "@/lib/chatDock/editorSession";
 import { getOrCreateDocumentStore } from "@/store/document";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -46,13 +49,23 @@ async function liveProposal(path: string | null = "bots/demo/main.bot") {
     source: "workflow changed:\n  entry: b\n",
     sessionId: snapshot.sessionId,
     revision: snapshot.revision,
+    applyIntent: "explicit",
+    saveIntent: "none",
   };
   return { tabId, store, snapshot };
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
-  proposal.current = { source: null, sessionId: null, revision: null };
+  window.localStorage.clear();
+  window.history.replaceState({}, "", "/editor");
+  proposal.current = {
+    source: null,
+    sessionId: null,
+    revision: null,
+    applyIntent: "none",
+    saveIntent: "none",
+  };
   useTabsStore.setState({ tabs: [], activeEditorTabId: null, activeRunTabId: null });
   useServerInfoStore.setState({ info: null });
   api.parseSource.mockResolvedValue({
@@ -112,7 +125,7 @@ describe("EditorChangeOffer", () => {
 
     const apply = await screen.findByRole("button", { name: "Apply to editor" });
     expect((apply as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/return to the editor tab/i)).toBeTruthy();
+    expect(screen.getByText(/return to the captured editor tab/i)).toBeTruthy();
   });
 
   it("keeps Save As under operator control for an untitled buffer", async () => {
@@ -129,5 +142,56 @@ describe("EditorChangeOffer", () => {
         .disabled,
     ).toBe(true);
     expect(api.saveFile).not.toHaveBeenCalled();
+  });
+
+  it("offers one confirmed apply-and-save action", async () => {
+    const { store } = await liveProposal();
+    proposal.current.saveIntent = "explicit";
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Apply and save" }));
+    await screen.findByText("Editor change saved");
+
+    expect(store.getState().document?.workflows[0]?.name).toBe("changed");
+    expect(api.saveFile).toHaveBeenCalledTimes(1);
+    expect(store.getState().isDirty()).toBe(false);
+  });
+
+  it("auto-applies and saves only when both policies and explicit intent allow it", async () => {
+    const { store } = await liveProposal();
+    proposal.current.saveIntent = "explicit";
+    writeAssistantActionPolicy("editor.apply", "explicit");
+    writeAssistantActionPolicy("editor.save", "explicit");
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+    await screen.findByText("Editor change saved");
+
+    expect(api.parseSource).toHaveBeenCalledTimes(1);
+    expect(api.saveFile).toHaveBeenCalledTimes(1);
+    expect(store.getState().isDirty()).toBe(false);
+  });
+
+  it("enforces a denied apply policy instead of merely hiding the setting", async () => {
+    await liveProposal();
+    writeAssistantActionPolicy("editor.apply", "deny");
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    expect(screen.getByText(/applying assistant changes is disabled/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Apply to editor" })).toBeNull();
+    expect(api.parseSource).not.toHaveBeenCalled();
+  });
+
+  it("keeps the proposal but requires returning to the editor surface", async () => {
+    await liveProposal();
+    window.history.replaceState({}, "", "/runs/run-2");
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    expect(screen.getByText(/return to the captured editor tab/i)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Apply to editor" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Return to the bot" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/editor"));
   });
 });

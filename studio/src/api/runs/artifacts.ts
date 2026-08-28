@@ -172,6 +172,10 @@ async function blobToBase64(blob: Blob): Promise<string> {
 export const DRAFT_BOT_FIELD = "draft_bot";
 export const EDITOR_SESSION_FIELD = "editor_session_id";
 export const EDITOR_REVISION_FIELD = "editor_revision";
+export const EDITOR_APPLY_INTENT_FIELD = "editor_apply_intent";
+export const EDITOR_SAVE_INTENT_FIELD = "editor_save_intent";
+
+export type EditorActionIntent = "none" | "suggested" | "explicit";
 
 // The bot's own posture for the turn. A conversational bot that designs
 // workflows announces it here BEFORE it has anything to show, which is what
@@ -191,6 +195,12 @@ export interface EditorProposalLookup {
   source: string | null;
   sessionId: string | null;
   revision: number | null;
+  applyIntent: EditorActionIntent;
+  saveIntent: EditorActionIntent;
+}
+
+function editorActionIntent(value: unknown): EditorActionIntent {
+  return value === "suggested" || value === "explicit" ? value : "none";
 }
 
 // Newest artifacts first: a draft is the LATEST thing the conversation
@@ -259,6 +269,8 @@ export async function lookupEditorProposal(
     source: null,
     sessionId: null,
     revision: null,
+    applyIntent: "none",
+    saveIntent: "none",
   };
   const summaries = await listAllArtifacts(runId, opts);
   const ordered = [...summaries].sort((a, b) =>
@@ -291,7 +303,13 @@ export async function lookupEditorProposal(
       typeof source === "string" &&
       source.trim() !== ""
     ) {
-      return { source, sessionId: session, revision };
+      return {
+        source,
+        sessionId: session,
+        revision,
+        applyIntent: editorActionIntent(data[EDITOR_APPLY_INTENT_FIELD]),
+        saveIntent: editorActionIntent(data[EDITOR_SAVE_INTENT_FIELD]),
+      };
     }
     // `mode` exists on every current Copi turn. Reaching it without a valid
     // proposal means this newest turn intentionally carries no editor action.

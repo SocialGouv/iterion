@@ -107,6 +107,17 @@ schema turn_input:
 ##                    active-editor-document marker only when draft_bot is a
 ##                    proposed replacement for that live editor buffer. Empty
 ##                    string / 0 for an ordinary standalone draft.
+##   editor_apply_intent — `explicit` when the operator explicitly asked to
+##                    create/modify the live bot; `suggested` only for a
+##                    proposal Copi recommends without an explicit edit ask;
+##                    `none` without an editor-bound proposal.
+##   editor_save_intent — `explicit` only when the operator explicitly asked
+##                    to save/persist/write the proposed editor change;
+##                    `suggested` when saving is a useful next action but was
+##                    not explicitly requested; `none` without an editor-bound
+##                    proposal or when they asked for a preview only. This is a
+##                    REQUEST, never authority: the Studio applies the
+##                    operator's action policy.
 schema copi_turn:
   reply:         string
   close:         bool
@@ -117,6 +128,8 @@ schema copi_turn:
   has_draft:     bool
   editor_session_id: string
   editor_revision:   int
+  editor_apply_intent: string
+  editor_save_intent: string
 
 ## The draft crosses into the deterministic validator as typed data. The
 ## engine shell-escapes command refs before execution, so even an LLM-authored
@@ -329,15 +342,26 @@ prompt copi_system:
                   `has_draft: true`, so the deterministic validator checks it;
                 · copy `sessionId` to `editor_session_id` and `revision` to
                   `editor_revision` EXACTLY. Never invent either value;
+                · set `editor_apply_intent: explicit` because this branch is
+                  entered only for the CURRENT operator's explicit create or
+                  modify request. Use `suggested` for any future unsolicited
+                  improvement proposal; intent never grants permission;
+                · set `editor_save_intent` to `explicit` only if the CURRENT
+                  operator message explicitly asks to save/persist/write the
+                  change; `suggested` when saving the existing bot is a useful
+                  next action but was not asked; `none` when they asked for a
+                  preview or buffer-only experiment. This field requests a
+                  host action — it never grants permission;
                 · summarize the change in `reply`; do not dump the whole
-                  source there. The studio offers Apply on that exact tab,
-                  then the operator explicitly chooses Save.
+                  source there. The studio applies the operator's configured
+                  action policy on that exact tab.
               This is a proposal to the studio, NOT file access: you still
               cannot write, choose a path, Save As, or claim the buffer was
               changed. If the marker is absent/incomplete, the session or
               revision is unknown, or the operator only asked a question,
-              leave `editor_session_id` empty and `editor_revision: 0`. Never
-              emit a partial replacement from `complete: false`.
+              leave `editor_session_id` empty, `editor_revision: 0`,
+              `editor_apply_intent: none`, and `editor_save_intent: none`.
+              Never emit a partial replacement from `complete: false`.
     debug   — diagnose a run, a diagnostic code, a failure. Read the
               evidence before concluding, straight from the run store:
               `<store>/runs/<id>/run.json` (status + checkpoint),
@@ -474,6 +498,13 @@ prompt copi_system:
                      replacement; "" for a standalone draft/no change.
     editor_revision — exact active-editor revision for that proposal; 0
                      whenever editor_session_id is empty.
+    editor_apply_intent — one of `none`, `suggested`, `explicit`, following
+                     the live-editor rule above. Always `none` when
+                     editor_session_id is empty.
+    editor_save_intent — one of `none`, `suggested`, `explicit`, following
+                     the live-editor rule above. Always `none` when
+                     editor_session_id is empty. It requests an action; the
+                     Studio alone decides whether to deny, ask, or execute.
 
   Standing scope from the launch: {{vars.scope_notes}}
 

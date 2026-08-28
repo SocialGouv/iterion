@@ -58,8 +58,10 @@ type ChatSurface struct {
 
 // ChatEditorSurface is deliberately capability-shaped rather than bot-shaped:
 // every conversational bot opts into the same editor-session protocol. The
-// fixed artifact fields are `draft_bot`, `editor_session_id`, and
-// `editor_revision`; the studio, never the model, owns applying and saving.
+// fixed artifact fields are `draft_bot`, `editor_session_id`,
+// `editor_revision`, `editor_apply_intent`, and `editor_save_intent`; intent
+// requests a host action but grants no authority. The studio, never the model,
+// owns policy evaluation, applying, and saving.
 type ChatEditorSurface struct {
 	Context   bool `json:"context,omitempty" yaml:"context,omitempty"`
 	Proposals bool `json:"proposals,omitempty" yaml:"proposals,omitempty"`

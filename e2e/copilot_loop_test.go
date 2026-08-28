@@ -710,15 +710,17 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 
 	exec.on("copi", func(map[string]any) (map[string]any, error) {
 		return map[string]any{
-			"reply":             answer,
-			"close":             false,
-			"mode":              "info",
-			"context_brief":     "brief",
-			"quick_replies":     []any{},
-			"has_draft":         false,
-			"draft_bot":         "",
-			"editor_session_id": "",
-			"editor_revision":   0,
+			"reply":               answer,
+			"close":               false,
+			"mode":                "info",
+			"context_brief":       "brief",
+			"quick_replies":       []any{},
+			"has_draft":           false,
+			"draft_bot":           "",
+			"editor_session_id":   "",
+			"editor_revision":     0,
+			"editor_apply_intent": "none",
+			"editor_save_intent":  "none",
 		}, nil
 	})
 	exec.on("review", func(input map[string]any) (map[string]any, error) {
@@ -834,27 +836,31 @@ func TestCopilot_DraftValidation_ReachesChat(t *testing.T) {
 			exec.on("copi", func(map[string]any) (map[string]any, error) {
 				if exec.callCount("copi") > 1 {
 					return map[string]any{
-						"reply":             plainAnswer,
-						"close":             false,
-						"mode":              "info",
-						"context_brief":     "brief",
-						"quick_replies":     []any{},
-						"has_draft":         false,
-						"draft_bot":         "",
-						"editor_session_id": "",
-						"editor_revision":   0,
+						"reply":               plainAnswer,
+						"close":               false,
+						"mode":                "info",
+						"context_brief":       "brief",
+						"quick_replies":       []any{},
+						"has_draft":           false,
+						"draft_bot":           "",
+						"editor_session_id":   "",
+						"editor_revision":     0,
+						"editor_apply_intent": "none",
+						"editor_save_intent":  "none",
 					}, nil
 				}
 				return map[string]any{
-					"reply":             answer,
-					"close":             false,
-					"mode":              "design",
-					"context_brief":     "brief",
-					"quick_replies":     []any{},
-					"has_draft":         true,
-					"draft_bot":         "workflow draft { entry: start }",
-					"editor_session_id": "",
-					"editor_revision":   0,
+					"reply":               answer,
+					"close":               false,
+					"mode":                "design",
+					"context_brief":       "brief",
+					"quick_replies":       []any{},
+					"has_draft":           true,
+					"draft_bot":           "workflow draft { entry: start }",
+					"editor_session_id":   "",
+					"editor_revision":     0,
+					"editor_apply_intent": "none",
+					"editor_save_intent":  "none",
 				}, nil
 			})
 			exec.on("validate_draft", func(map[string]any) (map[string]any, error) {
