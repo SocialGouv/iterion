@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -261,5 +263,70 @@ func TestBankPushesThroughOriginNotClaimTimeURL(t *testing.T) {
 	run := loadRun(t, r, msg.RunID)
 	if run.FinalBranch == "" || run.FinalBranchError != "" {
 		t.Fatalf("bank recorded %q with error %q, want a clean banked branch", run.FinalBranch, run.FinalBranchError)
+	}
+}
+
+// The bank contract by classified outcome: a finished run banks, and so
+// do the deaths whose successor would otherwise restart from the base
+// commit (budget_exceeded, failed) — measured as nine manual
+// store-snapshot recoveries in three days of one campaign before this.
+// Pauses resume in place, an interrupted delivery re-clones and banks on
+// its next attempt, a cancel is the operator refusing the work: none of
+// those bank. Keyed on classifyExecResult's output so the
+// budget-beats-interrupted precedence transfers verbatim.
+func TestBankableStatusFollowsClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"finished banks", nil, true},
+		{"budget exceeded banks", runtime.ErrBudgetExceeded, true},
+		{"wrapped budget exceeded banks", fmt.Errorf("%w: duration (14401/14400)", runtime.ErrBudgetExceeded), true},
+		{"bare runtime-error budget code banks", &runtime.RuntimeError{
+			Code: runtime.ErrCodeBudgetExceeded, Message: "budget hard limit reached",
+		}, true},
+		{"generic failure banks", errors.New("boom"), true},
+		{"paused does not bank", runtime.ErrRunPaused, false},
+		{"operator pause does not bank", runtime.ErrRunPausedOperator, false},
+		{"interrupted does not bank", runtime.ErrRunInterrupted, false},
+		{"cancelled does not bank", runtime.ErrRunCancelled, false},
+		// The one case a sentinel-order reimplementation would get wrong:
+		// an interruption that also carries a spent budget classifies as
+		// budget_exceeded — acked, never redelivered — so skipping the
+		// bank here strands the work with no next attempt to bank it.
+		{"budget-carrying interruption banks like a budget death",
+			errors.Join(runtime.ErrRunInterrupted, runtime.ErrBudgetExceeded), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := bankableStatus(classifyExecResult(c.err, "run-1").finalStatus)
+			if got != c.want {
+				t.Errorf("bankable(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+// A budget death banks exactly like a success: branch on the forge,
+// FinalCommit/FinalBranch on the run doc — so `runs merge` works on a
+// dead run and its successor starts from the banked head, not from base.
+func TestBankOnBudgetDeathLandsTheBranch(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work paid for before the cap")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	deathErr := fmt.Errorf("%w: duration (14401/14400)", runtime.ErrBudgetExceeded)
+	if !bankableStatus(classifyExecResult(deathErr, msg.RunID).finalStatus) {
+		t.Fatal("a budget death must be bankable")
+	}
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{})
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("banked %q (present=%v), want %s on the forge", got, ok, head)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranch != "iterion/run-"+msg.RunID || run.FinalCommit != head || run.FinalBranchError != "" {
+		t.Fatalf("run doc = branch %q commit %q err %q, want the banked branch recorded clean", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
 	}
 }

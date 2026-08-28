@@ -377,6 +377,22 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	}
 }
 
+// bankableStatus says whether a run that classified to this finalStatus
+// should push its workspace branch to the forge (bankRepoWorkspace).
+// Keyed on classifyExecResult's OUTPUT, not on raw sentinels, so the
+// budget-beats-interrupted precedence lives in exactly one place: an
+// interruption that also carries a spent budget classifies as
+// budget_exceeded — a manual-resume death whose redelivery never comes
+// back on its own — and must bank like one. classifyExecResult is pure,
+// so the bank site calls it a second time without side effects.
+func bankableStatus(finalStatus string) bool {
+	switch finalStatus {
+	case "finished", "budget_exceeded", "failed":
+		return true
+	}
+	return false
+}
+
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
@@ -1534,11 +1550,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// clean "no commits" (run 01a02a4b).
 		integ := engine.SandboxWorkspaceIntegrity()
 		r.recordRunGitMeta(ctx, msg, workDir, gitBase, integ)
-		// Bank a SUCCESSFUL repo-targeted run to the forge before the
-		// clone is wiped: the worktree-finalization path never fires
-		// here, so without this push a finished run's commits exist
-		// nowhere the server can reach (runs merge: "nothing to merge").
-		if runErr == nil {
+		// Bank a repo-targeted run's work to the forge before the clone
+		// is wiped — on success AND on the deaths whose successor would
+		// otherwise restart from RepoSHA: the worktree-finalization path
+		// never fires here, so an unbanked death leaves its commits only
+		// in the git-meta snapshot above, and turning that snapshot back
+		// into a branch takes a manual replay every time (measured: nine
+		// manual recoveries in three days of one campaign). Pauses resume
+		// in place, an interrupted delivery re-clones and banks on its
+		// next attempt, and a cancel is the operator saying the work is
+		// not wanted — none of those bank.
+		if bankableStatus(classifyExecResult(runErr, msg.RunID).finalStatus) {
 			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
 		}
 	}

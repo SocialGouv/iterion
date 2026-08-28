@@ -557,18 +557,22 @@ func injectGitToken(rawURL, token string) string {
 	return u.String()
 }
 
-// bankRepoWorkspace pushes a successful repo-targeted run's work to the
-// forge as a per-run storage branch and records FinalCommit/FinalBranch,
-// so `runs merge` has something to merge. The worktree-finalization path
+// bankRepoWorkspace pushes a repo-targeted run's work to the forge as a
+// per-run storage branch and records FinalCommit/FinalBranch, so
+// `runs merge` has something to merge. The worktree-finalization path
 // that normally banks a run never fires on this path ("store has no
-// filesystem root — worktree isolation skipped"), which used to leave a
-// FINISHED run's commits only in this pod's soon-wiped clone.
+// filesystem root — worktree isolation skipped"), which used to leave
+// the run's commits only in this pod's soon-wiped clone.
 //
-// Called only when the run succeeded. A push failure never changes the
-// run's outcome — the work is done, and failing the run would re-run all
-// of it — but it is never silent either: the cause lands in
-// FinalBranchError and FinalBranch stays empty, so merge keeps refusing
-// with the truth instead of a bare "nothing to merge".
+// Called for every bankable outcome (bankableStatus): a finished run,
+// and the deaths — budget_exceeded, failed — whose successor would
+// otherwise restart from the base commit with the work stranded in the
+// git-meta snapshot. The push is force-to-own-branch and the branch name
+// is per-run, so a later attempt that ends better simply overwrites. A
+// push failure never changes the run's outcome — but it is never silent
+// either: the cause lands in FinalBranchError and FinalBranch stays
+// empty, so merge keeps refusing with the truth instead of a bare
+// "nothing to merge".
 func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity) {
 	head, headErr := gitlib.RevParseHead(workDir)
 	if integ.Applicable {
