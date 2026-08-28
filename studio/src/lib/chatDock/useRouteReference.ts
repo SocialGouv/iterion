@@ -16,6 +16,11 @@ import { useLocation, useSearch } from "wouter";
 
 import { useAssistantDock } from "@/components/ChatDock/AssistantProvider";
 
+import {
+  pageContextSnapshot,
+  useRegisteredAssistantPageContext,
+  type AssistantPageContextSnapshot,
+} from "./pageContext";
 import { referenceForRoute, type TypedReference } from "./routeReference";
 
 export interface RouteReferenceState {
@@ -25,6 +30,12 @@ export interface RouteReferenceState {
   // What the assistant is actually told. Null when there is nothing to
   // point at OR the operator dismissed it.
   active: TypedReference | null;
+  // Structured description of the visible page. It has an automatic route
+  // floor and merges any state registered by the current view.
+  page: AssistantPageContextSnapshot | null;
+  // Null whenever the reference was dismissed, so one control disables both
+  // the pointer and its richer page state.
+  activePage: AssistantPageContextSnapshot | null;
   dismissed: boolean;
   dismiss: () => void;
   restore: () => void;
@@ -44,6 +55,7 @@ export function useRouteReference(): RouteReferenceState {
   const [location] = useLocation();
   const search = useSearch();
   const dockCtx = useAssistantDock();
+  const contribution = useRegisteredAssistantPageContext();
   // Both hooks run unconditionally (hook order); the provider's state
   // wins whenever there is one.
   const [localRef, setLocalRef] = useState<string | null>(null);
@@ -55,6 +67,11 @@ export function useRouteReference(): RouteReferenceState {
     [location, search],
   );
   const active = activeReference(reference, dismissedRef);
+  const page = useMemo(
+    () => pageContextSnapshot(location, reference, contribution),
+    [location, reference, contribution],
+  );
+  const activePage = active ? page : null;
 
   const dismiss = useCallback(() => {
     setDismissedRef(reference?.ref ?? null);
@@ -64,6 +81,8 @@ export function useRouteReference(): RouteReferenceState {
   return {
     reference,
     active,
+    page,
+    activePage,
     dismissed: reference !== null && active === null,
     dismiss,
     restore,

@@ -22,6 +22,7 @@ import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useAuth } from "@/auth/AuthContext";
 import { Button, InlineBanner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
+import { useAssistantPageContext } from "@/lib/chatDock/pageContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 
@@ -107,6 +108,49 @@ export default function BotBuilderView() {
 function Builder() {
   const [, setLocation] = useLocation();
   const { draft, setDraft, draftSaved, created, onCreated } = useBuilderDraft();
+  const slug = useMemo(() => deriveSlug(draft.name), [draft.name]);
+  const assistantContext = useMemo(
+    () => ({
+      title: draft.name.trim() || "New bot",
+      section:
+        draft.phase === 1 ? "template-gallery" : created ? "test-created-bot" : "bot-form",
+      entity: {
+        type: created ? "bot" : "bot-draft",
+        id: created?.name || slug || "new",
+        label: created?.display_name?.trim() || draft.name.trim() || "New bot",
+      },
+      state: {
+        draft: created === null,
+        phase: draft.phase,
+        ...(draft.templateId ? { templateId: draft.templateId } : {}),
+        form: {
+          name: draft.name,
+          description: draft.description,
+          instructions: draft.instructions,
+          whenToUse: draft.whenToUse,
+          capabilities: draft.capabilities,
+          model: draft.model,
+          backend: draft.backend,
+          skills: draft.skills,
+          variables: draft.vars.map((variable) => ({
+            name: variable.name,
+            type: variable.type,
+            description: variable.description,
+            // Defaults are intentionally omitted: operators sometimes use
+            // them for credentials despite the dedicated secret surface.
+          })),
+          worktree: draft.worktree,
+          sandbox: draft.sandbox,
+          permission: draft.permission,
+          maxCostUsd: draft.maxCostUsd,
+          maxDuration: draft.maxDuration,
+          scheduleCron: draft.scheduleCron,
+        },
+      },
+    }),
+    [draft, created, slug],
+  );
+  useAssistantPageContext(assistantContext);
 
   if (draft.phase === 1) {
     return (

@@ -22,16 +22,19 @@
 
 import { EyeOpenIcon } from "@radix-ui/react-icons";
 
+import type { AssistantPageContextSnapshot } from "@/lib/chatDock/pageContext";
 import type { TypedReference } from "@/lib/chatDock/routeReference";
 
 import { stripSpeaks } from "./ContextChip";
 
 export default function ContextEye({
   reference,
+  page,
   dismissed,
   onDismiss,
 }: {
   reference: TypedReference | null;
+  page?: AssistantPageContextSnapshot | null;
   dismissed: boolean;
   onDismiss: () => void;
 }) {
@@ -41,7 +44,13 @@ export default function ContextEye({
   // title carries the wire form as well: a sighted operator hovers, a
   // screen-reader user hears it on focus, and neither has to take the
   // pointer on trust.
-  const said = `Sending this page as context: ${reference.ref}`;
+  const details = [
+    reference.ref,
+    page?.route ? `route ${page.route}` : null,
+    page?.section ? `section ${page.section}` : null,
+    page?.state?.dirty === true ? "unsaved changes" : null,
+  ].filter(Boolean);
+  const said = `Sending this page as context: ${details.join("; ")}`;
   return (
     <button
       type="button"

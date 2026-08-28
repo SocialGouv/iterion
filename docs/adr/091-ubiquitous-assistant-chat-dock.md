@@ -88,12 +88,16 @@ operator clicks. A single context would re-render every consumer —
 including `AppShell`, which reads the dock state to reserve the docked
 column — on each event, dragging the whole route subtree with it.
 
-### C. Implicit context is a typed POINTER, from a declarative map
+### C. Implicit context is a typed pointer plus a bounded visible snapshot
 
 [`referenceForRoute`](../../studio/src/lib/chatDock/routeReference.ts)
 maps a location to `run/<id>`, `card/<id>`, `bot/<path>`, `repo/<key>` or
 `view/<name>` — the same vocabulary an explicit drop chip produces, so
-both paths converge on one protocol and a bot has one thing to learn.
+both paths converge on one protocol and a bot has one thing to learn. Every
+route also emits a one-line `<visible-page-context>{…}</visible-page-context>`
+snapshot with its pathname and semantic page state. Known views enrich that
+floor through `useAssistantPageContext` (selected editor item, active section,
+dirty state); it is explicitly not a DOM or accessibility-tree scrape.
 
 Two properties are load-bearing:
 
@@ -114,11 +118,11 @@ Two properties are load-bearing:
   studio that emits a wire format its only consumer was never taught is
   a chip that looks like context and is not; teaching the bot is part of
   shipping the protocol, not a follow-up.
-- **A table, not per-view handlers.** Opting a view in is a row in
-  `ROUTE_RULES`. The alternative — a `useChatContext()` call inside each
-  view — is how this kind of thing rots: half the views wired and nobody
-  sure which. An **unmapped route yields no reference**: wrong context is
-  worse than none.
+- **Automatic coverage, explicit enrichment.** `ROUTE_RULES` upgrades known
+  routes to resolvable entity pointers. An unmapped route still receives a
+  generic, distinct `view/route-…` reference, so a newly-added page never
+  silently loses context. A view hook is reserved for state a route cannot
+  know; its contributions merge and mounted-but-hidden panes do not publish.
 - **The delimiter is a security boundary, so it is enforced, not
   assumed.** *(added 2026-08-01, after the first implementation shipped
   without it.)* The reference is minted from route params, which are URL

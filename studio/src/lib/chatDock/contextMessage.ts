@@ -14,8 +14,14 @@
 
 import { sanitizeReferenceText } from "./routeReference";
 import type { TypedReference } from "./routeReference";
+import type {
+  AssistantPageContextSnapshot,
+  PageContextValue,
+} from "./pageContext";
 
 export const CONTEXT_PREFIX = "[page context:";
+export const VISIBLE_PAGE_PREFIX = "<visible-page-context>";
+export const VISIBLE_PAGE_SUFFIX = "</visible-page-context>";
 
 // The EXPLICIT half (#333). A separate prefix rather than more entries on the
 // page-context line, because the two mean different things to the bot: the
@@ -39,6 +45,7 @@ export function withPageContext(
   text: string,
   reference: TypedReference | null,
   attached: readonly TypedReference[] = [],
+  page: AssistantPageContextSnapshot | null = null,
 ): string {
   const trimmed = text.trim();
   if (trimmed === "") return trimmed;
@@ -51,6 +58,11 @@ export function withPageContext(
   // attacker-authored text at the top of the operator's own message.
   if (reference) {
     lines.push(`${CONTEXT_PREFIX} ${sanitizeReferenceText(reference.ref)}]`);
+  }
+  if (page) {
+    lines.push(
+      `${VISIBLE_PAGE_PREFIX}${serializeVisiblePage(page)}${VISIBLE_PAGE_SUFFIX}`,
+    );
   }
   if (attached.length > 0) {
     const refs = attached
@@ -85,11 +97,94 @@ export function withoutPageContext(text: string): string {
   let start = 0;
   while (start < lines.length) {
     const line = (lines[start] ?? "").trim();
-    if (line.startsWith(CONTEXT_PREFIX) || line.startsWith(ATTACHED_PREFIX)) {
+    if (
+      line.startsWith(CONTEXT_PREFIX) ||
+      line.startsWith(VISIBLE_PAGE_PREFIX) ||
+      line.startsWith(ATTACHED_PREFIX)
+    ) {
       start += 1;
       continue;
     }
     break;
   }
   return lines.slice(start).join("\n").trimStart();
+}
+
+// Page contributions are deliberately bounded metadata, not a DOM dump. The
+// limits keep an editor selection from swallowing the conversation, and the
+// key filter is defence in depth for a future view accidentally handing the
+// registry credentials. Views must still avoid registering secret values.
+const MAX_VISIBLE_PAGE_JSON = 8_000;
+const MAX_CONTEXT_STRING = 1_200;
+const MAX_CONTEXT_KEYS = 32;
+const MAX_CONTEXT_ARRAY = 16;
+const MAX_CONTEXT_DEPTH = 6;
+const SENSITIVE_KEY =
+  /(?:^|[_-])(?:password|passwd|secret|secrets|credential|credentials|authorization|cookie|api[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token|env|environment)(?:$|[_-])/i;
+
+export function serializeVisiblePage(
+  page: AssistantPageContextSnapshot,
+): string {
+  const sanitized = sanitizeContextValue(page, 0, new WeakSet<object>());
+  let json = JSON.stringify(sanitized);
+  if (json.length > MAX_VISIBLE_PAGE_JSON) {
+    const compact: AssistantPageContextSnapshot = {
+      route: page.route,
+      ...(page.title ? { title: page.title } : {}),
+      ...(page.section ? { section: page.section } : {}),
+      ...(page.entity ? { entity: page.entity } : {}),
+      state: { truncated: true },
+    };
+    json = JSON.stringify(
+      sanitizeContextValue(compact, 0, new WeakSet<object>()),
+    );
+  }
+  // JSON escapes quotes and real newlines, but not the XML-like delimiter.
+  // Escape angle brackets and the remaining Unicode line separators so page
+  // data cannot close the machine-generated line or create a second one.
+  return json
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function sanitizeContextValue(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>,
+): PageContextValue {
+  if (value === null) return null;
+  if (typeof value === "string") {
+    // C0/C1 controls have no useful place in page metadata. Replace rather
+    // than concatenate so two attacker-controlled words cannot be joined into
+    // a different identifier by stripping.
+    return value
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .slice(0, MAX_CONTEXT_STRING);
+  }
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (depth >= MAX_CONTEXT_DEPTH || typeof value !== "object") return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_CONTEXT_ARRAY)
+      .map((item) => sanitizeContextValue(item, depth + 1, seen));
+  }
+
+  const out: Record<string, PageContextValue> = {};
+  for (const [key, child] of Object.entries(value).slice(0, MAX_CONTEXT_KEYS)) {
+    if (SENSITIVE_KEY.test(key)) continue;
+    const safeKey = key
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+      .slice(0, 80);
+    if (!safeKey) continue;
+    out[safeKey] = sanitizeContextValue(child, depth + 1, seen);
+  }
+  return out;
 }

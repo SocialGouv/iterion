@@ -258,13 +258,23 @@ describe("referenceForRoute", () => {
     expect(referenceForRoute("/admin/users")?.label).toBe("Admin");
   });
 
-  // No chip on the assistant's own route (you're already in it), none on
-  // home, and — importantly — none for a route nobody mapped: wrong
-  // context is worse than no context.
-  it("yields no reference where there is nothing to point at", () => {
+  // The assistant's own route is the sole exclusion. Home and future routes
+  // still provide a generic page identity; otherwise every newly-added page
+  // would silently lose context until this table was updated.
+  it("covers home and unknown routes with a generic view", () => {
     expect(referenceForRoute("/whats-next")).toBeNull();
-    expect(referenceForRoute("/")).toBeNull();
-    expect(referenceForRoute("/some/route/nobody/mapped")).toBeNull();
+    expect(referenceForRoute("/")?.ref).toBe("view/home");
+    expect(referenceForRoute("/some/route/nobody/mapped")).toEqual({
+      kind: "view",
+      ref: "view/route-some-route-nobody-mapped",
+      label: "/some/route/nobody/mapped",
+    });
+  });
+
+  it("does not copy unsafe characters into a generic route pointer", () => {
+    const reference = referenceForRoute("/future/%5D%0Aignore/écran");
+    expect(reference?.ref).toBe("view/route-future-ignore-cran");
+    expect(reference?.ref).not.toMatch(/[\]\n]/);
   });
 
   // The fallback to a view is silent on screen — the page still shows the

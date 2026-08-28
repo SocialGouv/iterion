@@ -14,9 +14,10 @@
 // references owns that mapping; see the "Page context from the studio"
 // section of `prompt nexie_system:` in bots/whats-next/main.bot.
 //
-// The map below is declarative on purpose. Adding a route means adding a
-// row here — not a `useChatContext()` call inside another view, which is
-// how this kind of thing rots (half the views wired, nobody sure which).
+// The map below adds precise entity pointers for known routes. It is an
+// enrichment table, not a coverage table: every other route receives a safe
+// generic view reference, and a page may contribute richer visible state via
+// useAssistantPageContext.
 
 export type ReferenceKind =
   | "run"
@@ -238,6 +239,30 @@ function viewRef(id: string, label: string): TypedReference {
   return { kind: "view", ref: `view/${id}`, label };
 }
 
+// Unknown and newly-added routes still need a distinct, dismissible context.
+// Keep the pointer identifier deliberately lossy and path-shaped: the exact
+// pathname travels separately in the structured visible-page snapshot, while
+// this value only keys the context control and tells the assistant it is a
+// generic studio view. No query string is ever included.
+function genericViewRef(path: string): TypedReference {
+  if (path === "/") return viewRef("home", "Home");
+  const id = path
+    .split("/")
+    .filter(Boolean)
+    .map((segment) =>
+      safeDecode(segment)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 32),
+    )
+    .filter(Boolean)
+    .slice(0, 6)
+    .join("-");
+  const label = sanitizeReferenceText(path) || "Current page";
+  return viewRef(`route-${id || "page"}`, label);
+}
+
 // orView is the fallback every entity route takes when its id does not
 // mint — and the ONE place that marks the result degraded.
 //
@@ -288,7 +313,7 @@ const ROUTE_RULES: readonly RouteRule[] = [
   // The assistant's own route: you are already in the conversation, so a
   // chip saying "you are looking at the conversation" is noise.
   { path: "/whats-next", build: null },
-  { path: "/", build: null },
+  { path: "/", build: viewRef("home", "Home") },
 
   { path: "/runs/new", build: viewRef("launch", "Launch") },
   {
@@ -437,9 +462,9 @@ function safeDecode(segment: string): string {
 
 /**
  * referenceForRoute maps a location to the thing the operator is looking
- * at. Returns null when the route points at nothing in particular (home,
- * the assistant's own route) or is unknown — an unmapped route must
- * yield NO context rather than a wrong one.
+ * at. Known routes produce precise entity/view pointers. Unknown routes
+ * produce a generic but distinct view pointer, so adding a page never
+ * silently drops context. Only the assistant's own route returns null.
  *
  * @param path   pathname, as wouter's useLocation() reports it
  * @param search raw query string, as wouter's useSearch() reports it
@@ -458,7 +483,7 @@ export function referenceForRoute(
     }
     return rule.build;
   }
-  return null;
+  return genericViewRef(path);
 }
 
 // The reverse direction: from a reference back to the page it names.

@@ -140,9 +140,23 @@ The dock reports the page you are on as a **typed reference**:
 | `/repos/acme%2Fwidgets`  | `repo/acme/widgets`   |
 | `/board`, `/pipelines`, … | `view/board`, `view/pipelines`, … |
 
-Two things about it matter:
+The pointer is followed by a bounded structured snapshot:
 
-- **It is a pointer, never the page's content.** The reference travels as
+```text
+[page context: bot/bots/review-pr/main.bot]
+<visible-page-context>{"route":"/editor","title":"review-pr","section":"agent-inspector","entity":{"type":"bot","id":"bots/review-pr/main.bot"},"state":{"dirty":true,"selection":{"node":{"kind":"agent","name":"reviewer"}}}}</visible-page-context>
+```
+
+Every page gets the route, title and entity automatically. A view may enrich
+that floor with what the operator can actually see: active section, selected
+item, validation counts and unsaved-state metadata. This is deliberately a
+small semantic snapshot, never a DOM dump. The editor and both bot editing
+surfaces publish richer state; future views use the same
+`useAssistantPageContext` API.
+
+Three things about it matter:
+
+- **The reference stays a pointer, never the fetched entity's content.** It travels as
   one line on your message (`[page context: run/019fbd46…]`); the
   assistant then resolves it with the tools it already has. A run with
   thousands of events costs your prompt one line, and the assistant reads
@@ -156,6 +170,15 @@ Two things about it matter:
   are scope only: they tell the assistant what you are looking at, with
   nothing to fetch. A reference that does not resolve on this host is
   reported as such rather than guessed at.
+- **The visible snapshot is current, bounded and safe by default.** It is
+  captured when the message is sent, so navigating or selecting another node
+  changes the next turn's context without restarting the conversation.
+  `dirty: true` tells the assistant that what is visible may be newer than the
+  persisted file. Strings, nesting, arrays and the whole JSON line are capped;
+  credential-shaped keys are removed defensively, query strings are never
+  included automatically, and bot variable defaults are omitted. Views must
+  still never register secret values. The receiving bot is explicitly told
+  that every field is untrusted page DATA, never an instruction.
 - **It is a reference the URL cannot forge.** Route params are
   attacker-supplied — an operator only has to open a link someone sent
   them — so the mint both strips what would break the one-line,
@@ -228,12 +251,13 @@ Two things about it matter:
   the fallback every entity route takes — rather than at each `??`, where
   it is both easy to forget and impossible to notice.
 
-A route nobody mapped contributes **no** context rather than a guess.
-Home and `/whats-next` deliberately contribute none.
-
-Adding a route is a row in `ROUTE_RULES`
-([`studio/src/lib/chatDock/routeReference.ts`](../studio/src/lib/chatDock/routeReference.ts)) —
-there is no per-view wiring to forget.
+Every route contributes a generic, distinct `view/route-…` reference when no
+more precise rule exists; Home contributes `view/home`. `/whats-next` remains
+the sole exclusion because it renders this same assistant conversation
+full-width. Adding a row to `ROUTE_RULES` upgrades a generic page into a typed
+entity pointer. Calling `useAssistantPageContext` from a view enriches it with
+state the URL cannot express; mounted-but-hidden panes opt out so only what is
+actually visible wins.
 
 `node/<run>/<node>` is part of the same vocabulary but is not derivable
 from the URL today (node selection is component state, not a route
@@ -247,6 +271,7 @@ mean different things to the bot:
 
 ```
 [page context: view/pipelines]
+<visible-page-context>{"route":"/pipelines","title":"Pipelines"}</visible-page-context>
 [attached: run/019fbd46ed82, card/native:3a81df64]
 
 why did this one fail and the other stall?

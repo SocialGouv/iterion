@@ -137,7 +137,15 @@ function AssistantDock({
   dockWidth: number;
   onWidthChange: (px: number) => void;
 }) {
-  const { reference, active, dismissed, dismiss, restore } = useRouteReference();
+  const {
+    reference,
+    active,
+    page,
+    activePage,
+    dismissed,
+    dismiss,
+    restore,
+  } = useRouteReference();
 
   // The floating panel grows leftward from its top-left handle, so its width
   // budget must stop at the sidebar — not at the viewport edge. Focus mode
@@ -166,8 +174,8 @@ function AssistantDock({
   // assistant the operator is still asking about something they moved on
   // from.
   const decorate = useCallback(
-    (text: string) => withPageContext(text, active, attached),
-    [active, attached],
+    (text: string) => withPageContext(text, active, attached, activePage),
+    [active, attached, activePage],
   );
   const composer = useAssistantComposer({ bot, session, decorate });
   // The chat equivalent of a CLI's `/new`. Lives in the dock's own chrome
@@ -423,6 +431,7 @@ function AssistantDock({
                   strip it replaced this costs no vertical space. */}
               <ContextEye
                 reference={reference}
+                page={page}
                 dismissed={dismissed}
                 onDismiss={dismiss}
               />
