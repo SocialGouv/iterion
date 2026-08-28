@@ -149,4 +149,5 @@ const (
 	// trunk-only review and llm_or_human orchestration from becoming inert.
 	DiagLoopInExecBranch      DiagCode = "C244"
 	DiagHumanModeInExecBranch DiagCode = "C245"
+	DiagImplicitCollectorMove DiagCode = "C246" // bounded predecessor used to elect an implicit collector that now executes per branch (warning)
 )

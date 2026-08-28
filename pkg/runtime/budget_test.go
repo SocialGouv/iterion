@@ -2090,12 +2090,11 @@ func TestBudgetGraceRefusedOnImposedCap(t *testing.T) {
 	}
 }
 
-// TestBudgetGraceCoversFanOut pins the parallel path: the sequential
-// boundary graces a run past its cap, and the design deliberately allows
-// the graced walk to reach ANY forward node — including a fan-out. The
-// branch scheduler's own budget checks must consult the same grace, or
-// the run dies at the first router.
-func TestBudgetGraceCoversFanOut(t *testing.T) {
+// TestBudgetGraceStopsBeforeFanOutBranches pins the parallel safety rule:
+// branch-local predictive loop pricing is disabled because sibling spend is
+// shared, so its exit-grace safety argument does not hold. A graced trunk may
+// reach the router, but no branch node may start past the declared cap.
+func TestBudgetGraceStopsBeforeFanOutBranches(t *testing.T) {
 	wf := &ir.Workflow{
 		Name:  "budget_grace_fanout",
 		Entry: "work",
@@ -2136,10 +2135,10 @@ func TestBudgetGraceCoversFanOut(t *testing.T) {
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 	if err := eng.Run(context.Background(), "run-grace-fanout", nil); err != nil {
-		t.Fatalf("a graced run died at its fan-out: %v", err)
+		t.Fatalf("best_effort terminal convergence should report failed branches in output, got: %v", err)
 	}
-	if got := branches.Load(); got != 2 {
-		t.Fatalf("expected both branches to run under the grace, got %d", got)
+	if got := branches.Load(); got != 0 {
+		t.Fatalf("%d branch nodes ran under an unsafe exit grace", got)
 	}
 }
 

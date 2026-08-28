@@ -192,13 +192,13 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		if done {
 			return result
 		}
-		if parallel.isRetired() {
-			result.err = e.wrapContextErr(context.Canceled)
-			return result
-		}
 		branchRS.outputs[currentNodeID] = output
 
 		if e.recordBranchUsage(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, output, &branchCostUSD, result) {
+			return result
+		}
+		if parallel.isRetired() {
+			result.err = e.wrapContextErr(context.Canceled)
 			return result
 		}
 
@@ -222,12 +222,12 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		currentNodeID = nextNodeID
-		e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
 		if resumedHuman {
-			// The answered gate is durable at its successor. Release siblings
-			// now so this branch may encounter another gate during the same
-			// invocation without the old pending identity blocking it.
-			e.completeParallelResume(rs, parallel, branchID, result)
+			// Persist the successor and clear the old pending identity in one
+			// snapshot before releasing siblings.
+			e.checkpointResumedBranch(rs, branchRS, result, currentNodeID, parallel)
+		} else {
+			e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
 		}
 	}
 }
@@ -311,13 +311,28 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 // trunk anchored on the router. SaveCheckpoint is best-effort, matching the
 // sequential node-boundary path; the next completed branch boundary retries.
 func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState) {
+	e.checkpointBranchState(parent, branchRS, result, currentNodeID, completed, parallel, false)
+}
+
+func (e *Engine) checkpointResumedBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, parallel *parallelExecutionState) {
+	e.checkpointBranchState(parent, branchRS, result, currentNodeID, false, parallel, true)
+}
+
+func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState, completeResume bool) {
 	if parallel == nil || branchRS == nil {
 		return
 	}
 	parallel.saveMu.Lock()
 	defer parallel.saveMu.Unlock()
 	branch := branchCheckpointFromState(branchRS, result, currentNodeID, completed)
-	if !parallel.updateBranch(branch) {
+	var barrier chan struct{}
+	var updated bool
+	if completeResume {
+		updated, barrier = parallel.updateResumedBranch(branch)
+	} else {
+		updated = parallel.updateBranch(branch)
+	}
+	if !updated {
 		return
 	}
 	ps := parallel.snapshot()
@@ -332,6 +347,9 @@ func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResu
 	}
 	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
 		e.logger.Error("failed to save branch checkpoint %s at %q: %v", result.branchID, currentNodeID, err)
+	}
+	if barrier != nil {
+		close(barrier)
 	}
 }
 

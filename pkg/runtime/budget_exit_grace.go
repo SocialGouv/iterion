@@ -86,7 +86,7 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// ITERION_LOOP_BUDGET_GUARD). With it lifted a graced run can take a
 	// back-edge and keep looping on a spent budget, so the grace must
 	// not be offered.
-	if !e.loopBudgetGuardEnabled() {
+	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
 		return "", false
 	}
 	// An externally-imposed cap (platform ceiling, pool donor allowance —

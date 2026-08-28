@@ -685,7 +685,7 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 		e.captureWorkspace(rs, nodeID, workspacetrack.PhasePost)
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	ref := nodeSnapshotRef(rs.runID, nodeID, loopIter)
 	commit, err := snapshotWorktree(e.workDir, ref)
 	if err != nil {
@@ -733,7 +733,7 @@ func (e *Engine) markPreNodeBoundary(rs *runState, nodeID string) {
 		e.aliasWorkspacePre(rs, nodeID)
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	// Several dispatch paths bracket the same node: execLoop brackets every
 	// isSpecialDispatch kind, then execSpecialNode brackets the compute /
 	// subbot / emit / wait / await_answers kinds again, and the human path
@@ -948,7 +948,7 @@ func (e *Engine) captureWorkspace(rs *runState, nodeID, phase string) {
 	if e.workspaceTracker == nil {
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	snap, err := e.workspaceTracker.Capture(rs.runID, e.workDir, workspacetrack.Label(phase, nodeID, loopIter))
 	if err != nil {
 		if e.logger != nil {
@@ -1027,7 +1027,7 @@ func (e *Engine) captureStopBoundary(rs *runState, nodeID, phase string) {
 		// boundaries and the tracker is not consulted.
 		return
 	}
-	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, rs.loopCounters))
+	label := workspacetrack.Label(phase, nodeID, e.currentLoopIteration(nodeID, runStateIterationCounters(rs)))
 	if rs.stopCaptured == nil {
 		rs.stopCaptured = make(map[string]bool)
 	}
@@ -1047,7 +1047,7 @@ func (e *Engine) aliasWorkspacePre(rs *runState, nodeID string) {
 	if e.workspaceTracker == nil {
 		return
 	}
-	loopIter := e.currentLoopIteration(nodeID, rs.loopCounters)
+	loopIter := e.currentLoopIteration(nodeID, runStateIterationCounters(rs))
 	label := workspacetrack.Label(workspacetrack.PhasePre, nodeID, loopIter)
 	head := rs.lastWorkspaceSnapshot
 	_, hasPre := e.workspaceTracker.Resolve(rs.runID, label)

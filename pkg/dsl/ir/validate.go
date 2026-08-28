@@ -23,6 +23,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateLLMRouterEdges(w)
 	c.validateFanOutEachEdges(w)
 	c.validateBoundedIterationInExecBranch(w)
+	c.validateImplicitCollectorMigration(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
 	c.validateDuplicateWithKeys(w)

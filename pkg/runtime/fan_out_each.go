@@ -202,9 +202,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 			}
 		}
 		defer slot.release()
-		result := e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot, parallel)
-		e.completeParallelResume(rs, parallel, branchID, result)
-		return result
+		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot, parallel)
 	}
 
 	// finishBranch applies the shared post-branch cancellation policy.

@@ -334,6 +334,42 @@ func (c *compiler) validateBoundedIterationInExecBranch(w *Workflow) {
 	}
 }
 
+// validateImplicitCollectorMigration warns about the execution-shape change
+// introduced by branch-local bounded iteration. Historically, any second
+// predecessor elected an implicit collector, including a node's own bounded
+// back-edge. Bounded predecessors are now branch-local control flow, so such a
+// node executes once per branch unless the author marks a real collector with
+// await. The graph remains valid, but silently multiplying side effects would
+// be an unsafe migration.
+func (c *compiler) validateImplicitCollectorMigration(w *Workflow) {
+	body := execBranchBodyNodes(w)
+	allIn := make(map[string]map[string]bool)
+	nonIterIn := make(map[string]map[string]bool)
+	boundedIn := make(map[string]bool)
+	for _, edge := range w.Edges {
+		if allIn[edge.To] == nil {
+			allIn[edge.To] = make(map[string]bool)
+		}
+		allIn[edge.To][edge.From] = true
+		if edge.IsBoundedIteration() {
+			boundedIn[edge.To] = true
+			continue
+		}
+		if nonIterIn[edge.To] == nil {
+			nonIterIn[edge.To] = make(map[string]bool)
+		}
+		nonIterIn[edge.To][edge.From] = true
+	}
+	for id, node := range w.Nodes {
+		if !body[id] || !boundedIn[id] || NodeAwaitMode(node) != AwaitNone || len(allIn[id]) <= 1 || len(nonIterIn[id]) > 1 {
+			continue
+		}
+		c.warnfAt(DiagImplicitCollectorMove, id, "",
+			"node %q was previously elected as an implicit fan-out collector because a bounded back-edge counted as a second predecessor; it now executes once per branch (C246). Add await: wait_all/best_effort to the intended collector, or keep the bounded loop branch-local intentionally",
+			id)
+	}
+}
+
 func hasSingleCommonBranchOwner(left, right map[string]bool) bool {
 	if len(left) != 1 || len(right) != 1 {
 		return false

@@ -502,7 +502,7 @@ workflow test:
 	expectDiag(t, r, DiagLoopInExecBranch)
 }
 
-func TestValidateLoopInFanOutEachImplicitChain_Allowed(t *testing.T) {
+func TestValidateLoopInFanOutEachImplicitChain_WarnsMigration(t *testing.T) {
 	// fan_out_each has one template edge, so writer/collect/refine share one
 	// item owner. The refine self-loop runs inside that item scope.
 	src := execBranchLoopPrompts + `
@@ -539,6 +539,12 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectDiag(t, r, DiagImplicitCollectorMove)
+	for _, diag := range r.Diagnostics {
+		if diag.Code == DiagImplicitCollectorMove && diag.Severity != SeverityWarning {
+			t.Fatalf("C246 severity = %s, want warning", diag.Severity)
+		}
+	}
 }
 
 func TestValidateLoopOnFanOutEachTemplateHead_Allowed(t *testing.T) {

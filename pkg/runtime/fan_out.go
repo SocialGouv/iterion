@@ -271,7 +271,6 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			defer slot.release()
 
 			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot, parallel)
-			e.completeParallelResume(rs, parallel, branchID, result)
 			// Cancel siblings (they observe it via the ctx.Done() select at
 			// the top of their per-iteration loop) when this branch tripped
 			// the global budget — every fan_out regardless of await mode — or

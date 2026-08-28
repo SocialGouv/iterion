@@ -201,11 +201,85 @@ func TestBranchLocalLoopBudgetGuardDoesNotPriceSiblingSpend(t *testing.T) {
 	}
 }
 
+func TestBranchLocalLoopCannotUseBudgetExitGrace(t *testing.T) {
+	t.Setenv("ITERION_BUDGET_EXIT_GRACE", "0.1")
+	wf := branchLocalLoopWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 10_000}
+	engine := New(wf, tmpStore(t), newStubExecutor())
+	shared := newSharedBudget(wf.Budget, engine.logger)
+	shared.RecordUsage(10_100, 0)
+	if _, ok := engine.withinBudgetGrace(&runState{budget: shared, branchLocal: true}); ok {
+		t.Fatal("branch-local loop received exit grace without a predictive loop guard")
+	}
+	if _, ok := engine.withinBudgetGrace(&runState{budget: shared}); !ok {
+		t.Fatal("trunk exit grace unexpectedly disabled")
+	}
+}
+
+func TestRetiredBranchStillRecordsCompletedNodeUsage(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Budget = &ir.Budget{MaxTokens: 1_000}
+	exec := newStubExecutor()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	exec.on("work", func(map[string]any) (map[string]any, error) {
+		close(started)
+		<-release
+		return map[string]any{"_tokens": 7}, nil
+	})
+
+	runStore := tmpStore(t)
+	const runID = "retired-branch-usage"
+	if _, err := runStore.CreateRun(context.Background(), runID, wf.Name, nil); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(wf, runStore, exec)
+	rs := engine.newRunState(runID, nil)
+	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{"branch": "work"}, nil)
+	parallel.captureBase(rs)
+	resultCh := make(chan *branchResult, 1)
+	go func() {
+		resultCh <- engine.execBranch(context.Background(), rs, "branch", wf.Edges[1], map[string]map[string]any{}, map[string]map[string]any{}, "collect", &branchSlot{}, parallel)
+	}()
+	<-started
+	parallel.retire()
+	close(release)
+	result := <-resultCh
+	if result == nil || result.err == nil {
+		t.Fatalf("retired branch result = %+v, want cancellation", result)
+	}
+	tokens, _, _, _, _, _ := rs.budget.Snapshot()
+	if tokens != 7 {
+		t.Fatalf("recorded tokens = %d, want 7 spent before retirement", tokens)
+	}
+}
+
 func TestRetiredParallelInvocationRefusesHumanPause(t *testing.T) {
 	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{"branch": "gate"}, nil)
 	parallel.retire()
 	if parallel.beginPause("branch", "gate", &store.BranchCheckpoint{BranchID: "branch"}) {
 		t.Fatal("retired invocation elected a late human pause")
+	}
+}
+
+func TestResumedBranchAdvancesAndClearsPendingGateAtomically(t *testing.T) {
+	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{"branch": "gate"}, nil)
+	parallel.cp.PendingBranchID = "branch"
+	parallel.cp.PendingNodeID = "gate"
+	parallel.cp.PendingInteractionID = "interaction"
+	parallel.cp.PendingInteractionQuestions = map[string]any{"approved": true}
+	parallel.resumePending = "branch"
+	parallel.resumeBarrier = make(chan struct{})
+
+	advanced := cloneBranchCheckpoint(parallel.cp.Branches["branch"])
+	advanced.CurrentNodeID = "work"
+	updated, barrier := parallel.updateResumedBranch(advanced)
+	if !updated || barrier == nil {
+		t.Fatalf("update = %v, barrier = %v; want resumed update and barrier", updated, barrier)
+	}
+	snapshot := parallel.snapshot()
+	if snapshot.Branches["branch"].CurrentNodeID != "work" || snapshot.PendingBranchID != "" || snapshot.PendingNodeID != "" || snapshot.PendingInteractionID != "" {
+		t.Fatalf("resumed snapshot = %+v", snapshot)
 	}
 }
 
@@ -294,6 +368,7 @@ func TestBranchNodeIterationComposesEnclosingAndLocalCounters(t *testing.T) {
 	wf.Loops["outer"] = &ir.Loop{Name: "outer", Body: map[string]bool{"work": true}}
 	eng := &Engine{workflow: wf}
 	rs := &runState{
+		branchLocal:           true,
 		enclosingLoopCounters: map[string]int{"outer": 2},
 		loopCounters:          map[string]int{"retry": 1},
 	}
@@ -303,6 +378,9 @@ func TestBranchNodeIterationComposesEnclosingAndLocalCounters(t *testing.T) {
 	}
 	if _, path := eng.branchNodeIteration("work", &runState{}); path != "" {
 		t.Fatalf("empty branch iteration path = %q, want omitted", path)
+	}
+	if got := runStateIterationCounters(rs); got["outer"] != 2 || got["retry"] != 1 {
+		t.Fatalf("workspace iteration counters = %#v, want enclosing and local scope", got)
 	}
 }
 

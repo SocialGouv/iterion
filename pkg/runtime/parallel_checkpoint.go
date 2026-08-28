@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +38,16 @@ func branchIterationCounters(rs *runState) map[string]int {
 		combined[name] = count
 	}
 	return combined
+}
+
+func runStateIterationCounters(rs *runState) map[string]int {
+	if rs != nil && rs.branchLocal {
+		return branchIterationCounters(rs)
+	}
+	if rs == nil {
+		return nil
+	}
+	return rs.loopCounters
 }
 
 func (e *Engine) parallelInvocationKey(routerNodeID string, counters map[string]int) string {
@@ -229,37 +238,6 @@ func (p *parallelExecutionState) releaseResumeWaiters(branchID string) {
 	close(barrier)
 }
 
-func (e *Engine) completeParallelResume(parent *runState, p *parallelExecutionState, branchID string, result *branchResult) {
-	if p == nil || result == nil || errors.Is(result.err, ErrRunPaused) {
-		return
-	}
-	p.saveMu.Lock()
-	defer p.saveMu.Unlock()
-	p.mu.Lock()
-	if p.resumePending != branchID {
-		p.mu.Unlock()
-		return
-	}
-	p.cp.PendingBranchID = ""
-	p.cp.PendingNodeID = ""
-	p.cp.PendingInteractionID = ""
-	p.cp.PendingInteractionQuestions = nil
-	barrier := p.resumeBarrier
-	p.resumeBarrier = nil
-	p.resumePending = ""
-	p.mu.Unlock()
-
-	ps := p.snapshot()
-	cp := buildCheckpoint(parent, ps.RouterNodeID)
-	cp.Parallel = ps
-	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
-		e.logger.Error("failed to complete parallel resume checkpoint for %s: %v", branchID, err)
-	}
-	if barrier != nil {
-		close(barrier)
-	}
-}
-
 func newParallelExecutionState(cp *store.ParallelCheckpoint) *parallelExecutionState {
 	if cp == nil {
 		return nil
@@ -345,6 +323,33 @@ func (p *parallelExecutionState) updateBranch(branch *store.BranchCheckpoint) bo
 	}
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
 	return true
+}
+
+// updateResumedBranch commits the answered branch at its successor and clears
+// the pending gate in the same parallel snapshot. Keeping those mutations
+// together prevents a restart from observing an advanced cursor with a stale
+// PendingBranchID after a crash between two checkpoint writes.
+func (p *parallelExecutionState) updateResumedBranch(branch *store.BranchCheckpoint) (bool, chan struct{}) {
+	if p == nil || branch == nil {
+		return false, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retired {
+		return false, nil
+	}
+	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
+	if p.resumePending != branch.BranchID {
+		return true, nil
+	}
+	p.cp.PendingBranchID = ""
+	p.cp.PendingNodeID = ""
+	p.cp.PendingInteractionID = ""
+	p.cp.PendingInteractionQuestions = nil
+	barrier := p.resumeBarrier
+	p.resumeBarrier = nil
+	p.resumePending = ""
+	return true, barrier
 }
 
 // beginPause elects at most one pending branch interaction for a fan-out.
