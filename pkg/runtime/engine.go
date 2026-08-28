@@ -312,8 +312,12 @@ type runState struct {
 	// branchLocal disables predictive loop pricing against the shared run
 	// budget. Concurrent sibling spend cannot price one branch's iteration;
 	// the shared 90% pre-exec and hard limits remain authoritative.
-	branchLocal        bool
-	roundRobinCounters map[string]int
+	branchLocal bool
+	// enclosingLoopCounters is the immutable trunk loop path at fan-out
+	// entry. Branch-local counters remain private in loopCounters; execution
+	// identity and model iteration compose both maps.
+	enclosingLoopCounters map[string]int
+	roundRobinCounters    map[string]int
 	// selectedIncoming records, per destination node, the incoming edges
 	// routing actually selected for the current visit of that node. Fan-out
 	// branches keep a private copy on branchResult so concurrent writers

@@ -27,6 +27,20 @@ func branchCounterPath(counters map[string]int) string {
 	return strings.Join(parts, ";")
 }
 
+func branchIterationCounters(rs *runState) map[string]int {
+	if rs == nil {
+		return nil
+	}
+	combined := cloneMap(rs.enclosingLoopCounters)
+	if combined == nil && len(rs.loopCounters) > 0 {
+		combined = make(map[string]int, len(rs.loopCounters))
+	}
+	for name, count := range rs.loopCounters {
+		combined[name] = count
+	}
+	return combined
+}
+
 func (e *Engine) parallelInvocationKey(routerNodeID string, counters map[string]int) string {
 	return routerNodeID + "@" + branchCounterPath(counters)
 }
@@ -46,8 +60,12 @@ func (e *Engine) ensureParallelInvocation(rs *runState, routerNodeID string, sta
 	}
 	if rs.parallel != nil {
 		persisted := rs.parallel.snapshot()
-		if persisted != nil && persisted.RouterNodeID == routerNodeID && persisted.InvocationKey == key {
-			return nil, fmt.Errorf("runtime: parallel invocation %q branch set changed across restart; rewind the router before resuming", routerNodeID)
+		if persisted != nil {
+			if persisted.RouterNodeID == routerNodeID && persisted.InvocationKey == key {
+				return nil, fmt.Errorf("runtime: parallel invocation %q branch set changed across restart; rewind the router before resuming", routerNodeID)
+			}
+			return nil, fmt.Errorf("runtime: persisted parallel invocation %q (%s) does not match resumed invocation %q (%s); rewind the router before resuming",
+				persisted.RouterNodeID, persisted.InvocationKey, routerNodeID, key)
 		}
 	}
 	rs.parallel = newParallelInvocation(routerNodeID, key, starts, rs.artifactVersions)
@@ -137,6 +155,7 @@ func cloneRunStateForBranch(parent *runState) *runState {
 		loopProgressSig:       parent.loopProgressSig,
 		loopStaleness:         parent.loopStaleness,
 		loopBudgetMarks:       parent.loopBudgetMarks,
+		enclosingLoopCounters: cloneMap(parent.enclosingLoopCounters),
 		roundRobinCounters:    cloneMap(parent.roundRobinCounters),
 		selectedIncoming:      parent.selectedIncoming,
 		parallel:              parent.parallel,
@@ -339,7 +358,13 @@ func (p *parallelExecutionState) beginPause(branchID, nodeID string, branch *sto
 		return false
 	}
 	if p.cp.PendingBranchID != "" {
-		return p.cp.PendingBranchID == branchID && p.cp.PendingNodeID == nodeID
+		if p.cp.PendingBranchID != branchID || p.cp.PendingNodeID != nodeID {
+			return false
+		}
+		// Re-prompting the elected gate (for example after schema-invalid
+		// answers) replaces its durable cursor and clears ResumeAnswers.
+		p.cp.Branches[branchID] = cloneBranchCheckpoint(branch)
+		return true
 	}
 	p.cp.PendingBranchID = branchID
 	p.cp.PendingNodeID = nodeID

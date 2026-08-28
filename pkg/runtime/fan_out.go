@@ -420,8 +420,12 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 		}
 	}
 	if convergenceNodeID == "" {
-		if isBestEffort && allTerminatedAtDone(results) {
-			return e.processConvergenceTerminal(rs, results)
+		if allTerminatedAtDone(results) {
+			strategy := ir.AwaitWaitAll
+			if isBestEffort {
+				strategy = ir.AwaitBestEffort
+			}
+			return e.processConvergenceTerminal(rs, results, strategy)
 		}
 		convergenceNodeID = plan.preComputedConvergence
 		if convergenceNodeID == "" {
@@ -434,8 +438,9 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 
 // allTerminatedAtDone reports whether every branch finished cleanly at
 // an *ir.DoneNode. Branches with err != nil count as non-terminating —
-// best_effort tolerates them but the all-done shortcut requires every
-// branch to have produced a terminal exit.
+// a terminal convergence requires every branch to have produced a clean
+// terminal exit, regardless of whether sibling failure policy was wait_all
+// or best_effort.
 func allTerminatedAtDone(results []*branchResult) bool {
 	if len(results) == 0 {
 		return false

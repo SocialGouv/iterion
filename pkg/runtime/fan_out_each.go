@@ -331,8 +331,12 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 	if convergenceNodeID == "" {
-		if isBestEffort && allTerminatedAtDone(results) {
-			next, err := e.processConvergenceTerminal(rs, results)
+		if allTerminatedAtDone(results) {
+			strategy := ir.AwaitWaitAll
+			if isBestEffort {
+				strategy = ir.AwaitBestEffort
+			}
+			next, err := e.processConvergenceTerminal(rs, results, strategy)
 			if err == nil {
 				rs.parallel = nil
 			}

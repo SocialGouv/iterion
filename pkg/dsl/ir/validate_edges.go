@@ -405,14 +405,9 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 // it hits a structural join. C243 uses the complete union; C244 combines it
 // with the more precise per-target ownership map above.
 //
-// On a multi-edge fan (fan_out_all / llm multi) we do not stop at a
-// node that has an extra loop predecessor (a -> a as refine or
-// impl→review→impl). Structural joins still keep trunk nodes after a real
-// collector out of the body.
-//
-// On a single-edge fan_out_each the template head always remains in the body.
-// C244's ownership pass independently treats bounded predecessors as local,
-// so safe template and downstream cycles are accepted.
+// The walk stops only at structural joins: an explicit await mode or more
+// than one non-iteration predecessor. Bounded predecessors remain inside the
+// branch body and therefore do not turn a local loop head into a collector.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
 	nonIterIn := map[string]map[string]bool{}
@@ -437,17 +432,10 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
-	// seen is PER ROUTER: memoizing on the shared body would let a walk
-	// that stopped early (stopOnElected) truncate a later, wider walk
-	// through the same node — C243/C244 then depend on w.Nodes map order.
-	var walk func(id string, stopOnElected bool, fanTargets, seen map[string]bool)
-	walk = func(id string, stopOnElected bool, fanTargets, seen map[string]bool) {
+	// seen is per router so one router's traversal cannot truncate another's.
+	var walk func(id string, seen map[string]bool)
+	walk = func(id string, seen map[string]bool) {
 		if id == "" || seen[id] || isStructuralJoin(id) {
-			return
-		}
-		// Downstream loop head on a single-path fan — not the template
-		// head, whose election would skip per-item work.
-		if stopOnElected && len(nonIterIn[id]) > 1 && !fanTargets[id] {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -456,7 +444,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		seen[id] = true
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, stopOnElected, fanTargets, seen)
+			walk(next, seen)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -465,17 +453,14 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 			continue
 		}
 		var fan []*Edge
-		fanTargets := map[string]bool{}
 		for _, e := range w.Edges {
 			if e.From == r.ID {
 				fan = append(fan, e)
-				fanTargets[e.To] = true
 			}
 		}
-		stopOnElected := len(fan) == 1
 		seen := map[string]bool{}
 		for _, e := range fan {
-			walk(e.To, stopOnElected, fanTargets, seen)
+			walk(e.To, seen)
 		}
 	}
 	return body

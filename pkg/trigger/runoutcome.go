@@ -94,7 +94,7 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		// checkpoint; surface both so a consumer can pinpoint the paused
 		// node and render the answer affordance.
 		if r.Checkpoint != nil {
-			nodeID = r.Checkpoint.NodeID
+			nodeID = r.Checkpoint.PausedNodeID()
 			interactionID = r.Checkpoint.InteractionID
 		}
 	}

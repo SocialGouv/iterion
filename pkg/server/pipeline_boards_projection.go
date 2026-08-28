@@ -731,12 +731,12 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 		exec, total := b.runProgress(run)
 		treeExec += exec
 		treeTotal += total
-		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.NodeID != "" {
+		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.PausedNodeID() != "" {
 			reviews = append(reviews, PipelineBoardPendingReview{
 				RunID:         run.ID,
 				WorkflowName:  run.WorkflowName,
 				BotID:         pipelineRunBotID(run),
-				NodeID:        run.Checkpoint.NodeID,
+				NodeID:        run.Checkpoint.PausedNodeID(),
 				InteractionID: run.Checkpoint.InteractionID,
 				Questions:     cloneAnyMap(run.Checkpoint.InteractionQuestions),
 				Instructions:  b.pendingReviewInstructions(run),
@@ -807,7 +807,7 @@ func (b *pipelineProjectionBuilder) pendingReviewInstructions(run *store.Run) st
 	if b == nil || b.rs == nil || run == nil || run.Checkpoint == nil {
 		return ""
 	}
-	node := run.Checkpoint.NodeID
+	node := run.Checkpoint.PausedNodeID()
 	if node == "" {
 		return ""
 	}

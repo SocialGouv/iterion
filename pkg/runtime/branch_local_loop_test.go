@@ -158,6 +158,21 @@ func TestParallelInvocationRejectsChangedBranchSetOnResume(t *testing.T) {
 	}
 }
 
+func TestParallelInvocationRejectsChangedLoopPathOnResume(t *testing.T) {
+	parallel := newParallelInvocation("dispatch", "dispatch@outer=1", map[string]string{
+		"branch_dispatch_0": "work",
+	}, map[string]int{})
+	rs := &runState{
+		parallel:         parallel,
+		loopCounters:     map[string]int{"outer": 2},
+		artifactVersions: map[string]int{},
+	}
+	engine := &Engine{}
+	if _, err := engine.ensureParallelInvocation(rs, "dispatch", map[string]string{"branch_dispatch_0": "work"}); err == nil {
+		t.Fatal("changed loop path silently discarded durable branch cursors")
+	}
+}
+
 func TestBranchLocalLoopBudgetGuardDoesNotPriceSiblingSpend(t *testing.T) {
 	wf := branchLocalLoopWorkflow()
 	wf.Budget = &ir.Budget{MaxTokens: 10_000}
@@ -191,6 +206,103 @@ func TestRetiredParallelInvocationRefusesHumanPause(t *testing.T) {
 	parallel.retire()
 	if parallel.beginPause("branch", "gate", &store.BranchCheckpoint{BranchID: "branch"}) {
 		t.Fatal("retired invocation elected a late human pause")
+	}
+}
+
+func TestFanOutEachImplicitCollectorAllowsAllDoneLocalLoop(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Nodes["collect"].(*ir.AgentNode).AwaitMode = ir.AwaitNone
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	workCalls := 0
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		workCalls++
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": workCalls < 2}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	runStore := tmpStore(t)
+	eng := New(wf, runStore, exec)
+	if got := eng.findConvergencePoint("dispatch", []*ir.Edge{wf.Edges[1]}); got != "" {
+		t.Fatalf("implicit local-loop collector = %q, want terminal convergence", got)
+	}
+	if err := eng.Run(context.Background(), "implicit-local-loop", nil); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if workCalls != 2 {
+		t.Fatalf("work calls = %d, want 2", workCalls)
+	}
+}
+
+func TestBranchInvalidHumanAnswerRepromptsWithoutDurableAnswer(t *testing.T) {
+	wf := branchFirstHumanLoopWorkflow()
+	wf.Nodes["gate"].(*ir.HumanNode).OutputSchema = "gate_answer"
+	wf.Schemas["gate_answer"] = &ir.Schema{
+		Name: "gate_answer",
+		Fields: []*ir.SchemaField{{
+			Name: "approved", Type: ir.FieldTypeBool,
+		}},
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	runStore := tmpStore(t)
+	const runID = "branch-invalid-human-answer"
+	if err := New(wf, runStore, exec, WithOutputValidation(true)).Run(context.Background(), runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want pause", err)
+	}
+	invalid := map[string]any{"approved": []any{"not", "a", "bool"}}
+	if err := New(wf, runStore, exec, WithOutputValidation(true)).Resume(context.Background(), runID, invalid); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("invalid resume = %v, want a new pause", err)
+	}
+	run, err := runStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := run.Checkpoint.Parallel.Branches[run.Checkpoint.Parallel.PendingBranchID]
+	if run.Status != store.RunStatusPausedWaitingHuman || run.Checkpoint.PausedNodeID() != "gate" {
+		t.Fatalf("invalid answer left run at status=%s checkpoint=%+v", run.Status, run.Checkpoint)
+	}
+	if branch == nil || len(branch.ResumeAnswers) != 0 {
+		t.Fatalf("invalid resume answer remained durable: %+v", branch)
+	}
+	if err := New(wf, runStore, exec, WithOutputValidation(true)).Resume(context.Background(), runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("corrected resume: %v", err)
+	}
+}
+
+func TestBranchNodeIterationComposesEnclosingAndLocalCounters(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Loops["outer"] = &ir.Loop{Name: "outer", Body: map[string]bool{"work": true}}
+	eng := &Engine{workflow: wf}
+	rs := &runState{
+		enclosingLoopCounters: map[string]int{"outer": 2},
+		loopCounters:          map[string]int{"retry": 1},
+	}
+	iter, path := eng.branchNodeIteration("work", rs)
+	if iter != 2 || path != "outer=2;retry=1" {
+		t.Fatalf("branch iteration = (%d, %q), want (2, outer=2;retry=1)", iter, path)
+	}
+	if _, path := eng.branchNodeIteration("work", &runState{}); path != "" {
+		t.Fatalf("empty branch iteration path = %q, want omitted", path)
 	}
 }
 

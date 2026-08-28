@@ -103,11 +103,12 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	return convergenceNodeID, nil
 }
 
-// processConvergenceTerminal handles the best_effort all-done topology
-// (every branch ran to its own *ir.DoneNode and no branch failed).
+// processConvergenceTerminal handles an all-done topology (every branch ran
+// to its own *ir.DoneNode and no branch failed), including an implicit
+// wait_all fan whose bounded local cycle leaves no structural collector.
 // Merges branch outputs/artifacts into the run state and hands back one
 // of the terminal node IDs so the engine's main loop emits run_finished.
-func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult) (string, error) {
+func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult, strategy ir.AwaitMode) (string, error) {
 	for _, r := range results {
 		for nodeID, output := range r.outputs {
 			rs.outputs[nodeID] = output
@@ -131,7 +132,7 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	// node as run_finished, so picking one is unambiguous.
 	terminal := results[0].terminalNodeID
 	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]any{
-		"strategy":       ir.AwaitBestEffort.String(),
+		"strategy":       strategy.String(),
 		"terminal_join":  true,
 		"branches_total": len(results),
 	}); err != nil {

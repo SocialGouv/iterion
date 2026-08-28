@@ -850,6 +850,19 @@ type Checkpoint struct {
 	Parallel *ParallelCheckpoint `json:"parallel,omitempty" bson:"parallel,omitempty"`
 }
 
+// PausedNodeID returns the operator-facing node that owns the pending
+// interaction. Parallel checkpoints stay anchored on their router for exact
+// runtime resume, while the actual human gate is stored in PendingNodeID.
+func (c *Checkpoint) PausedNodeID() string {
+	if c == nil {
+		return ""
+	}
+	if c.Parallel != nil && c.Parallel.PendingNodeID != "" {
+		return c.Parallel.PendingNodeID
+	}
+	return c.NodeID
+}
+
 // ParallelCheckpoint is the durable state of one fan_out_all, fan_out_each,
 // or llm-multi invocation. InvocationKey includes the router's enclosing loop
 // path, distinguishing repeated visits to the same router deterministically.

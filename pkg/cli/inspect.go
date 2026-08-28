@@ -168,7 +168,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	if r.Checkpoint != nil {
 		p.Blank()
 		p.Header("Checkpoint")
-		p.KV("Paused at", r.Checkpoint.NodeID)
+		p.KV("Paused at", r.Checkpoint.PausedNodeID())
 		p.KV("Interaction", r.Checkpoint.InteractionID)
 
 		// Show pending interaction questions.

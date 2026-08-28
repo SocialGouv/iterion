@@ -41,6 +41,15 @@ type branchResult struct {
 	selectedIncoming map[string][]store.IncomingEdge
 }
 
+func (e *Engine) branchNodeIteration(nodeID string, rs *runState) (int, string) {
+	counters := branchIterationCounters(rs)
+	path := branchCounterPath(counters)
+	if path == "root" {
+		path = ""
+	}
+	return e.currentLoopIteration(nodeID, counters), path
+}
+
 // execBranch runs a single parallel branch starting from the target of
 // the given edge. It executes nodes sequentially until it reaches a
 // convergence point, a terminal node, or encounters an error.
@@ -134,18 +143,18 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			return result
 		}
 
-		iter := e.currentLoopIteration(currentNodeID, branchRS.loopCounters)
+		iter, iterPath := e.branchNodeIteration(currentNodeID, branchRS)
 		// Branch execution keys include foreach indices as well as named loop
 		// counters. The trunk helper intentionally reports loops only, while a
 		// branch may execute the same node once per local foreach element.
-		iterPath := branchCounterPath(branchRS.loopCounters)
-
 		// Emit node_started.
 		startedData := map[string]any{
 			"kind":      node.NodeKind().String(),
 			"iteration": iter,
 		}
-		startedData["iteration_path"] = iterPath
+		if iterPath != "" {
+			startedData["iteration_path"] = iterPath
+		}
 		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, startedData); err != nil {
 			e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
 			result.eventErrors++
@@ -161,12 +170,17 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			} else if branchCP != nil && len(branchCP.ResumeAnswers) > 0 {
 				e.markPreNodeBoundary(branchRS, currentNodeID)
 				output = deepCopyAnyMap(branchCP.ResumeAnswers)
-				result.outputs[currentNodeID] = output
 				branchCP.ResumeAnswers = nil
-				resumedHuman = true
 				if err := e.validateNodeOutput(currentNodeID, node, output); err != nil {
-					result.err = err
+					// The interaction was already recorded as answered before the
+					// branch restarted. Re-pause with a checkpoint that omits the bad
+					// answer so the operator can correct it instead of wedging every
+					// future resume on the same durable invalid payload.
+					result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel)
 					done = true
+				} else {
+					result.outputs[currentNodeID] = output
+					resumedHuman = true
 				}
 			} else {
 				done = true
@@ -259,6 +273,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.loopStaleness = make(map[string]int)
 	local.loopBudgetMarks = make(map[string]loopBudgetMark)
 	local.branchLocal = true
+	local.enclosingLoopCounters = branchIterationCounters(parent)
 	local.parallel = nil
 	if cp != nil {
 		local.loopCounters = cloneMap(cp.LoopCounters)
@@ -343,8 +358,9 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 		}
 		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
 	}
-	scopeID := base64.RawURLEncoding.EncodeToString([]byte(branchID + ";" + branchCounterPath(branchRS.loopCounters)))
-	interactionID := e.interactionIDForPause(parent.runID, nodeID, branchRS.loopCounters) + "_branch_" + scopeID
+	executionCounters := branchIterationCounters(branchRS)
+	scopeID := base64.RawURLEncoding.EncodeToString([]byte(branchID + ";" + branchCounterPath(executionCounters)))
+	interactionID := e.interactionIDForPause(parent.runID, nodeID, executionCounters) + "_branch_" + scopeID
 	parallel.setPendingInteraction(interactionID, questions)
 	interaction := &store.Interaction{
 		ID:          interactionID,
@@ -608,7 +624,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	}
 	version := result.artifactVersions[currentNodeID]
 	if parallel != nil {
-		executionKey := branchID + "/" + currentNodeID + "/" + branchCounterPath(branchRS.loopCounters)
+		executionKey := branchID + "/" + currentNodeID + "/" + branchCounterPath(branchIterationCounters(branchRS))
 		version = parallel.artifactVersion(currentNodeID, executionKey, version)
 	}
 	artifact := &store.Artifact{

@@ -82,7 +82,7 @@ func (s *Service) AnswerInteractionCtx(ctx context.Context, runID, interactionID
 	// records) and injects the aggregated text as the ResumeAnswer.
 	if r.Status == store.RunStatusPausedWaitingHuman && r.Checkpoint != nil {
 		refs := delegate.ParseAwaitPending(r.Checkpoint.InteractionQuestions[delegate.AwaitPendingInteractionsKey])
-		if len(refs) > 0 && r.Checkpoint.NodeID == answered.NodeID {
+		if len(refs) > 0 && r.Checkpoint.PausedNodeID() == answered.NodeID {
 			pending, perr := store.ListPendingAsyncInteractions(ctx, s.store, runID, answered.NodeID)
 			if perr != nil {
 				return nil, fmt.Errorf("runview: answer recorded but pending re-check failed: %w", perr)
