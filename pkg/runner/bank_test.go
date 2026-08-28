@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
@@ -433,5 +434,69 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 	after := loadRun(t, r, msg.RunID)
 	if after.FinalBranch != "" || after.FinalCommit != "" {
 		t.Fatalf("cancelled run recorded FinalBranch=%q FinalCommit=%q, want both empty (not merge-eligible)", after.FinalBranch, after.FinalCommit)
+	}
+}
+
+// The wall-clock death is the class the death bank most exists for, and
+// the one the run ctx cannot serve: executeRun deadlines ctx, the engine
+// returns a sentinel-free error (classified `failed`, hence bankable),
+// and exec.CommandContext refuses to Start on a done ctx — so every git
+// op of the bank fails instantly and the branch never reaches the forge.
+// The detach is NARROW on purpose: a ctx cancelled for lease loss or an
+// operator cancel must stay dead, because another pod may already own
+// the run. The cause is the oracle, never the returned error — the
+// interrupted path LOSES its sentinel when the store write behind it
+// fails (run_failure.go falls back to failRun), which is exactly the
+// shape the second case pins.
+func TestBankDetachesOnlyFromOurOwnDeadline(t *testing.T) {
+	deadlined := func() context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		t.Cleanup(cancel)
+		<-ctx.Done()
+		return ctx
+	}
+	causedCancel := func(cause error) func() context.Context {
+		return func() context.Context {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(cause)
+			t.Cleanup(func() { cancel(nil) })
+			return ctx
+		}
+	}
+	cases := []struct {
+		name       string
+		ctx        func() context.Context
+		err        error
+		wantBanked bool
+	}{
+		{"our own wall-clock deadline still banks", deadlined, errors.New("timeout: context deadline exceeded"), true},
+		// The sentinel-free shape: FailRunResumable failed, so the engine
+		// returned a bare RuntimeError and classification says `failed`.
+		// Only the cancel CAUSE still tells us the lease may have moved.
+		{"lease loss does not bank even when the sentinel was lost",
+			causedCancel(runtime.ErrRunInterrupted), errors.New("boom"), false},
+		{"operator cancel does not bank", causedCancel(runtime.ErrRunCancelled), errors.New("boom"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, msg, work, origin, base := bankFixture(t)
+			gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+			head := gitOut(t, work, "rev-parse", "HEAD")
+
+			r.bankIfBankable(c.ctx(), msg, work, base, runtime.WorkspaceIntegrity{}, c.err)
+
+			got, present := bankedBranch(t, origin, msg.RunID)
+			if c.wantBanked && (!present || got != head) {
+				t.Fatalf("must bank: branch %q (present=%v), want %s", got, present, head)
+			}
+			if !c.wantBanked && present {
+				t.Fatalf("must NOT bank, yet the branch exists at %q", got)
+			}
+			if c.wantBanked {
+				if run := loadRun(t, r, msg.RunID); run.FinalBranchError != "" {
+					t.Fatalf("FinalBranchError = %q, want the bank to have run on a live ctx", run.FinalBranchError)
+				}
+			}
+		})
 	}
 }

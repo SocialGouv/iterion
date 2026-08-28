@@ -402,7 +402,55 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 	if !bankableStatus(classifyExecResult(runErr, msg.RunID).finalStatus) {
 		return
 	}
-	r.bankRepoWorkspace(ctx, msg, workDir, base, integ)
+	bankCtx, ok := bankContext(ctx)
+	if !ok {
+		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved. The redelivery banks.", msg.RunID, context.Cause(ctx))
+		return
+	}
+	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ)
+}
+
+// bankContext decides whether the bank may outlive the run ctx.
+//
+// The wall-clock death is the one this PR most exists for, and it is the
+// one the run ctx cannot serve: executeRun wraps ctx in
+// context.WithTimeout(msg.TimeoutSec), the engine returns a
+// sentinel-free RuntimeError on that deadline (classified `failed`, so
+// bankable), and every git op goes through exec.CommandContext — whose
+// Start() refuses outright on a done ctx. Unfixed, the ls-remote, the
+// fetch and the push all fail instantly and the branch never reaches the
+// forge.
+//
+// Only OUR OWN deadline is resurrectable: the work is done, the pod is
+// healthy, the lease is still ours (the heartbeat never stopped). Every
+// other cancellation — operator cancel, drain, heartbeat/lease loss —
+// means either the operator refused the work or ANOTHER POD may already
+// own this run, and force-pushing the storage branch from here would be
+// a split-brain write. Those causes can still arrive classified as a
+// generic `failed`: handleContextDoneWithCheckpoint falls back to
+// failRun — LOSING the ErrRunInterrupted sentinel — when the
+// FailRunResumable store write itself fails. That is exactly why the
+// cancellation CAUSE is the oracle here and the returned error is not.
+//
+// Cause propagation makes this correct in both orders: parent cancelled
+// first ⇒ the child reports the parent's ErrRunInterrupted/
+// ErrRunCancelled; child deadline first ⇒ DeadlineExceeded. A DSL
+// max_duration budget death never cancels ctx at all, so it takes the
+// live-ctx arm unchanged.
+//
+// No second deadline is imposed on the detached ctx on purpose: each git
+// op is already bounded by gitOpTimeout, and an operator who set
+// ITERION_RUNNER_GIT_TIMEOUT<=0 asked for unbounded git ops.
+func bankContext(ctx context.Context) (context.Context, bool) {
+	cause := context.Cause(ctx)
+	switch {
+	case cause == nil:
+		return ctx, true // live ctx — nothing to detach
+	case errors.Is(cause, context.DeadlineExceeded):
+		return context.WithoutCancel(ctx), true
+	default:
+		return nil, false
+	}
 }
 
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
