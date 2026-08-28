@@ -66,6 +66,21 @@ vi.mock("@/components/shared/AgentChatboxInline", () => ({
   },
 }));
 
+// One standing action request, so the offer tests below can tell "hidden by
+// the pause gate" from "nothing to offer". Under the default `ask` policy the
+// card renders a confirmation button and executes nothing.
+const offered = vi.hoisted(() => ({
+  request: {
+    key: "run-1:copi:1:0",
+    id: "pipeline.task.reset" as const,
+    intent: "explicit" as const,
+    args: { task_id: "native:d5fc94b2-ca40-4cb5-9056-ea02fb8dfdaf" },
+  },
+}));
+vi.mock("@/hooks/useAssistantActions", () => ({
+  useAssistantActions: () => [offered.request],
+}));
+
 function makeSession(over: Partial<UseWhatsNextSession> = {}): UseWhatsNextSession {
   return {
     status: "idle",
@@ -148,5 +163,72 @@ describe("ChatDock conversation isolation", () => {
     expect(screen.getByTestId("composer").textContent).toBe("1");
     fireEvent.click(screen.getByRole("button", { name: /new conversation/i }));
     expect(screen.getByTestId("composer").textContent).toBe("2");
+  });
+});
+
+// An offer belongs to a reply. The offers are built from the latest run
+// artifact, which the agent node publishes BEFORE the optional cross-review
+// runs and before the chat node pauses — on run 01a04999 the action card was
+// clickable for the 23 s the reviewer was still writing. The dock must show
+// them only once the turn is parked on its chat pause.
+describe("ChatDock offers wait for the chat pause", () => {
+  // ChatTranscript scrolls its tail into view on mount; jsdom has no layout
+  // and no scrollIntoView, and the throw would trip the assistant's
+  // ErrorBoundary into "the app without a dock" — an empty render that would
+  // make the two "nothing offered" cases below pass vacuously.
+  beforeEach(() => {
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  const question = {
+    kind: "human-question" as const,
+    id: "chat:1:question",
+    nodeId: "chat",
+    prompt: "Je propose le reset de la tâche.",
+  };
+
+  it("offers nothing while the turn is still running (the reviewer's window)", () => {
+    session = makeSession({
+      status: "active",
+      runId: "run-1",
+      runStatus: "running",
+      messages: [{ ...question, status: "answered", userReply: "ok go" }],
+    });
+    renderDock();
+    // The transcript itself is on screen — the offer is gated, not the dock.
+    expect(screen.getByText(/Je propose le reset/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirm action" })).toBeNull();
+  });
+
+  it("offers the action once the turn is parked on its chat pause", () => {
+    session = makeSession({
+      status: "active",
+      runId: "run-1",
+      runStatus: "paused_waiting_human",
+      messages: [{ ...question, status: "pending" }],
+    });
+    renderDock();
+    expect(screen.getByRole("button", { name: "Confirm action" })).toBeTruthy();
+  });
+
+  it("offers nothing on a mid-turn ask_user pause (the artifact is last turn's)", () => {
+    session = makeSession({
+      status: "active",
+      runId: "run-1",
+      runStatus: "paused_waiting_human",
+      messages: [
+        {
+          ...question,
+          id: "ask-1",
+          nodeId: "copi",
+          status: "pending",
+          questions: { ask_user_response: "Which task?" },
+        },
+      ],
+    });
+    renderDock();
+    // The transcript itself is on screen — the offer is gated, not the dock.
+    expect(screen.getByText(/Je propose le reset/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirm action" })).toBeNull();
   });
 });
