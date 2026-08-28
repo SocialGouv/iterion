@@ -5,6 +5,36 @@ semantics, backends. Read-only by construction. Newest run first.
 
 ---
 
+## 2026-08-28 — declared companion-file proposal (run `01a04962`)
+
+- **Status**: validated — paused normally after one Copi turn; no file was saved.
+- **Versions**: bot 0.1.0 · iterion `8d8704bb` (branch `feat/assistant-authoring-files`, stacked on `feat/assistant-epic`).
+- **Method**: local `legendary-film-chapter` editor marker with a complete live
+  `main.bot`, a server-minted snapshot of 15 declared companion files, and an
+  explicit request for one exact comment replacement in
+  `film_pipeline/matter.py`. Reviewer off; Copi on `claw` +
+  `openai/gpt-5.6-sol`.
+- **Result**: Copi made one `read_file` call and emitted one bounded
+  `file_changes` replacement with the exact host session/revision and
+  `file_changes_intent: explicit`. The 4894 preview endpoint resolved it to a
+  real before/after diff. A final disk read proved the original comment was
+  still present; commit was deliberately not called. 522 unpriced tokens were
+  reported for the answering node.
+
+### Value and finding
+
+The complete path works model → typed artifact → host-bound hash → server
+preview without giving Copi a write tool or asking it to copy a SHA-256. The
+server snapshot exposed exactly the manifest perimeter, including the three
+workspace files needed by this project.
+
+The active `main.bot` was 101,157 characters and therefore travelled inline
+on this turn. That is correct for a live unsaved buffer and still under the
+160-KB safety ceiling, but it dominates prompt size even when only a companion
+script is edited. A future optimization can make an unchanged saved editor
+document referenceable; V1 must keep inlining the unsaved buffer because the
+run cannot otherwise read it honestly.
+
 ## 2026-08-22 — first dogfood, with cross-review on (runs `01a02a31`, `01a02a32`, `01a02a39`)
 
 - **Status**: validated — after three attempts, two of which failed on real defects the bot's tests could not have caught.
