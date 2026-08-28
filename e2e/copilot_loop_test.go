@@ -145,6 +145,8 @@ func TestCopilot_PermissionPolicy_Behaviour(t *testing.T) {
 		{"store/run-json", "Read", repo + "/.iterion/runs/019f8384/run.json", permission.Allow,
 			"the debug posture reads the run store directly — a blanket .iterion deny kills it"},
 		{"store/events", "Read", repo + "/.iterion/runs/019f8384/events.jsonl", permission.Allow, ""},
+		{"tool/toolsearch", "ToolSearch", "select:Glob,Grep", permission.Allow,
+			"ToolSearch is Claude Code's loader for deferred tools; denied, the model concludes the tool is gone and reaches for Bash (run 01a049e1)"},
 		{"own-skills", "Read", repo + "/.claude/skills/copi-conversation/SKILL.md", permission.Allow,
 			"the runtime mirrors Copi's own skills here; denying it would leave the bot unable to load any of them"},
 		{"src/plain", "Read", repo + "/cmd/app/main.go", permission.Allow, ""},
@@ -438,6 +440,44 @@ func TestCopilot_GraphContract(t *testing.T) {
 	if slices.Contains(rev.Tools, "grep") {
 		t.Error("reviewer tools include grep even though the workflow's bare Grep deny rejects every call")
 	}
+	// The reviewer reads the THREAD, not just the last message. Fed only
+	// `operator_message` + `reply`, it once contested "ok go" for carrying
+	// no context — while Copi's own context_brief, rewritten that same
+	// turn, held exactly the missing context (run 01a04999). The brief
+	// rides the gate -> review edge, sourced from copi (this turn's
+	// rewrite), and the user prompt must actually render it.
+	if !schemaHasField(wf.Schemas["review_in"], "context_brief") {
+		t.Error("review_in has no context_brief field — the reviewer judges every turn as a standalone message")
+	}
+	reviewEdge := findEdge(t, wf, "gate", "review")
+	if got := edgeMappings(reviewEdge)["context_brief"]; got != "{{outputs.copi.context_brief}}" {
+		t.Errorf("gate -> review maps context_brief from %q, want {{outputs.copi.context_brief}} — copi's rewrite of THIS turn, so the brief covers the exchange under review", got)
+	}
+	if !strings.Contains(wf.Prompts["review_user"].Body, "{{input.context_brief}}") {
+		t.Error("review_user never renders {{input.context_brief}} — the brief would travel on the edge and reach nobody")
+	}
+	// The reviewer must also see the typed host-action requests: Copi can
+	// only PROPOSE, the Studio executes — a reviewer shown the prose alone
+	// contests "nothing was done" on every turn that requests an action.
+	if !schemaHasField(wf.Schemas["review_in"], "assistant_actions") {
+		t.Error("review_in has no assistant_actions field — the reviewer cannot tell a proposal from an omission")
+	}
+	if got := edgeMappings(reviewEdge)["assistant_actions"]; got != "{{outputs.copi.assistant_actions}}" {
+		t.Errorf("gate -> review maps assistant_actions from %q, want {{outputs.copi.assistant_actions}}", got)
+	}
+	if !strings.Contains(wf.Prompts["review_user"].Body, "{{input.assistant_actions}}") {
+		t.Error("review_user never renders {{input.assistant_actions}}")
+	}
+	// Under claude_code the node's tools: list is inert and the deny gate
+	// is the only boundary. A reviewer that has to DISCOVER that boundary
+	// burns a denied `curl` on the Studio API every turn and opens its
+	// critique with an apology (run 01a04999); the prompt must state it.
+	reviewSystem := wf.Prompts["review_system"].Body
+	for _, want := range []string{"Bash", "Studio API", "events.jsonl"} {
+		if !strings.Contains(reviewSystem, want) {
+			t.Errorf("review_system does not mention %q — the reviewer would rediscover its tool boundary by probing it", want)
+		}
+	}
 
 	// The routing flag must exclude a closing turn. Two sibling `when`
 	// guards both fire when both are true, so testing `reviewer == on` on
@@ -636,6 +676,19 @@ func TestCopilot_ColdTurn_BriefSurvivesLostSession(t *testing.T) {
 
 // ---- helpers ----
 
+// schemaHasField reports whether a resolved schema declares a field by name.
+func schemaHasField(s *ir.Schema, name string) bool {
+	if s == nil {
+		return false
+	}
+	for _, f := range s.Fields {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func findEdge(t *testing.T, wf *ir.Workflow, from, to string) *ir.Edge {
 	t.Helper()
 	for _, e := range wf.Edges {
@@ -789,6 +842,9 @@ func TestCopilot_CrossReview_ComposesBothHalves(t *testing.T) {
 	}
 	if got := fmt.Sprint(reviewInput["operator_message"]); got != question {
 		t.Errorf("the first-turn reviewer received operator_message %q, want %q", got, question)
+	}
+	if got := fmt.Sprint(reviewInput["context_brief"]); got != "brief" {
+		t.Errorf("the reviewer received context_brief %q, want copi's \"brief\" — the thread never reached it", got)
 	}
 	if composed == "" {
 		t.Fatal("compose produced no reply — the reviewer ran and reached nobody")
