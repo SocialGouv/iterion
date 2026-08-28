@@ -199,6 +199,50 @@ func TestCopilotHasASkillPerPosture(t *testing.T) {
 	}
 }
 
+// The versioned authoring method travels with Copi. A declaration in an
+// operator bot identifies these embedded rules; it must never make the agent
+// crawl an arbitrary workspace (or the operator's home) looking for a second
+// copy. Besides being nondeterministic, that lookup once spent sixteen minutes
+// in a single glob rooted at /home/victor.
+func TestCopilotAuthoringStandardIsEmbedded(t *testing.T) {
+	mainRaw, err := os.ReadFile("copilot/main.bot")
+	if err != nil {
+		t.Fatalf("read copilot: %v", err)
+	}
+	skillRaw, err := os.ReadFile("copilot/skills/iterion-bot-architecture.md")
+	if err != nil {
+		t.Fatalf("read architecture skill: %v", err)
+	}
+
+	main := string(mainRaw)
+	skill := string(skillRaw)
+	for _, forbidden := range []string{
+		"ITERION_AUTHORING_STANDARD_PATH",
+		"that standard outranks the skill: read it",
+	} {
+		if strings.Contains(main, forbidden) {
+			t.Errorf("copilot prompt still delegates its standard to an external file: found %q", forbidden)
+		}
+	}
+	if !strings.Contains(main, "Never search the\n  workspace, the operator's home") {
+		t.Error("copilot prompt does not explicitly forbid filesystem discovery of an authoring standard")
+	}
+
+	for _, required := range []string{
+		"**Identifier:** `victor/iterion-bot-authoring/v1`",
+		"## 5. Deterministic verdicts, advisory review, and human decisions",
+		"### 9.1 Context-window budget and compaction avoidance",
+		"## 12. Validation and checklist",
+	} {
+		if !strings.Contains(skill, required) {
+			t.Errorf("embedded authoring standard is incomplete: missing %q", required)
+		}
+	}
+	if strings.Contains(skill, "ITERION_AUTHORING_STANDARD_PATH") {
+		t.Error("architecture skill still instructs Copi to resolve an external authoring-standard file")
+	}
+}
+
 // stripSkillsDeclarations removes everything the MODEL never reads, so that
 // what remains is prompt text and only prompt text:
 //

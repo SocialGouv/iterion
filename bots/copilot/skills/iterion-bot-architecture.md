@@ -1,319 +1,696 @@
 ---
 name: iterion-bot-architecture
-description: How to DESIGN a .bot, as opposed to how to spell one — node responsibilities, closed contracts, the PASS/RETRY/BLOCKED verdict shape, why a retry must re-enter the producing node, subbot boundaries, idempotency, parallelism markers and what they do not guarantee, budgets, and the proof categories a PASS must carry. Load in design posture alongside iterion-dsl-authoring, before proposing any graph.
+description: Complete embedded victor/iterion-bot-authoring/v1 standard for designing .bot graphs — responsibilities, contracts, convergence, advisory review, retries, subbots, effects, idempotency, parallelism, routing, context budgets, proofs, resume, and validation. Load in design posture alongside iterion-dsl-authoring.
 ---
 
-# Designing a `.bot`
+# Bot authoring standard
 
-`iterion-dsl-authoring` gets a workflow to compile. This gets it to be
-*right*. They are different failures: a graph that passes `iterion
-validate` can still route from prose, retry into the wrong node, or
-present a hash as proof that the work is correct.
+**Identifier:** `victor/iterion-bot-authoring/v1`
 
-## Say which layer you are speaking from
+Personal method for designing Iterion `.bot` graphs — not an official
+standard of the Iterion engine. It talks about properties — risk, effect,
+contract, capability, proof — not model names, vendors, disciplines, or
+project files.
 
-Three layers, and conflating them is the most damaging thing you can do
-in this posture, because the operator acts on what you say:
+It does not replace the Iterion DSL. A consuming project applies it through
+a **local profile** (models, retry caps, budgets, entry points, verifiers)
+and SHOULD declare:
 
-| Layer | Means |
-|---|---|
-| **DSL** | The compiler or `iterion validate` enforces it. You can promise this. |
-| **Architecture** | A design requirement. The graph still compiles if it is violated. Say so. |
-| **Project profile** | Models, retry caps, budgets, verifiers. The operator's repo decides; you do not. |
-
-Never tell an operator "validate will catch that" unless it will. When
-a rule is architectural, name it as a rule you are applying and say
-that nothing in the toolchain enforces it.
-
-### The operator's own standard wins
-
-A repo may carry its own authoring standard, and it outranks this
-skill. Look for it before designing:
-
-- a `authoring_standard: <publisher>/<name>/<version>` declaration in
-  the workflow or the project's docs;
-- the `ITERION_AUTHORING_STANDARD_PATH` environment variable, which
-  points at the standard's file — read it with `Read`, it is usually
-  installed **outside** the repo;
-- otherwise, the repo's own `CLAUDE.md` / `AGENTS.md` conventions.
-
-When you find one, read it and follow it, and say which one you applied.
-When you do not, this skill is the floor. Never hardcode a path to a
-standard into a workflow you write — a project resolves it, it does not
-commit it.
-
-## Node kinds are responsibilities, not just types
-
-`agent` and `judge` accept the same property surface, so the compiler
-will happily let an agent grade itself or a judge rewrite the file it is
-reviewing. Treat them as roles:
-
-| Kind | Owns | Must not |
-|---|---|---|
-| `agent` | Producing or transforming an artifact | Be the only proof its own work is correct |
-| `judge` | Evaluating an artifact that already exists | Mutate it, or trigger new production |
-| `human` | A durable decision or outside input | Hide a technical routing target inside a yes/no form |
-| `tool` | One deterministic effect | Shell out to an agent CLI or to `iterion run` |
-| `compute` | Pure expressions | Do I/O or call a model |
-| `router` | Fan-out and conditions | Carry `await` (the DSL refuses it) |
-| `subbot` | A nested run with its own contract | Hide a second graph inside a prompt |
-
-One named responsibility per node. If an agent also has to judge, or to
-call a vendor API, that is two nodes.
-
-**An agent CLI inside a `tool` node is the anti-pattern to watch for.**
-It reads as deterministic in the graph and is not. `iterion validate`
-does not catch it.
-
-## Contracts
-
-- Any output a condition, a router, a writer, or another node
-  **consumes** needs a closed schema. Free text is fine only when the
-  workflow never interprets it — a conversational or documentary bot.
-- A node with a **side effect and no textual output** needs a
-  deterministic post-check behind it: file present, hash, exit code,
-  dimensions. Otherwise the graph believes an effect it never observed.
-- Machine-checkable decisions — hash, schema, equality, allowlist —
-  belong in `compute` or `tool`. Let the model choose among options that
-  are already valid.
-- Every guarded edge needs an exhaustive complement or an `else`.
-
-## First: which loop shape are you in
-
-Two regimes, and picking the wrong one is the most expensive mistake in
-this posture because everything downstream follows from it.
-
-**Campaign + deterministic gate.** For an improvement or review loop over
-a repo — the whole shipped iterion fleet since ADR-058 v2. ONE agent per
-pass, a deterministic verify gate (a real exit code, never an LLM
-judgment), a machine-checkable termination flag, and a single bounded
-`continuation_loop(N)`. The agent commits each unit in stride, so
-exhausting the loop ships what is banked. There is **no LLM judge in the
-loop at all**: oscillation is structurally absent because each pass is
-one fresh context re-reading `git log`, with no reviewer/fixer relay to
-re-litigate. Recommend this by default for "keep improving X until it is
-good".
-
-**Producer + judge, with a retry edge.** For evaluating a *specific
-artifact* against criteria a command cannot express — a design, a
-document, a plan, a piece of prose. Here the rest of this section
-applies, and applies strictly: the relay is exactly what oscillates when
-it is built carelessly.
-
-Both regimes diagnose the same failure — a fresh-context corrector
-re-derives instead of amending — and answer it differently: the campaign
-removes the corrector, the producer/judge pair keeps it and makes the
-retry re-enter the producer's own conversation. What neither tolerates is
-a *second* agent correcting the first one's work from a blank context.
-
-## Verdicts, and the node a retry goes back to
-
-Give an evaluation a structured verdict, and route from the **field**,
-never from the findings prose:
-
+```text
+authoring_standard: victor/iterion-bot-authoring/v1
 ```
+
+This complete versioned standard is embedded in the
+`iterion-bot-architecture` skill. An `authoring_standard:` declaration is
+an identifier for these embedded rules, not a file reference. Copi MUST NOT
+search the workspace, the operator's home, or an environment variable for an
+external copy. Future additions and good practices are made directly in this
+skill so every Copi installation receives the same standard.
+
+A project MAY add a visible local profile for models, retry caps, budgets,
+entry points, verifiers, and documented exceptions. That profile supplements
+this standard; it does not cause a second authoring-standard document to be
+loaded. The standard MUST NOT name or link to a particular project profile.
+
+## RFC 2119 keywords
+
+| Keyword | Meaning |
+|---|---|
+| **DSL** | Enforced by `iterion validate` (and the compiler). |
+| **MUST** | Architectural requirement of this standard. Tools other than the DSL may audit it; a graph can still compile if it violates it. |
+| **SHOULD** | Default; a documented, reviewable exception is allowed. |
+| **MAY** | Optional. |
+
+---
+
+## 1. Scope and vocabulary
+
+| Term | Meaning |
+|---|---|
+| Producer | Node that creates or transforms an artifact (`agent`, sometimes `tool`) |
+| Judge | Node that evaluates an already produced artifact and gives non-binding semantic advice (`judge`) |
+| Human gate | `human` node for a durable decision or external contribution |
+| Work unit | Deliverable the workflow commits to finish (task, job, item) |
+| Shared mutable resource | File, scene, store, or system only one writer may mutate at a time |
+| Idempotency key | Stable identity of a work unit, including freshness (see §6) |
+| Execution profile | Model-routing class (capability, context, modalities, cost) |
+| Subbot | Independently executable and reusable nested capability with a declared input and a clear output or deliverable |
+| Projected peak context | Maximum tokens a node can accumulate before completing one invocation or its bounded resumed session, including prompts, injected inputs, tool results, deltas, and reserved output |
+
+Keep these layers out of the same paragraph:
+
+1. **DSL** — true because the language/runtime says so.
+2. **MUST/SHOULD of this standard** — architecture, not the parser.
+3. **Project profile** — pins, enums, tools, entry points; out of this file.
+
+---
+
+## 2. Node kinds
+
+**DSL.** `agent` and `judge` accept the same property surface. The compiler
+does not stop an agent from evaluating, or a judge from using write tools.
+
+**MUST.** Treat kinds as responsibilities:
+
+| Kind | Role | MUST NOT |
+|---|---|---|
+| `agent` | Produce | Be the sole proof that its own work is correct |
+| `judge` | Evaluate an already produced artifact and advise its producer | Mutate that artifact; trigger new production; hard-filter the artifact on a semantic opinion |
+| `human` | Durable decision or external input | Hide a technical target inside a form that is meant to stay binary |
+| `tool` | Deterministic effect (CLI, hash, seal, I/O) | Shell out to an agent CLI or `iterion run` |
+| `compute` | Pure expressions | I/O or model calls |
+| `router` | Fan-out / condition | `await` (**DSL**) |
+| `subbot` | Nested run with its own contract | Hide a second graph inside a prompt |
+
+**SHOULD.** One named responsibility per node. If an agent also needs to
+judge or call a vendor, split the graph.
+
+**SHOULD.** A `tool` MAY call an **explicitly authorized** external service
+when that call is a single responsibility, declares its effects, uses an
+idempotency key when possible, and emits a redacted proof. How the project
+annotates the provider is a profile convention, not a DSL rule.
+
+Hiding an agent CLI inside a `tool` is an architectural **MUST NOT**,
+typically enforced by project audit, not by `iterion validate`.
+
+---
+
+## 3. Input and output contracts
+
+**MUST.** Any output **consumed** by a condition, router, writer, or another
+node has a closed schema.
+
+**MAY.** A platform-native opaque handle MAY cross one graph edge as `json`
+only when the DSL has no producer type for that handle (for example, Iterion
+reserves `file` for human uploads while a deterministic tool emits a native
+run-attachment preview descriptor). The producing deterministic node MUST
+construct and validate the descriptor from sealed paths, hashes, MIME and
+size; the consumer MUST treat it as opaque display/input plumbing. No
+condition, router, model prompt, repair scope, or business writer may inspect
+fields inside that open value. This is not permission to carry ordinary
+domain objects or fan-out collections as `json`.
+
+**MAY.** Output meant only for a human MAY stay free text if the workflow
+never interprets it (conversational, exploratory, documentary bots).
+
+**MUST.** A node with a **side effect and no textual output** MUST be
+followed by a deterministic post-check that attests the expected effect
+(file present, hash, dimensions, exit code).
+
+**SHOULD.** Machine-checkable decisions (hash, schema, equality, allowlist)
+live in `compute` or `tool`. The model chooses among already-valid options.
+
+**DSL / MUST.** Every guarded edge has an exhaustive complement or `else`.
+
+### 3.1 Subbot boundary and contract
+
+A `subbot` is a reusable capability boundary, not a way to move a node out of
+its parent graph.
+
+**MUST.** A subbot contains at least **two executable nodes**. For this rule,
+`agent`, `judge`, `human`, `tool`, `compute`, `router`, and nested `subbot`
+declarations count as executable nodes; schemas, prompts, the workflow
+declaration, `entry`, `done`, and `fail` do not. A capability that requires
+only one executable node stays inline in its caller. A project audit MUST
+reject a single-node subbot even when `iterion validate` accepts it.
+
+**MUST.** A subbot reads all variable data through a declared input contract
+and, on success, emits a clear deliverable or a closed structured output. A
+file or external artifact is a clear deliverable only when the output identifies
+it unambiguously and carries the receipt, status, hash, or other proof required
+by its contract. Unstructured completion prose alone is not a subbot output.
+
+**MUST.** A subbot is fully independent of its caller. Given its declared
+inputs and authorized external capabilities, it can be executed and validated
+without access to the parent workflow's node outputs, conversation, implicit
+working state, or control-flow history. It MUST NOT depend on a caller node
+name, a sibling output, an undeclared parent path, or knowledge of which node
+will run before or after it.
+
+**MUST.** A subbot can be reused unchanged by different workflows. Callers MAY
+map different values into its input contract, but MUST NOT require edits to the
+subbot's prompts, graph, schemas, or internal paths. Having only one current
+caller is allowed; caller-specific assumptions are not. The capability MUST
+remain independently testable through its public input/output contract.
+
+**SHOULD.** Name a subbot after the capability and deliverable it owns, not the
+parent phase or the first workflow that happens to call it.
+
+---
+
+## 4. Production, evaluation, and convergence
+
+**SHOULD.** The graph makes responsibilities and every model invocation
+visible.
+
+**SHOULD.** Costly or external effects follow:
+
+```text
+deterministic prepare (immutable job, idempotency key)
+  -> effect node (one piece per invocation)
+  -> deterministic post-check / seal
+```
+
+A judge **MUST**:
+
+- not modify the artifact under review;
+- not trigger new production;
+- emit a structured review if the graph consumes it;
+- advise rather than act as a hard semantic gate (see §5.2);
+- avoid unnecessary external effects.
+
+`readonly: true` (**DSL** intent) protects the **checkout** and classifies
+parallelism safety. It does **not** by itself block an MCP or API with
+external effects. A judge **SHOULD** add a read-only tool allowlist, no
+production APIs, no writes to external systems, no mutation permissions.
+
+A unique writer is required **only** when several branches converge on the
+**same shared mutable resource**. An Iterion node output does not by itself
+need a parent-persisted file.
+
+`isolated: true` is a **contractual assertion** (declared store, worktree,
+or namespace), not an OS sandbox provided by Iterion.
+
+---
+
+## 5. Deterministic verdicts, advisory review, and human decisions
+
+### 5.1 Deterministic evaluation verdict
+
+`PASS`, `RETRY`, and `BLOCKED` belong to deterministic contract validation
+(`tool` or `compute`) and to validated durable decisions. A probabilistic
+semantic `judge` does not issue one of these verdicts as routing authority;
+its protocol is defined in §5.2.
+
+Enum names below are **examples**. The workflow sets allowed values.
+
+```text
 verdict:         PASS | RETRY | BLOCKED
-rework_target:   <the producer inspected> | none
+rework_target:   <allowed producer> | none
 blocker_kind:    <workflow-defined enum>
-recovery_target: <an acquisition capability> | none
+recovery_target: <allowed acquisition capability> | none
 ```
 
-| Verdict | Next |
-|---|---|
-| PASS | continue |
-| RETRY | a bounded loop back to the producer that was inspected |
-| BLOCKED | the node named by `recovery_target`, or `fail` |
-
-RETRY names an observable defect. BLOCKED means something is missing —
-information, a capability — and the answer is to acquire it, not to
-invent scope around it.
-
-### No correction twin
-
-**A RETRY edge returns to the same node that produced the artifact.**
-Declaring a second node with the same prompt, tools and contract to
-serve the retry path duplicates a responsibility; it is not a routing
-decision. It costs three things:
-
-- **context** — a twin opens a fresh conversation, so the producer's own
-  reasoning is discarded and it re-derives the artifact instead of
-  amending it;
-- **input** — the retry brief re-renders material the producer already
-  had, with the verdict buried at the end;
-- **fidelity** — a producer that cannot see what it wrote cannot honour
-  "change only this". Every retry becomes a rewrite, and the next pass
-  judges a different artifact.
-
-The twin usually exists because the retry brief differs. Build that
-brief in the deterministic node in front of the producer, which is where
-the difference belongs.
-
-The re-entered producer should keep its conversation across visits
-(`session: inherit_if_available`). First visit gets the full brief;
-every later visit gets a **delta** — the verdict, the human note, the
-contract refusal — and nothing else.
-
-**A delta still names its paths.** Session resumption can fail silently
-and the runtime may fall back to a fresh conversation without telling
-the graph, so the delta says where the artifact and its inputs live. A
-context-less producer must be able to re-read rather than correct blind.
-
-Two consequences, and in iterion both are enforced by the compiler
-rather than left to discipline — say so, it changes the advice:
-
-- A node that keeps its conversation **cannot** declare a fallback that
-  changes backend. `C176` refuses it outright (session continuity has no
-  cross-backend meaning). So a node that must survive a fall-through
-  without losing its thread builds its ladder from different
-  **providers inside one backend** — not from different backends. Read
-  "prefer a decorrelated fallback" as *another provider*, which is what
-  actually decorrelates an outage; "another backend" is the reading that
-  will not compile.
-- A retry loop **inside** a `fan_out_each` / `fan_out_all` body is
-  `C244`, because a parallel branch has no local loop counter. Per-item
-  retry is a `subbot`, or a loop wrapped around the router from the
-  join. Design the per-item retry that way from the start.
-
-**A re-emitted identical artifact is a failed retry, not an idempotent
-success.** A contract that answers "already applied" on a retry path
-re-presents the refused artifact to the judge and the human gate, and
-the refusal is silently lost.
-
-Where several sources can trigger a retry — a contract refusal, a judge,
-a human gate — converge them on **one** deterministic node that merges
-them in a documented priority order. But give each source its **own**
-named cycle and cap: a shared counter lets a chatty judge eat the
-human's budget.
-
-## How capable the judge should be
-
-Choose from the cost of bad production, of a **false PASS**, and of a
-**false RETRY** — not from a habit. Default the judge to the same
-routing class as the artifact's creator; there is no `high_judge`
-profile to invent.
-
-Two places to depart from that default, both deliberate:
-
-- **A false PASS is the expensive one** — security, compliance, an
-  irreversible migration. Then the judge may be the most capable node in
-  the graph, because a retry is cheap next to what a wrong approval
-  costs.
-- **The mechanical tail.** Once the expensive phases have externalised
-  the context — plan approved, work-list enumerated, verify script
-  written — the remaining units are bounded and a cheaper model performs
-  equivalently. Spend the strong model on discovery, design and
-  judgment; pin `model:` per node and downgrade the tail.
-
-These pull in opposite directions on purpose. The question they both
-answer is which node's mistake is unaffordable, and that is a property of
-the artifact, not of the node's kind.
-
-## Human gates
-
-A refusal does not automatically mean "rerun the producer". Let the
-workflow name the states it allows — approve, revise, blocked, reject,
-cancel — and take the technical target from a **structured field** or a
-deterministic rule. A model is the classifier of last resort, and only
-with a deterministic validation behind it.
-
-## Subbot boundaries
-
-A `subbot` is a reusable capability, not a way to move a node out of its
-parent graph.
-
-- **At least two executable nodes.** `agent`, `judge`, `human`, `tool`,
-  `compute`, `router` and nested `subbot` count; schemas, prompts, the
-  workflow declaration, `done` and `fail` do not. One executable node
-  stays inline in the caller. `iterion validate` does **not** enforce
-  this.
-- **Declared inputs, and a clear deliverable.** A file counts only when
-  the output identifies it unambiguously and carries the receipt, hash
-  or status its contract requires. Completion prose is not an output.
-- **Independent of the caller.** No sibling output, no caller node name,
-  no undeclared parent path, no knowledge of what runs before or after.
-- **Reusable unchanged.** A caller may map different values in; it may
-  not require edits to the subbot's prompts, graph or paths. Having one
-  caller today is fine; caller-specific assumptions are not.
-
-Name it after the capability it owns, not the phase that first called it.
-
-## Parallelism markers, and what they do not promise
-
-| Marker | Guarantees | Does **not** guarantee |
+| Verdict | `rework_target` | Next |
 |---|---|---|
-| `readonly: true` | the checkout is not mutated | no MCP / API / external effect |
-| `isolated: true` | the contract promises a private store or namespace | an OS sandbox |
-| `parallel_safe: true` | `fan_out_each` replays write disjoint item-keyed outputs | anything if the keys overlap |
-| `await: wait_all` | a convergence barrier | a unique writer |
+| PASS | `none` | continue |
+| RETRY | the inspected producer, never another | bounded loop to that producer (§5.3) |
+| BLOCKED | `none` | node named by `recovery_target`, or `fail` if `none` |
 
-Run branches in parallel only when the writes are disjoint **and**
-declared. A unique writer is required only where branches converge on
-the *same shared mutable resource* — acquire it through `resources:`, a
-lease or a semaphore. Never raise `max_parallel_branches` to paper over
-a write conflict.
+**MUST.** The graph MUST NOT infer the next node from `findings` prose.
 
-## External effects
+**SHOULD.** A `RETRY` names an observable defect tied to a criterion. A
+`BLOCKED` means information or an external capability is missing: do not
+invent scope to work around it.
 
-One graph responsibility per external effect, and it leaves a redacted
-proof. The idempotency key should fold in the contract version, the
-input hashes, the tool or model version when it changes the result, a
-freshness window when the answer can go stale, and an explicit nonce
-when a rerun is wanted on purpose.
+**MUST.** Every graph cycle has a loop name and a cap. Retry counts are a
+**project variable**, not a universal default.
 
-The same key must not produce two effects — a deliberate rerun needs a
-new key. Record the attempt **before** the first effect of a cacheable
-unit, so a crash retries a candidate instead of promoting a stale
-success. Writers are atomic: a crash must not leave a half-written
-artifact as the current state.
+### 5.2 Semantic judges advise; they do not filter
 
-## Budgets
+A model judge detects risks and proposes advice. It is not the owner of the
+artifact and it does not have veto power over the producer. Example review
+status names are:
 
-Every workflow declares numeric caps, and they are dimensions, not a
-sum — never add a dollar figure, a branch count and a retry count
-together:
-
-```
-max cost      = Σ (max invocations of a node × its estimated unit cost)
-max duration  = critical path + bounded waits + retry slack
-max parallel  = branches concurrently live
+```text
+review_status: CLEAR | ADVICE
+artifact_hash: <hash of the reviewed snapshot>
+findings:      <structured findings>
 ```
 
-Fallback routes count as extra invocations in the worst case. Each paid
-loop declares its passes, its ceiling, and what happens when it is
-exhausted — fail, human gate, or a documented skip. A subbot has its own
-budget. `unbounded` only where the case is named in a comment.
+| Review status | Meaning | Next |
+|---|---|---|
+| `CLEAR` | The judge has no advice on the reviewed snapshot | continue |
+| `ADVICE` | The judge found a semantic risk worth reconsidering | prepare one review delta, then re-enter the same producer |
 
-Remember from `iterion-dsl-authoring`: the budget is **cumulative over
-the run's whole life**, so on a looping or conversational bot these are
-session caps, not per-turn caps.
+**MUST.** An `ADVICE` is non-binding. The producer reads it critically and
+MAY accept it, accept it partially, or reject it. The producer emits the new
+artifact (which MAY be unchanged) and a separate structured response annex.
+For every `finding_id`, that annex records at least:
 
-## Proofs
+```text
+decision:         ACCEPTED | PARTIALLY_ACCEPTED | REJECTED
+rationale:        <why>
+changed_refs:     <artifact locations or stable ids>
+evidence_refs:    <optional supporting contract or evidence>
+reviewed_hash:    <hash before the response>
+resulting_hash:   <hash after the response>
+```
 
-A PASS carries the proof categories its contract asks for, and they are
-not interchangeable:
+**MUST.** Findings carry a stable id, the reviewed artifact hash, and a
+criterion from a project allowlist. Free prose MUST NOT choose the next node,
+the producer, or the permitted repair scope. A deterministic aggregator
+validates finding codes, merges duplicates, and derives routing and repair
+scope from the current contract. The judge MAY describe a possible repair,
+but that suggestion is never an instruction.
 
-| Proof | Attests |
+**MUST.** Every finding is answered exactly once. An `ACCEPTED` response must
+identify a corresponding observable change. A `REJECTED` response MAY preserve
+the artifact byte-for-byte, but must explain the disagreement. This is not an
+identical failed `RETRY`: the semantic advice never refused the artifact, and
+the response annex is a new part of the review work unit. The identical-output
+rule in §5.3 still applies after a deterministic refusal.
+
+On the next visit, the judge reviews both the new snapshot and the producer's
+responses. It MAY return `CLEAR` because the artifact changed or because the
+reasoned response resolves its concern. If it repeats a finding, it **MUST**
+keep the same `finding_id` and explain why the prior response is insufficient.
+A new finding **SHOULD** concern changed material or a regression introduced by
+the revision, rather than reopening settled preferences.
+
+**MUST.** One semantic review phase has at most **three collective advice
+cycles**. A project MAY choose a lower cap, never a higher one. When several
+judges review the same artifact, they SHOULD inspect the same immutable
+snapshot in parallel, then have their findings aggregated into one producer
+response; they do not each receive a separate three-revision budget.
+
+After the third advice cycle, the producer **MUST** emit its final artifact and
+response annex, then the graph continues without another semantic review turn.
+The workflow **MUST NOT** mislabel this as `CLEAR` or judge approval. It records
+an explicit state such as `ADVISORY_EXHAUSTED`, preserves non-cleared findings
+and producer responses, and surfaces them to the next durable consumer or
+human gate.
+
+**SHOULD.** In a hierarchical map/reduce workflow, review the decision artifact
+at the level that owns it, rather than adding one late judge after every level
+has been flattened:
+
+- experience or journey judges review coarse boundaries and functional
+  fidelity, then return advice to the coarse producer;
+- split judges inspect the complete reduced sibling set when overlap, grain,
+  priority, or dependency quality is comparative; content judges MAY inspect
+  bounded groups in parallel;
+- item or epic judges review the complete fixed item without reopening
+  reducer-owned boundaries, IDs, ordering, or dependencies.
+
+The graph MAY use one correction cycle by default and expose a project setting
+up to the three-cycle maximum. Reducing the advice cap is the preferred cost
+control; removing a review whose false CLEAR would waste the downstream work is
+not automatically an economy. A cycle means judge snapshot A, producer
+response/revision B, and a fresh judgement of B. If B still receives advice at
+the cap, continue as `ADVISORY_EXHAUSTED`; do not call the unreviewed revision
+`CLEAR`.
+
+**SHOULD.** When an item's meaning controls generated visual evidence, keep the
+visual-intent artifact in that item's responsibility. First converge the
+textual/structural contract, then run a separate bounded visual realization
+loop: deterministic image job -> media generator -> vision-capable semantic
+judge -> feedback to the same visual-intent responsibility -> targeted
+regeneration. Regenerate only affected views when the contract can identify
+them. Image advice is non-filtering and exhausts into the human gate with its
+open findings; generation and vision review remain explicit nodes with their
+own capabilities, idempotency keys, effects, and budgets.
+
+**MUST.** Deterministic contracts remain filtering. Schema, hashes, signatures,
+allowlists, measured bounds, required evidence, safety rules, and other
+machine-checkable invariants MAY yield `PASS`, `RETRY`, or `BLOCKED` under
+§5.1. A semantic judge cannot waive such a failure, and a semantic opinion
+cannot promote itself into one.
+
+### 5.3 Retry and advice re-enter the producer, not a twin
+
+**MUST.** A `RETRY` edge and an `ADVICE` response edge return to the **same
+node** that produced the artifact. Declaring a second node with the same system
+prompt, tools, and contract to serve the correction path — a *correction twin*
+— duplicates a responsibility; it is not a routing decision. The twin exists
+because the delta differs, but the delta is built by the deterministic node in
+front of the producer, which is where that difference belongs.
+
+A twin costs three things the graph cannot get back:
+
+- **identity** — two declarations can diverge in prompts, tools, routing, and
+  fixes even though they own the same artifact responsibility;
+- **input** — the correction path tends to re-render material already frozen
+  in the work packet, with the actual delta buried at the end;
+- **fidelity** — a correction node that cannot reload the exact artifact and
+  its frozen inputs cannot honour a "change only this" instruction. Every
+  retry becomes a rewrite, and the judge reviews unnecessary drift.
+
+**MAY.** The re-entered producer keeps its conversation across visits
+(**DSL**: a session mode that resumes the node's own last conversation) only
+when its projected peak context across the maximum number of visits satisfies
+the no-compaction budget in §9.1. Session continuity is an optimization, never
+an authority or a substitute for frozen artifacts. If the bounded resumed
+session could reach that budget, the same producer responsibility uses a fresh
+session and reconstructs its state from those artifacts. The first visit
+receives the frozen work packet. Every later visit receives a **delta** — the
+deterministic verdict, aggregated advice and prior producer responses, the
+human notes, or the contract refusal — plus the paths and hashes needed to
+reload the frozen inputs and current artifact, not a rendered copy of the full
+brief.
+
+**MUST.** A delta stays self-sufficient in **paths**. Session resumption can
+fail silently (lost state, unavailable backend) and the runtime may fall back
+to a fresh conversation without telling the graph. The delta therefore names
+where the artifact and its frozen inputs live, so a context-less producer
+re-reads instead of correcting blind.
+
+**MUST.** When the producer re-emits an artifact **identical** to the refused
+one, the receiving contract treats it as a **failed retry**, not as an
+idempotent success. A contract that answers "already applied" on a retry path
+re-presents the refused artifact to the judge and to the human gate, and the
+refusal is silently lost. See §6.
+
+Consequences on the node's declaration (**DSL**):
+
+- session continuity has no meaning across backends, so a node that keeps its
+  conversation MUST NOT declare a fallback that changes backend; its safety
+  net stays inside the same backend. This is an authorized exception to the
+  cross-family preference of §8 and MUST be recorded where the routing
+  contract is audited — otherwise the next routing review "fixes" it back and
+  the graph stops compiling.
+- session persistence may be restricted to trunk nodes. A producer inside a
+  fan-out body may be unable to keep its conversation; verify against the
+  engine before designing a per-item retry around it.
+
+**SHOULD.** Distinct re-entry sources — deterministic contract refusal,
+semantic advice, human gate, a late deterministic refusal from downstream —
+converge on a **single** deterministic node that merges their feedback in a
+documented priority order, then re-enters the producer. **MUST.** Deterministic
+retry, advisory review, and human revision keep separate named cycles and caps:
+an advisory conversation must not consume the human's budget. Check how the
+engine resets those counters — a counter re-entered through a sibling cycle's
+edge may not reset, in which case its cap covers the whole run and must be
+sized for that.
+
+### 5.4 Judge vs producer capability
+
+**SHOULD.** Choose producer and judge capability from the cost of bad
+production, of a **false CLEAR**, and of unhelpful **ADVICE**. The judge MAY be
+less, equally, or more capable than the producer depending on risk.
+
+Economic heuristic (not a MUST): if a retry re-runs an expensive producer, a
+stronger judge often costs more than it saves. Security, compliance, critical
+migrations, irreversible decisions — a missed risk is costlier than extra
+advice, so the judge MAY be the most capable node. Hard enforcement still
+belongs to deterministic contracts and durable human decisions, not to the
+model's confidence.
+
+**SHOULD.** A judge of an artifact uses the **same routing class** as its
+creator (same artifact kind). Do not invent a `high_judge` profile.
+
+Common cases where the judge is the only quality LLM: the creator is not a
+model (vendor, compiler, engine); the review is as wide as the production.
+
+### 5.5 Human gates
+
+A human refusal **MUST NOT** be assumed to mean “rerun the producer”. The
+workflow chooses which states it allows, for example:
+
+| Decision | Next |
 |---|---|
-| Provenance / integrity | identity and origin; nothing changed undetected (hash, signature, content id) |
-| Execution | something actually ran (exit code, log, attested response) |
-| Acceptance | the functional criteria hold (test, postcondition, a durable human observation) |
+| APPROVE | continue |
+| REVISE | producer responsible for the defect |
+| BLOCKED | acquire / wait (`recovery_target`) |
+| REJECT | controlled terminal failure |
+| CANCEL | cancel |
 
-**A hash does not prove the artifact is semantically correct.** Which
-verifier is authoritative for which artifact is the project's call — an
-interactive aid never replaces the declared verifier.
+The technical target **MUST** come from a structured field, a deterministic
+rule, or — only if free-text interpretation is required — an explicit model
+node **followed by a deterministic validation**. A model MUST NOT be the
+default classifier when a field or rule would suffice.
 
-## Before you say a draft is ready
+---
 
-- [ ] `iterion validate` clean — and say when you have not been able to run it
-- [ ] one named responsibility per node; no agent CLI inside a `tool`
-- [ ] graph-consumed output has a closed schema; an effect with no text has a post-check
-- [ ] guarded edges exhaustive or `else`
-- [ ] RETRY re-enters the inspected producer; no correction twin; the producer keeps its conversation and gets a delta that names its paths
-- [ ] an identical re-emission counts as a failed retry
-- [ ] retry sources merge in one deterministic node, each keeping its own named cycle and cap
-- [ ] BLOCKED routes through a structured `recovery_target`, never from prose
-- [ ] subbots: ≥2 executable nodes, declared inputs, real deliverable, caller-independent
-- [ ] parallelism declared; unique writer only where a shared mutable resource converges
-- [ ] a fallback meets the contract's minimum capabilities, and no session-keeping node changes backend on fall-through
-- [ ] numeric budgets in every dimension; idempotency keys include freshness; writers atomic
-- [ ] the PASS carries the proof categories its contract requires
+## 6. External effects, idempotency, and atomicity
+
+**MUST.** An external effect (API, generation, remote write) is a single
+graph responsibility and leaves a redacted proof.
+
+The idempotency key **SHOULD** include:
+
+- contract version;
+- input hashes;
+- tool/model version when it changes the effect;
+- freshness window, when the result can go stale (search, periodic scans,
+  time-varying data, deliberately renewed generation);
+- an explicit regeneration nonce, when a new run is requested on purpose.
+
+**MUST.** The same idempotency key MUST NOT produce two effects. An
+intentional new execution requires a **new key**.
+
+**MUST.** A writer (receipt, bundle, canonical copy) is **atomic**: a crash
+MUST NOT leave a half-written artifact as current state.
+
+**SHOULD.** Record the attempt **before** the first effect node of a
+cacheable unit. A crash before a candidate retries; it MUST NOT reuse a
+prior success.
+
+On cancel / timeout, the valid current state remains authoritative; a failed
+candidate MUST NOT be promoted.
+
+---
+
+## 7. Parallelism, isolation, and shared resources
+
+**MUST.** Run in parallel only when writes are disjoint **and** declared.
+
+| Marker | Guarantees | Does not guarantee |
+|---|---|---|
+| `readonly: true` | no checkout mutation | no MCP / API / external-system effect |
+| `isolated: true` | contract promises a private store/namespace | an OS sandbox |
+| `parallel_safe: true` | `fan_out_each` with disjoint item-keyed outputs | safety if keys overlap |
+| `await: wait_all` | convergence barrier | a unique writer |
+
+`fan_out_all`: known independent branches.  
+`fan_out_each`: one piece per item. Object items use a stable `key`. Scalar
+content-addressed items omit `key` because Iterion resolves named keys only on
+objects; their producer MUST emit a deterministic order and the scalar value
+itself MUST carry the stable content identity.
+
+**MUST.** Two runs with the **same idempotency key** MUST NOT mutate the same
+work unit at the same time. A shared mutable resource is acquired through a
+semaphore / lease / `resources:`; a retry that does not need to mutate it
+MUST NOT re-acquire it for nothing.
+
+**SHOULD NOT.** Raise `max_parallel_branches` to hide a write conflict.
+
+---
+
+## 8. Model routing and fallbacks
+
+An execution profile **SHOULD** be chosen from:
+
+- required capabilities (tools, vision, output shape);
+- context size;
+- modalities (text, image, code);
+- cost and latency;
+- confidentiality;
+- failure tolerance;
+- functional compatibility of fallbacks.
+
+**SHOULD.** Primary + **one** named fallback, optionally a second safety net.
+Not a long chain.
+
+A fallback from **another family** reduces correlated outages; that is a
+SHOULD, not a MUST. A fallback **MUST** meet every **minimum** capability of
+the contract and MUST NOT receive more permissions than needed. It MAY have
+fewer tools or permissions if the contract remains satisfiable. A text-only
+backend MUST NOT silently replace a capability the contract requires
+(native image generation, a given tool, a context floor).
+
+A node that keeps its conversation across retries or advisory revisions
+constrains this: see the same-backend fallback rule in §5.3.
+
+Concrete model and backend pins belong in the **project profile**.
+
+---
+
+## 9. Budgets, timeouts, and stop conditions
+
+**MUST.** Every workflow declares numeric caps. Do not add a dollar cost, a
+branch count, and a retry count into one sum.
+
+```text
+max cost =
+  Σ (max invocations of node × estimated unit cost)
+
+max duration =
+  critical-path duration
+  + bounded waits
+  + retry slack
+
+max parallelism =
+  max concurrently live branches
+```
+
+Fallbacks count as extra invocations in the worst case.
+
+Each paid loop **SHOULD** declare separately:
+
+- number of passes;
+- max external effects;
+- cost or duration limit;
+- behavior when exhausted (fail, human, documented skip).
+
+A child subbot has its own budget. `unbounded` only when the case is named
+and documented.
+
+### 9.1 Context-window budget and compaction avoidance
+
+Compaction is a recovery mechanism for an oversized conversation, not a normal
+planning primitive. An authoritative producer MUST NOT depend on a compacted
+conversation to remember scope, ownership, prior decisions, or current state.
+
+**MUST.** Before execution, every model node has a conservative projected peak
+context budget expressed in tokens. It includes, for the maximum bounded path
+through that node or resumed session:
+
+- system and user prompts;
+- injected schemas, packets, references, and review deltas;
+- the maximum tool results the node is allowed to read;
+- prior turns retained by a resumed session;
+- reasoning/output headroom required by the execution profile.
+
+The local profile declares the model context window, any runtime compaction
+threshold, and a safety margin. It MUST select an execution profile whose
+context window can contain the bounded work unit after that margin is reserved.
+The projected peak MUST also stay below the compaction threshold when one is
+configured. Estimate tokens, not file bytes. A path contributes only the
+bounded content the node is authorized to read from it.
+
+```text
+projected_peak_tokens
+  <= min(usable_context_window, configured_compaction_threshold_or_window)
+     - safety_margin_tokens
+```
+
+**MUST.** When the bound does not fit, the author restructures the graph before
+raising runtime limits or relying on compaction. Applicable reductions include:
+
+- shorten the node's responsibility and role-specific prompt;
+- project a smaller immutable work packet;
+- split semantic levels into explicit producer stages;
+- fan out disjoint bounded work units in parallel;
+- converge them through a deterministic ownership, coverage, and dependency
+  reducer;
+- re-enter a fresh session from content-addressed artifacts instead of
+  accumulating prior passes.
+
+A larger-context model and hierarchical partitioning are complementary. A
+large window provides safety headroom; it MUST NOT justify giving one node
+several independently reviewable responsibilities or an unbounded packet.
+
+**MUST.** State that must survive a pass lives in closed, immutable or
+content-addressed artifacts with stable IDs, paths, and hashes. Conversation
+history MAY improve local continuity while it remains inside the declared
+budget, but downstream routing, retries, resume, and correctness MUST remain
+reconstructible from artifacts alone.
+
+**SHOULD.** Work that crosses several semantic granularities uses a staged
+map/reduce shape: a coarse producer maps the experience or objective into
+bounded units; independent producers refine those units in parallel; a
+deterministic reducer fixes ownership, coverage, dependencies, and order before
+the next level. Later producers may report new dependency claims, but MUST NOT
+silently rewrite reducer-owned global state.
+
+**SHOULD.** Runtime receipts record estimated and actual context tokens per
+invocation, resumed-session depth, and every compaction event. If the runtime
+cannot attest compaction, the graph still obeys the static no-compaction bound;
+absence of telemetry is never evidence that the budget is safe.
+
+---
+
+## 10. Proofs and acceptance
+
+A deterministic PASS **MUST** carry the proof **categories its contract
+requires**. They are not interchangeable:
+
+| Proof | What it attests |
+|---|---|
+| Provenance / integrity | identity, origin, lack of undetected mutation (hash, signature, content id) |
+| Execution | a command or service actually ran (log, attested API response, exit) |
+| Acceptance | functional or domain criteria hold (test, postcondition, durable human observation) |
+
+A hash does **not** prove the artifact is semantically correct.
+
+The **project** names which verifiers are authoritative per artifact type
+(engine, browser, compiler, linter, human gate). An interactive aid (MCP,
+manual recording) MUST NOT replace the declared verifier.
+
+---
+
+## 11. Resume after crash
+
+Current state MAY be reused only if schema, revision, and transitive hashes
+still hold. A missing file, a hash mismatch, or explicit feedback invalidates
+**that** unit and its consumers, not independent branches.
+
+Resume targets a responsibility, not the whole run, unless the contract
+requires otherwise.
+
+---
+
+## 12. Validation and checklist
+
+`iterion validate` checks syntax and a subset of **DSL** invariants, not this
+standard. The project profile adds semantic audits and tests.
+
+Checklist before merging a `.bot`:
+
+- [ ] `iterion validate` is clean
+- [ ] each node has a named responsibility; no agent CLI inside a `tool`
+      (unless an authorized single-responsibility external service with
+      redacted proof)
+- [ ] graph-consumed output ⇒ closed schema; effect without text ⇒
+      deterministic post-check
+- [ ] any open `json` exception is an engine-native opaque handle, built from
+      sealed proofs and never inspected for routing or domain semantics
+- [ ] every subbot has at least two executable nodes, consumes only declared
+      inputs, emits a clear deliverable/output, runs independently, and is
+      reusable unchanged from another workflow
+- [ ] judge: no mutation of the artifact, no new production, no unnecessary
+      external effect, no hard semantic veto
+- [ ] semantic review uses `CLEAR|ADVICE` (or closed equivalents), a frozen
+      artifact hash, stable finding ids, and allowlisted criterion codes
+- [ ] every advice finding receives one structured
+      `ACCEPTED|PARTIALLY_ACCEPTED|REJECTED` producer response
+- [ ] at most three collective advice cycles; exhaustion continues under an
+      explicit non-approval state and preserves unresolved findings
+- [ ] only deterministic contracts and durable decisions emit filtering
+      `PASS|RETRY|BLOCKED`; semantic findings never choose routing from prose
+- [ ] `RETRY` → inspected producer; `BLOCKED` → structured `recovery_target`
+      or `fail`; never from `findings`
+- [ ] no correction twin: retry and advice re-enter the same producer
+      responsibility from frozen artifact paths and a delta; conversation
+      continuity is used only when its bounded session satisfies §9.1
+- [ ] after deterministic refusal, a re-emitted identical artifact is a failed
+      retry; after advice, it is allowed only with a structured rejection annex
+- [ ] re-entry sources merge in one deterministic node; deterministic retry,
+      advice, and human revision keep separate named cycles and caps
+- [ ] named, capped cycles; exhaustive guarded edges
+- [ ] parallelism declared; unique writer only for a shared mutable resource
+- [ ] fallback meets the contract’s minimum capabilities; documented
+      exception if the capability is single-backend
+- [ ] numeric budgets; idempotent jobs (key includes freshness); atomic
+      writers; attempt recorded before the first cacheable effect
+- [ ] every model node has a token-based projected peak context below the
+      usable window and compaction threshold with a declared safety margin
+- [ ] no authoritative state depends on conversation history or compaction;
+      oversized work is partitioned into bounded stages/fan-outs with
+      deterministic reducers and content-addressed handoffs
+- [ ] persistent sessions are bounded across their maximum visits; otherwise
+      the same producer re-enters fresh from artifact paths, hashes, and delta
+- [ ] proofs of the categories the contract requires, from the project’s
+      verifiers
+
