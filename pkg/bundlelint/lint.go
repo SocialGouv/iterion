@@ -43,6 +43,20 @@ const (
 	// DiagArgsVarUnknown: an invocation args_var names a var the workflow does
 	// not declare, so the trigger's free-text payload is dropped.
 	DiagArgsVarUnknown Code = "C204"
+	// DiagChatNodeUnknown: a chat.nodes key names no compiled workflow node,
+	// so the studio cannot associate the manifest renderer with the run event.
+	DiagChatNodeUnknown Code = "C205"
+	// DiagChatNodeKindMismatch: a manifest human turn points at a workflow
+	// node that cannot pause for an operator answer.
+	DiagChatNodeKindMismatch Code = "C206"
+	// DiagChatFieldInvalid: a summary/text/approved field is missing from the
+	// corresponding output schema or has a type the chat surface cannot send.
+	DiagChatFieldInvalid Code = "C207"
+	// DiagChatSeedVarInvalid: chat.seed_var is absent or not string-compatible.
+	DiagChatSeedVarInvalid Code = "C208"
+	// DiagChatLauncherVarInvalid: a launcher_vars entry is absent or not
+	// string-compatible (the launcher submits string values).
+	DiagChatLauncherVarInvalid Code = "C209"
 
 	// DiagForgeSecretUnknown: the forge secret name the bot expects to be
 	// bound has no matching declaration in the main.bot secrets: block.
@@ -166,6 +180,7 @@ func CheckConsistency(in Input) []Diag {
 	}
 	var diags []Diag
 	checkVarMaps(&diags, m, in.Workflow)
+	checkChatSurface(&diags, m, in.Workflow)
 	checkForgeSecret(&diags, m, in.Workflow)
 	checkCapabilities(&diags, m, in.Workflow, in.Frontmatter)
 	checkBundleNameStability(&diags, m, in.Workflow, in.DirName)
@@ -178,6 +193,113 @@ func CheckConsistency(in Input) []Diag {
 		return diags[i].Field < diags[j].Field
 	})
 	return diags
+}
+
+// checkChatSurface joins the manifest's presentation contract to the compiled
+// workflow. pkg/bundle can validate only the shape of chat:, while the DSL
+// compiler can validate only main.bot; a stale name between them otherwise
+// ships a dock that looks interactive but cannot route an answer.
+func checkChatSurface(diags *[]Diag, m *bundle.Manifest, w *ir.Workflow) {
+	if m.Chat == nil || w == nil {
+		return
+	}
+	for _, id := range sortedChatNodeIDs(m.Chat.Nodes) {
+		decl := m.Chat.Nodes[id]
+		fieldBase := "chat.nodes." + id
+		node, ok := w.Nodes[id]
+		if !ok {
+			*diags = append(*diags, Diag{
+				Code: DiagChatNodeUnknown, Severity: SeverityError, Field: fieldBase,
+				Message: fmt.Sprintf("node %q does not exist in the compiled workflow; the chat renderer would never match its run events", id),
+				Hint:    "rename the manifest key to a workflow node id or restore the node in main.bot",
+			})
+			continue
+		}
+		if decl.Kind == bundle.ChatNodeHuman && node.NodeKind() != ir.NodeHuman {
+			*diags = append(*diags, Diag{
+				Code: DiagChatNodeKindMismatch, Severity: SeverityError, Field: fieldBase + ".kind",
+				Message: fmt.Sprintf("manifest declares an operator turn, but workflow node %q is %s and cannot collect a human answer", id, node.NodeKind()),
+				Hint:    "point the chat human entry at a human node or change kind to banner/silent",
+			})
+			continue
+		}
+
+		if decl.SummaryField != "" {
+			checkChatSchemaField(diags, w, node, decl.SummaryField, fieldBase+".summary_field", ir.FieldTypeString)
+		}
+		if decl.TextField != "" {
+			checkChatSchemaField(diags, w, node, decl.TextField, fieldBase+".text_field", ir.FieldTypeString)
+		}
+		if decl.ApprovedField != "" {
+			checkChatSchemaField(diags, w, node, decl.ApprovedField, fieldBase+".approved_field", ir.FieldTypeBool)
+		}
+	}
+
+	if name := m.Chat.SeedVar; name != "" {
+		checkChatVar(diags, w, name, "chat.seed_var", DiagChatSeedVarInvalid)
+	}
+	for i, v := range m.Chat.LauncherVars {
+		checkChatVar(diags, w, v.Name, fmt.Sprintf("chat.launcher_vars[%d].name", i), DiagChatLauncherVarInvalid)
+	}
+}
+
+func checkChatSchemaField(diags *[]Diag, w *ir.Workflow, node ir.Node, name, field string, want ir.FieldType) {
+	schemaName := ir.NodeOutputSchema(node)
+	schema := w.Schemas[schemaName]
+	if schema == nil {
+		*diags = append(*diags, Diag{
+			Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("field %q has no compiled output schema on node %q to land in", name, node.NodeID()),
+			Hint:    "declare an output schema on the node and add the field with type " + want.String(),
+		})
+		return
+	}
+	for _, f := range schema.Fields {
+		if f.Name != name {
+			continue
+		}
+		if f.Type != want {
+			*diags = append(*diags, Diag{
+				Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+				Message: fmt.Sprintf("field %q in output schema %q is %s; this chat field requires %s", name, schemaName, f.Type, want),
+				Hint:    "change the schema field type or point the manifest at a compatible field",
+			})
+		}
+		return
+	}
+	*diags = append(*diags, Diag{
+		Code: DiagChatFieldInvalid, Severity: SeverityError, Field: field,
+		Message: fmt.Sprintf("field %q does not exist in output schema %q of node %q", name, schemaName, node.NodeID()),
+		Hint:    "fix the manifest field name or add it to the node's output schema",
+	})
+}
+
+func checkChatVar(diags *[]Diag, w *ir.Workflow, name, field string, code Code) {
+	v, ok := w.Vars[name]
+	if !ok {
+		*diags = append(*diags, Diag{
+			Code: code, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("variable %q is not declared by the workflow; the launcher value would be discarded", name),
+			Hint:    "declare it as a string in the workflow vars: block or fix the manifest name",
+		})
+		return
+	}
+	if v.Type != ir.VarString {
+		*diags = append(*diags, Diag{
+			Code: code, Severity: SeverityError, Field: field,
+			Message: fmt.Sprintf("variable %q is %s, but the chat launcher submits a string", name, v.Type),
+			Hint:    "change the workflow variable to string or remove it from the chat launcher",
+		})
+	}
+}
+
+func sortedChatNodeIDs(nodes map[string]bundle.ChatNode) []string {
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // varDeclared reports whether the workflow declares a var by this name.

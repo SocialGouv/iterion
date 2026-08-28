@@ -293,6 +293,83 @@ func TestCheckConsistency(t *testing.T) {
 	}
 }
 
+func TestChatSurfaceConsistency(t *testing.T) {
+	chatWorkflow := func() *ir.Workflow {
+		w := wf("chatbot", []string{"seed", "scope"}, nil, nil,
+			&ir.AgentNode{BaseNode: ir.BaseNode{ID: "answer"}, SchemaFields: ir.SchemaFields{OutputSchema: "answer_out"}},
+			&ir.HumanNode{BaseNode: ir.BaseNode{ID: "chat"}, SchemaFields: ir.SchemaFields{OutputSchema: "chat_answer"}},
+		)
+		w.Schemas = map[string]*ir.Schema{
+			"answer_out": {Name: "answer_out", Fields: []*ir.SchemaField{{Name: "summary", Type: ir.FieldTypeString}}},
+			"chat_answer": {Name: "chat_answer", Fields: []*ir.SchemaField{
+				{Name: "message", Type: ir.FieldTypeString},
+				{Name: "approved", Type: ir.FieldTypeBool},
+			}},
+		}
+		return w
+	}
+	valid := func() *bundle.Manifest {
+		return &bundle.Manifest{Name: "chatbot", Chat: &bundle.ChatSurface{
+			SeedVar:      "seed",
+			LauncherVars: []bundle.ChatLauncherVar{{Name: "scope"}},
+			Nodes: map[string]bundle.ChatNode{
+				"answer": {Kind: bundle.ChatNodeBanner, SummaryField: "summary"},
+				"chat":   {Kind: bundle.ChatNodeHuman, TextField: "message", ApprovedField: "approved"},
+			},
+		}}
+	}
+
+	t.Run("valid text approval and summary contract", func(t *testing.T) {
+		if got := bundlelint.CheckConsistency(bundlelint.Input{Manifest: valid(), Workflow: chatWorkflow()}); len(got) != 0 {
+			t.Fatalf("diagnostics = %v, want none", got)
+		}
+	})
+
+	tests := []struct {
+		name   string
+		mutate func(*bundle.Manifest, *ir.Workflow)
+		code   bundlelint.Code
+		field  string
+	}{
+		{"unknown node", func(m *bundle.Manifest, _ *ir.Workflow) {
+			m.Chat.Nodes["missing"] = bundle.ChatNode{Kind: bundle.ChatNodeSilent}
+		}, bundlelint.DiagChatNodeUnknown, "chat.nodes.missing"},
+		{"human points at agent", func(m *bundle.Manifest, _ *ir.Workflow) {
+			m.Chat.Nodes["answer"] = bundle.ChatNode{Kind: bundle.ChatNodeHuman, TextField: "summary"}
+		}, bundlelint.DiagChatNodeKindMismatch, "chat.nodes.answer.kind"},
+		{"text field typo", func(m *bundle.Manifest, _ *ir.Workflow) {
+			n := m.Chat.Nodes["chat"]
+			n.TextField = "mesage"
+			m.Chat.Nodes["chat"] = n
+		}, bundlelint.DiagChatFieldInvalid, "chat.nodes.chat.text_field"},
+		{"approved field must be bool", func(_ *bundle.Manifest, w *ir.Workflow) { w.Schemas["chat_answer"].Fields[1].Type = ir.FieldTypeString }, bundlelint.DiagChatFieldInvalid, "chat.nodes.chat.approved_field"},
+		{"summary field must exist", func(m *bundle.Manifest, _ *ir.Workflow) {
+			n := m.Chat.Nodes["answer"]
+			n.SummaryField = "missing"
+			m.Chat.Nodes["answer"] = n
+		}, bundlelint.DiagChatFieldInvalid, "chat.nodes.answer.summary_field"},
+		{"seed var missing", func(m *bundle.Manifest, _ *ir.Workflow) { m.Chat.SeedVar = "missing" }, bundlelint.DiagChatSeedVarInvalid, "chat.seed_var"},
+		{"seed var must be string", func(_ *bundle.Manifest, w *ir.Workflow) { w.Vars["seed"].Type = ir.VarBool }, bundlelint.DiagChatSeedVarInvalid, "chat.seed_var"},
+		{"launcher var missing", func(m *bundle.Manifest, _ *ir.Workflow) { m.Chat.LauncherVars[0].Name = "missing" }, bundlelint.DiagChatLauncherVarInvalid, "chat.launcher_vars[0].name"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, w := valid(), chatWorkflow()
+			tc.mutate(m, w)
+			diags := bundlelint.CheckConsistency(bundlelint.Input{Manifest: m, Workflow: w})
+			found := false
+			for _, d := range diags {
+				if d.Code == tc.code && d.Field == tc.field && d.Severity == bundlelint.SeverityError {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("diagnostics = %v, want error %s at %s", diags, tc.code, tc.field)
+			}
+		})
+	}
+}
+
 // TestC230IsError pins the one error-severity finding; everything else is a
 // warning so the catalog never breaks on first roll-out.
 func TestSeverities(t *testing.T) {

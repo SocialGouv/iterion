@@ -162,8 +162,9 @@ runs on a **bundle** (a `.botz` archive or a directory with `manifest.yaml` +
 `main.bot`). They cross-check the manifest against the *compiled workflow* —
 something neither the manifest parser (`pkg/bundle`) nor the DSL compiler
 (`pkg/dsl/ir`) can do alone, because each only sees one side. They are reported
-under a separate `bundle_diagnostics` list in `--json` output. All are warnings
-except **C230**; warnings are surfaced but do not fail validation.
+under a separate `bundle_diagnostics` list in `--json` output. Manifest/workflow
+chat-contract violations (**C205–C209**) and the memory identity mismatch
+(**C230**) are errors; warnings are surfaced but do not fail validation.
 
 | Code | Severity | Description | Cause | Fix |
 |------|----------|-------------|-------|-----|
@@ -172,6 +173,11 @@ except **C230**; warnings are surfaced but do not fail validation.
 | **C202** | warning | schedule.default_vars key not a workflow var | An `invocations[].schedule.default_vars` key names no workflow var | Same as C200 |
 | **C203** | warning | launch_vars key not a workflow var | A `forge.webhook.launch_vars` key names no workflow var | Same as C200 |
 | **C204** | warning | args_var not a workflow var | An `invocations[].args_var` names no workflow var, so the trigger's free-text payload is dropped | Declare the var, or fix the name |
+| **C205** | error | chat node not in workflow | A `chat.nodes` key names no compiled workflow node | Fix the node id or add the node to `main.bot` |
+| **C206** | error | chat human maps to non-human node | A manifest `kind: human` entry points at a compiled node whose kind is not `human` | Align the manifest kind and workflow node kind |
+| **C207** | error | chat output field missing or wrong type | `summary_field`, `text_field`, or `approved_field` is absent from the node output schema, or is not respectively string/string/boolean | Declare the exact field with the required type, or fix the manifest field name |
+| **C208** | error | chat seed_var missing or not string | `chat.seed_var` names no workflow var, or that var is not typed `string` | Declare a string launch var or fix/remove `seed_var` |
+| **C209** | error | chat launcher var missing or not string | A `chat.launcher_vars[].name` names no workflow var, or that var is not typed `string` | Declare the string var or fix/remove the launcher entry |
 | **C210** | warning | forge secret not declared | The forge secret the bot expects (`forge.secret`, default `forge_token`) has no matching declaration in the `main.bot` `secrets:` block | Declare `secrets: { <name>: { as: file, optional: true } }`, or point `forge.secret` at an existing secret. Only checked when the bot is forge-triggerable (has `forge.events` or a `kind: forge` invocation) |
 | **C211** | warning | forge secret not a file mount | The forge secret is declared but not `as: file` — managed forge tokens are bound as a file mount | Set `as: file` on the secret declaration |
 | **C220** | warning | manifest capability granted by no node | A `manifest.capabilities` entry is granted by no workflow-level or node-level `capabilities:` list | Add it to a node's `capabilities:`, or drop it from the manifest (it is documentation-only otherwise) |
