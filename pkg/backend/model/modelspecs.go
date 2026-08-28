@@ -232,7 +232,10 @@ func (r *specRegistry) ensureFresh() {
 	r.mu.Unlock()
 
 	if trigger {
-		go r.runRefresh(context.Background())
+		// The outcome lands in r.refreshErr (runRefresh's deferred publish)
+		// and is read by whoever joins on refreshDone; the return value is
+		// only for that defer, so the goroutine launch discards it.
+		go func() { _ = r.runRefresh(context.Background()) }()
 	}
 }
 
@@ -270,7 +273,10 @@ func (r *specRegistry) refresh(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if start {
-		go r.runRefresh(context.Background())
+		// The outcome lands in r.refreshErr (runRefresh's deferred publish)
+		// and is read by whoever joins on refreshDone; the return value is
+		// only for that defer, so the goroutine launch discards it.
+		go func() { _ = r.runRefresh(context.Background()) }()
 	}
 	select {
 	case <-ctx.Done():
