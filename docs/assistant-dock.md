@@ -113,6 +113,12 @@ The kinds a `chat:` block may name are closed (`banner`, `human`,
 the failure it prevents is a chat window that looks alive and swallows
 every message.
 
+A rejected block costs the bundle its catalog entry, not the workspace:
+discovery skips the malformed bundle and keeps listing its valid
+siblings, reporting the skip as a `discovery_errors` entry on
+`GET /api/v1/bots` (a `bots: skipping …` warning on the CLI's stderr, a
+banner in the studio's Bots view).
+
 ## The context chip
 
 The dock reports the page you are on as a **typed reference**:

@@ -44,6 +44,7 @@ export default function BotsView() {
   const bots = useBotsStore((s) => s.bots);
   const loading = useBotsStore((s) => s.loading);
   const botsError = useBotsStore((s) => s.error);
+  const discoveryErrors = useBotsStore((s) => s.discoveryErrors);
   const fetchBots = useBotsStore((s) => s.fetch);
   const refetch = useBotsStore((s) => s.refetch);
   const addToast = useUIStore((s) => s.addToast);
@@ -210,6 +211,20 @@ export default function BotsView() {
       {botsError && (
         <InlineBanner tone="danger" title="Couldn't load bots">
           {botsError}
+        </InlineBanner>
+      )}
+      {discoveryErrors.length > 0 && (
+        <InlineBanner
+          tone="warning"
+          title={`${discoveryErrors.length} bot${discoveryErrors.length === 1 ? "" : "s"} skipped — malformed bundle`}
+        >
+          <ul className="list-disc pl-4">
+            {discoveryErrors.map((d, i) => (
+              <li key={`${i}-${d.path}`}>
+                <code>{d.path}</code>: {d.error}
+              </li>
+            ))}
+          </ul>
         </InlineBanner>
       )}
       {triggersError && (

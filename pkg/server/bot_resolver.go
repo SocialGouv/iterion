@@ -132,7 +132,12 @@ func (s *Server) resolveBotTiered(ctx context.Context, teamID, botID, filePath s
 	}
 	path, err := botregistry.ResolveBotPath(slug, s.effectivePaths())
 	if err != nil {
-		return nil, nil //nolint:nilerr // unknown id = not found here, the caller decides
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil // unknown id = not found here, the caller decides
+		}
+		// A matching malformed bundle is not absence: preserve the discovery
+		// diagnostic so studio/webhook launches explain why it is unavailable.
+		return nil, err
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -187,8 +192,9 @@ func (s *Server) resolveBotSource(ctx context.Context, botID string) (*launchBot
 // the schema-augmented entry set AND the decoded manifests, built from the
 // same list read so the two can never disagree within a TTL window.
 type platformBotSet struct {
-	entries   []botregistry.EntryWithSchema
-	manifests map[string]*bundle.Manifest
+	entries     []botregistry.EntryWithSchema
+	diagnostics []botregistry.DiscoveryError
+	manifests   map[string]*bundle.Manifest
 }
 
 // platformBotSetCached returns the resolver-cached set (30s TTL,
@@ -225,9 +231,11 @@ func (s *Server) newPlatformBotsResolver() *platformcfg.Resolver[platformBotSet]
 		if err != nil {
 			return nil, err
 		}
+		entries, diags := s.materializeBotEntriesWithDiagnostics(list)
 		set := platformBotSet{
-			entries:   s.materializeBotEntries(list),
-			manifests: make(map[string]*bundle.Manifest, len(list)),
+			entries:     entries,
+			diagnostics: diags,
+			manifests:   make(map[string]*bundle.Manifest, len(list)),
 		}
 		for i := range list {
 			if m := list[i].Manifest(); m != nil {

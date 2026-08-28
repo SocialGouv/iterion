@@ -1,6 +1,7 @@
 package botregistry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +72,43 @@ func TestList_DedupesSameBotAcrossRoots(t *testing.T) {
 	// Precedence: the bots/ source wins over the .botz/ stray (root order).
 	if !strings.Contains(got.Path, filepath.Join("bots", "review-pr")) {
 		t.Errorf("bots/ copy should win precedence, got path %q", got.Path)
+	}
+}
+
+func TestList_MalformedHigherPrecedenceBundleReservesName(t *testing.T) {
+	// A broken source bundle must not make an older packed copy runnable.
+	// DefaultPaths establishes bots/ > examples/ > .botz/ precedence, and
+	// that precedence still applies when the winning source cannot load.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "review-pr", "manifest.yaml"), `name: review-pr
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "bots", "review-pr", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, ".botz", "review-pr", "manifest.yaml"), "name: review-pr\ndisplay_name: Stale Revi\n")
+	writeFile(t, filepath.Join(dir, ".botz", "review-pr", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if NormalizeName(entry.Name) == "review-pr" {
+			t.Fatalf("malformed bots/review-pr must shadow the stale .botz copy, got %+v", entry)
+		}
+	}
+	if len(diags) != 1 || !strings.Contains(diags[0].Path, filepath.Join("bots", "review-pr")) {
+		t.Fatalf("diags = %#v, want the higher-precedence bundle diagnostic", diags)
+	}
+
+	_, err = ResolveBotPath("review-pr", DefaultPaths(dir))
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ResolveBotPath = %v, want the higher-precedence load diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("ResolveBotPath = %v, want the malformed chat diagnostic", err)
 	}
 }
 
@@ -290,5 +328,230 @@ func TestList_SetsRelPath(t *testing.T) {
 	bare, _ := List(ListOptions{Paths: DefaultPaths(dir)})
 	if bare[0].RelPath != "" {
 		t.Errorf("RelPath without workdir = %q, want empty", bare[0].RelPath)
+	}
+}
+
+func TestList_MalformedBundleDoesNotBlankSiblings(t *testing.T) {
+	// One bundle with a malformed chat: block (validateChatSurface rejects a
+	// human node with no text_field) next to one valid bundle: the malformed
+	// one stays OUT with its diagnostic, the valid one still lists.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good", "manifest.yaml"), "name: good\ndescription: fine\n")
+	writeFile(t, filepath.Join(dir, "good", "main.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the valid bundle", entries)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want one discovery error", diags)
+	}
+	if !strings.HasSuffix(diags[0].Path, "broken-chat") {
+		t.Errorf("diag.Path = %q, want the broken-chat bundle dir", diags[0].Path)
+	}
+	if !strings.Contains(diags[0].Error, "chat:") {
+		t.Errorf("diag.Error = %q, want the chat: validation diagnostic", diags[0].Error)
+	}
+
+	// List keeps its two-value contract: valid siblings, no error.
+	plain, err := List(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 || plain[0].Name != "good" {
+		t.Fatalf("List = %#v, want only the valid bundle", plain)
+	}
+}
+
+func TestList_DiagnosticPathIsWorkdirRelative(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "broken", "manifest.yaml"), "name: broken\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "bots", "broken", "main.bot"), "agent x:\n  model: \"test\"\n")
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: DefaultPaths(dir), Workdir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want one", diags)
+	}
+	if diags[0].Path != "bots/broken" {
+		t.Errorf("diag.Path = %q, want workdir-relative bots/broken", diags[0].Path)
+	}
+	if strings.Contains(diags[0].Error, dir) {
+		t.Errorf("diag.Error = %q, must not contain the absolute workdir %q", diags[0].Error, dir)
+	}
+}
+
+func TestList_UnreadableLooseBotFileIsSkipped(t *testing.T) {
+	// parseBotFile only fails on a read error — pinned with a dangling
+	// symlink so the skip path for loose .bot files stays covered.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good.bot"), "agent x:\n  model: \"test\"\n")
+	if err := os.Symlink(filepath.Join(dir, "gone.bot"), filepath.Join(dir, "dead.bot")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the readable bot", entries)
+	}
+	if len(diags) != 1 || !strings.HasSuffix(diags[0].Path, "dead.bot") {
+		t.Fatalf("diags = %#v, want one for dead.bot", diags)
+	}
+}
+
+func TestList_DiagnosticsDedupeOverlappingRoots(t *testing.T) {
+	// An explicit root and its parent both reach the same malformed
+	// bundle: the diagnostic is reported ONCE, like the entry dedupe.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "bots", "broken", "manifest.yaml"), "name: broken\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "bots", "broken", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	_, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir, filepath.Join(dir, "bots")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %#v, want exactly one for the shared malformed bundle", diags)
+	}
+}
+
+func TestList_UnreadableSubdirDoesNotBlankSiblings(t *testing.T) {
+	// A permission-denied branch of the walk is the same failure shape as
+	// a malformed bundle: it must not blank the rest of the workspace.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "good.bot"), "agent x:\n  model: \"test\"\n")
+	writeFile(t, filepath.Join(dir, "sealed", "broken.bot"), "agent x:\n  model: \"test\"\n")
+	sealed := filepath.Join(dir, "sealed")
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+	if _, err := os.ReadDir(sealed); err == nil {
+		t.Skip("elevated privileges can still read the sealed dir")
+	}
+
+	entries, diags, err := ListWithDiagnostics(ListOptions{Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name != "good" {
+		t.Fatalf("entries = %#v, want only the readable bot", entries)
+	}
+	if len(diags) != 1 || !strings.HasSuffix(diags[0].Path, "sealed") {
+		t.Fatalf("diags = %#v, want one for the sealed dir", diags)
+	}
+}
+
+func TestResolveBotPath_MalformedBundleExplainsWhy(t *testing.T) {
+	// Launch/dispatch against a malformed bundle must name the cause, not
+	// report a bare "not found".
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	_, err := ResolveBotPath("broken-chat", []string{dir})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want the load diagnostic, not not-exist", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("err = %v, want the chat: diagnostic naming the cause", err)
+	}
+	// An unrelated name still reports not-found.
+	if _, err := ResolveBotPath("ghost", []string{dir}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want os.ErrNotExist for an unknown bot", err)
+	}
+}
+
+func TestEnsureNameFree_MalformedBundleHoldsItsName(t *testing.T) {
+	// A malformed bundle produces no entry, but its directory still holds
+	// the name: creating a second bot under it would shadow the first the
+	// day the manifest is fixed.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "broken-chat", "manifest.yaml"), `name: broken-chat
+chat:
+  nodes:
+    chat:
+      kind: human
+`)
+	writeFile(t, filepath.Join(dir, "broken-chat", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "broken-chat")
+	if !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("err = %v, want ErrNameTaken for the malformed bundle's name", err)
+	}
+	if !strings.Contains(err.Error(), "chat:") {
+		t.Errorf("err = %v, want the load diagnostic attached", err)
+	}
+	// A genuinely free name stays free.
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "other-bot"); err != nil {
+		t.Fatalf("err = %v, want nil for a free name", err)
+	}
+}
+
+func TestEnsureNameFree_NormalizedNameCollision(t *testing.T) {
+	// A bot created as "my_bot" while "my-bot" exists would be permanently
+	// shadowed by discovery's normalized dedupe and unreachable by its own
+	// name — the precondition must refuse it like an exact collision.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "my-bot", "manifest.yaml"), "name: my-bot\n")
+	writeFile(t, filepath.Join(dir, "my-bot", "main.bot"), "agent x:\n  model: \"test\"\n")
+
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "my_bot"); !errors.Is(err, ErrNameTaken) {
+		t.Fatalf("err = %v, want ErrNameTaken for the normalized collision", err)
+	}
+}
+
+func TestDiagForName_OnlyBotSourcesClaimNames(t *testing.T) {
+	dir := t.TempDir()
+	// A malformed bundle whose DIRECTORY NAME carries a dot: the
+	// extension trim must not strip ".review" off it, and the bare prefix
+	// "v2" must stay free.
+	writeFile(t, filepath.Join(dir, "v2.review", "manifest.yaml"), "name: v2.review\nschema_version: 9999\n")
+	writeFile(t, filepath.Join(dir, "v2.review", "main.bot"), "agent x:\n  model: \"test\"\n")
+	// A permission-denied PLAIN directory is a walk diagnostic, not a bot
+	// source: it must not claim the name "sealed".
+	writeFile(t, filepath.Join(dir, "sealed", "notes.txt"), "not a bot\n")
+	sealed := filepath.Join(dir, "sealed")
+	if err := os.Chmod(sealed, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o755) })
+	if _, err := os.ReadDir(sealed); err == nil {
+		t.Skip("elevated privileges can still read the sealed dir")
+	}
+
+	if _, err := ResolveBotPath("v2.review", []string{dir}); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Errorf("ResolveBotPath(v2.review) = %v, want the load diagnostic", err)
+	}
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "v2"); err != nil {
+		t.Errorf("EnsureNameFree(v2) = %v, want nil — the dot is part of the dir name", err)
+	}
+	if err := EnsureNameFree(ListOptions{Paths: []string{dir}}, "sealed"); err != nil {
+		t.Errorf("EnsureNameFree(sealed) = %v, want nil — an unreadable plain dir holds no bot name", err)
+	}
+	if _, err := ResolveBotPath("sealed", []string{dir}); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ResolveBotPath(sealed) = %v, want not-found, not a phantom bundle", err)
 	}
 }

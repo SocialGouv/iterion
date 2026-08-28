@@ -158,9 +158,36 @@ func RegenerateWhatsNextCatalog(workdir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("botregistry: resolve workdir %s: %w", workdir, err)
 	}
-	entries, err := ListWithSchema(ListOptions{Paths: DefaultPaths(abs), Workdir: abs})
+	entries, diags, err := ListWithSchemaDiagnostics(ListOptions{Paths: DefaultPaths(abs), Workdir: abs})
 	if err != nil {
 		return "", err
+	}
+	// Discovery is now per-entry fault-tolerant, which is right for READ
+	// surfaces but wrong here: regenerating from a partial list would
+	// rewrite the COMMITTED catalog with the skipped bundle's row and card
+	// silently deleted from Nexie's routing table. Refuse to write until
+	// the malformed bundle is fixed or removed — the file stays untouched,
+	// exactly as when discovery used to fail hard.
+	//
+	// Only diagnostics that could change the catalog's CONTENT block: a
+	// skipped bundle dir, or an unreadable walk path whose contents are
+	// unknown (conservative). A skipped LOOSE .bot file never contributes
+	// a card (they are excluded below), so a broken demo under examples/
+	// must not freeze the catalog. The kind recorded at skip time decides
+	// — re-stat'ing the path here would silently downgrade to
+	// non-blocking whenever the stat itself fails.
+	var blocking []DiscoveryError
+	for _, d := range diags {
+		if d.Kind != DiscoveryErrorFile {
+			blocking = append(blocking, d)
+		}
+	}
+	if len(blocking) > 0 {
+		parts := make([]string, 0, len(blocking))
+		for _, d := range blocking {
+			parts = append(parts, d.Path+": "+d.Error)
+		}
+		return "", fmt.Errorf("botregistry: refusing to regenerate the catalog from partial discovery — fix or remove the malformed bundle(s): %s", strings.Join(parts, "; "))
 	}
 
 	// The catalog routes to dispatchable bundles only. Loose .bot demo

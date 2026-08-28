@@ -36,7 +36,7 @@ var botsListCmd = &cobra.Command{
 		if len(paths) == 0 {
 			paths = []string{"bots", "examples"}
 		}
-		return cli.BotsList(cli.BotsListOptions{Paths: paths, Format: format}, os.Stdout)
+		return cli.BotsList(cli.BotsListOptions{Paths: paths, Format: format, ErrW: os.Stderr}, os.Stdout)
 	},
 }
 
