@@ -14,8 +14,31 @@ configured sink to a Mattermost/Slack **incoming webhook**. Payload:
 
 - Mattermost accepts Slack-compatible incoming webhooks natively;
   `channel` override must be enabled on the Mattermost integration.
-- Messages over 14000 chars are truncated with an explicit notice (the
-  full digest stays in the run artifacts and the state archive).
+
+## Long digests are SPLIT, not cut
+
+A digest above a sink's per-message budget is posted as **consecutive
+messages**, each ending with a `_(i/n)_` marker. The channel is the
+digest's only audience: pointing its readers at "the run artifacts" for
+the missing half points them somewhere they cannot go.
+
+- **Budget** — `max_message_chars` (var, default 14000: under
+  Mattermost's own 16383-char post limit). A sink may override it with
+  its own `max_chars` (a Slack channel wants less), and each sink is
+  split to its own budget.
+- **Boundaries** — blank-line blocks first, then lines, then a hard cut
+  as a last resort. A digest entry is one line, so no entry and no link
+  is ever broken in two. A section heading that would close a message
+  travels to the next one instead, where its items are.
+- **Ceiling** — `max_messages` (var, default 5, `0` = none) bounds one
+  digest. It is reached only by an abnormal synthesis; the last message
+  then carries the truncation notice, which is the only case left where
+  a digest is cut at all.
+- Incoming webhooks return no post id, so the parts **cannot** be
+  threaded. They are ordinary consecutive posts; ordering comes from
+  sequential blocking POSTs plus a 0.3s pause between parts (two posts
+  created in the same millisecond can render out of order).
+- A digest that fits is one message with **no marker** — unchanged.
 
 ## Resolution chain
 
@@ -39,14 +62,24 @@ never appear in the repo, in prompts, or in logs.
   consumed all the same, so a sink that is broken rather than flaky
   loses one digest per run, quietly, until someone reads a summary.
   Re-post from `<state_dir>/<category>/digests/*.md` once it is fixed.
-- **total failure** (every POST failed) — the run FAILS
+- **partial failure WITHIN a sink** (parts 1–2 of 3 delivered) — that
+  sink stops there: posting part 3 over a missing part 2 leaves a hole
+  no reader can detect. It does not count in `delivered` (which means
+  *sinks that got the whole digest*) and the failed part is named in
+  the summary (`w1 part 2/3: …`).
+- **total failure** (not one POST accepted, anywhere) — the run FAILS
   (failed_resumable). Nothing was delivered, so `iterion resume` is
-  safe and will re-attempt delivery.
+  safe and will re-attempt delivery. The guard is the `posts` count,
+  **not** `delivered`: once a digest can span several messages, "no
+  sink got all of it" no longer means "nothing was posted", and
+  resuming there would re-post what already landed.
 
 ## Troubleshooting a missing digest
 
 1. `iterion report --run-id <id>` → check the `notify` node output:
-   `delivered`, `targets`, `summary` (failures are spelled out).
+   `delivered` (sinks that got it whole), `parts` (messages the digest
+   occupies), `posts` (POSTs accepted), `targets`, `summary` (failures
+   are spelled out, part by part).
 2. Queue was empty? A digest with nothing pending ends at
    `load_pending` (`has_items=false`) — by design, no empty digests.
 3. Webhook 4xx: URL revoked/wrong (`iterion secret set webhooks …`
