@@ -1781,8 +1781,12 @@ the findings in a session. The command seeds Billy with Revi's review
 (kind-matched hand-off), he pushes fixes onto the PR branch, posts his ledger +
 gate count, and the push re-triggers Revi. Every such run is a dogfood run:
 monitor it, fix the frictions it surfaces, write the bilan. Full habit +
-gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). (The zero-touch
-`auto_fix_on_gate_failure` lane is deliberately not enabled here yet.)
+gotchas: [docs/revi-billy-loop.md](docs/revi-billy-loop.md). The zero-touch
+`auto_fix_on_gate_failure` lane is **enabled here** since 2026-08-28: a red
+`revi/review` launches Billy by itself, with no comment. So **check no fixer
+run is already in flight** (`iterion remote runs list`, or the gate's `pending`
+link) before hand-fixing a red PR — a manual push while he works recreates the
+mid-run collision.
 
 ## Conventions
 
