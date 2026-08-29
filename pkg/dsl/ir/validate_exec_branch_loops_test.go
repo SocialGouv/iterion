@@ -679,6 +679,63 @@ workflow test:
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
 
+func TestValidateLoopNameSharedByTrunkAndBranchAfterNonElectedAwait_Rejected(t *testing.T) {
+	// joiner is elected from the first branch, so z is only an await-looking
+	// node on the second branch: execBranch runs through it. The compiler must
+	// therefore classify w -> z as branch-local and reject its name colliding
+	// with the trunk loop below joiner.
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool x:
+  command: ` + "`echo`" + `
+  output: s
+
+tool z:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+tool w:
+  command: ` + "`echo`" + `
+  output: s
+
+tool joiner:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+tool trunk:
+  command: ` + "`echo`" + `
+  output: s
+
+router r1:
+  mode: fan_out_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> x
+  x -> joiner
+  a2 -> z
+  z -> w
+  w -> z as refine(3) when ok
+  w -> joiner else
+  joiner -> trunk
+  trunk -> joiner as refine(3) when ok
+  trunk -> done else
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
 func TestValidateLoopOnTrunk_Allowed(t *testing.T) {
 	src := execBranchLoopPrompts + `
 tool a:

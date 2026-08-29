@@ -447,25 +447,16 @@ func hasSingleCommonBranchOwner(left, right map[string]bool) bool {
 	return false
 }
 
-// execBranchNodeOwners walks each router target independently until a real
-// collector. Bounded back-edges do not create collectors; they stay inside
-// the owner walk and therefore form a legal local cycle.
+// execBranchNodeOwners walks each router target independently until the exact
+// collector elected by the runtime. Bounded back-edges do not create
+// collectors; they stay inside the owner walk and therefore form a legal local
+// cycle. An await node on another path is not necessarily that collector, so
+// it must not truncate the compiler's ownership view while execBranch keeps
+// running past it.
 func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 	out := make(map[string][]string)
-	nonIterIn := make(map[string]map[string]bool)
 	for _, edge := range w.Edges {
 		out[edge.From] = append(out[edge.From], edge.To)
-		if edge.IsBoundedIteration() {
-			continue
-		}
-		if nonIterIn[edge.To] == nil {
-			nonIterIn[edge.To] = make(map[string]bool)
-		}
-		nonIterIn[edge.To][edge.From] = true
-	}
-	isJoin := func(id string) bool {
-		node := w.Nodes[id]
-		return node != nil && (NodeAwaitMode(node) != AwaitNone || len(nonIterIn[id]) > 1)
 	}
 	owners := make(map[string]map[string]bool)
 	for _, node := range w.Nodes {
@@ -473,7 +464,14 @@ func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 		if !ok || !routerSpawnsExecBranch(router) {
 			continue
 		}
+		var fanEdges []*Edge
 		for _, edge := range w.Edges {
+			if edge.From == router.ID {
+				fanEdges = append(fanEdges, edge)
+			}
+		}
+		convergence := execBranchConvergencePoint(w, fanEdges)
+		for _, edge := range fanEdges {
 			if edge.From != router.ID {
 				continue
 			}
@@ -481,7 +479,7 @@ func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 			seen := make(map[string]bool)
 			var walk func(string)
 			walk = func(id string) {
-				if id == "" || seen[id] || isJoin(id) || w.Nodes[id] == nil {
+				if id == "" || seen[id] || id == convergence || w.Nodes[id] == nil {
 					return
 				}
 				seen[id] = true
@@ -504,41 +502,23 @@ func edgeFromExecBranchRouter(w *Workflow, e *Edge) bool {
 	return ok && routerSpawnsExecBranch(r)
 }
 
-// execBranchBodyNodes approximates the nodes a parallel branch runs before
-// it hits a structural join. C243 uses the complete union; C244 combines it
-// with the more precise per-target ownership map above.
+// execBranchBodyNodes approximates the nodes a parallel branch runs before it
+// hits the exact convergence point the runtime pre-computes. C243 uses the
+// complete union; C244 combines it with the more precise per-target ownership
+// map above.
 //
-// The walk stops only at structural joins: an explicit await mode or more
-// than one non-iteration predecessor. Bounded predecessors remain inside the
-// branch body and therefore do not turn a local loop head into a collector.
+// Bounded predecessors remain inside the branch body and therefore do not
+// turn a local loop head into a collector.
 func execBranchBodyNodes(w *Workflow) map[string]bool {
 	out := map[string][]string{}
-	nonIterIn := map[string]map[string]bool{}
 	for _, e := range w.Edges {
 		out[e.From] = append(out[e.From], e.To)
-		if e.IsBoundedIteration() {
-			continue
-		}
-		if nonIterIn[e.To] == nil {
-			nonIterIn[e.To] = map[string]bool{}
-		}
-		nonIterIn[e.To][e.From] = true
-	}
-	isStructuralJoin := func(id string) bool {
-		n, ok := w.Nodes[id]
-		if !ok {
-			return false
-		}
-		if NodeAwaitMode(n) != AwaitNone {
-			return true
-		}
-		return len(nonIterIn[id]) > 1
 	}
 	body := map[string]bool{}
 	// seen is per router so one router's traversal cannot truncate another's.
-	var walk func(id string, seen map[string]bool)
-	walk = func(id string, seen map[string]bool) {
-		if id == "" || seen[id] || isStructuralJoin(id) {
+	var walk func(id, convergence string, seen map[string]bool)
+	walk = func(id, convergence string, seen map[string]bool) {
+		if id == "" || seen[id] || id == convergence {
 			return
 		}
 		if _, ok := w.Nodes[id]; !ok {
@@ -547,7 +527,7 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 		seen[id] = true
 		body[id] = true
 		for _, next := range out[id] {
-			walk(next, seen)
+			walk(next, convergence, seen)
 		}
 	}
 	for _, node := range w.Nodes {
@@ -561,12 +541,56 @@ func execBranchBodyNodes(w *Workflow) map[string]bool {
 				fan = append(fan, e)
 			}
 		}
+		convergence := execBranchConvergencePoint(w, fan)
 		seen := map[string]bool{}
 		for _, e := range fan {
-			walk(e.To, seen)
+			walk(e.To, convergence, seen)
 		}
 	}
 	return body
+}
+
+// execBranchConvergencePoint mirrors runtime.findConvergencePoint so compile
+// time ownership stops at the same node as execBranch. The first explicit
+// await or multi-source node found by a breadth-first walk from the router's
+// ordered targets is elected; bounded back-edges are local control flow and
+// do not contribute to the multi-source test.
+func execBranchConvergencePoint(w *Workflow, fanEdges []*Edge) string {
+	inSources := make(map[string]map[string]bool)
+	for _, edge := range w.Edges {
+		if edge.IsBoundedIteration() {
+			continue
+		}
+		if inSources[edge.To] == nil {
+			inSources[edge.To] = make(map[string]bool)
+		}
+		inSources[edge.To][edge.From] = true
+	}
+	for _, startEdge := range fanEdges {
+		visited := make(map[string]bool)
+		queue := []string{startEdge.To}
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			if visited[id] {
+				continue
+			}
+			visited[id] = true
+			node := w.Nodes[id]
+			if node == nil {
+				continue
+			}
+			if NodeAwaitMode(node) != AwaitNone || len(inSources[id]) > 1 {
+				return id
+			}
+			for _, edge := range w.Edges {
+				if edge.From == id {
+					queue = append(queue, edge.To)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func routerSpawnsExecBranch(r *RouterNode) bool {

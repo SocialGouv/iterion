@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -766,6 +767,42 @@ func resumeWithinDeadline(t *testing.T, wf *ir.Workflow, runStore store.RunStore
 	case <-ctx.Done():
 		t.Fatal("resume hung: answered branch exit did not release the sibling resume barrier")
 		return nil
+	}
+}
+
+type pauseFailStore struct {
+	store.RunStore
+	err error
+}
+
+func (s *pauseFailStore) PauseRun(context.Context, string, *store.Checkpoint) error {
+	return s.err
+}
+
+func TestFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
+	wf := branchFirstHumanLoopWorkflow()
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"items": []any{map[string]any{"id": "first"}, map[string]any{"id": "second"}},
+		}, nil
+	})
+
+	base := tmpStore(t)
+	pauseErr := errors.New("pause store unavailable")
+	runStore := &pauseFailStore{RunStore: base, err: pauseErr}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := New(wf, runStore, exec).Run(ctx, "branch-pause-store-failure", nil)
+	if err == nil || errors.Is(err, ErrRunPaused) || !strings.Contains(err.Error(), pauseErr.Error()) {
+		t.Fatalf("run error = %v, want visible pause persistence failure (not ErrRunPaused)", err)
+	}
+	run, loadErr := base.LoadRun(context.Background(), "branch-pause-store-failure")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if run.Status == store.RunStatusPausedWaitingHuman {
+		t.Fatalf("status = %s after PauseRun failure, want a non-paused status", run.Status)
 	}
 }
 

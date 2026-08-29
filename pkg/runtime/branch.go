@@ -42,6 +42,12 @@ type branchResult struct {
 	selectedIncoming map[string][]store.IncomingEdge
 }
 
+// errBranchPauseDeferred marks a branch that reached a human gate after a
+// sibling had already persisted the invocation's one active interaction. It
+// is intentionally distinct from ErrRunPaused: only the elected branch may
+// report the whole run as durably paused.
+var errBranchPauseDeferred = errors.New("runtime: branch human pause deferred to elected sibling")
+
 func (e *Engine) branchNodeIteration(nodeID string, rs *runState) (int, string) {
 	counters := branchIterationCounters(rs)
 	path := branchCounterPath(counters)
@@ -357,7 +363,7 @@ func (e *Engine) abandonBranchResume(parent, branchRS *runState, result *branchR
 	if ps == nil {
 		return
 	}
-	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
 	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
 		e.logger.Error("failed to save abandoned branch resume %s at %q: %v", result.branchID, gateNodeID, err)
@@ -385,7 +391,7 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 	if ps == nil {
 		return
 	}
-	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
 	if ps.PendingInteractionID != "" {
 		cp.InteractionID = ps.PendingInteractionID
@@ -404,8 +410,14 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	defer parallel.saveMu.Unlock()
 	branch := branchCheckpointFromState(branchRS, result, nodeID, false)
 	if !parallel.beginPause(branchID, nodeID, branch) {
-		return ErrRunPaused
+		return errBranchPauseDeferred
 	}
+	pausePersisted := false
+	defer func() {
+		if !pausePersisted {
+			parallel.abortPause(branchID, nodeID)
+		}
+	}()
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArtifacts := mergeOutputs(parentArtifacts, result.artifacts)
 	questions := e.buildNodeInputRS(nodeID, resolveScope{
@@ -450,13 +462,14 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 		return err
 	}
 	ps := parallel.snapshot()
-	cp := buildCheckpoint(parent, ps.RouterNodeID)
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
 	cp.Parallel = ps
 	cp.InteractionID = interactionID
 	cp.InteractionQuestions = questions
 	if err := e.store.PauseRun(parent.ctx, parent.runID, cp); err != nil {
 		return fmt.Errorf("runtime: pause branch: %w", err)
 	}
+	pausePersisted = true
 	return ErrRunPaused
 }
 
@@ -490,32 +503,20 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 	}
 	checks := rs.budget.Check()
 	if exc := findExceeded(checks); exc != nil {
-		// Same grace as the sequential path (graceOrFailBudget): a run
-		// graced past its cap that then walks into a fan-out must not
-		// die at the first branch. No lastGrace dedupe here — branches
-		// run concurrently and those fields are unsynchronized; one
-		// grace event per branch boundary is the honest audit anyway.
-		if _, ok := e.withinBudgetGrace(rs); ok {
-			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
-				"dimension": exc.dimension,
-				"used":      exc.used,
-				"limit":     exc.limit,
-			}); err != nil {
-				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
-				result.eventErrors++
-			}
-		} else {
-			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
-				"dimension": exc.dimension,
-				"used":      exc.used,
-				"limit":     exc.limit,
-			}); err != nil {
-				e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
-				result.eventErrors++
-			}
-			result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
-			return true
+		// Branch-local predictive pricing is deliberately disabled because
+		// sibling spend shares one budget. Exit grace is therefore unsafe in
+		// a branch: once the trunk reaches a fan-out over cap, every branch
+		// refuses its next node boundary.
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
+			"dimension": exc.dimension,
+			"used":      exc.used,
+			"limit":     exc.limit,
+		}); err != nil {
+			e.logger.Warn("branch %s: failed to emit budget_exceeded: %v", branchID, err)
+			result.eventErrors++
 		}
+		result.err = fmt.Errorf("%w: %s (%.0f/%.0f)", ErrBudgetExceeded, exc.dimension, exc.used, exc.limit)
+		return true
 	}
 	if hl := findHardLimited(checks); hl != nil {
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
@@ -647,20 +648,6 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	}
 
 	if exc := findExceeded(checks); exc != nil {
-		// Post-exec twin of the pre-exec grace above: the node already
-		// spent — killing the branch here converts "stop without
-		// spending" into "spend, then stop anyway".
-		if _, ok := e.withinBudgetGrace(rs); ok {
-			if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExitGrace, currentNodeID, map[string]any{
-				"dimension": exc.dimension,
-				"used":      exc.used,
-				"limit":     exc.limit,
-			}); err != nil {
-				e.logger.Warn("branch %s: failed to emit budget_exit_grace: %v", branchID, err)
-				result.eventErrors++
-			}
-			return false
-		}
 		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,

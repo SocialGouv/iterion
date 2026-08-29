@@ -412,6 +412,25 @@ func (p *parallelExecutionState) beginPause(branchID, nodeID string, branch *sto
 	return true
 }
 
+// abortPause releases an election whose interaction could not be durably
+// paused. A sibling may then elect its own gate, and no branch can mistake the
+// failed attempt for a real paused run. It deliberately preserves the branch
+// cursor written by beginPause so retry/recovery still starts at the gate.
+func (p *parallelExecutionState) abortPause(branchID, nodeID string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cp.PendingBranchID != branchID || p.cp.PendingNodeID != nodeID {
+		return
+	}
+	p.cp.PendingBranchID = ""
+	p.cp.PendingNodeID = ""
+	p.cp.PendingInteractionID = ""
+	p.cp.PendingInteractionQuestions = nil
+}
+
 func (p *parallelExecutionState) setPendingInteraction(id string, questions map[string]any) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
