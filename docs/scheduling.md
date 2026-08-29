@@ -365,6 +365,17 @@ you have accepted their loss.
   that pauses for human input will pause and persist a resumable
   checkpoint (resume it later with [`iterion resume`](resume.md)),
   not block the cron job.
+- **A cloud repo-bound schedule resolves NO forge connection.** A
+  studio/API launch pins a `connection_id` and mints a fresh managed
+  token for the clone; a `cloudsched` tick carries only `repo_url`, so
+  the runner's clone token comes from the bot's `forge_token` secret
+  resolution — per-bot binding first
+  (`POST /api/teams/{id}/bots/{bot}/bindings`), else any team secret
+  *named* `forge_token`. Bind the bot to the connection's MANAGED
+  secret (`forge_github_<conn>`, auto-refreshed): a hand-set
+  `forge_token` team secret expires eventually and every tick then dies
+  on `Invalid username or token` at clone — while manual launches keep
+  working, which masks the gap.
 
 ## Implementation
 
