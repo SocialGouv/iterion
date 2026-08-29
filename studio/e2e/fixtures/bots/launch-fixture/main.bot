@@ -12,11 +12,11 @@ schema verdict:
   summary: string
 
 agent survey:
-  ## Qualified and curated-known on purpose: the suite runs offline, so the
-  ## spec aggregator contributes nothing and the model-capability caption can
-  ## only render what the curated table carries. GLM-5.2 is the one family
-  ## with a curated context window (1M), which makes the caption assertable
-  ## without a network fetch.
+  ## Qualified and curated-known on purpose: serve.mjs pins
+  ## ITERION_MODEL_SPECS=off, so the spec aggregator contributes nothing and
+  ## the model-capability caption can only render what the curated table
+  ## carries. GLM-5.2 is the one family with a curated context window (1M),
+  ## which makes the caption assertable without a network fetch.
   model: "anthropic/glm-5.2"
   system: "Survey {{vars.target_branch}} for {{vars.mission}}."
   output: verdict

@@ -78,7 +78,8 @@ test("engine options expose the workflow's own LLM node for retargeting", async 
 
 // The model-capability caption reads the node's OWN model on the inherit
 // path — the input is empty and the model lives only in the placeholder, which
-// is most launches. Offline the spec aggregator contributes nothing, so the
+// is most launches. serve.mjs pins ITERION_MODEL_SPECS=off, so the spec
+// aggregator contributes nothing on ANY host (networked or not) and the
 // assertion is on the curated context window and on the source that says the
 // answer can still improve; the published price needs a fetched table.
 test("the per-node model picker captions its model's capabilities", async ({

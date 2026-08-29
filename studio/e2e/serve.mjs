@@ -74,6 +74,15 @@ const childEnv = {
   // Keep the seeded runs' backend resolution offline: nothing in the
   // fixtures calls an LLM, and no host credential must leak into a run.
   ITERION_DEFAULT_BACKEND: "claw",
+  // Pin the model-spec aggregator OFF rather than assuming the host is
+  // offline. With it enabled, opening a model picker warms the registry
+  // (a background models.dev fetch), and a later spec assertion resolves
+  // against whatever that snapshot happened to publish — the fixture's
+  // `anthropic/glm-5.2` is absent from models.dev under its provider but
+  // its bare id is carried by dozens of them, so the caption would flip
+  // from `curated` to `aggregator` on any networked box. Off, the
+  // endpoint still serves the curated window and reports `curated`.
+  ITERION_MODEL_SPECS: "off",
 };
 
 function run(args, { json = false } = {}) {
