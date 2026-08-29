@@ -379,6 +379,11 @@ type Run struct {
 	// plain .bot runs and for bundles whose manifest had no name;
 	// consumers fall back to basename(BundlePath) stripped of `.botz`.
 	BundleName string `json:"bundle_name,omitempty" bson:"bundle_name,omitempty"`
+	// BundleVersion and BundleWorkflow complete the identity of a shared
+	// workflow export. BundleWorkflow is the manifest export id (not a path);
+	// FilePath remains the resolved source path used for diagnostics.
+	BundleVersion  string `json:"bundle_version,omitempty" bson:"bundle_version,omitempty"`
+	BundleWorkflow string `json:"bundle_workflow,omitempty" bson:"bundle_workflow,omitempty"`
 	// BundleDisplayName is the bundle's friendly persona name (e.g.
 	// "Nexie"), captured from manifest.yaml's `display_name` at launch.
 	// Empty when the bundle's manifest doesn't declare one. The studio

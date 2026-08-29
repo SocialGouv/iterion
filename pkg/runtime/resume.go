@@ -122,9 +122,18 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 // checkWorkflowHash validates that the workflow source has not changed since
 // the run was started. When forceResume is set, a mismatch is logged as a
 // warning instead of causing an error.
-func (e *Engine) checkWorkflowHash(r *store.Run) error {
-	err := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, e.forceResume)
-	if err == nil && e.forceResume && r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash {
+func (e *Engine) checkWorkflowHash(ctx context.Context, r *store.Run) error {
+	workflowChanged := r.WorkflowHash != "" && e.workflowHash != "" && r.WorkflowHash != e.workflowHash
+	workflowErr := ValidateResumeWorkflowHash(r.ID, r.WorkflowHash, e.workflowHash, false)
+	_, bundleErr := ResolveResumeBundleWorkflow(r, e.bundle, e.filePath, false)
+	if !e.forceResume {
+		if workflowErr != nil {
+			return workflowErr
+		}
+		return bundleErr
+	}
+	bundleChanged := bundleErr != nil
+	if workflowChanged {
 		if e.logger != nil {
 			e.logger.Warn(
 				"workflow source has changed since run %q was started (expected %s, got %s); resuming anyway (--force)",
@@ -134,7 +143,23 @@ func (e *Engine) checkWorkflowHash(r *store.Run) error {
 			)
 		}
 	}
-	return err
+	if workflowChanged || bundleChanged {
+		data := map[string]any{
+			"workflow_changed": workflowChanged,
+			"bundle_changed":   bundleChanged,
+			"previous_hash":    r.WorkflowHash,
+			"current_hash":     e.workflowHash,
+		}
+		if bundleErr != nil {
+			data["bundle_reason"] = bundleErr.Error()
+		}
+		if e.store != nil {
+			if err := e.emit(ctx, r.ID, store.EventRunResumeOverride, "", data); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func shortWorkflowHash(hash string) string {
@@ -161,7 +186,7 @@ func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]
 // continuing execution from the node after the human checkpoint.
 func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(ctx, r); err != nil {
 		return err
 	}
 	if r.Checkpoint == nil {
@@ -618,7 +643,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 // them through but the engine refuses to resume.
 func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	runID := r.ID
-	if err := e.checkWorkflowHash(r); err != nil {
+	if err := e.checkWorkflowHash(ctx, r); err != nil {
 		return err
 	}
 

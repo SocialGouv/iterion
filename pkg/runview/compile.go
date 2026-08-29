@@ -152,6 +152,15 @@ func compileForLaunch(path, source, bundleDir string) (*ir.Workflow, string, err
 	if source != "" {
 		return CompileWorkflowFromSource(path, source)
 	}
+	if path != "" {
+		b, err := bundle.OpenForWorkflow(path)
+		if err != nil {
+			return nil, "", fmt.Errorf("open workflow bundle: %w", err)
+		}
+		if b != nil {
+			return CompileBundleWorkflow(path, b)
+		}
+	}
 	return CompileWorkflowWithHash(path)
 }
 

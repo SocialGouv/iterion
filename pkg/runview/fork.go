@@ -117,6 +117,10 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	child.Preset = parent.Preset
 	child.BundleHash = parent.BundleHash
 	child.BundlePath = parent.BundlePath
+	child.BundleName = parent.BundleName
+	child.BundleVersion = parent.BundleVersion
+	child.BundleWorkflow = parent.BundleWorkflow
+	child.BundleDisplayName = parent.BundleDisplayName
 	child.LaunchEnv = parent.LaunchEnv
 	child.IterionVersion = parent.IterionVersion
 	child.TenantID = parent.TenantID

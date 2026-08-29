@@ -66,6 +66,10 @@ const (
 	// NON-BLOCKING async question (ADR-081) — see IsAsyncHumanInput.
 	asyncEventDataKey           = "async"
 	EventRunResumed   EventType = "run_resumed"
+	// EventRunResumeOverride is the audit marker for an explicit --force
+	// resume that accepted changed workflow or shared-bundle identity.
+	// Data: workflow_changed, bundle_changed, previous/current hashes.
+	EventRunResumeOverride EventType = "run_resume_override"
 	// EventRunSteered marks a live-steering intervention on a RUNNING
 	// run (bump_loop / raise_budget), emitted by the engine goroutine
 	// atomically with the in-memory mutation so the timeline and any

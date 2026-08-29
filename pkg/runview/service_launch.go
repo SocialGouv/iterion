@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -354,6 +355,9 @@ func (s *Service) PreflightResume(parent context.Context, spec ResumeSpec) error
 	if err := validateResumable(r, spec.Answers); err != nil {
 		return err
 	}
+	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return err
+	}
 	_, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
 		return err
@@ -424,6 +428,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		if cleanup != nil {
 			defer cleanup()
 		}
+	}
+	if err := resolveSharedResumeSpec(r, &spec); err != nil {
+		return nil, err
 	}
 
 	// Compile and compare synchronously before handing the resume to any
@@ -977,7 +984,7 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		// can mirror skills/ + recipes/ + attachments/ into the
 		// workspace before any node runs. Nil bundle → engine no-ops
 		// (existing behaviour for inline / standalone .bot files).
-		if b := ResolveBundleFromFilePath(filePath); b != nil {
+		if b, err := bundle.OpenForWorkflow(filePath); err == nil && b != nil {
 			opts = append(opts, runtime.WithBundle(b))
 		}
 	}

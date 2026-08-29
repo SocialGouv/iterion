@@ -47,7 +47,7 @@ func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[strin
 //
 // The caller MUST defer the returned cleanup (no-op on the
 // non-bundle path).
-func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
+func resumeOpenWorkflow(r *store.Run, iterFile string, force bool) (*ir.Workflow, string, string, *bundle.Bundle, func() error, error) {
 	cleanup := func() error { return nil }
 	if r != nil && r.BundlePath != "" {
 		bundleHandle, bundleCleanup, openErr := openResumeBundle(r.BundlePath)
@@ -56,11 +56,15 @@ func resumeOpenWorkflow(r *store.Run, iterFile string) (*ir.Workflow, string, st
 		}
 		if bundleHandle != nil {
 			cleanup = bundleCleanup
-			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleHandle.IterPath, bundleHandle)
-			if compileErr != nil {
-				return nil, "", bundleHandle.IterPath, bundleHandle, cleanup, compileErr
+			bundleWorkflowPath, resolveErr := runtime.ResolveResumeBundleWorkflow(r, bundleHandle, iterFile, force)
+			if resolveErr != nil {
+				return nil, "", iterFile, bundleHandle, cleanup, resolveErr
 			}
-			return wf, hash, bundleHandle.IterPath, bundleHandle, cleanup, nil
+			wf, hash, compileErr := runview.CompileBundleWorkflow(bundleWorkflowPath, bundleHandle)
+			if compileErr != nil {
+				return nil, "", bundleWorkflowPath, bundleHandle, cleanup, compileErr
+			}
+			return wf, hash, bundleWorkflowPath, bundleHandle, cleanup, nil
 		}
 	}
 	wf, hash, compileErr := runview.CompileWorkflowWithHash(iterFile)

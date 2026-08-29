@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -329,7 +330,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 			run.BundlePath = e.bundle.SourcePath
 			if e.bundle.Manifest != nil {
 				run.BundleName = e.bundle.Manifest.Name
+				run.BundleVersion = e.bundle.Manifest.Version
 				run.BundleDisplayName = e.bundle.Manifest.DisplayName
+				if rel, relErr := filepath.Rel(e.bundle.Dir, e.filePath); relErr == nil {
+					rel = filepath.ToSlash(rel)
+					for _, exp := range e.bundle.Manifest.Exports.Workflows {
+						if exp.Path == rel {
+							run.BundleWorkflow = exp.ID
+							break
+						}
+					}
+				}
 			}
 		}
 		if e.source != nil {

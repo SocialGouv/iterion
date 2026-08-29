@@ -215,7 +215,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		pausedNode = r.Checkpoint.NodeID
 	}
 
-	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile)
+	wf, wfHash, iterFile, bundleHandle, bundleCleanup, err := resumeOpenWorkflow(r, iterFile, opts.Force)
 	// Install cleanup BEFORE the error check: resumeOpenWorkflow returns a
 	// live cleanup (the .botz temp-dir remover) even on a bundle compile
 	// error, so returning on err without deferring it leaks the extracted dir.
