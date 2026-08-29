@@ -880,13 +880,19 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		}
 	})
 
-	t.Run("max_messages ceiling truncates the tail, and says so", func(t *testing.T) {
+	// Truncation is the quietest way this node can drop content: the ceiling
+	// removes the tail parts BEFORE any POST, so every sink reports a
+	// complete send and the queue would be consumed for items whose text
+	// never left. The channel only sees a notice pointing at run artifacts
+	// its readers cannot open. What fits is still posted — but the run must
+	// FAIL so the queue survives and the items are re-digested.
+	t.Run("max_messages ceiling posts what fits, says so, and keeps the queue", func(t *testing.T) {
 		msg := longDigest(20)
 		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
 		sink := newNotifySink()
-		out, err := run(t, msg, sinks, 1200, 2, sink)
-		if err != nil {
-			t.Fatalf("notify failed: %v", err)
+		_, err := run(t, msg, sinks, 1200, 2, sink)
+		if err == nil {
+			t.Fatal("a truncated digest must not report success — the queue would be consumed for items that never left")
 		}
 		got := sink.texts("#demo")
 		if len(got) != 2 {
@@ -898,8 +904,36 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if strings.Contains(got[0], "digest truncated") {
 			t.Fatal("only the LAST message announces the truncation")
 		}
-		if int(out["parts"].(float64)) != 2 {
-			t.Fatalf("parts must reflect what was posted: %v", out["parts"])
+	})
+
+	// The capped last message carries the LONGEST marker there is (the
+	// truncation notice). A reserve sized for the ordinary "_(i/n)_" puts it
+	// over the budget — and the budget exists to stay under the platform's
+	// hard post limit, so that POST is the one the platform rejects.
+	// The input is a single unbroken line on purpose: only the hard-cut path
+	// packs a part to exactly `limit - reserve`, where the shortfall shows.
+	// Block-separated text leaves slack that hides it.
+	t.Run("no message exceeds the budget, marker included", func(t *testing.T) {
+		msg := strings.Repeat("x", 9000)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#demo"}}
+		sink := newNotifySink()
+		// Truncation keeps the queue, so this run fails by design; what is
+		// under test is what reached the channel before it did.
+		if _, err := run(t, msg, sinks, 1200, 3, sink); err == nil {
+			t.Fatal("a truncated digest must not report success")
+		}
+		got := sink.texts("#demo")
+		if len(got) != 3 {
+			t.Fatalf("expected 3 capped messages, got %d", len(got))
+		}
+		if !strings.Contains(got[2], "digest truncated") {
+			t.Fatalf("the capped tail must be announced: %q", tail(got[2]))
+		}
+		for i, m := range got {
+			if len(m) > 1200 {
+				t.Fatalf("message %d/%d is %d chars, over the 1200 budget: %q",
+					i+1, len(got), len(m), tail(m))
+			}
 		}
 	})
 
