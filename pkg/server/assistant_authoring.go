@@ -73,15 +73,16 @@ type authoringChangeResponse struct {
 }
 
 type authoringTarget struct {
-	editorPath string
-	manifest   *bundle.Manifest
-	bundleDir  string
-	workDir    string
-	teamID     string
-	slug       string
-	version    int
-	files      map[string]string // cloud bundle contents; nil for local
-	userID     string
+	editorPath   string
+	manifest     *bundle.Manifest
+	bundleDir    string
+	workDir      string
+	readOnlyRoot string
+	teamID       string
+	slug         string
+	version      int
+	files        map[string]string // cloud bundle contents; nil for local
+	userID       string
 }
 
 type resolvedAuthoringFile struct {
@@ -272,6 +273,9 @@ func (s *Server) resolveAuthoringTarget(r *http.Request, editorPath string) (*au
 	if err != nil {
 		return nil, fmt.Errorf("invalid editor_path: %w", err)
 	}
+	if s.isMaterializedBotDependencyPath(absEditor) {
+		return nil, authoringForbiddenError{"shared bot bundles under .botz are read-only; edit the source bundle instead"}
+	}
 	s.stateMu.RLock()
 	workDir := s.cfg.WorkDir
 	s.stateMu.RUnlock()
@@ -279,7 +283,11 @@ func (s *Server) resolveAuthoringTarget(r *http.Request, editorPath string) (*au
 	if err != nil {
 		return nil, err
 	}
-	return &authoringTarget{editorPath: editorPath, manifest: m, bundleDir: bundleDir, workDir: workDir}, nil
+	readOnlyRoot, err := s.materializedBotDependenciesRoot()
+	if err != nil {
+		return nil, fmt.Errorf("resolve read-only bot dependencies: %w", err)
+	}
+	return &authoringTarget{editorPath: editorPath, manifest: m, bundleDir: bundleDir, workDir: workDir, readOnlyRoot: readOnlyRoot}, nil
 }
 
 func findAuthoringManifest(editorPath, workDir string) (string, *bundle.Manifest, error) {
@@ -349,6 +357,9 @@ func (t *authoringTarget) readDeclared(spec bundle.AuthoringEditableFile) (resol
 	abs, err := safePathWithin(base, spec.Path)
 	if err != nil {
 		return resolvedAuthoringFile{}, "", false, "", fmt.Errorf("%s:%s: %w", spec.Scope, spec.Path, err)
+	}
+	if t.readOnlyRoot != "" && pathContains(t.readOnlyRoot, abs) {
+		return resolvedAuthoringFile{}, "", false, "", authoringForbiddenError{"shared bot bundles under .botz are read-only; edit the source bundle instead"}
 	}
 	body, err := os.ReadFile(abs) // #nosec G304 -- symlink-aware safePathWithin result
 	if errors.Is(err, os.ErrNotExist) {

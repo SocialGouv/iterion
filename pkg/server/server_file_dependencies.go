@@ -29,11 +29,15 @@ type fileDependencyResponse struct {
 // bundles installed by `iterion bots sync`. It compares canonical paths, so a
 // workspace symlink pointing back into .botz cannot bypass the read-only rule.
 func (s *Server) isMaterializedBotDependencyPath(absPath string) bool {
+	root, err := s.materializedBotDependenciesRoot()
+	return err == nil && pathContains(root, absPath)
+}
+
+func (s *Server) materializedBotDependenciesRoot() (string, error) {
 	s.stateMu.RLock()
 	workDir := s.cfg.WorkDir
 	s.stateMu.RUnlock()
-	root, err := safePathWithin(workDir, ".botz")
-	return err == nil && pathContains(root, absPath)
+	return safePathWithin(workDir, ".botz")
 }
 
 func (s *Server) handleFileDependency(w http.ResponseWriter, r *http.Request) {

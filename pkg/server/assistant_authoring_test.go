@@ -164,6 +164,86 @@ func TestAuthoringSnapshotPreviewAndCommit(t *testing.T) {
 	}
 }
 
+func TestAuthoringRejectsMaterializedDependencyAcrossEndpoints(t *testing.T) {
+	root := t.TempDir()
+	bundleDir := filepath.Join(root, ".botz", "shared-planner")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "main.bot"), []byte("workflow shared:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "manifest.yaml"), []byte(`schema_version: 1
+name: shared-planner
+authoring:
+  editable_files:
+    - {scope: bundle, path: main.bot}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{WorkDir: root}}
+	paths := []string{".botz/shared-planner/main.bot"}
+	if err := os.Symlink(bundleDir, filepath.Join(root, "shared-alias")); err == nil {
+		paths = append(paths, "shared-alias/main.bot")
+	}
+	for _, editorPath := range paths {
+		for _, endpoint := range []string{"/snapshot", "/preview", "/commit"} {
+			var payload any = authoringSnapshotRequest{EditorPath: editorPath}
+			if endpoint != "/snapshot" {
+				payload = authoringChangeRequest{EditorPath: editorPath, Changes: []authoringFileChange{{
+					Scope: "bundle", Path: "main.bot", ExpectedSHA256: "irrelevant",
+					Replacements: []authoringReplacement{{Before: "shared", After: "changed"}},
+				}}}
+			}
+			rec := authoringCall(t, s, endpoint, payload)
+			if rec.Code != 403 || !strings.Contains(rec.Body.String(), ".botz") {
+				t.Fatalf("%s %s: %d %s", endpoint, editorPath, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestAuthoringRejectsWorkspaceCompanionInsideMaterializedDependency(t *testing.T) {
+	root := t.TempDir()
+	bundleDir := filepath.Join(root, "project-bot")
+	lockedDir := filepath.Join(root, ".botz", "shared-planner")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lockedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "main.bot"), []byte("workflow main:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockedDir, "helper.py"), []byte("value = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "manifest.yaml"), []byte(`schema_version: 1
+name: project-bot
+authoring:
+  editable_files:
+    - {scope: workspace, path: .botz/shared-planner/helper.py}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{WorkDir: root}}
+	editorPath := "project-bot/main.bot"
+	for _, endpoint := range []string{"/snapshot", "/preview", "/commit"} {
+		var payload any = authoringSnapshotRequest{EditorPath: editorPath}
+		if endpoint != "/snapshot" {
+			payload = authoringChangeRequest{EditorPath: editorPath, Changes: []authoringFileChange{{
+				Scope: "workspace", Path: ".botz/shared-planner/helper.py", ExpectedSHA256: "irrelevant",
+				Replacements: []authoringReplacement{{Before: "1", After: "2"}},
+			}}}
+		}
+		rec := authoringCall(t, s, endpoint, payload)
+		if rec.Code != 403 || !strings.Contains(rec.Body.String(), ".botz") {
+			t.Fatalf("%s: %d %s", endpoint, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestAuthoringRejectsOutOfScopeBeforeReadAndStaleHash(t *testing.T) {
 	s, editorPath := authoringFixture(t)
 	outside := authoringFileChange{
