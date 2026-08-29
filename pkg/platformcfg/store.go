@@ -22,6 +22,7 @@ const colPlatformSettings = "platform_settings"
 const (
 	FamilyBotRoles = "bot_roles"
 	FamilySandbox  = "sandbox"
+	FamilyBotVars  = "bot_vars"
 )
 
 // MongoStore is the cloud Store for one family: the single document every
@@ -39,6 +40,11 @@ func NewMongoBotRoles(db *mongo.Database) *MongoStore[BotRoles] {
 // NewMongoSandbox binds the sandbox family to a database.
 func NewMongoSandbox(db *mongo.Database) *MongoStore[Sandbox] {
 	return &MongoStore[Sandbox]{col: db.Collection(colPlatformSettings), docID: FamilySandbox}
+}
+
+// NewMongoBotVars binds the bot_vars family to a database.
+func NewMongoBotVars(db *mongo.Database) *MongoStore[BotVars] {
+	return &MongoStore[BotVars]{col: db.Collection(colPlatformSettings), docID: FamilyBotVars}
 }
 
 func (s *MongoStore[T]) Get(ctx context.Context) (*T, error) {
@@ -104,6 +110,8 @@ func stampUpdatedAt[T any](rec *T) {
 	case *BotRoles:
 		v.UpdatedAt = time.Now().UTC()
 	case *Sandbox:
+		v.UpdatedAt = time.Now().UTC()
+	case *BotVars:
 		v.UpdatedAt = time.Now().UTC()
 	}
 }

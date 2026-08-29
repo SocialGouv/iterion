@@ -76,6 +76,10 @@ func (s *Server) registerAdminSettingsFamilyRoutes() {
 		s.mux.Handle("GET /api/admin/settings/sandbox", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetSandboxSettings)))
 		s.mux.Handle("PUT /api/admin/settings/sandbox", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutSandboxSettings)))
 	}
+	if s.botVarsStore != nil {
+		s.mux.Handle("GET /api/admin/settings/bot-vars", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetBotVars)))
+		s.mux.Handle("PUT /api/admin/settings/bot-vars", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminPutBotVars)))
+	}
 }
 
 func (s *Server) handleAdminGetBotRoles(w http.ResponseWriter, r *http.Request) {
@@ -221,4 +225,89 @@ func strPtrOr(v *string, def string) string {
 		return def
 	}
 	return *v
+}
+
+func (s *Server) handleAdminGetBotVars(w http.ResponseWriter, r *http.Request) {
+	rec, err := s.botVarsStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	origin := "default"
+	if rec != nil && len(rec.Vars) > 0 {
+		origin = "db"
+	}
+	s.writeJSONFor(w, r, map[string]any{
+		"stored": rec,
+		"origin": origin,
+		// The bound every replica converges within after a write — the
+		// operator-facing answer to "when does my var take effect".
+		"propagation_bound_seconds": int(platformcfg.DefaultTTL.Seconds()),
+	})
+}
+
+// handleAdminPutBotVars applies MERGE semantics per key, like the caps
+// route does per field: a string sets the override, an explicit null
+// removes the key, a key absent from the body keeps its stored state.
+func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	var patch map[string]*string
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return
+	}
+	if len(patch) == 0 {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "empty patch: name at least one ITERION_* var (null to clear)")
+		return
+	}
+	rec, err := s.botVarsStore.Get(r.Context())
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if rec == nil {
+		rec = &platformcfg.BotVars{}
+	}
+	// Work on a COPY of the map: the store may hand back a record that
+	// shares it (MemoryStore does), and a patch that fails validation
+	// below must leave the stored record untouched.
+	vars := make(map[string]string, len(rec.Vars))
+	for k, v := range rec.Vars {
+		vars[k] = v
+	}
+	rec.Vars = vars
+	// Audit meta carries old→new per touched key: the values are
+	// non-secret by construction (Validate refuses credential-shaped
+	// names), so they are loggable in clear.
+	changes := map[string]any{}
+	for name, v := range patch {
+		old := rec.Vars[name]
+		if v == nil {
+			if _, had := rec.Vars[name]; !had {
+				// Clearing a key that was never set: refuse loudly rather
+				// than audit a no-op — the operator probably misspelled it.
+				s.httpErrorFor(w, r, http.StatusBadRequest, "%s is not set — nothing to clear", name)
+				return
+			}
+			delete(rec.Vars, name)
+			changes[name] = map[string]string{"old": old, "new": ""}
+			continue
+		}
+		rec.Vars[name] = *v
+		changes[name] = map[string]string{"old": old, "new": *v}
+	}
+	if err := rec.Validate(); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	}
+	rec.UpdatedBy = s.requestUserID(r)
+	if err := s.botVarsStore.Put(r.Context(), *rec); err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.botVars.Invalidate()
+	s.auditPlatform(r, "", "platform.settings.bot_vars.updated", "platform_settings", platformcfg.FamilyBotVars, changes)
+	s.handleAdminGetBotVars(w, r)
 }

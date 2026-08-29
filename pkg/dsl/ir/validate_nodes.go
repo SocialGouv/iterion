@@ -959,6 +959,33 @@ func modelEnvRefNames(s string) []string {
 	return names
 }
 
+// envOverlay, when set, is consulted BEFORE the process env by every
+// lookup in ExpandEnvWithDefault. It is how DB-backed bot-var settings
+// (platformcfg FamilyBotVars) reach the ~30 expansion sites through one
+// choke point: cmd wiring installs a TTL-cached resolver here at boot,
+// once, before any workflow runs — never mutated afterwards, so reads
+// need no lock. Nil (the default, and every local CLI run) keeps the
+// historical env-only behaviour byte-identical.
+var envOverlay func(name string) (string, bool)
+
+// SetEnvOverlay installs the settings lookup consulted before os.Getenv.
+// Call it once at process boot; the precedence it creates is
+// setting > pod env > `:-` default.
+func SetEnvOverlay(fn func(name string) (string, bool)) { envOverlay = fn }
+
+// lookupEnv resolves one variable name through the overlay-then-env
+// chain. An overlay hit with an empty value counts as unset (same rule
+// the `:-` form applies to env values), so a setting cannot pin
+// "empty" — clearing is expressed by removing the key.
+func lookupEnv(name string) string {
+	if envOverlay != nil {
+		if v, ok := envOverlay(name); ok && v != "" {
+			return v
+		}
+	}
+	return os.Getenv(name)
+}
+
 // ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
 // Mirrors the shell parameter-expansion default-value syntax that
 // stdlib os.ExpandEnv does not support: when ${VAR} is unset or empty,
@@ -984,7 +1011,7 @@ func ExpandEnvWithDefault(s string) string {
 				end++
 			}
 			if end > i+1 {
-				b.WriteString(os.Getenv(s[i+1 : end]))
+				b.WriteString(lookupEnv(s[i+1 : end]))
 				i = end
 				continue
 			}
@@ -1016,13 +1043,13 @@ func ExpandEnvWithDefault(s string) string {
 				expanded := ExpandEnvWithDefault(inner)
 				if idx := strings.Index(expanded, ":-"); idx >= 0 {
 					name, fallback := expanded[:idx], expanded[idx+2:]
-					if v := os.Getenv(name); v != "" {
+					if v := lookupEnv(name); v != "" {
 						b.WriteString(v)
 					} else {
 						b.WriteString(fallback)
 					}
 				} else {
-					b.WriteString(os.Getenv(expanded))
+					b.WriteString(lookupEnv(expanded))
 				}
 				i = j + 1
 				continue

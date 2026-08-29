@@ -3507,6 +3507,32 @@
         ]
       }
     },
+    "/api/admin/settings/bot-vars": {
+      "get": {
+        "operationId": "getAdminSettingsBotVars",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/settings/bot-vars",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "putAdminSettingsBotVars",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/admin/settings/bot-vars",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/settings/sandbox": {
       "get": {
         "operationId": "getAdminSettingsSandbox",
