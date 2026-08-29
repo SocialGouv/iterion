@@ -425,7 +425,9 @@ schema notify_output:
   dry_run: bool
   targets: string[]
   summary: string
-  ## Messages the digest occupies on the widest sink (1 = it fit).
+  ## The most messages the digest occupies on any sink (1 = it fit
+  ## everywhere). That is the sink with the NARROWEST budget: a smaller
+  ## max_chars means more parts.
   parts: int
   ## Individual POSTs that succeeded, all sinks and parts counted. The
   ## delivery evidence `delivered` cannot carry: a sink that took 2 of 3
@@ -1197,10 +1199,17 @@ tool verify_message:
 
 ## Deterministic delivery (no LLM at the last step — a provider
 ## rate-limit cannot sink a finished digest). Posts to every configured
-## sink; a PARTIAL failure is surfaced in the output but does not fail
-## the run (a retry would double-post what already landed); a TOTAL
-## failure — not one POST accepted anywhere — fails the run loudly (safe
-## to resume, nothing was delivered).
+## sink.
+##
+## `posted` is NOT "something went out": it is the QUEUE-CONSUMPTION signal
+## (`notify -> commit_state when posted`), and commit_state clears the
+## delivered snapshots from pending.jsonl. So it is true only when every
+## sink received the digest WHOLE. Anything less — a sink that failed, a
+## sink that got parts 1..k of n, or a digest the max_messages ceiling
+## truncated — fails the run loudly with the queue INTACT. The successful
+## posts are reported on stderr; the replay may duplicate what already
+## landed, and that is the deliberate trade: a duplicate is recoverable, a
+## dropped digest is not.
 ##
 ## A digest longer than the sink's per-message budget is SPLIT into
 ## consecutive messages, never cut: the channel is the digest's only
@@ -1223,9 +1232,18 @@ tool notify:
     max_messages = int({{input.max_messages}} or 0)
     webhooks_file = {{secrets.webhooks.path}}
 
-    # Room for the blank line + '_(i/n)_' marker appended to every part of
-    # a split digest, so a part plus its marker still fits the budget.
-    MARK_RESERVE = 32
+    # The notice the LAST part carries when max_messages cut the tail off.
+    TRUNC_NOTE = ' -- digest truncated, full version in the run artifacts'
+
+    def mark_for(i, n, cut):
+        return '_(' + str(i) + '/' + str(n) + (TRUNC_NOTE if cut else '') + ')_'
+
+    # Room for the blank line + the marker appended to every part of a split
+    # digest. DERIVED from the longest marker a part can carry (the truncation
+    # notice, three-digit counts) rather than guessed: a reserve smaller than
+    # the marker it reserves for puts the last message OVER the budget the
+    # budget exists to respect.
+    MARK_RESERVE = len(chr(10) + chr(10) + mark_for(999, 999, True))
 
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
@@ -1287,6 +1305,11 @@ tool notify:
             parts[i + 1] = moved + sep + parts[i + 1]
         return parts
 
+    # Budgets whose rendering DROPPED content (the max_messages ceiling).
+    # Visible outside messages_for because truncation, like a partial
+    # delivery, must forbid consuming the queue.
+    truncated_limits = set()
+
     def messages_for(limit):
         """The digest as it will be posted to a sink of budget `limit`:
         one entry when it fits, else numbered parts, the last one carrying
@@ -1294,16 +1317,22 @@ tool notify:
         parts = split_text(message or '', max(limit - MARK_RESERVE, 1))
         cut = max_messages > 0 and len(parts) > max_messages
         if cut:
+            truncated_limits.add(limit)
             parts = parts[:max_messages]
+            # Every part was sized against MARK_RESERVE, which covers the
+            # plain `_(i/n)_` marker — not the 62-char truncation notice the
+            # LAST part now carries. Re-trim that one part rather than
+            # reserving 64 chars on EVERY part, which would shrink the whole
+            # digest to pay for a marker only one message ever gets.
+            room = limit - len(mark_for(len(parts), len(parts), True)) - 2
+            if room > 0 and len(parts[-1]) > room:
+                parts[-1] = parts[-1][:room].rstrip()
         if len(parts) == 1 and not cut:
             return parts
         n = len(parts)
         msgs = []
         for i, part in enumerate(parts, 1):
-            mark = '_(' + str(i) + '/' + str(n) + ')_'
-            if cut and i == n:
-                mark = '_(' + str(i) + '/' + str(n) + ' -- digest truncated, full version in the run artifacts)_'
-            msgs.append(part + chr(10) + chr(10) + mark)
+            msgs.append(part + chr(10) + chr(10) + mark_for(i, n, cut and i == n))
         return msgs
 
     if not sinks:
@@ -1388,12 +1417,22 @@ tool notify:
     # NOT consume, and fail LOUDLY so the stuck half is visible. The replay
     # may duplicate what already landed; a duplicate is recoverable, a lost
     # digest is not.
-    if delivered < len(plans):
+    # Truncation is the THIRD way this node can drop content, and it is the
+    # quietest: the ceiling removes the tail parts BEFORE any POST, so every
+    # sink reports a complete send, `delivered` reaches len(plans), and the
+    # queue would be consumed for items whose text never left. The channel
+    # only sees a notice pointing at run artifacts its readers cannot open.
+    # Same rule as a partial delivery: content dropped => do not consume.
+    if delivered < len(plans) or truncated_limits:
         print(json.dumps({'posted': False, 'dry_run': False, 'delivered': delivered,
-                          'targets': targets, 'parts': parts_max, 'posts': posts_ok},
+                          'targets': targets, 'parts': parts_max, 'posts': posts_ok,
+                          'truncated': bool(truncated_limits)},
                          ensure_ascii=False), file=sys.stderr)
-        raise SystemExit('feed-watch: only ' + str(delivered) + '/' + str(len(plans)) +
-                         ' sink(s) received the COMPLETE digest (' + str(posts_ok) +
+        why = ('the digest was TRUNCATED by the max_messages ceiling (' + str(max_messages) +
+               '), so part of it never left' if truncated_limits
+               else 'only ' + str(delivered) + '/' + str(len(plans)) +
+                    ' sink(s) received the COMPLETE digest')
+        raise SystemExit('feed-watch: ' + why + ' (' + str(posts_ok) +
                          ' post(s) ok) -- the queue is NOT consumed, so this digest replays in '
                          'full on the next run and may duplicate what already landed. ' +
                          '; '.join(failures))
