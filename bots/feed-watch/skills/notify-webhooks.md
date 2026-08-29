@@ -27,9 +27,14 @@ the missing half points them somewhere they cannot go.
   its own `max_chars` (a Slack channel wants less), and each sink is
   split to its own budget.
 - **Boundaries** — blank-line blocks first, then lines, then a hard cut
-  as a last resort. A digest entry is one line, so no entry and no link
-  is ever broken in two. A section heading that would close a message
-  travels to the next one instead, where its items are.
+  as a last resort. A digest entry is one line, so **as long as every
+  entry fits the budget** no entry and no link is broken in two. The
+  hard cut only fires on a single line longer than the budget by itself
+  (a synthesis rendering the whole "also seen" list inline, say) — it is
+  the one place a markdown link can land across two messages, so keep
+  the smallest configured `max_chars` above your longest entry. A
+  section heading that would close a message travels to the next one
+  instead, where its items are.
 - **Ceiling** — `max_messages` (var, default 5, `0` = none) bounds one
   digest. It is reached only by an abnormal synthesis; the last message
   then carries the truncation notice, which is the only case left where

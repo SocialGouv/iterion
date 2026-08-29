@@ -1244,8 +1244,10 @@ tool notify:
     def split_text(text, limit):
         """Cut `text` into <=limit chunks at the widest markdown boundary
         available: blank-line blocks first, then lines (a digest entry is
-        one line, so no entry and no link is ever broken), then a hard cut
-        for a single line that alone exceeds the budget."""
+        one line, so while every entry fits the budget no entry and no
+        link is broken), then -- only for a single line that alone exceeds
+        the budget -- a hard cut, the one place a markdown link can land
+        across two messages."""
         if len(text) <= limit:
             return [text]
         parts, cur = [], ''
