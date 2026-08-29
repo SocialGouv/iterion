@@ -583,7 +583,9 @@ web_fetches the top articles to ground the takeaways, semantically
 dedups against the previously sent digests, ranks by importance and
 writes ONE chat-ready markdown message; a deterministic tool POSTs it
 to the configured Mattermost/Slack incoming webhooks and clears
-exactly the digested items from the queue.
+exactly the digested items from the queue. A digest above a sink's
+per-message budget is delivered as consecutive numbered messages, so
+the channel gets all of it rather than a cut version.
 
 Everything workspace-specific (categories, feeds, editorial guidance
 and language, webhook sinks, cadences) lives in the target repo's
@@ -607,7 +609,7 @@ schemes by default (opt into internal feeds with
   synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
-- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `max_message_chars` (int), `max_messages` (int), `mode` (string), `scratch_dir` (string), `silence_alert_days` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
 ### `golden-master` — Goldy
