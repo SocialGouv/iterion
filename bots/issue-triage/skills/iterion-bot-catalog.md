@@ -32,6 +32,7 @@ Walk top-to-bottom; first match wins.
 | If the card sounds like… | → bot |
 |---|---|
 | "where should this project go next?", "long-term vision", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) on a mature/stable project | `evolve` |
+| "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot / workflow that does Y" — no existing fit, one must be authored | `feature-dev` (feature_prompt = the new `.bot` to create) |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole-improve-loop` |
@@ -77,6 +78,11 @@ you cannot confirm from the card — is a no-fit: label
 - **`evolve` vs `whats-next`**: horizon ≥ a quarter on a mature repo →
   `evolve`. "What should we do this week / dispatch now" → that is the
   operator's conversation with `whats-next`, not a card you route.
+- **`copilot` vs `whats-next` vs `feature-dev`**: questions ABOUT
+  iterion (a diagnostic, a failed run, a draft `.bot` the operator
+  will validate) → `copilot`. What to work on this week → `whats-next`
+  (not a card). Build and land a missing bot → `feature-dev`. Copi is
+  read-only; it never edits or commits.
 
 <!-- ITERION:CATALOG:GENERATED:BEGIN -->
 
@@ -94,6 +100,7 @@ dispatcher routes on it), never the persona.
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Campy | `campaign` |
+| Copi | `copilot` |
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
@@ -325,6 +332,45 @@ with blocked lots requalified against the final tree.
   authority over it is measuring whether it advances.
 - **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
+
+### `copilot` — Copi
+
+Conversational iterion assistant. ONE adaptive agent (claw, bundled
+skills, a cross-provider model ladder) in a standing chat loop, whose subject is
+iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
+semantics, backends, bundles and convergence doctrine. Three
+postures the operator can switch mid-conversation — info (explain
+and orient), design (draft a workflow, which the run compiles with
+`iterion validate` before the reply is shown), debug (diagnose a
+run from its real events).
+Read-only agent by construction: a `permission: deny` gate denies Bash,
+Write, Edit and WebFetch outright — an allow-listed shell prefix is
+not a boundary, since the matcher grants everything after it — so
+Copi reads files, run stores and manifests. For the active bot it may return
+bounded exact replacements for companion files explicitly declared in that
+bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
+them under the operator's action policy. Copi itself still has no write
+tool. Every turn ends
+at a budget-free chat pause — the session stays reachable for days,
+and a rolling context_brief carries the conversation across server
+restarts, redeploys and cloud pod changes. Only an explicit "close"
+ends the session. An optional cross-review (`reviewer: on`) has a
+SECOND model, from another family, criticise each answer before you
+read it — off by default, since it costs a full extra call per turn.
+
+- **Use when**:
+  Use to ask questions about iterion itself, from anywhere: what a
+  diagnostic code means, why a run paused or failed, how to write or
+  fix a .bot, which bot to reach for, how backends/sandbox/resume
+  behave. Also the drafting partner for a new bot — it writes the
+  workflow and a deterministic node compiles it before you read the
+  answer, so a draft is never presented as working on the agent's
+  word alone. It advises about whatever workspace it is pointed at;
+  it never edits or commits directly; the Studio-owned authoring bridge is the
+  only write path it may request.
+- **Triggers**: copi, copilot
+- **Vars**: `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty
 

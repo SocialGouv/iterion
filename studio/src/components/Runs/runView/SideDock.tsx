@@ -17,7 +17,7 @@ interface SideDockProps {
   onCloseChat: () => void;
 }
 
-// SideDock is the run console's unified right-hand dock: Chat and Browser
+// SideDock is the run console's unified right-hand dock: Steering and Browser
 // share one resizable column instead of stacking as two independent
 // panels (which pushed the canvas into a cramped four-column row). When
 // both are docked it shows a tab switcher; when only one is docked it
@@ -59,7 +59,7 @@ export function SideDock({
           value={tab}
           onValueChange={(v) => setTab(v as "chat" | "browser")}
           items={[
-            { value: "chat", label: "Chat" },
+            { value: "chat", label: "Steering" },
             { value: "browser", label: "Browser" },
           ]}
           variant="underline"

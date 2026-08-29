@@ -1,0 +1,100 @@
+name: copilot
+display_name: Copi
+icon: 💬
+version: 0.1.2
+description: |
+  Conversational iterion assistant. ONE adaptive agent (claw, bundled
+  skills, a cross-provider model ladder) in a standing chat loop, whose subject is
+  iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
+  semantics, backends, bundles and convergence doctrine. Three
+  postures the operator can switch mid-conversation — info (explain
+  and orient), design (draft a workflow, which the run compiles with
+  `iterion validate` before the reply is shown), debug (diagnose a
+  run from its real events).
+  Read-only agent by construction: a `permission: deny` gate denies Bash,
+  Write, Edit and WebFetch outright — an allow-listed shell prefix is
+  not a boundary, since the matcher grants everything after it — so
+  Copi reads files, run stores and manifests. For the active bot it may return
+  bounded exact replacements for companion files explicitly declared in that
+  bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
+  them under the operator's action policy. Copi itself still has no write
+  tool. Every turn ends
+  at a budget-free chat pause — the session stays reachable for days,
+  and a rolling context_brief carries the conversation across server
+  restarts, redeploys and cloud pod changes. Only an explicit "close"
+  ends the session. An optional cross-review (`reviewer: on`) has a
+  SECOND model, from another family, criticise each answer before you
+  read it — off by default, since it costs a full extra call per turn.
+when_to_use: |
+  Use to ask questions about iterion itself, from anywhere: what a
+  diagnostic code means, why a run paused or failed, how to write or
+  fix a .bot, which bot to reach for, how backends/sandbox/resume
+  behave. Also the drafting partner for a new bot — it writes the
+  workflow and a deterministic node compiles it before you read the
+  answer, so a draft is never presented as working on the agent's
+  word alone. It advises about whatever workspace it is pointed at;
+  it never edits or commits directly; the Studio-owned authoring bridge is the
+  only write path it may request.
+author: SocialGouv — copilot/main.bot
+schema_version: 1
+triggers: [copi, copilot]
+
+dispatch_vars:
+  initial_message: |-
+    {{issue.title}}
+
+    {{issue.body}}
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [initial_message, mode]
+  hidden: [scope_notes]
+
+## Copi is a CONVERSATIONAL bot — the studio hosts him in the assistant
+## dock. This block is the whole cost of that: bundle.Manifest carries
+## `chat:` now, so a second chat bot needs no studio code (issue #333).
+chat:
+  seed_var: initial_message
+  ## The studio sends the active in-memory editor document with the operator's
+  ## message and may offer Copi's validated replacement back to that exact
+  ## tab/revision. Copi still has no Write/Edit/Bash tool and never chooses a
+  ## path; apply/save remain studio actions.
+  editor:
+    context: true
+    proposals: true
+  ## Declared so the studio KNOWS this bot understands cross-review and can
+  ## offer the choice before a conversation starts. Without it the studio
+  ## would either have to guess, or send `reviewer` to every chat bot —
+  ## including ones that declare no such var.
+  launcher_vars:
+    - name: reviewer
+      label: "Cross-review each answer"
+  nodes:
+    seed: {kind: silent}
+    gate: {kind: silent}
+    copi: {kind: banner, label: "Copi is thinking"}
+    validate_draft: {kind: banner, label: "Validating Copi's draft"}
+    review: {kind: banner, label: "Cross-reviewing Copi's answer"}
+    compose: {kind: silent}
+    ## No `prompt`: Copi's reply IS the chat node's runtime-resolved
+    ## `instructions:`, exactly as for Nexie.
+    chat: {kind: human, text_field: message}
+  launcher:
+    prompt: "What do you want to ask about iterion?"
+    description: "A starting point, or type your own — Copi answers about iterion itself, in whatever workspace he is pointed at."
+    submit_label: "Start the conversation"
+    presets:
+      - value: "Explique-moi ce diagnostic et comment le corriger."
+        label: "Decode a diagnostic (Cxxx)"
+        description: "What the code means, why it fired, how to fix it."
+      - value: "Ce run a échoué / est en pause : diagnostique-le à partir de ses événements."
+        label: "Diagnose a run"
+        description: "Reads the run store: status, checkpoint, events."
+      - value: "Aide-moi à écrire un .bot qui fait ceci : "
+        label: "Draft a workflow"
+        description: "Writes real DSL — a draft you validate yourself."
+      - value: "Quel bot du catalogue dois-je utiliser pour ce que je veux faire ?"
+        label: "Which bot should I use?"
+        description: "Routes you through the catalog and its personas."

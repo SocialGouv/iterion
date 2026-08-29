@@ -855,6 +855,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BotSourceTenant: botSourceTenantOf(spec.BotBundle),
 		KeyOverrides:    spec.KeyOverrides,
 		SecretOverrides: spec.SecretOverrides,
+		// The override is authoritative run intent, not display metadata: the
+		// resume publisher replays it onto every later queue attempt.
+		PermissionOverride: spec.Permission,
+		PermissionMode:     spec.Permission,
+		// Same display parity a local launch gets from the engine: the
+		// studio Overview reads the pins from the run doc, and the resume
+		// path replays them onto its RunMessage from here.
+		ModelOverrides: runModelOverrides(spec.ModelOverrides),
 		// Cap. 3 sharding fields — propagate to the persisted Run so
 		// studio surfaces can render the parent/child relationship,
 		// and onto the published RunMessage below so the runner pod
@@ -866,15 +874,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackURL:        spec.CallbackURL,
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
-		// Same display parity a local launch gets from the engine: the
-		// studio Overview reads the pins from the run doc, and the resume
-		// path replays them onto its RunMessage from here.
-		ModelOverrides: runModelOverrides(spec.ModelOverrides),
 		// The raw budget ask, same doctrine as the model pins above: the
 		// run doc is the single source the resume path replays from. The
 		// clamped/effective figure is NOT what is stamped — the resume
 		// re-clamps against its own grant.
 		BudgetOverrides: runBudgetOverrides(spec.Budget),
+	}
+	if r.PermissionMode == "" {
+		r.PermissionMode = wf.Permission
 	}
 	// Typed provenance (schedule / dispatcher / trigger spine). The queued
 	// doc is the ONLY carrier: the RunMessage has no source field, and the
@@ -981,6 +988,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      spec.Permission,
 		BackendConfig:   queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC:  time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:        tenantID,
@@ -1238,6 +1246,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		AutoMemory:      spec.AutoMemory,
 		LoopBudgetGuard: spec.LoopBudgetGuard,
 		Supervisors:     spec.Supervisors,
+		Permission:      prior.PermissionOverride,
+		// A resumed attempt must honour the SAME pins the launch declared —
+		// replayed from the run doc, the single source the launch stamped.
+		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
 		// A resume re-acquires from the pool, so it re-inherits the donor's
 		// CURRENT remaining allowance as its cost ceiling — a run that was
 		// paused for a day must not come back holding yesterday's budget.
@@ -1250,9 +1262,6 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		Budget:         clampBudgetToGrant(budgetOverridesFromRun(prior.BudgetOverrides), wf, creds.grant, checkpointCostUSD(prior), p.logger, spec.RunID),
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
-		// A resumed attempt must honour the SAME pins the launch declared —
-		// replayed from the run doc, the single source the launch stamped.
-		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -1587,7 +1596,7 @@ func queueModelOverrides(entries []runview.ModelOverrideEntry) []queue.ModelOver
 	}
 	out := make([]queue.ModelOverride, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 	}
 	return out
 }
@@ -1600,7 +1609,7 @@ func runModelOverrides(entries []runview.ModelOverrideEntry) []store.RunModelOve
 	}
 	out := make([]store.RunModelOverride, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+		out = append(out, store.RunModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 	}
 	return out
 }
@@ -1648,7 +1657,7 @@ func queueOverridesFromRun(entries []store.RunModelOverride) []queue.ModelOverri
 	}
 	out := make([]queue.ModelOverride, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider})
+		out = append(out, queue.ModelOverride{Selector: e.Selector, Backend: e.Backend, Model: e.Model, Provider: e.Provider, Effort: e.Effort})
 	}
 	return out
 }

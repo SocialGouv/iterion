@@ -446,6 +446,41 @@ func TestLaunch_RejectsPathOutsideWorkDir(t *testing.T) {
 	}
 }
 
+// TestLaunch_LocalCatalogBotOutsideWorkDir covers the assistant deployment
+// shape: the active project is one repository, while Copi is supplied through
+// an explicit --bots-path in another. Bot resolution is the authority for
+// that external path; raw file_path launches must remain WorkDir-contained.
+func TestLaunch_LocalCatalogBotOutsideWorkDir(t *testing.T) {
+	srv, hs := newTestServer(t)
+	bundleDir := filepath.Join(t.TempDir(), "copilot")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatalf("mkdir bot bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "manifest.yaml"), []byte("name: copilot\ndisplay_name: Copi\n"), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, "main.bot"), []byte("workflow copilot:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+	srv.cfg.Bots.Paths = []string{bundleDir}
+
+	body := bytes.NewReader([]byte(`{"file_path":"bots/copilot/main.bot","bot_id":"copilot","run_id":"external-copilot"}`))
+	resp, err := http.Post(hs.URL+"/api/runs", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 202; body=%q", resp.StatusCode, string(b))
+	}
+	var out launchRunResponse
+	decodeJSONResp(t, resp, &out)
+	if out.RunID != "external-copilot" {
+		t.Errorf("run_id = %q, want external-copilot", out.RunID)
+	}
+}
+
 // TestResolveWorkflowPath_InlineCacheFallback covers the resume case
 // where the persisted FilePath points at the server's own inline-source
 // cache (outside the current WorkDir, because the operator switched

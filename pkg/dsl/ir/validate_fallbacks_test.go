@@ -144,6 +144,26 @@ func TestFallbackUngatedRouteIsRefused(t *testing.T) {
 	}
 }
 
+func TestToolRestrictionLossReason(t *testing.T) {
+	if got := ToolRestrictionLossReason("claw", "claude_code", []string{"read_file"}); !strings.Contains(got, "tools:") {
+		t.Fatalf("claw → CLI warning = %q, want tools: restriction loss", got)
+	}
+	for _, tc := range []struct {
+		name, from, to string
+		tools          []string
+	}{
+		{name: "same backend", from: "claw", to: "claw", tools: []string{"read_file"}},
+		{name: "CLI source", from: "claude_code", to: "codex", tools: []string{"read_file"}},
+		{name: "no restriction", from: "claw", to: "claude_code"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ToolRestrictionLossReason(tc.from, tc.to, tc.tools); got != "" {
+				t.Fatalf("unexpected warning: %s", got)
+			}
+		})
+	}
+}
+
 // externalHookBackends are the CLI backends whose PreToolUse hook is an
 // EXTERNAL process. Both earned their entry with a live denial (a real model,
 // a real tool call, a filesystem sentinel), and both are deny-only for the

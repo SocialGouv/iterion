@@ -37,6 +37,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 	s.mux.HandleFunc("GET /api/resolve-model", s.handleResolveModel)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
+	// The model registry: known x usable x capabilities x pricing. It is what
+	// turns the studio's free-text model field into an actual picker.
+	s.mux.HandleFunc("GET /api/models", s.handleModels)
 
 	// Bot registry — exposes the bots discoverable on the host (single
 	// .bot files, .botz bundles) with their declared workflow vars +
@@ -110,6 +113,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+	// Assistant companion-file authoring. The model only proposes exact
+	// replacements; these host-owned endpoints resolve the manifest perimeter,
+	// check optimistic-concurrency tokens, preview, and persist.
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/snapshot", s.handleAuthoringSnapshot)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/preview", s.handleAuthoringPreview)
+	s.mux.HandleFunc("POST /api/v1/assistant/authoring/commit", s.handleAuthoringCommit)
 
 	// Project registry — lets the SPA list MRU projects, switch
 	// between them, and add/remove entries. The same on-disk file
@@ -244,6 +253,11 @@ func (s *Server) routes() {
 	// Browser push notifications (subscription CRUD + prefs + test push).
 	if s.webPushEnabled() && s.authSvc != nil {
 		s.registerNotificationRoutes()
+	}
+
+	// The operator's remembered model choice for a long-lived surface.
+	if s.cfg.ModelPrefs != nil {
+		s.registerModelPrefRoutes()
 	}
 
 	// Super-admin DLQ inspection/replay (cloud only — needs the queue).

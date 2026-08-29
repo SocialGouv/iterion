@@ -6,7 +6,10 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import { Button, InlineBanner, Input } from "@/components/ui";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import type { UseSessionModelPrefResult } from "@/hooks/useSessionModelPref";
 import { useServerInfoStore } from "@/store/serverInfo";
+
+import SessionModelControl from "./whatsNextView/SessionModelControl";
 
 interface Props {
   bot: FirstClassBot;
@@ -14,7 +17,7 @@ interface Props {
   // with the launch var map. When the bot declares a `seedVar`, the
   // launcher form's answer text is already folded into the vars under
   // that name (the bot reads it as the first operator message).
-  onLaunch?: (params: { vars: Record<string, string> }) => void;
+  onLaunch?: (params: { vars: Record<string, string> }) => void | Promise<void>;
   busy?: boolean;
   errorMessage?: string | null;
   // Startup discovery failed — a live session may exist that we can't
@@ -24,6 +27,9 @@ interface Props {
   // The repo the launch will operate on (cloud active repo), or null
   // for a board-only launch.
   launchRepo?: string | null;
+  // The remembered model choice this launch will apply. Offered here so the
+  // model can be picked BEFORE the first message, not discovered mid-session.
+  modelPref?: UseSessionModelPrefResult;
 }
 
 export default function SessionLauncher({
@@ -34,6 +40,7 @@ export default function SessionLauncher({
   discoveryError = null,
   onRetryDiscovery,
   launchRepo = null,
+  modelPref,
 }: Props) {
   const workDir = useServerInfoStore((s) => s.info?.work_dir ?? "");
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
@@ -78,7 +85,11 @@ export default function SessionLauncher({
       const text = Array.isArray(first) ? first.join(", ") : first ?? "";
       if (text.trim() !== "") next[bot.seedVar] = text.trim();
     }
-    onLaunch({ vars: next });
+    // This surface has no draft to preserve; the dock composer does. Consume
+    // the lifecycle rejection here so a failed button/form launch does not
+    // become an unhandled promise while the shared lifecycle keeps its
+    // reject-to-preserve contract for composer callers.
+    void Promise.resolve(onLaunch({ vars: next })).catch(() => {});
   };
 
   return (
@@ -172,6 +183,12 @@ export default function SessionLauncher({
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {modelPref && (
+          <div className="border-t border-border-subtle pt-3">
+            <SessionModelControl pref={modelPref} />
           </div>
         )}
 

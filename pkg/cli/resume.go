@@ -93,6 +93,8 @@ type ResumeOptions struct {
 	// silently stopped applying would kill the run on the second
 	// closure. See ADR-087.
 	Fallback string
+	// EffortFor re-applies the launch-time reasoning_effort overrides.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
 	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
@@ -283,6 +285,10 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithRepoDevbox(opts.RepoDevbox),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
+		// Re-applied from the run record, like Preset. Load-bearing for a
+		// conversational bot: every turn is a resume, so a launch-only list
+		// would vanish after the first reply.
+		runtime.WithExtraSkills(r.ExtraSkills, "resume"),
 		// Wire the subbot runner, mirroring the run path (run.go). Without
 		// it, ANY resumed run whose remaining graph contains a subbot node
 		// died with "no SubbotRunner is wired" — runs with subbots were
@@ -303,6 +309,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 			ModelFor:        opts.ModelFor,
 			BackendFor:      opts.BackendFor,
 			Fallback:        opts.Fallback,
+			EffortFor:       opts.EffortFor,
 		})),
 	)...)
 

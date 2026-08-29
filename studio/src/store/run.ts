@@ -782,6 +782,15 @@ export function useRunStore<T>(selector: (state: RunStoreState) => T): T {
   return useStore(useRunStoreInstance(), selector);
 }
 
+// getDefaultRunStore hands back the module default explicitly. Needed by
+// scopes that mount their OWN RunStoreProvider around a subtree but must
+// hand the default back to the subtree below it (the assistant dock,
+// which runs a long-lived session in an isolated store while the rest of
+// the app keeps reading the default one).
+export function getDefaultRunStore(): RunStore {
+  return defaultRunStore;
+}
+
 // Imperative façade for non-React callers (e.g. effects that need to
 // poke the store without subscribing). Pre-tab callers used
 // `useRunStore.getState()` — that pattern is preserved via this helper

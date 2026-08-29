@@ -3,11 +3,13 @@
 // `createRun`, subscribes to the run's WS to fold events into messages,
 // and exposes a `submitHumanAnswer` callback for chat inputs.
 //
-// State is intentionally local to the hook (not a Zustand store) so
-// the WhatsNext view can be navigated away from and remounted without
-// resurrecting a stale session. Auto-attach to an already-running
-// session is wired in Étape 5 — for now, mounting the hook with
-// `null` keeps it idle.
+// State is local to the hook rather than a Zustand store, and the hook
+// is mounted ONCE above the route tree (AssistantProvider) rather than
+// by a view. Navigation therefore neither restarts the session nor
+// drops the transcript — see docs/adr/091-ubiquitous-assistant-chat-dock.md.
+// What used to bound a stale session (the view unmounting) is now explicit:
+// the identity-change effects below drop a session that belongs to another
+// bot, project or repo.
 //
 // The hook is a composition shell over the concern modules in this
 // directory:
@@ -22,9 +24,13 @@ import { useEffect, useRef, useState } from "react";
 
 import { type RunStatus } from "@/api/runs";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
+import {
+  useSessionModelPref,
+  type UseSessionModelPrefResult,
+} from "@/hooks/useSessionModelPref";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
-import { useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import { useSessionScope } from "./sessionScope";
 import { isEndedRunStatus, type WhatsNextStatus } from "./sessionStatus";
@@ -69,6 +75,10 @@ export interface UseWhatsNextSession {
   // The repo the NEXT launch will operate on (cloud: the sidebar's
   // active repo). Null = board-only launch (no repo connected / overview).
   launchRepo: string | null;
+  // The operator's remembered model/backend/effort for this bot, and the
+  // actions to change it. Applied to the NEXT launch as model_overrides — a
+  // live run keeps the model it started on.
+  modelPref: UseSessionModelPrefResult;
   // Imperative actions.
   launch: (vars: Record<string, string>) => Promise<void>;
   submitHumanAnswer: (
@@ -88,7 +98,21 @@ export interface UseWhatsNextSession {
   resume: () => Promise<void>;
 }
 
-export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
+export interface WhatsNextSessionOptions {
+  // See useSessionDiscovery's `discover`. A conversation the operator just
+  // opened passes false: discovery is keyed on (bot, scope), so it would hand
+  // this tab the run another tab is already showing.
+  discover?: boolean;
+  // The run THIS conversation owns, when it has one. Attaching to it directly
+  // is what stops several conversations on the same bot from converging on
+  // whichever run the bot-scoped lookup happens to return.
+  attachRunId?: string | null;
+}
+
+export function useWhatsNextSession(
+  bot: FirstClassBot,
+  options?: WhatsNextSessionOptions,
+): UseWhatsNextSession {
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<WhatsNextStatus>("idle");
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
@@ -113,15 +137,72 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   }, []);
 
   // Subscribe to the WS for the active run. The hook is a no-op when
-  // runId is null. The store is shared with the rest of the SPA — a
-  // user who flips to /runs/:id mid-session will see the same data,
-  // and our reads of useRunStore here pick up the same updates.
+  // runId is null. Reads and writes go to whichever store the hook is
+  // mounted under — the assistant's isolated one below AssistantProvider,
+  // the module default otherwise.
   useRunWebSocket(runId);
+  const store = useRunStoreInstance();
 
   // Repo-first scope: (team, active repo) in cloud, project dir
   // locally. The key participates in session storage + discovery.
-  const { scopeKey, repoScopeEnabled, overview, activeRepo, projectId, launchRepo } =
-    useSessionScope();
+  const {
+    scopeKey,
+    ready: scopeReady,
+    repoScopeEnabled,
+    overview,
+    activeRepo,
+    projectId,
+    launchRepo,
+  } = useSessionScope();
+
+  // A session belongs to BOTH a bot and a scope. Bot and scope are tracked
+  // separately because scope readiness may never settle (for example, a
+  // signed-in cloud user with no active team). A bot switch must still drop
+  // the attached run in that state.
+  //
+  // This used to be covered incidentally: the view unmounted on the
+  // navigate-to-"/" that follows a project switch, taking the session's
+  // state with it. The session is mounted above the route tree now, so
+  // nothing unmounts and a stale conversation would simply stay on
+  // screen — discovery only overwrites runId when it FINDS a run.
+  //
+  // The old scope's remembered runId is deliberately left in place, so
+  // switching back re-attaches instead of starting over.
+  // Only a settled key can be compared. `scopeKey` is not stable at mount:
+  // a cloud cold load walks `null → "team:all" → "team:<repo>"` as
+  // server-info, auth, the active team and the team-repos query land in
+  // turn. Skipping only the FIRST run classified those as two switches, so
+  // every page load dropped the session twice and re-armed discovery
+  // mid-flight — up to two wasted round-trips, a blank-then-repopulate
+  // flash in an open dock, and a remembered runId written under a scope key
+  // nothing reads again. Cheap on one route; paid on every route now.
+  //
+  const prevBotIdRef = useRef(bot.id);
+  useEffect(() => {
+    if (prevBotIdRef.current === bot.id) return;
+    prevBotIdRef.current = bot.id;
+    // Retaining runId would route the new bot's composer into the previous
+    // bot's run and fold that transcript through the wrong manifest map.
+    setRunId(null);
+    setStatus("idle");
+    store.getState().reset();
+  }, [bot.id, store]);
+
+  // Only a settled scope key can be compared. `scopeKey` is not stable at
+  // mount: a cloud cold load walks `null -> "team:all" -> "team:<repo>"` as
+  // server-info, auth, active-team and team-repos queries land. Pin the last
+  // settled value so those loading transitions are not mistaken for project
+  // switches, while a later real scope change still starts clean discovery.
+  const prevScopeRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!scopeReady) return;
+    const prev = prevScopeRef.current;
+    prevScopeRef.current = scopeKey;
+    if (prev === undefined || prev === scopeKey) return;
+    setRunId(null);
+    setStatus("idle");
+    store.getState().reset();
+  }, [scopeReady, scopeKey, store]);
 
   // Startup auto-attach: live run first, remembered run second, idle
   // launcher last. Owns discoveryError + retry.
@@ -133,6 +214,8 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     activeRepo,
     onAttached: setRunId,
     setStatus,
+    discover: options?.discover ?? true,
+    attachRunId: options?.attachRunId ?? null,
   });
 
   // Reset to "idle" state when runId becomes null (Étape 5 lets the
@@ -211,12 +294,19 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     pendingHuman,
   });
 
+  // The operator's remembered model/backend/effort for this bot. Keyed by bot
+  // id, NOT by session: the whole point is that it outlives the session. The
+  // engine treats the key as opaque, so a second conversational bot needs no
+  // engine change.
+  const modelPref = useSessionModelPref(bot.id);
+
   const { launch, newSession, lastVarsRef } = useSessionLifecycle({
     bot,
     scopeKey,
     repoScopeEnabled,
     activeRepo,
     lifetimeAbortRef,
+    modelChoice: modelPref.current,
     setRunId,
     setStatus,
     setBusyMessageId,
@@ -242,6 +332,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     retryDiscovery,
     sessionRepo: snapshot?.run.project_path ?? null,
     launchRepo,
+    modelPref,
     launch,
     submitHumanAnswer,
     newSession,

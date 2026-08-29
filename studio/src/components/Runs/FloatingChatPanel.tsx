@@ -1,34 +1,42 @@
-// Deliberately NOT built on ui/Dialog (Radix): this is a NON-modal
-// floating panel — the operator keeps interacting with the run view
-// behind it (no scrim, no focus trap, page stays live). Radix Dialog is
-// modal by design, so the hand-rolled shell here is intentional.
-import { useEffect, useRef, useState } from "react";
-import {
-  ChatBubbleIcon,
-  MinusIcon,
-  PinRightIcon,
-} from "@radix-ui/react-icons";
+// The run console's STEERING panel: text typed here is queued into the
+// live agent's inbox and picked up at its next turn. Nothing replies —
+// that is the shell-level assistant dock's job (see components/ChatDock).
+// The two are named apart on purpose; see @/lib/chatDock/labels.
+//
+// Presentation (the non-modal closed/floating/docked-right shell) is
+// ChatDockShell's. This file is a caller of it: it owns the run-specific
+// pieces only — the transcript, the queue composer, the unread count and
+// the auto-expand-on-pause rule.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PaperPlaneIcon } from "@radix-ui/react-icons";
 
 import AgentChatboxInline from "@/components/shared/AgentChatboxInline";
-import { IconButton } from "@/components/ui";
+import { useAssistantFixedInsetPx } from "@/components/ChatDock/AssistantProvider";
+import {
+  ChatDockBubble,
+  ChatDockChrome,
+  ChatDockFloating,
+  ChatDockPanel,
+} from "@/components/ChatDock/ChatDockShell";
 import RunConversationView from "./conversation/RunConversationView";
+import {
+  openedDock,
+  STEERING_DOCK_BREAKPOINT_PX,
+  type DockState,
+} from "@/lib/chatDock/dockState";
+import {
+  STEERING_HINT,
+  STEERING_LANE,
+  STEERING_TITLE,
+} from "@/lib/chatDock/labels";
 import { useRunChatMessages } from "@/lib/runChat/useRunChatMessages";
 import { useRunStore } from "@/store/run";
 import type { RunStatus } from "@/api/runs";
 
-export type ChatDock = "closed" | "floating" | "docked-right";
-
-// Tailwind's lg breakpoint — below it the floating panel covers most of
-// the canvas and the bottom tab bar, so open-from-closed docks instead.
-const DOCK_BREAKPOINT_PX = 1024;
-
-// openedDock picks the presentation when the panel OPENS from closed.
-// Point-in-time check by design: an already-open panel must not re-dock
-// itself on window resize, and the user's explicit dock choice (persisted
-// by the caller) wins afterwards.
-function openedDock(): ChatDock {
-  return window.innerWidth <= DOCK_BREAKPOINT_PX ? "docked-right" : "floating";
-}
+// The dock vocabulary now lives in @/lib/chatDock/dockState — it is
+// shared with the shell-level assistant dock. Kept as an alias so the
+// run console's existing `ChatDock` imports keep resolving.
+export type ChatDock = DockState;
 
 interface Props {
   runId: string;
@@ -50,92 +58,79 @@ export default function FloatingChatPanel({
   const status = useRunStore((s) => s.snapshot?.run.status);
   useAutoExpandOnPause(status, dock, onDockChange);
 
+  // Same opened-by-operator tracking the assistant's shell does. The
+  // extracted ChatDockFloating defaults focusOnMount to false, and this
+  // call site not passing it silently cost keyboard users the
+  // focus-on-open the panel had before the extraction — they landed back
+  // on the page background and had to tab in. Passing it unconditionally
+  // is not the fix either: this dock's state is persisted too
+  // (CHAT_DOCK_KEY) and remounts on every navigation to /runs/:id, so it
+  // would steal focus on restore exactly like the assistant did.
+  const openedByOperator = useRef(false);
+  const changeDock = useCallback(
+    (next: ChatDock) => {
+      openedByOperator.current = true;
+      onDockChange(next);
+    },
+    [onDockChange],
+  );
+  // The assistant is on this route too, and when docked it owns a fixed
+  // column at the right edge. Lane 1 alone does not clear it — the
+  // steering bubble would sit under it and take no clicks.
+  // The steering panel is a PEER fixed surface, so it must clear the
+  // assistant's band in every state it occupies one — floating included.
+  // Using the layout reservation here left the bubble under a floating
+  // assistant, unclickable, in the default closed configuration.
+  const rightInset = useAssistantFixedInsetPx();
+
   if (dock === "docked-right") {
     // RunView mounts ChatPanelContent inline; nothing to render here.
     return null;
   }
   if (dock === "closed") {
     return (
-      <ClosedBubble
+      <SteeringBubble
         runId={runId}
         status={status}
-        onOpen={() => onDockChange(openedDock())}
+        rightInset={rightInset}
+        onOpen={() =>
+          changeDock(openedDock(undefined, STEERING_DOCK_BREAKPOINT_PX))
+        }
       />
     );
   }
   return (
-    <FloatingDialogShell
-      label="Conversation"
-      onClose={() => onDockChange("closed")}
+    <ChatDockFloating
+      label={STEERING_TITLE}
+      lane={STEERING_LANE}
+      rightInset={rightInset}
+      focusOnMount={openedByOperator.current}
+      onClose={() => changeDock("closed")}
     >
-      <ChatPanelChrome
-        onDockRight={() => onDockChange("docked-right")}
-        onClose={() => onDockChange("closed")}
+      <ChatDockChrome
+        title={STEERING_TITLE}
+        titleHint={STEERING_HINT}
+        onDockRight={() => changeDock("docked-right")}
+        onClose={() => changeDock("closed")}
       />
       <ChatPanelBody runId={runId} inputDisabled={inputDisabled} compact />
-    </FloatingDialogShell>
-  );
-}
-
-// Non-blocking floating dialog: labelled, keyboard-reachable, and
-// dismissable via Escape. Focus moves into the panel on mount so a
-// keyboard user can immediately Tab through the chrome + body without
-// reaching the page background first. Intentionally NOT a focus trap —
-// the page underneath remains interactive (this is a docked helper,
-// not a modal).
-function FloatingDialogShell({
-  label,
-  onClose,
-  children,
-}: {
-  label: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // Defer focus so any layout / autofocus inside children settles first.
-    const t = window.setTimeout(() => {
-      const root = ref.current;
-      if (!root) return;
-      if (root.contains(document.activeElement)) return;
-      const focusable = root.querySelector<HTMLElement>(
-        'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])',
-      );
-      (focusable ?? root).focus();
-    }, 0);
-    return () => window.clearTimeout(t);
-  }, []);
-  return (
-    <div
-      ref={ref}
-      tabIndex={-1}
-      className="fixed bottom-4 right-4 z-[var(--z-toast)] flex flex-col rounded-md border border-border-default bg-surface-1 shadow-[var(--shadow-popover)] resize overflow-hidden focus:outline-none"
-      style={{ width: 420, height: 520, minWidth: 320, minHeight: 280 }}
-      role="dialog"
-      aria-label={label}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          onClose();
-        }
-      }}
-    >
-      {children}
-    </div>
+    </ChatDockFloating>
   );
 }
 
 // Subscribes to the message stream only when actually rendered (i.e.
 // dock === "closed"), so the bubble doesn't pay the fold cost for
-// other dock states.
-function ClosedBubble({
+// other dock states. That subscription is why the bubble is a component
+// here rather than an `unread` prop computed by the caller.
+function SteeringBubble({
   runId,
   status,
+  rightInset,
   onOpen,
 }: {
   runId: string;
   status: RunStatus | undefined;
+  rightInset: number;
   onOpen: () => void;
 }) {
   const messages = useRunChatMessages(runId);
@@ -147,27 +142,17 @@ function ClosedBubble({
   const needsAttention =
     status === "paused_waiting_human" || status === "paused_operator";
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`fixed bottom-4 right-4 z-[var(--z-toast)] h-12 w-12 rounded-full border shadow-[var(--shadow-lg)] flex items-center justify-center transition-transform hover:scale-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${needsAttention ? "border-warning bg-warning-soft animate-pulse" : "border-border-default bg-surface-2 text-fg-default"}`}
-      aria-label={`Open conversation${unread > 0 ? ` (${unread} new)` : ""}`}
-      title={
-        needsAttention
-          ? "Run waiting for input — click to open conversation"
-          : "Open conversation"
-      }
-    >
-      <ChatBubbleIcon className="h-5 w-5" />
-      {unread > 0 && (
-        <span
-          className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-fg-onAccent text-caption font-semibold flex items-center justify-center"
-          aria-hidden
-        >
-          {unread > 99 ? "99+" : unread}
-        </span>
-      )}
-    </button>
+    <ChatDockBubble
+      label="Open run steering"
+      title="Steer this run — queue a message into its live agent"
+      attentionTitle="Run waiting for input — click to open steering"
+      icon={<PaperPlaneIcon className="h-5 w-5" />}
+      unread={unread}
+      attention={needsAttention}
+      lane={STEERING_LANE}
+      rightInset={rightInset}
+      onOpen={onOpen}
+    />
   );
 }
 
@@ -186,64 +171,14 @@ export function ChatPanelContent({
   onClose: () => void;
 }) {
   return (
-    <div className="h-full w-full flex flex-col bg-surface-1 border-l border-border-default">
-      <ChatPanelChrome onUndock={onUndock} onClose={onClose} />
+    <ChatDockPanel
+      title={STEERING_TITLE}
+      titleHint={STEERING_HINT}
+      onUndock={onUndock}
+      onClose={onClose}
+    >
       <ChatPanelBody runId={runId} inputDisabled={inputDisabled} compact={false} />
-    </div>
-  );
-}
-
-function ChatPanelChrome({
-  onDockRight,
-  onUndock,
-  onClose,
-}: {
-  onDockRight?: () => void;
-  onUndock?: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="shrink-0 flex items-center justify-between px-3 py-1 border-b border-border-default bg-surface-2">
-      <span className="text-micro font-medium text-fg-default uppercase tracking-wide">
-        Conversation
-      </span>
-      <div className="flex items-center gap-0.5">
-        {onDockRight && (
-          <IconButton
-            label="Dock conversation to right side"
-            tooltip="Dock to right"
-            size="sm"
-            variant="ghost"
-            onClick={onDockRight}
-          >
-            <PinRightIcon className="h-3.5 w-3.5" />
-          </IconButton>
-        )}
-        {onUndock && (
-          <IconButton
-            label="Undock to floating panel"
-            tooltip="Float (undock)"
-            size="sm"
-            variant="ghost"
-            onClick={onUndock}
-          >
-            <PinRightIcon
-              className="h-3.5 w-3.5"
-              style={{ transform: "scaleX(-1)" }}
-            />
-          </IconButton>
-        )}
-        <IconButton
-          label="Minimise conversation"
-          tooltip="Minimise"
-          size="sm"
-          variant="ghost"
-          onClick={onClose}
-        >
-          <MinusIcon className="h-3.5 w-3.5" />
-        </IconButton>
-      </div>
-    </div>
+    </ChatDockPanel>
   );
 }
 

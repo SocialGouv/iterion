@@ -32,6 +32,7 @@ Walk top-to-bottom; first match wins.
 | If the card sounds like… | → bot |
 |---|---|
 | "where should this project go next?", "long-term vision", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) on a mature/stable project | `evolve` |
+| "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot / workflow that does Y" — no existing fit, one must be authored | `feature-dev` (feature_prompt = the new `.bot` to create) |
 | "review the whole codebase", "audit production-readiness", "find bugs anywhere" | `whole-improve-loop` |
@@ -77,6 +78,11 @@ you cannot confirm from the card — is a no-fit: label
 - **`evolve` vs `whats-next`**: horizon ≥ a quarter on a mature repo →
   `evolve`. "What should we do this week / dispatch now" → that is the
   operator's conversation with `whats-next`, not a card you route.
+- **`copilot` vs `whats-next` vs `feature-dev`**: questions ABOUT
+  iterion (a diagnostic, a failed run, a draft `.bot` the operator
+  will validate) → `copilot`. What to work on this week → `whats-next`
+  (not a card). Build and land a missing bot → `feature-dev`. Copi is
+  read-only; it never edits or commits.
 
 <!-- ITERION:CATALOG:GENERATED:BEGIN -->
 <!-- ITERION:CATALOG:GENERATED:END -->

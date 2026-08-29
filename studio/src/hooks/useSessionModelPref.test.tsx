@@ -1,0 +1,133 @@
+// @vitest-environment jsdom
+
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { useSessionModelPref } from "./useSessionModelPref";
+
+const api = vi.hoisted(() => ({
+  fetchModelPref: vi.fn(),
+  saveModelPref: vi.fn(),
+  clearModelPref: vi.fn(),
+}));
+
+vi.mock("@/api/modelPrefs", () => api);
+
+describe("useSessionModelPref", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("drops the previous key's choice even when the new key cannot load", async () => {
+    let rejectCopilot!: (error: Error) => void;
+    api.fetchModelPref
+      .mockResolvedValueOnce({
+        key: "whats-next",
+        model: "openai/gpt-5.6-sol",
+        backend: "claw",
+        effort: "high",
+        set: true,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectCopilot = reject;
+          }),
+      );
+
+    const { result, rerender } = renderHook(
+      ({ prefKey }) => useSessionModelPref(prefKey),
+      { initialProps: { prefKey: "whats-next" as string | null } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.current()).toEqual({
+        model: "openai/gpt-5.6-sol",
+        backend: "claw",
+        effort: "high",
+      });
+    });
+
+    rerender({ prefKey: "copilot" });
+
+    expect(result.current.choice).toEqual({});
+    expect(result.current.current()).toEqual({});
+    expect(result.current.set).toBe(false);
+    expect(result.current.loading).toBe(true);
+
+    act(() => rejectCopilot(new Error("preferences unavailable")));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+      expect(result.current.available).toBe(false);
+    });
+    expect(result.current.current()).toEqual({});
+  });
+
+  it("does not let an older GET overwrite a choice saved while it loads", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    api.fetchModelPref.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    api.saveModelPref.mockResolvedValue({});
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await act(async () => {
+      await result.current.save({ model: "anthropic/claude-opus-5" });
+    });
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+
+    await act(async () => {
+      resolveFetch({
+        key: "copilot",
+        model: "openai/gpt-5.6-sol",
+        set: true,
+      });
+    });
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.choice).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+  });
+
+  it("does not let an older failed GET erase a choice saved while it loads", async () => {
+    let rejectFetch!: (error: Error) => void;
+    api.fetchModelPref.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectFetch = reject;
+        }),
+    );
+    api.saveModelPref.mockResolvedValue({});
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await act(async () => {
+      await result.current.save({ model: "anthropic/claude-opus-5" });
+    });
+    act(() => rejectFetch(new Error("stale load failed")));
+
+    expect(result.current.current()).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.choice).toEqual({
+      model: "anthropic/claude-opus-5",
+    });
+    expect(result.current.error).toBeNull();
+  });
+
+  it("treats an empty successful response as no recorded preference", async () => {
+    api.fetchModelPref.mockResolvedValueOnce(null);
+    const { result } = renderHook(() => useSessionModelPref("copilot"));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.available).toBe(true);
+    expect(result.current.set).toBe(false);
+    expect(result.current.choice).toEqual({});
+  });
+});

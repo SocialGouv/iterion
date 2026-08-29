@@ -13,7 +13,8 @@ load-bearing, not advisory.
 
 ## What dispatch actually is
 
-`set_bot` (if unset) then `transition_issue → ready`. A running
+request `board.issue.update` for an unset bot, then
+`board.issue.transition → ready`. A running
 dispatcher claims eligible cards within seconds (board-event nudge; the
 ~30s poll is the backstop). A clean run auto-transitions the card
 `in_progress → review`; a failed one retries per config, then parks.
@@ -91,8 +92,8 @@ to the bot.
 
 ## Observing the drain — watched cards
 
-The ids you report in `dispatched_ids` are stamped server-side onto
-your run's watched issues: every state change on those cards is
+Keep `dispatched_ids` empty. The Studio stamps an issue onto your run's
+watched issues after it executes an approved ready transition: every state change on those cards is
 injected into your session as an operator-style message at your next
 tool boundary ("Watched ticket X changed state: ready → in_progress").
 That is your telemetry. You can NOT read a child run's logs, events, or

@@ -38,6 +38,7 @@ type RunOptions struct {
 	Recipe        string               // recipe JSON file path (alternative to File)
 	Vars          map[string]string    // --var key=value overrides
 	Preset        string               // --preset <name>: applies an in-source named preset before --var
+	Skills        []string             // --skill <name> (repeatable): skill-library skills ADDED to whatever the workflow declares
 	RunID         string               // explicit run ID (auto-generated if empty)
 	Source        *store.RunSource     // originating-action provenance stamped on the run (schedule launches)
 	StoreDir      string               // explicit store override; empty uses store.ResolveStoreDir anchored at the workflow project
@@ -144,6 +145,10 @@ type RunOptions struct {
 	// judges — a weaker judge still emits a well-formed verdict, so a
 	// blanket launch setting must not reach one. See ADR-087.
 	Fallback string
+	// EffortFor is the same shape for reasoning_effort (repeatable
+	// --effort-for). Model, backend and effort are one decision, so the
+	// selector machinery is shared; an invalid level is a flag error.
+	EffortFor []string
 	// AutoResume is the bounded run-level auto-resume budget N
 	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
 	// run exits failed_resumable with a retryable cause, the CLI waits
@@ -196,6 +201,15 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	}
 	if err := supervise.ValidateSupervisorsMode(opts.Supervisors); err != nil {
 		return UserInputError(fmt.Errorf("--supervisors: %w", err))
+	}
+	// Validate launch overrides independently of executor construction. The
+	// normal CLI path parses them again while building the real executor, but
+	// an injected executor deliberately skips that build (tests and embedders).
+	// buildEngine still stamps the same flags on the run document, so accepting
+	// malformed values only on the injected path would make that seam lie about
+	// production behaviour and silently omit the invalid rows.
+	if _, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err != nil {
+		return err
 	}
 
 	if opts.BranchName != "" {
@@ -358,6 +372,17 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
+	// Fail here, not at run start: an operator-typed skill name that
+	// resolves to nothing must be an error they see immediately, next to
+	// the command that named it — the same treatment `--preset <unknown>`
+	// gets. The workflow's OWN refs stay soft (a bundle ships its skills;
+	// the library is a fallback), but nobody typed those.
+	if names, _ := ResolveExtraSkills(opts.Skills); len(names) > 0 {
+		if err := runtime.ResolveExtraSkills(storeDir, names); err != nil {
+			return err
+		}
+	}
+
 	// Resolve the credential-derived topology vars (review_mode +
 	// mono_family, plan_review, llm_families). No-op unless the workflow
 	// declares the matching var; then detect host provider credentials and
@@ -481,7 +506,7 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
-	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor)
 	if err != nil {
 		return nil, err
 	}
@@ -681,8 +706,25 @@ func buildEngine(
 	bundleHandle *bundle.Bundle,
 	base []runtime.EngineOption,
 ) *runtime.Engine {
+	// Stamp what the operator asked for onto the run document. Without
+	// this the CLI's own --model / --backend / --effort-for were applied to
+	// the executor and then FORGOTTEN: the studio Overview showed no
+	// override, and `iterion resume` had nothing to inherit, so a
+	// CLI-launched run silently reverted to the .bot's own values at the
+	// first resume — the exact failure the resume inheritance was added to
+	// close, still open on the one path that had no other surface.
+	//
+	// The flags were already parsed (and any error surfaced) when the
+	// executor was built, so a parse failure here cannot be new.
+	if ov, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor, opts.EffortFor); err == nil {
+		if rows := runModelOverrideRows(ov); len(rows) > 0 {
+			base = append(base, runtime.WithModelOverrides(rows))
+		}
+	}
+
 	sandboxDefault := runtime.ResolveGlobalSandboxDefault()
 	sandboxHostStateDefault := strings.ToLower(os.Getenv("ITERION_SANDBOX_HOST_STATE"))
+	extraSkills, extraSkillsOrigin := ResolveExtraSkills(opts.Skills)
 	return runtime.New(wf, s, executor,
 		append(base,
 			runtime.WithWorkflowHash(wfHash),
@@ -701,6 +743,7 @@ func buildEngine(
 			runtime.WithRepoDevbox(opts.RepoDevbox),
 			runtime.WithBundle(bundleHandle),
 			runtime.WithPreset(opts.Preset),
+			runtime.WithExtraSkills(extraSkills, extraSkillsOrigin),
 			runtime.WithSource(opts.Source),
 		)...,
 	)
@@ -871,4 +914,26 @@ func bundleManifestName(b *bundle.Bundle) string {
 		return ""
 	}
 	return b.Manifest.Name
+}
+
+// runModelOverrideRows converts parsed CLI override directives into the
+// persisted shape the run document carries — the same rows the studio
+// stamps, so `runview.ModelOverridesFromRun` folds a CLI-launched run and a
+// studio-launched one identically on resume.
+func runModelOverrideRows(ov model.ModelOverrides) []store.RunModelOverride {
+	rows := ov.Rows()
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.RunModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }

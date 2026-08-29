@@ -14,12 +14,29 @@ import {
 } from "@/api/runs";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
-import { runStore, type PendingHumanInput } from "@/store/run";
+import { useRunStoreInstance, type PendingHumanInput } from "@/store/run";
 
 import {
   messagesFromEventsCached,
   type MessagesFoldCache,
 } from "./messagesFromEvents";
+
+function pendingPrompt(questions: Record<string, unknown> | undefined): string {
+  if (!questions) return "Reply to continue.";
+  for (const key of ["ask_user_response", "acknowledge_recovery"]) {
+    const value = questions[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  // Delegate interaction envelopes may use a task-specific answer key (for
+  // example `active_editor_document`) rather than ask_user_response. The
+  // value is still the operator-facing question; underscore-prefixed fields
+  // are presentation/runtime plumbing and must not become the prompt.
+  for (const [key, value] of Object.entries(questions)) {
+    if (key.startsWith("_")) continue;
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "Reply to continue.";
+}
 
 export function useSessionMessages(opts: {
   bot: FirstClassBot;
@@ -30,6 +47,12 @@ export function useSessionMessages(opts: {
   pendingHuman: PendingHumanInput | null;
 }): WhatsNextMessage[] {
   const { bot, runId, runStatus, events, snapshot, pendingHuman } = opts;
+  // The store this session lives in — the assistant's isolated one when
+  // mounted under AssistantProvider, the module default otherwise.
+  // Imperative reads MUST go through it: reaching for the module-default
+  // `runStore` façade here would split the session's state (reads via
+  // the provider, writes to another store).
+  const store = useRunStoreInstance();
 
   // Derive the transcript with an incremental fold. The cached folder
   // resumes from the last processed seq instead of replaying the whole
@@ -50,8 +73,56 @@ export function useSessionMessages(opts: {
     // Return a fresh array reference so memo consumers see a new value
     // when new events land. (Mutating `out` in place wouldn't propagate
     // through React.)
-    return out.slice();
-  }, [bot, events, snapshot]);
+    const withSeed = out.slice();
+
+    // The operator's OPENING message is not an event — it rides in as a launch
+    // VAR (the bot's `chat.seed_var`), so a transcript folded from events
+    // alone starts at the assistant's reply and the question it answers is
+    // nowhere on screen. Read it back off the run's persisted inputs rather
+    // than from the launch call, so a reattached session (reload, another
+    // tab, days later) shows it too.
+    const seedVar = bot.seedVar;
+    const seedRaw = seedVar ? snapshot?.run?.inputs?.[seedVar] : undefined;
+    const seed = typeof seedRaw === "string" ? seedRaw.trim() : "";
+    if (seed) {
+      withSeed.unshift({
+        kind: "user-message",
+        id: "seed",
+        text: seed,
+        // `consumed`, not `delivered`: the run READ this one — it is the launch
+        // var the first node ran on. Claiming an in-flight state it never went
+        // through is what made the opening message render unlike the rest.
+        status: "consumed",
+      });
+    }
+
+    // A paused checkpoint is the durable source of truth. The event stream
+    // can have a gap after a reconnect/redeploy: previously we only scheduled
+    // a tail refetch, which cannot recover a missing event that sits BEFORE
+    // the local tail. In that state the transcript had no pending question,
+    // so the composer treated the operator's answer as an inbox message and
+    // buffered it forever behind the pause. Materialise the current blocking
+    // interaction from the checkpoint until its event is present.
+    if (pendingHuman?.node_id) {
+      const alreadyPending = withSeed.some(
+        (message) =>
+          message.kind === "human-question" && message.status === "pending",
+      );
+      if (!alreadyPending) {
+        withSeed.push({
+          kind: "human-question",
+          id:
+            pendingHuman.interaction_id ??
+            `${pendingHuman.node_id}:checkpoint:question`,
+          nodeId: pendingHuman.node_id,
+          prompt: pendingPrompt(pendingHuman.questions),
+          status: "pending",
+          questions: pendingHuman.questions,
+        });
+      }
+    }
+    return withSeed;
+  }, [bot, events, snapshot, pendingHuman]);
 
   // Track the latest pending human message id so submitHumanAnswer
   // can route to the right turn without the caller having to look it
@@ -110,13 +181,13 @@ export function useSessionMessages(opts: {
     );
     if (hasPendingQuestion) return;
     pauseRefetchedForRef.current = runId;
-    const stored = runStore.getState().events;
+    const stored = store.getState().events;
     const tail = stored[stored.length - 1];
     const fromSeq = tail ? tail.seq + 1 : 0;
     loadEvents(runId, fromSeq)
       .then((evts) => {
-        if (runStore.getState().runId !== runId) return;
-        if (evts.length > 0) runStore.getState().applyEventsBatch(evts);
+        if (store.getState().runId !== runId) return;
+        if (evts.length > 0) store.getState().applyEventsBatch(evts);
       })
       .catch((err) => {
         // One shot per pause by design (loop guard); on failure the

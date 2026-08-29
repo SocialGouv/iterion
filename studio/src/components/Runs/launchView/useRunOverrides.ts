@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { previewRunCost } from "@/api/runs";
 import type { MergeStrategy } from "@/api/runs";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
+import { useBackendDetectStore } from "@/store/backendDetect";
 
 import {
   emptyBudgetFieldValues,
@@ -22,7 +23,11 @@ const ENGINE_OPTIONS_OPEN_KEY = "iterion.launch.engine-options-open";
 
 export type UseRunOverridesResult = ReturnType<typeof useRunOverrides>;
 
-export function useRunOverrides(filePath: string, worktreeOn: boolean) {
+export function useRunOverrides(
+  filePath: string,
+  currentSource: string | null,
+  worktreeOn: boolean,
+) {
   // Worktree finalization overrides — only meaningful when the
   // workflow declares `worktree: auto`. We always render the controls
   // (collapsed) even for non-worktree runs so the UI is predictable;
@@ -76,18 +81,41 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
+  const backendReport = useBackendDetectStore((s) => s.report);
+  const backendNames = (backendReport?.backends ?? []).map((b) => b.name);
   // Server-resolved knob provenance below run-override (workflow/env/
   // default), captioning the Run-settings selects. Best-effort — any
   // failure just leaves the captions hidden.
   const effectiveQuery = useQuery({
-    queryKey: ["preview-effective-settings", filePath],
+    queryKey: [
+      "preview-effective-settings",
+      filePath,
+      filePath ? "" : currentSource,
+      permissionOverride,
+      backendOverride,
+      backendNames,
+    ],
     queryFn: async () =>
-      (await previewRunCost({ file_path: filePath })).effective ?? null,
-    enabled: !!filePath,
+      await previewRunCost({
+        file_path: filePath || undefined,
+        source: filePath ? undefined : currentSource || undefined,
+        permission: permissionOverride || undefined,
+        backend: backendOverride || undefined,
+        backend_names: backendNames,
+      }),
+    enabled: !!(filePath || currentSource),
   });
   const effectiveSettings = effectiveQuery.isError
     ? null
-    : effectiveQuery.data ?? null;
+    : effectiveQuery.data?.effective ?? null;
+  const nodeBackendOptions = effectiveQuery.isError
+    ? {}
+    : effectiveQuery.data?.backend_options ?? {};
+  // Fail closed in the picker while the server-side capability assessment is
+  // loading or unavailable. Runtime admission still repeats the check, but a
+  // transient preview failure must not briefly advertise an unsafe choice.
+  const nodeBackendOptionsReady = effectiveQuery.isSuccess;
+  const nodeBackendOptionsError = effectiveQuery.isError;
   // Mono/dual review-topology override ("" = auto: resolve from the
   // providers detected at launch). Only sent when explicitly mono/dual;
   // ignored by bots that don't declare a `review_mode` var.
@@ -146,6 +174,9 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
     permissionOverride,
     setPermissionOverride,
     effectiveSettings,
+    nodeBackendOptions,
+    nodeBackendOptionsReady,
+    nodeBackendOptionsError,
     reviewModeOverride,
     setReviewModeOverride,
     budgetFields,

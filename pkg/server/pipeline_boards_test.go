@@ -1721,3 +1721,54 @@ func TestPipelineBoardParkedForkWithoutParentRecord(t *testing.T) {
 		t.Error("a parked fork shell must not become the card root even when the parent's record is gone")
 	}
 }
+
+// A CHAT SESSION — a run of a bot whose manifest declares a chat: surface
+// (the assistant dock's Copi / Nexie) — is not a pipeline: the dock is its
+// surface and it parks on a human turn for days. It never becomes a card,
+// whether resolved by bot id or (legacy run, no bot id) by the manifest
+// beside its workflow file; its own children stay folded under it; every
+// ordinary run keeps its card. The rule is the manifest block, never a bot
+// id — the engine stays bot-agnostic.
+func TestPipelineBoardHidesChatSessions(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	bundleDir := filepath.Join(env.workDir, "bots", "chatty")
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chatBotPath := filepath.Join(bundleDir, "main.bot")
+	if err := os.WriteFile(chatBotPath, []byte(pipelineBoardTestBot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name: chatty\ndisplay_name: Chatty\nchat:\n  nodes:\n    approval: {kind: human, text_field: feedback}\n"
+	if err := os.WriteFile(filepath.Join(bundleDir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env.seedRun(t, "chat-open", "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
+		run.FilePath = chatBotPath
+		run.BotID = "chatty"
+	})
+	env.seedRun(t, "chat-legacy", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = chatBotPath // no BotID: resolved from the manifest beside the file
+	})
+	env.seedRun(t, "chat-child", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.ParentRunID = "chat-open"
+	})
+	env.seedRun(t, "run-manual", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+	})
+
+	projection := env.projection(t)
+	for _, hidden := range []string{"run:chat-open", "run:chat-legacy", "run:chat-child"} {
+		if hasPipelineCard(projection.Cards, hidden) {
+			t.Errorf("chat session %s was projected as a pipeline card", hidden)
+		}
+	}
+	if findPipelineCard(t, projection.Cards, "run:run-manual").ColumnID != pipelineColumnInProgress {
+		t.Error("ordinary running run should keep its In-progress card")
+	}
+	if len(projection.Cards) != 1 {
+		t.Errorf("cards = %d, want exactly the ordinary run: %+v", len(projection.Cards), projection.Cards)
+	}
+}

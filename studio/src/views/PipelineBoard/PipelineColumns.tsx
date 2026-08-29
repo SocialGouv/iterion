@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { addReferenceToDrag } from "@/lib/chatDock/dragReference";
 import { Link, useLocation } from "wouter";
 
 import type {
@@ -846,10 +847,20 @@ export function PipelineCard({
             onDragStart: (e: React.DragEvent) => {
               e.dataTransfer.setData(LAUNCH_DRAG_TYPE, card.issue_id as string);
               e.dataTransfer.effectAllowed = "move";
+              // …and onto the assistant. Only the cards that ALREADY drag
+              // carry a reference: this board's rule is that card position is
+              // server-derived and launch-now is its only drag gesture
+              // (PipelineColumns.test.tsx pins the count), so making every
+              // card draggable to serve the assistant would quietly overturn
+              // it. A running or failed card is still reachable from the dock
+              // through the route's own context chip, which is what the
+              // implicit half of the protocol is for.
+              addPipelineCardReference(e.dataTransfer, card);
               launchDrag.onDragStateChange?.(true);
             },
             onDragEnd: () => launchDrag.onDragStateChange?.(false),
-            title: "Drag onto In progress to start now (skips the queue)",
+            title:
+              "Drag onto In progress to start now (skips the queue), or onto the assistant to ask about it",
           }
         : {})}
       role="article"
@@ -1348,4 +1359,20 @@ function NeedsAttentionStatus({ card }: { card: PipelineBoardCardDTO }) {
       )}
     </div>
   );
+}
+
+// A pipeline card points at a RUN once it has one, and at its board card
+// before that. Preferring the run is what makes "why is this red?" resolvable:
+// the run carries the events, the card only carries the intent.
+function addPipelineCardReference(
+  dt: DataTransfer,
+  card: { run_id?: string | null; issue_id?: string | null; title: string },
+): void {
+  if (card.run_id) {
+    addReferenceToDrag(dt, "run", card.run_id, card.title);
+    return;
+  }
+  if (card.issue_id) {
+    addReferenceToDrag(dt, "card", card.issue_id, card.title);
+  }
 }

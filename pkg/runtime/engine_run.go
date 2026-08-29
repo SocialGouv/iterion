@@ -266,7 +266,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || len(e.extraSkills) > 0 || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -292,11 +292,23 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if e.preset != "" {
 			run.Preset = e.preset
 		}
-		// Persist the workflow-declared tool-permission mode so the studio
-		// RunHeader can badge a gated run (off|ask|deny). This is the bot's
-		// declared posture; a run-level --permission override refines it per
-		// node but isn't reflected here.
-		run.PermissionMode = e.workflow.Permission
+		// Persisted so every resume re-applies it. This matters more than
+		// Preset does: a conversational bot resumes on EVERY turn, so a
+		// launch-only list would quietly disappear after the first reply.
+		if len(e.extraSkills) > 0 {
+			run.ExtraSkills = e.extraSkills
+		}
+		// Keep the operator's strongest-precedence gate choice durable. On a
+		// cloud attempt the publisher has already stamped it; on a local launch
+		// the engine option does. A resume with no new option must preserve it.
+		if e.permissionOverride != "" {
+			run.PermissionOverride = e.permissionOverride
+		}
+		if run.PermissionOverride != "" {
+			run.PermissionMode = run.PermissionOverride
+		} else {
+			run.PermissionMode = e.workflow.Permission
+		}
 		// Guard on len>0 so a resume (which never re-supplies overrides)
 		// preserves the value persisted at the original launch instead of
 		// clobbering it with nil.
@@ -477,6 +489,18 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// once, after the last of them has run.
 	e.applyMirroredSkills(append(ownedSkills, e.applyLibrarySkills()...))
 	e.applyPresetFocus()
+	// Say, on the run's own record, that this run carried skills its .bot
+	// does not mention. Without it the addition is invisible state changing
+	// how the bot answers, and a bug report against the run is
+	// irreproducible. Best-effort: losing the note must not lose the run.
+	if len(e.extraSkills) > 0 {
+		if err := e.emit(ctx, runID, store.EventSkillsInjected, "", map[string]any{
+			"skills": append([]string(nil), e.extraSkills...),
+			"origin": e.extraSkillsOrigin,
+		}); err != nil && e.logger != nil {
+			e.logger.Warn("runtime: skills_injected event: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -491,7 +515,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // is there — but a shadowed entry is NOT owned: that content is the target
 // repository's, and a backend passing skills explicitly must not hand it over.
 func (e *Engine) applyLibrarySkills() []string {
-	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
+	hints, owned, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.extraSkills, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)

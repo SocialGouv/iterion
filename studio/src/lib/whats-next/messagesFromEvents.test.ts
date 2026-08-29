@@ -185,7 +185,7 @@ describe("messagesFromEvents (whats-next v2)", () => {
     expect(out).toHaveLength(1);
   });
 
-  it("ignores events for nodes not in the nodeMap", () => {
+  it("renders an unmapped node as ordinary progress instead of hiding it", () => {
     nextSeq = 1;
     const out = messagesFromEvents({
       bot: whatsNext,
@@ -195,6 +195,12 @@ describe("messagesFromEvents (whats-next v2)", () => {
       ],
       snapshot: null,
     });
-    expect(out).toEqual([]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      kind: "banner",
+      nodeId: "some_other_node",
+      label: "some_other_node",
+      status: "done",
+    });
   });
 });

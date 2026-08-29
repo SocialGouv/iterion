@@ -181,8 +181,13 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// bump with a dual-accept window (MinSchemaVersion=8): the change is
 	// purely additive, so consumers take both and a rolling deploy has no
 	// rollout-ordering hazard.
-	if SchemaVersion != 9 {
-		t.Errorf("SchemaVersion = %d, want 9 (bump intentionally)", SchemaVersion)
+	// v=10 (2026-08-27) added ModelOverride.Effort so a stale runner
+	// rejects the message rather than silently dropping the operator's
+	// reasoning_effort pin.
+	// v=11 (2026-08-28) added the run-level Permission override so a stale
+	// runner cannot silently execute an operator-requested deny as off.
+	if SchemaVersion != 11 {
+		t.Errorf("SchemaVersion = %d, want 11 (bump intentionally)", SchemaVersion)
 	}
 	if MinSchemaVersion != 8 {
 		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
@@ -256,6 +261,55 @@ func TestRunMessage_LoopBudgetGuardSurvivesTheWire(t *testing.T) {
 	}
 }
 
+// TestModelOverridesSurviveTheWire pins the field that carries an operator's
+// model choice to the runner. A silent drop here is invisible — the run record
+// still shows the chosen model while the pod executes the DSL default — so the
+// round-trip is asserted rather than assumed.
+func TestModelOverridesSurviveTheWire(t *testing.T) {
+	in := &RunMessage{
+		V:            SchemaVersion,
+		RunID:        "r1",
+		WorkflowName: "wf",
+		IRCompiled:   json.RawMessage(`{}`),
+		ModelOverrides: []ModelOverride{
+			{Selector: "reviewer_*", Model: "anthropic/claude-opus-5", Effort: "xhigh"},
+			{Selector: "agent", Backend: "claw", Provider: "anthropic"},
+		},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out RunMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := out.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.ModelOverrides) != 2 {
+		t.Fatalf("ModelOverrides len = %d, want 2 (dropped on the wire)", len(out.ModelOverrides))
+	}
+	if got := out.ModelOverrides[0]; got.Selector != "reviewer_*" || got.Model != "anthropic/claude-opus-5" || got.Effort != "xhigh" {
+		t.Errorf("first override round-tripped as %+v", got)
+	}
+	if got := out.ModelOverrides[1]; got.Backend != "claw" || got.Provider != "anthropic" {
+		t.Errorf("second override round-tripped as %+v", got)
+	}
+}
+
+// TestModelOverridesOmittedWhenEmpty keeps the common launch (no overrides)
+// off the wire entirely rather than publishing an empty array.
+func TestModelOverridesOmittedWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(&RunMessage{V: SchemaVersion, RunID: "r1", WorkflowName: "wf"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte("model_overrides")) {
+		t.Errorf("empty overrides should be omitted, got %s", raw)
+	}
+}
+
 // TestRunMessage_SupervisorsSurvivesTheWire is the same composition for
 // the supervisors kill switch: a pod re-deciding it from its own env
 // would spawn LLM watchers the operator explicitly declined.
@@ -288,6 +342,29 @@ func TestRunMessage_SupervisorsSurvivesTheWire(t *testing.T) {
 		}
 		if err := out.Validate(); err != nil {
 			t.Errorf("validate: %v", err)
+		}
+	}
+}
+
+func TestRunMessage_PermissionSurvivesTheWire(t *testing.T) {
+	for _, want := range []string{"off", "ask", "deny", ""} {
+		in := RunMessage{
+			V: SchemaVersion, RunID: "r1", WorkflowName: "w",
+			IRCompiled: json.RawMessage(`{}`), Permission: want,
+		}
+		blob, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == "" && bytes.Contains(blob, []byte(`"permission"`)) {
+			t.Errorf("unset permission was serialised: %s", blob)
+		}
+		var out RunMessage
+		if err := json.Unmarshal(blob, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Permission != want {
+			t.Errorf("Permission = %q after round trip, want %q", out.Permission, want)
 		}
 	}
 }

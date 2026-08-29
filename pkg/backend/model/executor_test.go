@@ -2172,3 +2172,45 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 		}
 	})
 }
+
+// The launch-time effort override sits at the TOP of the chain, above both
+// the node's static reasoning_effort: and a dynamic _reasoning_effort edge
+// mapping — the same precedence the model and backend overrides already have,
+// because the operator is re-targeting the run without editing the .bot.
+func TestEffortForNode_OverrideOutranksStaticAndDynamic(t *testing.T) {
+	var ov ModelOverrides
+	ov.SetEffort("*", "max")
+	e := &ClawExecutor{modelOverrides: ov}
+
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{ReasoningEffort: "low"},
+	}
+	if got := e.effortForNode(node, node.ReasoningEffort, nil); got != "max" {
+		t.Errorf("override over static: got %q, want max", got)
+	}
+	dynamic := map[string]any{"_reasoning_effort": "medium"}
+	if got := e.effortForNode(node, node.ReasoningEffort, dynamic); got != "max" {
+		t.Errorf("override over dynamic edge mapping: got %q, want max", got)
+	}
+}
+
+// A selector that does not match must leave the node's own resolution intact,
+// dynamic edge mapping included.
+func TestEffortForNode_UnmatchedSelectorChangesNothing(t *testing.T) {
+	var ov ModelOverrides
+	ov.SetEffort("reviewer_*", "max")
+	e := &ClawExecutor{modelOverrides: ov}
+
+	node := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "implement"},
+		LLMFields: ir.LLMFields{ReasoningEffort: "low"},
+	}
+	if got := e.effortForNode(node, node.ReasoningEffort, nil); got != "low" {
+		t.Errorf("got %q, want the node's own low", got)
+	}
+	dynamic := map[string]any{"_reasoning_effort": "high"}
+	if got := e.effortForNode(node, node.ReasoningEffort, dynamic); got != "high" {
+		t.Errorf("got %q, want the dynamic high", got)
+	}
+}

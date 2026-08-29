@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/modelcatalog"
 )
 
 // ModelsOptions configures the `iterion models` command.
@@ -17,75 +17,36 @@ type ModelsOptions struct {
 	Refresh bool
 }
 
-// modelRow is one resolved model in the output (human + JSON share this shape).
-type modelRow struct {
-	Spec          string `json:"spec"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Source        string `json:"source"`
-	ContextWindow int    `json:"context_window"`
-	Reasoning     bool   `json:"reasoning"`
-	ToolCall      bool   `json:"tool_call"`
-	Temperature   bool   `json:"temperature"`
-}
-
-// modelsResult is the top-level JSON envelope.
-type modelsResult struct {
-	Refreshed    bool       `json:"refreshed"`
-	RefreshError string     `json:"refresh_error,omitempty"`
-	Models       []modelRow `json:"models"`
-}
-
-// RunModels resolves and prints ModelCapabilities for one model (--spec/arg) or
-// a representative known set, reporting the resolution source
-// (aggregator|curated) and the context window. With opts.Refresh it first
-// force-refetches the model-spec cache via the shared resolver; a failed
-// refresh is reported but non-fatal so the command still works offline.
+// RunModels resolves and prints the model catalog: for one model (--spec/arg)
+// or a representative known set, it reports the capabilities the runtime would
+// resolve, where each value came from (aggregator|curated), and whether this
+// host can actually reach the model with the credentials it holds.
+//
+// It shares pkg/modelcatalog with GET /api/models on purpose — the CLI and the
+// studio picker answering "which models can I use here" differently is a bug
+// class, not a feature.
 func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
-	result := modelsResult{}
-
-	if opts.Refresh {
-		result.Refreshed = true
-		if err := model.RefreshModelSpecs(ctx); err != nil {
-			result.RefreshError = err.Error()
-		}
-	}
-
-	var specsList []string
+	var specs []string
 	if s := strings.TrimSpace(opts.Spec); s != "" {
-		if _, _, err := model.ParseModelSpec(s); err != nil {
-			return UserInputError(err)
-		}
-		specsList = []string{s}
-	} else {
-		specsList = model.KnownModelSpecs()
+		specs = []string{s}
 	}
 
-	for _, spec := range specsList {
-		rc, err := model.ResolveSpec(spec)
-		if err != nil {
-			return UserInputError(err)
-		}
-		result.Models = append(result.Models, modelRow{
-			Spec:          rc.Spec,
-			Provider:      rc.Provider,
-			Model:         rc.Model,
-			Source:        string(rc.Source),
-			ContextWindow: rc.ContextWindow,
-			Reasoning:     rc.Reasoning,
-			ToolCall:      rc.ToolCall,
-			Temperature:   rc.Temperature,
-		})
+	cat, err := modelcatalog.Build(ctx, modelcatalog.Options{
+		Specs:   specs,
+		Refresh: opts.Refresh,
+	})
+	if err != nil {
+		return UserInputError(err)
 	}
 
 	if p.Format == OutputJSON {
-		p.JSON(result)
+		p.JSON(cat)
 		return nil
 	}
 
-	if result.Refreshed {
-		if result.RefreshError != "" {
-			p.Line("! model-spec refresh failed: %s (showing cached/curated values)", result.RefreshError)
+	if cat.Refreshed {
+		if cat.RefreshError != "" {
+			p.Line("! model-spec refresh failed: %s (showing cached/curated values)", cat.RefreshError)
 		} else {
 			p.Line("✓ model-spec cache refreshed")
 		}
@@ -93,9 +54,9 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 	}
 
 	p.Header("Model capabilities")
-	headers := []string{"MODEL", "SOURCE", "CONTEXT", "REASON", "TOOLS", "TEMP"}
-	rows := make([][]string, 0, len(result.Models))
-	for _, m := range result.Models {
+	headers := []string{"MODEL", "SOURCE", "CONTEXT", "REASON", "TOOLS", "TEMP", "PRICE IN/OUT", "USABLE"}
+	rows := make([][]string, 0, len(cat.Models))
+	for _, m := range cat.Models {
 		rows = append(rows, []string{
 			m.Spec,
 			m.Source,
@@ -103,10 +64,59 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 			yesNo(m.Reasoning),
 			yesNo(m.ToolCall),
 			yesNo(m.Temperature),
+			formatPrice(m),
+			formatUsable(m),
 		})
 	}
 	p.Table(headers, rows)
+
+	// The reasons matter more than the column: "no" without "why" sends the
+	// operator hunting through env vars.
+	var unusable []modelcatalog.Entry
+	for _, m := range cat.Models {
+		if !m.Usable {
+			unusable = append(unusable, m)
+		}
+	}
+	if len(unusable) > 0 {
+		p.Blank()
+		p.Line("Not reachable from this host:")
+		for _, m := range unusable {
+			p.Line("  %s — %s", m.Spec, m.UnusableReason)
+		}
+	}
+	if cat.RecommendedSpec != "" {
+		p.Blank()
+		p.Line("Recommended on this host: %s", cat.RecommendedSpec)
+	}
 	return nil
+}
+
+// formatUsable renders reachability compactly: the backends that can drive the
+// model, or "no" when none can.
+func formatUsable(m modelcatalog.Entry) string {
+	if m.Reachability == modelcatalog.ReachabilityUnknown {
+		return "unknown"
+	}
+	if !m.Usable {
+		return "no"
+	}
+	return strings.Join(m.Backends, ",")
+}
+
+// formatPrice renders the per-million-token rates, and "—" when unknown. A zero
+// rate is NOT free — it means no source published one.
+func formatPrice(m modelcatalog.Entry) string {
+	if !m.PriceKnown {
+		return "—"
+	}
+	return fmt.Sprintf("$%s/$%s", trimPrice(m.InputCostPerM), trimPrice(m.OutputCostPerM))
+}
+
+func trimPrice(v float64) string {
+	s := fmt.Sprintf("%.2f", v)
+	s = strings.TrimRight(s, "0")
+	return strings.TrimSuffix(s, ".")
 }
 
 // formatContextWindow renders a token count compactly (1M, 200K, 4096) and

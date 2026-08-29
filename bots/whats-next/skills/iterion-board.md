@@ -11,6 +11,14 @@ description: |
 
 # Writing to the iterion board
 
+> **Nexie boundary.** The `whats-next` conversational node is deliberately
+> granted only `board.read`. Use `list_issues`, `get_issue` and `list_labels`
+> directly, but express every write through the `assistant_actions` contract
+> in its system prompt. The Studio validates those arguments and enforces the
+> operator's per-action policy. The mutating MCP tools below document ordinary
+> workflow nodes that hold the corresponding capability; they are not an
+> escape hatch for Nexie.
+
 Iterion runtime registers an internal MCP server (`__mcp-board`) for any
 agent/judge node whose `capabilities:` list contains a `board.*` entry.
 The server exposes these tools, each gated by a single capability:

@@ -110,6 +110,8 @@ type Engine struct {
 	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	parentNodeID             string                   // IR node id of the parent's subbot node that spawned this run, set via WithParentNodeID
 	preset                   string                   // in-source preset name selected at launch, set via WithPreset
+	extraSkills              []string                 // operator-added skill-library skills (--skill / ITERION_SKILLS), unioned with the workflow's own; set via WithExtraSkills
+	extraSkillsOrigin        string                   // "flag" | "env" — where extraSkills came from, reported on the skills_injected event
 	runName                  string                   // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
 	mergeInto                string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
@@ -117,6 +119,7 @@ type Engine struct {
 	mergeStrategy            string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
 	autoMerge                bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
 	modelOverrides           []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	permissionOverride       string                   // launch-time tool-permission gate override, persisted so every resume keeps the operator's choice; set via WithPermissionOverride
 	validateOutputs          bool                     // when true, validate node outputs against declared schemas
 	forceResume              bool                     // when true, skip workflow hash check on resume
 	workDir                  string                   // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time

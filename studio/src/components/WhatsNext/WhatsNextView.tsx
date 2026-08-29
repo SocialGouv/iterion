@@ -1,19 +1,18 @@
-import { useCallback } from "react";
-
 import {
-  DEFAULT_WHATS_NEXT_BOT_ID,
-  getFirstClassBot,
-} from "@/lib/whats-next/firstClassBots";
-import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
+  AssistantStoreScope,
+  useAssistantSession,
+} from "@/components/ChatDock/AssistantProvider";
+import AssistantActionOffer from "@/components/ChatDock/AssistantActionOffer";
+import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import {
-  askUserAllowsFreeText,
-  askUserOptions,
-  ASK_USER_RESPONSE_KEY,
-} from "@/lib/askUserOptions";
+  assistantHumanAnswer,
+  useAssistantComposer,
+} from "@/lib/whats-next/useAssistantComposer";
+import type { UseWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
-import { queueMessage } from "@/api/queueMessages";
 import AgentChatbox from "@/components/shared/AgentChatbox";
 import { Button } from "@/components/ui/Button";
+import AssistantApprovalComposer from "./AssistantApprovalComposer";
 import ChatTranscript from "./ChatTranscript";
 import PreFlightPanel from "./PreFlightPanel";
 import SessionLauncher from "./SessionLauncher";
@@ -22,8 +21,13 @@ import ResumeFooter from "./whatsNextView/ResumeFooter";
 import SessionHeader from "./whatsNextView/SessionHeader";
 import { composerPlaceholder } from "./whatsNextView/composerPlaceholder";
 
-// WhatsNextView is the /whats-next route — Nexie's chat. It owns one
-// whats-next session at a time via the useWhatsNextSession hook.
+// WhatsNextView is the /whats-next route — Nexie's chat, full width.
+//
+// It no longer OWNS the session: the session is mounted once above the
+// route tree by AssistantProvider, so the same conversation is reachable
+// from the shell-level dock on every other route and navigating here
+// (or away) neither restarts it nor loses the transcript. This route is
+// now one of two views onto that session, and the roomier one.
 //
 // v2: ONE always-on composer is the single input surface. Depending on
 // the session state, a submitted message:
@@ -35,117 +39,61 @@ import { composerPlaceholder } from "./whatsNextView/composerPlaceholder";
 // chat pause, the structured options on an ask_user pause.
 
 export default function WhatsNextView() {
-  const bot = getFirstClassBot(DEFAULT_WHATS_NEXT_BOT_ID);
-  // Hooks must be called unconditionally — pass a dummy bot if the
-  // lookup miss happens (in practice it can't since DEFAULT_WHATS_NEXT_BOT_ID
-  // is a const key, but the early-return branch needs valid hook order).
-  const session = useWhatsNextSession(
-    bot ?? {
-      id: "",
-      label: "",
-      description: "",
-      workflowPath: "",
-      launcherVars: [],
-      nodeMap: {},
-    },
-  );
-
-  const pendingHumanQuestion = session.messages.find(
-    (m): m is Extract<typeof m, { kind: "human-question" }> =>
-      m.kind === "human-question" && m.status === "pending",
-  );
-
-  // A pending ask_user pause (mid-turn agent question) answers with a
-  // single string under ask_user_response; the chat node's pause
-  // answers with {message}. Both flow through the same composer.
-  const pendingIsAskUser =
-    !!pendingHumanQuestion?.questions &&
-    ASK_USER_RESPONSE_KEY in pendingHumanQuestion.questions;
-  const pendingAnswerKey = pendingIsAskUser
-    ? ASK_USER_RESPONSE_KEY
-    : bot?.nodeMap[pendingHumanQuestion?.nodeId ?? ""]?.textField ?? "message";
-
-  // Clickable chips: ask_user structured options win; otherwise the
-  // chat turn's quick_replies (Nexie's suggested next messages).
-  const options = pendingIsAskUser
-    ? askUserOptions(pendingHumanQuestion?.questions)
-    : [];
-  const allowFreeText = pendingIsAskUser
-    ? askUserAllowsFreeText(pendingHumanQuestion?.questions)
-    : true;
-  const quickReplies: string[] = !pendingIsAskUser
-    ? readQuickReplies(pendingHumanQuestion?.questions)
-    : [];
-
-  // Awaited (not fire-and-forget) so the composer's draft survives a
-  // failed submit: AgentChatboxInline only clears the text when onSend
-  // resolves, and submitHumanAnswer rethrows on failure.
-  const submitPending = useCallback(
-    async (value: string) => {
-      if (!pendingHumanQuestion) return;
-      await session.submitHumanAnswer(pendingHumanQuestion.id, {
-        [pendingAnswerKey]: value,
-      });
-    },
-    [pendingHumanQuestion, pendingAnswerKey, session],
-  );
-
-  // The unified composer routing (see the file comment).
-  const onComposerSend = useCallback(
-    async (text: string, opts: { skills: string[] }) => {
-      const trimmed = text.trim();
-      if (trimmed === "") return;
-      if (pendingHumanQuestion) {
-        await submitPending(trimmed);
-        return;
-      }
-      const status = session.runStatus;
-      const closed =
-        !session.runId ||
-        status === "finished" ||
-        status === "failed" ||
-        status === "cancelled";
-      if (closed) {
-        const seedVar = bot?.seedVar ?? "initial_message";
-        await session.launch({
-          ...(session.lastVars ?? {}),
-          [seedVar]: trimmed,
-        });
-        return;
-      }
-      // Not closed ⇒ runId is truthy (it's part of the `closed`
-      // disjunction above), so the run is live: inject into its inbox.
-      await queueMessage(session.runId!, trimmed, { skills: opts.skills });
-    },
-    [pendingHumanQuestion, submitPending, session, bot?.seedVar],
-  );
-
-  if (!bot) {
+  const assistant = useAssistantSession();
+  if (!assistant?.bot) {
     return (
       <div className="h-full grid place-items-center text-fg-muted">
         No first-class bot registered.
       </div>
     );
   }
+  // The transcript + composer read the run store; re-enter the
+  // assistant's isolated one (AssistantProvider hands the default store
+  // to the route tree).
+  return (
+    <AssistantStoreScope>
+      <WhatsNextConversation bot={assistant.bot} session={assistant.session} />
+    </AssistantStoreScope>
+  );
+}
+
+function WhatsNextConversation({
+  bot,
+  session,
+}: {
+  bot: FirstClassBot;
+  session: UseWhatsNextSession;
+}) {
+  // The composer routing is shared with the shell-level dock — see
+  // useAssistantComposer for the four destinations a message can take.
+  const {
+    pendingHumanQuestion,
+    pendingIsAskUser,
+    pendingApproval,
+    options,
+    quickReplies,
+    allowFreeText,
+    busyPending,
+    launchPending,
+    submitPending,
+    submitApproval,
+    onComposerSend,
+  } = useAssistantComposer({ bot, session });
 
   const inSession = session.status !== "idle";
-  const busyPending =
-    !!pendingHumanQuestion &&
-    session.busyMessageId === pendingHumanQuestion.id;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
         {!inSession ? (
           <SessionLauncher
             bot={bot}
-            onLaunch={({ vars }) => {
-              void session.launch(vars);
-            }}
+            onLaunch={({ vars }) => session.launch(vars)}
             busy={session.status === "launching"}
             errorMessage={session.errorMessage}
             discoveryError={session.discoveryError}
             onRetryDiscovery={session.retryDiscovery}
             launchRepo={session.launchRepo}
+            modelPref={session.modelPref}
           />
         ) : (
           <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto overflow-hidden">
@@ -168,16 +116,26 @@ export default function WhatsNextView() {
                 // onHumanSubmit fallback only fires for a pending card
                 // the composer somehow doesn't own (defensive).
                 composerHandlesId={pendingHumanQuestion?.id}
+                // Same rule as the dock (see ChatDock's `turnParked`): an
+                // offer belongs to a reply, so it renders only once the turn
+                // is parked on its chat pause — never during the agent's
+                // turn, whose artifact already carries next turn's requests.
+                bubbleSlot={
+                  pendingHumanQuestion && !pendingIsAskUser ? (
+                    <AssistantActionOffer
+                      runId={session.runId}
+                      revision={session.messages.length}
+                    />
+                  ) : null
+                }
                 onHumanSubmit={(messageId, outcome) => {
                   const m = session.messages.find((x) => x.id === messageId);
                   if (!m || m.kind !== "human-question") return;
-                  const isAsk =
-                    !!m.questions && ASK_USER_RESPONSE_KEY in m.questions;
-                  const key = isAsk
-                    ? ASK_USER_RESPONSE_KEY
-                    : bot.nodeMap[m.nodeId]?.textField ?? "message";
                   void session
-                    .submitHumanAnswer(messageId, { [key]: outcome.text })
+                    .submitHumanAnswer(
+                      messageId,
+                      assistantHumanAnswer(bot, m, outcome),
+                    )
                     .catch(() => {});
                 }}
               />
@@ -219,29 +177,49 @@ export default function WhatsNextView() {
                       ))}
                       {quickReplies.map((q) => (
                         <Button
-                          key={q}
+                          key={`${q.label}:${q.message}`}
                           variant="secondary"
                           size="sm"
                           disabled={busyPending}
-                          onClick={() => void submitPending(q).catch(() => {})}
+                          onClick={() =>
+                            void onComposerSend(q.message, { skills: [] }).catch(
+                              () => {},
+                            )
+                          }
                         >
-                          {q}
+                          {q.label}
                         </Button>
                       ))}
                     </div>
                   )}
-                  {/* ask_user with options may disallow free text — the
-                      chips above are then the only input. */}
-                  {(!pendingIsAskUser || allowFreeText || options.length === 0) && (
+                  {pendingApproval ? (
+                    <AssistantApprovalComposer
+                      hasTextField={!!pendingApproval.textField}
+                      busy={busyPending}
+                      onSubmit={submitApproval}
+                    />
+                  ) : (
+                    /* ask_user with options may disallow free text — the
+                       chips above are then the only input. */
+                    (!pendingIsAskUser || allowFreeText || options.length === 0) && (
                     <AgentChatbox
                       runId={session.runId}
                       embedded
-                      placeholder={composerPlaceholder(
-                        session.runStatus,
-                        !!pendingHumanQuestion,
-                      )}
+                      // Same rule as the dock: a send while a session is
+                      // still starting would seed a second one beside it.
+                      disabled={launchPending}
+                      placeholder={
+                        launchPending
+                          ? "Starting a session…"
+                          : composerPlaceholder(
+                              session.runStatus,
+                              !!pendingHumanQuestion,
+                              bot.label,
+                            )
+                      }
                       onSend={onComposerSend}
                     />
+                    )
                   )}
                 </div>
               )
@@ -250,27 +228,4 @@ export default function WhatsNextView() {
         )}
     </div>
   );
-}
-
-// readQuickReplies lifts Nexie's suggested next messages off the chat
-// pause's questions payload (`quick_replies: json` on the turn output,
-// mapped into the chat node's input). Tolerates absent / malformed
-// payloads — chips are sugar, never load-bearing. A `json`-typed schema
-// field can arrive as the literal TEXT of a JSON array (the LLM emits
-// the array stringified) — parse that shape too.
-function readQuickReplies(
-  questions: Record<string, unknown> | undefined,
-): string[] {
-  let raw = questions?.quick_replies;
-  if (typeof raw === "string" && raw.trim().startsWith("[")) {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    .slice(0, 4);
 }

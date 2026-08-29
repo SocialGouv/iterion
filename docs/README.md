@@ -12,6 +12,7 @@ This index describes the current repository state. Guides and references below a
 | [examples.md](examples.md) | Maintained bot catalogue and focused DSL examples. |
 | [cli-reference.md](cli-reference.md) | Complete top-level CLI map plus the commonly used commands and flags. |
 | [visual-editor.md](visual-editor.md) | Browser-based studio, graph editor, launch forms, and live diagnostics. |
+| [assistant-dock.md](assistant-dock.md) | The assistant reachable from every studio route: which bot answers (manifest-driven `chat:` registry), its page-context chip, dragging a run/card/bot onto the composer, and how it differs from run steering. |
 | [skill.md](skill.md) | Install Iterion guidance into AI coding agents. |
 
 For the architectural trade-off against prompt-only orchestration, read [why-not-prompt-orchestration.md](why-not-prompt-orchestration.md). [asymptote-bench.md](asymptote-bench.md) and [thinking-metrics.md](thinking-metrics.md) cover workflow-quality measurement, and [improvement-ratchet.md](improvement-ratchet.md) names what carries a gain from one run to the next.
@@ -43,6 +44,7 @@ For the architectural trade-off against prompt-only orchestration, read [why-not
 | [bundles.md](bundles.md) | Deterministic `.botz` packaging with skills and resources. |
 | [import.md](import.md) | Lossy, non-executing import of Claude Code workflow JavaScript into draft `.bot` files. |
 | [backends.md](backends.md) | Backend/model matrix, harness behavior, and provider support. |
+| [models.md](models.md) | The model registry (`GET /api/models`, `iterion models`), the picker's capability guard, and the operator's persisted model choice. |
 | [delegation.md](delegation.md) | Choosing in-process `model:` calls or delegated CLI `backend:` execution. |
 | [permissions.md](permissions.md) | Workflow/node permission modes and allow/ask/deny rules. |
 | [skills-library.md](skills-library.md) | Local project/global skill library and DSL `skills:` references. |

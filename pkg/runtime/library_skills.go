@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -33,14 +35,17 @@ import (
 // the local library store is never consulted (the cloud path — a runner pod has
 // no library on disk, so the launching instance resolved the workflow's refs
 // for it; see Contributions).
-func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *Contributions, logger *iterlog.Logger) (map[string]string, []string, error) {
+func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, extra []string, inj *Contributions, logger *iterlog.Logger) (map[string]string, []string, error) {
 	if workDir == "" || wf == nil {
 		return nil, nil, nil
 	}
 	if inj != nil {
+		// The cloud path: the launching instance already resolved BOTH the
+		// workflow's refs and the operator's extras into the payload, so the
+		// union is upstream of here and the pod just mirrors what it was sent.
 		return mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
 	}
-	refs := collectSkillRefs(wf)
+	refs := unionSkillRefs(collectSkillRefs(wf), extra)
 	if len(refs) == 0 {
 		return nil, nil, nil
 	}
@@ -53,6 +58,12 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *
 	var owned []string
 	dirsReady := false
 	for _, name := range refs {
+		if err := skilllib.ValidName(name); err != nil {
+			if logger != nil {
+				logger.Warn("skill %q skipped: %v", name, err)
+			}
+			continue
+		}
 		srcPath, ok := store.Resolve(name)
 		if !ok {
 			// The reference may already be satisfied: this mirror runs AFTER the
@@ -136,6 +147,74 @@ func collectSkillRefs(wf *ir.Workflow) []string {
 		}
 	}
 	return out
+}
+
+// unionSkillRefs appends the operator's run-level skills to the workflow's own,
+// deduped, workflow first.
+//
+// Union, not replacement: the bot's author declared their set for a reason and
+// an operator adding a house standard must not be able to drop one. Order puts
+// the workflow's first only for stability — the mirror is idempotent and each
+// node re-sorts its own hint list.
+func unionSkillRefs(wfRefs, extra []string) []string {
+	if len(extra) == 0 {
+		return wfRefs
+	}
+	seen := make(map[string]bool, len(wfRefs)+len(extra))
+	out := make([]string, 0, len(wfRefs)+len(extra))
+	for _, list := range [][]string{wfRefs, extra} {
+		for _, n := range list {
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// ResolveExtraSkills checks that every operator-supplied skill name exists in
+// the local library, returning an error naming the ones that do not alongside
+// what IS available.
+//
+// Deliberately stricter than the workflow's own `skills:` reference, which is
+// soft (a bundle ships its skills, the library is a fallback, and warning per
+// missing name would read as a broken run). This list was TYPED by a human who
+// expects it to take effect; dropping it with a log line reproduces exactly the
+// silent failure this whole seam exists to avoid — a skill mirrored nowhere,
+// named nowhere, and an agent that answers from priors instead.
+//
+// Mirrors the `--preset` precedent, which errors at launch and lists what the
+// workflow declares.
+func ResolveExtraSkills(projectStoreDir string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	store := skilllib.LocalStoreForProject(projectStoreDir)
+	var missing []string
+	for _, n := range names {
+		if err := skilllib.ValidName(n); err != nil {
+			return fmt.Errorf("skill %q: %w", n, err)
+		}
+		if _, ok := store.Resolve(n); !ok {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	available := "none — add one with `iterion skill add <name> --from <file.md>`"
+	if list, err := store.List(); err == nil && len(list) > 0 {
+		names := make([]string, 0, len(list))
+		for _, s := range list {
+			names = append(names, s.Name)
+		}
+		sort.Strings(names)
+		available = strings.Join(names, ", ")
+	}
+	return fmt.Errorf("skill %s: not in the skill library (available: %s)",
+		strings.Join(missing, ", "), available)
 }
 
 // skillDescription parses the `description:` frontmatter of a skill file for the

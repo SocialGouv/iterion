@@ -147,4 +147,23 @@ func TestRunModelOverrideRetargetsNodes(t *testing.T) {
 			t.Errorf("error %q does not attribute the failure to --model", err)
 		}
 	})
+
+	t.Run("a malformed override also fails with an injected executor", func(t *testing.T) {
+		err := cli.RunRun(context.Background(), cli.RunOptions{
+			File:          filepath.Join("testdata", "model_override_claw_mini.bot"),
+			StoreDir:      t.TempDir(),
+			RunID:         "model-ov-malformed-injected",
+			EffortFor:     []string{"gen=warp-speed"},
+			Executor:      newScenarioExecutor(),
+			NoInteractive: true,
+			MergeInto:     "none",
+			Sandbox:       "none",
+		}, &cli.Printer{W: io.Discard, Format: cli.OutputJSON})
+		if err == nil {
+			t.Fatalf("expected an invalid --effort-for value to be rejected")
+		}
+		if !strings.Contains(err.Error(), "--effort-for") {
+			t.Errorf("error %q does not attribute the failure to --effort-for", err)
+		}
+	})
 }

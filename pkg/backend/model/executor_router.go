@@ -212,7 +212,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 			// wireEffort collapses the "ultracode" mode to xhigh so the raw token
 			// never reaches the provider; identity for every other level. Routers
 			// don't get the orchestration prerogative (they route, not orchestrate).
-			ReasoningEffort: wireEffort(resolveReasoningEffort(node.ReasoningEffort, input)),
+			ReasoningEffort: wireEffort(e.effortForNode(node, node.ReasoningEffort, input)),
 			Sandbox:         e.sandbox,
 			// ProviderHint is set per-attempt by the chain walker.
 			InboxDrain: e.bindInboxDrain(ctx),
@@ -277,6 +277,21 @@ func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 		}
 	}
 	return ir.ResolveEffortLiteral(nodeEffort)
+}
+
+// effortForNode is resolveReasoningEffort with the launch-time override on
+// top. The override wins over BOTH the node's static `reasoning_effort:` and a
+// dynamic `_reasoning_effort` edge mapping, for the same reason the model and
+// backend overrides do: the operator is explicitly re-targeting this run
+// without editing the .bot, so a workflow-authored value cannot outrank them.
+//
+// A bot that escalates effort per branch is therefore flattened by a run-wide
+// `*` override — which is what asking for one means.
+func (e *ClawExecutor) effortForNode(node ir.Node, nodeEffort string, input map[string]any) string {
+	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Effort != "" {
+		return ov.Effort
+	}
+	return resolveReasoningEffort(nodeEffort, input)
 }
 
 // providerOptsForNode builds the ProviderOptions map from the resolved

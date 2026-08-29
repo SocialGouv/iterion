@@ -1545,6 +1545,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/models */
+        get: operations["getModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/openapi.json": {
         parameters: {
             query?: never;
@@ -4709,6 +4726,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/preferences/model": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/preferences/model */
+        get: operations["getV1PreferencesModel"];
+        /** PUT /api/v1/preferences/model */
+        put: operations["putV1PreferencesModel"];
+        post?: never;
+        /** DELETE /api/v1/preferences/model */
+        delete: operations["deleteV1PreferencesModel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/repos": {
         parameters: {
             query?: never;
@@ -4995,6 +5031,13 @@ export interface components {
             orgs: components["schemas"]["OrgTreeView"][];
             user: components["schemas"]["UserView"];
         };
+        BackendStatus: {
+            auth: string;
+            available: boolean;
+            hints?: string[];
+            name: string;
+            sources: string[];
+        };
         BackendUsage: {
             backend: string;
             model?: string;
@@ -5012,6 +5055,16 @@ export interface components {
         BlockingInfo: {
             id: string;
             title?: string;
+        };
+        Catalog: {
+            backends?: components["schemas"]["BackendStatus"][];
+            invalid_specs?: components["schemas"]["InvalidSpec"][];
+            models: components["schemas"]["Entry"][];
+            reachability?: string;
+            recommended_spec?: string;
+            refresh_error?: string;
+            refreshed?: boolean;
+            resolved_default_backend?: string;
         };
         Checkpoint: {
             artifact_versions: {
@@ -5152,6 +5205,27 @@ export interface components {
             pushed: boolean;
             verifiable: boolean;
         };
+        Entry: {
+            backends?: string[];
+            context_window: number;
+            credential_provider: string;
+            credential_source?: string;
+            input_cost_per_m?: number;
+            model: string;
+            output_cost_per_m?: number;
+            price_known: boolean;
+            provider: string;
+            reachability: string;
+            reasoning: boolean;
+            recommended?: boolean;
+            source: string;
+            spec: string;
+            temperature: boolean;
+            tool_call: boolean;
+            ultracode_capable: boolean;
+            unusable_reason?: string;
+            usable: boolean;
+        };
         ExecutionState: {
             branch_id: string;
             current_event_seq: number;
@@ -5222,6 +5296,10 @@ export interface components {
             loop?: string;
             negated?: boolean;
             to: string;
+        };
+        InvalidSpec: {
+            reason: string;
+            spec: string;
         };
         Issue: {
             assignee?: string;
@@ -5387,6 +5465,13 @@ export interface components {
             reserved: number;
             waiting: number;
         };
+        ProviderStatus: {
+            available: boolean;
+            name: string;
+            overridden_sources?: string[];
+            source: string;
+            suggested_model?: string;
+        };
         RepoSummary: {
             can_admin: boolean;
             default_branch?: string;
@@ -5394,6 +5479,12 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
+        };
+        Report: {
+            backends: components["schemas"]["BackendStatus"][];
+            preference_order: string[];
+            providers: components["schemas"]["ProviderStatus"][];
+            resolved_default: string;
         };
         RunBudget: {
             max_cost_usd?: number;
@@ -5467,6 +5558,7 @@ export interface components {
         };
         RunModelOverride: {
             backend?: string;
+            effort?: string;
             model?: string;
             provider?: string;
             selector: string;
@@ -5732,6 +5824,19 @@ export interface components {
             email: string;
             password: string;
         };
+        modelPrefRequest: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+        };
+        modelPrefResponse: {
+            backend?: string;
+            effort?: string;
+            key: string;
+            model?: string;
+            set: boolean;
+        };
         orgView: {
             created_at?: string;
             id: string;
@@ -5807,6 +5912,52 @@ export interface components {
             targets?: {
                 [key: string]: string;
             };
+        };
+        previewBackendOption: {
+            unavailable_reason?: string;
+            warning?: string;
+        };
+        previewCostNode: {
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effort?: string;
+            kind: string;
+            model?: string;
+            node_id: string;
+            tokens_in: number;
+            tokens_out: number;
+        };
+        previewCostRequest: {
+            backend?: string;
+            backend_names?: string[];
+            file_path?: string;
+            permission?: string;
+            source?: string;
+        };
+        previewCostResponse: {
+            backend_options?: {
+                [key: string]: {
+                    [key: string]: components["schemas"]["previewBackendOption"];
+                };
+            };
+            cost_max_usd: number;
+            cost_min_usd: number;
+            effective?: components["schemas"]["previewEffectiveSettings"];
+            nodes: components["schemas"]["previewCostNode"][];
+            notes?: string[];
+            tokens_max: number;
+            tokens_min: number;
+        };
+        previewEffectiveKnob: {
+            effective: string;
+            node_pinned?: boolean;
+            source: string;
+        };
+        previewEffectiveSettings: {
+            auto_memory: components["schemas"]["previewEffectiveKnob"];
+            backend: components["schemas"]["previewEffectiveKnob"];
+            compress: components["schemas"]["previewEffectiveKnob"];
+            permission: components["schemas"]["previewEffectiveKnob"];
         };
         setOrgStatusReq: {
             reason?: string;
@@ -6938,12 +7089,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
             };
         };
     };
@@ -7959,6 +8112,26 @@ export interface operations {
             };
         };
     };
+    getModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalog"];
+                };
+            };
+        };
+    };
     "getOpenapi.json": {
         parameters: {
             query?: never;
@@ -8594,14 +8767,20 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["previewCostRequest"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["previewCostResponse"];
+                };
             };
         };
     };
@@ -12255,6 +12434,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    putV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["modelPrefRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
+            };
+        };
+    };
+    deleteV1PreferencesModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelPrefResponse"];
+                };
             };
         };
     };

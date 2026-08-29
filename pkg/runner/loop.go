@@ -1761,16 +1761,20 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// would resolve auto-memory from the workflow and its own (empty)
 		// environment, so an operator's `--auto-memory off` on a bot whose
 		// DSL says `on` would run with memory on — the knob failing open.
-		AutoMemory:  msg.AutoMemory,
-		MemoryStore: r.cfg.MemoryStore,
+		AutoMemory: msg.AutoMemory,
+		// Keep this as the ExecutorSpec's run-level override: folding it into
+		// wf.Permission would let a node-level `off` beat an operator `deny`.
+		Permission: msg.Permission,
+		// The launch-time model/backend/provider/effort choice. Without this
+		// the pod silently runs the bot's DSL defaults while the run record
+		// advertises the model the operator picked — see
+		// queue.RunMessage.ModelOverrides.
+		ModelOverrides: runview.ModelOverridesFromRun(modelOverridesFromWire(msg.ModelOverrides)),
+		MemoryStore:    r.cfg.MemoryStore,
 		// The operator's subscription ceiling, published to the shared
 		// store as this run measures it — the pod is where the provider's
 		// telemetry is observable, and the only place it can be captured.
 		UsageGuard: r.usageGuardFor(ctx, msg, logger),
-		// The operator's launch-time model/backend pins, replayed from the
-		// wire. Before this, the cloud path persisted them display-only:
-		// the studio showed an override the delegates never honoured.
-		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the
@@ -1781,6 +1785,27 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		AsyncAsk: &model.StoreAsyncAskBinder{Store: r.cfg.Store},
 	}
 	return spec, usage, nil
+}
+
+// modelOverridesFromWire lifts the queue's override rows back into the
+// persisted shape runview.ModelOverridesFromRun folds. The two types are
+// field-identical by design: queue keeps a local mirror so the schema package
+// stays dependency-free, and this is the one place they meet.
+func modelOverridesFromWire(rows []queue.ModelOverride) []store.RunModelOverride {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.RunModelOverride{
+			Selector: r.Selector,
+			Backend:  r.Backend,
+			Model:    r.Model,
+			Provider: r.Provider,
+			Effort:   r.Effort,
+		})
+	}
+	return out
 }
 
 // stringifyVars converts the wire payload's free-form vars into the
@@ -1819,24 +1844,4 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// modelOverridesFromMsg folds the wire pins into the executor's override
-// set — the runner-side twin of runview's launch-entry fold, so a cloud
-// run resolves per-node models exactly like a local launch with the same
-// flags.
-func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
-	var o model.ModelOverrides
-	for _, e := range entries {
-		if e.Backend != "" {
-			o.SetBackend(e.Selector, e.Backend)
-		}
-		if e.Model != "" {
-			o.SetModel(e.Selector, e.Model)
-		}
-		if e.Provider != "" {
-			o.SetProvider(e.Selector, e.Provider)
-		}
-	}
-	return o
 }

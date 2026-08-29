@@ -380,9 +380,15 @@ export async function saveFile(
   const bs = parseBotSourceEditorPath(path);
   if (bs) {
     const source = await unparse(document);
+    // Carry the botsource CAS token. The old per-file editor write omitted it,
+    // so two tabs could silently overwrite one another even though the store
+    // already supported optimistic concurrency.
+    const current = await apiRequest<BotSourceFilesResponse>(
+      `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}`,
+    );
     await apiRequest(
       `/api/teams/${encodeURIComponent(bs.teamID)}/bot-sources/${encodeURIComponent(bs.slug)}/files/${bs.rel}`,
-      { method: "PUT", body: JSON.stringify({ content: source }) },
+      { method: "PUT", body: JSON.stringify({ content: source, version: current.version }) },
     );
     return { path, source };
   }

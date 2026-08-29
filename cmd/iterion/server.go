@@ -40,6 +40,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/mail"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/modelprefs"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
@@ -394,6 +395,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("server: build events bus: %w", err)
 	}
+	// The operator's remembered model choice, per (team, user, scope key).
+	// Ungated: a model preference is convenience, not a feature flag, and a
+	// cloud operator who cannot keep one is back to re-picking every session.
+	modelPrefStore := modelprefs.NewMongoStore(st.DB())
+	if sErr := modelPrefStore.EnsureSchema(rootCtx); sErr != nil {
+		return fmt.Errorf("server: ensure model prefs schema: %w", sErr)
+	}
+
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
 	var notifSent usernotify.SentStore
@@ -536,6 +545,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		EventsBus:              eventsBus,
 		PushSubscriptions:      pushSubs,
 		NotificationPrefs:      notifPrefs,
+		ModelPrefs:             modelPrefStore,
 		NotificationSent:       notifSent,
 		NotifiableRuns:         notifiableRuns,
 		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,

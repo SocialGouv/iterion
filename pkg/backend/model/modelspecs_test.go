@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -352,6 +353,68 @@ func TestModelSpecs_ForceRefreshIsOneShot(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("force-refresh HTTP attempts within TTL = %d, want 1", got)
+	}
+}
+
+func TestModelSpecs_ConcurrentForceRefreshIsCoalesced(t *testing.T) {
+	var attempts atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		<-release
+		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
+	}))
+	defer srv.Close()
+
+	r := newTestRegistry(t, srv.URL)
+	const callers = 24
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() { errs <- r.refresh(context.Background()) }()
+	}
+	waitFor(t, func() bool { return attempts.Load() == 1 })
+	// Give every goroutine time to join the in-flight channel. If refresh
+	// starts independent work, attempts rises before the first is released.
+	time.Sleep(25 * time.Millisecond)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("concurrent refresh attempts = %d, want exactly one", got)
+	}
+	close(release)
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("waiter %d: %v", i, err)
+		}
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("HTTP attempts after all waiters = %d, want 1", got)
+	}
+}
+
+func TestModelSpecs_CancelledWaiterDoesNotCancelSharedRefresh(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
+	}))
+	defer srv.Close()
+
+	r := newTestRegistry(t, srv.URL)
+	ownerDone := make(chan error, 1)
+	go func() { ownerDone <- r.refresh(context.Background()) }()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() { waiterDone <- r.refresh(ctx) }()
+	cancel()
+	if err := <-waiterDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled waiter = %v, want context.Canceled", err)
+	}
+	close(release)
+	if err := <-ownerDone; err != nil {
+		t.Fatalf("shared refresh was cancelled with a waiter: %v", err)
 	}
 }
 

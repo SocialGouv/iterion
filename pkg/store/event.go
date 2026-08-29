@@ -267,6 +267,17 @@ const (
 	//   - mode: the requested mode ("auto" or "inline")
 	//   - reason: human-readable explanation
 	EventSandboxSkipped EventType = "sandbox_skipped"
+	// EventSkillsInjected fires at run start when the OPERATOR added
+	// skill-library skills to this run on top of the workflow's own
+	// (`--skill <name>`, or the ITERION_SKILLS machine default).
+	//
+	// Emitted because otherwise the addition is invisible state that changes
+	// how a bot answers: the run would carry knowledge its `.bot` does not
+	// mention, and a bug report against that run would be irreproducible.
+	// This is the record that makes it reproducible. Data:
+	//   - skills: []string of the names added (never the workflow's own)
+	//   - origin: "flag" | "env" — where the list came from
+	EventSkillsInjected EventType = "skills_injected"
 	// EventSandboxStarted fires after the active sandbox driver finishes
 	// `Start` (container running, postCreate executed). The data block
 	// makes the resolved spec visible to operators without parsing

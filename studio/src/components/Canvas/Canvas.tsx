@@ -19,7 +19,7 @@ import { useAddSubNode, type SubNodeDragData } from "@/hooks/useAddSubNode";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useLibraryStore, selectAllItems } from "@/store/library";
-import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
+import { documentHasEditableNodes, isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isGroupNodeId } from "@/lib/groups";
 import type { NodeKind } from "@/api/types";
 import WorkflowNode from "./WorkflowNode";
@@ -403,14 +403,12 @@ export default function Canvas({ active = true }: CanvasProps) {
         />
       </ReactFlow>
 
-      {/* Empty-state overlay when the document has no editable nodes */}
-      {document &&
-        document.agents.length === 0 &&
-        document.judges.length === 0 &&
-        document.routers.length === 0 &&
-        document.humans.length === 0 &&
-        document.tools.length === 0 &&
-        (document.subbots ?? []).length === 0 && <CanvasEmpty />}
+      {/* Empty-state overlay when the document has no editable nodes.
+          `computes` belongs here like every other kind: documentToGraph
+          renders compute nodes, so omitting it put "No workflow loaded"
+          OVER a workflow that has some — which is what a deterministic,
+          LLM-free workflow (all compute) looks like. */}
+      {document && !documentHasEditableNodes(document) && <CanvasEmpty />}
 
       {/* Context menu */}
       {contextMenu && (

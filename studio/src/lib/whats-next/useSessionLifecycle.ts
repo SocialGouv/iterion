@@ -9,8 +9,10 @@ import { errorMessage as toMessage } from "@/lib/errorHints";
 
 import { createRun, getRunWithRetry } from "@/api/runs";
 import type { ForgeTeamRepo } from "@/api/forgeConnections";
+import { modelPrefOverrides } from "@/api/modelPrefs";
+import type { SessionModelChoice } from "@/hooks/useSessionModelPref";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
-import { runStore, useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 
 import type { WhatsNextStatus } from "./sessionStatus";
 import { forgetSessionRunId, rememberSessionRunId } from "./sessionStorage";
@@ -31,6 +33,12 @@ export function useSessionLifecycle(opts: {
   // Hook-lifetime abort handle owned by the orchestrating hook (stops
   // the launch path's getRunWithRetry 404-backoff on unmount).
   lifetimeAbortRef: { current: AbortController | null };
+  // modelChoice reads the operator's remembered model/backend/effort at the
+  // MOMENT of launch. It is a getter, not a value, so a choice made a keystroke
+  // before pressing send is the one that ships — and so this callback does not
+  // have to be re-created (dropping its identity into every consumer) each
+  // time the picker moves.
+  modelChoice?: () => SessionModelChoice;
   setRunId: (runId: string | null) => void;
   setStatus: (status: WhatsNextStatus) => void;
   setBusyMessageId: (id: string | null) => void;
@@ -42,6 +50,7 @@ export function useSessionLifecycle(opts: {
     repoScopeEnabled,
     activeRepo,
     lifetimeAbortRef,
+    modelChoice,
     setRunId,
     setStatus,
     setBusyMessageId,
@@ -52,6 +61,12 @@ export function useSessionLifecycle(opts: {
   // into the composer after the run closed) reuses the same scope.
   const lastVarsRef = useRef<Record<string, string> | null>(null);
 
+  // The store this session lives in — the assistant's isolated one
+  // when mounted under AssistantProvider, the module default
+  // otherwise. Imperative reads MUST go through it: reaching for the
+  // module-default `runStore` façade here would split the session's
+  // state (reads via the provider, writes to another store).
+  const store = useRunStoreInstance();
   const applySnapshot = useRunStore((s) => s.applySnapshot);
   const reset = useRunStore((s) => s.reset);
   const loadEventHistoryIfMissing = useRunStore(
@@ -85,12 +100,20 @@ export function useSessionLifecycle(opts: {
                 connection_id: activeRepo.connection_id,
               }
             : {}),
+          // The chat session was the one launch surface that could not
+          // retarget its model — the per-run override mechanism already
+          // existed and was generic, it just was not wired here. The helper
+          // targets agent nodes only: the operator changes the answering
+          // model while explicit judges keep their independent family.
+          // Undefined when nothing is chosen, so the bot's DSL defaults apply
+          // untouched.
+          model_overrides: modelPrefOverrides(modelChoice?.()),
         });
         rememberSessionRunId(bot.id, scopeKey, res.run_id);
         // Pin the store's runId early so loadEventHistoryIfMissing's
         // `state.runId !== runId` guard doesn't drop the fetched batch
         // after its await — same trick the auto-attach branch uses.
-        runStore.getState().setRunId(res.run_id);
+        store.getState().setRunId(res.run_id);
         setRunId(res.run_id);
         // Seed the store with the freshly-created run's snapshot AND
         // any events the runtime persisted between createRun and now.
@@ -115,6 +138,10 @@ export function useSessionLifecycle(opts: {
       } catch (e) {
         setErrorMessage(toMessage(e));
         setStatus("idle");
+        // Every composer destination rejects on failure so its caller keeps
+        // the operator's draft and attached references. Swallowing only the
+        // first-launch failure made the most expensive send path erase both.
+        throw e;
       }
     },
     // Setters and the lifetime ref are stable (useState setters / a
@@ -126,6 +153,7 @@ export function useSessionLifecycle(opts: {
       scopeKey,
       repoScopeEnabled,
       activeRepo,
+      modelChoice,
       reset,
       applySnapshot,
       loadEventHistoryIfMissing,
@@ -139,7 +167,7 @@ export function useSessionLifecycle(opts: {
   // app restarts).
   const newSession = useCallback(() => {
     forgetSessionRunId(bot.id, scopeKey);
-    runStore.getState().reset();
+    store.getState().reset();
     setRunId(null);
     setBusyMessageId(null);
     setErrorMessage(null);

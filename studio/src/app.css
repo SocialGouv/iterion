@@ -196,6 +196,7 @@
    * or Tailwind arbitrary value `z-[var(--z-modal)]`. Canvas chrome
    * (toolbars/overlays anchored inside a panel) stays on the lower
    * `--z-canvas` rung so it doesn't compete with global modals. */
+  --z-dock: 35;          /* persistent corner docks (assistant, steering) */
   --z-canvas: 40;        /* floating chrome inside a canvas/panel */
   --z-overlay: 40;       /* modal backdrops */
   --z-modal: 50;         /* dialogs, full-screen drawers */

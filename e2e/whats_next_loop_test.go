@@ -51,7 +51,7 @@ import (
 )
 
 // TestWhatsNextV2_GraphContract pins the v2 shape statically:
-//   - `worktree: none` — Nexie mutates the board + memory only; the v1
+//   - `worktree: none` — Nexie never edits the repo; the v1
 //     default (auto) produced phantom storage branches and aimed
 //     workspace_dir at a tree without .iterion.
 //   - the chat → nexie loop edge MUST map `_session_id` from
@@ -76,6 +76,15 @@ func TestWhatsNextV2_GraphContract(t *testing.T) {
 	}
 	if nexie.Session != ir.SessionInheritIfAvailable {
 		t.Errorf("nexie session = %v, want inherit_if_available", nexie.Session)
+	}
+	if wf.Permission != "deny" {
+		t.Errorf("workflow permission = %q, want deny (host actions must not be bypassable)", wf.Permission)
+	}
+	if !slices.Equal(nexie.Capabilities, []string{"board.read"}) {
+		t.Errorf("nexie capabilities = %v, want board.read only", nexie.Capabilities)
+	}
+	if slices.Contains(nexie.Tools, "bash") || slices.Contains(nexie.Tools, "write_file") {
+		t.Errorf("nexie write-shaped tools must stay absent, got %v", nexie.Tools)
 	}
 
 	var loopEdge *ir.Edge
@@ -120,10 +129,11 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 		turn := exec.callCount("nexie")
 		if turn == 1 {
 			return map[string]any{
-				"reply":          "Board: 3 tickets. Je recommande `fix-doctor` (quick win).",
-				"close":          false,
-				"quick_replies":  []any{"Dispatche-le"},
-				"dispatched_ids": []any{},
+				"reply":             "Board: 3 tickets. Je recommande `fix-doctor` (quick win).",
+				"close":             false,
+				"quick_replies":     []any{"Dispatche-le"},
+				"dispatched_ids":    []any{},
+				"assistant_actions": []any{},
 				// The real delegate stamps these; the loop edge maps them
 				// back into turn 2's input.
 				"_session_id":          "sess-nexie-1",
@@ -132,11 +142,12 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 		}
 		secondTurnInput = input
 		return map[string]any{
-			"reply":          "Session archivée.",
-			"close":          true,
-			"quick_replies":  []any{},
-			"dispatched_ids": []any{},
-			"_session_id":    "sess-nexie-1",
+			"reply":             "Session archivée.",
+			"close":             true,
+			"quick_replies":     []any{},
+			"dispatched_ids":    []any{},
+			"assistant_actions": []any{},
+			"_session_id":       "sess-nexie-1",
 		}, nil
 	})
 
@@ -217,10 +228,11 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 		}
 		resumedInput = input
 		return map[string]any{
-			"reply":          "Fermé les 4 tickets périmés.",
-			"close":          true,
-			"quick_replies":  []any{},
-			"dispatched_ids": []any{},
+			"reply":             "Fermé les 4 tickets périmés.",
+			"close":             true,
+			"quick_replies":     []any{},
+			"dispatched_ids":    []any{},
+			"assistant_actions": []any{},
 		}, nil
 	})
 

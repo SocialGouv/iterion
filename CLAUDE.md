@@ -249,6 +249,18 @@ the hours this one spent.
   is set, one transaction per API request and per in-process LLM call), the
   scrubbing, and the smoke tests. Read it when a deployment needs to answer
   "what crashed, how often, since which release" or "where did the time go".
+- [docs/assistant-dock.md](docs/assistant-dock.md) — the studio assistant:
+  which bot answers it (the manifest `chat:` block IS the registry — a
+  second conversational bot is a bundle, not a studio release), the
+  page-context chip, dragging a run/card/bot onto the composer, and
+  assistant-vs-steering on a run page. Read it before adding a chat
+  surface, or to know which bot answers where: Nexie owns `/whats-next`
+  and only that route, the dock everywhere else is Copi.
+- [docs/models.md](docs/models.md) — the model registry (`iterion models`,
+  `GET /api/models`: known × usable × capabilities × pricing), the launch-time
+  model/backend/effort overrides, and how to change the studio assistant's
+  model (persisted per user; fixes "which model is this running on" and
+  "the assistant feels dumber").
 
 ## Development setup
 
@@ -560,10 +572,16 @@ through `claw`. `on:` filters which failure routes where (default
 fall-through is deliberately **loud**: a `model_fallback` event,
 `_backend`/`_model` naming what actually *served*, and
 `_fallback_used`/`_served_by` so a deterministic gate can fail closed on
-a degraded input. Two crossings are compile-time errors (C176): a route
-that cannot enforce the node's `permission:` gate, and a claw⇄CLI
+a degraded input. THREE crossings are compile-time errors (C176): a route
+that cannot enforce the node's `permission:` gate; a claw⇄CLI
 crossing on a node with an empty `tools:` list (the list inverts meaning
-across that boundary). Two route properties extend the chain (ADR-091):
+across that boundary); and a **backend change on a node that keeps its
+conversation** (`session: inherit` / `inherit_if_available` / `fork` —
+`sessionContinuityCrossingReason`), since session continuity has no
+cross-backend meaning. The third is why a node that must survive a
+fall-through WITHOUT losing its thread builds its ladder from different
+*providers* inside ONE backend rather than from different backends —
+Copi's claw ladder is the shipped example. Two route properties extend the chain (ADR-091):
 `action: skip` is a TERMINAL degrade — the node completes with a
 zero-value output stamped `_skipped` instead of failing the run (the
 "continue and ignore" half of an optional-peer policy; "pause and
@@ -1080,6 +1098,35 @@ Current bundles and their skills:
   [scripts/adhoc/whats-next-skills-gen.bot](scripts/adhoc/whats-next-skills-gen.bot)
   for the generator (the seed for a future formalised
   `generate-skills.bot`).
+- [bots/copilot/skills/](bots/copilot/skills/) — 5 skills, **one per
+  posture** plus the playbook and a second design skill:
+  `iterion-concepts` (info), `iterion-dsl-authoring` +
+  `iterion-bot-architecture` (design), `iterion-run-debug` (debug),
+  `copi-conversation` (the operating playbook, loaded every turn).
+  The two design skills are deliberately separate because they fail
+  differently: `iterion-dsl-authoring` is how to SPELL a `.bot` (the
+  syntax traps that compile clean and break at runtime),
+  `iterion-bot-architecture` is how to DESIGN one (responsibilities,
+  closed contracts, the PASS/RETRY/BLOCKED shape, why a retry re-enters
+  its producer rather than a correction twin, subbot boundaries,
+  idempotency, budgets, proof categories). Folding them together makes
+  a reader treat architecture rules as compiler rules — the one thing
+  the design posture must never tell an operator. A repo may override
+  the second with its own standard (`authoring_standard:` declaration
+  or `ITERION_AUTHORING_STANDARD_PATH`), which the skill tells Copi to
+  read and prefer.
+
+**A `skills:` entry that resolves to nothing is silent.** It is not a
+compile error and not a bundle-lint finding — the runtime mirrors
+nothing, the agent's Skill tool finds nothing, and the bot answers from
+the model's priors instead of the authored knowledge (it reads as "the
+bot got dumber", not as a typo). `bots/catalog_skill_refs_test.go`
+closes that gap: every name in a catalog bot's `skills:` list must exist
+as `<bundle>/skills/<name>.md` with matching frontmatter. The exception
+is a skill a bot deliberately does NOT ship so the operator attaches it
+from the skill library (ADR-059) — `deploy-target` for app-dev /
+review-env, where shipping one would pin a catalog bot to a platform.
+Those live in a commented allowlist in that test.
 
 **Maintain skills inline with the code they describe.** Each time
 you touch a skill's subject area and notice the skill is wrong,
@@ -1509,7 +1556,7 @@ above is the standing baseline, not an open-work list).
 ```
 iterion validate <file.bot>            # Parse and validate workflow
 iterion import <workflow.js> [--out] [--name] [--dry-run]  # Lossy Claude-Code workflow-script → draft .bot (goja AST, zero execution; see docs/import.md)
-iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
+iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --fallback, --skill, --model, --backend, --effort-for, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion runs prune [--store-dir] [--older-than 720h] [--keep-last N] [--status finished,failed,cancelled] [--dry-run]  # Delete old runs (pair with `iterion schedule` for retention; docs/scheduling.md)
 iterion runs questions <run-id> [--store-dir]   # List a run's pending async (ask_user_async) questions
@@ -1526,10 +1573,10 @@ iterion issue create|list|show|move|update|close|board|import  # Native kanban t
 iterion bots create <slug> [--template <id>] [--workdir <dir>] [--dest <dir>]  # Scaffold a bot bundle (CLI half of the studio builder /bots/new)
 iterion bots templates                  # List the templates `bots create` can start from
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
-iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
+iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field, or added to any run with `iterion run --skill <name>` / ITERION_SKILLS (see docs/skills-library.md)
 iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion memory export|import|du         # Manage local shared-knowledge memory spaces (.tar.gz export/import, usage vs quota; see docs/memory-and-knowledge.md)
-iterion models [provider/model-id]      # Inspect resolved model capabilities and their source
+iterion models [provider/model-id]      # The model registry: capabilities + source + price + whether THIS host can reach it (shared with GET /api/models; see docs/models.md)
 iterion mcp [--store-dir] [--read-only] [--only local|remote]  # Operator MCP server on stdio: local_* (store/engine, detached launches) + remote_* (logged-in instance, remote_api escape hatch) — `claude mcp add iterion -- iterion mcp` (see docs/mcp-server.md)
 iterion openapi                         # Generate this build's OpenAPI 3.1 spec offline (stdout)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)

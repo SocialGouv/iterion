@@ -259,6 +259,16 @@ export function transitionIssue(id: string, to: string): Promise<NativeIssue> {
   });
 }
 
+export function commentIssue(
+  id: string,
+  body: string,
+): Promise<NativeIssue> {
+  return request(`/issues/${encodeURIComponent(id)}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
 // pushIssueToForge mirrors a card to its forge. Omit `body` for a card
 // already linked to a forge (server updates the linked issue); pass
 // {connection_id, repo} to create-and-link an unlinked card.

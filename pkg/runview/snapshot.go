@@ -79,8 +79,8 @@ type RunHeader struct {
 	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
 	Status            store.RunStatus `json:"status"`
 	Inputs            map[string]any  `json:"inputs,omitempty"`
-	// PermissionMode is the workflow-declared tool-permission gate mode
-	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
+	// PermissionMode is the effective run-level tool-permission gate mode
+	// (operator override when set, otherwise workflow declaration). The studio
 	// badges ask/deny. See docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty"`
 	// ModelOverrides are the launch-time per-node/-group model/backend

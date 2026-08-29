@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
@@ -7,6 +7,7 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 import HumanChatTurn from "./HumanChatTurn";
+import { OperatorBubble } from "./OperatorBubble";
 import NodeBanner from "./NodeBanner";
 
 interface Props {
@@ -36,6 +37,10 @@ interface Props {
   // assistant bubble — Nexie's reply — must stay in the flow), but
   // its own textarea/buttons are suppressed.
   composerHandlesId?: string;
+  // Rendered inside the LAST turn's assistant bubble. For something that turn
+  // produced — an offer the assistant just made. Below the bubble it reads as
+  // chrome and gets missed; inside it, it reads as part of what was said.
+  bubbleSlot?: ReactNode;
 }
 
 export default function ChatTranscript({
@@ -44,6 +49,7 @@ export default function ChatTranscript({
   onHumanSubmit,
   busyMessageId = null,
   composerHandlesId,
+  bubbleSlot,
 }: Props) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +117,15 @@ export default function ChatTranscript({
     return messages.filter((m) => !hiddenIds.has(m.id));
   }, [messages]);
 
+  // bubbleSlot only renders on a human-question row. Anchoring it to the
+  // last visible message dropped the CTA whenever a banner or narration
+  // landed after the question, or the moment the operator answered
+  // (AnsweredTurn used to ignore the slot). Last hostable row, answered
+  // or not (R98e430).
+  const lastHostableId = [...visible]
+    .reverse()
+    .find((m) => m.kind === "human-question")?.id;
+
   return (
     <div
       ref={scrollContainerRef}
@@ -121,6 +136,7 @@ export default function ChatTranscript({
         <MessageRow
           key={m.id}
           message={m}
+          bubbleSlot={m.id === lastHostableId ? bubbleSlot : undefined}
           bot={bot}
           onHumanSubmit={onHumanSubmit}
           busy={m.kind === "human-question" && busyMessageId === m.id}
@@ -129,7 +145,7 @@ export default function ChatTranscript({
       ))}
       {messages.length === 0 && (
         <p className="text-body text-fg-subtle italic">
-          The conversation will start as soon as Nexie's first turn begins.
+          The conversation will start as soon as the first turn begins.
         </p>
       )}
       <div ref={endRef} />
@@ -143,12 +159,14 @@ function MessageRow({
   onHumanSubmit,
   busy,
   inputHidden,
+  bubbleSlot,
 }: {
   message: WhatsNextMessage;
   bot?: FirstClassBot;
   onHumanSubmit?: Props["onHumanSubmit"];
   busy: boolean;
   inputHidden: boolean;
+  bubbleSlot?: ReactNode;
 }) {
   switch (message.kind) {
     case "banner":
@@ -158,6 +176,8 @@ function MessageRow({
       return (
         <HumanChatTurn
           message={message}
+          persona={bot?.label ?? ""}
+          bubbleSlot={bubbleSlot}
           form={form}
           inputHidden={inputHidden}
           onSubmit={
@@ -206,51 +226,56 @@ function UserMessageRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "user-message" }>;
 }) {
-  const { label, tone, hint } = userStatusMeta(message.status);
+  const meta = userStatusMeta(message.status);
   return (
-    <div className="flex justify-end">
-      <div className="max-w-[85%] rounded-lg border border-info/30 bg-info-soft/50 px-3 py-2">
-        <div className="text-body text-fg-default">
-          <MarkdownText value={message.text} size="sm" />
-        </div>
-        <div className="mt-1 flex items-center justify-end gap-1.5">
+    <OperatorBubble
+      text={message.text}
+      // A settled message is just a message. The chip only earns its place
+      // while the message is still in flight or has failed — which is exactly
+      // when the operator needs to know it has not landed.
+      badge={
+        meta.transient ? (
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${tone}`}
-            title={hint}
+            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-caption font-medium ${meta.tone}`}
+            title={meta.hint}
           >
-            {label}
+            {meta.label}
           </span>
-        </div>
-      </div>
-    </div>
+        ) : null
+      }
+    />
   );
 }
 
 function userStatusMeta(
   status: Extract<WhatsNextMessage, { kind: "user-message" }>["status"],
-): { label: string; tone: string; hint: string } {
+): { label: string; tone: string; hint: string; transient: boolean } {
   switch (status) {
     case "queued":
       return {
         label: "Queued",
+        transient: true,
         tone: "bg-warning-soft text-warning-fg",
         hint: "Waiting for the agent's next turn. The agent has not seen it yet.",
       };
     case "delivered":
       return {
         label: "In agent's context",
+        transient: true,
         tone: "bg-info-soft text-info-fg",
         hint: "Injected into the agent's conversation. The next LLM turn will read it — but the agent has not processed it yet.",
       };
     case "consumed":
       return {
         label: "Read by agent",
+        transient: false,
         tone: "bg-success-soft text-success-fg",
         hint: "The agent finished a turn that included this message. Note: this does not mean the agent acted on it — only that it had the chance to.",
       };
     case "cancelled":
       return {
         label: "Cancelled",
+        transient: true,
         tone: "bg-surface-2 text-fg-muted",
         hint: "Removed before delivery.",
       };
@@ -264,6 +289,7 @@ function userStatusMeta(
         label: String(_exhaustive),
         tone: "bg-surface-2 text-fg-muted",
         hint: "",
+        transient: true,
       };
     }
   }

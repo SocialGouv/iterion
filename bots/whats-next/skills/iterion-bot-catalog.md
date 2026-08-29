@@ -72,6 +72,7 @@ Walk top-to-bottom; first match wins.
 | If the work sounds like… | → `assignee` |
 |---|---|
 | "where should this project go next?", "long-term vision", "architectural direction", "strategic axes for the next quarter/year" — STRATEGIC (a quarter+ horizon) AND the project is mature/stable | `evolve` |
+| "what does this diagnostic mean", "how do resume/sandbox/backends work", "why did this run fail or pause", "draft a .bot I will validate myself" — questions ABOUT iterion, not work IN the repo | `copilot` |
 | "implement feature X", "add capability", "build the thing" | `feature-dev` |
 | "build a new bot for Y" / "create a workflow that does Y" — the catalogue lacks a fit and we need to author one | `feature-dev` (with `feature_prompt` pointing at the new `.bot` file to create) |
 | "build a new app from scratch", "greenfield from a prompt" — no existing codebase to extend | `app-dev` |
@@ -187,6 +188,20 @@ before you walk the table on a new roadmap item.
 - Tie-break: "is there an open PR / unmerged branch they want
   reviewed?" → `branch-improve-loop`. "is the work
   workspace-wide / no specific branch?" → `whole-improve-loop`.
+
+### `copilot` (Copi) vs `whats-next` (Nexie) vs `feature-dev` (Featurly)
+
+- `copilot` / Copi is the **engine assistant**. Its subject is iterion
+  itself — the DSL, the Cxxx diagnostics, run/resume/sandbox/backends,
+  how to read a run store. It is read-only: it drafts a `.bot` and
+  hands the operator `iterion validate`, it never edits or commits.
+- `whats-next` / Nexie is the **tactical orchestrator** for the *target
+  repo*: what to work on this week, which bot to stamp, the board.
+- `feature-dev` / Featurly is the **worker** that authors and lands a
+  missing bot in the repo.
+- Tie-break: "what is C083 / why did run 019f… fail / draft this
+  workflow for me to check" → Copi. "what should we do this week?" →
+  Nexie (usually not a card). "build the bot and commit it" → Featurly.
 
 ### `evolve` (Evoly) vs `whats-next` (Nexie) — altitude
 
@@ -337,6 +352,7 @@ dispatcher routes on it), never the persona.
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Campy | `campaign` |
+| Copi | `copilot` |
 | Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
@@ -568,6 +584,45 @@ with blocked lots requalified against the final tree.
   authority over it is measuring whether it advances.
 - **Vars**: `escalation` (string), `governance` (string), `lot_max_passes` (int), `max_lots` (int), `plan_path` (string), `stagnation_stop` (int), `workspace_dir` (string)
 - **Path**: `bots/campaign/main.bot`
+
+### `copilot` — Copi
+
+Conversational iterion assistant. ONE adaptive agent (claw, bundled
+skills, a cross-provider model ladder) in a standing chat loop, whose subject is
+iterion ITSELF: the .bot DSL, the Cxxx diagnostics, run/resume
+semantics, backends, bundles and convergence doctrine. Three
+postures the operator can switch mid-conversation — info (explain
+and orient), design (draft a workflow, which the run compiles with
+`iterion validate` before the reply is shown), debug (diagnose a
+run from its real events).
+Read-only agent by construction: a `permission: deny` gate denies Bash,
+Write, Edit and WebFetch outright — an allow-listed shell prefix is
+not a boundary, since the matcher grants everything after it — so
+Copi reads files, run stores and manifests. For the active bot it may return
+bounded exact replacements for companion files explicitly declared in that
+bot's `authoring.editable_files`; the Studio previews, hash-checks and saves
+them under the operator's action policy. Copi itself still has no write
+tool. Every turn ends
+at a budget-free chat pause — the session stays reachable for days,
+and a rolling context_brief carries the conversation across server
+restarts, redeploys and cloud pod changes. Only an explicit "close"
+ends the session. An optional cross-review (`reviewer: on`) has a
+SECOND model, from another family, criticise each answer before you
+read it — off by default, since it costs a full extra call per turn.
+
+- **Use when**:
+  Use to ask questions about iterion itself, from anywhere: what a
+  diagnostic code means, why a run paused or failed, how to write or
+  fix a .bot, which bot to reach for, how backends/sandbox/resume
+  behave. Also the drafting partner for a new bot — it writes the
+  workflow and a deterministic node compiles it before you read the
+  answer, so a draft is never presented as working on the agent's
+  word alone. It advises about whatever workspace it is pointed at;
+  it never edits or commits directly; the Studio-owned authoring bridge is the
+  only write path it may request.
+- **Triggers**: copi, copilot
+- **Vars**: `initial_message` (string), `mode` (string), `reviewer` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Path**: `bots/copilot/main.bot`
 
 ### `dep-update-guard` — Vetty
 

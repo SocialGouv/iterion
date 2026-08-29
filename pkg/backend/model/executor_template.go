@@ -540,11 +540,26 @@ func sameStringSlice(a, b []string) bool {
 	return true
 }
 
-// prependPriorAskUser injects an explicit "[PRIOR INTERACTION]" block
-// at the top of userText when the runtime relayed a prior ask_user
-// question and answer. Returns userText unchanged when no relay is
-// present (first invocation, or pause came from another source).
+// prependPriorAskUser restores the human answer that caused a backend
+// re-invocation. Native ask_user keeps its explicit reminder framing. A custom
+// `_interaction_questions` answer is placed verbatim first: it may itself be a
+// Studio capability payload whose protocol markers are valid only at the start
+// of the operator message (for example <active-editor-document>).
 func prependPriorAskUser(userText string, input map[string]any) string {
+	if questions, ok := input[delegate.PriorInteractionQuestionsKey].(map[string]any); ok {
+		if answers, ok := input[delegate.PriorInteractionAnswersKey].(map[string]any); ok {
+			if key, question, answer, ok := soleStringInteraction(questions, answers); ok {
+				reminder := systemReminder(fmt.Sprintf("[PRIOR INTERACTION]\nYou requested human input under field %q: %q\nThe exact operator answer appears above this reminder. Use it to complete the task and do not ask the same question again.", key, question))
+				return answer + "\n\n" + reminder + "\n\n" + userText
+			}
+			q, qErr := json.Marshal(questions)
+			a, aErr := json.Marshal(answers)
+			if qErr == nil && aErr == nil {
+				reminder := systemReminder(fmt.Sprintf("[PRIOR INTERACTION]\nYou requested human input: %s\nThe user answered: %s\nUse these answers to complete the task and do not ask the same questions again.", q, a))
+				return reminder + "\n\n" + userText
+			}
+		}
+	}
 	q, qOK := input[delegate.PriorAskUserQuestionKey].(string)
 	if !qOK || q == "" {
 		return userText
@@ -564,6 +579,21 @@ func prependPriorAskUser(userText string, input map[string]any) string {
 		return systemReminder(fmt.Sprintf("[PERMISSION DENIED]\nThe operator denied your previous tool call (%s). Do not retry it; take a different approach or explain why it is needed.", q)) + "\n\n" + userText
 	}
 	return systemReminder(fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.", q, a)) + "\n\n" + userText
+}
+
+func soleStringInteraction(questions, answers map[string]any) (key, question, answer string, ok bool) {
+	for candidate, rawQuestion := range questions {
+		if strings.HasPrefix(candidate, "_") {
+			continue
+		}
+		q, qOK := rawQuestion.(string)
+		a, aOK := answers[candidate].(string)
+		if !qOK || !aOK || q == "" || a == "" || ok {
+			return "", "", "", false
+		}
+		key, question, answer, ok = candidate, q, a, true
+	}
+	return key, question, answer, ok
 }
 
 // isPermissionPrompt reports whether a relayed prior question is a

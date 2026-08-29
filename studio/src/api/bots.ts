@@ -77,6 +77,78 @@ export interface BotEntry {
    *  form regroups its buckets from this; requiredness/validation and the
    *  engine's var resolution are untouched. */
   launch?: BotLaunchHints;
+  /** Conversational-bot declaration (manifest `chat:` block). Present ONLY
+   *  on bots the studio hosts in the assistant dock; absent on every
+   *  ordinary bot, which is what makes this list the chat registry. */
+  chat?: BotChatSurface;
+  /** Files this bundle explicitly exposes to the assistant authoring bridge.
+   *  This is a write perimeter; it does not grant the model a file tool. */
+  authoring?: BotAuthoringSpec;
+}
+
+export interface BotAuthoringSpec {
+  editable_files?: BotAuthoringEditableFile[];
+}
+
+export interface BotAuthoringEditableFile {
+  scope: "bundle" | "workspace";
+  path: string;
+}
+
+/** BotChatSurface mirrors the manifest `chat:` block (pkg/bundle/chat.go).
+ *  It carries presentation shape only — which node speaks, which one takes
+ *  the reply — never what the bot means. */
+export interface BotChatSurface {
+  /** Overrides for the picker; empty falls back to display_name/description. */
+  label?: string;
+  description?: string;
+  /** Launch var carrying the operator's first message. */
+  seed_var?: string;
+  /** node id → how the transcript renders it. A node absent from the map
+   *  renders as an ordinary run event rather than disappearing. */
+  nodes?: Record<string, BotChatNode>;
+  launcher_vars?: BotChatLauncherVar[];
+  launcher?: BotChatLauncher;
+  /** Bounded access to the active editor session. This never grants a file
+   *  tool: proposals are returned as artifacts and applied by the studio. */
+  editor?: BotChatEditorSurface;
+}
+
+export interface BotChatEditorSurface {
+  context?: boolean;
+  proposals?: boolean;
+}
+
+export interface BotChatNode {
+  kind: "banner" | "human" | "silent";
+  label?: string;
+  summary_field?: string;
+  prompt?: string;
+  text_field?: string;
+  approved_field?: string;
+}
+
+export interface BotChatLauncherVar {
+  name: string;
+  label?: string;
+  /** Studio-side pre-fill source. "work_dir" is the only one understood;
+   *  anything else is ignored so a newer bundle degrades to an empty
+   *  field rather than failing to render. */
+  default_from?: string;
+}
+
+export interface BotChatLauncher {
+  prompt?: string;
+  description?: string;
+  submit_label?: string;
+  allow_other?: boolean;
+  presets?: BotChatSeedPreset[];
+}
+
+export interface BotChatSeedPreset {
+  value: string;
+  label?: string;
+  description?: string;
 }
 
 /** BotLaunchHints mirrors the manifest `launch:` block. Unknown var names
@@ -217,8 +289,25 @@ export interface BotEntryWithSchema extends BotEntry {
   origin?: "tenant" | "platform" | "catalog";
 }
 
+/** BotDiscoveryError is one bot source the registry skipped: the bundle
+ *  directory or .bot file at `path` failed to load (e.g. a malformed
+ *  manifest `chat:` block). Discovery is per-entry fault-tolerant, so
+ *  the bot is ABSENT from the list — this is the channel that keeps the
+ *  skip visible. Mirrors botregistry.DiscoveryError. */
+export interface BotDiscoveryError {
+  path: string;
+  error: string;
+  /** What the skipped source is known to be. Only "bundle" and "file"
+   *  name an actual bot source; "walk" is an unreadable path whose
+   *  contents are unknown. Optional on older servers. */
+  kind?: "bundle" | "file" | "walk";
+}
+
 interface ListResponse {
   bots: BotEntryWithSchema[];
+  /** One entry per skipped malformed bundle/bot file. Absent when
+   *  everything discovered cleanly. */
+  discovery_errors?: BotDiscoveryError[];
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +320,18 @@ interface ListResponse {
 export async function listBots(): Promise<BotEntryWithSchema[]> {
   const r = await apiRequest<ListResponse>(BASE);
   return r.bots ?? [];
+}
+
+/** listBotsWithDiagnostics is listBots plus the per-source discovery
+ *  errors: the bots whose bundle failed to load and were therefore
+ *  skipped. The bots store keeps them so the gallery can warn instead
+ *  of letting a malformed bundle vanish silently. */
+export async function listBotsWithDiagnostics(): Promise<{
+  bots: BotEntryWithSchema[];
+  discoveryErrors: BotDiscoveryError[];
+}> {
+  const r = await apiRequest<ListResponse>(BASE);
+  return { bots: r.bots ?? [], discoveryErrors: r.discovery_errors ?? [] };
 }
 
 /** getBot fetches a single bot by name with its full schema. Useful

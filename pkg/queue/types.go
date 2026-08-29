@@ -79,7 +79,14 @@ import (
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 9
+// v=10 (2026-08-27): ModelOverride.Effort. Dropping it makes a stale runner
+// accept the message as v9 and run each node at its DSL reasoning_effort —
+// an operator who pinned ultracode gets the bot's declared effort with no
+// signal. MinSchemaVersion stays 8: a new runner still consumes queued v8/v9.
+// v=11 (2026-08-28): added Permission so the operator's run-level tool gate
+// override reaches the cloud runner. Dropping `deny` is a silent security
+// downgrade; dropping `off` makes the documented escape hatch inert.
+const SchemaVersion = 11
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
 // v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
@@ -142,6 +149,10 @@ type RunMessage struct {
 	// precedence level. Empty means the caller expressed nothing and the
 	// pod's ITERION_SUPERVISORS (then the default on) decides.
 	Supervisors string `json:"supervisors,omitempty"`
+	// Permission is the operator's run-level tool-permission-gate override.
+	// It must remain distinct from the workflow permission because it sits
+	// ABOVE node declarations in the precedence chain.
+	Permission string `json:"permission,omitempty"`
 	// BotBundle, when set, points at the STORED bot bundle (a team-authored
 	// bot or a platform override — a pkg/botsource row) this run was
 	// resolved from. The runner fetches the row, verifies Version still
@@ -249,15 +260,20 @@ type BudgetOverrides struct {
 	CapImposed          bool    `json:"cap_imposed,omitempty"`
 }
 
-// ModelOverride is one launch-time selector→override directive (the wire
-// mirror of store.RunModelOverride, kept local so this schema package
-// stays dependency-free). Selector semantics are the executor's: exact
-// node id, id glob, kind keyword ("agent"|"judge"|…) or "*".
+// ModelOverride is one launch-time retargeting rule: every LLM node matching
+// Selector (a node id, an id glob like "reviewer_*", or a node kind keyword
+// such as "agent"/"judge") runs on the named backend/model/provider/effort
+// instead of its DSL value. The wire mirror of store.RunModelOverride, kept
+// local so this schema package stays dependency-free.
+//
+// Empty fields inherit: a rule carrying only Model retargets the model and
+// leaves the node's backend alone.
 type ModelOverride struct {
 	Selector string `json:"selector"`
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

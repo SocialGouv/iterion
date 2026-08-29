@@ -757,6 +757,14 @@ export function getOrCreateDocumentStore(tabId: string): DocumentStore {
   return store;
 }
 
+// Read-only registry lookup for cross-cutting UI capabilities (the assistant
+// editor bridge). Unlike getOrCreateDocumentStore it never manufactures an
+// empty document for a stale/restored tab id: absence means there is no live
+// editor session to bind an action to.
+export function getDocumentStore(tabId: string): DocumentStore | undefined {
+  return REGISTRY.get(tabId);
+}
+
 export function disposeDocumentStore(tabId: string): void {
   REGISTRY.delete(tabId);
 }

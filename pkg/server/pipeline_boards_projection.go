@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -103,6 +105,13 @@ type pipelineProjectionBuilder struct {
 	since         time.Time
 	hiddenBySince int
 
+	// chatBot answers "is this bot conversational?" (a manifest chat:
+	// surface) for a (bot id, workflow path) pair — injected by the server,
+	// memoized per key in chatBots for the lifetime of one projection so a
+	// board of N Copi sessions reads the manifest once, not N times.
+	chatBot  func(botID, filePath string) bool
+	chatBots map[string]bool
+
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
@@ -128,6 +137,8 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		queuePositions:  map[string]int{},
 		since:           since,
 		finalOutputMemo: &s.finalOutputMemo,
+		chatBot:         s.botIsChat,
+		chatBots:        map[string]bool{},
 	}
 	if runs != nil {
 		builder.rs = runs.RunStore()
@@ -194,7 +205,12 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 	// Standalone roots: manual/API/scheduled/queued runs with no native
 	// issue. Only top-level runs (parent absent or dangling) become cards;
 	// a child belongs to the root that spawned it, even when the child runs
-	// a different bot.
+	// a different bot. A CHAT SESSION (a run of a bot whose manifest
+	// declares a chat: surface — the assistant dock's Copi / Nexie) is not a
+	// pipeline at all and never becomes a card: the dock is its surface, and
+	// a session parks on a budget-free human turn for days, so projecting it
+	// would pin one In-progress card per open conversation. Its children
+	// (a subbot it spawned) stay folded under it and disappear with it.
 	standalone := make([]*store.Run, 0)
 	for _, run := range builder.runs {
 		if _, owned := builder.issueOwnedRuns[run.ID]; owned {
@@ -202,6 +218,9 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		}
 		parentID := pipelineParentRunID(run)
 		if parentID != "" && builder.runs[parentID] != nil {
+			continue
+		}
+		if builder.isChatSession(run) {
 			continue
 		}
 		standalone = append(standalone, run)
@@ -457,6 +476,56 @@ func pipelineCardEligible(run *store.Run) bool {
 // ended.
 func pipelineForkShell(run *store.Run) bool {
 	return run.ForkedFrom != "" && run.Status.IsTerminal() && run.FinishedAt == nil
+}
+
+// isChatSession reports whether run belongs to a conversational bot — see
+// the standalone-roots comment in buildPipelineBoard. Memoized per bot id
+// (or, for a legacy run stamped with no bot id, per workflow directory).
+func (b *pipelineProjectionBuilder) isChatSession(run *store.Run) bool {
+	if b.chatBot == nil || run == nil {
+		return false
+	}
+	botID := strings.TrimSpace(run.BotID)
+	filePath := strings.TrimSpace(run.FilePath)
+	key := "bot:" + botID
+	if botID == "" {
+		if filePath == "" {
+			return false
+		}
+		key = "dir:" + filepath.Dir(filePath)
+	}
+	if b.chatBots == nil {
+		b.chatBots = map[string]bool{}
+	}
+	if v, ok := b.chatBots[key]; ok {
+		return v
+	}
+	v := b.chatBot(botID, filePath)
+	b.chatBots[key] = v
+	return v
+}
+
+// botIsChat resolves whether the bot behind a run declares a chat: surface
+// in its manifest. The bot id goes through the same tiers as every other
+// manifest read (platform override, then the configured catalog —
+// botManifest); a run with no bot id (a legacy launch, or a loose .bot)
+// falls back to the manifest beside its workflow file, which is where a
+// bundle's manifest lives. Anything unresolvable is an ordinary run — the
+// board must never hide a card on a missing or malformed manifest.
+func (s *Server) botIsChat(botID, filePath string) bool {
+	if botID != "" {
+		if m := s.botManifest(botID); m != nil {
+			return m.Chat != nil
+		}
+	}
+	if filePath == "" {
+		return false
+	}
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(filePath), "manifest.yaml"))
+	if err != nil || m == nil {
+		return false
+	}
+	return m.Chat != nil
 }
 
 func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, current *store.Run) []PipelineBoardAttempt {

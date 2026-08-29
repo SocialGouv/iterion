@@ -167,6 +167,17 @@ making every v7 build safe for model pins. The rollout preconditions are:
       DLQ-park mechanics this release introduces, so only a drained queue
       protects in-flight messages during this specific cutover.
 
+## v11: run-level permission override
+
+Schema v11 adds `RunMessage.permission`. This is intentionally a versioned
+change even though the JSON field is additive: omission changes explicit run
+intent. A stale runner would otherwise accept an operator's `deny` launch and
+execute with the workflow/node default, silently weakening the tool gate. The
+publisher persists the launch override on the run document and republishes it
+on resume; the runner applies it at run precedence, above node and workflow
+declarations. `MinSchemaVersion` remains 8 so new runners can drain older
+queued messages whose permission field was necessarily absent.
+
 ## If something went wrong
 
 - **Runs stuck `queued` after a rollout**: check the DLQ (they parked there
