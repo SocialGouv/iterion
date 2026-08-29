@@ -55,24 +55,25 @@ never appear in the repo, in prompts, or in logs.
   every item.
 - **no sinks configured** — not an error; the digest stays in the run
   artifacts (report-only mode). Queue kept, same rule.
-- **partial failure** (some sinks 2xx, some not) — the run SUCCEEDS
-  and the failures are listed in the notify output summary. Rationale:
-  failing the run would re-post to the sinks that already delivered on
-  resume (duplicates are worse than a visible partial). The queue is
-  consumed all the same, so a sink that is broken rather than flaky
-  loses one digest per run, quietly, until someone reads a summary.
-  Re-post from `<state_dir>/<category>/digests/*.md` once it is fixed.
 - **partial failure WITHIN a sink** (parts 1–2 of 3 delivered) — that
   sink stops there: posting part 3 over a missing part 2 leaves a hole
-  no reader can detect. It does not count in `delivered` (which means
-  *sinks that got the whole digest*) and the failed part is named in
-  the summary (`w1 part 2/3: …`).
-- **total failure** (not one POST accepted, anywhere) — the run FAILS
-  (failed_resumable). Nothing was delivered, so `iterion resume` is
-  safe and will re-attempt delivery. The guard is the `posts` count,
-  **not** `delivered`: once a digest can span several messages, "no
-  sink got all of it" no longer means "nothing was posted", and
-  resuming there would re-post what already landed.
+  no reader can detect. It does not count in `delivered`, which means
+  *sinks that got the whole digest*.
+- **partial failure** (a sink did not get the digest whole — some parts
+  refused, or one sink of several down) — the run **FAILS**
+  (failed_resumable) and the queue is **not** consumed, so the digest
+  replays in full next run. The replay may duplicate what already
+  landed on a healthy sink; that is the deliberate trade — a duplicate
+  is recoverable, a digest dropped from the queue is not.
+- **total failure** (not one POST accepted, anywhere) — same: the run
+  FAILS, nothing is consumed, `iterion resume` re-attempts delivery.
+
+`posted` is the **queue-consumption signal**, not "something went out":
+it takes the `notify -> commit_state when posted` edge, and commit_state
+clears the digested snapshots from `pending.jsonl`. So it is true only
+when EVERY sink received the whole digest. Anything less raises, loudly,
+naming the sinks and parts that failed — the alternative is a run that
+ends green having permanently dropped what it never delivered.
 
 ## Troubleshooting a missing digest
 
