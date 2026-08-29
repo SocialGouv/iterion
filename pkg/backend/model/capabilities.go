@@ -17,12 +17,24 @@ import (
 // aggregator lacks the model or is unreachable, the curated value wins.
 // Resolution never performs blocking network I/O on this path.
 func capabilitiesForModel(provider, modelID string) ModelCapabilities {
+	caps, _ := resolveMerged(provider, modelID)
+	return caps
+}
+
+// resolveMerged is capabilitiesForModel plus the answer to "did the aggregator
+// actually supply any of this?" — which is what the operator-facing Source
+// field reports. The two are computed together so the registry is consulted
+// ONCE per resolution: an entry existing is not the same as an entry
+// contributing (consensusSpec zeroes every field its publishers disagree on, so
+// a bare-index hit routinely carries nothing at all), and answering the two
+// questions with two separate lookups is how they drifted apart.
+func resolveMerged(provider, modelID string) (caps ModelCapabilities, fromAggregator bool) {
 	curated := curatedCapabilities(provider, modelID)
 	spec, ok := modelspecs.Default().Lookup(provider, modelID)
 	if !ok {
-		return curated
+		return curated, false
 	}
-	return mergeSpec(spec, curated)
+	return mergeSpec(spec, curated), specContributes(spec)
 }
 
 // curatedCapabilities is the static heuristic table — the authoritative

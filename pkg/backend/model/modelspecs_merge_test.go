@@ -118,3 +118,50 @@ func TestCapabilitiesForModel_DisabledRegistryIsPureCurated(t *testing.T) {
 		t.Errorf("disabled resolution = %+v, want curated %+v", got, want)
 	}
 }
+
+// An aggregator ENTRY is not an aggregator ANSWER. The bare index is
+// consensus-filtered, so a name several publishers quote differently resolves
+// to an entry with every field zeroed — and the resolved capabilities are then
+// wholly curated. Reporting SourceAggregator for that credits the wrong source
+// on `iterion models`, on GET /api/model-capabilities and in the studio's model
+// caption, where an "aggregator" answer is additionally cached for the whole
+// session as if it were settled.
+func TestResolveCapabilities_EmptyConsensusIsCuratedNotAggregator(t *testing.T) {
+	// Neither publisher lists the id under "anthropic", and they disagree on
+	// every field, so consensusSpec empties the bare entry.
+	seedSpecs(t, map[string]modelspecs.Spec{
+		"zai/glm-5.2":     {ContextWindow: 200_000, InputCostPerM: 0.6, OutputCostPerM: 2.2},
+		"alibaba/glm-5.2": {ContextWindow: 128_000, InputCostPerM: 1.44, OutputCostPerM: 4},
+	})
+
+	rc := ResolveCapabilities("anthropic", "glm-5.2")
+	if rc.Source != SourceCurated {
+		t.Errorf("Source = %q, want %q: every field came from the curated table", rc.Source, SourceCurated)
+	}
+	if rc.ContextWindow != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want 1000000 (curated glm-5.2 must survive)", rc.ContextWindow)
+	}
+	if rc.InputCostPerM != 0 || rc.OutputCostPerM != 0 {
+		t.Errorf("price = %v/%v, want 0/0: the publishers disagreed", rc.InputCostPerM, rc.OutputCostPerM)
+	}
+
+	// The bare endpoint path answers the same way: nothing to supply is not a
+	// hit, so a client is never told the aggregator answered with a row of
+	// zeroes.
+	if bare := ResolveBareModel("glm-5.2"); bare.Found {
+		t.Errorf("ResolveBareModel(%q).Found = true, want false on an emptied consensus entry", "glm-5.2")
+	}
+
+	// A partial consensus still counts: one surviving field IS a contribution.
+	seedSpecs(t, map[string]modelspecs.Spec{
+		"zai/glm-5.2":     {ContextWindow: 200_000, MaxOutputTokens: 64_000, InputCostPerM: 0.6},
+		"alibaba/glm-5.2": {ContextWindow: 128_000, MaxOutputTokens: 64_000, InputCostPerM: 1.44},
+	})
+	rc = ResolveCapabilities("anthropic", "glm-5.2")
+	if rc.Source != SourceAggregator {
+		t.Errorf("Source = %q, want %q: max output survived consensus", rc.Source, SourceAggregator)
+	}
+	if rc.MaxOutputTokens != 64_000 {
+		t.Errorf("MaxOutputTokens = %d, want 64000", rc.MaxOutputTokens)
+	}
+}

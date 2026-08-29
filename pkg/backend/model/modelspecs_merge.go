@@ -45,3 +45,25 @@ func mergeSpec(spec modelspecs.Spec, curated ModelCapabilities) ModelCapabilitie
 	out.OutputCostPerM = spec.OutputCostPerM
 	return out
 }
+
+// specContributes reports whether mergeSpec would carry ANY of spec into the
+// result — exactly the fields guarded above.
+//
+// The registry answering "I have an entry" is not the same as the aggregator
+// having something to say. consensusSpec zeroes every field its publishers
+// disagree on, and a bare-index hit is routinely a name several providers quote
+// differently, so an entry with every field zeroed/nil is a normal outcome.
+// Reporting SourceAggregator for one puts the aggregator's name on numbers that
+// came entirely from the curated table — and the studio pins an "aggregator"
+// answer for the whole session precisely because it is supposed to be settled,
+// so the mislabel also freezes the curated fallback the caption means to
+// refetch.
+func specContributes(spec modelspecs.Spec) bool {
+	return spec.ContextWindow > 0 ||
+		spec.MaxOutputTokens > 0 ||
+		spec.InputCostPerM > 0 ||
+		spec.OutputCostPerM > 0 ||
+		spec.Reasoning != nil ||
+		spec.ToolCall != nil ||
+		spec.Temperature != nil
+}

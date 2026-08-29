@@ -54,10 +54,15 @@ type ResolvedCapabilities struct {
 // exactly as the runtime does via capabilitiesForModel(), and additionally
 // reports whether the dynamic aggregator contributed (Source). It performs no
 // blocking network fetch — call RefreshModelSpecs first to force one.
+//
+// CONTRIBUTED, not "was present": an aggregator entry whose every field the
+// consensus filter zeroed leaves the resolved capabilities entirely curated, and
+// labelling that "aggregator" would credit the wrong source. See
+// specContributes.
 func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
-	caps := capabilitiesForModel(provider, modelID)
+	caps, fromAggregator := resolveMerged(provider, modelID)
 	src := SourceCurated
-	if _, ok := modelspecs.Default().Lookup(provider, modelID); ok {
+	if fromAggregator {
 		src = SourceAggregator
 	}
 	return ResolvedCapabilities{
@@ -88,9 +93,11 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 // own response shape — so it carries no JSON tags to imply otherwise.
 type BareModelSpec struct {
 	Model string
-	// Found is false when the aggregator has no entry. The zero fields below
-	// then mean "nothing known", which is the same thing every zero in this
-	// area means: unknown, never none.
+	// Found is false when the aggregator has nothing to supply — either no
+	// entry at all, or an entry the consensus filter emptied because its
+	// publishers disagreed on every field. The zero fields below then mean
+	// "nothing known", which is the same thing every zero in this area means:
+	// unknown, never none.
 	Found           bool
 	ContextWindow   int
 	MaxOutputTokens int
@@ -99,13 +106,17 @@ type BareModelSpec struct {
 }
 
 // ResolveBareModel resolves an unqualified model id against the aggregator's
-// bare index. Found is false when the aggregator has no entry — the caller
-// then has nothing to show, which is the honest answer rather than a curated
-// guess made under an invented provider.
+// bare index. Found is false when the aggregator has nothing to supply — the
+// caller then has nothing to show, which is the honest answer rather than a
+// curated guess made under an invented provider.
+//
+// An entry the consensus filter emptied counts as nothing: the bare index is
+// exactly where publishers disagree, so reporting Found on a hit alone would
+// tell a caller "the aggregator answered" about a row of zeroes.
 func ResolveBareModel(modelID string) BareModelSpec {
 	out := BareModelSpec{Model: modelID}
 	spec, ok := modelspecs.Default().LookupBare(modelID)
-	if !ok {
+	if !ok || !specContributes(spec) {
 		return out
 	}
 	out.Found = true
