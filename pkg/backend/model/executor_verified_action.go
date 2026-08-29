@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -302,7 +301,7 @@ func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 			return m
 		}
 	}
-	if m := os.Getenv("ITERION_VERIFIED_ACTION_MODEL"); m != "" {
+	if m := ir.LookupEnv("ITERION_VERIFIED_ACTION_MODEL"); m != "" {
 		return m
 	}
 	return defaultVerifiedActionModel

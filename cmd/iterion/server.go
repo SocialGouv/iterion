@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -326,6 +327,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	})
 
 	sandboxResolver := platformcfg.NewResolver[platformcfg.Sandbox](stores.sandboxCfg, logger.Warn)
+	// Bot-var settings reach ${ITERION_X:-default} expansion through the
+	// ir overlay — installed once at boot, shared with the admin PUT's
+	// Invalidate so this replica's own compile-time previews see a
+	// mutation immediately. Precedence: setting > pod env > .bot default.
+	botVarsResolver := platformcfg.NewResolver[platformcfg.BotVars](stores.botVars, logger.Warn)
+	ir.SetEnvOverlay(func(name string) (string, bool) {
+		rec := botVarsResolver.Get(context.Background())
+		if rec == nil {
+			return "", false
+		}
+		v, ok := rec.Vars[name]
+		return v, ok
+	})
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -513,6 +527,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		PluginSources:          stores.pluginSources,
 		BotSources:             stores.botSources,
 		BotRolesSettings:       stores.botRoles,
+		BotVarsSettings:        stores.botVars,
+		BotVarsResolver:        botVarsResolver,
 		SandboxSettings:        stores.sandboxCfg,
 		SandboxResolver:        sandboxResolver,
 		WebhookConfigs:         stores.webhooks.Configs,
@@ -617,6 +633,7 @@ type cloudStores struct {
 	usageCapSettings *usagecap.MongoSettingsStore
 	botRoles         *platformcfg.MongoStore[platformcfg.BotRoles]
 	sandboxCfg       *platformcfg.MongoStore[platformcfg.Sandbox]
+	botVars          *platformcfg.MongoStore[platformcfg.BotVars]
 	marketplace      marketplace.Store
 	pat              *pat.MongoStore
 	memory           *mongostore.MongoMemoryStore
@@ -646,6 +663,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		botSources:       botsource.NewMongoStore(st.DB()),
 		botRoles:         platformcfg.NewMongoBotRoles(st.DB()),
 		sandboxCfg:       platformcfg.NewMongoSandbox(st.DB()),
+		botVars:          platformcfg.NewMongoBotVars(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas

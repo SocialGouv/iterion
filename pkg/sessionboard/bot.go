@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // decisionSchema is the structured-output contract handed to
@@ -86,7 +86,7 @@ func resolveModel(pinned string) (string, error) {
 	if pinned != "" {
 		return pinned, nil
 	}
-	if env := os.Getenv("ITERION_DEFAULT_SESSIONBOARD_MODEL"); env != "" {
+	if env := ir.LookupEnv("ITERION_DEFAULT_SESSIONBOARD_MODEL"); env != "" {
 		return env, nil
 	}
 	report := detect.Detect(context.Background())

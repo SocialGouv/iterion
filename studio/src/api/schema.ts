@@ -399,6 +399,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/bot-vars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/bot-vars */
+        get: operations["getAdminSettingsBotVars"];
+        /** PUT /api/admin/settings/bot-vars */
+        put: operations["putAdminSettingsBotVars"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/sandbox": {
         parameters: {
             query?: never;
@@ -6460,6 +6478,42 @@ export interface operations {
         };
     };
     putAdminSettingsBotRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsBotVars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBotVars: {
         parameters: {
             query?: never;
             header?: never;

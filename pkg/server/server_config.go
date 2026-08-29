@@ -236,11 +236,21 @@ type Config struct {
 	// keeps the hardcoded/env defaults (local mode).
 	BotRolesSettings platformcfg.Store[platformcfg.BotRoles]
 	SandboxSettings  platformcfg.Store[platformcfg.Sandbox]
+	// BotVarsSettings is the bot-variable override family: DB-resolved
+	// values for the `${ITERION_X:-default}` expansions bots declare, so
+	// re-tuning a bot (model pin, reasoning effort) is a settings write,
+	// not a Helm change + rollout. Nil keeps env-only expansion.
+	BotVarsSettings platformcfg.Store[platformcfg.BotVars]
 	// SandboxResolver, when non-nil, is the SHARED TTL resolver over
 	// SandboxSettings, also handed to the cloud publisher — one instance,
 	// so the admin PUT's Invalidate reaches publish-time pinning on the
 	// same replica. Nil (tests/local) builds a private one.
 	SandboxResolver *platformcfg.Resolver[platformcfg.Sandbox]
+	// BotVarsResolver, when non-nil, is the SHARED TTL resolver over
+	// BotVarsSettings, also installed as ir.SetEnvOverlay by the cmd
+	// wiring — one instance, so the admin PUT's Invalidate reaches the
+	// same replica's expansions immediately. Nil builds a private one.
+	BotVarsResolver *platformcfg.Resolver[platformcfg.BotVars]
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

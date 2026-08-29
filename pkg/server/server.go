@@ -168,6 +168,8 @@ type Server struct {
 	botRolesStore   platformcfg.Store[platformcfg.BotRoles]
 	sandboxCfg      *platformcfg.Resolver[platformcfg.Sandbox]
 	sandboxCfgStore platformcfg.Store[platformcfg.Sandbox]
+	botVars         *platformcfg.Resolver[platformcfg.BotVars]
+	botVarsStore    platformcfg.Store[platformcfg.BotVars]
 	// platformBots caches the platform-override entry set per replica
 	// (TTL-bounded read cache; Mongo stays the authority — bot_resolver.go).
 	platformBots   *platformcfg.Resolver[platformBotSet]
@@ -452,6 +454,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		botSources:        cfg.BotSources,
 		botRolesStore:     cfg.BotRolesSettings,
 		sandboxCfgStore:   cfg.SandboxSettings,
+		botVarsStore:      cfg.BotVarsSettings,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,
@@ -467,6 +470,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	// the stores. A nil store keeps them nil-safe — Get returns nil and
 	// every consumer falls back to its hardcoded/env default.
 	s.botRoles = platformcfg.NewResolver(cfg.BotRolesSettings, logger.Warn)
+	if cfg.BotVarsResolver != nil {
+		// Shared with the ir.SetEnvOverlay hook (cmd wiring): ONE resolver,
+		// so the admin PUT's Invalidate reaches this replica's own
+		// expansions immediately, not after the TTL.
+		s.botVars = cfg.BotVarsResolver
+	} else {
+		s.botVars = platformcfg.NewResolver(cfg.BotVarsSettings, logger.Warn)
+	}
 	if cfg.SandboxResolver != nil {
 		// Shared with the cloud publisher (cmd wiring): ONE resolver
 		// instance, so the admin PUT's Invalidate reaches publish-time

@@ -392,6 +392,55 @@ var (
 	remoteRoleClears = map[string]*bool{}
 )
 
+var remoteAdminVarsCmd = &cobra.Command{
+	Use:   "vars [set NAME VALUE | rm NAME]",
+	Short: "Bot-var overrides: resolve ${ITERION_X:-default} from the DB before the pod env — re-tune a bot without a rollout",
+	Long: `Platform bot vars — DB-backed overrides for the ` + "`${ITERION_X:-default}`" + ` .bot
+expansions (model pins, reasoning effort, tunables). Precedence:
+setting > pod env var > the .bot's own default.
+
+  iterion remote admin vars                                  # stored + origin
+  iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
+  iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE   # back to env/default
+
+Infra namespaces (Mongo/NATS/JWT/secrets/…) and credential-shaped names
+are refused at write time. Changes reach every replica within the
+resolver TTL (no restart); runs claimed after that expand the new value.
+
+Two honesty notes. Values are stored, echoed and audit-logged IN CLEAR —
+never put a secret in a bot var, even under an innocent name. And a var
+only takes effect where the engine resolves it through the expansion
+chain (every ` + "`${ITERION_X:-default}`" + ` in a .bot, plus the routed model
+pins); a name nothing reads is accepted but changes nothing.`,
+	Args: cobra.MaximumNArgs(3),
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		const path = "/api/admin/settings/bot-vars"
+		if len(args) == 0 {
+			return cli.RemoteGetPrint(cmd.Context(), c, p, path)
+		}
+		patch := map[string]*string{}
+		switch args[0] {
+		case "set":
+			if len(args) != 3 {
+				return fmt.Errorf("usage: admin vars set NAME VALUE")
+			}
+			patch[args[1]] = &args[2]
+		case "rm":
+			if len(args) != 2 {
+				return fmt.Errorf("usage: admin vars rm NAME")
+			}
+			patch[args[1]] = nil
+		default:
+			return fmt.Errorf("unknown vars action %q (want set|rm)", args[0])
+		}
+		body, err := json.Marshal(patch)
+		if err != nil {
+			return err
+		}
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", path, body)
+	}),
+}
+
 var remoteAdminRolesCmd = &cobra.Command{
 	Use:   "roles [set]",
 	Short: "Webhook role→bot bindings: show the effective set (default) or re-point a role without a rollout",
@@ -610,7 +659,7 @@ func init() {
 	remoteAdminSandboxCmd.Flags().StringVar(&remoteSandboxImage, "default-image", "", "`sandbox: auto` fallback image ref (prefer an @sha256 digest)")
 	remoteAdminSandboxCmd.Flags().BoolVar(&remoteSandboxClearImage, "clear-default-image", false, "Clear the override (fall back to the env default / built-in)")
 
-	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd)
+	remoteAdminCmd.AddCommand(remoteAdminOrgsCmd, remoteAdminUsersCmd, remoteAdminDLQCmd, remoteAdminLLMCmd, remoteAdminCapsCmd, remoteAdminBotsCmd, remoteAdminRolesCmd, remoteAdminSandboxCmd, remoteAdminVarsCmd)
 
 	remoteSSOProvidersCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
 	remoteSSODomainsCmd.Flags().StringVar(&remoteSSOData, "data", "", "Request body JSON (literal or @file)")
