@@ -182,7 +182,7 @@ emitter when a consumer needs an exact payload contract.
 | Sandbox/network | `sandbox_skipped`, `sandbox_started`, `sandbox_claw_routed_via_runner`, `sandbox_host_state_mounted`, `sandbox_user_remap`, `sandbox_uid_mismatch_warning`, `sandbox_devbox_provisioned`, `sandbox_workspace_export_failed`, `network_blocked`, `sandbox_build_started`, `sandbox_build_finished`, `sandbox_build_failed` |
 | Browser/preview | `preview_url_available`, `browser_screenshot`, `browser_session_started`, `browser_session_ended` |
 | Operator messages | `user_message_queued`, `user_message_delivered`, `user_message_consumed`, `user_message_cancelled` |
-| Worktree | `worktree_branch_failed` |
+| Worktree / repo bank | `worktree_branch_failed`, `run_bank_refused`, `run_bank_superseded` |
 
 `alert` is deliberately not persisted: it is an ephemeral broker event.
 `run_health` is its persisted, replayable counterpart. A single torn JSONL
