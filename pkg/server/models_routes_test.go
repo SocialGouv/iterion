@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -161,5 +162,25 @@ func TestModelCapabilities_MissingSpecIs400(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// The length cap must bound what is RESOLVED, not just the `spec` param.
+// `provider` is caller-supplied and gets concatenated onto it, so capping spec
+// alone left the composed string unbounded — the limit borrowed from
+// /api/resolve-model did nothing for anyone who sent both.
+func TestModelCapabilities_ProviderCannotBypassTheLengthCap(t *testing.T) {
+	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(nil)))
+	_, hs := newTestServer(t)
+
+	if _, status := getModelCaps(t, hs.URL, strings.Repeat("a", maxResolveLiteralBytes+1), ""); status != http.StatusBadRequest {
+		t.Errorf("oversized spec status = %d, want 400", status)
+	}
+	if _, status := getModelCaps(t, hs.URL, "m", strings.Repeat("p", maxResolveLiteralBytes+1)); status != http.StatusBadRequest {
+		t.Errorf("oversized provider status = %d, want 400", status)
+	}
+	// A composition that fits is still served.
+	if _, status := getModelCaps(t, hs.URL, "claude-opus-5", "anthropic"); status != http.StatusOK {
+		t.Errorf("ordinary composition status = %d, want 200", status)
 	}
 }

@@ -55,14 +55,17 @@ func (s *Server) handleModelCapabilities(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusBadRequest, "missing required query param: spec")
 		return
 	}
-	if len(spec) > maxResolveLiteralBytes {
-		httpError(w, http.StatusBadRequest, "spec too long")
-		return
-	}
-
 	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
 	if provider != "" && !strings.Contains(spec, "/") {
 		spec = provider + "/" + spec
+	}
+
+	// Bound what is resolved, AFTER composition: `provider` is caller-supplied
+	// too, so capping `spec` alone leaves the composed string unbounded and the
+	// limit borrowed from /api/resolve-model does nothing.
+	if len(spec) > maxResolveLiteralBytes {
+		httpError(w, http.StatusBadRequest, "spec too long")
+		return
 	}
 
 	if strings.Contains(spec, "/") {
