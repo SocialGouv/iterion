@@ -419,6 +419,9 @@ schema silence_input:
   state_commit: bool
 
 schema notify_output:
+  ## At least one sink received the digest WHOLE (`delivered > 0`). It
+  ## gates `notify -> commit_state`, i.e. whether the queue is consumed,
+  ## so it must never be true for a digest nobody got in full.
   posted: bool
   ## Sinks that received the digest ENTIRELY (every message of it).
   delivered: int
@@ -1378,7 +1381,20 @@ tool notify:
     if posts_ok == 0:
         raise SystemExit('feed-watch: all webhook post(s) failed across ' + str(len(plans)) +
                          ' sink(s): ' + '; '.join(failures))
-    out({'posted': True, 'dry_run': False, 'delivered': delivered, 'targets': targets,
+    if delivered == 0:
+        ## stderr only (see the dry-run note above): stdout is the node's
+        ## JSON output. Loud, because this is the one shape where content
+        ## landed in a channel and the queue is deliberately NOT consumed.
+        print('feed-watch: no sink received the digest whole (' + str(posts_ok) +
+              ' partial post(s) landed) -- the queue is kept, the next digest re-sends it ' +
+              'and will duplicate the parts already posted: ' + '; '.join(failures), file=sys.stderr)
+    ## `posted` gates `notify -> commit_state`, which CLEARS the pending
+    ## queue: it must mean "a sink got the digest WHOLE", never merely
+    ## "a POST succeeded". A split digest whose tail failed on every sink
+    ## leaves delivered=0 with posts_ok>0 — consuming the queue there
+    ## would drop the undelivered items permanently. `posts_ok` stays the
+    ## resume guard above; the two questions are not the same one.
+    out({'posted': delivered > 0, 'dry_run': False, 'delivered': delivered, 'targets': targets,
          'parts': parts_max, 'posts': posts_ok,
          'summary': 'delivered ' + str(delivered) + '/' + str(len(plans)) + ' sink(s)' +
                     ('' if parts_max == 1 else ' in ' + str(parts_max) + ' message(s)') +

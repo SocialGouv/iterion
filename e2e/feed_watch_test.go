@@ -920,8 +920,15 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if out["delivered"].(float64) != 0 {
 			t.Fatalf("a sink missing parts is not delivered: %v", out)
 		}
-		if out["posts"].(float64) != 1 || out["posted"] != true {
+		if out["posts"].(float64) != 1 {
 			t.Fatalf("the one successful post must be visible in the output: %v", out)
+		}
+		// `posted` gates notify -> commit_state, which CLEARS the pending
+		// queue. No sink got the digest whole, so the queue must survive:
+		// posted=true here would consume it and drop the undelivered tail
+		// permanently, with nothing failing to say so.
+		if out["posted"] != false {
+			t.Fatalf("a digest no sink received whole must not consume the queue: %v", out)
 		}
 		if !strings.Contains(out["summary"].(string), "FAILED") ||
 			!strings.Contains(out["summary"].(string), "part 2/") {

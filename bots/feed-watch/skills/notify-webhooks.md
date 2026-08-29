@@ -67,6 +67,12 @@ never appear in the repo, in prompts, or in logs.
   no reader can detect. It does not count in `delivered` (which means
   *sinks that got the whole digest*) and the failed part is named in
   the summary (`w1 part 2/3: …`).
+  When NO sink got the digest whole, `posted` is false, so the queue is
+  **not** consumed: the run still finishes, the items stay pending, and
+  the next digest re-sends them — duplicating the parts that already
+  landed. A visible duplicate beats a silent permanent drop, which is
+  what consuming the queue on a half-delivered digest would be. A
+  stderr line names the shape when it happens.
 - **total failure** (not one POST accepted, anywhere) — the run FAILS
   (failed_resumable). Nothing was delivered, so `iterion resume` is
   safe and will re-attempt delivery. The guard is the `posts` count,
