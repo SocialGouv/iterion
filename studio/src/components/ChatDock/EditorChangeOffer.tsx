@@ -28,6 +28,7 @@ import { useRecentsStore } from "@/store/recents";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
+import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 type ActionState = "idle" | "applying" | "applied" | "saving" | "saved" | "error";
 
@@ -80,10 +81,11 @@ export default function EditorChangeOffer({
   const targetStale = !stillActive || !revisionMatches;
   // A live editor tab survives navigation by design. Keep the proposal, but
   // never let an automatic or confirmed action mutate an invisible canvas.
-  const unavailable = targetStale || !onEditor;
-
   const path = resolved?.store.getState().currentFilePath ?? null;
-  const readOnly = !!path && isCloud && api.parseBotSourceEditorPath(path) === null;
+  const readOnly =
+    isSharedBundleFilePath(path) ||
+    (!!path && isCloud && api.parseBotSourceEditorPath(path) === null);
+  const unavailable = targetStale || !onEditor || readOnly;
   const persistable = !!path && !readOnly;
   // Intent is model-reported but never grants authority: it can only select
   // the operator's preconfigured branch. Unknown/legacy intent is non-explicit
@@ -112,6 +114,11 @@ export default function EditorChangeOffer({
       if (!currentPath) {
         throw new Error(
           "This buffer has no file yet. Use Save As in the editor to choose its location.",
+        );
+      }
+      if (isSharedBundleFilePath(currentPath)) {
+        throw new Error(
+          "This workflow comes from a locked shared bundle. Edit the source bundle and sync the dependency before saving.",
         );
       }
       if (isCloud && api.parseBotSourceEditorPath(currentPath) === null) {
@@ -164,6 +171,13 @@ export default function EditorChangeOffer({
       ) {
         setError(
           "The editor tab, page, or document revision changed. Return to the captured buffer and ask again if needed.",
+        );
+        setAction("error");
+        return;
+      }
+      if (isSharedBundleFilePath(current.store.getState().currentFilePath)) {
+        setError(
+          "This workflow comes from a locked shared bundle. Edit its source bundle instead.",
         );
         setAction("error");
         return;
@@ -320,6 +334,7 @@ export default function EditorChangeOffer({
   let detail = "Apply changes only the live buffer; you can undo or save afterwards.";
   if (action === "saved") detail = path ?? "Saved";
   else if (needsReturn) detail = "Return to the captured editor tab to review or run this action.";
+  else if (readOnly) detail = "This locked shared bundle is read-only in the consumer project.";
   else if (!revisionMatches) detail = "The document changed since this proposal was created.";
   else if (applyDecision === "deny") detail = "Applying assistant changes is disabled in Settings → Assistant.";
   else if (action === "applying") detail = "Validating and applying the proposed bot…";

@@ -2,7 +2,11 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ unparse: vi.fn(), parseBotSourceEditorPath: vi.fn() }));
+const api = vi.hoisted(() => ({
+  unparse: vi.fn(),
+  parseBotSourceEditorPath: vi.fn(),
+  getFileDependencyMetadata: vi.fn(),
+}));
 const authoring = vi.hoisted(() => ({ snapshotAssistantAuthoring: vi.fn() }));
 const botSources = vi.hoisted(() => ({ getBotSource: vi.fn() }));
 vi.mock("@/api/client", () => api);
@@ -87,6 +91,34 @@ describe("active editor session snapshots", () => {
     expect(resolveAuthoringSnapshot(snapshot.sessionId, snapshot.revision)).toEqual(
       snapshot.authoring,
     );
+  });
+
+  it("attaches verified shared bundle identity to a materialized workflow", async () => {
+    api.unparse.mockResolvedValue("workflow shared:\n  entry: start\n");
+    api.getFileDependencyMetadata.mockResolvedValue({
+      read_only: true,
+      shared_bundle: {
+        name: "shared-planner",
+        version: "0.1.0",
+        workflow: "hierarchy-feature-author",
+        bundle_sha256: "a".repeat(64),
+        verified: true,
+      },
+    });
+    const path = ".botz/shared-planner/main.bot";
+    const tabId = useTabsStore.getState().openTab("editor", { file: path }, "shared");
+    const store = getOrCreateDocumentStore(tabId);
+    store.getState().setDocument(createEmptyDocument());
+    store.getState().setCurrentFilePath(path);
+
+    const snapshot = await captureActiveEditorDocument();
+
+    expect(snapshot?.sharedBundle).toMatchObject({
+      name: "shared-planner",
+      version: "0.1.0",
+      workflow: "hierarchy-feature-author",
+      verified: true,
+    });
   });
 
   it("inlines only an explicitly attached declared cloud bundle file", async () => {

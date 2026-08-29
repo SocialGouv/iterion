@@ -114,6 +114,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files", s.handleListFiles)
 	s.mux.HandleFunc("POST /api/files/open", s.handleOpenFile)
 	s.mux.HandleFunc("POST /api/files/save", s.handleSaveFile)
+	s.mux.HandleFunc("POST /api/files/dependency", s.handleFileDependency)
 	// Assistant companion-file authoring. The model only proposes exact
 	// replacements; these host-owned endpoints resolve the manifest perimeter,
 	// check optimistic-concurrency tokens, preview, and persist.

@@ -24,6 +24,7 @@ import { downloadBlob } from "@/lib/download";
 import { DISCARD_CHANGES_PROMPT } from "@/lib/copy";
 import { errorMessage, toastError } from "@/lib/errorHints";
 import { openExampleIntoStore } from "@/lib/openExample";
+import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ConfirmOptions } from "@/hooks/useConfirm";
 
@@ -83,10 +84,13 @@ export function useDocumentFileOps({
   // catalog bot at /opt/iterion/bots, a deep link — is read-only; saving it
   // would 500 with "permission denied". Such a bot must be forked first
   // ("Duplicate & edit"). Local mode always writes to disk.
+  const sharedBundle = isSharedBundleFilePath(currentFilePath);
   const readOnly =
-    isCloud && !!currentFilePath && api.parseBotSourceEditorPath(currentFilePath) === null;
-  const READ_ONLY_MSG =
-    "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
+    sharedBundle ||
+    (isCloud && !!currentFilePath && api.parseBotSourceEditorPath(currentFilePath) === null);
+  const READ_ONLY_MSG = sharedBundle
+    ? "This workflow comes from a locked shared bundle. Edit its source bundle, update bots.lock, then run iterion bots sync."
+    : "This is a read-only catalog bot. Use “Duplicate & edit” on the bot's page to make an editable copy.";
   const isDirty = useDocumentStore((s) => s.isDirty);
   const addWorkflow = useDocumentStore((s) => s.addWorkflow);
   const removeWorkflow = useDocumentStore((s) => s.removeWorkflow);

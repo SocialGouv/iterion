@@ -17,6 +17,7 @@ import {
   type DocumentStore,
 } from "@/store/document";
 import { useTabsStore } from "@/store/tabs";
+import { isSharedBundleFilePath } from "@/lib/sharedBundle";
 
 import type { ActiveEditorDocumentSnapshot } from "./contextMessage";
 import type { TypedReference } from "./routeReference";
@@ -67,6 +68,7 @@ export async function captureActiveEditorDocument(
   const complete = source.length <= MAX_ACTIVE_EDITOR_SOURCE;
   const sessionId = tokenForTab(tabId);
   let authoring: AssistantAuthoringSnapshot | undefined;
+  let sharedBundle: api.SharedBundleFileMetadata | undefined;
   if (state.currentFilePath) {
     try {
       authoring = await snapshotAssistantAuthoring(state.currentFilePath);
@@ -83,6 +85,15 @@ export async function captureActiveEditorDocument(
       // remains useful on its own, so an unavailable authoring snapshot is not
       // allowed to suppress the editor marker.
     }
+    if (isSharedBundleFilePath(state.currentFilePath)) {
+      try {
+        const metadata = await api.getFileDependencyMetadata(state.currentFilePath);
+        sharedBundle = metadata.shared_bundle;
+      } catch {
+        // Metadata enriches Copi's context but is not required to capture the
+        // live read-only document.
+      }
+    }
   }
   return {
     sessionId,
@@ -92,6 +103,7 @@ export async function captureActiveEditorDocument(
     sourceLength: source.length,
     ...(complete ? { source } : {}),
     ...(authoring ? { authoring } : {}),
+    ...(sharedBundle ? { sharedBundle } : {}),
   };
 }
 

@@ -34,6 +34,7 @@ export interface ActiveEditorDocumentSnapshot {
   sourceLength: number;
   source?: string;
   authoring?: AssistantAuthoringSnapshot;
+  sharedBundle?: import("@/api/client").SharedBundleFileMetadata;
 }
 
 // The EXPLICIT half (#333). A separate prefix rather than more entries on the

@@ -117,6 +117,17 @@ describe("EditorChangeOffer", () => {
     expect(api.parseSource).not.toHaveBeenCalled();
   });
 
+  it("refuses to apply a proposal to a materialized shared bundle", async () => {
+    await liveProposal(".botz/shared-planner/main.bot");
+
+    render(<EditorChangeOffer runId="run-1" revision={1} />);
+
+    const apply = await screen.findByRole("button", { name: "Apply to editor" });
+    expect((apply as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/locked shared bundle is read-only/i)).toBeTruthy();
+    expect(api.parseSource).not.toHaveBeenCalled();
+  });
+
   it("refuses to affect another active editor tab", async () => {
     await liveProposal();
     useTabsStore.getState().newEditorTab("other");

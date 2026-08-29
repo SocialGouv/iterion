@@ -398,6 +398,28 @@ export async function saveFile(
   });
 }
 
+export interface SharedBundleFileMetadata {
+  name: string;
+  version?: string;
+  workflow?: string;
+  bundle_sha256?: string;
+  verified: boolean;
+}
+
+export interface FileDependencyMetadata {
+  read_only: boolean;
+  shared_bundle?: SharedBundleFileMetadata;
+}
+
+export async function getFileDependencyMetadata(
+  path: string,
+): Promise<FileDependencyMetadata> {
+  return request("/files/dependency", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
 // Reasoning effort capabilities
 
 export interface EffortCapabilities {

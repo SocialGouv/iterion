@@ -448,6 +448,10 @@ func (s *Server) handleSaveFile(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid path: %v", err)
 		return
 	}
+	if s.isMaterializedBotDependencyPath(absPath) {
+		httpError(w, http.StatusForbidden, "shared bot bundles under .botz are read-only; edit the source bundle and run iterion bots sync")
+		return
+	}
 	f, err := ast.UnmarshalFile(req.Document)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "invalid document: %v", err)
