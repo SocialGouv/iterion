@@ -803,6 +803,19 @@ func (e *Engine) varExpandFn() func(string) string {
 			}
 			return e.workDir
 		}
+		if key == "BUNDLE_DIR" {
+			// A bundle is mounted read-only at the runtime's canonical sandbox
+			// path. Outside a sandbox, expose its resolved host directory. Plain
+			// .bot runs deliberately expand to empty: they have no bundle root
+			// and must not accidentally treat the process cwd as one.
+			if e.bundle == nil || e.bundle.Dir == "" {
+				return ""
+			}
+			if e.containerWorkspace != "" {
+				return "/run/iterion/bundle"
+			}
+			return e.bundle.Dir
+		}
 		if key == "PROJECT_MEMORY_DIR" {
 			// Project-rooted memory directory, keyed off the run's
 			// repo_root (not the per-run workDir). Resolves to
