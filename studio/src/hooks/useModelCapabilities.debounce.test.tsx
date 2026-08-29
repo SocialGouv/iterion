@@ -160,4 +160,35 @@ describe("useModelCapabilities", () => {
     });
     expect(apiMocks.fetchModelCapabilities.mock.calls.length).toBe(settled);
   });
+  // The poll that makes a curated answer improve must not turn a broken
+  // endpoint into a request storm: this caption is decoration, and the hook
+  // sets `retry: false` precisely so a failed lookup leaves the picker usable.
+  it("does not poll an endpoint that is failing", async () => {
+    apiMocks.fetchModelCapabilities.mockReset();
+    apiMocks.fetchModelCapabilities.mockRejectedValue(new Error("boom"));
+
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useModelCapabilities("anthropic/claude-opus-5"),
+      { wrapper: wrapper(client) },
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+
+    // Two minutes at the poll interval would be ~24 attempts if the error
+    // state did not stop the timer.
+    expect(
+      apiMocks.fetchModelCapabilities.mock.calls.length,
+    ).toBeLessThanOrEqual(3);
+    expect(result.current.capabilities).toBeNull();
+  });
 });
