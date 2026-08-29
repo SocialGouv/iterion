@@ -204,6 +204,15 @@ type Manifest struct {
 	Produces []ProducedArtifact `yaml:"produces,omitempty"`
 	Consumes []ConsumedArtifact `yaml:"consumes,omitempty"`
 
+	// Exports names workflows that another bundle may reference through a
+	// bot:// URI. Dependencies is the consumer-side allow-list: a workflow
+	// can only resolve a shared bundle that its own manifest declares. Both
+	// fields are additive schema-v1 extensions; older binaries reject them
+	// explicitly through strict YAML decoding instead of silently ignoring
+	// the dependency contract.
+	Exports      BundleExports      `yaml:"exports,omitempty" json:"exports,omitempty"`
+	Dependencies BundleDependencies `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
+
 	// Retry is the bot author's opinion on what should happen when one of
 	// this bot's runs dies because the provider's quota window is exhausted
 	// (pkg/retrypolicy). It is the BOT layer of the retry precedence chain,
@@ -400,6 +409,29 @@ type ConsumedArtifact struct {
 	Var string `yaml:"var" json:"var"`
 	// Scope selects the upstream run. Defaults to HandoffScopePR.
 	Scope HandoffScope `yaml:"scope,omitempty" json:"scope,omitempty"`
+}
+
+// BundleExports is the public workflow surface of a bundle.
+type BundleExports struct {
+	Workflows []WorkflowExport `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+}
+
+// WorkflowExport binds a stable bot:// workflow id to a bundle-relative
+// workflow source path.
+type WorkflowExport struct {
+	ID   string `yaml:"id" json:"id"`
+	Path string `yaml:"path" json:"path"`
+}
+
+// BundleDependencies declares the shared bundles a consumer is allowed to
+// resolve. The exact version and content hash live in the project lockfile.
+type BundleDependencies struct {
+	Workflows []WorkflowDependency `yaml:"workflows,omitempty" json:"workflows,omitempty"`
+}
+
+// WorkflowDependency names one shared workflow bundle. Matching is exact.
+type WorkflowDependency struct {
+	Name string `yaml:"name" json:"name"`
 }
 
 // EffectiveScope returns the declared scope or the default.
@@ -1005,6 +1037,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateHandoff(m.Produces, m.Consumes); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateWorkflowSharing(m.Exports, m.Dependencies); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	// A typo in retry: must fail at parse time, next to its source. Left
 	// unvalidated it would surface days later as a silently-defaulted
 	// policy on a run nobody is watching.
@@ -1012,6 +1047,51 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
 	return &m, nil
+}
+
+func validateWorkflowSharing(exports BundleExports, dependencies BundleDependencies) error {
+	exportIDs := make(map[string]struct{}, len(exports.Workflows))
+	for i := range exports.Workflows {
+		exp := &exports.Workflows[i]
+		exp.ID = strings.TrimSpace(exp.ID)
+		exp.Path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp.Path)))
+		if exp.ID == "" {
+			return fmt.Errorf("exports.workflows[%d].id is required", i)
+		}
+		if strings.ContainsAny(exp.ID, `/\\`) || exp.ID == "." || exp.ID == ".." {
+			return fmt.Errorf("exports.workflows[%d].id %q must not contain path separators", i, exp.ID)
+		}
+		if _, duplicate := exportIDs[exp.ID]; duplicate {
+			return fmt.Errorf("exports.workflows[%d].id %q is duplicated", i, exp.ID)
+		}
+		exportIDs[exp.ID] = struct{}{}
+		if exp.Path == "" || exp.Path == "." {
+			return fmt.Errorf("exports.workflows[%d].path is required", i)
+		}
+		if filepath.IsAbs(exp.Path) || strings.HasPrefix(exp.Path, "../") || exp.Path == ".." {
+			return fmt.Errorf("exports.workflows[%d].path %q must stay inside the bundle", i, exp.Path)
+		}
+		if !strings.HasSuffix(strings.ToLower(exp.Path), ".bot") {
+			return fmt.Errorf("exports.workflows[%d].path %q must name a .bot workflow", i, exp.Path)
+		}
+	}
+
+	dependencyNames := make(map[string]struct{}, len(dependencies.Workflows))
+	for i := range dependencies.Workflows {
+		dep := &dependencies.Workflows[i]
+		dep.Name = strings.TrimSpace(dep.Name)
+		if dep.Name == "" {
+			return fmt.Errorf("dependencies.workflows[%d].name is required", i)
+		}
+		if strings.ContainsAny(dep.Name, `/\\`) || dep.Name == "." || dep.Name == ".." {
+			return fmt.Errorf("dependencies.workflows[%d].name %q must not contain path separators", i, dep.Name)
+		}
+		if _, duplicate := dependencyNames[dep.Name]; duplicate {
+			return fmt.Errorf("dependencies.workflows[%d].name %q is duplicated", i, dep.Name)
+		}
+		dependencyNames[dep.Name] = struct{}{}
+	}
+	return nil
 }
 
 func validateAuthoring(a *AuthoringSpec) error {

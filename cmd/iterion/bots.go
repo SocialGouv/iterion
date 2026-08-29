@@ -178,6 +178,32 @@ sandboxing applies as usual). By default bots install under <workdir>/.botz/
 	},
 }
 
+var botsSyncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Materialize the shared bot bundles pinned by bots.lock",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		workdir, _ := cmd.Flags().GetString("workdir")
+		results, err := cli.BotsSync(cmd.Context(), workdir)
+		if err != nil {
+			return err
+		}
+		p := newPrinter()
+		if p.Format == cli.OutputJSON {
+			p.JSON(results)
+			return nil
+		}
+		for _, result := range results {
+			state := "verified"
+			if result.Changed {
+				state = "installed"
+			}
+			p.Line("%s  %s  %s", state, result.Name, result.BundleSHA256)
+		}
+		return nil
+	},
+}
+
 func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
 	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill")
@@ -198,10 +224,12 @@ func init() {
 	botsInstallCmd.Flags().String("name", "", "Install under this name instead of the source's")
 	botsInstallCmd.Flags().Bool("force", false, "Overwrite an existing install of the same name")
 	botsInstallCmd.Flags().String("workdir", "", "Workspace root for catalog refresh (default: current directory)")
+	botsSyncCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
 	botsCmd.AddCommand(botsCreateCmd)
 	botsCmd.AddCommand(botsTemplatesCmd)
 	botsCmd.AddCommand(botsListCmd)
 	botsCmd.AddCommand(botsRegenCatalogCmd)
 	botsCmd.AddCommand(botsInstallCmd)
+	botsCmd.AddCommand(botsSyncCmd)
 	rootCmd.AddCommand(botsCmd)
 }

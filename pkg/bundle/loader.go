@@ -318,6 +318,21 @@ func assembleBundle(dir string) (*Bundle, error) {
 		}
 	}
 	b.Manifest = manifest
+	if manifest != nil {
+		for _, exp := range manifest.Exports.Workflows {
+			path, joinErr := safeJoin(dir, exp.Path)
+			if joinErr != nil {
+				return nil, fmt.Errorf("bundle: export %q: %w", exp.ID, joinErr)
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				return nil, fmt.Errorf("bundle: export %q references %s: %w", exp.ID, exp.Path, statErr)
+			}
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("bundle: export %q references non-file %s", exp.ID, exp.Path)
+			}
+		}
+	}
 	return b, nil
 }
 
