@@ -204,6 +204,38 @@ var botsSyncCmd = &cobra.Command{
 	},
 }
 
+var botsUpdateCmd = &cobra.Command{
+	Use:   "update <name>",
+	Short: "Refresh one bots.lock dependency and materialize it",
+	Long: `Resolve one existing bots.lock dependency at its current pin (or at
+--ref), validate and hash the bundle, atomically rewrite the lock, then sync
+the materialized .botz copy. Local Git bundle changes must be committed unless
+--allow-dirty is passed explicitly.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		workdir, _ := cmd.Flags().GetString("workdir")
+		ref, _ := cmd.Flags().GetString("ref")
+		allowDirty, _ := cmd.Flags().GetBool("allow-dirty")
+		result, err := cli.BotsUpdate(cmd.Context(), cli.BotsUpdateOptions{
+			Workdir: workdir, Name: args[0], Ref: ref, AllowDirty: allowDirty,
+		})
+		if err != nil {
+			return err
+		}
+		p := newPrinter()
+		if p.Format == cli.OutputJSON {
+			p.JSON(result)
+			return nil
+		}
+		p.Header("Bot dependency updated")
+		p.KV("Name", result.Name)
+		p.KV("Ref", result.Ref)
+		p.KV("SHA-256", result.BundleSHA256)
+		p.KV("Installed", result.InstalledPath)
+		return nil
+	},
+}
+
 func init() {
 	botsListCmd.Flags().StringSlice("paths", nil, "Directories or .bot files to scan (default: bots, examples)")
 	botsListCmd.Flags().String("format", "json", "Output format: json|markdown|skill")
@@ -225,11 +257,15 @@ func init() {
 	botsInstallCmd.Flags().Bool("force", false, "Overwrite an existing install of the same name")
 	botsInstallCmd.Flags().String("workdir", "", "Workspace root for catalog refresh (default: current directory)")
 	botsSyncCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
+	botsUpdateCmd.Flags().String("workdir", "", "Workspace root containing bots.lock (default: current directory)")
+	botsUpdateCmd.Flags().String("ref", "", "New Git commit or tag (default: keep the locked ref; local clean sources record HEAD)")
+	botsUpdateCmd.Flags().Bool("allow-dirty", false, "Allow hashing uncommitted local bundle content (not reproducible from the recorded ref)")
 	botsCmd.AddCommand(botsCreateCmd)
 	botsCmd.AddCommand(botsTemplatesCmd)
 	botsCmd.AddCommand(botsListCmd)
 	botsCmd.AddCommand(botsRegenCatalogCmd)
 	botsCmd.AddCommand(botsInstallCmd)
 	botsCmd.AddCommand(botsSyncCmd)
+	botsCmd.AddCommand(botsUpdateCmd)
 	rootCmd.AddCommand(botsCmd)
 }

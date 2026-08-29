@@ -48,56 +48,59 @@ func BotsSync(ctx context.Context, workdir string) ([]BotSyncResult, error) {
 	results := make([]BotSyncResult, 0, len(names))
 	for _, name := range names {
 		dep := lock.Dependencies[name]
-		target := filepath.Join(absWorkdir, ".botz", name)
-		if installedHash, hashErr := bundle.ContentHashDir(target); hashErr == nil && installedHash == dep.BundleSHA256 {
-			results = append(results, BotSyncResult{Name: name, BundleSHA256: installedHash, InstalledPath: target})
-			continue
+		result, err := syncBotDependency(ctx, absWorkdir, name, dep)
+		if err != nil {
+			return nil, err
 		}
-
-		source := resolveLocalLockSource(absWorkdir, dep.Source)
-		fetched, cleanup, fetchErr := botinstall.Fetch(ctx, botinstall.Options{Source: source, Ref: dep.Ref, Path: dep.Path})
-		if fetchErr != nil {
-			return nil, fmt.Errorf("bot dependencies: sync %q: %w", name, fetchErr)
-		}
-		fetchedHash, hashErr := bundle.ContentHashDir(fetched)
-		if hashErr != nil {
-			cleanup()
-			return nil, fmt.Errorf("bot dependencies: hash %q: %w", name, hashErr)
-		}
-		if fetchedHash != dep.BundleSHA256 {
-			cleanup()
-			return nil, fmt.Errorf("bot dependencies: %q resolved to sha256 %s, lock requires %s", name, fetchedHash, dep.BundleSHA256)
-		}
-		fetchedBundle, openErr := bundle.OpenDir(fetched)
-		if openErr != nil {
-			cleanup()
-			return nil, fmt.Errorf("bot dependencies: open %q: %w", name, openErr)
-		}
-		if fetchedBundle.Manifest == nil || fetchedBundle.Manifest.Name != name {
-			cleanup()
-			actual := "<missing>"
-			if fetchedBundle.Manifest != nil {
-				actual = fetchedBundle.Manifest.Name
-			}
-			return nil, fmt.Errorf("bot dependencies: lock name %q does not exactly match bundle manifest name %q", name, actual)
-		}
-
-		installed, installErr := botinstall.Install(ctx, botinstall.Options{
-			Source: fetched, Name: name, Force: true, Workdir: absWorkdir,
-		})
-		cleanup()
-		if installErr != nil {
-			return nil, fmt.Errorf("bot dependencies: install %q: %w", name, installErr)
-		}
-		installedHash, hashErr := bundle.ContentHashDir(installed.InstalledPath)
-		if hashErr != nil || installedHash != dep.BundleSHA256 {
-			return nil, fmt.Errorf("bot dependencies: installed %q failed post-install hash verification", name)
-		}
-		results = append(results, BotSyncResult{
-			Name: name, BundleSHA256: installedHash, InstalledPath: installed.InstalledPath, Changed: true,
-		})
+		results = append(results, result)
 	}
 	return results, nil
+}
+
+func syncBotDependency(ctx context.Context, workdir, name string, dep botlock.Dependency) (BotSyncResult, error) {
+	target := filepath.Join(workdir, ".botz", name)
+	if installedHash, hashErr := bundle.ContentHashDir(target); hashErr == nil && installedHash == dep.BundleSHA256 {
+		return BotSyncResult{Name: name, BundleSHA256: installedHash, InstalledPath: target}, nil
+	}
+
+	source := resolveLocalLockSource(workdir, dep.Source)
+	fetched, cleanup, fetchErr := botinstall.Fetch(ctx, botinstall.Options{Source: source, Ref: dep.Ref, Path: dep.Path})
+	if fetchErr != nil {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: sync %q: %w", name, fetchErr)
+	}
+	defer cleanup()
+	fetchedHash, hashErr := bundle.ContentHashDir(fetched)
+	if hashErr != nil {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: hash %q: %w", name, hashErr)
+	}
+	if fetchedHash != dep.BundleSHA256 {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: %q resolved to sha256 %s, lock requires %s", name, fetchedHash, dep.BundleSHA256)
+	}
+	fetchedBundle, openErr := bundle.OpenDir(fetched)
+	if openErr != nil {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: open %q: %w", name, openErr)
+	}
+	if fetchedBundle.Manifest == nil || fetchedBundle.Manifest.Name != name {
+		actual := "<missing>"
+		if fetchedBundle.Manifest != nil {
+			actual = fetchedBundle.Manifest.Name
+		}
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: lock name %q does not exactly match bundle manifest name %q", name, actual)
+	}
+
+	installed, installErr := botinstall.Install(ctx, botinstall.Options{
+		Source: fetched, Name: name, Force: true, Workdir: workdir,
+	})
+	if installErr != nil {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: install %q: %w", name, installErr)
+	}
+	installedHash, hashErr := bundle.ContentHashDir(installed.InstalledPath)
+	if hashErr != nil || installedHash != dep.BundleSHA256 {
+		return BotSyncResult{}, fmt.Errorf("bot dependencies: installed %q failed post-install hash verification", name)
+	}
+	return BotSyncResult{
+		Name: name, BundleSHA256: installedHash, InstalledPath: installed.InstalledPath, Changed: true,
+	}, nil
 }
 
 func resolveLocalLockSource(workdir, source string) string {

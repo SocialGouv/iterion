@@ -52,6 +52,45 @@ func Load(workdir string) (*Lock, error) {
 	return &lock, nil
 }
 
+// Save atomically replaces <workdir>/bots.lock after validating the complete
+// v1 document. The temporary file lives beside the lock so Rename remains an
+// atomic same-filesystem operation.
+func Save(workdir string, lock *Lock) error {
+	if err := lock.Validate(); err != nil {
+		return fmt.Errorf("bot dependencies: %s: %w", filepath.Join(workdir, FileName), err)
+	}
+	body, err := yaml.Marshal(lock)
+	if err != nil {
+		return fmt.Errorf("bot dependencies: encode %s: %w", filepath.Join(workdir, FileName), err)
+	}
+	path := filepath.Join(workdir, FileName)
+	tmp, err := os.CreateTemp(workdir, ".bots.lock-*")
+	if err != nil {
+		return fmt.Errorf("bot dependencies: create temporary lock: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("bot dependencies: write temporary lock: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("bot dependencies: sync temporary lock: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("bot dependencies: close temporary lock: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("bot dependencies: replace %s: %w", path, err)
+	}
+	return nil
+}
+
 // Validate enforces the lockfile's closed v1 contract.
 func (l *Lock) Validate() error {
 	if l == nil {

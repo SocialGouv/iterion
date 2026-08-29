@@ -44,3 +44,40 @@ dependencies:
 		t.Fatal("expected invalid hash to fail")
 	}
 }
+
+func TestSaveRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	want := &Lock{Version: CurrentVersion, Dependencies: map[string]Dependency{
+		"shared-planner": {
+			Source: "https://example.test/shared.git", Ref: "deadbeef", Path: "bots/shared-planner",
+			BundleSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}}
+	if err := Save(dir, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Dependencies["shared-planner"] != want.Dependencies["shared-planner"] {
+		t.Fatalf("dependency = %#v", got.Dependencies["shared-planner"])
+	}
+}
+
+func TestSaveDoesNotReplaceLockWithInvalidData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	if err := os.WriteFile(path, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(dir, &Lock{Version: CurrentVersion, Dependencies: map[string]Dependency{
+		"shared-planner": {Source: "x", Ref: "y", BundleSHA256: "invalid"},
+	}}); err == nil {
+		t.Fatal("expected invalid lock to fail")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || string(body) != "original\n" {
+		t.Fatalf("lock changed: %q err=%v", body, err)
+	}
+}
