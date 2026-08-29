@@ -152,16 +152,24 @@ const (
 	// head their run's own artifacts and gate never cite, and `runs merge`
 	// merges that other attempt's tree. FinalBranchError cannot carry it:
 	// that field's documented meaning is "FinalCommit has no persistent
-	// branch guarding it", which is exactly not the case here. Data:
-	//   - branch: the storage branch that was left alone
-	//   - kept_head: the head that branch stays on
-	//   - kept_commits / dropped_head / dropped_commits: the two chains'
-	//     exclusive counts and this attempt's head — the chain-comparison
-	//     refusal only
-	//   - cause: why this attempt's workspace was refused — the
-	//     integrity-check refusal only
-	//   - reason ("push_failed") / error: the forge refused this
-	//     attempt's push — the push-failure refusal only
+	// branch guarding it", which is exactly not the case here.
+	//
+	// Every emitter carries `branch` (the storage branch left alone),
+	// `kept_head` (the head it stays on) and `reason`, which selects the
+	// rest. Extend this list when adding an emitter — `reason` is what a
+	// consumer switches on, so an unlisted value is an unreadable event.
+	//   - "chain_poorer": the earlier attempt banked a strictly richer
+	//     chain. Adds kept_commits / dropped_head / dropped_commits — the
+	//     two chains' exclusive counts and this attempt's head. That head
+	//     is NOT archived anywhere: it never reached the forge and dies
+	//     with the pod, which is the point (the poorer chain is not worth
+	//     a branch on the customer's repo). Recorded so the divergence is
+	//     legible, never so it can be recovered.
+	//   - "integrity_refused": this attempt's workspace failed the export
+	//     integrity check. Adds `cause` — the refusal in full, the same
+	//     text FinalBranchError would have carried on a first bank.
+	//   - "push_failed": the forge refused this attempt's own push. Adds
+	//     `error` — git's message, token-redacted.
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the

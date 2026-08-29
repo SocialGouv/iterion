@@ -412,6 +412,9 @@ func TestBankRefusesToClobberRicherAttempt(t *testing.T) {
 		t.Fatal("a refused bank left no run_bank_refused on the timeline — the dropped head is invisible outside the pod log")
 	}
 	poorHead := gitOut(t, work2, "rev-parse", "HEAD")
+	if got := ev.Data["reason"]; got != "chain_poorer" {
+		t.Errorf("reason = %v, want chain_poorer — it is what a consumer switches the payload shape on", got)
+	}
 	if got := ev.Data["kept_head"]; got != richHead {
 		t.Errorf("kept_head = %v, want the richer banked head %s", got, richHead)
 	}
@@ -632,6 +635,16 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 		if run.FinalBranchError != "" {
 			t.Fatalf("FinalBranchError = %q — a later attempt's push failure must not mask the valid banked pair", run.FinalBranchError)
 		}
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("the failed second push left no run_bank_refused — with FinalBranchError deliberately untouched, the timeline is the ONLY place it can appear")
+		}
+		if got := ev.Data["reason"]; got != "push_failed" {
+			t.Errorf("reason = %v, want push_failed", got)
+		}
+		if ev.Data["error"] == nil {
+			t.Errorf("event = %v, want error carrying git's message", ev.Data)
+		}
 	})
 
 	t.Run("a clean bank clears an earlier attempt's recorded failure", func(t *testing.T) {
@@ -815,6 +828,9 @@ func TestBankIntegrityRefusalKeepsAnEarlierAttemptsPair(t *testing.T) {
 	ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
 	if ev == nil {
 		t.Fatal("the integrity refusal left no run_bank_refused — it became a silent no-op, which is what recordBankFailure exists to prevent")
+	}
+	if got := ev.Data["reason"]; got != "integrity_refused" {
+		t.Errorf("reason = %v, want integrity_refused", got)
 	}
 	if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "bank refused") {
 		t.Errorf("event cause = %q, want the integrity refusal named", cause)

@@ -964,6 +964,7 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 		runID, branch, oldHead, oldCount, head, newCount)
 	r.recordBankRefused(msg, map[string]any{
 		"branch":          branch,
+		"reason":          "chain_poorer",
 		"kept_head":       oldHead,
 		"kept_commits":    oldCount,
 		"dropped_head":    head,
@@ -1028,6 +1029,7 @@ func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 			msg.RunID, run.FinalBranch, run.FinalCommit, cause)
 		r.recordBankRefused(msg, map[string]any{
 			"branch":    run.FinalBranch,
+			"reason":    "integrity_refused",
 			"kept_head": run.FinalCommit,
 			"cause":     cause,
 		})
