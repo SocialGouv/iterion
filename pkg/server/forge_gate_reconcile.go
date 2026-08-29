@@ -206,21 +206,30 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// that never gated anything. Naming the reason is what makes the next
 	// occurrence a grep instead of an investigation.
 	//
-	// Warn on the EVENT path only. The sweep re-offers the same run every
-	// minute for the whole lookback, so a run sitting in a permanent abstain
-	// branch — a lost grant, an unreachable forge — would log the identical
-	// line ~60 times an hour per replica and bury the branches that carry new
-	// information, defeating the point of naming the reason at all. The event
-	// fires once per run, which is exactly one line per occurrence.
+	// Warn on the EVENT path, and on the sweep's LAST pass over this run.
+	// The sweep re-offers the same run every minute for the whole lookback, so
+	// a run sitting in a permanent abstain branch — a lost grant, an
+	// unreachable forge — would log the identical line ~60 times an hour per
+	// replica and bury the branches that carry new information. But Debug is
+	// suppressed at the info level deployments run at, so those passes said
+	// NOTHING at all: the one Warn the event path emits dies with the pod, and
+	// a check stuck for a day leaves nothing to diagnose it with. The last
+	// pass is the one that matters anyway — past the lookback nothing revisits
+	// the run and the miss becomes permanent — so it speaks, once.
 	abstain := func(format string, args ...any) error {
-		if s.logger != nil {
-			msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
-			args = append([]any{runID, via, prURL}, args...)
-			if via == gateTriggerSweep {
-				s.logger.Debug(msg, args...)
-			} else {
-				s.logger.Warn(msg, args...)
-			}
+		if s.logger == nil {
+			return nil
+		}
+		msg := "forge gate: run %s (via %s) held a grant on %s but posts nothing: " + format
+		args = append([]any{runID, via, prURL}, args...)
+		switch {
+		case via != gateTriggerSweep:
+			s.logger.Warn(msg, args...)
+		case s.gateSweepIsLastPass(run):
+			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
+				gateSweepLookback.String()+" window: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
+		default:
+			s.logger.Debug(msg, args...)
 		}
 		return nil
 	}

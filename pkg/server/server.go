@@ -209,6 +209,10 @@ type Server struct {
 	// deterministic instant to assert NextFire jumps to the expected slot).
 	// nil → time.Now().UTC().
 	scheduleClock func() time.Time
+	// gateClock overrides the wall clock the merge-gate sweeper measures its
+	// lookback window by (test seam — a test cannot wait an hour to reach the
+	// last pass over a run). nil → time.Now().UTC().
+	gateClock func() time.Time
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →
