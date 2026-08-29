@@ -8,24 +8,27 @@ import (
 
 // Public, operator-facing view over the capability resolver.
 //
-// capabilitiesForModel() and the specRegistry are unexported and live on the
-// runtime hot path. The `iterion models` CLI needs to (a) resolve the same
-// ModelCapabilities the runtime would use, (b) report WHERE each value came
-// from (the online aggregator vs the curated static fallback), and (c) force a
-// cache refresh. This file exposes exactly that surface without duplicating the
-// resolver — ResolveCapabilities calls capabilitiesForModel() and asks the same
-// registry whether the aggregator contributed.
+// capabilitiesForModel() is unexported and lives on the runtime hot path. The
+// `iterion models` CLI, GET /api/model-capabilities and the studio's model
+// captions all need to (a) resolve the same ModelCapabilities the runtime would
+// use, (b) report WHERE those values came from (the online aggregator vs the
+// curated static fallback), and (c) force a cache refresh. This file exposes
+// exactly that surface without duplicating the resolver: both go through
+// resolveMerged(), which answers the capabilities and the provenance from one
+// registry lookup.
 
 // CapabilitySource records where a resolved capability value came from.
 type CapabilitySource string
 
 const (
 	// SourceAggregator means the online model-spec aggregator (models.dev,
-	// cached under ~/.iterion) had an entry for the model and was merged over
-	// the curated fallback.
+	// cached under ~/.iterion) SUPPLIED at least one value that was merged
+	// over the curated fallback — not merely that it held an entry. An entry
+	// the consensus filter emptied contributes nothing and reads as curated.
 	SourceAggregator CapabilitySource = "aggregator"
 	// SourceCurated means the curated static table in capabilities.go was the
-	// sole source — the aggregator lacked the model, was disabled, or offline.
+	// sole source — the aggregator lacked the model, had nothing its publishers
+	// agreed on, was disabled, or was offline.
 	SourceCurated CapabilitySource = "curated"
 )
 
