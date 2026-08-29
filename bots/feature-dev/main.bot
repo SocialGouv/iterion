@@ -142,15 +142,18 @@ vars:
   plan_review: string = "auto"
   ## What a MID-RUN peer failure (forfait window shut, provider down,
   ## credential revoked) does:
-  ##   wait (default) — the failure stays a failure: the run parks
+  ##   skip (default) — the reviewer's `action: skip` fallback route
+  ##     completes it with a zero-value critique stamped _skipped; the
+  ##     plan proceeds unreviewed, LOUDLY (plan_gate reads the stamp).
+  ##     The peer is an optional enrichment: the primary family alone
+  ##     must always suffice, so a dead peer credential never parks the
+  ##     whole campaign (lived: a stale second-family key paused every
+  ##     cloud run of this bot through plan_review auto + wait).
+  ##   wait — the failure stays a failure: the run parks
   ##     failed_resumable and the run-level usage-window retry resumes
   ##     it when the window reopens (cloud: durable; local:
-  ##     --auto-resume). The pair review is the point of the phase, so
-  ##     degrading it is a per-run choice, never a silent default.
-  ##   skip — the reviewer's `action: skip` fallback route completes it
-  ##     with a zero-value critique stamped _skipped; the plan proceeds
-  ##     unreviewed, LOUDLY (plan_gate reads the stamp).
-  plan_review_policy: string [enum: "wait", "skip"] = "wait"
+  ##     --auto-resume) — the deliberate-spend posture, per run.
+  plan_review_policy: string [enum: "wait", "skip"] = "skip"
 
 secrets:
   ## Forge access for push + PR creation + the issue back-link. Mounted

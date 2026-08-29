@@ -125,12 +125,15 @@ vars:
   ## (the peer reviewer then fails loudly on a missing credential).
   plan_review: string = "auto"
   ## What a MID-RUN peer failure (forfait window shut, provider down,
-  ## credential revoked) does: "wait" (default) parks the run
-  ## failed_resumable until the peer window reopens (run-level
-  ## usage-window retry; cloud durable, local --auto-resume); "skip"
-  ## arms the reviewer's `action: skip` fallback route — the plan
-  ## proceeds unreviewed, LOUDLY (_skipped stamped, plan_gate reads it).
-  plan_review_policy: string [enum: "wait", "skip"] = "wait"
+  ## credential revoked) does: "skip" (default) arms the reviewer's
+  ## `action: skip` fallback route — the plan proceeds unreviewed,
+  ## LOUDLY (_skipped stamped, plan_gate reads it). The peer is an
+  ## optional enrichment: the primary family alone must always suffice,
+  ## so a dead peer credential never parks the whole campaign. "wait"
+  ## parks the run failed_resumable until the peer window reopens
+  ## (run-level usage-window retry; cloud durable, local --auto-resume)
+  ## — the deliberate-spend posture, per run.
+  plan_review_policy: string [enum: "wait", "skip"] = "skip"
 
   ## ─── Deployment (opt-in, platform-agnostic) ───────────────────
   ## deploy_enabled=true adds a deploy phase AFTER the app converges

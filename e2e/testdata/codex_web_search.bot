@@ -1,0 +1,38 @@
+## Live feature fixture: Codex native hosted Web search from the DSL.
+
+schema research_out:
+  summary: string
+  source_urls: string[]
+  write_succeeded: bool
+
+prompt research_system:
+  You are testing two concrete Codex capabilities. Perform both actions; do
+  not simulate either one.
+
+  1. Use the native Web search tool to find the most recent stable release of
+     the OpenAI Codex CLI. Return at least one absolute http(s) source URL you
+     actually consulted.
+  2. Use the shell tool to try exactly `touch codex-readonly-must-not-create`.
+     The workspace is read-only, so report write_succeeded=false when the tool
+     refuses the write. Do not create that file by any other means.
+
+  Keep the summary concise and fill every output field.
+
+prompt research_user:
+  Run the live Web research and read-only write probe now.
+
+agent researcher:
+  backend: "codex"
+  model: "gpt-5.6-luna"
+  system: research_system
+  user: research_user
+  output: research_out
+  tools: [web_search]
+  readonly: true
+  tool_max_steps: 8
+
+workflow main:
+  sandbox: none
+  worktree: none
+  entry: researcher
+  researcher -> done

@@ -132,8 +132,10 @@ type LaunchSpec struct {
 	// --max-parallel-branches flags. Applied to the compiled workflow after
 	// recipe/preset resolution and before the executor snapshots Budget
 	// (non-zero field wins, zero inherits — see ir.ApplyBudgetOverrides).
-	// The detached path forwards it as the CLI flags; the queued cloud path
-	// does not support it yet and rejects a non-zero Budget explicitly.
+	// The detached path forwards it as the CLI flags; the queued cloud
+	// path publishes it on the RunMessage (clamped to the pool grant),
+	// persists the raw ask on the run doc, and replays it on resume so
+	// unattended auto-retries keep the cap the launch declared.
 	Budget *ir.BudgetOverrides
 	// ParentRunID, ShardIndex, ShardCount, ShardLabel are set when a
 	// parent run dispatches this as a shard child (see Cap. 3 in

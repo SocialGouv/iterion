@@ -211,15 +211,18 @@ Two of the decisions above met a real run and moved
   amnesiac input. It is deliberately NOT a `model_fallback` — the same
   backend, model and credential served; what degraded is the node's
   INPUT.
-- **`plan_review_policy` now defaults to `skip` for
-  `branch-improve-loop` only.** The discriminator is not the bot's
-  identity but the property that it is invoked ON an external artifact:
-  a fixer that parks on an OPTIONAL cross-model reviewer holds someone's
-  pull request hostage, while a parked campaign on a workspace blocks
-  nobody. The other three campaign bots keep `wait`. Residual risk,
-  filed rather than fixed: a permanently dead peer credential now
-  degrades every run silently, and the only operator signal is the run
-  console — the fixer's PR comment does not yet say "plan peer skipped".
+- **`plan_review_policy` now defaults to `skip` — fleet-wide** (all
+  four plan-phase campaign bots). It started as a branch-improve-loop
+  exception (a fixer that parks on an OPTIONAL cross-model reviewer
+  holds someone's pull request hostage), then two lived incidents the
+  same day generalised it: a dead second-family credential blocked a
+  fixer through `plan_review: auto` + `wait`, and a stale pod OpenAI
+  key paused every cloud campaign the same way. The peer is an optional
+  enrichment; the primary family alone must always suffice. `wait`
+  stays the per-run deliberate-spend opt-in. Residual risk, filed
+  rather than fixed: a permanently dead peer credential now degrades
+  every run silently, and the only operator signal is the run console —
+  the fixer's PR comment does not yet say "plan peer skipped".
 
 ## Consequences
 

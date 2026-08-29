@@ -1,7 +1,13 @@
 name: whole-improve-loop
 display_name: Willy
 icon: 🌍
-version: 2.2.0
+version: 2.2.1
+## 2.2.1 — plan_review_policy defaults to "skip": the cross-model plan peer
+## is an optional enrichment, and the primary family alone must always
+## suffice. A dead/parked peer credential (401, shut forfait window,
+## provider outage) completes plan_review with the `_skipped` stamp and
+## the campaign proceeds, instead of parking the run. "wait" remains the
+## per-run opt-in for the deliberate-spend posture.
 ## 2.0.2 — third advisory question before the report: `Ratchet` — the cheap
 ## deterministic check that would have caught the site it just fixed, landed
 ## in the same commit or a follow-up one, NEVER by amending a commit already

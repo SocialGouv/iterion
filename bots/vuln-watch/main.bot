@@ -111,6 +111,22 @@ vars:
   ## state_dir NOT gitignored and push credentials on the workspace.
   state_commit: bool = false
 
+  ## Ceiling on advisory + Dependabot lookups the version confirmation may
+  ## spend in one run. The confirmation is a precision nicety: it must never
+  ## be the reason an hourly tick hangs or hammers the forge.
+  max_version_lookups: int = 40
+
+  ## ...and a COUNT of lookups is not a wall-clock bound. At the defaults, 40
+  ## sequential requests x a 20s per-request timeout is 800s against a 900s
+  ## max_duration — before DNS, body reads, and the three polling lanes that
+  ## run first. confirm_versions sits upstream of BOTH notify and
+  ## commit_state, so overrunning the workflow budget means no message
+  ## delivered and no state consumed: the bot goes silent for exactly as long
+  ## as GitHub is slow, which is plausibly when it matters most. This deadline
+  ## is what makes the "never the reason a tick hangs" contract above true.
+  ## 0 disables it (the lookup ceiling then bounds the node on its own).
+  max_version_seconds: int = 120
+
   ## Per-request HTTP timeout (feeds, APIs).
   fetch_timeout_secs: int = 20
 
@@ -261,6 +277,32 @@ schema match_output:
   alertlog_file: string
   summary: string
 
+schema confirm_input:
+  ## The alerts match_policy decided to post, enriched in place.
+  alerts: json
+  github_orgs: string[]
+  github_api_base: string
+  timeout_secs: int
+  allow_private: bool
+  ## Hard ceiling on advisory+alert lookups for one run: the confirmation
+  ## is a nicety, never a reason for the tick to hang or to hammer the API.
+  max_lookups: int
+  ## ...and the wall-clock half of that promise, which the count alone
+  ## cannot make (a slow API turns 40 lookups into 800s). 0 disables.
+  max_seconds: int
+
+schema confirm_output:
+  alerts: json
+  ## Units whose affected packages could be resolved at all. A deployed
+  ## product (Metabase, GitLab, a WordPress install) has NO package in any
+  ## dependency manifest, so it can never be confirmed this way — that is
+  ## reported, not silently rendered as "nothing found".
+  confirmable: int
+  confirmed: int
+  lookups: int
+  errors: json
+  summary: string
+
 schema notify_input:
   alerts: json
   overflow_count: int
@@ -381,6 +423,14 @@ tool plan:
         'no_fix': 'none published yet',
         'fix_see_source': 'see the advisory',
         'projects': 'Affected projects',
+        'confirmed_projects': 'Vulnerable — confirmed',
+        'fixed_projects': 'Was vulnerable — already fixed',
+        'declared_projects': 'Declares this technology — to verify',
+        'not_a_package': 'no dependency package to check against (deployed product): version not verifiable automatically',
+        'check_unavailable': 'version NOT verified this run (no advisory match, lookup budget or API error) — assume nothing',
+        'none_found': 'no vulnerable dependency found in the watched orgs',
+        'fixed_window': 'was vulnerable {since} → {until}',
+        'open_since': 'since {since}',
         'repos': 'repo(s)',
         'via_dependabot': 'flagged by Dependabot in {n} repo(s)',
         'sources': 'Sources',
@@ -1679,6 +1729,423 @@ tool match_policy:
 ## message per alert + one overflow note + one staleness warning to the
 ## configured sinks. The techno→projects join arrives pre-resolved —
 ## this node is a renderer and a courier, nothing more.
+tool confirm_versions:
+  ## Turns "these 53 projects declare this technology" into "this repo runs
+  ## a version the advisory names, and here is the fix".
+  ##
+  ## The inventory match is deliberately keyword-based and therefore
+  ## VERSION-BLIND: it answers "who uses React", not "who is vulnerable".
+  ## Measured on the first live tick: a React Server Components advisory
+  ## named 53 projects; exactly ONE repository carried an affected package.
+  ## An alert that over-names by 53x is the kind operators stop reading,
+  ## which is the failure this whole bot exists to avoid.
+  ##
+  ## Two GitHub reads per alerted unit, both server-side filtered:
+  ##   1. /advisories?cve_id=...  -> the packages the advisory actually names
+  ##   2. /orgs/{org}/dependabot/alerts?package=...  -> who runs them
+  ##
+  ## GOTCHA, paid for: `state=all` is NOT a valid value for that endpoint,
+  ## and GitHub answers 200 with an EMPTY list instead of an error — the
+  ## confirmation would have been silently, permanently empty. Measured
+  ## `state=open&package=uuid` -> 73, `state=all&package=uuid` -> 0, no state
+  ## param -> 78. The REASON, per GitHub's own OpenAPI description: `state` is
+  ## a comma-separated LIST over {auto_dismissed, dismissed, fixed, open}, and
+  ## `all` is simply not a member — so it matches nothing rather than
+  ## everything. `open,fixed` is the valid spelling of what this node wants
+  ## (an exposure, and the window of a closed one), and it drops both
+  ## dismissal states server-side: a dismissal is a decision, not an exposure.
+  input: confirm_input
+  output: confirm_output
+  language: py
+  script: |
+    import json, os, socket, time, ipaddress
+    import urllib.request
+    from urllib.parse import urlsplit, quote
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    alerts = {{input.alerts}} or []
+    orgs = {{input.github_orgs}} or []
+    api_base = ({{input.github_api_base}} or 'https://api.github.com').rstrip('/')
+    timeout = int({{input.timeout_secs}} or 20)
+    allow_private = {{input.allow_private}}
+    max_lookups = int({{input.max_lookups}} or 40)
+    max_seconds = int({{input.max_seconds}} or 0)
+    ## MONOTONIC, not wall time: a clock step must not extend or collapse the
+    ## window this node is allowed to spend.
+    deadline = (time.monotonic() + max_seconds) if max_seconds > 0 else None
+    tokens_file = {{secrets.dependabot_tokens.path}}
+
+    tokens = {}
+    if tokens_file and os.path.exists(tokens_file):
+        try:
+            raw = open(tokens_file, encoding='utf-8').read().strip()
+            tokens = json.loads(raw) if raw else {}
+        except ValueError:
+            tokens = {}
+
+    _base_parts = urlsplit(api_base)
+    base_host = (_base_parts.hostname or '')
+    base_scheme = _base_parts.scheme
+
+    def _port_of(parts):
+        return parts.port or (443 if parts.scheme == 'https' else 80)
+
+    base_port = _port_of(_base_parts)
+
+    def _addr_ok(ip):
+        a = ipaddress.ip_address(ip)
+        return allow_private or a.is_global
+
+    def _origin_ok(parts):
+        ## The token is a bearer credential: what may carry it is an ORIGIN,
+        ## not a hostname. Pinning the host alone would still allow an
+        ## https -> http hop on the same name (the token in clear on the
+        ## wire) or a hop to another service on a different port.
+        return (parts.scheme in ('http', 'https') and parts.scheme == base_scheme
+                and (parts.hostname or '') == base_host and _port_of(parts) == base_port)
+
+    def _addrs_ok(parts):
+        for fam, _, _, _, sa in socket.getaddrinfo(parts.hostname, _port_of(parts), proto=socket.IPPROTO_TCP):
+            if not _addr_ok(sa[0]):
+                raise OSError('refusing a non-public address for ' + str(parts.hostname))
+
+    class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+        ## urllib's default opener copies EVERY header (bar content-*) onto a
+        ## redirected request and compares no hosts — so a 30x answered by the
+        ## API origin would hand the org's Dependabot token to whoever the
+        ## Location names, with the pre-flight address check never re-run.
+        ## The polling lanes carry the same guard; this one also pins the
+        ## scheme and port, so an https -> http downgrade cannot slip through.
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            parts = urlsplit(newurl)
+            if not _origin_ok(parts):
+                raise OSError('refusing redirect off the configured API origin: ' + str(newurl)[:200])
+            _addrs_ok(parts)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    _opener = urllib.request.build_opener(_SafeRedirect())
+
+    def get(url, token):
+        ## Same egress discipline as the polling lanes: the origin is pinned to
+        ## the configured API base, and a resolved address must be public
+        ## unless the operator opted into private ranges.
+        parts = urlsplit(url)
+        if not _origin_ok(parts):
+            raise OSError('refusing an off-origin request: ' + url[:200])
+        ## Same guard as the polling lanes: the token rides as a bearer, so
+        ## plaintext is refused unless the operator opted into private
+        ## sources (which is also what a test harness uses).
+        if parts.scheme != 'https' and not allow_private:
+            raise OSError('refusing a plaintext request carrying a token: ' + url[:200])
+        _addrs_ok(parts)
+        req = urllib.request.Request(url, headers={
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'iterion-vuln-watch'})
+        if token:
+            req.add_header('Authorization', 'Bearer ' + token)
+        ## Clamp the per-request timeout to what is left of the node's window,
+        ## so one hung read cannot overshoot the deadline by a whole timeout.
+        t = timeout if deadline is None else max(1, min(timeout, int(deadline - time.monotonic())))
+        with _opener.open(req, timeout=t) as r:
+            ## Bounded like the sibling lane's read: a hostile or broken
+            ## endpoint must not be able to stream this node out of memory.
+            ## The Link header comes back with it — without that, pagination is
+            ## not even OBSERVABLE from here, let alone walked.
+            return (json.loads(r.read(8 * 1024 * 1024).decode('utf-8') or '[]'),
+                    (r.headers.get('Link') or ''))
+
+    def next_link(link_header):
+        ## The pagination URL is server-supplied and re-requested WITH the
+        ## Authorization header, so it is followed only while it stays on the
+        ## configured origin — a rewritten Link header would otherwise
+        ## exfiltrate the token in one hop, exactly as a 30x would.
+        for part in (link_header or '').split(','):
+            if 'rel="next"' in part:
+                s, e = part.find('<'), part.find('>')
+                if 0 <= s < e:
+                    url = part[s + 1:e]
+                    if not _origin_ok(urlsplit(url)):
+                        raise OSError('refusing an off-origin pagination Link: ' + url[:200])
+                    return url
+        return ''
+
+    lookups = [0]
+    errors = []
+
+    expired = [False]
+
+    def budgeted(fn, what):
+        if lookups[0] >= max_lookups:
+            return None
+        ## The deadline is checked BEFORE every request, so a degraded API
+        ## costs this node its precision and never the run's delivery. What
+        ## is left unlooked-up degrades to "not verified", never to an
+        ## all-clear — see the version_check assignment below.
+        if deadline is not None and time.monotonic() >= deadline:
+            if not expired[0]:
+                expired[0] = True
+                errors.append({'what': 'deadline',
+                               'error': 'version confirmation stopped after ' + str(max_seconds) +
+                                        's; remaining units are reported unverified'})
+            return None
+        lookups[0] += 1
+        try:
+            return fn()
+        except Exception as e:
+            errors.append({'what': what, 'error': type(e).__name__ + ': ' + str(e)[:200]})
+            return None
+
+    adv_cache = {}
+    MAX_PAGES = 10  # bounded walk; truncation is REPORTED, never silent
+
+    def packages_for(cve):
+        ## The advisory database is the authority on WHICH packages a CVE
+        ## affects — and it answers THREE different things, which the message
+        ## downstream must not collapse into one:
+        ##   * an advisory carrying package mappings -> those packages;
+        ##   * an advisory carrying NONE -> the technology genuinely has no
+        ##     package in any manifest: a deployed product. Measured shape of
+        ##     that answer (CVE-2023-38646, Metabase RCE) is ONE advisory whose
+        ##     `vulnerabilities` array is empty;
+        ##   * an EMPTY advisory list -> GitHub has no advisory indexed for
+        ##     this CVE at all. Establishes nothing; measured on an unknown id.
+        ## Returns (packages, status), status in indexed|not_indexed|failed.
+        if cve in adv_cache:
+            return adv_cache[cve]
+        url = api_base + '/advisories?cve_id=' + quote(cve, safe='')
+
+        def fetch_advisory():
+            ## /advisories is a PUBLIC endpoint — it answers unauthenticated
+            ## (verified against the live API). A token is sent only to buy the
+            ## authenticated rate limit, and the one available here is some
+            ## org's Dependabot credential: in production a watch-only GitHub
+            ## App installation token whose manifest permissions were REPLACED
+            ## by metadata + vulnerability_alerts read (docs/forge-security-read.md),
+            ## which this endpoint has no reason to accept. If it is rejected,
+            ## the advisory lane must not go dark — every unit would render as
+            ## unverified and the whole confirmation would quietly stop working
+            ## — so fall back to the unauthenticated read it does not need.
+            tok = tokens.get('*') or next(iter(tokens.values()), '')
+            if not tok:
+                return get(url, '')
+            try:
+                return get(url, tok)
+            except Exception:
+                return get(url, '')
+
+        got = budgeted(fetch_advisory, 'advisory ' + cve)
+        ## A cve_id query returns at most one advisory, so there is no page to
+        ## walk here — only the alerts lane needs that.
+        data = got[0] if got else None
+        if not isinstance(data, list):
+            ## A read that failed, was never funded, or came back in a shape
+            ## the endpoint does not document. None of those is an answer —
+            ## and none may be CACHED, or one blip would mis-stamp every later
+            ## unit sharing this CVE for the rest of the run.
+            return (set(), 'failed')
+        pkgs = set()
+        for a in data:
+            if not isinstance(a, dict):
+                continue
+            for v in (a.get('vulnerabilities') or []):
+                pk = ((v or {}).get('package') or {})
+                name, eco = pk.get('name') or '', (pk.get('ecosystem') or '').lower()
+                if name and eco:
+                    pkgs.add((eco, name))
+        res = (pkgs, 'indexed' if data else 'not_indexed')
+        adv_cache[cve] = res
+        return res
+
+    def alerts_for(org, names):
+        ## Returns (alerts, checked). `checked` is False whenever NO answer was
+        ## obtained — no token for the org, no budget left, an HTTP error. An
+        ## org that was never asked is not an org where nothing was found, and
+        ## only this flag can tell the two apart downstream.
+        ##
+        ## NO `ecosystem` parameter, deliberately: the advisory database's
+        ## vocabulary is WIDER than this endpoint's (it returns `actions`,
+        ## `erlang`, `other`, `swift`, none of which the alerts endpoint
+        ## accepts), so forwarding one verbatim 422s — and a swallowed 422
+        ## reads as an all-clear. The `package` filter narrows server-side on
+        ## its own (measured: `package=uuid` -> 78), one request per org
+        ## instead of one per ecosystem, and the (ecosystem, name) pair is
+        ## re-checked on the way back so nothing is lost by dropping it.
+        ##
+        ## `state=open,fixed` — NEVER `state=all`; see the GOTCHA in this
+        ## node's header for why the latter silently matches nothing.
+        token = tokens.get(org) or tokens.get('*')
+        if not token:
+            return ([], False)
+        url = (api_base + '/orgs/' + quote(org, safe='') + '/dependabot/alerts?per_page=100&state=' +
+               quote('open,fixed', safe=',') + '&package=' + quote(','.join(sorted(names)), safe=','))
+        ## One page of 100 is NOT the answer. A single package already yielded
+        ## 78 alerts in one org on the first live tick, and an advisory naming
+        ## several packages across a 388-repo org exceeds 100 routinely — so
+        ## page 2 onwards would vanish precisely on the biggest, most urgent
+        ## advisories, which is the under-reporting this node exists to fix.
+        ## Bounded like the sibling lane, and truncation is REPORTED: a walk
+        ## that stopped early returns checked=False, so the unit reads
+        ## "not verified" rather than as a complete answer.
+        out, pages = [], 0
+        while url:
+            got = budgeted(lambda u=url: get(u, token), 'alerts ' + org)
+            if got is None or not isinstance(got[0], list):
+                return (out, False)
+            out.extend(got[0])
+            pages += 1
+            try:
+                url = next_link(got[1])
+            except Exception as e:
+                errors.append({'what': 'alerts ' + org + ' pagination',
+                               'error': type(e).__name__ + ': ' + str(e)[:200]})
+                return (out, False)
+            if url and pages >= MAX_PAGES:
+                errors.append({'what': 'alerts ' + org,
+                               'error': 'more than ' + str(MAX_PAGES) + ' pages of matching alerts;'
+                                        ' the remainder was not scanned'})
+                return (out, False)
+        return (out, True)
+
+    confirmable = 0
+    confirmed = 0
+    for a in alerts:
+        ## A unit carrying `repos` came off the DEPENDABOT lane, which is
+        ## already version-precise — it names the repositories running an
+        ## affected version, which is exactly what this node has to go and
+        ## establish for every OTHER lane. notify renders confirmed_repos only
+        ## on the branch where `repos` is empty, so confirming these would be
+        ## lookups nothing can ever display, drawn from the same budget the KEV
+        ## and feed units need. Not hypothetical: the first live tick had that
+        ## lane alone reporting ~200 new alerts against max_alerts_per_run=20.
+        if a.get('repos'):
+            continue
+        cves = [c for c in (a.get('cves') or []) if c]
+        ## A CERT-FR avis can carry hundreds of CVEs, so only the head is
+        ## resolved. That head carries NO signal: poll_advisories stores the
+        ## set `sorted()`, so these are just the six lowest-numbered ids — the
+        ## oldest years, not the advisory's subject. Which is exactly why the
+        ## cut has to be REPORTED: if the CVE naming the affected package sits
+        ## at position 7, an unmarked result reads as "this technology has no
+        ## package to check" or as an all-clear, on evidence never gathered.
+        cve_cap = 6
+        truncated_cves = len(cves) > cve_cap
+        pkgs = set()
+        adv_status = set()
+        for c in cves[:cve_cap]:
+            p, st = packages_for(c)
+            pkgs |= p
+            adv_status.add(st)
+        if not pkgs:
+            ## Nothing to look up — and WHY is three different facts, only one
+            ## of which is about the technology. "The advisory exists and names
+            ## no package" IS the deployed-product signal the label was written
+            ## for (Metabase, GitLab, a WordPress install). A read that failed,
+            ## was never funded, matched no indexed advisory, or was never
+            ## reached because the CVE list was cut, says nothing at all —
+            ## dressing any of those up as "deployed product" states a
+            ## confident fact about the technology on no evidence.
+            ## Membership is NOT the test: adv_status is one state per CVE, so
+            ## `'indexed' in ...` is true as soon as ONE of them resolved. A
+            ## unit mixing an indexed CVE with an unindexed one would then be
+            ## called a deployed product on the strength of the CVE GitHub was
+            ## never asked to explain. Require the WHOLE head to be indexed —
+            ## an unindexed CVE is the same epistemic state as a failed read.
+            a['version_check'] = ('not_a_package'
+                                  if (adv_status == {'indexed'} and not truncated_cves)
+                                  else 'unavailable')
+            continue
+        confirmable += 1
+        names = set(n for _, n in pkgs)
+        cveset = set(cves)
+        ## Keyed by (repo, PACKAGE), not by repo: one advisory routinely names
+        ## several packages and a repo can run more than one of them. Keyed by
+        ## repo alone, every match after the first lost its package, its fix
+        ## version and its dates, and the message showed ONE fix as though it
+        ## covered the repository.
+        matches = {}
+        ## An advisory read that failed, a CVE GitHub has no advisory indexed
+        ## for, or a CVE list cut short — each leaves the package set
+        ## incomplete, so whatever the alert lane then finds cannot be a
+        ## COMPLETE answer, and an empty one cannot be an all-clear. An
+        ## unindexed CVE is not a lesser doubt than a failed read: its affected
+        ## package was never named, so it was never looked for.
+        checked, complete = False, ('failed' not in adv_status
+                                    and 'not_indexed' not in adv_status
+                                    and not truncated_cves)
+        for org in orgs:
+            got, ok = alerts_for(org, names)
+            checked = checked or ok
+            complete = complete and ok
+            for al in got:
+                if not isinstance(al, dict):
+                    continue
+                adv = (al.get('security_advisory') or {})
+                if cveset and (adv.get('cve_id') or '') not in cveset:
+                    continue
+                pk = ((al.get('dependency') or {}).get('package') or {})
+                ## The ecosystem is no longer filtered server-side (see
+                ## alerts_for), so the pair is re-checked here: a package name
+                ## can collide across ecosystems.
+                if ((pk.get('ecosystem') or '').lower(), pk.get('name') or '') not in pkgs:
+                    continue
+                repo = ((al.get('repository') or {}).get('full_name') or '')
+                if not repo:
+                    continue
+                key = (repo, pk.get('name') or '')
+                st = (al.get('state') or '')
+                prev = matches.get(key)
+                ## An OPEN alert wins over a fixed one for the same repo+package
+                ## — still-vulnerable is the actionable truth — and it brings
+                ## its OWN fix version and dates with it. Promoting the state
+                ## alone would date an open exposure from the resolved alert
+                ## that happened to be seen first, and order here is not
+                ## controllable: it follows org iteration and GitHub's sort.
+                if prev is not None and not (st == 'open' and prev['state'] != 'open'):
+                    continue
+                sv = (al.get('security_vulnerability') or {})
+                matches[key] = {'repo': repo, 'package': key[1], 'state': st,
+                                'fix': ((sv.get('first_patched_version') or {}) or {}).get('identifier') or '',
+                                'since': (al.get('created_at') or '')[:10],
+                                'until': '' if st == 'open' else (al.get('fixed_at') or '')[:10]}
+        ## Group back to ONE record per repository: the operator-facing count is
+        ## repositories, and a repo running two affected packages must not
+        ## inflate it into two findings. A repo with anything still open is an
+        ## open repo, and only its open packages are the actionable part.
+        hits = {}
+        for key in sorted(matches):
+            m = matches[key]
+            g = hits.setdefault(m['repo'], {'repo': m['repo'], 'state': m['state'], 'packages': []})
+            if m['state'] == 'open' and g['state'] != 'open':
+                g['state'], g['packages'] = 'open', []
+            elif g['state'] == 'open' and m['state'] != 'open':
+                continue
+            g['packages'].append({'package': m['package'], 'fix': m['fix'],
+                                  'since': m['since'], 'until': m['until']})
+        a['confirmed_repos'] = sorted(hits.values(), key=lambda r: (r['state'] != 'open', r['repo']))
+        if hits:
+            a['version_check'] = 'confirmed'
+            confirmed += 1
+        else:
+            ## An empty result is an ALL-CLEAR only where a check actually ran
+            ## to completion. No org configured, no token for one, a spent
+            ## budget, an HTTP error, a partial advisory resolution — every one
+            ## of them yields the same empty set, and rendering that as "no
+            ## vulnerable dependency found in the watched orgs" is a false
+            ## all-clear on a security message.
+            a['version_check'] = 'none_found' if (checked and complete) else 'unavailable'
+
+    parts = [str(confirmed) + '/' + str(confirmable) + ' unit(s) version-confirmed',
+             str(lookups[0]) + ' lookup(s)']
+    if expired[0]:
+        parts.append('stopped on the ' + str(max_seconds) + 's deadline')
+    elif lookups[0] >= max_lookups:
+        parts.append('lookup budget spent')
+    if errors:
+        parts.append(str(len(errors)) + ' lookup error(s)')
+    print(json.dumps({'alerts': alerts, 'confirmable': confirmable, 'confirmed': confirmed,
+                      'lookups': lookups[0], 'errors': errors,
+                      'summary': ', '.join(parts)}))
+
 tool notify:
   input: notify_input
   output: notify_output
@@ -1776,11 +2243,71 @@ tool notify:
                          proj_part + ', '.join('`' + r + '`' for r in shown) +
                          ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
             lines.append('_' + labels['via_dependabot'].replace('{n}', str(len(a['repos']))) + '_')
-        elif pnames:
-            shown = [flat(n, 60) for n in pnames[:12]]
-            extra = len(pnames) - len(shown)
-            lines.append(labels['projects'] + ' (' + str(len(pnames)) + '): ' + ', '.join(shown) +
-                         ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
+        else:
+            ## Two lists, never one. The inventory match is keyword-based and
+            ## VERSION-BLIND — it answers "who declares this technology", not
+            ## "who is vulnerable". Printing it alone under a heading that reads
+            ## "affected" is what turns one real finding into a 53-project wall
+            ## nobody reads. What confirm_versions proved comes FIRST and stays
+            ## short; the rest is demoted to context, explicitly unverified.
+            conf = a.get('confirmed_repos') or []
+            def render_repos(group, heading):
+                ## A heading is what a skimmed security message is read by, so
+                ## an already-fixed match must NEVER sit under one that asserts
+                ## current exposure — its "was vulnerable" detail line does not
+                ## undo the word above it. Open exposures and closed history are
+                ## two sections; the window is kept, it is just not called a
+                ## vulnerability any more.
+                if not group:
+                    return
+                bits = []
+                for c in group[:12]:
+                    who = flat(c.get('repo'), 100)
+                    pks = c.get('packages') or []
+                    detail = []
+                    ## Every affected package, not just the first: showing one
+                    ## fix version as though it covered the repository is how an
+                    ## operator patches half of an exposure and files it closed.
+                    for p in pks[:4]:
+                        nm = flat(p.get('package'), 40)
+                        detail.append((nm + ' → ' + flat(p.get('fix'), 30)) if p.get('fix') else nm)
+                    if len(pks) > 4:
+                        detail.append('+' + str(len(pks) - 4) + ' ' + labels['more'])
+                    ## Dates span the repo's matches, so a window can never be
+                    ## borrowed from a different package's alert.
+                    sinces = sorted(x for x in [p.get('since') or '' for p in pks] if x)
+                    untils = sorted(x for x in [p.get('until') or '' for p in pks] if x)
+                    if c.get('state') == 'open':
+                        if sinces:
+                            detail.append(labels['open_since'].replace('{since}', flat(sinces[0], 10)))
+                    elif sinces and untils:
+                        detail.append(labels['fixed_window']
+                                      .replace('{since}', flat(sinces[0], 10))
+                                      .replace('{until}', flat(untils[-1], 10)))
+                    bits.append('`' + who + '`' + ((' ' + ' · '.join(detail)) if detail else ''))
+                extra = len(group) - len(bits)
+                lines.append(heading + ' (' + str(len(group)) + '): ' + ', '.join(bits) +
+                             ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
+            if conf:
+                render_repos([c for c in conf if c.get('state') == 'open'], labels['confirmed_projects'])
+                render_repos([c for c in conf if c.get('state') != 'open'], labels['fixed_projects'])
+            else:
+                ## Say WHY nothing is confirmed. "none_found" and "this kind of
+                ## technology cannot be checked" are different facts, and
+                ## collapsing them would let a deployed product read as safe.
+                why = a.get('version_check') or ''
+                if why == 'not_a_package':
+                    lines.append('_' + labels['not_a_package'] + '_')
+                elif why == 'unavailable':
+                    lines.append('_' + labels['check_unavailable'] + '_')
+                elif why == 'none_found':
+                    lines.append('_' + labels['none_found'] + '_')
+            if pnames:
+                shown = [flat(n, 60) for n in pnames[:12]]
+                extra = len(pnames) - len(shown)
+                head = labels['declared_projects'] if conf or a.get('version_check') else labels['projects']
+                lines.append(head + ' (' + str(len(pnames)) + '): ' + ', '.join(shown) +
+                             ((' +' + str(extra) + ' ' + labels['more']) if extra > 0 else ''))
         src = []
         unit_url = safe_url(a.get('url'))
         if unit_url:
@@ -2087,8 +2614,18 @@ workflow vuln_watch:
     source_stale_hours: "{{vars.source_stale_hours}}"
   }
 
-  match_policy -> notify with {
+  match_policy -> confirm_versions with {
     alerts: "{{outputs.match_policy.alerts}}",
+    github_orgs: "{{outputs.plan.github_orgs}}",
+    github_api_base: "{{outputs.plan.github_api_base}}",
+    timeout_secs: "{{vars.fetch_timeout_secs}}",
+    allow_private: "{{vars.allow_private_sources}}",
+    max_lookups: "{{vars.max_version_lookups}}",
+    max_seconds: "{{vars.max_version_seconds}}"
+  }
+
+  confirm_versions -> notify with {
+    alerts: "{{outputs.confirm_versions.alerts}}",
     overflow_count: "{{outputs.match_policy.overflow_count}}",
     stale_sources: "{{outputs.match_policy.stale_sources}}",
     sinks: "{{outputs.plan.sinks}}",

@@ -1261,7 +1261,7 @@ the run, a source silent for too long is announced on the sinks.
   digest (use feed-watch), not a PR dependency gate (use
   supply-shield-cve), not a code audit (use sec-audit-*); it never
   edits code.
-- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_sources` (bool), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `inventory_path` (string), `kev_max_age_days` (int), `max_alerts_per_run` (int), `max_version_lookups` (int), `max_version_seconds` (int), `mode` (string), `observe_window_days` (int), `scratch_dir` (string), `source_stale_hours` (int), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/vuln-watch/main.bot`
 
 ### `whats-next` — Nexie
