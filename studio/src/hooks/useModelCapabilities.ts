@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchModelCapabilities, type ModelCapabilities } from "@/api/client";
+import { useDebounce } from "@/hooks/useDebounce";
 
 // A curated answer can still improve, so it is refetched; an aggregator one
 // cannot, so it is kept for the session.
@@ -14,6 +15,22 @@ import { fetchModelCapabilities, type ModelCapabilities } from "@/api/client";
 // never see.
 const CURATED_STALE_MS = 30_000;
 const AGGREGATOR_STALE_MS = Number.POSITIVE_INFINITY;
+
+// Every picker feeding this hook is a free-text <Input>, so the spec changes
+// once per keystroke and each distinct value is its own query key. Settle it
+// before it reaches the key: without this, typing "anthropic/claude-opus-5"
+// issues one request per character. The initial value is NOT delayed
+// (useDebounce seeds its state with it), so the common case — a picker
+// mounting on an already-selected model — still resolves immediately.
+const SPEC_DEBOUNCE_MS = 150;
+
+// Inactive entries are evicted after five minutes. `staleTime: Infinity` is
+// what pins a settled aggregator answer for the session; `gcTime` only decides
+// how long an UNMOUNTED key is retained, and the keys this hook produces are
+// mostly the half-typed prefixes debouncing did not absorb. Keeping those
+// forever grows the cache for the life of the page with entries nothing will
+// ever read again — five minutes still covers a picker closed and reopened.
+const GC_MS = 5 * 60_000;
 
 /**
  * modelCapsStaleTime is the caching rule, exported so it can be asserted
@@ -44,7 +61,7 @@ export interface UseModelCapabilitiesResult {
 export function useModelCapabilities(
   spec: string | undefined,
 ): UseModelCapabilitiesResult {
-  const trimmed = spec?.trim() ?? "";
+  const trimmed = useDebounce(spec?.trim() ?? "", SPEC_DEBOUNCE_MS);
   const enabled = trimmed !== "" && !trimmed.includes("$");
 
   const query = useQuery<ModelCapabilities>({
@@ -52,7 +69,7 @@ export function useModelCapabilities(
     queryFn: ({ signal }) => fetchModelCapabilities(trimmed, signal),
     enabled,
     staleTime: (q) => modelCapsStaleTime(q.state.data?.source),
-    gcTime: AGGREGATOR_STALE_MS,
+    gcTime: GC_MS,
     refetchOnMount: true,
     // A capability caption is decoration: a failed lookup must leave the
     // picker usable, so nothing here retries or surfaces an error.
