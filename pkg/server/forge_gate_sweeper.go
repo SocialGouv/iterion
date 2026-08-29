@@ -140,3 +140,31 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 	s.warnf("merge-gate sweeper: stopped after %d pages of %d — the oldest candidates in the %s window were not examined this pass",
 		gateSweepMaxPages, gateSweepBatch, gateSweepLookback)
 }
+
+// gateSweepIsLastPass reports whether this pass is among the final ones that
+// will ever offer the run to the reconciler. Candidacy is bounded by
+// gateSweepLookback on the run's own updated_at, so once that much time has
+// passed the run leaves the window and NOTHING revisits it — whatever the
+// reconciler abstained on becomes permanent.
+//
+// That instant is the only one worth a Warn out of ~60 identical passes: a
+// stuck check is not news while the net is still trying, and is news the
+// moment the net gives up. The margin is two intervals so a late or skipped
+// pass does not swallow the only line that names the reason (2026-08-29: a
+// pull request sat behind an unanswered required check for 22h and the whole
+// sweep history had been Debug, which deployments suppress at info level).
+func (s *Server) gateSweepIsLastPass(run *store.Run) bool {
+	if run == nil || run.UpdatedAt.IsZero() {
+		return false
+	}
+	return s.gateNow().Sub(run.UpdatedAt) >= gateSweepLookback-2*gateSweepInterval
+}
+
+// gateNow reads the wall clock the gate sweeper judges its window by,
+// overridable in tests (mirrors scheduleClock).
+func (s *Server) gateNow() time.Time {
+	if s != nil && s.gateClock != nil {
+		return s.gateClock()
+	}
+	return time.Now().UTC()
+}
