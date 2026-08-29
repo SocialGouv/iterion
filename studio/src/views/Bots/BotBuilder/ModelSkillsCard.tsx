@@ -13,6 +13,7 @@ import { Card, FieldLabel, Input, Select, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { useBackendDetectStore } from "@/store/backendDetect";
 
+import { ModelCapsCaption } from "@/components/ModelCapsCaption";
 import { type BuilderDraft, type PatchDraft } from "./model";
 import SectionTitle from "./SectionTitle";
 
@@ -104,6 +105,7 @@ export default function ModelSkillsCard({
               <option key={m} value={m} />
             ))}
           </datalist>
+          <ModelCapsCaption override={draft.model} />
         </div>
       </div>
       <p className="mt-1.5 text-caption text-fg-subtle">

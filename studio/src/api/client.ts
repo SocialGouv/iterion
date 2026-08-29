@@ -409,6 +409,41 @@ export async function fetchEffortCapabilities(
   return request<EffortCapabilities>(`/effort-capabilities?${params.toString()}`, { signal });
 }
 
+// Model capabilities — the limits + published price a picker captions
+// its selection with.
+
+export interface ModelCapabilities {
+  spec: string;
+  provider?: string;
+  model: string;
+  // "aggregator" is a settled answer; "curated" is what a cold lookup
+  // returns while the background spec refresh is still in flight, so it
+  // can still improve and must not be cached for the whole session.
+  source: "aggregator" | "curated";
+  context_window: number;
+  max_output_tokens: number;
+  // Per-million-token prices. Zero means the aggregator had no price —
+  // "unknown", never "free".
+  input_cost_per_m: number;
+  output_cost_per_m: number;
+  // Omitted for a bare model id: the flags resolve through a curated
+  // per-provider branch, and a bare id names no provider.
+  reasoning?: boolean;
+  tool_call?: boolean;
+  temperature?: boolean;
+}
+
+// fetchModelCapabilities accepts both a qualified "provider/model-id"
+// spec and a bare model id; the bare form is served from the spec
+// aggregator's consensus-filtered index rather than rejected.
+export async function fetchModelCapabilities(
+  spec: string,
+  signal?: AbortSignal,
+): Promise<ModelCapabilities> {
+  const params = new URLSearchParams({ spec });
+  return request<ModelCapabilities>(`/model-capabilities?${params.toString()}`, { signal });
+}
+
 // fetchResolvedEffort asks the server to env-substitute and validate
 // a reasoning_effort literal (e.g. "${VIBE_EFFORT:-max}"). Returns the
 // resolved enum value, or "" when the literal is empty / expansion

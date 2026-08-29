@@ -2435,6 +2435,53 @@
         ],
         "type": "object"
       },
+      "modelCapabilitiesResponse": {
+        "properties": {
+          "context_window": {
+            "type": "integer"
+          },
+          "input_cost_per_m": {
+            "type": "number"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_cost_per_m": {
+            "type": "number"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": "boolean"
+          },
+          "tool_call": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "spec",
+          "model",
+          "source",
+          "context_window",
+          "max_output_tokens",
+          "input_cost_per_m",
+          "output_cost_per_m"
+        ],
+        "type": "object"
+      },
       "orgView": {
         "properties": {
           "created_at": {
@@ -4891,6 +4938,27 @@
         "summary": "GET /api/memory/usage",
         "tags": [
           "memory"
+        ]
+      }
+    },
+    "/api/model-capabilities": {
+      "get": {
+        "operationId": "getModelCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/modelCapabilitiesResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/model-capabilities",
+        "tags": [
+          "model-capabilities"
         ]
       }
     },

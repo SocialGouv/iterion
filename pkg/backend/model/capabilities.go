@@ -4,18 +4,25 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
 
 // capabilitiesForModel returns capabilities for a given provider and model ID.
 // It resolves dynamically: the curated static heuristics (curatedCapabilities)
 // are the authoritative fallback, and any spec fetched from the online
-// aggregator (see modelspecs.go) is merged over them — a fetched ContextWindow>0
-// overrides the static one, and reasoning/tool_call/temperature flags override
-// the heuristics when the source provides them. When the aggregator lacks the
-// model or is unreachable, the curated value wins. Resolution never performs
-// blocking network I/O on this path.
+// aggregator (pkg/backend/modelspecs) is merged over them — a fetched
+// ContextWindow>0 overrides the static one, and reasoning/tool_call/temperature
+// flags override the heuristics when the source provides them. When the
+// aggregator lacks the model or is unreachable, the curated value wins.
+// Resolution never performs blocking network I/O on this path.
 func capabilitiesForModel(provider, modelID string) ModelCapabilities {
-	return specs.merge(provider, modelID, curatedCapabilities(provider, modelID))
+	curated := curatedCapabilities(provider, modelID)
+	spec, ok := modelspecs.Default().Lookup(provider, modelID)
+	if !ok {
+		return curated
+	}
+	return mergeSpec(spec, curated)
 }
 
 // curatedCapabilities is the static heuristic table — the authoritative

@@ -42,6 +42,37 @@ func liveCacheDir(t *testing.T) string {
 	return root
 }
 
+// seedClawCache writes claw's live-registry cache under root so a test can pin
+// the rates tier 1 will answer with.
+//
+// The LiveCache JSON is inlined rather than built through claw's own types:
+// Go's internal-import rule blocks cross-module access to the package that
+// defines them. The on-disk format is the public source of truth for the
+// integration anyway — a change to the JSON shape breaks consumers whether or
+// not they went through claw's typed APIs.
+func seedClawCache(t *testing.T, root, canonical string, inPerM, outPerM float64) {
+	t.Helper()
+	clawDir := filepath.Join(root, "claw-code-go")
+	if err := os.MkdirAll(clawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	cache := fmt.Sprintf(`{
+  "entries": [
+    {
+      "canonical": %q,
+      "provider": "openai",
+      "input_usd_per_million": %v,
+      "output_usd_per_million": %v
+    }
+  ],
+  "fetched_at": %q,
+  "source": "test"
+}`, canonical, inPerM, outPerM, time.Now().UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), []byte(cache), 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+}
+
 func TestEstimateUSD(t *testing.T) {
 	// Pin the static table as the only price source. Without this the
 	// assertions below are machine-dependent: on a host whose claw live
@@ -182,30 +213,7 @@ func TestEstimateUSD_PrefersLiveRegistry(t *testing.T) {
 	// trusted.
 	dir := liveCacheDir(t)
 	t.Setenv("XDG_CACHE_HOME", dir)
-	clawDir := filepath.Join(dir, "claw-code-go")
-	if err := os.MkdirAll(clawDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	// Inline the LiveCache JSON so we don't import claw's internal
-	// package (Go's internal-import rule blocks cross-module access).
-	// The on-disk format is the public source of truth for the
-	// integration: any change to the JSON shape would break consumers
-	// regardless of whether they go through claw's typed APIs.
-	cache := fmt.Sprintf(`{
-  "entries": [
-    {
-      "canonical": "gpt-5",
-      "provider": "openai",
-      "input_usd_per_million": 99.0,
-      "output_usd_per_million": 999.0
-    }
-  ],
-  "fetched_at": %q,
-  "source": "test"
-}`, time.Now().UTC().Format(time.RFC3339Nano))
-	if err := os.WriteFile(filepath.Join(clawDir, "models-cache.json"), []byte(cache), 0o644); err != nil {
-		t.Fatalf("write cache: %v", err)
-	}
+	seedClawCache(t, dir, "gpt-5", 99.0, 999.0)
 
 	got := EstimateUSD("gpt-5", 1_000_000, 1_000_000)
 	// 99 + 999 = 1098 if claw is consulted; 11.25 from the static
