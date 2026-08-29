@@ -407,6 +407,7 @@ export type PassthroughEventType =
   | "run_auto_resumed"
   | "run_workspace_reset"
   | "run_bank_refused"
+  | "run_bank_superseded"
   | "review_turn"
   | "review_verdict"
   | "review_merged"

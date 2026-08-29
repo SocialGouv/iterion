@@ -142,9 +142,9 @@ const (
 	EventRunWorkspaceReset EventType = "run_workspace_reset"
 	// EventRunBankRefused marks THIS attempt's head being dropped by the
 	// runner's death bank while an EARLIER attempt of the same run keeps
-	// the storage branch — either because that attempt banked a strictly
-	// richer chain, or because this attempt's workspace failed the
-	// integrity check.
+	// the storage branch — because that attempt banked a strictly richer
+	// chain, because this attempt's workspace failed the integrity
+	// check, or because this attempt's push failed.
 	//
 	// It exists because the refusal is otherwise invisible outside the pod
 	// log: FinalBranch/FinalCommit keep naming a valid, forge-backed,
@@ -160,7 +160,25 @@ const (
 	//     refusal only
 	//   - cause: why this attempt's workspace was refused — the
 	//     integrity-check refusal only
+	//   - reason ("push_failed") / error: the forge refused this
+	//     attempt's push — the push-failure refusal only
 	EventRunBankRefused EventType = "run_bank_refused"
+	// EventRunBankSuperseded marks a finished outcome force-taking the
+	// storage branch from an earlier dead attempt whose banked chain the
+	// finished chain does NOT contain. The takeover itself is correct —
+	// the storage branch must point at the finished product — but the
+	// dropped chain may be the only forge-side copy of that attempt's
+	// work, so the bank archives it first and this event says where (or
+	// why it could not). Emitted only on divergence: a banked head the
+	// finished chain contains is not a loss and stays silent. Data:
+	//   - branch: the storage branch the finished head took over
+	//   - superseded_head / new_head: the dropped and the winning heads
+	//   - archived_ref: the iterion/run-<id>-attempt-<sha12> ref now
+	//     holding the dropped chain — the success shape
+	//   - archive_error: why the chain could not be archived (it stays
+	//     recoverable from the run's git-meta snapshot) — the failure
+	//     shape; exactly one of the two is present
+	EventRunBankSuperseded EventType = "run_bank_superseded"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from

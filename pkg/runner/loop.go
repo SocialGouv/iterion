@@ -403,11 +403,12 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 	if !bankableStatus(finalStatus) {
 		return
 	}
-	bankCtx, ok := bankContext(ctx)
+	bankCtx, cancel, ok := bankContext(ctx)
 	if !ok {
-		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved. The redelivery banks.", msg.RunID, context.Cause(ctx))
+		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved, and banking from here could race the new owner's push. This attempt's work stays in the git-meta snapshot.", msg.RunID, context.Cause(ctx))
 		return
 	}
+	defer cancel()
 	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
 }
 
@@ -439,20 +440,42 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 // max_duration budget death never cancels ctx at all, so it takes the
 // live-ctx arm unchanged.
 //
-// No second deadline is imposed on the detached ctx on purpose: each git
-// op is already bounded by gitOpTimeout, and an operator who set
-// ITERION_RUNNER_GIT_TIMEOUT<=0 asked for unbounded git ops.
-func bankContext(ctx context.Context) (context.Context, bool) {
+// The detachment relies on the wall-clock deadline living on a CHILD of
+// the heartbeat's ctx (executeRun wraps ctx; the heartbeat watches the
+// parent), so DeadlineExceeded-as-cause proves the lease never stopped.
+// That layering is load-bearing: a deadline moved onto the run ctx
+// itself would make a heartbeat-lost pod read as "merely deadlined" and
+// force-push from a lease that may have moved. Keep any new deadline
+// below executeRun's.
+//
+// The detached ctx gets its OWN aggregate deadline: per-op gitOpTimeout
+// bounds each git subprocess but not the sequence — the bank issues up
+// to four network ops (ls-remote, fetch, archive push, push), and a
+// wedged forge must not pin a pod for 4×op-timeout past the deadline
+// the operator set precisely to cap the run. When the operator disabled
+// per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
+// that choice is honoured here too.
+func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	cause := context.Cause(ctx)
 	switch {
 	case cause == nil:
-		return ctx, true // live ctx — nothing to detach
+		return ctx, func() {}, true // live ctx — nothing to detach
 	case errors.Is(cause, context.DeadlineExceeded):
-		return context.WithoutCancel(ctx), true
+		detached := context.WithoutCancel(ctx)
+		if gitOpTimeout > 0 {
+			bounded, cancel := context.WithTimeout(detached, bankBudget)
+			return bounded, cancel, true
+		}
+		return detached, func() {}, true
 	default:
-		return nil, false
+		return nil, nil, false
 	}
 }
+
+// bankBudget bounds the whole post-deadline bank sequence. Generous
+// against the nominal case (seconds) and small against the run
+// deadlines it may outlive (hours).
+const bankBudget = 10 * time.Minute
 
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
@@ -1618,8 +1641,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// in the git-meta snapshot above, and turning that snapshot back
 		// into a branch takes a manual replay every time (measured: nine
 		// manual recoveries in three days of one campaign). An interrupted
-		// delivery re-clones and banks on its next attempt, and a cancel
-		// is the operator saying the work is not wanted. Paused runs do
+		// delivery does NOT bank — not because its work survives (the
+		// redelivery re-clones at RepoSHA and banks only its OWN later
+		// commits; this attempt's work strands in the snapshot exactly
+		// like a death's) but because interruption means the lease may
+		// already belong to another pod, and a bank from here could race
+		// the new owner's push (bankContext refuses on the same oracle).
+		// A cancel is the operator saying the work is not wanted. Paused runs do
 		// not bank either — NOT because the work is safe (a cloud resume
 		// re-clones at the base, so a paused run's committed work is as
 		// stranded as a death's until it ends) but because FinalBranch on

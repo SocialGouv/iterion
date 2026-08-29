@@ -680,8 +680,12 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 		// legitimately SHORTER than the dead one it completes — refusing
 		// it would make `runs merge` land the dead attempt's tree over
 		// the finished run's. The chain comparison protects dead
-		// attempts from poorer dead attempts, nothing else.
+		// attempts from poorer dead attempts, nothing else. Supersede is
+		// not destruction, though: when the finished chain does not
+		// CONTAIN the banked head, that head may be the only copy of the
+		// dead attempt's commits, so it is archived first.
 		if finalStatus == "finished" {
+			r.preserveSupersededChain(ctx, msg, workDir, tok, branch, oldHead, head)
 			r.cfg.Logger.Info("runner: run %s: bank: finished outcome supersedes the chain banked at %.12s", msg.RunID, oldHead)
 		} else if !r.bankSupersedes(ctx, msg, workDir, tok, branch, oldHead, head) {
 			return
@@ -811,6 +815,79 @@ func parseLsRemoteHead(out, branch string) string {
 		}
 	}
 	return ""
+}
+
+// preserveSupersededChain archives the head a finished outcome is about
+// to force away, when (and only when) that head is not contained in the
+// finished chain. A finished run legitimately supersedes a dead
+// attempt's longer chain, but on the documented budget-cap→resume
+// recovery the resumed run re-clones at base and re-does the work — it
+// can converge without ever carrying the dead attempt's commits, and
+// the banked branch may hold their ONLY forge-side copy. The archive
+// ref keeps that work reachable at iterion/run-<id>-attempt-<head12>
+// without contesting the storage branch, which must point at the
+// finished product.
+//
+// A failure here never blocks the bank: the finished head is what every
+// downstream consumer (`runs merge`, the gate, the PR) reads off the
+// storage branch, and the dead chain stays recoverable from the run's
+// git-meta snapshot — pricier, but not gone. It is never silent either:
+// the divergence always lands on the run's timeline as
+// run_bank_superseded, carrying either the archive ref or the error.
+func (r *Runner) preserveSupersededChain(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) {
+	// The banked head came from ls-remote; the finished clone has no
+	// reason to carry it. Fetch before any ancestry test or archive push
+	// — both need the object locally.
+	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: cannot fetch superseded head %.12s to archive it — the finished push drops it from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, oldHead, branch, err)
+		r.recordBankSuperseded(msg, branch, oldHead, head, "", "fetch superseded head: "+err.Error())
+		return
+	}
+	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {
+		return // contained in the finished chain — nothing to lose
+	}
+	archive := branch + "-attempt-" + shortSHA(oldHead)
+	if err := r.runGit(ctx, workDir, tok, "push", "origin", oldHead+":refs/heads/"+archive); err != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: archive push %s FAILED — the finished push drops %.12s from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, archive, oldHead, branch, err)
+		r.recordBankSuperseded(msg, branch, oldHead, head, "", "archive push: "+err.Error())
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: bank: superseded chain archived at %s @ %.12s", msg.RunID, archive, oldHead)
+	r.recordBankSuperseded(msg, branch, oldHead, head, archive, "")
+}
+
+// shortSHA is the 12-hex abbreviation used in archive ref names —
+// defensive about inputs shorter than an abbreviation, which a forge
+// ls-remote never returns but a unit test might.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// recordBankSuperseded puts a finished outcome's takeover of an earlier
+// attempt's diverging banked chain on the run's timeline. Exactly one of
+// archivedRef / archiveErr is non-empty.
+func (r *Runner) recordBankSuperseded(msg *queue.RunMessage, branch, oldHead, newHead, archivedRef, archiveErr string) {
+	data := map[string]any{
+		"branch":          branch,
+		"superseded_head": oldHead,
+		"new_head":        newHead,
+	}
+	if archivedRef != "" {
+		data["archived_ref"] = archivedRef
+	}
+	if archiveErr != "" {
+		data["archive_error"] = archiveErr
+	}
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankSuperseded,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_superseded: %v", msg.RunID, err)
+	}
 }
 
 // bankSupersedes says whether this outcome's head may overwrite the

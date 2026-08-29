@@ -125,7 +125,12 @@ func TestBankRepoWorkspacePushFailureIsNamed(t *testing.T) {
 
 func bankedBranch(t *testing.T, origin, runID string) (string, bool) {
 	t.Helper()
-	out, err := exec.Command("git", "-C", origin, "rev-parse", "refs/heads/iterion/run-"+runID).CombinedOutput()
+	return refAt(t, origin, "refs/heads/iterion/run-"+runID)
+}
+
+func refAt(t *testing.T, origin, ref string) (string, bool) {
+	t.Helper()
+	out, err := exec.Command("git", "-C", origin, "rev-parse", ref).CombinedOutput()
 	return strings.TrimSpace(string(out)), err == nil
 }
 
@@ -311,7 +316,9 @@ func TestBankableStatusFollowsClassification(t *testing.T) {
 
 // A budget death banks exactly like a success: branch on the forge,
 // FinalCommit/FinalBranch on the run doc — so `runs merge` works on a
-// dead run and its successor starts from the banked head, not from base.
+// dead run, and an operator can merge or branch from the banked head
+// instead of replaying the snapshot. (Resume itself still re-clones at
+// base — anchoring the successor on the banked head is follow-on work.)
 func TestBankOnBudgetDeathLandsTheBranch(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	gitOut(t, work, "commit", "--allow-empty", "-m", "work paid for before the cap")
@@ -741,6 +748,8 @@ func TestBankFinishedResumeSupersedesLongerDeadAttempt(t *testing.T) {
 	gitOut(t, work, "commit", "--allow-empty", "-m", "dead attempt: three")
 	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
 
+	deadHead := gitOut(t, work, "rev-parse", "HEAD")
+
 	gitOut(t, work2, "commit", "--allow-empty", "-m", "finished resume: the remaining unit")
 	finishedHead := gitOut(t, work2, "rev-parse", "HEAD")
 	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{}, "finished")
@@ -750,5 +759,43 @@ func TestBankFinishedResumeSupersedesLongerDeadAttempt(t *testing.T) {
 	}
 	if run := loadRun(t, r, msg.RunID); run.FinalCommit != finishedHead {
 		t.Fatalf("FinalCommit = %q, want the finished head %s", run.FinalCommit, finishedHead)
+	}
+	// The finished chain does not contain the dead attempt's commits, so
+	// the supersede force-pushed away their only forge-side copy — the
+	// bank must have archived them first, and said so on the timeline.
+	archive := "refs/heads/iterion/run-" + msg.RunID + "-attempt-" + deadHead[:12]
+	if got, ok := refAt(t, origin, archive); !ok || got != deadHead {
+		t.Fatalf("archive ref = %q (present=%v), want the dead attempt's head %s preserved at %s", got, ok, deadHead, archive)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankSuperseded)
+	if ev == nil {
+		t.Fatal("the divergent supersede left no run_bank_superseded — the takeover is invisible outside the pod log")
+	}
+	if ref, _ := ev.Data["archived_ref"].(string); ref == "" {
+		t.Fatalf("run_bank_superseded carries no archived_ref, data=%v", ev.Data)
+	}
+}
+
+// A finished chain that CONTAINS the banked head loses nothing by
+// superseding it: no archive ref, no timeline event.
+func TestBankFinishedContainedChainLeavesNoArchive(t *testing.T) {
+	r, msg, work, origin, _ := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work before the death")
+	deadHead := gitOut(t, work, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work, "", runtime.WorkspaceIntegrity{}, "failed")
+
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the finishing unit on top")
+	finishedHead := gitOut(t, work, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work, "", runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != finishedHead {
+		t.Fatalf("branch = %q (present=%v), want the finished head %s", got, ok, finishedHead)
+	}
+	archive := "refs/heads/iterion/run-" + msg.RunID + "-attempt-" + deadHead[:12]
+	if got, ok := refAt(t, origin, archive); ok {
+		t.Fatalf("a contained chain must not be archived, found %s @ %s", archive, got)
+	}
+	if ev := findEvent(t, r, msg.RunID, store.EventRunBankSuperseded); ev != nil {
+		t.Fatalf("a contained supersede must stay silent, got run_bank_superseded with data=%v", ev.Data)
 	}
 }
