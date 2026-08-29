@@ -901,6 +901,45 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		if int(out["parts"].(float64)) != 2 {
 			t.Fatalf("parts must reflect what was posted: %v", out["parts"])
 		}
+		// Documents the intent; the fixture below is the one that bites,
+		// because longDigest's coarse entries never pack near the budget.
+		for i, m := range got {
+			if len(m) > 1200 {
+				t.Fatalf("message %d is %d chars, over the 1200 budget", i+1, len(m))
+			}
+		}
+	})
+
+	// The budget exists to sit under the platform's hard post limit, so
+	// EVERY message must honour it -- including the last one of a
+	// ceiling-capped digest, whose marker is the ~64-char truncation
+	// notice rather than the ~9-char "_(i/n)_". A single over-long line
+	// makes every part pack exactly to the reserve, which is the shape
+	// that catches a reserve sized for the short marker only.
+	t.Run("the truncation marker fits the budget too", func(t *testing.T) {
+		msg := strings.Repeat("x", 9000)
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#tight"}}
+		sink := newNotifySink()
+		out, err := run(t, msg, sinks, 1200, 3, sink)
+		if err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#tight")
+		if len(got) != 3 {
+			t.Fatalf("max_messages=3 must post exactly 3 messages, got %d", len(got))
+		}
+		if !strings.Contains(got[2], "digest truncated") {
+			t.Fatalf("the capped tail must carry the truncation notice, got: %q", tail(got[2]))
+		}
+		for i, m := range got {
+			if len(m) > 1200 {
+				t.Fatalf("message %d/%d is %d chars, over the 1200 budget the sink promised",
+					i+1, len(got), len(m))
+			}
+		}
+		if out["posted"] != true || out["delivered"].(float64) != 1 {
+			t.Fatalf("a fully delivered capped digest still counts as delivered: %v", out)
+		}
 	})
 
 	t.Run("a part failure stops that sink without failing the run", func(t *testing.T) {

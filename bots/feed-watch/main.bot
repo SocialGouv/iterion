@@ -1226,9 +1226,14 @@ tool notify:
     max_messages = int({{input.max_messages}} or 0)
     webhooks_file = {{secrets.webhooks.path}}
 
-    # Room for the blank line + '_(i/n)_' marker appended to every part of
-    # a split digest, so a part plus its marker still fits the budget.
-    MARK_RESERVE = 32
+    # Room for the blank line + the marker appended to every part of a
+    # split digest, so a part PLUS its marker still fits the budget --
+    # sized for the LONGEST marker, the truncation notice on a
+    # ceiling-capped last part, not for the ordinary '_(i/n)_' one.
+    TRUNC_NOTE = ' -- digest truncated, full version in the run artifacts'
+    # chr(10)*2 + '_(' + 'nnnnn/nnnnn' + TRUNC_NOTE + ')_'; five digits a
+    # side is far past any max_messages an operator would set.
+    MARK_RESERVE = 2 + 2 + 11 + len(TRUNC_NOTE) + 2
 
     def out(o):
         print(json.dumps(o, ensure_ascii=False))
@@ -1303,9 +1308,7 @@ tool notify:
         n = len(parts)
         msgs = []
         for i, part in enumerate(parts, 1):
-            mark = '_(' + str(i) + '/' + str(n) + ')_'
-            if cut and i == n:
-                mark = '_(' + str(i) + '/' + str(n) + ' -- digest truncated, full version in the run artifacts)_'
+            mark = '_(' + str(i) + '/' + str(n) + (TRUNC_NOTE if cut and i == n else '') + ')_'
             msgs.append(part + chr(10) + chr(10) + mark)
         return msgs
 
