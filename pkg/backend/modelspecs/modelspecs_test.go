@@ -437,3 +437,36 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func boolp(b bool) *bool { return &b }
+
+// NewSeeded is the cross-package fixture seam, and its whole reason to exist is
+// that a test asserting on a price must not resolve against — or overwrite —
+// whatever the host's ~/.iterion cache last fetched. NoAutoFetch alone only
+// suppressed the BACKGROUND refresh: an explicit Refresh still reached
+// models.dev and rewrote DefaultCachePath(), and `iterion models --refresh` /
+// `models pricing --refresh` are exactly the paths a CLI test drives into it.
+func TestNewSeeded_RefreshTouchesNeitherNetworkNorDisk(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		_, _ = w.Write([]byte(`{"anthropic":{"models":{"claude-opus-5":{"limit":{"context":999}}}}}`))
+	}))
+	defer srv.Close()
+
+	r := NewSeeded(map[string]Spec{"anthropic/claude-opus-5": {ContextWindow: 42}})
+	if r.cachePath != "" {
+		t.Errorf("seeded cachePath = %q, want empty — never the host's real cache", r.cachePath)
+	}
+	// Stand in for models.dev: even pointed at a live endpoint it must not go.
+	r.url = srv.URL
+
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh on a seeded registry = %v, want nil (a no-op, not an error)", err)
+	}
+	if got := attempts.Load(); got != 0 {
+		t.Errorf("HTTP attempts = %d, want 0 — a seeded registry must never fetch", got)
+	}
+	// And the fixture is still the answer: sealing must not empty the table.
+	if got, ok := r.Lookup("anthropic", "claude-opus-5"); !ok || got.ContextWindow != 42 {
+		t.Errorf("post-Refresh lookup = %+v, %v; want the seeded 42", got, ok)
+	}
+}

@@ -145,6 +145,10 @@ type Registry struct {
 	loadedAt  time.Time       // last successful load/refresh or failed refresh attempt for TTL gating
 	diskTried bool            // disk cache lazily loaded once
 	inFlight  bool            // a background refresh is running
+
+	// sealed marks a fixture-only registry (NewSeeded). Unlike enabled, it
+	// still answers lookups — it just may never reach the network or the disk.
+	sealed bool
 }
 
 // New builds a Registry from opts, filling unset fields with the package
@@ -195,6 +199,16 @@ func NewSeeded(flat map[string]Spec) *Registry {
 	// answer from its fixture alone, never fall back to the host's cache.
 	r.diskTried = true
 	r.loadedAt = time.Now()
+	// NoAutoFetch only suppresses the BACKGROUND refresh. An explicit Refresh
+	// would still reach models.dev and overwrite DefaultCachePath() — the
+	// host's real ~/.iterion cache — which is precisely what this seam exists
+	// to keep tests away from, and `iterion models --refresh` /
+	// `models pricing --refresh` both route there through RefreshModelSpecs.
+	// Sealing closes that door, so the promise above holds for every path and
+	// not just the implicit one.
+	r.sealed = true
+	r.url = ""
+	r.cachePath = ""
 	return r
 }
 
@@ -375,11 +389,13 @@ func (r *Registry) loadDiskCacheLocked() {
 // never blocked or failed by spec resolution. It always clears inFlight and
 // advances loadedAt (even on failure) so we never fetch more than once per TTL.
 //
-// A nil or disabled registry is a no-op returning nil: `iterion models
+// A nil, disabled or SEALED registry is a no-op returning nil: `iterion models
 // --refresh` on a host with ITERION_MODEL_SPECS=off asked for nothing, and
-// failing it would report an error about a feature the operator turned off.
+// failing it would report an error about a feature the operator turned off. A
+// sealed one (NewSeeded) is a test fixture whose whole point is that it answers
+// from its own table without touching the host.
 func (r *Registry) Refresh(ctx context.Context) error {
-	if r == nil || !r.enabled {
+	if r == nil || !r.enabled || r.sealed {
 		return nil
 	}
 	defer func() {
