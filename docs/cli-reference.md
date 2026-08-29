@@ -422,6 +422,8 @@ iterion bots templates
 iterion bots list
 iterion bots list --paths bots --paths examples --format markdown
 iterion bots install <git-url|path> [--path <bundle>] [--ref <git-ref>] [--name <id>] [--dest <dir>] [--force]
+iterion bots sync [--workdir <dir>]
+iterion bots update <name> [--ref <git-ref>] [--workdir <dir>] [--allow-dirty]
 iterion bots regen-catalog
 ```
 
@@ -439,6 +441,14 @@ The name must be free **everywhere discovery looks** (`bots/`, `examples/`, `.bo
 | `--worktree`, `--sandbox` | Isolation dials; only override the template when passed explicitly. |
 
 `bots list` scans `bots` and `examples` by default and emits `json`, `markdown`, or a generated `skill`. Installs default to the git-ignored workspace `.botz/` and never run the bot — pass `--dest bots` to install into a committable location. `regen-catalog` rebuilds Nexie's generated bot catalogue from manifests and `.iterion/bot-overrides.yaml`.
+
+`bots sync` materializes every dependency pinned by the project-root
+`bots.lock` into `.botz/` and rejects content whose bundle hash differs from
+the lock. `bots update <name>` fetches that dependency again, computes its
+content hash, atomically rewrites the pin, and syncs only that bundle. A local
+Git source records its current commit and must be clean; `--allow-dirty` is an
+explicit, non-reproducible development escape hatch. Commit local source
+changes before updating whenever the pin is meant to be shared.
 
 ### `iterion marketplace`
 

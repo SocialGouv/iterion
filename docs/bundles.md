@@ -26,6 +26,27 @@ bundle reuse the same cache slot.
 Bundles are also the unit of distribution we expect for shared
 workflows (templates, examples, organisation-internal recipes).
 
+## Shared subbot dependencies
+
+A bundle can export workflows for another project bundle to call with a
+`bot://` URI. The consumer declares the dependency and exports it uses in its
+manifest, while a project-root `bots.lock` pins the source revision and exact
+bundle content hash. The materialized `.botz/<name>` tree is a generated,
+read-only consumer copy.
+
+```bash
+# Restore all pins after cloning a consumer project.
+iterion bots sync
+
+# After committing a source-bundle change, advance one pin and rematerialize it.
+iterion bots update shared-planner
+```
+
+Edit the source bundle, never `.botz`. `bots sync` only restores the existing
+pin; it does not discover a newer revision or rewrite the lock. `bots update`
+does both. Local Git sources must be clean unless the operator explicitly uses
+`--allow-dirty`, whose resulting lock is not reproducible by another checkout.
+
 ## Quick start
 
 ```bash
@@ -201,6 +222,8 @@ persisted `BundlePath` automatically — the user doesn't re-type
 
 ```
 iterion bots create <slug>               Scaffold a bundle source layout.
+iterion bots sync                         Materialize project `bots.lock` pins.
+iterion bots update <name> [--ref <ref>]  Advance one pin and materialize it.
 iterion bundle pack <dir> [-o file]      Build a deterministic .botz from a dir.
                        [--force]         Overwrite the output if it exists.
 iterion validate <bundle.botz|dir>       Validate a bundle and its workflow.

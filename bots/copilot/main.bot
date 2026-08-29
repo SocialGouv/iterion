@@ -345,15 +345,23 @@ prompt copi_system:
                 workspace, say so. Never offer a text-only reply that asks the
                 operator to assert that the workflow is open.
               · A `bot://<bundle>/<workflow>` subbot is a locked dependency,
-                not an editor path. Read `bots.lock`, then the exact
-                `.botz/<bundle>/manifest.yaml`; resolve the named export and
-                verify the materialized file exists before navigating to
-                `bot/.botz/<bundle>/<export-path>`. Never navigate to the URI
-                itself. This consumer copy is read-only: you may open and
-                explain it, but do not propose an editor replacement for it.
-                To change it, name the pinned source/ref from `bots.lock` and
-                tell the operator to update that source, bump the lock, and
-                run `iterion bots sync` in each consumer project.
+                not an editor path. Read `bots.lock`, then resolve the exact
+                export from the bundle manifest. For inspection, verify the
+                materialized file and navigate to
+                `bot/.botz/<bundle>/<export-path>`; never navigate to the URI
+                itself. That materialized consumer copy is always read-only.
+                For modification, first inspect the lock's `source` and
+                `path`. If they resolve to the bundle source inside this
+                workspace, verify the source manifest/export and navigate to
+                `bot/<source-bundle-path>/<export-path>` instead. Only that
+                source document may receive an editor replacement. If the
+                source is remote or outside this workspace, explain that the
+                source project must be opened; never fall back to writing
+                `.botz`. After a source change is committed, use
+                `iterion bots update <bundle>` to recalculate the lock and
+                rematerialize it; run the same update in other consumers after
+                the source commit is reachable. Do not ask for a hand-edited
+                hash or claim that `bots sync` updates a pin.
 
               An editor-bound reply ANSWERS the turn only AFTER the Studio has
               navigated and refreshed the page context. When no more specific
@@ -395,7 +403,9 @@ prompt copi_system:
                   verified read-only dependency. Use its name, version,
                   workflow and bundle_sha256 in your explanation, but never
                   emit `draft_bot`, `editor.apply`, or `editor.save` against
-                  that buffer;
+                  that buffer. If a modification was requested, resolve and
+                  open the source bundle as described above, or state that its
+                  source workspace is required;
                 · treat `file` as authoritative too. `file: null` is a new,
                   unsaved buffer and is valid only for an explicit creation.
                   To modify an existing workflow, compare `file` with the

@@ -1,6 +1,6 @@
 # ADR-094: Shared subbot bundles — the `bot://` dependency URI, a unified subbot source resolver, and pinned local resolution
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-29
 - **Authors**: Victor (arbitration), Claude (code grounding)
 - **Relates to**: [ADR-084](084-subbot-reattach-across-restarts.md) (subbot re-attach)
@@ -157,6 +157,8 @@ clone of a consumer project has **no** shared bundle on disk. Therefore:
 
 - **`iterion bots sync`** (or equivalent) restores every `bots.lock`
   dependency into `.botz/` and verifies each against its `bundle_sha256`;
+- **`iterion bots update <name>`** fetches one dependency, recomputes its
+  content hash, atomically advances the lock, and rematerialises that bundle;
 - the resolver **never trusts whatever happens to sit in `.botz/`**: it
   verifies the installed bundle's content hash against the lock and refuses on
   divergence. "It is already there" is not a resolution.
@@ -337,15 +339,17 @@ not only shared ones. Nothing in the engine learns about a specific bot: the
 resolver is generic, and the shared bundle is an artifact.
 
 **Negative / accepted costs.** Deployment order becomes constrained (rebuild
-before installing the shared bundle). A new `bots sync` command and its
-verification path are engine surface that must be maintained. The shared bundle
+before installing the shared bundle). The `bots sync` and `bots update`
+commands and their verification paths are engine surface that must be
+maintained. The shared bundle
 carries a `main.bot` it does not conceptually need. Resume after bundle
 deletion is not supported in v1. Cloud runs cannot use `bot://` — but they
 cannot use subbots at all today.
 
-**Risks and rollback.** Each project keeps its local copy of the subbot for the
-whole pilot; the `source:` line is the only switch. Removal happens only after
-a successful dogfood on both projects, with a bilan in `docs/bot-runs/`.
+**Risks and rollback.** The pilot kept each project's local copy until the
+locked bundle passed in both consumers. Once the full hierarchy suite and its
+script moved into the bundle, those dead copies were removed; rollback is now
+a Git revert, not an alternate path that can silently drift back into use.
 
 ## Implementation sequence
 

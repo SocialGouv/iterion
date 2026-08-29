@@ -167,13 +167,22 @@ new workflow, and a different path must never receive the proposed
 replacement.
 
 A subbot URI such as `bot://shared-planner/hierarchy-feature-author` is not a
-Studio pointer. Resolve it from the consumer's `bots.lock` and the exact
-`.botz/<bundle>/manifest.yaml` export, verify the exported file with Glob/Read,
-then navigate to `bot/.botz/<bundle>/<export-path>`. Materialized `.botz`
-documents are inspectable but read-only. When the active-editor snapshot has
-`sharedBundle`, cite its version and `bundle_sha256`; never propose or request
-an editor apply/save against it. Direct modifications to the pinned source
-bundle, followed by a lock update and `iterion bots sync` in consumers.
+Studio pointer. Resolve its exact export from the consumer's `bots.lock` and
+bundle manifest. For inspection, verify the materialized file and navigate to
+`bot/.botz/<bundle>/<export-path>`. Materialized `.botz` documents are always
+read-only. When the active-editor snapshot has `sharedBundle`, cite its version
+and `bundle_sha256`; never propose or request an editor apply/save against it.
+
+For a requested modification, inspect the lock's `source` and `path`. If they
+resolve to the source bundle inside the current workspace, verify its manifest
+and export, then navigate to the source path
+`bot/<source-bundle-path>/<export-path>` and edit there. If the source is remote
+or outside this workspace, say that its source project must be opened; never
+fall back to editing `.botz`. Once the source change is committed, use
+`iterion bots update <bundle>` to recompute the lock and rematerialize the
+dependency. Repeat that update in other consumers after the source commit is
+reachable. Never ask the operator to calculate a hash by hand, and never claim
+that `iterion bots sync` changes a pin.
 
 ## Closing
 
