@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
@@ -230,5 +231,42 @@ func TestAdminBotVars_PutMergeClearAndRejects(t *testing.T) {
 	rec, _ = st.Get(context.Background())
 	if _, still := rec.Vars["ITERION_VIBE_EFFORT_CLAUDE"]; still || len(rec.Vars) != 1 {
 		t.Fatalf("clear semantics wrong: %+v", rec)
+	}
+}
+
+func TestAdminBotVars_ConcurrentPutIsA409NotALostKey(t *testing.T) {
+	st := platformcfg.NewMemoryStore[platformcfg.BotVars]()
+	s := New(Config{SkipProjectRegistration: true, BotVarsSettings: st}, iterlog.New(iterlog.LevelError, nil))
+	admin := auth.WithIdentity(context.Background(), auth.Identity{UserID: "root", IsSuperAdmin: true})
+
+	put := func(body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("PUT", "/api/admin/settings/bot-vars", strings.NewReader(body)).WithContext(admin)
+		w := httptest.NewRecorder()
+		s.handleAdminPutBotVars(w, r)
+		return w
+	}
+	if w := put(`{"ITERION_A_VAR":"1"}`); w.Code != http.StatusOK {
+		t.Fatalf("seed = %d", w.Code)
+	}
+	// Simulate replica B writing between A's read and A's write: bump the
+	// stored record directly so A's CAS token is stale.
+	rec, _ := st.Get(context.Background())
+	rec.Vars["ITERION_B_VAR"] = "2"
+	if err := st.Put(context.Background(), *rec); err != nil {
+		t.Fatalf("concurrent write: %v", err)
+	}
+	// A's handler now reads fresh state (this test drives sequentially),
+	// so instead exercise the CAS directly with the stale token.
+	stale := rec.UpdatedAt.Add(-time.Second)
+	wrote, err := st.PutIfUnchanged(context.Background(), platformcfg.BotVars{Vars: map[string]string{"ITERION_A_VAR": "1"}}, stale)
+	if err != nil {
+		t.Fatalf("cas: %v", err)
+	}
+	if wrote {
+		t.Fatal("a stale CAS token must not win — that is the silently-dropped-key path")
+	}
+	after, _ := st.Get(context.Background())
+	if after.Vars["ITERION_B_VAR"] != "2" {
+		t.Fatalf("the concurrent writer's key was lost: %+v", after.Vars)
 	}
 }

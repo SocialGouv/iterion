@@ -561,14 +561,14 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (
 	for name, server := range wf.ResolvedMCPServers {
 		expandedArgs := make([]string, len(server.Args))
 		for i, a := range server.Args {
-			expandedArgs[i] = os.ExpandEnv(a)
+			expandedArgs[i] = ir.ExpandEnvWithDefault(a)
 		}
 		catalog[name] = &mcp.ServerConfig{
 			Name:      server.Name,
 			Transport: mcp.FromIRTransport(server.Transport),
-			Command:   os.ExpandEnv(server.Command),
+			Command:   ir.ExpandEnvWithDefault(server.Command),
 			Args:      expandedArgs,
-			URL:       os.ExpandEnv(server.URL),
+			URL:       ir.ExpandEnvWithDefault(server.URL),
 			Headers:   server.Headers,
 			// Env is already fully resolved at catalog-build time (plugin
 			// {{config.*}} placeholders expanded by loadPluginServers) — copy
@@ -641,7 +641,7 @@ func buildToolChecker(wf *ir.Workflow) tool.ToolChecker {
 //
 // Returns (nil, nil) when the env var is empty.
 func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permissions.Classifier, error) {
-	spec := strings.TrimSpace(os.Getenv("ITERION_LLM_CLASSIFIER_MODEL"))
+	spec := strings.TrimSpace(ir.LookupEnv("ITERION_LLM_CLASSIFIER_MODEL"))
 	if spec == "" {
 		return nil, nil
 	}

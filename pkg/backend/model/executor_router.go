@@ -187,7 +187,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// stdlib's silent collapse to "".
 	expanded := ir.ExpandEnvWithDefault(node.Model)
 	if expanded == "" {
-		expanded = os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL")
+		expanded = ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL")
 	}
 	if expanded == "" {
 		expanded = defaultRouterModel

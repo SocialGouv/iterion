@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 )
@@ -267,6 +268,10 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}
+	var prevUpdatedAt time.Time
+	if rec != nil {
+		prevUpdatedAt = rec.UpdatedAt
+	}
 	if rec == nil {
 		rec = &platformcfg.BotVars{}
 	}
@@ -278,9 +283,11 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 		vars[k] = v
 	}
 	rec.Vars = vars
-	// Audit meta carries old→new per touched key: the values are
-	// non-secret by construction (Validate refuses credential-shaped
-	// names), so they are loggable in clear.
+	// Audit meta carries old→new per touched key. Validate refuses
+	// credential-SHAPED NAMES, but nothing can vouch for the VALUE an
+	// operator chooses to store under an innocent name: values live in
+	// clear in the settings doc, this audit trail and every GET — the
+	// CLI help says so, and the surface is super-admin-only.
 	changes := map[string]any{}
 	for name, v := range patch {
 		old := rec.Vars[name]
@@ -303,7 +310,21 @@ func (s *Server) handleAdminPutBotVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.UpdatedBy = s.requestUserID(r)
-	if err := s.botVarsStore.Put(r.Context(), *rec); err != nil {
+	// Conditional write: two replicas merging concurrently must not
+	// silently drop each other's keys through a blind ReplaceOne. A lost
+	// race is a loud 409 — the operator re-runs the command against the
+	// fresh state.
+	if cas, ok := s.botVarsStore.(platformcfg.CASStore[platformcfg.BotVars]); ok {
+		wrote, err := cas.PutIfUnchanged(r.Context(), *rec, prevUpdatedAt)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if !wrote {
+			s.httpErrorFor(w, r, http.StatusConflict, "bot vars changed concurrently — re-read and retry")
+			return
+		}
+	} else if err := s.botVarsStore.Put(r.Context(), *rec); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
 		return
 	}

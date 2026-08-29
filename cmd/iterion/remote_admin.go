@@ -405,7 +405,13 @@ setting > pod env var > the .bot's own default.
 
 Infra namespaces (Mongo/NATS/JWT/secrets/…) and credential-shaped names
 are refused at write time. Changes reach every replica within the
-resolver TTL (no restart); runs claimed after that expand the new value.`,
+resolver TTL (no restart); runs claimed after that expand the new value.
+
+Two honesty notes. Values are stored, echoed and audit-logged IN CLEAR —
+never put a secret in a bot var, even under an innocent name. And a var
+only takes effect where the engine resolves it through the expansion
+chain (every ` + "`${ITERION_X:-default}`" + ` in a .bot, plus the routed model
+pins); a name nothing reads is accepted but changes nothing.`,
 	Args: cobra.MaximumNArgs(3),
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		const path = "/api/admin/settings/bot-vars"

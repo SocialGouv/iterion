@@ -12,6 +12,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -129,7 +130,7 @@ func resolveModel(ctx context.Context, specModel, providerHint string) (string, 
 	if specModel != "" {
 		return specModel, nil
 	}
-	if env := os.Getenv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
+	if env := ir.LookupEnv("ITERION_DEFAULT_SUPERVISOR_MODEL"); env != "" {
 		return env, nil
 	}
 	report := detect.Detect(ctx)

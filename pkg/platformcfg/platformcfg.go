@@ -6,13 +6,16 @@
 // fixed _id (the layout usagecap's settings store reserved for exactly
 // this growth).
 //
-// Two families ship here:
+// Families shipped here:
 //   - bot_roles — the webhook role→bot-id bindings that were hardcoded
 //     engine constants (reviewer/revi_converse/brancher/implementer), so
 //     re-pointing a role at another bot no longer needs a rollout.
 //   - sandbox — the `sandbox: auto` fallback image, resolved at PUBLISH
 //     time and pinned on the RunMessage so a redelivery reruns in the same
 //     environment.
+//   - bot_vars — DB-resolved overrides for the ${ITERION_X:-default}
+//     expansions bots declare (model pins, reasoning effort, tunables),
+//     consulted before the pod env through ir.SetEnvOverlay.
 //
 // A nil field means "no override — inherit the code/env default", which is
 // what keeps a deployment that never touches the API at exactly its
@@ -119,16 +122,37 @@ type BotVars struct {
 }
 
 // botVarsInfraPrefixes are the env namespaces a DB record must never
-// shadow: they configure the process's own transport, storage, identity
-// and enforcement — an override there would let a settings write repoint
-// the database it is stored in, or blunt the cap that meters it. The
-// usage-cap and sandbox-image families are excluded because they already
-// have their own audited, validated settings surface.
+// shadow. Honest scope: most of these are read via plain os.Getenv at
+// boot and never through the overlay, so this list is namespace HYGIENE
+// and defence in depth (the read side additionally gates on ITERION_),
+// not the containment boundary — that is the overlay's reach itself.
+// It still matters for the sites that DO resolve through
+// ir.LookupEnv/ExpandEnvWithDefault today or gain it tomorrow: keeping
+// transport/auth/enforcement names unwritable means routing one more
+// os.Getenv site through the choke point can never turn a stored var
+// into an infra override. Grepped from the real config surface
+// (pkg/config, cmd), not written from memory. The usage-cap and
+// sandbox-image families are excluded because they already have their
+// own audited, validated settings surface.
 var botVarsInfraPrefixes = []string{
-	"ITERION_MONGO_", "ITERION_NATS_", "ITERION_JWT_", "ITERION_SECRETS_",
-	"ITERION_S3_", "ITERION_BLOB_", "ITERION_VALKEY_", "ITERION_OIDC_",
-	"ITERION_OAUTH_", "ITERION_USAGE_CAP", "ITERION_SANDBOX_DEFAULT_IMAGE",
-	"ITERION_PUBLIC_URL", "ITERION_BOOTSTRAP_",
+	"ITERION_MONGO_", "ITERION_NATS_", "ITERION_QUEUE_", "ITERION_REDIS_",
+	"ITERION_JWT_", "ITERION_SECRETS_", "ITERION_S3_",
+	"ITERION_OIDC_", "ITERION_OAUTH_", "ITERION_AUTH_",
+	"ITERION_ACCESS_", "ITERION_PAT_", "ITERION_COOKIE_",
+	"ITERION_SMTP_", "ITERION_OTLP_", "ITERION_SANDBOX_",
+	"ITERION_USAGE_CAP", "ITERION_BOOTSTRAP_",
+	"ITERION_MODEL_SPECS_", "ITERION_UPDATE_",
+}
+
+// botVarsInfraExact are single infra names outside those namespaces —
+// exact matches, so a legitimate sibling (ITERION_BIN_PACKING…) is not
+// collaterally blocked the way a bare prefix would.
+var botVarsInfraExact = map[string]bool{
+	"ITERION_PUBLIC_URL":   true,
+	"ITERION_DISABLE_AUTH": true,
+	"ITERION_SIGNUP_MODE":  true,
+	"ITERION_BIN":          true,
+	"ITERION_PI_BIN":       true,
 }
 
 // botVarsMax bounds the record so a runaway writer cannot grow the
@@ -179,6 +203,9 @@ func botVarNameOK(name string) bool {
 		if strings.Contains(name, bad) {
 			return false
 		}
+	}
+	if botVarsInfraExact[name] {
+		return false
 	}
 	for _, p := range botVarsInfraPrefixes {
 		if strings.HasPrefix(name, p) {

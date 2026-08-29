@@ -77,6 +77,56 @@ func (s *MongoStore[T]) Put(ctx context.Context, rec T) error {
 	return nil
 }
 
+// updatedAtOf reads the family record's UpdatedAt (the CAS token for
+// PutIfUnchanged). Zero for families that would not have the field —
+// none today, the switch is the same shape stampUpdatedAt maintains.
+func updatedAtOf[T any](rec *T) time.Time {
+	switch v := any(rec).(type) {
+	case *BotRoles:
+		return v.UpdatedAt
+	case *Sandbox:
+		return v.UpdatedAt
+	case *BotVars:
+		return v.UpdatedAt
+	}
+	return time.Time{}
+}
+
+// PutIfUnchanged writes rec only if the stored document's updated_at
+// still equals prevUpdatedAt (zero = "no document existed"). Returns
+// false when another writer got there first — the read-modify-write
+// callers (the per-key merge handlers) surface that as a 409 and
+// re-read, instead of silently dropping the concurrent writer's keys
+// under ReplaceOne semantics.
+func (s *MongoStore[T]) PutIfUnchanged(ctx context.Context, rec T, prevUpdatedAt time.Time) (bool, error) {
+	stampUpdatedAt(&rec)
+	body, err := bson.Marshal(rec)
+	if err != nil {
+		return false, fmt.Errorf("platformcfg: encode %s: %w", s.docID, err)
+	}
+	var doc bson.M
+	if err := bson.Unmarshal(body, &doc); err != nil {
+		return false, fmt.Errorf("platformcfg: encode %s: %w", s.docID, err)
+	}
+	doc["_id"] = s.docID
+	filter := bson.M{"_id": s.docID, "updated_at": prevUpdatedAt}
+	upsert := false
+	if prevUpdatedAt.IsZero() {
+		// First write: match only a missing document, and upsert it.
+		filter = bson.M{"_id": s.docID, "updated_at": bson.M{"$exists": false}}
+		upsert = true
+	}
+	res, err := s.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(upsert))
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			// The upsert raced another first write.
+			return false, nil
+		}
+		return false, fmt.Errorf("platformcfg: put %s: %w", s.docID, err)
+	}
+	return res.MatchedCount > 0 || res.UpsertedCount > 0, nil
+}
+
 // MemoryStore is the in-process Store for tests and single-process wiring.
 type MemoryStore[T any] struct {
 	mu  sync.Mutex
@@ -101,6 +151,29 @@ func (m *MemoryStore[T]) Put(_ context.Context, rec T) error {
 	defer m.mu.Unlock()
 	m.rec = &rec
 	return nil
+}
+
+// PutIfUnchanged is the MemoryStore mirror of the Mongo CAS write.
+func (m *MemoryStore[T]) PutIfUnchanged(_ context.Context, rec T, prevUpdatedAt time.Time) (bool, error) {
+	stampUpdatedAt(&rec)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.rec == nil:
+		if !prevUpdatedAt.IsZero() {
+			return false, nil
+		}
+	case !updatedAtOf(m.rec).Equal(prevUpdatedAt):
+		return false, nil
+	}
+	m.rec = &rec
+	return true, nil
+}
+
+// CASStore is the optional conditional-write surface a Store may offer;
+// the merge handlers use it when present and fall back to Put otherwise.
+type CASStore[T any] interface {
+	PutIfUnchanged(ctx context.Context, rec T, prevUpdatedAt time.Time) (bool, error)
 }
 
 // stampUpdatedAt sets the family record's UpdatedAt on write — in the

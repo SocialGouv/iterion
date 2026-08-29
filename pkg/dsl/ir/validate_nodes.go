@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/automemory"
@@ -960,31 +961,51 @@ func modelEnvRefNames(s string) []string {
 }
 
 // envOverlay, when set, is consulted BEFORE the process env by every
-// lookup in ExpandEnvWithDefault. It is how DB-backed bot-var settings
-// (platformcfg FamilyBotVars) reach the ~30 expansion sites through one
-// choke point: cmd wiring installs a TTL-cached resolver here at boot,
-// once, before any workflow runs — never mutated afterwards, so reads
-// need no lock. Nil (the default, and every local CLI run) keeps the
+// lookup in ExpandEnvWithDefault (and by LookupEnv's direct callers).
+// It is how DB-backed bot-var settings (platformcfg FamilyBotVars)
+// reach every expansion site through one choke point: cmd wiring
+// installs a TTL-cached resolver here at boot. Held behind an atomic
+// so a mid-process SetEnvOverlay (tests do it; a future caller might)
+// can never race a concurrent expansion — the read path pays one
+// atomic load. Nil (the default, and every local CLI run) keeps the
 // historical env-only behaviour byte-identical.
-var envOverlay func(name string) (string, bool)
+var envOverlay atomic.Pointer[func(name string) (string, bool)]
 
 // SetEnvOverlay installs the settings lookup consulted before os.Getenv.
-// Call it once at process boot; the precedence it creates is
-// setting > pod env > `:-` default.
-func SetEnvOverlay(fn func(name string) (string, bool)) { envOverlay = fn }
+// The precedence it creates is setting > pod env > `:-` default.
+// Nil restores env-only behaviour.
+func SetEnvOverlay(fn func(name string) (string, bool)) {
+	if fn == nil {
+		envOverlay.Store(nil)
+		return
+	}
+	envOverlay.Store(&fn)
+}
 
-// lookupEnv resolves one variable name through the overlay-then-env
-// chain. An overlay hit with an empty value counts as unset (same rule
-// the `:-` form applies to env values), so a setting cannot pin
-// "empty" — clearing is expressed by removing the key.
-func lookupEnv(name string) string {
-	if envOverlay != nil {
-		if v, ok := envOverlay(name); ok && v != "" {
-			return v
+// LookupEnv resolves one variable name through the overlay-then-env
+// chain — the same resolution ExpandEnvWithDefault applies inside
+// `${...}` forms, exported for the direct os.Getenv("ITERION_*") sites
+// (model pins, delegate tunables) so a bot-var setting reaches them
+// too, not only the DSL expansions. An overlay hit with an empty value
+// counts as unset (same rule the `:-` form applies to env values), so
+// a setting cannot pin "empty" — clearing is expressed by removing the
+// key. The overlay is consulted ONLY for ITERION_-namespaced names:
+// the write surface validates that namespace, and gating the read side
+// too means a corrupted or hand-edited settings document can never
+// inject $HOME, $PATH or a provider credential into an expansion.
+func LookupEnv(name string) string {
+	if strings.HasPrefix(name, "ITERION_") {
+		if fn := envOverlay.Load(); fn != nil {
+			if v, ok := (*fn)(name); ok && v != "" {
+				return v
+			}
 		}
 	}
 	return os.Getenv(name)
 }
+
+// lookupEnv keeps the package-internal call sites on the short name.
+func lookupEnv(name string) string { return LookupEnv(name) }
 
 // ExpandEnvWithDefault expands ${VAR} and ${VAR:-default} forms in s.
 // Mirrors the shell parameter-expansion default-value syntax that
