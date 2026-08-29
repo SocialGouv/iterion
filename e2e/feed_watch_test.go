@@ -819,6 +819,31 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		}
 	})
 
+	// The reserve for the part marker is only owed once there IS a marker.
+	// Charging it up front splits a digest that fits the budget whole into
+	// a full message plus a stub carrying the last few chars and "_(2/2)_"
+	// -- and the reserve is wide enough (72) for that window to be real.
+	t.Run("a digest that fits the budget stays one unmarked message", func(t *testing.T) {
+		msg := strings.Repeat("a", 1180) // under 1200, over 1200 - reserve
+		sinks := []any{map[string]any{"webhook": "w1", "channel": "#fits"}}
+		sink := newNotifySink()
+		out, err := run(t, msg, sinks, 1200, 5, sink)
+		if err != nil {
+			t.Fatalf("notify failed: %v", err)
+		}
+		got := sink.texts("#fits")
+		if len(got) != 1 {
+			t.Fatalf("a %d-char digest under a 1200-char budget must stay ONE message, got %d: %q",
+				len(msg), len(got), tail(got[len(got)-1]))
+		}
+		if got[0] != msg {
+			t.Fatalf("an unsplit digest must be posted verbatim, with no part marker: %q", tail(got[0]))
+		}
+		if int(out["parts"].(float64)) != 1 {
+			t.Fatalf("parts must be 1 for an unsplit digest: %v", out["parts"])
+		}
+	})
+
 	t.Run("per-sink max_chars splits each channel to its own budget", func(t *testing.T) {
 		msg := longDigest(20)
 		sinks := []any{

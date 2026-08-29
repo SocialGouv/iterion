@@ -1301,7 +1301,13 @@ tool notify:
         """The digest as it will be posted to a sink of budget `limit`:
         one entry when it fits, else numbered parts, the last one carrying
         the truncation notice if the ceiling cut the tail off."""
-        parts = split_text(message or '', max(limit - MARK_RESERVE, 1))
+        text = message or ''
+        # MARK_RESERVE only has to be paid when there IS a marker. Charging
+        # it up front would split a digest that fits the budget whole --
+        # a full message plus a stub carrying the tail and '_(2/2)_'.
+        if len(text) <= limit:
+            return [text]
+        parts = split_text(text, max(limit - MARK_RESERVE, 1))
         cut = max_messages > 0 and len(parts) > max_messages
         if cut:
             parts = parts[:max_messages]
