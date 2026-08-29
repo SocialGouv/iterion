@@ -1884,6 +1884,11 @@ func (r *Runner) executorSpec(ctx context.Context, msg *queue.RunMessage, wf *ir
 		// wire. Before this, the cloud path persisted them display-only:
 		// the studio showed an override the delegates never honoured.
 		ModelOverrides: modelOverridesFromMsg(msg.ModelOverrides),
+		// The operator's run-level fallback route, carried on the wire for
+		// the same reason as the pins above — and applied through the SAME
+		// ir.ApplyRunFallback screen a local launch passes, so a pod can
+		// never take a crossing the compiler would refuse.
+		RunFallback: runFallbackFromMsg(msg.Fallback),
 		// Inbox/AsyncAsk drain the run's queued messages into the agent's
 		// live turn — supervisor steering and operator chat both ride
 		// them. Every other launch surface binds these; without them the
@@ -1938,6 +1943,21 @@ func stringifyVars(in map[string]any) (map[string]string, error) {
 // set — the runner-side twin of runview's launch-entry fold, so a cloud
 // run resolves per-node models exactly like a local launch with the same
 // flags.
+// runFallbackFromMsg folds the wire route into the IR form the executor
+// applies. Name is stamped here (not on the wire) so every consumer
+// reports the route under the one recognisable launch-route label.
+func runFallbackFromMsg(f *queue.RunFallback) ir.Fallback {
+	if f == nil {
+		return ir.Fallback{}
+	}
+	return ir.Fallback{
+		Name:     ir.RunFallbackName,
+		Backend:  f.Backend,
+		Model:    f.Model,
+		Provider: f.Provider,
+	}
+}
+
 func modelOverridesFromMsg(entries []queue.ModelOverride) model.ModelOverrides {
 	var o model.ModelOverrides
 	for _, e := range entries {

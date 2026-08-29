@@ -105,6 +105,14 @@ type RunModelOverride struct {
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
 }
 
+// RunFallback is the persisted form of the launch's run-level fallback
+// route — the doc twin of queue.RunFallback.
+type RunFallback struct {
+	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
+	Model    string `json:"model,omitempty" bson:"model,omitempty"`
+	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
 // NodeServed is the (backend, model) that actually served one LLM node.
 // Last write wins per node_id — a loop's last pass is what a finished
 // run.json reports; the event stream is the full history.
@@ -284,6 +292,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// Fallback captures the launch-time run-level fallback route (CLI
+	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
+	// same doctrine as the budget ask: cloud resumes are often unattended
+	// auto-retries, so nothing else can re-state the route, and a dropped
+	// route silently strands the run on exactly the provider wall it was
+	// meant to escape.
+	Fallback *RunFallback `json:"fallback,omitempty" bson:"fallback,omitempty"`
 	// NodesServed maps IR node id → last (backend, model) that served
 	// it. Display-only / post-hoc: makes a finished run self-describing
 	// without replaying events.jsonl. Empty for legacy runs and for

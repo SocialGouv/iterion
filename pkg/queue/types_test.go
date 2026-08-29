@@ -181,11 +181,15 @@ func TestSchemaVersionConstant(t *testing.T) {
 	// bump with a dual-accept window (MinSchemaVersion=8): the change is
 	// purely additive, so consumers take both and a rolling deploy has no
 	// rollout-ordering hazard.
-	if SchemaVersion != 9 {
-		t.Errorf("SchemaVersion = %d, want 9 (bump intentionally)", SchemaVersion)
+	// v=10 (2026-08-29) added Fallback — dropped, the run-level rescue
+	// route the launch declared never reaches the pod, and the run parks
+	// on the very provider wall the route exists to escape. Additive,
+	// same dual-accept window as v9 (MinSchemaVersion=9).
+	if SchemaVersion != 10 {
+		t.Errorf("SchemaVersion = %d, want 10 (bump intentionally)", SchemaVersion)
 	}
-	if MinSchemaVersion != 8 {
-		t.Errorf("MinSchemaVersion = %d, want 8", MinSchemaVersion)
+	if MinSchemaVersion != 9 {
+		t.Errorf("MinSchemaVersion = %d, want 9", MinSchemaVersion)
 	}
 }
 

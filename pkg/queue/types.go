@@ -75,17 +75,23 @@ import (
 // same-release roll of both — remains required; dual-accept removes only
 // the stranded-v8-message half of the window.)
 //
+// v=10 (2026-08-29): added Fallback so the operator's single run-level
+// fallback route (`--fallback` / launch `fallback`) reaches the runner.
+// Same failure direction as v=7: the server accepted the field and the
+// local executor honoured it, but the cloud path dropped it at publish —
+// so the one route meant to rescue a run from a provider's exhausted
+// usage window never fired precisely where runs park unattended.
+//
 // KNOWN DEBT: ModelOverrides shipped earlier inside v7 (427a9f44e) without a
 // version bump. A v7 runner built before that commit can silently ignore the
 // operator's model/backend pins. That historical gap cannot be repaired by a
 // later bump; the additive-intent rule above prevents repeating it.
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // MinSchemaVersion is the oldest wire version a consumer still accepts.
-// v8 → v9 is additive (absent BotBundle/SandboxImage simply mean "no stored
-// bundle, env-default image"), so a v8 payload decodes into exactly the
-// pre-v9 behaviour.
-const MinSchemaVersion = 8
+// v9 → v10 is additive (an absent Fallback simply means "no run-level
+// route"), so a v9 payload decodes into exactly the pre-v10 behaviour.
+const MinSchemaVersion = 9
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -129,6 +135,15 @@ type RunMessage struct {
 	// display-only: the studio showed an override the delegates never
 	// honoured.
 	ModelOverrides []ModelOverride `json:"model_overrides,omitempty"`
+	// Fallback carries the operator's single run-level fallback route so
+	// the claiming runner APPLIES it to its executor (ir.ApplyRunFallback,
+	// same screen as a local launch) — the wire mirror of
+	// store.RunFallback, same doctrine as ModelOverrides above. Without
+	// this field the cloud path accepted the launch's `fallback` and
+	// dropped it at publish: the one route meant to rescue a run from an
+	// exhausted usage window never fired on the path where runs park
+	// unattended.
+	Fallback *RunFallback `json:"fallback,omitempty"`
 	// AutoMemory is the launch-time auto-memory (MEMORY.md) override — the
 	// wire half of the knob's strongest precedence level. Empty means the
 	// caller expressed nothing and the workflow/env decide.
@@ -255,6 +270,17 @@ type BudgetOverrides struct {
 // node id, id glob, kind keyword ("agent"|"judge"|…) or "*".
 type ModelOverride struct {
 	Selector string `json:"selector"`
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// RunFallback is the operator's single run-level fallback route on the
+// wire — the queue twin of runview.FallbackEntry. Node targeting is not
+// carried: eligibility (agent nodes without their own `fallbacks:`,
+// never judges) is decided by ir.ApplyRunFallback on the consuming side,
+// identically for a local launch and a runner pod.
+type RunFallback struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`

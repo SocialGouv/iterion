@@ -870,6 +870,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
 		ModelOverrides: runModelOverrides(spec.ModelOverrides),
+		// The run-level fallback route, same doctrine: stamped raw so the
+		// resume path replays it, and mirrored onto the RunMessage below
+		// so the claiming runner applies it.
+		Fallback: runFallbackOf(spec.Fallback),
 		// The raw budget ask, same doctrine as the model pins above: the
 		// run doc is the single source the resume path replays from. The
 		// clamped/effective figure is NOT what is stamped — the resume
@@ -1010,6 +1014,11 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// doc is display-only — the studio would show an override the
 		// delegates never honoured.
 		ModelOverrides: queueModelOverrides(spec.ModelOverrides),
+		// The run-level fallback route rides the wire for the same reason:
+		// a route only persisted on the doc is display-only, and this one
+		// exists precisely for unattended cloud runs hitting a provider's
+		// usage window.
+		Fallback: queueFallbackOf(spec.Fallback),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
@@ -1253,6 +1262,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// A resumed attempt must honour the SAME pins the launch declared —
 		// replayed from the run doc, the single source the launch stamped.
 		ModelOverrides: queueOverridesFromRun(prior.ModelOverrides),
+		// The fallback route is replayed from the doc for the same reason:
+		// the auto-retry that follows a usage-window park is exactly the
+		// publication that must still carry the rescue route.
+		Fallback: queueFallbackFromRun(prior.Fallback),
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
@@ -1638,6 +1651,33 @@ func budgetOverridesFromRun(o *store.RunBudgetOverrides) *ir.BudgetOverrides {
 		MaxIterations:       o.MaxIterations,
 		MaxParallelBranches: o.MaxParallelBranches,
 	}
+}
+
+// runFallbackOf converts the launch's run-level fallback route into the
+// persisted run-doc form (the resume path's replay source). Targetless
+// entries persist as nil so override-less launches stay byte-identical.
+func runFallbackOf(e *runview.FallbackEntry) *store.RunFallback {
+	if e == nil || (e.Backend == "" && e.Model == "" && e.Provider == "") {
+		return nil
+	}
+	return &store.RunFallback{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+}
+
+// queueFallbackOf puts the launch's run-level fallback route on the wire.
+func queueFallbackOf(e *runview.FallbackEntry) *queue.RunFallback {
+	if e == nil || (e.Backend == "" && e.Model == "" && e.Provider == "") {
+		return nil
+	}
+	return &queue.RunFallback{Backend: e.Backend, Model: e.Model, Provider: e.Provider}
+}
+
+// queueFallbackFromRun replays a run doc's persisted fallback route onto
+// a resume publication.
+func queueFallbackFromRun(f *store.RunFallback) *queue.RunFallback {
+	if f == nil {
+		return nil
+	}
+	return &queue.RunFallback{Backend: f.Backend, Model: f.Model, Provider: f.Provider}
 }
 
 // queueOverridesFromRun replays a run doc's persisted pins onto a resume
