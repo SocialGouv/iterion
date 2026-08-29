@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
@@ -15,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 // maxSubbotDepth bounds nested subbot recursion so a child that (directly or
@@ -48,7 +48,7 @@ type subbotDepthKey struct{}
 // explicitly or the child resolves relative paths (a bot's `.venv/bin/python`)
 // against the wrong tree.
 func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger) runtime.SubbotRunner {
-	parentDir := filepath.Dir(parentPath)
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
@@ -72,10 +72,11 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			childWorkDir = req.WorkDir
 		}
 
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(parentDir, childPath)
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		childPath := resolvedSource.Path
 		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)

@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sync"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 )
 
 // maxSubbotDepth bounds nested subbot recursion so a child that (directly or
@@ -83,10 +83,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 	if runLogger == nil {
 		runLogger = s.logger
 	}
-	base := s.workDir
-	if parentPath != "" {
-		base = filepath.Dir(parentPath)
-	}
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
@@ -99,10 +96,11 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			return out, aerr
 		}
 
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(base, childPath)
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		childPath := resolvedSource.Path
 		childWf, hash, err := CompileWorkflowWithHash(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)

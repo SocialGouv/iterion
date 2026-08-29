@@ -8,7 +8,6 @@ import (
 	"io"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/subbotsource"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
 
@@ -575,7 +575,7 @@ type subbotDepthKey struct{}
 // resolved `with:` data as inputs, and returns the child's terminal node
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
-	parentDir := filepath.Dir(parentPath)
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
@@ -589,10 +589,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return out, aerr
 		}
 
-		childPath := req.Source
-		if !filepath.IsAbs(childPath) {
-			childPath = filepath.Join(parentDir, childPath)
+		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		childPath := resolvedSource.Path
 		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
