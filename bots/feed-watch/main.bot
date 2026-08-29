@@ -428,7 +428,9 @@ schema notify_output:
   dry_run: bool
   targets: string[]
   summary: string
-  ## Messages the digest occupies on the widest sink (1 = it fit).
+  ## Messages the digest occupies on the sink that needed the MOST of
+  ## them — the NARROWEST budget, i.e. the worst case, which is the
+  ## useful troubleshooting number. 1 = it fit whole on every sink.
   parts: int
   ## Individual POSTs that succeeded, all sinks and parts counted. The
   ## delivery evidence `delivered` cannot carry: a sink that took 2 of 3

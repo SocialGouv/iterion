@@ -84,8 +84,9 @@ never appear in the repo, in prompts, or in logs.
 
 1. `iterion report --run-id <id>` → check the `notify` node output:
    `delivered` (sinks that got it whole), `parts` (messages the digest
-   occupies), `posts` (POSTs accepted), `targets`, `summary` (failures
-   are spelled out, part by part).
+   occupied on the sink that needed the most of them — the narrowest
+   budget; `1` = it fit whole everywhere), `posts` (POSTs accepted),
+   `targets`, `summary` (failures are spelled out, part by part).
 2. Queue was empty? A digest with nothing pending ends at
    `load_pending` (`has_items=false`) — by design, no empty digests.
 3. Webhook 4xx: URL revoked/wrong (`iterion secret set webhooks …`
