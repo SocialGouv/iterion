@@ -1072,6 +1072,11 @@ var providerCredentialEnvVars = []string{
 	"ITERION_CODEX_VERSION",
 }
 
+// hostCodexVersion resolves the codex-cli version on the HOST side of the
+// sandbox boundary (env override, then `codex --version`). A var so tests
+// can stub the probe.
+var hostCodexVersion = codexCLIVersion
+
 // byokEnvVar names the environment variable claw's registry reads for a
 // provider's key inside the container. A provider absent here has no
 // env-based BYOK path, so a tenant key for it cannot be forwarded.
@@ -1102,6 +1107,18 @@ func forwardableProviderEnv(ctx context.Context) map[string]string {
 	for _, name := range providerCredentialEnvVars {
 		if v := os.Getenv(name); v != "" {
 			env[name] = v
+		}
+	}
+	// No ITERION_CODEX_VERSION override set: forward the HOST-resolved
+	// codex-cli version instead. The in-container runner cannot probe
+	// `codex --version` itself (the sandbox image ships no codex binary),
+	// so without a value crossing the boundary it falls back to claw's
+	// baked-in version string — which the ChatGPT-forfait backend refuses
+	// for newer models ("gpt-5.6-sol requires a newer version of Codex")
+	// even though the host's codex install is current.
+	if env["ITERION_CODEX_VERSION"] == "" {
+		if v := hostCodexVersion(); v != "" {
+			env["ITERION_CODEX_VERSION"] = v
 		}
 	}
 	creds, ok := secrets.CredentialsFromContext(ctx)

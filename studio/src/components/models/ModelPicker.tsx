@@ -48,6 +48,8 @@ export interface ModelPickerProps {
 function optionLabel(m: ModelEntry): string {
   const bits: string[] = [];
   if (m.context_window > 0) bits.push(formatContextWindow(m.context_window));
+  if ((m.max_output_tokens ?? 0) > 0)
+    bits.push(`${formatContextWindow(m.max_output_tokens ?? 0)} max output`);
   if (m.price_known) bits.push(formatModelPrice(m).replace(" per Mtok", "/Mtok"));
   if (!m.tool_call) bits.push("no tools");
   if (m.reachability === "unknown") bits.push("unproven");
@@ -192,6 +194,9 @@ export default function ModelPicker({
       {!compact && selected && (
         <p className="text-caption text-fg-subtle">
           {formatContextWindow(selected.context_window)} context ·{" "}
+          {(selected.max_output_tokens ?? 0) > 0 && (
+            <>{formatContextWindow(selected.max_output_tokens ?? 0)} max output · </>
+          )}
           {selected.tool_call ? "tools" : "no tools"} ·{" "}
           {selected.reasoning ? "reasoning" : "no reasoning"} ·{" "}
           {formatModelPrice(selected)}

@@ -50,6 +50,13 @@ type ModelCapabilities struct {
 	// ContextWindow is the model's context window in tokens. Zero = unknown.
 	ContextWindow int
 
+	// MaxOutputTokens is the largest completion the model will emit, in
+	// tokens, as published by the spec aggregator. Zero = the aggregator had
+	// no figure, which callers must read as "unknown" and never as "no cap":
+	// a caller that treated zero as unbounded would size a request against a
+	// limit the provider will still enforce.
+	MaxOutputTokens int
+
 	// InputCostPerM and OutputCostPerM are the per-million-token prices in
 	// USD as published by the spec aggregator. Zero = the aggregator had no
 	// price, which callers must treat as "unknown" and never as free.

@@ -14,11 +14,25 @@ import (
 // The pricing audit exists because two sources of truth for the same number
 // were never compared. iterion fetches model specs from the aggregator —
 // including cost.input and cost.output — caches them for 24h, and merges them
-// into ModelCapabilities. Meanwhile the cost estimator asks a DIFFERENT live
-// source and falls back to a hand-maintained table. Nothing ever looked at
+// into ModelCapabilities. Meanwhile the cost estimator asked a DIFFERENT live
+// source and fell back to a hand-maintained table. Nothing ever looked at
 // both, so the committed table could sit three times off the published price,
 // and a model the aggregator priced could still report no cost at all. Neither
 // showed up as an error: a wrong estimate looks exactly like a right one.
+//
+// The estimator now consults the aggregator itself, as the tier between claw's
+// live registry and the committed table, which narrows what this audit can
+// find. That is the point — the two remaining verdicts are the two the fix
+// cannot close on its own:
+//
+//   - DISAGREES is now, in practice, "claw's live registry quotes something
+//     other than what models.dev publishes". It can no longer mean "the
+//     committed table is stale", because a stale entry is reached only when
+//     nothing is published to be stale against.
+//   - IGNORED narrows to the HALF-published pair: the estimator refuses a pair
+//     with only one positive rate (pricing the other half at zero would read as
+//     a bargain and be plain wrong), so the price is published and a run still
+//     reports none. That is a real gap, and it is the only shape left.
 //
 // This deliberately does NOT rewrite the table. Prices feed budget decisions,
 // the aggregator is itself a third party, and a generator that silently
@@ -95,8 +109,11 @@ func RunModelsPricing(ctx context.Context, opts PricingOptions, p *Printer) erro
 		case row.HasEffective && row.HasFetched:
 			// Verdicts compare what a run is charged at against what is
 			// published — not the table against the aggregator. The table is
-			// only one of the two sources the estimator consults, and judging
-			// a source the estimator may never reach yields false verdicts.
+			// only one of the three sources the estimator consults, and
+			// judging a source the estimator may never reach yields false
+			// verdicts. A difference here means claw's live registry answered
+			// with a rate other than the published one, since the published
+			// pair is what the estimator uses whenever claw has no entry.
 			row.Disagrees = !nearlyEqual(row.EffectiveIn, row.FetchedIn) ||
 				!nearlyEqual(row.EffectiveOut, row.FetchedOut)
 		case row.HasEffective:
@@ -105,6 +122,8 @@ func RunModelsPricing(ctx context.Context, opts PricingOptions, p *Printer) erro
 			row.OnlyStatic = true
 		case row.HasFetched:
 			// A price is published and a run would still report nothing.
+			// Now reachable only for a half-published pair, which the
+			// estimator refuses whole rather than pricing one half at zero.
 			row.OnlyFetched = true
 		}
 		if row.Disagrees || row.OnlyFetched {
@@ -120,7 +139,7 @@ func RunModelsPricing(ctx context.Context, opts PricingOptions, p *Printer) erro
 	}
 
 	if opts.Check && result.DriftCount > 0 {
-		return fmt.Errorf("pricing drift on %d model(s): the committed table disagrees with the aggregator, or a published price is being ignored. Review each line and update pkg/backend/cost/cost.go deliberately", result.DriftCount)
+		return fmt.Errorf("pricing drift on %d model(s): the rate a run is charged at disagrees with the published one, or a published price is being ignored (a half-published pair is refused whole). Review each line and update pkg/backend/cost/cost.go deliberately", result.DriftCount)
 	}
 	return nil
 }
@@ -162,7 +181,7 @@ func printPricingHuman(r PricingResult, p *Printer) {
 		p.Line("! aggregator refresh failed: %s (comparing against the cached table only)", r.RefreshError)
 		p.Blank()
 	}
-	p.Header("Pricing audit — what a run is charged vs what is published")
+	p.Header("Pricing audit — what a run is charged (claw → aggregator → table) vs what is published")
 	headers := []string{"MODEL", "EFFECTIVE in/out", "TABLE in/out", "PUBLISHED in/out", "VERDICT"}
 	rows := make([][]string, 0, len(r.Rows))
 	for _, row := range r.Rows {
@@ -180,7 +199,7 @@ func printPricingHuman(r PricingResult, p *Printer) {
 		case row.Disagrees:
 			verdict = "DISAGREES"
 		case row.OnlyFetched:
-			verdict = "IGNORED — price published, a run reports nothing"
+			verdict = "IGNORED — price published (half a pair?), a run reports nothing"
 		case row.OnlyStatic:
 			verdict = "priced, aggregator has no rate to check it against"
 		case !row.HasEffective && !row.HasFetched:

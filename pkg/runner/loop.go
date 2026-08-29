@@ -377,6 +377,106 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 	}
 }
 
+// bankableStatus says whether a run that classified to this finalStatus
+// should push its workspace branch to the forge (bankRepoWorkspace).
+// Keyed on classifyExecResult's OUTPUT, not on raw sentinels, so the
+// budget-beats-interrupted precedence lives in exactly one place: an
+// interruption that also carries a spent budget classifies as
+// budget_exceeded — a manual-resume death whose redelivery never comes
+// back on its own — and must bank like one. classifyExecResult is pure,
+// so the bank site calls it a second time without side effects.
+func bankableStatus(finalStatus string) bool {
+	switch finalStatus {
+	case "finished", "budget_exceeded", "failed":
+		return true
+	}
+	return false
+}
+
+// bankIfBankable is the single gate between a run's outcome and the
+// forge push. Kept as one method so the decision and the action are
+// testable TOGETHER against a real bare remote — the measured regression
+// this blocks is someone quietly reverting the gate to success-only,
+// which every direct bankRepoWorkspace test is blind to.
+func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
+	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
+	if !bankableStatus(finalStatus) {
+		return
+	}
+	bankCtx, cancel, ok := bankContext(ctx)
+	if !ok {
+		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved, and banking from here could race the new owner's push. This attempt's work stays in the git-meta snapshot.", msg.RunID, context.Cause(ctx))
+		return
+	}
+	defer cancel()
+	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+}
+
+// bankContext decides whether the bank may outlive the run ctx.
+//
+// The wall-clock death is the one this PR most exists for, and it is the
+// one the run ctx cannot serve: executeRun wraps ctx in
+// context.WithTimeout(msg.TimeoutSec), the engine returns a
+// sentinel-free RuntimeError on that deadline (classified `failed`, so
+// bankable), and every git op goes through exec.CommandContext — whose
+// Start() refuses outright on a done ctx. Unfixed, the ls-remote, the
+// fetch and the push all fail instantly and the branch never reaches the
+// forge.
+//
+// Only OUR OWN deadline is resurrectable: the work is done, the pod is
+// healthy, the lease is still ours (the heartbeat never stopped). Every
+// other cancellation — operator cancel, drain, heartbeat/lease loss —
+// means either the operator refused the work or ANOTHER POD may already
+// own this run, and force-pushing the storage branch from here would be
+// a split-brain write. Those causes can still arrive classified as a
+// generic `failed`: handleContextDoneWithCheckpoint falls back to
+// failRun — LOSING the ErrRunInterrupted sentinel — when the
+// FailRunResumable store write itself fails. That is exactly why the
+// cancellation CAUSE is the oracle here and the returned error is not.
+//
+// Cause propagation makes this correct in both orders: parent cancelled
+// first ⇒ the child reports the parent's ErrRunInterrupted/
+// ErrRunCancelled; child deadline first ⇒ DeadlineExceeded. A DSL
+// max_duration budget death never cancels ctx at all, so it takes the
+// live-ctx arm unchanged.
+//
+// The detachment relies on the wall-clock deadline living on a CHILD of
+// the heartbeat's ctx (executeRun wraps ctx; the heartbeat watches the
+// parent), so DeadlineExceeded-as-cause proves the lease never stopped.
+// That layering is load-bearing: a deadline moved onto the run ctx
+// itself would make a heartbeat-lost pod read as "merely deadlined" and
+// force-push from a lease that may have moved. Keep any new deadline
+// below executeRun's.
+//
+// The detached ctx gets its OWN aggregate deadline: per-op gitOpTimeout
+// bounds each git subprocess but not the sequence — the bank issues up
+// to four network ops (ls-remote, fetch, archive push, push), and a
+// wedged forge must not pin a pod for 4×op-timeout past the deadline
+// the operator set precisely to cap the run. When the operator disabled
+// per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
+// that choice is honoured here too.
+func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	cause := context.Cause(ctx)
+	switch {
+	case cause == nil:
+		return ctx, func() {}, true // live ctx — nothing to detach
+	case errors.Is(cause, context.DeadlineExceeded):
+		detached := context.WithoutCancel(ctx)
+		if gitOpTimeout > 0 {
+			bounded, cancel := context.WithTimeout(detached, bankBudget)
+			return bounded, cancel, true
+		}
+		return detached, func() {}, true
+	default:
+		return nil, nil, false
+	}
+}
+
+// bankBudget bounds the whole post-deadline bank sequence. Generous
+// against the nominal case (seconds) and small against the run
+// deadlines it may outlive (hours).
+const bankBudget = 10 * time.Minute
+
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
 // metadata carried in preconditionOutcome / execOutcome.
@@ -1534,13 +1634,26 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// clean "no commits" (run 01a02a4b).
 		integ := engine.SandboxWorkspaceIntegrity()
 		r.recordRunGitMeta(ctx, msg, workDir, gitBase, integ)
-		// Bank a SUCCESSFUL repo-targeted run to the forge before the
-		// clone is wiped: the worktree-finalization path never fires
-		// here, so without this push a finished run's commits exist
-		// nowhere the server can reach (runs merge: "nothing to merge").
-		if runErr == nil {
-			r.bankRepoWorkspace(ctx, msg, workDir, gitBase, integ)
-		}
+		// Bank a repo-targeted run's work to the forge before the clone
+		// is wiped — on success AND on the deaths whose successor would
+		// otherwise restart from RepoSHA: the worktree-finalization path
+		// never fires here, so an unbanked death leaves its commits only
+		// in the git-meta snapshot above, and turning that snapshot back
+		// into a branch takes a manual replay every time (measured: nine
+		// manual recoveries in three days of one campaign). An interrupted
+		// delivery does NOT bank — not because its work survives (the
+		// redelivery re-clones at RepoSHA and banks only its OWN later
+		// commits; this attempt's work strands in the snapshot exactly
+		// like a death's) but because interruption means the lease may
+		// already belong to another pod, and a bank from here could race
+		// the new owner's push (bankContext refuses on the same oracle).
+		// A cancel is the operator saying the work is not wanted. Paused runs do
+		// not bank either — NOT because the work is safe (a cloud resume
+		// re-clones at the base, so a paused run's committed work is as
+		// stranded as a death's until it ends) but because FinalBranch on
+		// a half-done run would make it merge-eligible mid-flight; that
+		// trade-off is a product decision deferred, not an oversight.
+		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 
 	// Upload any tool-produced artifact files (run reports, SBOMs) from

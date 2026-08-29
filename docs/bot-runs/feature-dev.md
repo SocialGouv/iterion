@@ -1,5 +1,72 @@
 # Featurly — `feature-dev` run bilans
 
+## 2026-08-27 — Plan phase cross-model LIVE: gpt-5.6-sol peer-reviews the plan, claude challenges and integrates (runs 01a04514 skip-path, 01a04520 full-path)
+
+- Status: **validated** (both plan-phase paths of ADR-091 proven live —
+  the review-succeeded chain AND the `action: skip` degrade)
+- Versions: bot 2.3.0 · iterion 9b9ab7c32 (v3.69.0) · first run since the
+  codex OAuth forfait landed on this host (2 credentialed families →
+  `plan_review` auto-resolved **on**, log `plan review: on` at launch)
+- Method: real feature off the board (native:293b9720 — ADR-042: surface
+  model pricing/max-output in ModelCapabilities), local run visible in the
+  studio store, `--merge-into none`, `--max-cost-usd 30 --max-duration 2h`,
+  default `sandbox: auto` (docker, slim image), Persy armed on `campaign`.
+- Result: **converged** in 1 pass. Chain proven end-to-end:
+  `plan_topology → plan` (ON path, no bypass) → plan authored by
+  claude_code opus (4m40, 22k tok) → **`plan_review` served by
+  `claw + openai/gpt-5.6-sol`** (13m, 31.8k tok, zero fallback,
+  `blocking: true`) → `plan_gate → plan_revise` **in the SAME claude
+  session as `plan`** (`e01607fb` on both `system/init` lines — the author
+  revises with full context) → campaign on a fresh session. Delivery:
+  7 commits on `iterion/run/01a04520…` (`efb37307`), verify gate green
+  (vet + tests + studio tsc/vitest + the OpenAPI-drift check the bot
+  authored into its own verify.sh), internal review clean, ADR-093
+  written. Cost ≈ $43 / 248k tok / ~1h45 — the **gpt peer review itself
+  billed $0 metered** (ChatGPT forfait wire).
+- Value: the peer review was REAL, grounded review — e.g. it caught that
+  copying `useEffortCapabilities`'s infinite `staleTime` would cache the
+  curated (price-less) cold-start response forever and permanently hide
+  the dynamic pricing the feature exists to surface, with exact
+  `file:line` citations; `plan_revise` verified the claim in code and
+  answered "ACCEPTED — Verified … Plan now derives staleTime from the
+  response's own `source`". Exactly the challenge-and-integrate flow the
+  feature was built for.
+- Findings / misses:
+  - Run 01a04514 (first attempt) proved the **skip path** live for free:
+    the peer call 400'd, the `give_up` route fired
+    (`model_fallback … to_action: skip`, output `_skipped:true`,
+    `_served_by: give_up`), `plan_gate` routed AROUND `plan_revise`, the
+    campaign continued on the unreviewed plan. #548's fleet-wide `skip`
+    default behaves as designed.
+  - My dogfood `--max-cost-usd 30` was too tight for a 7-slice feature:
+    campaign alone spent $32.6, the run died `BUDGET_EXCEEDED (38/30)` on
+    `verify_probe` (beyond the 1.1 grace) — but `failed_resumable` +
+    "raise cap + resume" recovered it exactly as documented, with all 7
+    commits banked in the worktree. Realistic floor for a real feature:
+    ≥ $50.
+- Engine hardening:
+  1. **The 400 behind the skip was an engine gap**: `gpt-5.6-sol requires
+     a newer version of Codex` — the sandboxed `__claw-runner` cannot
+     probe `codex --version` (no codex binary in the image) and only the
+     `ITERION_CODEX_VERSION` env var crossed the boundary (#553); the
+     HOST-probed version never did. Fixed in this PR
+     (`forwardableProviderEnv` forwards the host-resolved version through
+     the single env choke point, docker + k8s; red-first test). Cloud
+     runner pods still want `ITERION_CODEX_VERSION` set at the deployment
+     (docs/cloud-llm-credentials.md).
+  2. **`--merge-into none` is lost across `iterion resume`**: the merge
+     prefs are not persisted on run.json and `resume` rejects the flag,
+     so the resumed run finalized offering a merge into whatever branch
+     the operator had checked out MEANWHILE (an unrelated fix branch)
+     with `merge_status: pending` instead of the `none` ⇒ skip semantics.
+     Nothing merged (auto-merge off), but the recorded intent was
+     silently replaced — board finding filed.
+- Lessons for next run: budget a real feature ≥ $50; the peer review adds
+  ~13 min + ~32k tokens at $0 metered cost — cheap for what it caught;
+  when the checkout is shared with the operator, expect the branch under
+  you to move (commit early on YOUR branch, verify HEAD right before
+  `git switch -c`).
+
 ## 2026-08-27 — Persy A/B on a weakened campaign: first REAL intervention, obeyed within 37 seconds (runs 01a0434a OFF, 01a0435c ON)
 
 - Status: **validated** (the intervention half of Persy, live, with the

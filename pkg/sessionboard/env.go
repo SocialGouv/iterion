@@ -3,6 +3,8 @@ package sessionboard
 import (
 	"os"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
 // Enabled reports whether the LLM curation layer should run, read from
@@ -23,5 +25,5 @@ func Enabled() bool {
 // ITERION_DEFAULT_SESSIONBOARD_MODEL, or "" to let the evaluator
 // auto-detect a reachable provider.
 func ModelFromEnv() string {
-	return strings.TrimSpace(os.Getenv("ITERION_DEFAULT_SESSIONBOARD_MODEL"))
+	return strings.TrimSpace(ir.LookupEnv("ITERION_DEFAULT_SESSIONBOARD_MODEL"))
 }

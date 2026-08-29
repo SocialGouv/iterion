@@ -45,8 +45,9 @@ type Entry struct {
 	// or "curated" (the static fallback table).
 	Source string `json:"source"`
 
-	ContextWindow int  `json:"context_window"`
-	Reasoning     bool `json:"reasoning"`
+	ContextWindow   int  `json:"context_window"`
+	MaxOutputTokens int  `json:"max_output_tokens,omitempty"`
+	Reasoning       bool `json:"reasoning"`
 	// ToolCall is the hard capability gate: a model without it cannot drive
 	// board tools, skills, or run introspection, so an agent node on it is
 	// broken rather than degraded.
@@ -254,6 +255,7 @@ func Build(ctx context.Context, opts Options) (Catalog, error) {
 			CredentialProvider: CredentialProviderFor(rc.Provider, rc.Model),
 			Source:             string(rc.Source),
 			ContextWindow:      rc.ContextWindow,
+			MaxOutputTokens:    rc.MaxOutputTokens,
 			Reasoning:          rc.Reasoning,
 			ToolCall:           rc.ToolCall,
 			Temperature:        rc.Temperature,

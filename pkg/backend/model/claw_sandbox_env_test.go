@@ -81,3 +81,27 @@ func TestForwardableProviderEnv_forwardsCodexVersionOverride(t *testing.T) {
 		t.Errorf("ITERION_CODEX_VERSION = %q, want the ambient override forwarded", env["ITERION_CODEX_VERSION"])
 	}
 }
+
+// With NO operator override, the HOST-probed `codex --version` value must
+// cross the boundary instead. Measured live (run 01a04514, 2026-08-27): host
+// codex-cli 0.144.6 present, env unset → the in-container runner fell back
+// to claw's baked-in version and OpenAI 400'd gpt-5.6-sol ("requires a newer
+// version of Codex"), failing the plan_review node the host could serve.
+func TestForwardableProviderEnv_forwardsHostProbedCodexVersion(t *testing.T) {
+	t.Setenv("ITERION_CODEX_VERSION", "")
+	orig := hostCodexVersion
+	t.Cleanup(func() { hostCodexVersion = orig })
+
+	hostCodexVersion = func() string { return "0.144.6" }
+	env := forwardableProviderEnv(context.Background())
+	if env["ITERION_CODEX_VERSION"] != "0.144.6" {
+		t.Errorf("ITERION_CODEX_VERSION = %q, want the host-probed version forwarded when no override is set", env["ITERION_CODEX_VERSION"])
+	}
+
+	// No codex on the host either: forward nothing, never an empty pair.
+	hostCodexVersion = func() string { return "" }
+	env = forwardableProviderEnv(context.Background())
+	if v, ok := env["ITERION_CODEX_VERSION"]; ok {
+		t.Errorf("ITERION_CODEX_VERSION = %q set with nothing to forward — an empty value must not cross", v)
+	}
+}

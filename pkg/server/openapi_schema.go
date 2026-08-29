@@ -130,6 +130,10 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/v1/preferences/model": {response: modelPrefResponse{}},
 		"GET /api/backends/detect":         {response: detect.Report{}},
 
+		// Model capabilities — the limits and published prices a model
+		// picker captions its selection with.
+		"GET /api/model-capabilities": {response: modelCapabilitiesResponse{}},
+
 		// Global pipeline board — a single execution projection of every
 		// root pipeline (ADR-074). Additive to the native backlog (/board).
 		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},

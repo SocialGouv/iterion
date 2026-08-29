@@ -399,6 +399,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/settings/bot-vars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/settings/bot-vars */
+        get: operations["getAdminSettingsBotVars"];
+        /** PUT /api/admin/settings/bot-vars */
+        put: operations["putAdminSettingsBotVars"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/settings/sandbox": {
         parameters: {
             query?: never;
@@ -1537,6 +1555,23 @@ export interface paths {
         };
         /** GET /api/memory/usage */
         get: operations["getMemoryUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/model-capabilities */
+        get: operations["getModelCapabilities"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4015,6 +4050,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant/authoring/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/commit */
+        post: operations["postV1AssistantAuthoringCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/preview */
+        post: operations["postV1AssistantAuthoringPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant/authoring/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/assistant/authoring/snapshot */
+        post: operations["postV1AssistantAuthoringSnapshot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots": {
         parameters: {
             query?: never;
@@ -5211,6 +5297,7 @@ export interface components {
             credential_provider: string;
             credential_source?: string;
             input_cost_per_m?: number;
+            max_output_tokens?: number;
             model: string;
             output_cost_per_m?: number;
             price_known: boolean;
@@ -5823,6 +5910,19 @@ export interface components {
         loginReq: {
             email: string;
             password: string;
+        };
+        modelCapabilitiesResponse: {
+            context_window: number;
+            input_cost_per_m: number;
+            max_output_tokens: number;
+            model: string;
+            output_cost_per_m: number;
+            provider?: string;
+            reasoning?: boolean;
+            source: string;
+            spec: string;
+            temperature?: boolean;
+            tool_call?: boolean;
         };
         modelPrefRequest: {
             backend?: string;
@@ -6611,6 +6711,42 @@ export interface operations {
         };
     };
     putAdminSettingsBotRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminSettingsBotVars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putAdminSettingsBotVars: {
         parameters: {
             query?: never;
             header?: never;
@@ -8109,6 +8245,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getModelCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["modelCapabilitiesResponse"];
+                };
             };
         };
     };
@@ -11535,6 +11691,60 @@ export interface operations {
         };
     };
     postUnparse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringCommit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1AssistantAuthoringSnapshot: {
         parameters: {
             query?: never;
             header?: never;

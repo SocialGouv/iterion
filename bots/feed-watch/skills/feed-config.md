@@ -48,6 +48,16 @@ Per category:
   `webhooks` secret (never a URL — URLs never enter the repo);
   `channel`/`username`/`icon_emoji` are the Mattermost/Slack overrides.
   Several sinks = multi-channel fan-out of the same digest.
+  Optional `max_chars` caps THIS sink's messages, overriding the
+  `max_message_chars` var (default 14000, sized for Mattermost) — a
+  Slack channel alongside a Mattermost one wants a lower number:
+
+  ```json
+  { "webhook": "slack_watch", "channel": "#watch", "max_chars": 3500 }
+  ```
+
+  A digest above the budget is split into consecutive `_(i/n)_`
+  messages per sink, never cut; see `skills/notify-webhooks.md`.
 
 ## The `webhooks` secret
 

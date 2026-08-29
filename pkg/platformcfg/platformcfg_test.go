@@ -270,3 +270,49 @@ func TestResolver_PanicInFetchDoesNotWedge(t *testing.T) {
 		t.Error("the panic must be logged as a failed read")
 	}
 }
+
+func TestBotVarsValidate(t *testing.T) {
+	ok := BotVars{Vars: map[string]string{
+		"ITERION_VIBE_EFFORT_CLAUDE":            "max",
+		"ITERION_GOLDEN_MASTER_ADVERSARY_MODEL": "claude-opus-5",
+	}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid vars: %v", err)
+	}
+	rejected := map[string]string{
+		"not ITERION_-prefixed":  "OTHER_VAR",
+		"lowercase":              "ITERION_vibe",
+		"bare prefix":            "ITERION_",
+		"infra mongo":            "ITERION_MONGO_URI",
+		"infra nats":             "ITERION_NATS_URL",
+		"infra jwt":              "ITERION_JWT_SIGNING",
+		"cap family (dedicated)": "ITERION_USAGE_CAP_WEEK",
+		"sandbox image family":   "ITERION_SANDBOX_DEFAULT_IMAGE",
+		"credential-shaped key":  "ITERION_MY_API_KEY",
+		"credential-shaped tok":  "ITERION_FORGE_TOKEN_TTL",
+	}
+	for label, name := range rejected {
+		if err := (BotVars{Vars: map[string]string{name: "v"}}).Validate(); err == nil {
+			t.Errorf("%s (%s) must be rejected", label, name)
+		}
+	}
+	badValues := map[string]string{
+		"blank value":      "  ",
+		"multi-line value": "a\nb",
+		"oversized value":  strings.Repeat("x", botVarsMaxValueLen+1),
+	}
+	for label, v := range badValues {
+		if err := (BotVars{Vars: map[string]string{"ITERION_OK_VAR": v}}).Validate(); err == nil {
+			t.Errorf("%s must be rejected", label)
+		}
+	}
+	big := map[string]string{}
+	for i := 0; i <= botVarsMaxKeys; i++ {
+		big["ITERION_V"+strings.Repeat("X", 3)+string(rune('A'+i%26))+string(rune('A'+(i/26)%26))+string(rune('A'+(i/676)%26))] = "v"
+	}
+	if len(big) > botVarsMaxKeys {
+		if err := (BotVars{Vars: big}).Validate(); err == nil {
+			t.Error("a record past the key bound must be rejected")
+		}
+	}
+}

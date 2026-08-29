@@ -24,6 +24,7 @@ export interface ModelEntry {
   source: "aggregator" | "curated" | string;
 
   context_window: number;
+  max_output_tokens?: number;
   reasoning: boolean;
   // The hard capability gate: a model without tool-calling cannot drive board
   // tools, skills or run introspection, so an agent node on it is broken

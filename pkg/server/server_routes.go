@@ -36,6 +36,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/effort-capabilities", s.handleEffortCapabilities)
 	s.mux.HandleFunc("GET /api/resolve-effort", s.handleResolveEffort)
 	s.mux.HandleFunc("GET /api/resolve-model", s.handleResolveModel)
+	s.mux.HandleFunc("GET /api/model-capabilities", s.handleModelCapabilities)
 	s.mux.HandleFunc("GET /api/backends/detect", s.handleBackendsDetect)
 	// The model registry: known x usable x capabilities x pricing. It is what
 	// turns the studio's free-text model field into an actual picker.

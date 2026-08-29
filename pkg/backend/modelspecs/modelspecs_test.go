@@ -1,4 +1,4 @@
-package model
+package modelspecs
 
 import (
 	"context"
@@ -13,28 +13,10 @@ import (
 	"time"
 )
 
-// TestMain disables auto-fetch on the package-global registry so unrelated
-// tests in this package never spawn a background network goroutine. Local
-// registries built inside individual tests still fetch from httptest servers.
-func TestMain(m *testing.M) {
-	specs.mu.Lock()
-	specs.autoFetch = false
-	// Point the package-global registry's cache at a nonexistent path so
-	// curated-fallback assertions (TestCapabilitiesForModel) are deterministic
-	// regardless of the host's ~/.iterion/model-specs-cache.json. Without this,
-	// merge() lazily loads that real cache (ensureFresh → loadDiskCacheLocked)
-	// and overrides curated with live models.dev values — so the curated-equality
-	// checks flaked on dev machines that had run a real bot (clean CI has no
-	// cache, so it only failed locally).
-	specs.cachePath = filepath.Join(os.TempDir(), "iterion-modelspecs-test-absent.json")
-	specs.diskTried = false
-	specs.mu.Unlock()
-	os.Exit(m.Run())
-}
-
 // modelsDevJSON returns a minimal models.dev-shaped api.json. Pass includeGLM
 // to control whether glm-5.2 is present (it is omitted by real aggregators
-// today, which is exactly the curated-fallback case).
+// today, which is exactly the case where the caller must keep its curated
+// value — asserted in pkg/backend/model, which owns that table).
 func modelsDevJSON(t *testing.T, includeGLM bool) string {
 	t.Helper()
 	providers := map[string]mdProvider{
@@ -70,47 +52,48 @@ func mdModelLit(ctx, out int, in, outc float64, reasoning, tool, temp *bool) mdM
 }
 
 // newTestRegistry builds an isolated registry pointing at url with a temp cache
-// path. autoFetch is left false; tests drive refresh() synchronously.
-func newTestRegistry(t *testing.T, url string) *specRegistry {
+// path. Auto-fetch is off; tests drive Refresh synchronously.
+func newTestRegistry(t *testing.T, url string) *Registry {
 	t.Helper()
-	return &specRegistry{
-		url:       url,
-		cachePath: filepath.Join(t.TempDir(), "model-specs-cache.json"),
-		ttl:       defaultSpecTTL,
-		client:    &http.Client{Timeout: defaultSpecTimeout},
-		enabled:   true,
-		autoFetch: false,
-		byFull:    map[string]fetchedSpec{},
-		byModel:   map[string]fetchedSpec{},
-	}
+	return New(Options{
+		URL:         url,
+		CachePath:   filepath.Join(t.TempDir(), "model-specs-cache.json"),
+		Client:      &http.Client{Timeout: defaultTimeout},
+		NoAutoFetch: true,
+	})
 }
 
-func TestModelSpecs_FetchAndMerge(t *testing.T) {
+func TestModelSpecs_FetchAndLookup(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
 	}))
 	defer srv.Close()
 
 	r := newTestRegistry(t, srv.URL)
-	if err := r.refresh(context.Background()); err != nil {
+	if err := r.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 
-	// Fetched ContextWindow>0 overrides the curated default (which has no
-	// context window for claude).
-	curated := curatedCapabilities("anthropic", "claude-sonnet-4-6")
-	got := r.merge("anthropic", "claude-sonnet-4-6", curated)
-	if got.ContextWindow != 1_000_000 {
-		t.Errorf("claude ContextWindow = %d, want 1000000", got.ContextWindow)
+	got, ok := r.Lookup("anthropic", "claude-sonnet-4-6")
+	if !ok {
+		t.Fatal("claude-sonnet-4-6 not found after refresh")
 	}
-	if !got.Reasoning || !got.ToolCall || !got.Temperature {
-		t.Errorf("claude flags = %+v, want all true", got)
+	if got.ContextWindow != 1_000_000 || got.MaxOutputTokens != 64000 {
+		t.Errorf("claude limits = %d ctx / %d out, want 1000000 / 64000", got.ContextWindow, got.MaxOutputTokens)
+	}
+	if got.InputCostPerM != 3 || got.OutputCostPerM != 15 {
+		t.Errorf("claude price = %v/%v, want 3/15", got.InputCostPerM, got.OutputCostPerM)
+	}
+	if got.Reasoning == nil || !*got.Reasoning || got.ToolCall == nil || !*got.ToolCall {
+		t.Errorf("claude flags = %+v, want reasoning+tool_call true", got)
 	}
 
-	// openai/gpt-5: aggregator says temperature=false → overrides heuristic.
-	gpt := r.merge("openai", "gpt-5", curatedCapabilities("openai", "gpt-5"))
-	if gpt.Temperature {
-		t.Errorf("gpt-5 Temperature = true, want false (from aggregator)")
+	gpt, ok := r.Lookup("openai", "gpt-5")
+	if !ok {
+		t.Fatal("gpt-5 not found after refresh")
+	}
+	if gpt.Temperature == nil || *gpt.Temperature {
+		t.Errorf("gpt-5 Temperature = %v, want an explicit false", gpt.Temperature)
 	}
 	if gpt.ContextWindow != 400_000 {
 		t.Errorf("gpt-5 ContextWindow = %d, want 400000", gpt.ContextWindow)
@@ -122,7 +105,37 @@ func TestModelSpecs_FetchAndMerge(t *testing.T) {
 	}
 }
 
-func TestModelSpecs_OfflineFallback(t *testing.T) {
+// LookupBare is the no-provider entry point (a `.bot` may pin a bare model id,
+// and the cost estimator is handed whatever string a backend reported). It must
+// answer from the bare index and must NOT answer from the qualified one.
+func TestModelSpecs_LookupBare(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(modelsDevJSON(t, true)))
+	}))
+	defer srv.Close()
+
+	r := newTestRegistry(t, srv.URL)
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	got, ok := r.LookupBare("claude-sonnet-4-6")
+	if !ok || got.InputCostPerM != 3 {
+		t.Errorf("LookupBare(claude-sonnet-4-6) = %+v, %v; want the published spec", got, ok)
+	}
+	// Case and surrounding space are normalised like the qualified path.
+	if _, ok := r.LookupBare("  Claude-Sonnet-4-6 "); !ok {
+		t.Error("LookupBare does not normalise case/whitespace")
+	}
+	if _, ok := r.LookupBare("anthropic/claude-sonnet-4-6"); ok {
+		t.Error("LookupBare answered a qualified spec; the bare index is keyed on bare ids only")
+	}
+	if _, ok := r.LookupBare("no-such-model"); ok {
+		t.Error("LookupBare invented an answer for an unknown model")
+	}
+}
+
+func TestModelSpecs_OfflineDegradesToNoAnswer(t *testing.T) {
 	// Point at a server we immediately close → connection refused.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	url := srv.URL
@@ -130,15 +143,15 @@ func TestModelSpecs_OfflineFallback(t *testing.T) {
 
 	r := newTestRegistry(t, url)
 	r.client = &http.Client{Timeout: 200 * time.Millisecond}
-	// refresh must not panic and must return an error, but never block a run.
-	if err := r.refresh(context.Background()); err == nil {
+	// Refresh must not panic and must return an error, but never block a run.
+	if err := r.Refresh(context.Background()); err == nil {
 		t.Fatal("expected error from offline refresh")
 	}
 
-	// merge degrades to curated — glm-5.2 still resolves to 1M.
-	got := r.merge("anthropic", "glm-5.2", curatedCapabilities("anthropic", "glm-5.2"))
-	if got.ContextWindow != 1_000_000 {
-		t.Errorf("offline glm-5.2 ContextWindow = %d, want 1000000 (curated)", got.ContextWindow)
+	// Offline means "no answer", which is what leaves the caller's curated
+	// value standing — never a zero-valued Spec reported as authoritative.
+	if _, ok := r.Lookup("anthropic", "glm-5.2"); ok {
+		t.Error("offline lookup reported an answer")
 	}
 }
 
@@ -153,10 +166,10 @@ func TestModelSpecs_CacheHit(t *testing.T) {
 
 	r := newTestRegistry(t, srv.URL)
 	r.autoFetch = true // would trigger a refresh if the cache were stale
-	cf := specCacheFile{
+	cf := cacheFile{
 		FetchedAt: time.Now(),
 		Source:    "test",
-		Specs: map[string]fetchedSpec{
+		Specs: map[string]Spec{
 			"anthropic/claude-sonnet-4-6": {ContextWindow: 1_000_000, Reasoning: boolp(true), ToolCall: boolp(true), Temperature: boolp(true)},
 		},
 	}
@@ -165,12 +178,12 @@ func TestModelSpecs_CacheHit(t *testing.T) {
 		t.Fatalf("write cache: %v", err)
 	}
 
-	got := r.merge("anthropic", "claude-sonnet-4-6", curatedCapabilities("anthropic", "claude-sonnet-4-6"))
-	if got.ContextWindow != 1_000_000 {
-		t.Errorf("cache-hit ContextWindow = %d, want 1000000", got.ContextWindow)
+	got, ok := r.Lookup("anthropic", "claude-sonnet-4-6")
+	if !ok || got.ContextWindow != 1_000_000 {
+		t.Errorf("cache-hit lookup = %+v, %v; want 1M context", got, ok)
 	}
 	// Second call within TTL also performs no fetch.
-	_ = r.merge("anthropic", "claude-sonnet-4-6", curatedCapabilities("anthropic", "claude-sonnet-4-6"))
+	_, _ = r.Lookup("anthropic", "claude-sonnet-4-6")
 	// Give any (erroneous) background goroutine a chance to run.
 	time.Sleep(50 * time.Millisecond)
 	if hit {
@@ -187,10 +200,10 @@ func TestModelSpecs_StaleRefresh(t *testing.T) {
 	r := newTestRegistry(t, srv.URL)
 	r.ttl = 10 * time.Millisecond
 	// Seed a stale cache (old FetchedAt) holding a wrong value.
-	cf := specCacheFile{
+	cf := cacheFile{
 		FetchedAt: time.Now().Add(-time.Hour),
 		Source:    "test",
-		Specs:     map[string]fetchedSpec{"anthropic/claude-sonnet-4-6": {ContextWindow: 123}},
+		Specs:     map[string]Spec{"anthropic/claude-sonnet-4-6": {ContextWindow: 123}},
 	}
 	data, _ := json.MarshalIndent(cf, "", "  ")
 	if err := os.WriteFile(r.cachePath, data, 0o644); err != nil {
@@ -198,10 +211,10 @@ func TestModelSpecs_StaleRefresh(t *testing.T) {
 	}
 
 	// A synchronous refresh replaces the stale value.
-	if err := r.refresh(context.Background()); err != nil {
+	if err := r.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	got := r.merge("anthropic", "claude-sonnet-4-6", curatedCapabilities("anthropic", "claude-sonnet-4-6"))
+	got, _ := r.Lookup("anthropic", "claude-sonnet-4-6")
 	if got.ContextWindow != 1_000_000 {
 		t.Errorf("after stale refresh ContextWindow = %d, want 1000000", got.ContextWindow)
 	}
@@ -214,60 +227,66 @@ func TestModelSpecs_MalformedResponse(t *testing.T) {
 	defer srv.Close()
 
 	r := newTestRegistry(t, srv.URL)
-	if err := r.refresh(context.Background()); err == nil {
+	if err := r.Refresh(context.Background()); err == nil {
 		t.Fatal("expected error from malformed response")
 	}
-	// Degrades to curated.
-	got := r.merge("openai", "o1-preview", curatedCapabilities("openai", "o1-preview"))
-	want := curatedCapabilities("openai", "o1-preview")
-	if got != want {
-		t.Errorf("malformed-response merge = %+v, want curated %+v", got, want)
+	if _, ok := r.Lookup("openai", "o1-preview"); ok {
+		t.Error("malformed response left the registry answering")
 	}
 }
 
-// TestModelSpecs_GLM52FallbackWhenOmitted is the explicit requirement-6 case:
-// when the aggregator omits glm-5.2, the curated 1M value must win; glm-5.1 /
-// glm-4.6 stay 200K.
-func TestModelSpecs_GLM52FallbackWhenOmitted(t *testing.T) {
+// A model the aggregator omits must produce no answer at all, so the caller's
+// curated value survives. glm-5.2 is the live instance of that case.
+func TestModelSpecs_OmittedModelHasNoAnswer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(modelsDevJSON(t, false))) // GLM omitted
 	}))
 	defer srv.Close()
 
 	r := newTestRegistry(t, srv.URL)
-	if err := r.refresh(context.Background()); err != nil {
+	if err := r.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-
-	cases := []struct {
-		model string
-		want  int
-	}{
-		{"glm-5.2", 1_000_000},
-		{"glm-5.1", 200_000},
-		{"glm-4.6", 200_000},
-	}
-	for _, c := range cases {
-		got := r.merge("anthropic", c.model, curatedCapabilities("anthropic", c.model))
-		if got.ContextWindow != c.want {
-			t.Errorf("%s ContextWindow = %d, want %d (curated fallback)", c.model, got.ContextWindow, c.want)
+	for _, m := range []string{"glm-5.2", "glm-5.1", "glm-4.6"} {
+		if _, ok := r.Lookup("anthropic", m); ok {
+			t.Errorf("%s: aggregator omits it, so lookup must not answer", m)
 		}
 	}
 }
 
-// TestModelSpecs_DisabledIsPureCurated verifies ITERION_MODEL_SPECS=off yields
-// the curated fallback with no aggregator contact.
-func TestModelSpecs_DisabledIsPureCurated(t *testing.T) {
+// ITERION_MODEL_SPECS=off must make every read a no-op — no answer, no disk,
+// no network.
+func TestModelSpecs_DisabledAnswersNothing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("aggregator hit while disabled")
 	}))
 	defer srv.Close()
 
-	r := newTestRegistry(t, srv.URL)
-	r.enabled = false
-	got := r.merge("anthropic", "claude-sonnet-4-6", curatedCapabilities("anthropic", "claude-sonnet-4-6"))
-	if got != curatedCapabilities("anthropic", "claude-sonnet-4-6") {
-		t.Errorf("disabled merge = %+v, want curated", got)
+	r := New(Options{URL: srv.URL, CachePath: filepath.Join(t.TempDir(), "c.json"), Disabled: true})
+	if _, ok := r.Lookup("anthropic", "claude-sonnet-4-6"); ok {
+		t.Error("disabled registry answered a lookup")
+	}
+	if _, ok := r.LookupBare("claude-sonnet-4-6"); ok {
+		t.Error("disabled registry answered a bare lookup")
+	}
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Errorf("Refresh on a disabled registry = %v, want a silent no-op", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+}
+
+// A nil registry is the zero value a caller gets before wiring; it must read as
+// "no answer" rather than panic, since resolution is on the run hot path.
+func TestModelSpecs_NilRegistryIsSafe(t *testing.T) {
+	var r *Registry
+	if _, ok := r.Lookup("anthropic", "claude-opus-5"); ok {
+		t.Error("nil registry answered a lookup")
+	}
+	if _, ok := r.LookupBare("claude-opus-5"); ok {
+		t.Error("nil registry answered a bare lookup")
+	}
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Errorf("nil Refresh = %v, want nil", err)
 	}
 }
 
@@ -285,10 +304,10 @@ func TestModelSpecs_StaleCacheOfflineRefreshDoesNotRefetchWithinTTL(t *testing.T
 
 	// Seed a stale cache. It should be used as a non-blocking fallback while the
 	// one allowed background refresh attempt fails.
-	cf := specCacheFile{
+	cf := cacheFile{
 		FetchedAt: time.Now().Add(-2 * time.Hour),
 		Source:    "test",
-		Specs: map[string]fetchedSpec{
+		Specs: map[string]Spec{
 			"anthropic/claude-sonnet-4-6": {ContextWindow: 123, Reasoning: boolp(true)},
 		},
 	}
@@ -297,8 +316,7 @@ func TestModelSpecs_StaleCacheOfflineRefreshDoesNotRefetchWithinTTL(t *testing.T
 		t.Fatalf("write cache: %v", err)
 	}
 
-	curated := curatedCapabilities("anthropic", "claude-sonnet-4-6")
-	got := r.merge("anthropic", "claude-sonnet-4-6", curated)
+	got, _ := r.Lookup("anthropic", "claude-sonnet-4-6")
 	if got.ContextWindow != 123 {
 		t.Fatalf("initial stale-cache ContextWindow = %d, want 123", got.ContextWindow)
 	}
@@ -314,7 +332,7 @@ func TestModelSpecs_StaleCacheOfflineRefreshDoesNotRefetchWithinTTL(t *testing.T
 	// refresh attempt, and the stale cache remains available until a successful
 	// refresh swaps in newer specs.
 	for i := 0; i < 5; i++ {
-		got = r.merge("anthropic", "claude-sonnet-4-6", curated)
+		got, _ = r.Lookup("anthropic", "claude-sonnet-4-6")
 		if got.ContextWindow != 123 {
 			t.Fatalf("post-failure stale-cache ContextWindow = %d, want 123", got.ContextWindow)
 		}
@@ -338,8 +356,7 @@ func TestModelSpecs_ForceRefreshIsOneShot(t *testing.T) {
 	r.force = true
 	r.ttl = time.Hour
 
-	curated := curatedCapabilities("anthropic", "claude-sonnet-4-6")
-	_ = r.merge("anthropic", "claude-sonnet-4-6", curated)
+	_, _ = r.Lookup("anthropic", "claude-sonnet-4-6")
 	waitFor(t, func() bool { return attempts.Load() == 1 })
 	waitFor(t, func() bool {
 		r.mu.Lock()
@@ -348,7 +365,7 @@ func TestModelSpecs_ForceRefreshIsOneShot(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		_ = r.merge("anthropic", "claude-sonnet-4-6", curated)
+		_, _ = r.Lookup("anthropic", "claude-sonnet-4-6")
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := attempts.Load(); got != 1 {
@@ -370,11 +387,9 @@ func TestModelSpecs_ConcurrentForceRefreshIsCoalesced(t *testing.T) {
 	const callers = 24
 	errs := make(chan error, callers)
 	for i := 0; i < callers; i++ {
-		go func() { errs <- r.refresh(context.Background()) }()
+		go func() { errs <- r.Refresh(context.Background()) }()
 	}
 	waitFor(t, func() bool { return attempts.Load() == 1 })
-	// Give every goroutine time to join the in-flight channel. If refresh
-	// starts independent work, attempts rises before the first is released.
 	time.Sleep(25 * time.Millisecond)
 	if got := attempts.Load(); got != 1 {
 		t.Fatalf("concurrent refresh attempts = %d, want exactly one", got)
@@ -402,12 +417,12 @@ func TestModelSpecs_CancelledWaiterDoesNotCancelSharedRefresh(t *testing.T) {
 
 	r := newTestRegistry(t, srv.URL)
 	ownerDone := make(chan error, 1)
-	go func() { ownerDone <- r.refresh(context.Background()) }()
+	go func() { ownerDone <- r.Refresh(context.Background()) }()
 	<-started
 
 	ctx, cancel := context.WithCancel(context.Background())
 	waiterDone := make(chan error, 1)
-	go func() { waiterDone <- r.refresh(ctx) }()
+	go func() { waiterDone <- r.Refresh(ctx) }()
 	cancel()
 	if err := <-waiterDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled waiter = %v, want context.Canceled", err)
@@ -415,6 +430,58 @@ func TestModelSpecs_CancelledWaiterDoesNotCancelSharedRefresh(t *testing.T) {
 	close(release)
 	if err := <-ownerDone; err != nil {
 		t.Fatalf("shared refresh was cancelled with a waiter: %v", err)
+	}
+}
+
+// SetDefault is the seam every cross-package test relies on, so it is pinned
+// here: it swaps the process-wide registry and the returned restore puts the
+// previous one back, including the not-yet-built (nil) state a fresh process
+// starts in.
+func TestSetDefault_SwapsAndRestores(t *testing.T) {
+	seeded := newTestRegistry(t, "http://127.0.0.1:0")
+	seeded.mu.Lock()
+	seeded.indexLocked(map[string]Spec{"anthropic/claude-opus-5": {ContextWindow: 42}})
+	seeded.loadedAt = time.Now()
+	seeded.diskTried = true
+	seeded.mu.Unlock()
+
+	before := Default()
+	restore := SetDefault(seeded)
+	if got, ok := Default().Lookup("anthropic", "claude-opus-5"); !ok || got.ContextWindow != 42 {
+		t.Fatalf("after SetDefault, lookup = %+v, %v; want the seeded registry", got, ok)
+	}
+	restore()
+	if Default() != before {
+		t.Error("restore did not put the previous default back")
+	}
+}
+
+// OptionsFromEnv is read LAZILY by Default. A package-var initializer would
+// have read it at import time, which is exactly what made an env-based fixture
+// unreachable from another package's test.
+func TestOptionsFromEnv_ReadsKnobs(t *testing.T) {
+	t.Setenv("ITERION_MODEL_SPECS", "off")
+	t.Setenv("ITERION_MODEL_SPECS_URL", "https://example.invalid/api.json")
+	t.Setenv("ITERION_MODEL_SPECS_CACHE", "/tmp/iterion-fixture-cache.json")
+	t.Setenv("ITERION_MODEL_SPECS_TTL", "90s")
+	t.Setenv("ITERION_MODEL_SPECS_REFRESH", "1")
+
+	opts := OptionsFromEnv()
+	if !opts.Disabled || !opts.ForceRefresh {
+		t.Errorf("flags = disabled:%v force:%v, want both true", opts.Disabled, opts.ForceRefresh)
+	}
+	if opts.URL != "https://example.invalid/api.json" || opts.CachePath != "/tmp/iterion-fixture-cache.json" {
+		t.Errorf("url/cache = %q / %q", opts.URL, opts.CachePath)
+	}
+	if opts.TTL != 90*time.Second {
+		t.Errorf("TTL = %v, want 90s", opts.TTL)
+	}
+
+	// An unparsable duration leaves TTL unset so New falls back to the default
+	// rather than to zero, which ensureFresh would read as permanently stale.
+	t.Setenv("ITERION_MODEL_SPECS_TTL", "not-a-duration")
+	if got := New(OptionsFromEnv()).ttl; got != defaultTTL {
+		t.Errorf("ttl after unparsable TTL = %v, want the %v default", got, defaultTTL)
 	}
 }
 

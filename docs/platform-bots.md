@@ -126,9 +126,9 @@ consumable by upgraded runners. The reverse direction keeps the standard
 policy: a pre-bump runner rejects v9, so roll server and runner from the
 same release (or runner first) as usual.
 
-## Platform settings: bot roles + sandbox image
+## Platform settings: bot roles + sandbox image + bot vars
 
-Two more runtime-settings families (ADR-090 doctrine: env/const = default,
+Three more runtime-settings families (ADR-090 doctrine: env/const = default,
 DB record = override, ≤30 s propagation, super-admin surface), stored in
 the same `platform_settings` collection as the usage caps:
 
@@ -142,6 +142,11 @@ iterion remote admin roles set --clear-reviewer   # back to the built-in default
 iterion remote admin sandbox
 iterion remote admin sandbox set --default-image ghcr.io/…/iterion-sandbox-slim@sha256:…
 iterion remote admin sandbox set --clear-default-image
+
+# Bot-var overrides — ${ITERION_X:-default} resolved from the DB before the pod env
+iterion remote admin vars                        # stored + origin
+iterion remote admin vars set ITERION_VIBE_EFFORT_CLAUDE max
+iterion remote admin vars rm  ITERION_VIBE_EFFORT_CLAUDE  # back to env/default
 ```
 
 Role overrides apply at every webhook lane that used to read the

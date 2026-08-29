@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
@@ -24,6 +23,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -190,7 +190,7 @@ func resolveResolverModel(registry *model.Registry, override string) (string, er
 	// Honour an explicit operator override via env — useful in
 	// devloops where the detector's pick isn't what we want for
 	// resolution.
-	if env := os.Getenv("ITERION_CONFLICT_RESOLVER_MODEL"); env != "" {
+	if env := ir.LookupEnv("ITERION_CONFLICT_RESOLVER_MODEL"); env != "" {
 		return env, nil
 	}
 	report := detect.Detect(context.Background())

@@ -54,13 +54,14 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 	}
 
 	p.Header("Model capabilities")
-	headers := []string{"MODEL", "SOURCE", "CONTEXT", "REASON", "TOOLS", "TEMP", "PRICE IN/OUT", "USABLE"}
+	headers := []string{"MODEL", "SOURCE", "CONTEXT", "MAX OUT", "REASON", "TOOLS", "TEMP", "PRICE IN/OUT", "USABLE"}
 	rows := make([][]string, 0, len(cat.Models))
 	for _, m := range cat.Models {
 		rows = append(rows, []string{
 			m.Spec,
 			m.Source,
 			formatContextWindow(m.ContextWindow),
+			formatContextWindow(m.MaxOutputTokens),
 			yesNo(m.Reasoning),
 			yesNo(m.ToolCall),
 			yesNo(m.Temperature),
@@ -120,7 +121,8 @@ func trimPrice(v float64) string {
 }
 
 // formatContextWindow renders a token count compactly (1M, 200K, 4096) and
-// "—" when unknown (zero).
+// "—" when unknown (zero). Shared by the context window and the max-output
+// column: both are token counts whose zero means unknown.
 func formatContextWindow(n int) string {
 	switch {
 	case n <= 0:
