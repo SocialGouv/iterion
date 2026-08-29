@@ -33,3 +33,17 @@ func TestModelOverridesFromMsg(t *testing.T) {
 		t.Fatal("an empty wire must fold into the zero override set")
 	}
 }
+
+// runFallbackFromMsg is the runner-side fold of the wire route into the
+// IR form ir.ApplyRunFallback screens — the run-level fallback twin of
+// modelOverridesFromMsg. The Name is stamped here so every consumer
+// reports the route under the recognisable launch-route label.
+func TestRunFallbackFromMsg(t *testing.T) {
+	f := runFallbackFromMsg(&queue.RunFallback{Backend: "codex", Model: "gpt-5.5", Provider: "openai"})
+	if f.Name != ir.RunFallbackName || f.Backend != "codex" || f.Model != "gpt-5.5" || f.Provider != "openai" {
+		t.Fatalf("folded route = %+v, want the wire fields under the run-fallback label", f)
+	}
+	if z := runFallbackFromMsg(nil); z.Name != "" || z.Backend != "" || z.Model != "" || z.Provider != "" {
+		t.Fatalf("nil wire route folded to %+v, want the zero route ApplyRunFallback ignores", z)
+	}
+}
