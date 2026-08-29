@@ -25,12 +25,14 @@ var zipEpoch = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 var skipPatterns = []string{
 	".git",
 	".iterion",
+	"__pycache__",
 	".DS_Store",
 }
 
 // skipSuffixes matches filename suffixes the packer never includes.
 var skipSuffixes = []string{
 	".botz",
+	".pyc",
 	".swp",
 	"~",
 }
