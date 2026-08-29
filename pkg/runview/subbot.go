@@ -83,25 +83,22 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 	if runLogger == nil {
 		runLogger = s.logger
 	}
-	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir})
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{ParentlessBaseDir: s.workDir, WorkDir: s.workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one.
-		if out, aerr, handled := ReattachSubbotChild(ctx, s.store, req, runLogger); handled {
-			return out, aerr
-		}
-
 		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		if out, aerr, handled := ReattachSubbotChild(ctx, s.store, req, runLogger); handled {
+			return out, aerr
+		}
 		childPath := resolvedSource.Path
-		childWf, hash, err := CompileWorkflowWithHash(childPath)
+		childWf, hash, childBundle, err := CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -119,6 +116,10 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// active pass returns (before any park below).
 		managedCtx, pauseOpts, releaseChild := manageSubbotChild(s.manager, ctx, childRunID, runLogger)
 
+		bundleName := BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		childExec, err := BuildExecutor(ExecutorSpec{
 			Ctx:      managedCtx,
 			Workflow: childWf,
@@ -134,7 +135,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			// to the child WORKFLOW's name, and the same subbot bundle ends up
 			// with two memory spaces depending on which surface launched the
 			// parent.
-			BotID:          ResolveBotID("", BundleNameForPath(childPath), childPath),
+			BotID:          ResolveBotID("", bundleName, childPath),
 			BoardRegister:  s.boardRegister,
 			LocalSecrets:   s.localSecrets,
 			LocalSealer:    s.localSealer,
@@ -158,6 +159,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithBundle(childBundle),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.

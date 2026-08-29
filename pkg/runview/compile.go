@@ -101,6 +101,26 @@ func CompileBundleWorkflow(path string, b *bundle.Bundle) (*ir.Workflow, string,
 	return compileWith(path, "", true, b)
 }
 
+// CompileSubbotWorkflow compiles a resolved child with its bundle context.
+// bot:// supplies the bundle directly; local workflow paths are promoted when
+// they live anywhere inside a directory bundle, including workflows/ exports.
+func CompileSubbotWorkflow(path string, resolvedBundle *bundle.Bundle) (*ir.Workflow, string, *bundle.Bundle, error) {
+	b := resolvedBundle
+	if b == nil {
+		var err error
+		b, err = bundle.OpenForWorkflow(path)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+	if b != nil {
+		wf, hash, err := CompileBundleWorkflow(path, b)
+		return wf, hash, b, err
+	}
+	wf, hash, err := CompileWorkflowWithHash(path)
+	return wf, hash, nil, err
+}
+
 // CompileWorkflowFromSource is the cloud-mode entry point: the workflow
 // content is supplied verbatim (uploaded by the studio SPA). Path is
 // retained as a logical label for diagnostics + MCP relative-path

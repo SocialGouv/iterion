@@ -582,19 +582,17 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
 		}
 
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one (mirrors
-		// the runview runner so a bot behaves identically on either surface).
-		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
-			return out, aerr
-		}
-
 		resolvedSource, err := sourceResolver.Resolve(ctx, parentPath, req.Source)
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		// Resolve first so a resumed bot:// child cannot bypass the lock/hash
+		// check merely because a prior child run is available to re-attach.
+		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
+			return out, aerr
+		}
 		childPath := resolvedSource.Path
-		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -606,8 +604,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		// parked below re-attaches instead of spawning fresh.
 		runview.RecordSubbotChild(ctx, s, req, childRunID, logger)
 
+		bundleName := runview.BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil,
-			runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath), nil)
+			runview.ResolveBotID("", bundleName, childPath), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -628,6 +630,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithBundle(childBundle),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested

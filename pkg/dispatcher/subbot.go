@@ -48,20 +48,11 @@ type subbotDepthKey struct{}
 // explicitly or the child resolves relative paths (a bot's `.venv/bin/python`)
 // against the wrong tree.
 func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunStore, sealer secrets.Sealer, dailyCap *runtime.DailyCapGuard, logger *iterlog.Logger) runtime.SubbotRunner {
-	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{})
+	sourceResolver := subbotsource.NewResolver(subbotsource.ResolverOptions{WorkDir: workDir})
 	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
-		}
-
-		// Re-attach to an in-flight/finished child from a prior (interrupted)
-		// execution of this subbot node before spawning a fresh one — the
-		// dispatcher resumes a failed run on its own retry path, so this is
-		// the difference between picking a paid child back up and paying for
-		// it twice.
-		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
-			return out, aerr
 		}
 
 		// Le workDir EFFECTIF du parent prime : sous `worktree: auto` le moteur a
@@ -76,8 +67,11 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 		if err != nil {
 			return nil, fmt.Errorf("resolve child %q: %w", req.Source, err)
 		}
+		if out, aerr, handled := runview.ReattachSubbotChild(ctx, s, req, logger); handled {
+			return out, aerr
+		}
 		childPath := resolvedSource.Path
-		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
+		childWf, hash, childBundle, err := runview.CompileSubbotWorkflow(childPath, resolvedSource.Bundle)
 		if err != nil {
 			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
 		}
@@ -109,6 +103,10 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			logger.Warn("subbot child %s: run lock unavailable (%v) — the orphan reaper may misjudge it as dead mid-flight", childRunID, lerr)
 		}
 
+		bundleName := runview.BundleNameForPath(childPath)
+		if childBundle != nil && childBundle.Manifest != nil {
+			bundleName = childBundle.Manifest.Name
+		}
 		execSpec := runview.ExecutorSpec{
 			Ctx:      ctx,
 			Workflow: childWf,
@@ -121,7 +119,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			// CLI and studio runners do. Without it the executor falls back to
 			// the child workflow's name and the same subbot ends up with two
 			// memory spaces depending on which surface launched the parent.
-			BotID: runview.ResolveBotID("", runview.BundleNameForPath(childPath), childPath),
+			BotID: runview.ResolveBotID("", bundleName, childPath),
 			// Sans ce liant, un message adressé à l'enfant depuis le board est
 			// accepté, persisté `queued`, et jamais délivré : un silence, pas
 			// une erreur. Le parent le câble, le studio aussi.
@@ -158,6 +156,7 @@ func subbotRunnerForDispatch(parentPath, storeDir, workDir string, s store.RunSt
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),
+			runtime.WithBundle(childBundle),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's
 			// dir); the ctx-carried depth keeps the recursion bounded.
