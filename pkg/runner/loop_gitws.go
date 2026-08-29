@@ -786,6 +786,46 @@ func bankPushArgs(branch, head, oldHead string) []string {
 	return []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + oldHead, "origin", refspec}
 }
 
+// bankFetchArgs brings the storage branch's advertised tip into the
+// clone, so the bank can compare against it and archive it.
+//
+// It fetches the REF, never the raw sha the ls-remote returned.
+// `git fetch origin <sha>` needs uploadpack.allowReachableSHA1InWant on
+// the SERVER: GitHub and GitLab enable it, a stock-git Forgejo/Gitea —
+// a first-class forge here — does not. On those the fetch errors, both
+// callers take their documented fail-open path, and the guard this whole
+// change exists to add is silently inert in production: no comparison,
+// no archive, the dead chain force-pushed away exactly as before. No
+// test could catch it either, since the local-transport fixture carries
+// no such restriction. refs/heads/<branch> is advertised on every
+// transport, and it is the same ref bankPushArgs leases.
+func bankFetchArgs(branch string) []string {
+	return []string{"fetch", "--no-tags", "origin", "refs/heads/" + branch}
+}
+
+// fetchBankedChain makes the prior attempt's banked head a local object
+// for the ancestry test and the archive push.
+//
+// A head already present locally — the attempt that banked it ran in
+// THIS clone — is answered without touching the network: the fetch is a
+// means to the object, so having it makes a fetch failure irrelevant
+// rather than fatal. It reports an error when the branch moved between
+// the ls-remote and the fetch, so oldHead never arrived: nothing
+// downstream can read that chain, and the push's own lease is what fails
+// closed there.
+func (r *Runner) fetchBankedChain(ctx context.Context, workDir, tok, branch, oldHead string) error {
+	if r.hostHasCommit(ctx, workDir, oldHead) {
+		return nil
+	}
+	if err := r.runGit(ctx, workDir, tok, bankFetchArgs(branch)...); err != nil {
+		return err
+	}
+	if !r.hostHasCommit(ctx, workDir, oldHead) {
+		return fmt.Errorf("prior banked head %.12s is not among the objects fetched for %s — the branch moved", oldHead, branch)
+	}
+	return nil
+}
+
 // bankedBranchHead reads the forge's current tip of the run's storage
 // branch ("" when the branch does not exist, or when the read itself
 // fails — an unreadable remote must not block the bank, it degrades to
@@ -838,7 +878,7 @@ func (r *Runner) preserveSupersededChain(ctx context.Context, msg *queue.RunMess
 	// The banked head came from ls-remote; the finished clone has no
 	// reason to carry it. Fetch before any ancestry test or archive push
 	// — both need the object locally.
-	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
+	if err := r.fetchBankedChain(ctx, workDir, tok, branch, oldHead); err != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: cannot fetch superseded head %.12s to archive it — the finished push drops it from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, oldHead, branch, err)
 		r.recordBankSuperseded(msg, branch, oldHead, head, "", "fetch superseded head: "+err.Error())
 		return
@@ -902,8 +942,8 @@ func (r *Runner) recordBankSuperseded(msg *queue.RunMessage, branch, oldHead, ne
 // the comparison and never the anti-clobber guarantee.
 func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) bool {
 	runID := msg.RunID
-	if err := r.runGit(ctx, workDir, tok, "fetch", "origin", oldHead); err != nil {
-		r.cfg.Logger.Warn("runner: run %s: bank: fetch prior banked head %.12s: %v — pushing without the comparison", runID, oldHead, err)
+	if err := r.fetchBankedChain(ctx, workDir, tok, branch, oldHead); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: bank: read prior banked head %.12s: %v — pushing without the comparison", runID, oldHead, err)
 		return true
 	}
 	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {

@@ -603,6 +603,42 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 	})
 }
 
+// The prior banked head is fetched by REF, never by the raw sha
+// ls-remote returned: `git fetch origin <sha>` needs
+// uploadpack.allowReachableSHA1InWant on the server, which a stock-git
+// Forgejo/Gitea does not set — there the fetch errors, both callers take
+// their fail-open path, and the guard is silently inert in production
+// while this package's local-transport fixture (no such restriction)
+// stays green. Only the args can pin it.
+func TestBankFetchArgsUseTheRefNotASha(t *testing.T) {
+	const branch = "iterion/run-x"
+	got := strings.Join(bankFetchArgs(branch), " ")
+	if want := "fetch --no-tags origin refs/heads/" + branch; got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+// The fetch is a MEANS to the prior banked object: when the attempt that
+// banked it ran in this very clone the object is already here, so an
+// unreachable remote must not decide a question the local repo answers.
+func TestFetchBankedChainSkipsTheNetworkWhenTheHeadIsLocal(t *testing.T) {
+	r, _, work, _, _ := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the head an earlier attempt banked from here")
+	local := gitOut(t, work, "rev-parse", "HEAD")
+	gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
+
+	if err := r.fetchBankedChain(context.Background(), work, "", "iterion/run-x", local); err != nil {
+		t.Fatalf("fetchBankedChain = %v, want nil — the head is already local, the unreachable remote is irrelevant", err)
+	}
+	// A head that is genuinely absent still needs the remote, and still
+	// fails when it cannot be reached — the comparison must never read a
+	// chain it does not have.
+	absent := "feedfacefeedfacefeedfacefeedfacefeedface"
+	if err := r.fetchBankedChain(context.Background(), work, "", "iterion/run-x", absent); err == nil {
+		t.Fatal("fetchBankedChain = nil for a head neither local nor fetchable")
+	}
+}
+
 // runGitOutEnv returns COMBINED output, so the ls-remote parse has to
 // survive whatever git writes to stderr on a network read. Taking the
 // first token of the output turns a redirect warning into the "prior
