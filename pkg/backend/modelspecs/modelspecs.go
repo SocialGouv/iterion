@@ -395,7 +395,19 @@ func (r *Registry) loadDiskCacheLocked() {
 // sealed one (NewSeeded) is a test fixture whose whole point is that it answers
 // from its own table without touching the host.
 func (r *Registry) Refresh(ctx context.Context) error {
-	if r == nil || !r.enabled || r.sealed {
+	if r == nil {
+		return nil
+	}
+	if !r.enabled || r.sealed {
+		// Release any claim ensureFresh staked before spawning this call.
+		// It cannot get here from that path today (a disabled registry never
+		// reaches ensureFresh, a sealed one never auto-fetches), but the flag
+		// is set by the CALLER and cleared by the defer below — so a no-op
+		// return that skipped the defer would wedge inFlight for the life of
+		// the process and silence the background refresh entirely.
+		r.mu.Lock()
+		r.inFlight = false
+		r.mu.Unlock()
 		return nil
 	}
 	defer func() {

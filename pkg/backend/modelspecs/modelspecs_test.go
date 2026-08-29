@@ -470,3 +470,33 @@ func TestNewSeeded_RefreshTouchesNeitherNetworkNorDisk(t *testing.T) {
 		t.Errorf("post-Refresh lookup = %+v, %v; want the seeded 42", got, ok)
 	}
 }
+
+// inFlight is set by ensureFresh and cleared by Refresh's defer, so every
+// Refresh return path must clear it — including the no-op ones, which sit
+// BEFORE that defer. A path that returned without clearing would leave the
+// registry believing a refresh is running and never spawn another one.
+func TestRefresh_NoOpPathsStillReleaseInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		reg  *Registry
+	}{
+		{"disabled", New(Options{Disabled: true})},
+		{"sealed", NewSeeded(map[string]Spec{"anthropic/claude-opus-5": {ContextWindow: 1}})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.reg.mu.Lock()
+			tc.reg.inFlight = true // what ensureFresh stakes before spawning
+			tc.reg.mu.Unlock()
+
+			if err := tc.reg.Refresh(context.Background()); err != nil {
+				t.Fatalf("Refresh = %v, want nil", err)
+			}
+
+			tc.reg.mu.Lock()
+			defer tc.reg.mu.Unlock()
+			if tc.reg.inFlight {
+				t.Error("inFlight still set after a no-op Refresh — the background refresh is wedged for the process")
+			}
+		})
+	}
+}
