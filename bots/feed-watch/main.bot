@@ -1324,6 +1324,9 @@ tool notify:
             # LAST part now carries. Re-trim that one part rather than
             # reserving 64 chars on EVERY part, which would shrink the whole
             # digest to pay for a marker only one message ever gets.
+            room = limit - len(mark_for(len(parts), len(parts), True)) - 2
+            if room > 0 and len(parts[-1]) > room:
+                parts[-1] = parts[-1][:room].rstrip()
         if len(parts) == 1 and not cut:
             return parts
         n = len(parts)
@@ -1420,7 +1423,7 @@ tool notify:
     # queue would be consumed for items whose text never left. The channel
     # only sees a notice pointing at run artifacts its readers cannot open.
     # Same rule as a partial delivery: content dropped => do not consume.
-    if delivered < len(plans):
+    if delivered < len(plans) or truncated_limits:
         print(json.dumps({'posted': False, 'dry_run': False, 'delivered': delivered,
                           'targets': targets, 'parts': parts_max, 'posts': posts_ok,
                           'truncated': bool(truncated_limits)},
