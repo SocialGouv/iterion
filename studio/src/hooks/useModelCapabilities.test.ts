@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { modelCapsStaleTime } from "./useModelCapabilities";
+import {
+  modelCapsRefetchInterval,
+  modelCapsStaleTime,
+} from "./useModelCapabilities";
 
 // Spec resolution is non-blocking by design: a cold lookup answers from the
 // curated table and only STARTS the background refresh, installing the fetched
@@ -24,5 +27,27 @@ describe("modelCapsStaleTime", () => {
   // rather than inherit the never-refetch rule.
   it("treats an absent answer as improvable", () => {
     expect(modelCapsStaleTime(undefined)).toBe(modelCapsStaleTime("curated"));
+  });
+});
+
+// The polling half of the same rule. staleTime marks an answer improvable;
+// this is what makes it actually improve, because react-query never refetches
+// on staleness alone and the studio disables focus-refetching globally.
+describe("modelCapsRefetchInterval", () => {
+  it("stops as soon as the answer settles on the aggregator", () => {
+    expect(modelCapsRefetchInterval("aggregator", 1)).toBe(false);
+  });
+
+  it("keeps polling a fresh curated answer — the server refresh may still land", () => {
+    const first = modelCapsRefetchInterval("curated", 1);
+    expect(typeof first).toBe("number");
+    expect(first as number).toBeGreaterThan(0);
+    expect(modelCapsRefetchInterval(undefined, 0)).toBe(first);
+  });
+
+  // Plenty of models are curated forever — one no aggregator carries would
+  // otherwise be polled for the life of the page.
+  it("gives up after a bounded number of attempts", () => {
+    expect(modelCapsRefetchInterval("curated", 99)).toBe(false);
   });
 });

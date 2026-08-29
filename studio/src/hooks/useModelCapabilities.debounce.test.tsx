@@ -96,4 +96,68 @@ describe("useModelCapabilities", () => {
       true,
     );
   });
+  // The cold-start case the whole caching rule exists for, end to end: the
+  // server answers `curated` with no price while its background models.dev
+  // fetch is still in flight, then answers `aggregator` seconds later. A
+  // MOUNTED picker must pick that up — staleTime alone does not refetch, and
+  // the studio disables focus-refetching, so without the poll this answer
+  // stood until the picker was remounted and the operator watching it never
+  // saw a price.
+  it("supersedes a cold curated answer once the server refresh lands", async () => {
+    apiMocks.fetchModelCapabilities.mockReset();
+    apiMocks.fetchModelCapabilities
+      .mockResolvedValueOnce({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        spec: "anthropic/claude-opus-5",
+        source: "curated",
+        context_window: 200_000,
+        max_output_tokens: 0,
+        input_cost_per_m: 0,
+        output_cost_per_m: 0,
+      })
+      .mockResolvedValue({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        spec: "anthropic/claude-opus-5",
+        source: "aggregator",
+        context_window: 1_000_000,
+        max_output_tokens: 64_000,
+        input_cost_per_m: 5,
+        output_cost_per_m: 25,
+      });
+
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false },
+      },
+    });
+    const { result } = renderHook(
+      () => useModelCapabilities("anthropic/claude-opus-5"),
+      { wrapper: wrapper(client) },
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() =>
+      expect(result.current.capabilities?.source).toBe("curated"),
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(
+      () => expect(result.current.capabilities?.source).toBe("aggregator"),
+      { timeout: 2000 },
+    );
+    expect(result.current.capabilities?.input_cost_per_m).toBe(5);
+
+    // …and it stops there: a settled answer must not keep polling.
+    const settled = apiMocks.fetchModelCapabilities.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(apiMocks.fetchModelCapabilities.mock.calls.length).toBe(settled);
+  });
 });

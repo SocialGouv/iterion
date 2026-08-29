@@ -16,6 +16,22 @@ import { useDebounce } from "@/hooks/useDebounce";
 const CURATED_STALE_MS = 30_000;
 const AGGREGATOR_STALE_MS = Number.POSITIVE_INFINITY;
 
+// …and staleness alone is not enough to make that happen. react-query refetches
+// on mount, on window focus, on reconnect and on an interval — never merely
+// because staleTime elapsed — and the studio's global client disables
+// focus-refetching (see main.tsx). So a curated answer marked stale sits there
+// until the picker is remounted, which is exactly the cold-start case: the
+// server returns the price-less curated row, its background models.dev fetch
+// lands seconds later, and the caption goes on reading "price unknown" at an
+// operator who is still looking at it.
+//
+// A short poll closes that window, BOUNDED because plenty of models are curated
+// forever — one no aggregator carries would otherwise be polled for the life of
+// the page. A handful of attempts covers a background fetch whose own HTTP
+// timeout is 3s; past that, the answer is curated because that is the answer.
+const CURATED_REFETCH_MS = 5_000;
+const CURATED_REFETCH_ATTEMPTS = 4;
+
 // Every picker feeding this hook is a free-text <Input>, so the spec changes
 // once per keystroke and each distinct value is its own query key. Settle it
 // before it reaches the key: without this, typing "anthropic/claude-opus-5"
@@ -44,6 +60,23 @@ export function modelCapsStaleTime(
   return source === "aggregator" ? AGGREGATOR_STALE_MS : CURATED_STALE_MS;
 }
 
+/**
+ * modelCapsRefetchInterval is the polling rule, exported for the same reason:
+ * it is the half that actually makes a cold curated answer improve, and through
+ * the hook it is only observable by waiting out several timer windows.
+ *
+ * `false` means stop — either the answer settled on the aggregator, or it has
+ * been curated across enough attempts that it is not going to change.
+ */
+export function modelCapsRefetchInterval(
+  source: ModelCapabilities["source"] | undefined,
+  fetchCount: number,
+): number | false {
+  if (source === "aggregator") return false;
+  if (fetchCount > CURATED_REFETCH_ATTEMPTS) return false;
+  return CURATED_REFETCH_MS;
+}
+
 export interface UseModelCapabilitiesResult {
   // null until the first response lands, and whenever no model is selected.
   capabilities: ModelCapabilities | null;
@@ -69,6 +102,8 @@ export function useModelCapabilities(
     queryFn: ({ signal }) => fetchModelCapabilities(trimmed, signal),
     enabled,
     staleTime: (q) => modelCapsStaleTime(q.state.data?.source),
+    refetchInterval: (q) =>
+      modelCapsRefetchInterval(q.state.data?.source, q.state.dataUpdateCount),
     gcTime: GC_MS,
     refetchOnMount: true,
     // A capability caption is decoration: a failed lookup must leave the
