@@ -903,29 +903,45 @@ func TestFeedWatch_NotifySplitsLongDigest(t *testing.T) {
 		}
 	})
 
-	t.Run("a part failure stops that sink without failing the run", func(t *testing.T) {
+	// `posted` is not "something went out" — it is the QUEUE-CONSUMPTION
+	// signal (`notify -> commit_state when posted`), and commit_state clears
+	// the delivered snapshots from pending.jsonl. Returning it true on a
+	// partial delivery ends the run GREEN having permanently dropped whatever
+	// never left: the channel gets part 1 of 5 and the rest is gone from the
+	// queue forever. Louder-to-quieter than failing, and it contradicts the
+	// splitting's whole purpose. A replay may duplicate what already landed —
+	// a duplicate is recoverable, a lost digest is not.
+	t.Run("a part failure stops the sink AND refuses to consume the queue", func(t *testing.T) {
 		msg := longDigest(20)
 		sinks := []any{map[string]any{"webhook": "w1", "channel": "#flaky"}}
 		sink := newNotifySink()
 		sink.failFrom["#flaky"] = 2 // part 1 lands, part 2 onwards 500s
 		out, err := run(t, msg, sinks, 1200, 0, sink)
-		// Content IS in the channel, so the run must not fail: a resume
-		// would re-post the parts that already landed.
-		if err != nil {
-			t.Fatalf("a partial delivery must not fail the run (resume would double-post): %v", err)
+		if err == nil {
+			t.Fatalf("a sink that got part 1 of n must NOT report success — the queue would be consumed and the tail lost: %v", out)
 		}
 		if got := sink.texts("#flaky"); len(got) != 1 {
 			t.Fatalf("delivery must stop at the first failed part, got %d message(s)", len(got))
 		}
-		if out["delivered"].(float64) != 0 {
-			t.Fatalf("a sink missing parts is not delivered: %v", out)
+	})
+
+	// The same defect predates splitting: with two sinks, one served used to
+	// be enough to consume the queue for both, so the second channel lost the
+	// digest silently. One predicate closes both.
+	t.Run("one sink of two is not a delivery", func(t *testing.T) {
+		msg := "# Demo Watch\n\nshort enough to fit in one message"
+		sinks := []any{
+			map[string]any{"webhook": "w1", "channel": "#ok"},
+			map[string]any{"webhook": "w2", "channel": "#down"},
 		}
-		if out["posts"].(float64) != 1 || out["posted"] != true {
-			t.Fatalf("the one successful post must be visible in the output: %v", out)
+		sink := newNotifySink()
+		sink.failFrom["#down"] = 1 // this channel never accepts anything
+		out, err := run(t, msg, sinks, 4000, 0, sink)
+		if err == nil {
+			t.Fatalf("one sink of two served must not consume the queue for both: %v", out)
 		}
-		if !strings.Contains(out["summary"].(string), "FAILED") ||
-			!strings.Contains(out["summary"].(string), "part 2/") {
-			t.Fatalf("the summary must name the failed part: %q", out["summary"])
+		if got := sink.texts("#ok"); len(got) != 1 {
+			t.Fatalf("the healthy sink must still have been served, got %d", len(got))
 		}
 	})
 

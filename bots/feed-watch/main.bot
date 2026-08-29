@@ -1372,12 +1372,31 @@ tool notify:
             targets.append(label + ('' if len(msgs) == 1 else ' (' + str(len(msgs)) + ' msgs)'))
         elif sent:
             targets.append(label + ' (' + str(sent) + '/' + str(len(msgs)) + ' msgs)')
-    # The resume guard is posts_ok, NOT delivered: with a split digest
-    # "no sink got all of it" no longer means "nothing was posted", and
-    # failing the run there would re-post the parts already in a channel.
     if posts_ok == 0:
         raise SystemExit('feed-watch: all webhook post(s) failed across ' + str(len(plans)) +
                          ' sink(s): ' + '; '.join(failures))
+    # `posted` is not "something went out" — it is the QUEUE-CONSUMPTION
+    # signal (`notify -> commit_state when posted`), and commit_state clears
+    # every delivered snapshot from pending.jsonl. So it may only be true when
+    # every sink received the WHOLE digest.
+    #
+    # Splitting made the gap reachable in a new way (parts 2..n fail, part 1
+    # is out), but it was already there between SINKS: one sink of two served
+    # used to consume the queue for both. Both are the same defect — a green
+    # run that silently drops what it never delivered — so both are closed
+    # here, the way the sibling bot closes it: keep the successful posts, do
+    # NOT consume, and fail LOUDLY so the stuck half is visible. The replay
+    # may duplicate what already landed; a duplicate is recoverable, a lost
+    # digest is not.
+    if delivered < len(plans):
+        print(json.dumps({'posted': False, 'dry_run': False, 'delivered': delivered,
+                          'targets': targets, 'parts': parts_max, 'posts': posts_ok},
+                         ensure_ascii=False), file=sys.stderr)
+        raise SystemExit('feed-watch: only ' + str(delivered) + '/' + str(len(plans)) +
+                         ' sink(s) received the COMPLETE digest (' + str(posts_ok) +
+                         ' post(s) ok) -- the queue is NOT consumed, so this digest replays in '
+                         'full on the next run and may duplicate what already landed. ' +
+                         '; '.join(failures))
     out({'posted': True, 'dry_run': False, 'delivered': delivered, 'targets': targets,
          'parts': parts_max, 'posts': posts_ok,
          'summary': 'delivered ' + str(delivered) + '/' + str(len(plans)) + ' sink(s)' +
