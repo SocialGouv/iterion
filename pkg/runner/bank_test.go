@@ -722,7 +722,6 @@ func TestBankIntegrityRefusalKeepsAnEarlierAttemptsPair(t *testing.T) {
 	}
 }
 
-
 // The flagship scenario of the outcome-aware supersede: attempt 1 dies
 // at the budget cap holding a LONGER chain; the manual resume re-clones
 // at base, completes the remaining work in fewer commits, and FINISHES.
