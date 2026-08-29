@@ -480,6 +480,65 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 	}
 }
 
+// The aggregate bank budget bounds an operator's work, so it must be
+// reachable from outside — a ceiling nobody can lift is the artificial
+// limitation the project forbids. Falsified both ways: the deadline is
+// there by default, and ITERION_RUNNER_BANK_TIMEOUT<=0 lifts it, exactly
+// as ITERION_RUNNER_GIT_TIMEOUT<=0 lifts the per-op one.
+func TestBankBudgetIsOverridable(t *testing.T) {
+	deadlined := func() context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		t.Cleanup(cancel)
+		<-ctx.Done()
+		return ctx
+	}
+	withBudget := func(t *testing.T, d time.Duration) {
+		t.Helper()
+		prev := bankBudget
+		bankBudget = d
+		t.Cleanup(func() { bankBudget = prev })
+	}
+
+	t.Run("the detached ctx carries the aggregate deadline by default", func(t *testing.T) {
+		withBudget(t, time.Minute)
+		ctx, cancel, ok := bankContext(deadlined())
+		defer cancel()
+		if !ok {
+			t.Fatal("our own deadline must still bank")
+		}
+		if _, has := ctx.Deadline(); !has {
+			t.Fatal("no aggregate deadline — a wedged forge pins the pod past the run's own cap, with no drain signal left to stop it")
+		}
+	})
+
+	t.Run("an operator can lift it", func(t *testing.T) {
+		withBudget(t, 0)
+		ctx, cancel, ok := bankContext(deadlined())
+		defer cancel()
+		if !ok {
+			t.Fatal("our own deadline must still bank")
+		}
+		if _, has := ctx.Deadline(); has {
+			t.Fatal("ITERION_RUNNER_BANK_TIMEOUT<=0 must lift the bound, like ITERION_RUNNER_GIT_TIMEOUT<=0 lifts the per-op one")
+		}
+	})
+
+	t.Run("the refuse arm hands back a callable cancel, never nil", func(t *testing.T) {
+		withBudget(t, time.Minute)
+		refused, cancel := context.WithCancelCause(context.Background())
+		refused2 := refused
+		cancel(runtime.ErrRunCancelled)
+		_, bankCancel, ok := bankContext(refused2)
+		if ok {
+			t.Fatal("an operator cancel must not bank")
+		}
+		if bankCancel == nil {
+			t.Fatal("nil CancelFunc — a caller that defers the cancel before testing ok panics on this arm alone")
+		}
+		bankCancel()
+	})
+}
+
 // The wall-clock death is the class the death bank most exists for, and
 // the one the run ctx cannot serve: executeRun deadlines ctx, the engine
 // returns a sentinel-free error (classified `failed`, hence bankable),

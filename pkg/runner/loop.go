@@ -456,26 +456,44 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 // per-op bounds (ITERION_RUNNER_GIT_TIMEOUT<=0, "unbounded git ops"),
 // that choice is honoured here too.
 func bankContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	noop := func() {}
 	cause := context.Cause(ctx)
 	switch {
 	case cause == nil:
-		return ctx, func() {}, true // live ctx — nothing to detach
+		return ctx, noop, true // live ctx — nothing to detach
 	case errors.Is(cause, context.DeadlineExceeded):
 		detached := context.WithoutCancel(ctx)
-		if gitOpTimeout > 0 {
+		if gitOpTimeout > 0 && bankBudget > 0 {
 			bounded, cancel := context.WithTimeout(detached, bankBudget)
 			return bounded, cancel, true
 		}
-		return detached, func() {}, true
+		return detached, noop, true
 	default:
-		return nil, nil, false
+		// A callable no-op, never nil: every other arm returns one, and a
+		// caller that defers the cancel before testing ok would panic on
+		// the one arm that did not.
+		return nil, noop, false
 	}
 }
 
-// bankBudget bounds the whole post-deadline bank sequence. Generous
-// against the nominal case (seconds) and small against the run
-// deadlines it may outlive (hours).
-const bankBudget = 10 * time.Minute
+// bankBudget bounds the whole post-deadline bank sequence. The default
+// is generous against the nominal case (seconds) and small against the
+// run deadlines it may outlive (hours) — but it bounds an operator's
+// work, so it is reachable from outside like every other such bound:
+// ITERION_RUNNER_BANK_TIMEOUT (a Go duration; <= 0 disables, matching
+// ITERION_RUNNER_GIT_TIMEOUT's own semantics). A forge slow enough that
+// ten minutes truncates the bank is exactly the case where the operator
+// must be able to say so without a rebuild.
+var bankBudget = defaultBankBudget()
+
+func defaultBankBudget() time.Duration {
+	if v := os.Getenv("ITERION_RUNNER_BANK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d // <= 0 disables the bound
+		}
+	}
+	return 10 * time.Minute
+}
 
 // logAt routes a pre-formatted log triple (level, fmt, args) to the
 // matching Logger channel. Used by processOne to drain the log
