@@ -229,8 +229,8 @@ secret rots and every tick then dies on the clone):
 
 ```sh
 # secret_id = the connection's forge_github_<conn-prefix> managed secret
-# (GET /api/teams/<team>/secrets to find it)
-iterion remote api POST /api/teams/<team>/bots/vuln-watch/bindings \
+# (`iterion remote secrets list` to find its id)
+iterion remote bindings vuln-watch create \
   --data '{"secret_id":"<managed-secret-id>",
            "secret_name_for_workflow":"forge_token",
            "allowed_hosts":["github.com"]}'
