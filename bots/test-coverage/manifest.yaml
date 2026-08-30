@@ -2,6 +2,13 @@ name: test-coverage
 display_name: Testy
 icon: 🧪
 version: 2.1.0
+## 2.1.0 — cross-model peer-reviewed plan phase (ADR-091): when a second
+## model family is credentialed (plan_review auto→on, resolved at launch),
+## the coverage plan is authored from the target and the test-kind
+## selection, critiqued by a peer of the other family, and author-revised
+## before the campaign writes tests. Off → entry routes straight to the
+## campaign, the v2 shape unchanged. +30m/+$15 of budget for the phase's
+## three LLM calls.
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; the target repo's toolchain
 ## comes from its own devcontainer/devbox.json.

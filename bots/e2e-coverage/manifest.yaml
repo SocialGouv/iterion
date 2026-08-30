@@ -2,6 +2,13 @@ name: e2e-coverage
 display_name: Endy
 icon: 🕸️
 version: 0.2.0
+## 0.2.0 — cross-model peer-reviewed plan phase (ADR-091): when a second
+## model family is credentialed (plan_review auto→on, resolved at launch),
+## the coverage plan is authored from the matrix and the target, critiqued
+## by a peer of the other family, and author-revised before the campaign
+## writes tests. Off → entry routes straight to the campaign, the v2 shape
+## unchanged. The matrix stays the done-oracle. +30m/+$15 of budget for the
+## phase's three LLM calls.
 ## 0.1.0 — initial release (ADR-058 v2 shape, sibling of test-coverage).
 ## ONE adaptive `campaign` agent drives an application's FEATURE-level
 ## e2e coverage to complete, anchored on a committed feature×coverage
