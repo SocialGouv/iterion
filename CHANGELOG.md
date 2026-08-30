@@ -15,6 +15,42 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     </details>
 
+## [3.76.0](https://github.com/SocialGouv/iterion/compare/v3.75.1...v3.76.0) (2026-08-30)
+
+### Features
+
+* **fallback:** run-level fallback becomes an ordered chain — v11 rides beside v10 ([#583](https://github.com/SocialGouv/iterion/issues/583)) ([96bc9db](https://github.com/SocialGouv/iterion/commit/96bc9dbc86bbb137c95a1ec70d729f55ae121e8f))
+
+    <details><summary>why</summary>
+
+    One stage was not enough: a run whose primary AND first fallback share a failing provider still dies, and a three-stage route (subscription → facade → cross-family) was inexpressible. The launch field now accepts a single object (promoted to a one-stage chain, wire-compatible) or an ordered array; stages apply in order, a refused stage is logged and skipped, and the existing fallback event carries the zero-based fallback_index of the stage that took over. Budgets stay per-stage on the existing…
+
+    </details>
+
+## [3.75.1](https://github.com/SocialGouv/iterion/compare/v3.75.0...v3.75.1) (2026-08-30)
+
+### Bug Fixes
+
+* **bots,docs:** Revi follow-up on the plan-phase extension ([#578](https://github.com/SocialGouv/iterion/issues/578)) ([#580](https://github.com/SocialGouv/iterion/issues/580)) ([e38c3f8](https://github.com/SocialGouv/iterion/commit/e38c3f8343f3706fae1dde18ace466201e560a0c))
+
+    <details><summary>why</summary>
+
+    Findings R0c5ecf R111a3c R62b46b R9c35e4 R80915d R15f1bc R86427d R255dc8 R2c671d R1c4b91.
+
+    </details>
+
+## [3.75.0](https://github.com/SocialGouv/iterion/compare/v3.74.1...v3.75.0) (2026-08-30)
+
+### Features
+
+* **bots:** extend the cross-model plan phase to feature-gap-fill, test-coverage and e2e-coverage ([#578](https://github.com/SocialGouv/iterion/issues/578)) ([22a29c0](https://github.com/SocialGouv/iterion/commit/22a29c0e8dbf12bb1a664e59a5706beedbafb1c8))
+
+    <details><summary>why</summary>
+
+    Replicates the ADR-091 fragment (plan_topology → plan → plan_review → plan_gate → plan_revise; plan_review/plan_review_policy vars; the peer's action:skip fallback route) verbatim from feature-dev, with per-bot mission hand-offs (gap_spec+scope_notes / target+test kinds / matrix_path+target). All three had the exact feature-dev shape (entry: campaign + one continuation_loop back-edge), so the back-edge blanks and the map-every-field discipline carry over unchanged under selected-incoming-edges…
+
+    </details>
+
 ## [3.74.1](https://github.com/SocialGouv/iterion/compare/v3.74.0...v3.74.1) (2026-08-29)
 
 ### Bug Fixes
