@@ -1016,6 +1016,11 @@ tasks:
       # (watchexec's default shell re-shells `sh -c`, losing the quoting).
       - watchexec -r -e go -w cmd -w pkg -- 'docker compose -f docker-compose.cloud.yml up -d --build iterion-server'
 
+  changelog:gen:
+    desc: Rebuild CHANGELOG.md (current major) + docs/changelog/ archives from git history
+    cmds:
+      - corepack pnpm exec node scripts/changelog-gen.mjs
+
   # --- Helm chart targets (plan §F T-36, T-39) --------------------
   chart:sync-version:
     desc: Sync charts/iterion/Chart.yaml version + appVersion with package.json so `helm upgrade` picks up the right image tag
