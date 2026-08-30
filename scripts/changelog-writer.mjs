@@ -116,5 +116,18 @@ function commitPartial(context, commit) {
   return `${entry}\n\n  <details><summary>why</summary>\n\n  ${why}\n\n  </details>\n`
 }
 
-/** writerOpts enabling the "why" excerpts. Omit for plain one-line entries. */
+/**
+ * writerOpts enabling the "why" excerpts. Omit for plain one-line entries.
+ *
+ * Both consumers merge this over the preset's own writer options — a SHALLOW
+ * per-key spread (`{...preset.writer, ...ours}` in conventional-changelog's
+ * ConventionalChangelog.js), applied after loadPreset. So `commitPartial`
+ * replaces only itself and `groupBy` / `transform` / `headerPartial` /
+ * `commitGroupsSort` all survive, which is what keeps the `### Features` /
+ * `### Bug Fixes` headings on released sections.
+ *
+ * The shallowness is the trap: adding `transform` here would REPLACE the
+ * preset's type→section mapping wholesale rather than extend it, and the
+ * breakage would first appear in a real release.
+ */
 export const writerOpts = { commitPartial }
