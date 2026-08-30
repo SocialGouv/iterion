@@ -201,7 +201,7 @@ all — the bots' `auto` default then reads as off, fail-safe.) Mid-run peer-for
 `--var plan_review_policy=wait|skip` (wait = the run parks
 failed_resumable and the usage-window retry resumes it when the window
 reopens; skip = continue without the review, loudly stamped).
-All four campaign bots default to `skip` — the peer is an optional
+All seven campaign bots default to `skip` — the peer is an optional
 enrichment, and a dead second-family credential must never park a
 campaign (`wait` is the per-run deliberate-spend opt-in). Gotcha:
 the ChatGPT-forfait wire gates models by the codex-cli `version:` header

@@ -82,7 +82,7 @@ defaults regardless of tenant credentials.
    closing the standing `review_mode` queued-run gap. An empty bundle
    (runner env fallback, unknowable at publish) injects nothing.
 
-4. **The plan phase in the four campaign bots.** Opt-in by resolution:
+4. **The plan phase in the seven campaign bots.** Opt-in by resolution:
    `plan_topology` (compute) → `plan` (author, claude family, read-only)
    → `plan_review` (peer, `claw` + `openai/gpt-5.6-sol` by default,
    read-only tools, carrying the skip route) → `plan_gate` (compute
@@ -212,7 +212,7 @@ Two of the decisions above met a real run and moved
   backend, model and credential served; what degraded is the node's
   INPUT.
 - **`plan_review_policy` now defaults to `skip` — fleet-wide** (all
-  four plan-phase campaign bots). It started as a branch-improve-loop
+  seven plan-phase campaign bots). It started as a branch-improve-loop
   exception (a fixer that parks on an OPTIONAL cross-model reviewer
   holds someone's pull request hostage), then two lived incidents the
   same day generalised it: a dead second-family credential blocked a
@@ -234,7 +234,7 @@ Two of the decisions above met a real run and moved
   foresee) deactivate the route with a warning rather than failing the
   node — a broken fallback gate must not take down the primary it backs
   up. The compile-time vars-only check makes this path exceptional.
-- The four bots' `plan_review` default is `auto`: hosts with one family
+- The seven bots' `plan_review` default is `auto`: hosts with one family
   see no behaviour change; hosts (or cloud tenants) with two get the
   peer-reviewed plan automatically. Activation on the prod instance is
   exactly one credential provisioning
@@ -242,4 +242,10 @@ Two of the decisions above met a real run and moved
 - Extending the phase to the other campaign bots is a bundle change
   (copy the fragment; add the bot to `bots/plan_phase_test.go`), no
   engine PR — tracked as follow-on work once the pattern is
-  dogfood-proven.
+  dogfood-proven. **Done** for `feature-gap-fill`, `test-coverage` and
+  `e2e-coverage` (the three sharing the exact entry shape: campaign +
+  one continuation_loop back-edge), taking the fleet from four to
+  seven. Deliberately NOT extended: `docs-refresh` (its loop re-enters
+  through the scan pipeline, so the phase would re-author the plan every
+  pass — it needs a first-pass-only gate design), `modernize` (its plan
+  is the lot system) and `adr-cartograph` (manifest-driven campaign).
