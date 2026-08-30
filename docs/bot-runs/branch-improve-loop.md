@@ -1,5 +1,48 @@
 # Billy — branch-improvement validation
 
+## 2026-08-30 — three launches, zero delivery: the duration cap and the weekly cap (runs 01a0517a, 01a051dd, 01a05216)
+
+- Status: **failed.** `/billy` on SocialGouv/iterion#579 (the CHANGELOG
+  feature) produced no commit and no push across three launches. Nothing was
+  wrong with the hand-off — `prior_review` seeded, campaign working, tool
+  calls flowing — the run simply ran out of wall-clock, and the retries hit a
+  wall that was not Billy's.
+- Versions: iterion cloud prod (edge ~v3.74/3.77) · bot `branch-improve-loop`
+- Method: documented habit — Revi left 1 medium + 1 low on #579, `/billy`
+  comment as maintainer, no `skip`.
+- Result:
+
+  | run | wall-clock | outcome |
+  |---|---|---|
+  | `01a0517a` 07:02 | **2h31** | `budget exceeded: duration (9001s/9000s)` |
+  | `01a051dd` 08:51 | — | `failed_resumable` |
+  | `01a05216` 09:53 | 3 min | `usage cap: seven_day window at 75% ≥ 70% (week, hard)` |
+
+- Value: none delivered. The findings were fixed by hand instead, after the
+  weekly cap made a fourth attempt impossible before its 2026-09-01 reset.
+
+### Lessons
+
+- **The 2h30 duration cap is not sized for this repo's verify gate.** Each
+  campaign pass re-runs the repo's real build+test, measured at ~10 min a pass
+  (one tool call spanned 07:59:04 → 08:09:05). A handful of passes and the cap
+  is spent before the delivery tail. The loop budget guard declines a further
+  iteration when the budget cannot fund one, but nothing here shortened the
+  *first* pass, and the run died mid-pass with nothing committed — the exact
+  shape "commit in stride" exists to avoid. Either raise `max_duration` for
+  targets whose gate is expensive, or make the gate cheaper (scope the test
+  command to the touched packages).
+- **A run burning its whole cap with zero commits should be cancellable on
+  sight.** Nothing in the run view said "2h in, nothing banked"; the operator
+  reads `running` and waits. `commits_this_pass` exists in the contract —
+  surfacing it (or a zero-commit warning past N minutes) would have turned
+  2h31 of spend into a 20-minute decision.
+- **The habit has a precondition worth stating: Billy must be able to run.**
+  `docs/revi-billy-loop.md` says "don't hand-fix, comment /billy". When the
+  weekly cap is hard-blocking until a reset two days out, that instruction has
+  no path, and waiting is worse than fixing. The runbook should name the
+  fallback rather than leave the operator to infer it.
+
 ## 2026-08-27 — first `/billy` of the Revi→Billy habit on iterion itself (runs 01a0428a, 01a042b9, 01a042d7)
 
 - Status: **partial.** The habit's whole chain worked — `/billy` comment →
