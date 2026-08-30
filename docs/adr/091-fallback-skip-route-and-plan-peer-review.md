@@ -237,12 +237,14 @@ Two of the decisions above met a real run and moved
   foresee) deactivate the route with a warning rather than failing the
   node — a broken fallback gate must not take down the primary it backs
   up. The compile-time vars-only check makes this path exceptional.
-- The four bots' `plan_review` default is `auto`: hosts with one family
+- The plan-phase bots' `plan_review` default is `auto`: hosts with one family
   see no behaviour change; hosts (or cloud tenants) with two get the
   peer-reviewed plan automatically. Activation on the prod instance is
   exactly one credential provisioning
   ([docs/cloud-llm-credentials.md](../cloud-llm-credentials.md)).
-- Extending the phase to the other campaign bots is a bundle change
+- Extending the phase to another campaign bot is a bundle change
   (copy the fragment; add the bot to `bots/plan_phase_test.go`), no
-  engine PR — tracked as follow-on work once the pattern is
-  dogfood-proven.
+  engine PR — done 2026-08-30 for feature-gap-fill / test-coverage /
+  e2e-coverage after the dogfood proof; docs-refresh (loop re-enters
+  through its scan pipeline), modernize (lot system) and adr-cartograph
+  (manifest-driven) were deliberately left out.
