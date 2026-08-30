@@ -139,9 +139,9 @@ specific bot (see 2).
 (claw-code-go, the sibling repo) is meant to be feature-paritary with
 `claude_code`, and the two backends are meant to be **interchangeable** on
 the same node: `claude_code` is the more stable and mature harness today;
-`claw` reaches every provider the registry knows. It is an **addendum** to
-the numbered five above, not a sixth principle — equally settled, equally
-not to re-litigate. Consequences, settled:
+`claw` reaches every provider the registry knows. This doctrine is an
+**addendum** to the numbered five above, not a sixth principle — equally
+settled, equally not to re-litigate. Consequences, settled:
 
 - A claw error, gap or limitation met in real use is a **claw-code-go
   backlog item, not a disqualification** — fix the harness, then re-judge
