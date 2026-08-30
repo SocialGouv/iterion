@@ -1136,8 +1136,12 @@ workflow e2e_coverage:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "3h"
-    max_cost_usd: 60
+    ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
+    ## plan_review resolves on, ~3 LLM calls run before the campaign.
+    ## (The base 3h/$60 sizes the CAMPAIGN — a bigger mission than the
+    ## 2h siblings — so the phase's own headroom adds on top of it.)
+    max_duration: "3h30m"
+    max_cost_usd: 75
 
   compaction:
     threshold: 0.9

@@ -792,8 +792,10 @@ workflow feature_gap_fill:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "2h"
-    max_cost_usd: 60
+    ## +30m/+$15 headroom for the opt-in plan phase (ADR-091): when
+    ## plan_review resolves on, ~3 LLM calls run before the campaign.
+    max_duration: "2h30m"
+    max_cost_usd: 75
 
   compaction:
     threshold: 0.9
