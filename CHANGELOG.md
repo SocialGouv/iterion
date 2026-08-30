@@ -2145,7 +2145,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    only those. The default stays as it was, and that is the decision rather than
+    Closes the review→fix loop with no human in it — for repos that opt in, and only those. The default stays as it was, and that is the decision rather than
 
     </details>
 * **handoff:** a reviewer and a fixer cooperate without the engine naming either ([fc3e342](https://github.com/SocialGouv/iterion/commit/fc3e3423b396d9932ca66286d4cf92685da04756))
@@ -2699,12 +2699,6 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 ### Bug Fixes
 
 * make paused resumes reliable and compact run details ([#301](https://github.com/SocialGouv/iterion/issues/301)) ([876e847](https://github.com/SocialGouv/iterion/commit/876e8477c2c3063ecf60a90784ed8b7b92bbc2f6))
-
-    <details><summary>why</summary>
-
-    ---------
-
-    </details>
 
 ## [3.10.0](https://github.com/SocialGouv/iterion/compare/v3.9.1...v3.10.0) (2026-07-28)
 
