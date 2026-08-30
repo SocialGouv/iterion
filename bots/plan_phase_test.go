@@ -19,6 +19,9 @@ var planPhaseBots = []string{
 	"app-dev",
 	"branch-improve-loop",
 	"whole-improve-loop",
+	"feature-gap-fill",
+	"test-coverage",
+	"e2e-coverage",
 }
 
 // TestPlanPhaseWiring pins, per bot, the parts of the plan phase whose

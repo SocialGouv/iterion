@@ -1,7 +1,7 @@
 name: feature-gap-fill
 display_name: Fini
 icon: 🧩
-version: 2.0.1
+version: 2.1.0
 ## 2.0.1 — ADR-082 Phase 2 (sandbox-by-default): removed the `sandbox:`
 ## block — isolation is the platform's job; the target repo's toolchain
 ## comes from its own devcontainer/devbox.json.
