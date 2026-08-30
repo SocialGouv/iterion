@@ -1136,8 +1136,8 @@ workflow e2e_coverage:
 
   budget:
     max_parallel_branches: 1
-    max_duration: "3h"
-    max_cost_usd: 60
+    max_duration: "3h30m"
+    max_cost_usd: 75
 
   compaction:
     threshold: 0.9
@@ -1201,10 +1201,11 @@ workflow e2e_coverage:
   ## outputs.gate.fail_log (a BODY node — never the loop-head
   ## campaign's own output on its back-edge, which would read a
   ## loop-entry-frozen value).
-  ## The back-edge BLANKS the plan-phase fields: node input is built
-  ## from the SELECTED incoming edges, so on re-entry this mapping is
-  ## the only source — and a stale pass-1 plan must not re-anchor later
-  ## passes (git log is the durable state there).
+  ## The back-edge BLANKS the plan-phase fields: at loop re-entry the
+  ## back-edge is an OVERLAY applied last — forward-edge mappings from
+  ## sources with output still contribute the unmapped keys — so a
+  ## stale pass-1 plan would re-anchor later passes that must read
+  ## `git log` instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}",
     plan: "", plan_critique: "", plan_responses: ""

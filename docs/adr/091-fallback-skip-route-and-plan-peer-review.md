@@ -82,7 +82,10 @@ defaults regardless of tenant credentials.
    closing the standing `review_mode` queued-run gap. An empty bundle
    (runner env fallback, unknowable at publish) injects nothing.
 
-4. **The plan phase in the four campaign bots.** Opt-in by resolution:
+4. **The plan phase in the campaign bots** (the four originals;
+   extended 2026-08-30 to feature-gap-fill / test-coverage /
+   e2e-coverage — the authoritative list is `bots/plan_phase_test.go`).
+   Opt-in by resolution:
    `plan_topology` (compute) → `plan` (author, claude family, read-only)
    → `plan_review` (peer, `claw` + `openai/gpt-5.6-sol` by default,
    read-only tools, carrying the skip route) → `plan_gate` (compute
