@@ -116,13 +116,13 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     </details>
 
-## [3.69.0](https://github.com/SocialGouv/iterion/compare/v3.68.4...v3.69.0) (2026-08-27)
+## [3.69.0](https://github.com/SocialGouv/iterion/compare/v3.68.5...v3.69.0) (2026-08-27)
 
 ### Features
 
 * **codex:** expose native web search from DSL tools ([#550](https://github.com/SocialGouv/iterion/issues/550)) ([c4e1528](https://github.com/SocialGouv/iterion/commit/c4e1528b3b592d035b20b00444ff1bb28cda0121))
 
-## 3.68.5 (2026-08-27)
+## [3.68.5](https://github.com/SocialGouv/iterion/compare/v3.68.4...v3.68.5) (2026-08-27)
 
 ### Bug Fixes
 
