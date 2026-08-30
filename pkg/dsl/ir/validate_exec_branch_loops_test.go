@@ -53,6 +53,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateLoopHeadInFanOutBody_Allowed(t *testing.T) {
@@ -86,6 +87,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateLoopImplReviewRetryInFanOut_Allowed(t *testing.T) {
@@ -125,6 +127,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateLoopInFanOutEachBody_Allowed(t *testing.T) {
@@ -169,6 +172,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateForeachInFanOutBody_Allowed(t *testing.T) {
@@ -574,6 +578,7 @@ workflow test:
 `
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
+	expectNoDiag(t, r, DiagImplicitCollectorMove)
 }
 
 func TestValidateLoopNestedFanOutEachInFanOutAll_Rejected(t *testing.T) {

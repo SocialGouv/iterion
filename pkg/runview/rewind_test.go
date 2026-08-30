@@ -608,6 +608,47 @@ func TestRewind_PromotesFanOutBodyToRouter(t *testing.T) {
 	}
 }
 
+func TestRewind_PromotesInFlightBranchOutputToRouter(t *testing.T) {
+	cp := &store.Checkpoint{
+		NodeID:  "split",
+		Outputs: outputsOf("survey", "split"),
+		Parallel: &store.ParallelCheckpoint{
+			RouterNodeID:    "split",
+			InvocationKey:   "split@root",
+			PendingBranchID: "branch_split_branch_a",
+			PendingNodeID:   "branch_a",
+			Branches: map[string]*store.BranchCheckpoint{
+				"branch_split_branch_a": {
+					BranchID:      "branch_split_branch_a",
+					CurrentNodeID: "branch_a",
+					Outputs:       outputsOf("branch_a"),
+				},
+				"branch_split_branch_b": {
+					BranchID:      "branch_split_branch_b",
+					CurrentNodeID: "branch_b",
+					Outputs:       outputsOf("branch_b"),
+				},
+			},
+		},
+	}
+	svc, st, runID := seedRun(t, fanOutBot, cp, store.RunStatusPausedWaitingHuman)
+
+	result, err := svc.Rewind(context.Background(), RewindSpec{RunID: runID, NodeID: "branch_a"})
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	if result.NodeID != "split" || result.PromotedFrom != "branch_a" {
+		t.Fatalf("rewind target = %q promoted from %q, want split from branch_a", result.NodeID, result.PromotedFrom)
+	}
+	run, err := st.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if run.Checkpoint.Parallel != nil {
+		t.Errorf("parallel checkpoint survived in-flight branch rewind: %+v", run.Checkpoint.Parallel)
+	}
+}
+
 func TestRewind_PromotesBranchLocalLoopHeadToRouter(t *testing.T) {
 	cp := &store.Checkpoint{
 		NodeID:  "merge",

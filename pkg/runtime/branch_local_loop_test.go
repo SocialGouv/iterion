@@ -806,6 +806,70 @@ func TestFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {
 	}
 }
 
+func TestFanOutEachHumanGateEventsStayPairedAcrossSiblingResumes(t *testing.T) {
+	wf := branchFirstHumanLoopWorkflow()
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"items": []any{
+				map[string]any{"id": "first"},
+				map[string]any{"id": "second"},
+				map[string]any{"id": "third"},
+			},
+		}, nil
+	})
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"]}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false}, nil
+	})
+
+	runStore := tmpStore(t)
+	runID := "branch-gate-paired-events"
+	err := New(wf, runStore, exec).Run(context.Background(), runID, nil)
+	if !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("run = %v, want first branch pause", err)
+	}
+	for resumes := 0; resumes < 5 && errors.Is(err, ErrRunPaused); resumes++ {
+		err = resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true})
+	}
+	if err != nil {
+		t.Fatalf("final resume = %v, want all three branches complete", err)
+	}
+
+	events, err := runStore.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type counts struct{ started, finished, requested int }
+	byBranch := make(map[string]*counts)
+	for _, event := range events {
+		if event.NodeID != "gate" || event.BranchID == "" {
+			continue
+		}
+		if byBranch[event.BranchID] == nil {
+			byBranch[event.BranchID] = &counts{}
+		}
+		switch event.Type {
+		case store.EventNodeStarted:
+			byBranch[event.BranchID].started++
+		case store.EventNodeFinished:
+			byBranch[event.BranchID].finished++
+		case store.EventHumanInputRequested:
+			byBranch[event.BranchID].requested++
+		}
+	}
+	if len(byBranch) != 3 {
+		t.Fatalf("gate event branches = %d (%v), want 3", len(byBranch), byBranch)
+	}
+	for branchID, got := range byBranch {
+		if got.started != 1 || got.finished != 1 || got.requested != 1 {
+			t.Errorf("%s gate events = %+v, want one started/finished/requested", branchID, *got)
+		}
+	}
+}
+
 // A plain (non-pause, non-budget) error in the answered branch — here an
 // answer that satisfies no outgoing edge — must not wedge the fan-out: under
 // best_effort nothing cancels the siblings, so they only leave the resume

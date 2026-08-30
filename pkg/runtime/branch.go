@@ -164,27 +164,14 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 
 		iter, iterPath := e.branchNodeIteration(currentNodeID, branchRS)
-		// Branch execution keys include foreach indices as well as named loop
-		// counters. The trunk helper intentionally reports loops only, while a
-		// branch may execute the same node once per local foreach element.
-		// Emit node_started.
-		startedData := map[string]any{
-			"kind":      node.NodeKind().String(),
-			"iteration": iter,
-		}
-		if iterPath != "" {
-			startedData["iteration_path"] = iterPath
-		}
-		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, startedData); err != nil {
-			e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
-			result.eventErrors++
-		}
-
 		var output map[string]any
 		var done bool
 		resumedHuman := false
+		branchHuman := false
 		if human, ok := node.(*ir.HumanNode); ok && human.Interaction != ir.InteractionLLM {
+			branchHuman = true
 			if human.Interaction == ir.InteractionReview || human.Interaction == ir.InteractionLLMOrHuman {
+				e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)
 				result.err = fmt.Errorf("C245: human interaction %q is not supported inside an execution branch", human.Interaction)
 				done = true
 			} else if branchCP != nil && branchCP.ResumeAnswered {
@@ -197,7 +184,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 					// branch restarted. Re-pause with a checkpoint that omits the bad
 					// answer so the operator can correct it instead of wedging every
 					// future resume on the same durable invalid payload.
-					result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel)
+					result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel, iter, iterPath, false)
 					done = true
 				} else {
 					result.outputs[currentNodeID] = output
@@ -206,12 +193,19 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 				}
 			} else {
 				done = true
-				result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel)
+				result.err = e.pauseBranchAtHuman(rs, branchRS, branchID, currentNodeID, node, parentOutputs, parentArtifacts, result, parallel, iter, iterPath, true)
 			}
 		} else {
+			e.emitBranchNodeStarted(ctx, runID, branchID, currentNodeID, node, iter, iterPath, result)
 			output, done = e.executeNodeForBranch(ctx, branchRS, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
 		}
 		if done {
+			// A deferred gate never emitted node_started. A real pause keeps its
+			// one start open until the answered resume emits node_finished. Every
+			// other human-node failure closes the attempt in this invocation.
+			if branchHuman && result.err != nil && !errors.Is(result.err, ErrRunPaused) && !errors.Is(result.err, errBranchPauseDeferred) {
+				e.emitBranchNodeFailed(ctx, runID, branchID, currentNodeID, result.err, result)
+			}
 			return result
 		}
 		branchRS.outputs[currentNodeID] = output
@@ -405,7 +399,7 @@ func (e *Engine) checkpointBranchState(parent, branchRS *runState, result *branc
 	}
 }
 
-func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID string, _ ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, result *branchResult, parallel *parallelExecutionState) error {
+func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, result *branchResult, parallel *parallelExecutionState, iter int, iterPath string, emitStarted bool) error {
 	parallel.saveMu.Lock()
 	defer parallel.saveMu.Unlock()
 	branch := branchCheckpointFromState(branchRS, result, nodeID, false)
@@ -418,6 +412,9 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 			parallel.abortPause(branchID, nodeID)
 		}
 	}()
+	if emitStarted {
+		e.emitBranchNodeStarted(parent.ctx, parent.runID, branchID, nodeID, node, iter, iterPath, result)
+	}
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArtifacts := mergeOutputs(parentArtifacts, result.artifacts)
 	questions := e.buildNodeInputRS(nodeID, resolveScope{
@@ -471,6 +468,30 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	}
 	pausePersisted = true
 	return ErrRunPaused
+}
+
+// emitBranchNodeStarted records one logical branch-node attempt. Human gates
+// call it only after winning the pause election; answered resumes continue the
+// original attempt and therefore skip a duplicate start.
+func (e *Engine) emitBranchNodeStarted(ctx context.Context, runID, branchID, nodeID string, node ir.Node, iter int, iterPath string, result *branchResult) {
+	data := map[string]any{
+		"kind":      node.NodeKind().String(),
+		"iteration": iter,
+	}
+	if iterPath != "" {
+		data["iteration_path"] = iterPath
+	}
+	if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, nodeID, data); err != nil {
+		e.logger.Warn("branch %s: failed to emit node_started: %v", branchID, err)
+		result.eventErrors++
+	}
+}
+
+func (e *Engine) emitBranchNodeFailed(ctx context.Context, runID, branchID, nodeID string, nodeErr error, result *branchResult) {
+	if err := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, nodeID, map[string]any{"error": nodeErr.Error()}); err != nil {
+		e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, err)
+		result.eventErrors++
+	}
 }
 
 // emitBranchFinishedDefer emits branch_finished (with the branch's terminal

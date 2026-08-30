@@ -401,13 +401,13 @@ func describeIterationScope(scope string) string {
 	return "the branch rooted at " + scope
 }
 
-// validateImplicitCollectorMigration warns about the execution-shape change
-// introduced by branch-local bounded iteration. Historically, any second
-// predecessor elected an implicit collector, including a node's own bounded
-// back-edge. Bounded predecessors are now branch-local control flow, so such a
-// node executes once per branch unless the author marks a real collector with
-// await. The graph remains valid, but silently multiplying side effects would
-// be an unsafe migration.
+// validateImplicitCollectorMigration warns about the one execution-shape
+// change that could affect a workflow which compiled before branch-local
+// bounded iteration: a downstream loop head on a single-target fan used to be
+// elected as an implicit collector because its bounded predecessor counted as
+// a second source. Canonical multi-target retries and template-head loops were
+// C244 errors before this feature, so they are not migrations and must not get
+// this warning.
 func (c *compiler) validateImplicitCollectorMigration(w *Workflow) {
 	body := execBranchBodyNodes(w)
 	allIn := make(map[string]map[string]bool)
@@ -427,14 +427,65 @@ func (c *compiler) validateImplicitCollectorMigration(w *Workflow) {
 		}
 		nonIterIn[edge.To][edge.From] = true
 	}
+	legacyCollectors := legacySingleFanImplicitCollectors(w, allIn, nonIterIn)
 	for id, node := range w.Nodes {
-		if !body[id] || !boundedIn[id] || NodeAwaitMode(node) != AwaitNone || len(allIn[id]) <= 1 || len(nonIterIn[id]) > 1 {
+		if !body[id] || !legacyCollectors[id] || !boundedIn[id] || NodeAwaitMode(node) != AwaitNone || len(allIn[id]) <= 1 || len(nonIterIn[id]) > 1 {
 			continue
 		}
 		c.warnfAt(DiagImplicitCollectorMove, id, "",
 			"node %q was previously elected as an implicit fan-out collector because a bounded back-edge counted as a second predecessor; it now executes once per branch (C246). Add await: wait_all/best_effort to the intended collector, or keep the bounded loop branch-local intentionally",
 			id)
 	}
+}
+
+// legacySingleFanImplicitCollectors reconstructs the narrow pre-branch-loop
+// election rule that C246 is meant to warn about. The old walk stopped on an
+// extra predecessor only for a router with one target, and never at that fan
+// target itself. Canonical multi-edge retries and fan_out_each template-head
+// loops were compile errors before this feature, so warning about a migration
+// there would be both false and actively misleading.
+func legacySingleFanImplicitCollectors(w *Workflow, allIn, nonIterIn map[string]map[string]bool) map[string]bool {
+	out := make(map[string][]string)
+	for _, edge := range w.Edges {
+		out[edge.From] = append(out[edge.From], edge.To)
+	}
+	collectors := make(map[string]bool)
+	for _, node := range w.Nodes {
+		router, ok := node.(*RouterNode)
+		if !ok || !routerSpawnsExecBranch(router) {
+			continue
+		}
+		var fan []*Edge
+		for _, edge := range w.Edges {
+			if edge.From == router.ID {
+				fan = append(fan, edge)
+			}
+		}
+		if len(fan) != 1 {
+			continue
+		}
+		target := fan[0].To
+		seen := make(map[string]bool)
+		var walk func(string)
+		walk = func(id string) {
+			if id == "" || seen[id] || w.Nodes[id] == nil {
+				return
+			}
+			seen[id] = true
+			if NodeAwaitMode(w.Nodes[id]) != AwaitNone || len(nonIterIn[id]) > 1 {
+				return
+			}
+			if id != target && len(allIn[id]) > 1 {
+				collectors[id] = true
+				return
+			}
+			for _, next := range out[id] {
+				walk(next)
+			}
+		}
+		walk(target)
+	}
+	return collectors
 }
 
 func hasSingleCommonBranchOwner(left, right map[string]bool) bool {
