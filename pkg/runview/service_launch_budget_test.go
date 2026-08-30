@@ -29,6 +29,14 @@ human gate:
   interaction: human
 
 workflow budget_demo:
+  ## This test runs from inside iterion, so the run's workspace root is the
+  ## repo itself and both defaults bite: worktree defaults to auto (a full
+  ## git checkout of iterion per run) and repo_devbox to on (realising
+  ## iterion's own devbox.json, which a cold Nix cache turns into minutes).
+  ## The test only reads the persisted budget snapshot, so it wants neither
+  ## — together they made its wait for the human pause a coin flip.
+  worktree: none
+  repo_devbox: off
   budget:
     max_cost_usd: 60
     max_tokens: 5000

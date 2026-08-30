@@ -227,8 +227,24 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o644) })
 	childID := ""
 	held := false
+	// Watch the dispatch goroutine while polling. The child blocks until the
+	// release file exists, so Dispatch returning here means it never reached
+	// the subbot node — and its error is the diagnosis. Without this the loop
+	// runs the deadline out and reports "no child appeared", which names the
+	// symptom while the cause sits unread in the channel (observed in CI:
+	// 60s burned, nothing actionable in the log).
+	var dispatchErr error
+	dispatched := false
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) && !held {
+		select {
+		case dispatchErr = <-done:
+			dispatched = true
+		default:
+		}
+		if dispatched {
+			break
+		}
 		ids, lerr := probe.ListRuns(context.Background())
 		if lerr != nil {
 			t.Fatalf("ListRuns: %v", lerr)
@@ -272,6 +288,9 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 	if err := os.WriteFile(release, []byte("go"), 0o644); err != nil {
 		t.Fatalf("write release file: %v", err)
 	}
+	if dispatched && childID == "" {
+		t.Fatalf("Dispatch returned before any child run appeared — the subbot node was never reached: %v", dispatchErr)
+	}
 	if childID == "" {
 		t.Fatal("never observed a child run — the subbot node did not spawn one")
 	}
@@ -279,8 +298,11 @@ func TestEngineRunner_SubbotChildHoldsRunLock(t *testing.T) {
 		t.Fatal("never caught the child mid-pass — its lock was never observed held while it was blocked on the release file")
 	}
 
-	if derr := <-done; derr != nil {
-		t.Fatalf("Dispatch: %v", derr)
+	if !dispatched {
+		dispatchErr = <-done
+	}
+	if dispatchErr != nil {
+		t.Fatalf("Dispatch: %v", dispatchErr)
 	}
 	lock, err := probe.LockRun(context.Background(), childID)
 	if err != nil {
