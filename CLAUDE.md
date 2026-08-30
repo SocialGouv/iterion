@@ -143,8 +143,11 @@ the same node: `claude_code` is the more stable and mature harness today;
 
 - A claw error, gap or limitation met in real use is a **claw-code-go
   backlog item, not a disqualification** — fix the harness, then re-judge
-  the model. (Known v1 gaps to burn down: MCP servers and mid-tool-loop
-  `ask_user` under the sandboxed `__claw-runner`; session resume parity.)
+  the model. (Known gap to burn down: session resume parity — `claw`
+  never reads `SessionID`, replaying from the run's own store. MCP
+  servers and mid-tool-loop `ask_user` under the sandboxed
+  `__claw-runner` shipped in V2-2/V2-3 — see
+  [docs/sandbox.md](docs/sandbox.md).)
 - Every engine-side capability wired for one of the two (credentials,
   fingerprinting/meters, permission gate, session resume, events) must be
   wired — or explicitly refused with a typed diagnostic — for the other.
