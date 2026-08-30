@@ -119,7 +119,12 @@ async function main() {
     if (/^v\d+\.md$/.test(entry)) await rm(join(ARCHIVE_DIR, entry))
   }
 
-  const archived = [...plainByMajor.keys()].filter(m => m < currentMajor).sort((a, b) => b - a)
+  // Everything that is not the current major is archived — `!==`, not `<`, so
+  // a checkout whose package.json TRAILS the newest tag (a branch forked
+  // before a release, a maintenance branch, a stale worktree) still writes
+  // those sections somewhere instead of dropping them on the floor with a
+  // zero exit code and a `total` below that contradicts it.
+  const archived = [...plainByMajor.keys()].filter(m => m !== currentMajor).sort((a, b) => b - a)
   for (const major of archived) {
     await writeFile(join(ARCHIVE_DIR, `v${major}.md`), archiveDoc(major, plainByMajor.get(major)))
   }
