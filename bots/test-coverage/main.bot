@@ -451,7 +451,10 @@ prompt plan_user:
   {{vars.target}}
 
   Test kinds in scope — unit: {{vars.test_unit}} · integration:
-  {{vars.test_integration}} · e2e: {{vars.test_e2e}}
+  {{vars.test_integration}} · e2e: {{vars.test_e2e}} · other kinds:
+  {{vars.extra_test_kinds}}
+  (all four empty/false = choose the kinds that fit the code and the
+  repo's conventions — the same contract the campaign is given.)
 
 prompt plan_review_system:
   You are a peer reviewer from a DIFFERENT model family, adversarially
