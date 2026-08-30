@@ -188,6 +188,12 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
 * **bots:** product-docs publication tail — skill-driven Onyxia deploy behind deterministic gates ([#533](https://github.com/SocialGouv/iterion/issues/533)) ([6e8e6ea](https://github.com/SocialGouv/iterion/commit/6e8e6eaf9be4a3a1d6654809e04079ff2716fd93))
 
+    <details><summary>why</summary>
+
+    publish_gate (opt-in + secrets pre-flight) -> publish agent loading the org-private deploy-onyxia-sspcloud skill explicitly (ADR-059 skills: ref) -> verify_publish (external URL truth gate, fails the run when the site is not serving) -> surface_site_link. French admonition titles in the GitBook->MkDocs converter.
+
+    </details>
+
 ## [3.67.0](https://github.com/SocialGouv/iterion/compare/v3.66.0...v3.67.0) (2026-08-27)
 
 ### Features
@@ -286,6 +292,12 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 ### Features
 
 * **backends:** cool down refused fallback routes ([#511](https://github.com/SocialGouv/iterion/issues/511)) ([c123f89](https://github.com/SocialGouv/iterion/commit/c123f89aa8d7706b68e112d9c9c5e33f0b20e485)), closes [#468](https://github.com/SocialGouv/iterion/issues/468)
+
+    <details><summary>why</summary>
+
+    Keep the typed usage-window cause reachable when a cooled primary is skipped and its fallback also fails. Surface proactive skips in the Studio timeline and clarify the reserved unavailable-reset path.
+
+    </details>
 
 ## [3.62.1](https://github.com/SocialGouv/iterion/compare/v3.62.0...v3.62.1) (2026-08-26)
 
@@ -436,6 +448,12 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     </details>
 * **feed-watch:** title the digest with its send date, window in the body ([3596683](https://github.com/SocialGouv/iterion/commit/359668383d7e8c681489c7865af23bc61e6d04eb)), references [#452](https://github.com/SocialGouv/iterion/issues/452) [#452](https://github.com/SocialGouv/iterion/issues/452)
+
+    <details><summary>why</summary>
+
+    PR #452 titled the WINDOW the queue covers ('Veille Cyber — 21 → 24 août') whenever span_days > 1 — factually honest, but a Monday reader gets a period headline for what is an ordinary digest whose feeds simply published late over the weekend (observed live: gopuyrust '30 juillet → 24 août' after two quota-dead Mondays). Operator arbitrage: the headline names digest_title + the send date ONLY; the anti-breaking spirit of #452 stays as one body clause ('covers the period since <oldest>') when…
+
+    </details>
 * **pipelines:** adopt finished recovery forks on the cloud board ([#379](https://github.com/SocialGouv/iterion/issues/379)) ([#502](https://github.com/SocialGouv/iterion/issues/502)) ([d538808](https://github.com/SocialGouv/iterion/commit/d53880868bd89ab7147773f32561fcb3282e7f8b))
 
     <details><summary>why</summary>
@@ -553,7 +571,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Adversarial review of the banking invariant found a reproducible false
+    Adversarial review of the banking invariant found a reproducible false refusal: tar cannot delete, so when a pod-side `git gc` / `pack-refs --all --prune` moves a ref into packed-refs, the export overlay leaves the host's pre-run LOOSE ref in place — and git resolves loose before packed, so the exported clone reads a pre-run HEAD while every object actually arrived. The guard then refuses work that is sitting right there (and before the guard existed, this exact shape was a SILENT loss — it…
 
     </details>
 
@@ -713,6 +731,12 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 ### Bug Fixes
 
 * **golden-master,modernize:** the adversarial review's findings — a ratchet for the standard, named refusals everywhere, and skills that say exactly what is checked ([a6d5b8f](https://github.com/SocialGouv/iterion/commit/a6d5b8f46589e50c79b8d77057de4fb7f3eb4f46))
+
+    <details><summary>why</summary>
+
+    H2: standard-mark makes a silent 3->2 downgrade a named refusal in both drift directions. M2/M3: malformed feature-coverage and mistyped seal opt-ins bail with their cause instead of a traceback or a silence. M1: holdout_awaiting_gate is a report field, not only a notice. H1/C1/B2: the skills now state exactly what the harness checks (union-level source labels), where the outcomes conjunction is enforced today (the campaign runner, not this graph — roadmap named), and that SSR stacks DO expose…
+
+    </details>
 * **golden-master:** a gate never seals a COMMITTED held-out set — it awaits its own gate ([26bd79a](https://github.com/SocialGouv/iterion/commit/26bd79a0798b6b0e953052a73492798158da0166))
 
     <details><summary>why</summary>
@@ -767,6 +791,12 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 ### Bug Fixes
 
 * **fleet:** fold Revi's advisory findings into the follow-ups ([#461](https://github.com/SocialGouv/iterion/issues/461)) ([2b7abab](https://github.com/SocialGouv/iterion/commit/2b7abab9ec43abad1531d35f5eff552dd5e17cac))
+
+    <details><summary>why</summary>
+
+    The bare `!third_party/codex-agent-sdk-go/.claude/` negation re-included the WHOLE subtree, not just the fork's committed `rules/`: the root-anchored `.claude/skills/` rule on line 145 does not reach that depth, so `…/.claude/skills/JUNK.md` and `…/.claude/settings.local.json` came back as untracked. That is exactly the runtime junk `**/.claude/` exists to stop, and the fork is an active work target whose campaign bots commit with `git add -A`.
+
+    </details>
 
 ## [3.50.0](https://github.com/SocialGouv/iterion/compare/v3.49.0...v3.50.0) (2026-08-19)
 
@@ -984,7 +1014,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Fifth pass. It overturns one of the fourth's fixes, which is the honest
+    Fifth pass. It overturns one of the fourth's fixes, which is the honest outcome: what round 4 removed as a false positive was the only thing standing between a self-contained clone and its own destruction.
 
     </details>
 * **clean:** git answers in absolute paths, and a store dir need not ([ec3f9cb](https://github.com/SocialGouv/iterion/commit/ec3f9cb5c7fe94c9a9aeaaf9735cd1d83dcd0da7))
@@ -1269,7 +1299,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    `commit_check` decided between the `committed` and `clean` verdicts from the shas alone. An unmoved head has two causes, though, and they are opposite
+    `commit_check` decided between the `committed` and `clean` verdicts from the shas alone. An unmoved head has two causes, though, and they are opposite verdicts: the bump genuinely needed no alignment, or `align` produced one that never reached the branch. Both are green under the old wiring, and `clean` is what the required check reports.
 
     </details>
 
@@ -1295,7 +1325,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Switch the feature-dev and whole-improve-loop campaign nodes from
+    Switch the feature-dev and whole-improve-loop campaign nodes from interaction: human to interaction: async (ADR-081) and rewrite mission item 5: on an ambiguous mission (or a self-picked axis), the campaign posts a teach-back via ask_user_async — the goal restated in its own words plus the load-bearing assumptions — and KEEPS WORKING under those stated assumptions; answers fold in mid-run via the message queue. The blocking ask_user stays reserved for genuine hard stops, and unanswered…
 
     </details>
 
@@ -1502,7 +1532,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    The matrix claimed completeness while nine operator-observable surfaces had no row at all — an omission is exactly what the inventory promise forbids. Six were already covered and only needed citing (bots install core, `bots templates`, plugin lifecycle run, /api/v1/pipeline-board, /api/v1/limits/cost, /api/backends/detect); three are real gaps now
+    The matrix claimed completeness while nine operator-observable surfaces had no row at all — an omission is exactly what the inventory promise forbids. Six were already covered and only needed citing (bots install core, `bots templates`, plugin lifecycle run, /api/v1/pipeline-board, /api/v1/limits/cost, /api/backends/detect); three are real gaps now visible: `iterion server` and `iterion runner` CLI boot, and /api/effort-capabilities (reached today only as a readiness probe that asserts nothing…
 
     </details>
 * **e2e-coverage:** repair eleven more mis-citations found by the second audit ([9ecb92b](https://github.com/SocialGouv/iterion/commit/9ecb92be2fd1d11e417551b30988aa1be223d260))
@@ -1523,14 +1553,14 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    The round-1 hardening was itself reviewed adversarially. The worst finding is a false positive, which in a blocking gate costs as much as a
+    The round-1 hardening was itself reviewed adversarially. The worst finding is a false positive, which in a blocking gate costs as much as a hole: the test-file regex required a slash on BOTH sides of tests/ and spec/, so a ROOT-level tests/ (Rust, pytest), spec/ (RSpec) or __tests__/ (Jest) was rejected — this gate would have refused the legitimate matrix of most non-Go repos and could never converge there.
 
     </details>
 * **e2e-coverage:** round-3 — the round-2 hardening had narrowed the gate to Go ([2e8d7a7](https://github.com/SocialGouv/iterion/commit/2e8d7a784afc5d6b0dc8849b5ac45346b0146a9c))
 
     <details><summary>why</summary>
 
-    Round 2 fixed a false positive and introduced two more, in the same
+    Round 2 fixed a false positive and introduced two more, in the same place: the gate had quietly narrowed to matrices whose citations look like Go test function names — which is this repo's shape and almost nobody else's.
 
     </details>
 * **e2e-coverage:** verify.sh must be overwritten and workspace-relative ([0af0da7](https://github.com/SocialGouv/iterion/commit/0af0da7b847e570cfcc917d0af2d694da7938c61))
@@ -1558,7 +1588,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Turn capture lived only in GenerateTextDirect. Every node declaring an
+    Turn capture lived only in GenerateTextDirect. Every node declaring an output: schema — which in iterion is most of them — runs through GenerateObjectDirect and so anchored NOTHING: no TurnCheckpoint, an empty per-node timeline, and `iterion fork` failing with "turn not found" on a run that had plainly executed. The Fork API and the timeline were effectively blind to the majority of claw nodes.
 
     </details>
 * **studio:** a workflow with no LLM nodes no longer crashes the Launch view ([457374d](https://github.com/SocialGouv/iterion/commit/457374dddc6b849acf17a36f1c5213c6f8e0aedd))
@@ -1834,7 +1864,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A run that owed a merge-gate status and died as failed_resumable was never reconciled — on the theory that it would resume. Only usage-window failures arm a retry; a budget-exceeded or exhausted run sat forever and its PR stayed silently unmergeable behind an absent required check (observed in production
+    A run that owed a merge-gate status and died as failed_resumable was never reconciled — on the theory that it would resume. Only usage-window failures arm a retry; a budget-exceeded or exhausted run sat forever and its PR stayed silently unmergeable behind an absent required check (observed in production 2026-08-03: Vetty run 019fc8e5 on SocialGouv/iterion#354).
 
     </details>
 
@@ -1950,7 +1980,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A gate previews a `file` value by fetching `GET /api/runs/{id}/attachments/{name}` — the descriptor's path is a host or sandbox bind-mount path and is not reachable from a browser (iterion#332, #336). So attachments only ever entered a run from a
+    A gate previews a `file` value by fetching `GET /api/runs/{id}/attachments/{name}` — the descriptor's path is a host or sandbox bind-mount path and is not reachable from a browser (iterion#332, #336). So attachments only ever entered a run from a PERSON: the launch form, a `file`-typed gate field, the 📎 button.
 
     </details>
 
@@ -2131,7 +2161,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A fixer that pushes moves the head, and the merge-gate status stays on the old one. A required check that is ABSENT is indistinguishable from one still
+    A fixer that pushes moves the head, and the merge-gate status stays on the old one. A required check that is ABSENT is indistinguishable from one still running: the pull request waits for a context that will never arrive, with every other check green and nothing pointing at why. That is the failure #322 was written for, and pushing commits creates it on purpose.
 
     </details>
 * **detect:** report pi, so the preference variable and the studio can see it ([a4be02b](https://github.com/SocialGouv/iterion/commit/a4be02b10dc0f8e153755e62c2fe86fd1d1e1045))
@@ -2145,7 +2175,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    only those. The default stays as it was, and that is the decision rather than
+    only those. The default stays as it was, and that is the decision rather than caution: a reviewer already leaves the developer in the middle (findings land, they choose what to act on, and a comment hands the work over whenever they want). Turning the hand-over automatic everywhere would take that arbitration from every developer on the repo to save one comment.
 
     </details>
 * **handoff:** a reviewer and a fixer cooperate without the engine naming either ([fc3e342](https://github.com/SocialGouv/iterion/commit/fc3e3423b396d9932ca66286d4cf92685da04756))
@@ -2309,7 +2339,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    The diagnostic that says "pi got no skills" was written and then never
+    The diagnostic that says "pi got no skills" was written and then never wired: piSkillArgs took a logger, both transports passed nil, and the failure it exists to report — the agent hunting for files its own prompt told it to load — stayed as silent as before. Both argv builders now carry the backend's logger, and the warning fires on the case that matters: the engine named skills and none of them resolved.
 
     </details>
 * **pi:** one --skill per skill, and make detection read what the run reads ([b56fbf3](https://github.com/SocialGouv/iterion/commit/b56fbf300ea55507ee36051cd1862f560a5a5f90))
@@ -2379,7 +2409,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Revi's high finding, and it is the root cause of the two patches before
+    Revi's high finding, and it is the root cause of the two patches before it: the guard verified `<workDir>/.iterion/.gitignore` no matter where the seed root actually landed. That file is best-effort, is deliberately never overwritten when the repo already tracks one, and says nothing about a root `--store-dir` put elsewhere under the worktree. So the check could pass while the credential sat somewhere it did not cover.
 
     </details>
 * **runtime:** back the sandbox scratch with a shared, persistent host dir ([#330](https://github.com/SocialGouv/iterion/issues/330)) ([9c8e0e2](https://github.com/SocialGouv/iterion/commit/9c8e0e2a278db652ede08ce3482fe553c8b4b01d))
@@ -2400,7 +2430,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A flat bundle source writes <stem>/SKILL.md, and MkdirAll succeeds happily on a <stem>/ the checkout already ships. Reporting that DIRECTORY as owned therefore vouched for whatever the target repo planted beside our
+    A flat bundle source writes <stem>/SKILL.md, and MkdirAll succeeds happily on a <stem>/ the checkout already ships. Reporting that DIRECTORY as owned therefore vouched for whatever the target repo planted beside our file: a repo committing .claude/skills/whats-next/evil.md (no SKILL.md, so nothing shadows) got the whole directory back on the owned list. Naming the one file we wrote cannot carry a sibling. Library skills had the identical shape and get the same treatment; the directory-form…
 
     </details>
 * **runtime:** plugin skills reach pi, and directory skills survive a resume ([65227b0](https://github.com/SocialGouv/iterion/commit/65227b04ffdfc2a41c247c45148a413ec167210a))
@@ -2454,7 +2484,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    /dev/shm defaults to 64 MB in a container, and the renderer blocks there rather than erroring. The symptom is not a crash but a page that never finishes
+    /dev/shm defaults to 64 MB in a container, and the renderer blocks there rather than erroring. The symptom is not a crash but a page that never finishes loading: the load event does not come, and the load ceiling fires while blaming the host's speed. Measured on a real runner — 240 seconds on the first page, instant on the same page locally.
 
     </details>
 * **server+studio:** show the paused node's instructions on review cards ([#326](https://github.com/SocialGouv/iterion/issues/326)) ([a46527d](https://github.com/SocialGouv/iterion/commit/a46527d1415e2e083e277a1e1bf8bbef77b1981b))
@@ -2699,12 +2729,6 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 ### Bug Fixes
 
 * make paused resumes reliable and compact run details ([#301](https://github.com/SocialGouv/iterion/issues/301)) ([876e847](https://github.com/SocialGouv/iterion/commit/876e8477c2c3063ecf60a90784ed8b7b92bbc2f6))
-
-    <details><summary>why</summary>
-
-    ---------
-
-    </details>
 
 ## [3.10.0](https://github.com/SocialGouv/iterion/compare/v3.9.1...v3.10.0) (2026-07-28)
 
