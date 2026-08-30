@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.77.1](https://github.com/SocialGouv/iterion/compare/v3.77.0...v3.77.1) (2026-08-30)
+
+### Bug Fixes
+
+* **changelog:** backfill the three releases the cutover skipped ([#584](https://github.com/SocialGouv/iterion/issues/584)) ([554db02](https://github.com/SocialGouv/iterion/commit/554db02117fb44f508744b0bed692cb99c1368c8)), references [#579](https://github.com/SocialGouv/iterion/issues/579)
+
+    <details><summary>why</summary>
+
+    v3.75.0, v3.75.1 and v3.76.0 shipped while #579 was open, so release-it still ran under `infile: false` and wrote nothing. CHANGELOG.md kept the snapshot taken at v3.74.1 and the v3.77.0 section landed straight on top of it — the only visible trace was a compare link reaching back to a version no section described.
+
+    </details>
+
 ## [3.77.0](https://github.com/SocialGouv/iterion/compare/v3.76.0...v3.77.0) (2026-08-30)
 
 ### Features
