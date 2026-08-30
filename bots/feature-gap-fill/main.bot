@@ -854,10 +854,11 @@ workflow feature_gap_fill:
   ## (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
   ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
   ## output on its back-edge, which would read a loop-entry-frozen value).
-  ## The back-edge BLANKS the plan-phase fields: node input is built
-  ## from the SELECTED incoming edges, so on re-entry this mapping is
-  ## the only source — and a stale pass-1 plan must not re-anchor later
-  ## passes (git log is the durable state there).
+  ## The back-edge BLANKS the plan-phase fields: forward-edge mappings
+  ## re-apply on every re-entry (outputs persist — a back-edge is an
+  ## OVERLAY, not a replacement of the head's whole input), and a stale
+  ## pass-1 plan would re-anchor later passes that must read `git log`
+  ## instead.
   gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
     fail_log: "{{outputs.gate.fail_log}}",
     plan: "", plan_critique: "", plan_responses: ""

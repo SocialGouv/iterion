@@ -24,6 +24,11 @@ var planPhaseBots = []string{
 	"e2e-coverage",
 }
 
+// planHandoffFields are the campaign_input fields the plan phase feeds.
+// They travel forward from plan_revise (or plan_gate on the skip path)
+// and must be blanked on the continuation back-edge.
+var planHandoffFields = []string{"plan", "plan_critique", "plan_responses"}
+
 // TestPlanPhaseWiring pins, per bot, the parts of the plan phase whose
 // silent loss would not fail compilation:
 //   - the plan_review / plan_review_policy vars (the launch resolver's
@@ -120,7 +125,18 @@ func TestPlanPhaseWiring(t *testing.T) {
 //  2. no two LOOP back-edges into `campaign` map the same key — a shared
 //     key lets the later-declared loop hijack it on every subsequent
 //     pass (app-dev's draft_feedback/fail_log split exists because of
-//     exactly this).
+//     exactly this);
+//  3. some LOOP back-edge into `campaign` BLANKS each plan-phase field,
+//     and none maps one to a non-empty value. Because the back-edge is
+//     an overlay and not a replacement, the forward
+//     `plan_revise -> campaign` mapping keeps re-applying on every
+//     re-entry, so dropping the blanks silently re-anchors pass 2+ on
+//     the stale pass-1 plan — which the campaign must not read (git log
+//     is the durable state there). Nothing else pins this: (1) only
+//     covers forward edges and (2) only rejects DUPLICATE keys.
+//     Deliberately "some", not "every": (2) forbids two back-edges from
+//     sharing a key, so on a bot with two of them (app-dev) exactly one
+//     can own the blanks.
 func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 	for _, bot := range planPhaseBots {
 		t.Run(bot, func(t *testing.T) {
@@ -145,13 +161,16 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 			}
 
 			loopKeyOwners := map[string]string{} // key -> "from(loop)"
+			planBlanked := map[string]bool{}     // plan field -> a back-edge blanks it
 			for _, e := range wf.Edges {
 				if e.To != "campaign" {
 					continue
 				}
 				mapped := map[string]bool{}
+				raw := map[string]string{}
 				for _, m := range e.With {
 					mapped[m.Key] = true
+					raw[m.Key] = m.Raw
 				}
 				if e.IsBoundedIteration() {
 					for k := range mapped {
@@ -161,6 +180,17 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 								bot, prev, owner, k)
 						}
 						loopKeyOwners[k] = owner
+					}
+					for _, f := range planHandoffFields {
+						if !mapped[f] {
+							continue
+						}
+						if raw[f] != "" {
+							t.Errorf("%s: loop back-edge %s -> campaign maps %q to %q, want the empty string — a continuation pass must read `git log`, not a stale plan",
+								bot, e.From, f, raw[f])
+							continue
+						}
+						planBlanked[f] = true
 					}
 					continue
 				}
@@ -174,6 +204,12 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 			if len(loopKeyOwners) == 0 {
 				t.Errorf("%s: no loop back-edge into campaign found — the continuation loop is gone?", bot)
 			}
+			for _, f := range planHandoffFields {
+				if !planBlanked[f] {
+					t.Errorf("%s: no loop back-edge into campaign blanks %q — plan_revise's forward mapping re-applies on every re-entry, so a continuation pass would re-anchor on the stale pass-1 plan",
+						bot, f)
+				}
+			}
 
 			// Declaration-order invariant: an UNTRAVERSED forward edge still
 			// contributes its mappings (every edge whose source has output
@@ -182,7 +218,10 @@ func TestPlanPhaseCampaignEdgeMappings(t *testing.T) {
 			// plan_gate's blanks both qualify when the phase is on — must be
 			// declared BEFORE plan_revise's edge, or its blanks clobber the
 			// revised plan on pass 1.
-			planFields := map[string]bool{"plan": true, "plan_critique": true, "plan_responses": true}
+			planFields := map[string]bool{}
+			for _, f := range planHandoffFields {
+				planFields[f] = true
+			}
 			reviseIdx := -1
 			for i, e := range wf.Edges {
 				if e.To == "campaign" && e.From == "plan_revise" {
