@@ -1439,6 +1439,11 @@ type Fallback struct {
 	Metered  bool     // the author's acknowledgement that this route spends a metered credential
 	Action   string   // "" = route; FallbackActionSkip = terminal degrade (zero-value output, loudly marked)
 	When     string   // optional expr over vars gating the route ("" = always active), evaluated at dispatch
+	// RunStage identifies this route's zero-based position in a launch-time
+	// fallback chain. RunStageSet distinguishes stage zero from authored
+	// routes; the compiler never sets either field.
+	RunStage    int
+	RunStageSet bool
 }
 
 // FallbackActionSkip is the `action: skip` terminal route: instead of

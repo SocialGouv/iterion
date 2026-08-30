@@ -120,12 +120,13 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
-	// Fallback is the operator's single run-level fallback route (the
-	// studio Launch row / CLI --fallback). It applies to agent nodes
-	// that declare no `fallbacks:` of their own, and never to judges —
+	// Fallback is the operator's ordered run-level fallback chain (the
+	// studio Launch row; a single CLI --fallback becomes a one-stage chain).
+	// It applies to agent nodes that declare no `fallbacks:` of their own,
+	// and never to judges —
 	// a weaker judge still emits a well-formed verdict, so a blanket
-	// launch setting must not reach one. Nil = none. See ADR-087.
-	Fallback *FallbackEntry
+	// launch setting must not reach one. Empty = none. See ADR-087.
+	Fallback []FallbackEntry
 	// Budget carries launch-time budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP equivalent of the CLI --max-cost-usd /
 	// --max-tokens / --max-duration / --max-iterations /
@@ -261,29 +262,31 @@ type ModelOverrideEntry struct {
 	Provider string `json:"provider,omitempty"`
 }
 
-// FallbackEntry is the wire form of the operator's run-level fallback
-// route. A single route rather than a per-node chain: the value is
-// "don't lose a long run to a forfait wall", which one alternative
-// delivers, and a per-node ordered list is unusable on a real bot.
+// FallbackEntry is one stage of the operator's ordered run-level
+// fallback chain.
 type FallbackEntry struct {
 	Backend  string `json:"backend,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
 }
 
-// toRunFallback folds the launch entry into an IR route. A nil or
-// targetless entry yields the zero value, which ApplyRunFallback treats
-// as "no run-level route".
-func toRunFallback(e *FallbackEntry) ir.Fallback {
-	if e == nil {
-		return ir.Fallback{}
+// toRunFallback folds launch entries into the IR chain. Targetless
+// entries stay in place so ApplyRunFallback can preserve stage indexes
+// while screening every stage independently.
+func toRunFallback(entries []FallbackEntry) []ir.Fallback {
+	if len(entries) == 0 {
+		return nil
 	}
-	return ir.Fallback{
-		Name:     ir.RunFallbackName,
-		Backend:  e.Backend,
-		Model:    e.Model,
-		Provider: e.Provider,
+	out := make([]ir.Fallback, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, ir.Fallback{
+			Name:     ir.RunFallbackName,
+			Backend:  e.Backend,
+			Model:    e.Model,
+			Provider: e.Provider,
+		})
 	}
+	return out
 }
 
 // toModelOverrides folds the launch entries into the engine's ModelOverrides.

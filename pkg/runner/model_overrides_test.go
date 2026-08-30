@@ -39,11 +39,20 @@ func TestModelOverridesFromMsg(t *testing.T) {
 // modelOverridesFromMsg. The Name is stamped here so every consumer
 // reports the route under the recognisable launch-route label.
 func TestRunFallbackFromMsg(t *testing.T) {
-	f := runFallbackFromMsg(&queue.RunFallback{Backend: "codex", Model: "gpt-5.5", Provider: "openai"})
-	if f.Name != ir.RunFallbackName || f.Backend != "codex" || f.Model != "gpt-5.5" || f.Provider != "openai" {
-		t.Fatalf("folded route = %+v, want the wire fields under the run-fallback label", f)
+	chain := runFallbackFromMsg(queue.RunFallback{
+		{Backend: "codex", Model: "gpt-5.5", Provider: "openai"},
+		{Backend: "claw", Model: "anthropic/claude-opus-5", Provider: "anthropic"},
+	})
+	if len(chain) != 2 {
+		t.Fatalf("folded chain = %+v, want two stages", chain)
 	}
-	if z := runFallbackFromMsg(nil); z.Name != "" || z.Backend != "" || z.Model != "" || z.Provider != "" {
-		t.Fatalf("nil wire route folded to %+v, want the zero route ApplyRunFallback ignores", z)
+	if f := chain[0]; f.Name != ir.RunFallbackName || f.Backend != "codex" || f.Model != "gpt-5.5" || f.Provider != "openai" {
+		t.Fatalf("first folded stage = %+v, want the first wire entry under the run-fallback label", f)
+	}
+	if f := chain[1]; f.Name != ir.RunFallbackName || f.Backend != "claw" || f.Model != "anthropic/claude-opus-5" || f.Provider != "anthropic" {
+		t.Fatalf("second folded stage = %+v, want order preserved", f)
+	}
+	if z := runFallbackFromMsg(nil); z != nil {
+		t.Fatalf("nil wire chain folded to %+v, want nil", z)
 	}
 }

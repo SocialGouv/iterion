@@ -1,10 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
@@ -105,12 +109,74 @@ type RunModelOverride struct {
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
 }
 
-// RunFallback is the persisted form of the launch's run-level fallback
-// route — the doc twin of queue.RunFallback.
-type RunFallback struct {
+// RunFallbackEntry is one persisted stage of the launch's run-level
+// fallback chain — the doc twin of queue.RunFallbackEntry.
+type RunFallbackEntry struct {
 	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
 	Model    string `json:"model,omitempty" bson:"model,omitempty"`
 	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
+// RunFallback is the ordered persisted chain. New JSON and BSON documents
+// encode it as an array; both decoders also promote the legacy single-object
+// representation to a one-stage chain.
+type RunFallback []RunFallbackEntry
+
+func (f *RunFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("store: empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("store: invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []RunFallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("store: decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry RunFallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: fallback must be an object or array")
+	}
+}
+
+// UnmarshalBSONValue keeps legacy single-route run documents readable while
+// the canonical representation is an array.
+func (f *RunFallback) UnmarshalBSONValue(typ byte, data []byte) error {
+	switch bson.Type(typ) {
+	case bson.TypeNull:
+		*f = nil
+		return nil
+	case bson.TypeArray:
+		var entries []RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entries); err != nil {
+			return fmt.Errorf("store: decode BSON fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case bson.TypeEmbeddedDocument:
+		var entry RunFallbackEntry
+		if err := bson.UnmarshalValue(bson.Type(typ), data, &entry); err != nil {
+			return fmt.Errorf("store: decode legacy BSON fallback: %w", err)
+		}
+		*f = []RunFallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("store: BSON fallback must be an object or array, got %s", bson.Type(typ))
+	}
 }
 
 // NodeServed is the (backend, model) that actually served one LLM node.
@@ -292,13 +358,13 @@ type Run struct {
 	// executor at launch, never re-read from here. Empty when none, and
 	// left untouched on resume (resume doesn't re-supply them).
 	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
-	// Fallback captures the launch-time run-level fallback route (CLI
+	// Fallback captures the launch-time run-level fallback chain (CLI
 	// `--fallback` / HTTP `fallback`) — the resume path's replay source,
 	// same doctrine as the budget ask: cloud resumes are often unattended
 	// auto-retries, so nothing else can re-state the route, and a dropped
 	// route silently strands the run on exactly the provider wall it was
 	// meant to escape.
-	Fallback *RunFallback `json:"fallback,omitempty" bson:"fallback,omitempty"`
+	Fallback RunFallback `json:"fallback,omitempty" bson:"fallback,omitempty"`
 	// NodesServed maps IR node id → last (backend, model) that served
 	// it. Display-only / post-hoc: makes a finished run self-describing
 	// without replaying events.jsonl. Empty for legacy runs and for

@@ -176,7 +176,7 @@ func TestRunFallbackRefusedWhenToolsCannotResolve(t *testing.T) {
 	if cr.HasErrors() {
 		t.Fatalf("fixture must compile clean: %+v", cr.Diagnostics)
 	}
-	refusals := ApplyRunFallback(cr.Workflow, Fallback{Backend: "claw", Model: "anthropic/claude-opus-5"})
+	refusals := ApplyRunFallback(cr.Workflow, []Fallback{{Backend: "claw", Model: "anthropic/claude-opus-5"}})
 	if len(refusals) != 1 {
 		t.Fatalf("want the route refused, got %v", refusals)
 	}
@@ -197,7 +197,7 @@ func TestRunFallbackRefusedWhenToolsCannotResolve(t *testing.T) {
 func TestRunFallbackAcceptedWhenToolsResolve(t *testing.T) {
 	cr := compileToolsSrc(t, toolsWorkflow(
 		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, bash]\n"))
-	if refusals := ApplyRunFallback(cr.Workflow, Fallback{Backend: "claw", Model: "anthropic/claude-opus-5"}); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(cr.Workflow, []Fallback{{Backend: "claw", Model: "anthropic/claude-opus-5"}}); len(refusals) != 0 {
 		t.Fatalf("a resolvable list must be accepted, got %v", refusals)
 	}
 	agent := cr.Workflow.Nodes["x"].(*AgentNode)
@@ -380,7 +380,7 @@ func TestMCPActivationBlockSoftensEvenLegacyNames(t *testing.T) {
 func TestRunFallbackNotRefusedOnUnrecognisedName(t *testing.T) {
 	cr := compileToolsSrc(t, toolsWorkflow(
 		"  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  tools: [read_file, firecrawl_search]\n"))
-	if refusals := ApplyRunFallback(cr.Workflow, Fallback{Backend: "claw", Model: "anthropic/claude-opus-5"}); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(cr.Workflow, []Fallback{{Backend: "claw", Model: "anthropic/claude-opus-5"}}); len(refusals) != 0 {
 		t.Fatalf("an unrecognised name must not drop the operator's route, got %v", refusals)
 	}
 }

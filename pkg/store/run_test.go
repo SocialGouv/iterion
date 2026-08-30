@@ -1,9 +1,51 @@
 package store
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 	"testing"
 )
+
+func TestRunFallbackJSONAcceptsObjectAndArray(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want RunFallback
+	}{
+		{
+			name: "legacy object",
+			raw:  `{"fallback":{"backend":"codex","model":"gpt-5.5"}}`,
+			want: RunFallback{{Backend: "codex", Model: "gpt-5.5"}},
+		},
+		{
+			name: "ordered array",
+			raw:  `{"fallback":[{"backend":"codex","model":"gpt-5.5"},{"backend":"claw","model":"openai/gpt-5.5"}]}`,
+			want: RunFallback{
+				{Backend: "codex", Model: "gpt-5.5"},
+				{Backend: "claw", Model: "openai/gpt-5.5"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var run Run
+			if err := json.Unmarshal([]byte(tc.raw), &run); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(run.Fallback, tc.want) {
+				t.Fatalf("fallback = %+v, want %+v", run.Fallback, tc.want)
+			}
+			blob, err := json.Marshal(run)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !bytes.Contains(blob, []byte(`"fallback":[`)) {
+				t.Fatalf("canonical fallback is not an array: %s", blob)
+			}
+		})
+	}
+}
 
 // sliceEq compares two string slices under the watched-issue helpers'
 // contract: a nil want means "must be exactly nil" (so the persisted

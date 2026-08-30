@@ -142,7 +142,7 @@ func buildResumeExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
-		RunFallback:     runFallback,
+		RunFallback:     []ir.Fallback{runFallback},
 		AutoMemory:      opts.AutoMemory,
 		// Same resolution the studio resume path uses, so the two surfaces
 		// key a bot's memory identically.

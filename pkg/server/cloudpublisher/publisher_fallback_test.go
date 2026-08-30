@@ -2,6 +2,7 @@ package cloudpublisher
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -37,7 +38,10 @@ func TestSubmitLaunchCarriesRunFallback(t *testing.T) {
 	spec := runview.LaunchSpec{
 		FilePath: "wf.bot",
 		Source:   "workflow wf:\n  start -> done\n",
-		Fallback: &runview.FallbackEntry{Backend: "codex", Model: "gpt-5.5"},
+		Fallback: []runview.FallbackEntry{
+			{Backend: "codex", Model: "gpt-5.5"},
+			{Backend: "claw", Model: "openai/gpt-5.5"},
+		},
 	}
 	if _, err := p.SubmitLaunch(ctx, "run-fb-1", spec, wf, "hash"); err != nil {
 		t.Fatalf("SubmitLaunch: %v", err)
@@ -45,15 +49,23 @@ func TestSubmitLaunchCarriesRunFallback(t *testing.T) {
 	if published == nil {
 		t.Fatal("nothing published")
 	}
-	if published.Fallback == nil || *published.Fallback != (queue.RunFallback{Backend: "codex", Model: "gpt-5.5"}) {
-		t.Fatalf("message fallback = %+v, want the launch route verbatim", published.Fallback)
+	wantQueue := queue.RunFallback{
+		{Backend: "codex", Model: "gpt-5.5"},
+		{Backend: "claw", Model: "openai/gpt-5.5"},
+	}
+	if !reflect.DeepEqual(published.Fallback, wantQueue) {
+		t.Fatalf("message fallback = %+v, want the launch chain verbatim", published.Fallback)
 	}
 	r, err := st.LoadRun(ctx, "run-fb-1")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	if r.Fallback == nil || r.Fallback.Backend != "codex" || r.Fallback.Model != "gpt-5.5" {
-		t.Fatalf("run doc fallback = %+v, want the route persisted for the resume replay", r.Fallback)
+	wantStore := store.RunFallback{
+		{Backend: "codex", Model: "gpt-5.5"},
+		{Backend: "claw", Model: "openai/gpt-5.5"},
+	}
+	if !reflect.DeepEqual(r.Fallback, wantStore) {
+		t.Fatalf("run doc fallback = %+v, want the chain persisted for the resume replay", r.Fallback)
 	}
 }
 
@@ -96,7 +108,10 @@ func TestSubmitResumeReplaysRunDocFallback(t *testing.T) {
 		TenantID: "team-a",
 		OwnerID:  "u1",
 		Status:   store.RunStatusFailedResumable,
-		Fallback: &store.RunFallback{Backend: "codex", Model: "gpt-5.5"},
+		Fallback: store.RunFallback{
+			{Backend: "codex", Model: "gpt-5.5"},
+			{Backend: "claw", Model: "openai/gpt-5.5"},
+		},
 	}); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -116,7 +131,11 @@ func TestSubmitResumeReplaysRunDocFallback(t *testing.T) {
 	if published == nil {
 		t.Fatal("nothing published")
 	}
-	if published.Fallback == nil || *published.Fallback != (queue.RunFallback{Backend: "codex", Model: "gpt-5.5"}) {
-		t.Fatalf("resume fallback = %+v, want the launch route replayed from the run doc — the auto-retry after a usage-window park is exactly the publication that must still carry the rescue", published.Fallback)
+	want := queue.RunFallback{
+		{Backend: "codex", Model: "gpt-5.5"},
+		{Backend: "claw", Model: "openai/gpt-5.5"},
+	}
+	if !reflect.DeepEqual(published.Fallback, want) {
+		t.Fatalf("resume fallback = %+v, want the launch chain replayed from the run doc — the auto-retry after a usage-window park is exactly the publication that must still carry the rescue", published.Fallback)
 	}
 }

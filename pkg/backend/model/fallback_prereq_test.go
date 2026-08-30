@@ -136,17 +136,19 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 	if hooks.OnProviderFallback == nil {
 		t.Fatal("OnProviderFallback is not wired into the store hooks")
 	}
+	firstStage, secondStage := 0, 1
 	hooks.OnProviderFallback("implement", ProviderFallbackInfo{
-		BackendName: delegate.BackendClaudeCode,
-		FromBackend: delegate.BackendClaudeCode,
-		ToBackend:   delegate.BackendClaw,
-		FromModel:   "claude-opus-5",
-		ToModel:     "openai/gpt-5.5",
-		From:        "anthropic",
-		To:          "openai",
-		Reason:      string(delegate.FallbackUsageWindow),
-		Attempts:    1,
-		Err:         usageWindowErr(),
+		BackendName:   delegate.BackendClaudeCode,
+		FromBackend:   delegate.BackendClaudeCode,
+		ToBackend:     delegate.BackendClaw,
+		FromModel:     "claude-opus-5",
+		ToModel:       "openai/gpt-5.5",
+		From:          "anthropic",
+		To:            "openai",
+		Reason:        string(delegate.FallbackUsageWindow),
+		Attempts:      1,
+		FallbackIndex: &firstStage,
+		Err:           usageWindowErr(),
 	})
 	reset := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
 	hooks.OnProviderFallback("implement-next", ProviderFallbackInfo{
@@ -159,6 +161,7 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 		To:            "openai",
 		Reason:        string(delegate.FallbackUsageWindow),
 		Attempts:      0,
+		FallbackIndex: &secondStage,
 		Cooldown:      true,
 		CooldownUntil: reset,
 	})
@@ -179,6 +182,9 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 	}
 	if found.NodeID != "implement" {
 		t.Errorf("node_id = %q, want implement", found.NodeID)
+	}
+	if got := found.Data["fallback_index"]; got != float64(0) && got != 0 {
+		t.Errorf("fallback_index = %v, want 0", got)
 	}
 	for key, want := range map[string]any{
 		"from_backend": delegate.BackendClaudeCode,
@@ -215,5 +221,8 @@ func TestModelFallbackEventReachesStore(t *testing.T) {
 	}
 	if got := cooldown.Data["attempts"]; got != float64(0) && got != 0 {
 		t.Errorf("attempts = %v, want 0", got)
+	}
+	if got := cooldown.Data["fallback_index"]; got != float64(1) && got != 1 {
+		t.Errorf("fallback_index = %v, want 1", got)
 	}
 }

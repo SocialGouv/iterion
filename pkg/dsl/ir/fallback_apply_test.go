@@ -33,7 +33,7 @@ func TestApplyRunFallback_ReachesEligibleAgent(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	if refusals := ApplyRunFallback(w, runRoute()); len(refusals) != 0 {
+	if refusals := ApplyRunFallback(w, []Fallback{runRoute()}); len(refusals) != 0 {
 		t.Fatalf("unexpected refusals: %v", refusals)
 	}
 	if len(agent.Fallbacks) != 1 || agent.Fallbacks[0].Name != RunFallbackName {
@@ -52,7 +52,7 @@ func TestApplyRunFallback_NeverReachesJudges(t *testing.T) {
 	judge := applyJudge("gate", "claude_code")
 	w := &Workflow{Nodes: map[string]Node{"gate": judge}}
 
-	ApplyRunFallback(w, runRoute())
+	ApplyRunFallback(w, []Fallback{runRoute()})
 	if len(judge.Fallbacks) != 0 {
 		t.Errorf("the run-level route reached a judge: %+v", judge.Fallbacks)
 	}
@@ -67,7 +67,7 @@ func TestApplyRunFallback_AuthoredRoutesWin(t *testing.T) {
 	})
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	ApplyRunFallback(w, runRoute())
+	ApplyRunFallback(w, []Fallback{runRoute()})
 	if len(agent.Fallbacks) != 1 {
 		t.Errorf("run-level route appended past an authored chain: %+v", agent.Fallbacks)
 	}
@@ -82,7 +82,7 @@ func TestApplyRunFallback_RefusesUngatedRoute(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "deny", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "codex", Model: "gpt-5.4"})
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}})
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "UNGATED") {
 		t.Fatalf("expected an ungated-crossing refusal, got %v", refusals)
 	}
@@ -102,7 +102,7 @@ func TestApplyRunFallback_RefusesUngatedRouteFromWorkflowGate(t *testing.T) {
 		Nodes:      map[string]Node{"work": agent},
 	}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "codex", Model: "gpt-5.4"})
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "codex", Model: "gpt-5.4"}})
 	if len(refusals) != 1 {
 		t.Fatalf("a workflow-level gate must refuse the same crossing, got %v", refusals)
 	}
@@ -116,7 +116,7 @@ func TestApplyRunFallback_RefusesToolsInversion(t *testing.T) {
 	agent := applyAgent("work", "claw", "", nil, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "claude_code", Model: "claude-opus-5"})
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claude_code", Model: "claude-opus-5"}})
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "un-restricts") {
 		t.Fatalf("expected a tools-inversion refusal, got %v", refusals)
 	}
@@ -131,7 +131,7 @@ func TestApplyRunFallback_RefusesBackendWithoutModel(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
 
-	refusals := ApplyRunFallback(w, Fallback{Backend: "claw"})
+	refusals := ApplyRunFallback(w, []Fallback{{Backend: "claw"}})
 	if len(refusals) != 1 || !strings.Contains(refusals[0], "no model") {
 		t.Fatalf("expected a missing-model refusal, got %v", refusals)
 	}
@@ -144,7 +144,7 @@ func TestApplyRunFallback_RefusesBackendWithoutModel(t *testing.T) {
 func TestApplyRunFallback_VisibleToPreRunAnalyses(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
-	ApplyRunFallback(w, runRoute())
+	ApplyRunFallback(w, []Fallback{runRoute()})
 
 	llm, ok := w.Nodes["work"].(LLMNode)
 	if !ok {
@@ -159,11 +159,53 @@ func TestApplyRunFallback_VisibleToPreRunAnalyses(t *testing.T) {
 func TestApplyRunFallback_NoRouteIsANoOp(t *testing.T) {
 	agent := applyAgent("work", "claude_code", "", nil, nil)
 	w := &Workflow{Nodes: map[string]Node{"work": agent}}
-	if refusals := ApplyRunFallback(w, Fallback{}); refusals != nil {
+	if refusals := ApplyRunFallback(w, nil); refusals != nil {
 		t.Errorf("an empty route must do nothing, got %v", refusals)
 	}
 	if len(agent.Fallbacks) != 0 {
 		t.Error("an empty route attached something")
+	}
+}
+
+func TestApplyRunFallback_PreservesStageOrder(t *testing.T) {
+	agent := applyAgent("work", "claude_code", "", []string{"read_file"}, nil)
+	w := &Workflow{Nodes: map[string]Node{"work": agent}}
+	routes := []Fallback{
+		{Backend: "claw", Model: "openai/gpt-5.5"},
+		{Backend: "claw", Model: "anthropic/claude-opus-5"},
+	}
+
+	if refusals := ApplyRunFallback(w, routes); len(refusals) != 0 {
+		t.Fatalf("unexpected refusals: %v", refusals)
+	}
+	if len(agent.Fallbacks) != 2 {
+		t.Fatalf("fallbacks = %+v, want two stages", agent.Fallbacks)
+	}
+	if agent.Fallbacks[0].Model != routes[0].Model || agent.Fallbacks[1].Model != routes[1].Model {
+		t.Fatalf("fallback order = %+v, want %+v", agent.Fallbacks, routes)
+	}
+	if !agent.Fallbacks[0].RunStageSet || agent.Fallbacks[0].RunStage != 0 || agent.Fallbacks[1].RunStage != 1 {
+		t.Fatalf("fallback stage indexes = %+v, want 0 then 1", agent.Fallbacks)
+	}
+}
+
+func TestApplyRunFallback_RefusedStageDoesNotStopChain(t *testing.T) {
+	agent := applyAgent("work", "claude_code", "deny", []string{"read_file"}, nil)
+	w := &Workflow{Nodes: map[string]Node{"work": agent}}
+	routes := []Fallback{
+		{Backend: "codex", Model: "gpt-5.4"},
+		{Backend: "claw", Model: "openai/gpt-5.5"},
+	}
+
+	refusals := ApplyRunFallback(w, routes)
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "stage 1") || !strings.Contains(refusals[0], "UNGATED") {
+		t.Fatalf("refusals = %v, want the first stage refused explicitly", refusals)
+	}
+	if len(agent.Fallbacks) != 1 || agent.Fallbacks[0].Model != routes[1].Model {
+		t.Fatalf("fallbacks = %+v, want the accepted second stage", agent.Fallbacks)
+	}
+	if !agent.Fallbacks[0].RunStageSet || agent.Fallbacks[0].RunStage != 1 {
+		t.Fatalf("accepted stage index = %+v, want original index 1", agent.Fallbacks[0])
 	}
 }
 

@@ -274,8 +274,10 @@ const (
 	// Data keys: from_backend, to_backend, from_model, to_model,
 	// from_provider, to_provider (the credential hints, "" = auto),
 	// reason (delegate.FallbackCategory), attempts (budget spent on the
-	// failed element), error. A reactive skip additionally carries cooldown
-	// (true) and cooldown_until, with attempts=0 and no error.
+	// failed element), error. A launch-time run fallback also carries
+	// fallback_index (its zero-based destination stage). A reactive skip
+	// additionally carries cooldown (true) and cooldown_until,
+	// with attempts=0 and no error.
 	//
 	// This is the record that a fallback *chain* fired. Proxy / env
 	// overrides that rewrite the model without changing backend are

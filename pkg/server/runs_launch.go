@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -107,11 +109,12 @@ type launchRunRequest struct {
 	// See runview.ModelOverrideEntry. The current queue contract carries them
 	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
-	// Fallback is the operator's single run-level fallback route, taken
-	// when an agent node's primary fails. It applies only to agent nodes
-	// that declare no `fallbacks:` of their own and never to judges.
+	// Fallback is the operator's ordered run-level fallback chain, taken
+	// when an agent node's primary or preceding stage fails. It applies only
+	// to agent nodes that declare no `fallbacks:` of their own and never to judges.
+	// A single object is promoted to a one-stage chain for compatibility.
 	// Omitted = none. See ADR-087.
-	Fallback *runview.FallbackEntry `json:"fallback,omitempty"`
+	Fallback launchFallback `json:"fallback,omitempty"`
 	// Budget carries run-level budget-cap overrides for the workflow's
 	// `budget:` block — the HTTP twin of the CLI --max-* flags. Non-zero
 	// fields win over the DSL/recipe budget; zero fields inherit. A bad
@@ -156,6 +159,41 @@ type launchRunRequest struct {
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// launchFallback accepts the original single-object request and the ordered
+// array form. Its default JSON marshaler always emits the canonical array.
+type launchFallback []runview.FallbackEntry
+
+func (f *launchFallback) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+	if len(raw) == 0 {
+		return fmt.Errorf("empty fallback JSON")
+	}
+	switch raw[0] {
+	case 'n':
+		if !bytes.Equal(raw, []byte("null")) {
+			return fmt.Errorf("invalid fallback JSON %q", raw)
+		}
+		*f = nil
+		return nil
+	case '[':
+		var entries []runview.FallbackEntry
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return fmt.Errorf("decode fallback chain: %w", err)
+		}
+		*f = entries
+		return nil
+	case '{':
+		var entry runview.FallbackEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return fmt.Errorf("decode legacy fallback: %w", err)
+		}
+		*f = []runview.FallbackEntry{entry}
+		return nil
+	default:
+		return fmt.Errorf("fallback must be an object or array")
+	}
 }
 
 // launchBudgetSpec is the wire shape of launchRunRequest.Budget. Field
