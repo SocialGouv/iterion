@@ -113,6 +113,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 					SelectedIncoming: map[string][]store.IncomingEdge{
 						"gate": {{From: "work", To: "gate", Condition: "ready"}},
 					},
+					CostUSD:        1.25,
 					ResumeAnswers:  map[string]any{"approved": true},
 					ResumeAnswered: true,
 				},
@@ -142,6 +143,12 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if len(branch.SelectedIncoming["gate"]) != 1 || branch.SelectedIncoming["gate"][0].Condition != "ready" || branch.ResumeAnswers["approved"] != true || !branch.ResumeAnswered {
 		t.Fatalf("branch nested state after round-trip = %+v", branch)
+	}
+	// The daily-cap ledger key is monotonic-max and process-local sequence
+	// numbers restart on resume, so the branch's cumulative spend must survive
+	// the round-trip or the resumed pass's cost is silently discarded.
+	if branch.CostUSD != 1.25 {
+		t.Fatalf("branch cost after round-trip = %v, want 1.25", branch.CostUSD)
 	}
 }
 

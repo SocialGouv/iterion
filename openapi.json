@@ -126,6 +126,9 @@
           "completed": {
             "type": "boolean"
           },
+          "cost_usd": {
+            "type": "number"
+          },
           "current_node_id": {
             "type": "string"
           },

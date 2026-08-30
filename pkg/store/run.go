@@ -905,6 +905,12 @@ type BranchCheckpoint struct {
 	TerminalNodeID     string                        `json:"terminal_node_id,omitempty" bson:"terminal_node_id,omitempty"`
 	Completed          bool                          `json:"completed,omitempty" bson:"completed,omitempty"`
 	TerminatedAtDone   bool                          `json:"terminated_at_done,omitempty" bson:"terminated_at_done,omitempty"`
+	// CostUSD is this branch's cumulative LLM spend for the current
+	// invocation. The daily spend cap records per-branch spend under a
+	// monotonic-max ledger key, so a resumed branch must restart its
+	// accumulator from the persisted total rather than from zero —
+	// otherwise the post-resume nodes' spend is max()'d away.
+	CostUSD float64 `json:"cost_usd,omitempty" bson:"cost_usd,omitempty"`
 	// ResumeAnswers is populated transiently from the answered interaction.
 	// It is persisted before the resumed runner is claimed, so another crash
 	// in that window still has the answer needed to finish the human node.

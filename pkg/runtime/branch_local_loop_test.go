@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/clock"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -1145,5 +1146,85 @@ func TestFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 	defer mu.Unlock()
 	if workCalls["a"] == 0 || workCalls["b"] == 0 {
 		t.Fatalf("work calls = %#v, want both branches to complete", workCalls)
+	}
+}
+
+// TestBranchDailyCapLedgerSurvivesResume proves a branch that pauses at a
+// human gate and resumes contributes BOTH passes' spend to the daily cap.
+// The ledger key is "<runID>#<branchID>#<seq>" and AddSpend keeps the
+// monotonic MAX per key; branchLedgerSeq is process-local and restarts at
+// zero on a fresh engine, so the resumed branch re-uses its pre-pause key.
+// With branch-local cursors the resumed pass executes only the nodes after
+// the gate, so an accumulator restarting at zero would be max()'d away and
+// every post-resume dollar would vanish from the cap.
+func TestBranchDailyCapLedgerSurvivesResume(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Nodes["gate"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
+	for _, edge := range wf.Edges {
+		if edge.From == "work" && edge.To == "judge" {
+			edge.To = "gate"
+		}
+	}
+	wf.Edges = append(wf.Edges, &ir.Edge{From: "gate", To: "judge", With: []*ir.DataMapping{{
+		Key:  "id",
+		Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"dispatch", "item", "id"}, Raw: "{{outputs.dispatch.item.id}}"}},
+		Raw:  "{{outputs.dispatch.item.id}}",
+	}}})
+
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "_cost_usd": 2.0}, nil
+	})
+	exec.on("judge", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"id": input["id"], "again": false, "_cost_usd": 3.0}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	runStore := tmpStore(t)
+	// The cap is far above the run's spend: this test measures the ledger,
+	// not the pause decision.
+	guard := NewDailyCapGuard(store.AsSpendStore(runStore), clock.Default, DailyCapConfig{MaxCostPerDayUSD: 100})
+	if guard == nil {
+		t.Fatal("expected a non-nil daily-cap guard")
+	}
+	ctx := context.Background()
+	runID := "branch-daily-cap-resume"
+
+	eng := New(wf, runStore, exec, WithDailyCap(guard))
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("first run = %v, want ErrRunPaused", err)
+	}
+	st, err := guard.Status(ctx)
+	if err != nil {
+		t.Fatalf("status before resume: %v", err)
+	}
+	if st.SpentUSD != 2.0 {
+		t.Fatalf("spend before resume = %v, want 2", st.SpentUSD)
+	}
+
+	run, err := runStore.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := run.Checkpoint.Parallel.Branches["branch_dispatch_0"]
+	if branch == nil || branch.CostUSD != 2.0 {
+		t.Fatalf("durable branch cursor = %+v, want CostUSD=2", branch)
+	}
+
+	// A fresh engine restarts branchLedgerSeq at zero, so the resumed branch
+	// writes the same ledger key its pre-pause pass used.
+	eng = New(wf, runStore, exec, WithDailyCap(guard))
+	if err := eng.Resume(ctx, runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	st, err = guard.Status(ctx)
+	if err != nil {
+		t.Fatalf("status after resume: %v", err)
+	}
+	if st.SpentUSD != 5.0 {
+		t.Fatalf("spend after resume = %v, want 5 (the resumed pass must add to the cap, not be max()'d away)", st.SpentUSD)
 	}
 }

@@ -582,6 +582,7 @@ func cloneBranchCheckpoint(src *store.BranchCheckpoint) *store.BranchCheckpoint 
 		TerminalNodeID:     src.TerminalNodeID,
 		Completed:          src.Completed,
 		TerminatedAtDone:   src.TerminatedAtDone,
+		CostUSD:            src.CostUSD,
 		ResumeAnswers:      deepCopyAnyMap(src.ResumeAnswers),
 		ResumeAnswered:     src.ResumeAnswered,
 	}

@@ -522,15 +522,30 @@ func execBranchNodeOwners(w *Workflow) map[string]map[string]bool {
 			}
 		}
 		convergence := execBranchConvergencePoint(w, fanEdges)
+		// fan_out_all takes every outgoing edge without evaluating its
+		// condition and fan_out_each takes its single template edge, so their
+		// run-time edge set is exactly the declared one and the collector
+		// above is the collector execBranch stops at. An llm-multi router
+		// dispatches only the subset the model selected, and findConvergencePoint
+		// walks that subset, so it can elect an EARLIER collector than the
+		// declared set does — a cycle the full-set walk sees as branch-local
+		// would then straddle the executed collector. Bound each llm-multi
+		// branch by the boundary its own edge elects alone (the case where the
+		// model selects only that edge): the smallest, hence sound, ownership.
+		perEdgeBoundary := router.RouterMode == RouterLLM && router.RouterMulti
 		for _, edge := range fanEdges {
 			if edge.From != router.ID {
 				continue
+			}
+			boundary := convergence
+			if perEdgeBoundary {
+				boundary = execBranchConvergencePoint(w, []*Edge{edge})
 			}
 			owner := router.ID + "/" + edge.To
 			seen := make(map[string]bool)
 			var walk func(string)
 			walk = func(id string) {
-				if id == "" || seen[id] || id == convergence || w.Nodes[id] == nil {
+				if id == "" || seen[id] || id == boundary || w.Nodes[id] == nil {
 					return
 				}
 				seen[id] = true

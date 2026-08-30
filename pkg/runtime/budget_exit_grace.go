@@ -94,7 +94,9 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// (the same reason predictive loop pricing is disabled there).
 	// Refused branches surface as budget_exceeded events and failed
 	// branch results; wait_all fails the run, best_effort tolerates them
-	// by declaration.
+	// by declaration. The wait_all death keeps the ErrBudgetExceeded
+	// sentinel (processConvergence) so it reads as BUDGET_EXCEEDED to the
+	// operator and as terminal to the cloud runner's ack carve-out.
 	if !e.loopBudgetGuardEnabled() || rs.branchLocal {
 		return "", false
 	}

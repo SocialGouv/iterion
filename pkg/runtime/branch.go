@@ -40,6 +40,10 @@ type branchResult struct {
 	// fired into each node it executed (or the join it stopped at).
 	// Concurrent branches must not write the trunk runState map.
 	selectedIncoming map[string][]store.IncomingEdge
+	// costUSD is the branch's cumulative LLM spend for this invocation,
+	// seeded from the durable branch cursor so a resumed pass keeps
+	// growing the same monotonic-max daily-cap ledger entry.
+	costUSD float64
 }
 
 // errBranchPauseDeferred marks a branch that reached a human gate after a
@@ -80,14 +84,17 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	}
 	runID := rs.runID
 
-	// branchCostUSD is this branch's cumulative LLM spend, recorded into the
+	// result.costUSD is this branch's cumulative LLM spend, recorded into the
 	// shared daily-cap ledger under ledgerKey. The key carries a per-invocation
 	// sequence ("<runID>#<branchID>#<seq>") so concurrent branches don't
 	// clobber each other's monotonic-max entry AND a fan-out re-run inside a
 	// loop gets a fresh key each iteration (branchID alone repeats across
 	// iterations, which would make the monotonic-max keep only the costliest
-	// one instead of summing) — see recordBranchUsage.
-	var branchCostUSD float64
+	// one instead of summing) — see recordBranchUsage. branchLedgerSeq is
+	// process-local and restarts at zero on resume, so a resumed branch
+	// re-uses its pre-pause key; initBranchResult seeds the accumulator from
+	// the durable cursor so the monotonic-max entry keeps growing instead of
+	// discarding everything the resumed pass spent.
 	ledgerKey := fmt.Sprintf("%s#%s#%d", runID, branchID, rs.branchLedgerSeq.Add(1))
 
 	// Emit branch_started (best-effort — branch can proceed without the event).
@@ -220,7 +227,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		}
 		branchRS.outputs[currentNodeID] = output
 
-		if e.recordBranchUsage(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, output, &branchCostUSD, result) {
+		if e.recordBranchUsage(ctx, branchRS, runID, branchID, ledgerKey, currentNodeID, output, &result.costUSD, result) {
 			return result
 		}
 		if parallel.isRetired() {
@@ -288,6 +295,7 @@ func initBranchResult(rs *runState, branchID string, cp *store.BranchCheckpoint)
 		if incoming := cloneIncoming(cp.SelectedIncoming); incoming != nil {
 			result.selectedIncoming = incoming
 		}
+		result.costUSD = cp.CostUSD
 	}
 	return result
 }
@@ -336,6 +344,7 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 		TerminalNodeID:     result.terminalNodeID,
 		Completed:          completed,
 		TerminatedAtDone:   result.terminatedAtDone,
+		CostUSD:            result.costUSD,
 	}
 }
 

@@ -5024,6 +5024,7 @@ export interface components {
             };
             branch_id: string;
             completed?: boolean;
+            cost_usd?: number;
             current_node_id?: string;
             join_node_id?: string;
             loop_budget_marks?: {

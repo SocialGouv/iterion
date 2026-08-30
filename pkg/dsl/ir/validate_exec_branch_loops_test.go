@@ -863,3 +863,101 @@ workflow test:
 	r := compileFile(t, src)
 	expectNoDiag(t, r, DiagLoopInExecBranch)
 }
+
+// An llm-multi router dispatches only the edges the model selected, and the
+// runtime elects its collector from that narrower set. Here the declared set
+// elects `join` (reached first from a1), which would put the mid/head cycle
+// wholly inside the a2 branch — but when the model selects a2 ALONE the
+// runtime elects `mid`, whose await makes it the collector, and the cycle
+// straddles it. C244 must bound each llm-multi branch by the collector its own
+// edge can elect, so this shape is rejected rather than silently accepted for
+// one selection and broken for another.
+func TestValidateLoopStraddlingLLMMultiPerEdgeCollector_Rejected(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool head:
+  command: ` + "`echo`" + `
+  output: s
+
+tool mid:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+router r1:
+  mode: llm
+  model: "test-model"
+  multi: true
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> head
+  head -> mid
+  mid -> head as spin(3) when ok
+  mid -> join else
+  join -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagLoopInExecBranch)
+}
+
+// The same shape under fan_out_all stays legal: that router dispatches EVERY
+// declared edge without evaluating a condition, so the collector the compiler
+// elects is the collector execBranch stops at — there is no narrower run-time
+// edge set to diverge from.
+func TestValidateLoopBeforeNonElectedAwaitInFanOutAll_Allowed(t *testing.T) {
+	src := execBranchLoopPrompts + `
+tool a1:
+  command: ` + "`echo`" + `
+  output: s
+
+tool a2:
+  command: ` + "`echo`" + `
+  output: s
+
+tool head:
+  command: ` + "`echo`" + `
+  output: s
+
+tool mid:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+router r1:
+  mode: fan_out_all
+
+tool join:
+  command: ` + "`echo`" + `
+  output: s
+  await: wait_all
+
+workflow test:
+  entry: r1
+  r1 -> a1
+  r1 -> a2
+  a1 -> join
+  a2 -> head
+  head -> mid
+  mid -> head as spin(3) when ok
+  mid -> join else
+  join -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagLoopInExecBranch)
+}
