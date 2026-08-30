@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.77.0](https://github.com/SocialGouv/iterion/compare/v3.76.0...v3.77.0) (2026-08-30)
+
+### Features
+
+* **release:** commit a CHANGELOG.md fed by release-it, with commit-body context ([#579](https://github.com/SocialGouv/iterion/issues/579)) ([501ef49](https://github.com/SocialGouv/iterion/commit/501ef498efc34bdd0e87e6686fb5eec0062c4c6c))
+
+    <details><summary>why</summary>
+
+    The conventional-changelog plugin ran with `infile: false`, so 264 releases of notes existed only on the GitHub releases page. `infile` settles the drift objection that deferred the file: release-it writes the section in `beforeRelease` and stages it with `git add . --update`, so it lands in the release commit itself and cannot diverge from the tags.
+
+    </details>
+
 ## [3.74.1](https://github.com/SocialGouv/iterion/compare/v3.74.0...v3.74.1) (2026-08-29)
 
 ### Bug Fixes
