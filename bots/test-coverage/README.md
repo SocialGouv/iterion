@@ -30,6 +30,8 @@ doctrine.
 | `baseline` | no | `""` | Known pre-existing failures to SKIP (empty = cheap stash-check once). |
 | `max_passes` | no | `8` | Continuation-loop cap. |
 | `workspace_dir` | no | `${PROJECT_DIR}` | Workspace root (resolves to the run worktree under `worktree: auto` — do not override). |
+| `plan_review` | no | `auto` | Cross-model plan phase: `auto` resolves at launch from the run's credentials; `on` / `off` force it — see below. |
+| `plan_review_policy` | no | `skip` | Mid-run peer failure: `skip` proceeds unreviewed, `wait` parks the run — see below. |
 
 When **no** test type is checked and `extra_test_kinds` is empty (the default),
 Testy chooses the types that fit the code and the repo's conventions.
@@ -37,6 +39,11 @@ Testy chooses the types that fit the code and the repo's conventions.
 ## Shape (v2 — one agent, minimal framing)
 
 ```
+plan_topology → campaign                        when the plan phase is off
+plan_topology → plan → plan_review → plan_gate  when it is on
+plan_gate     → plan_revise → campaign          peer served
+plan_gate     → campaign                        peer skipped (unreviewed plan)
+
 campaign → verify_build → verify_run → gate
 gate → done            when converged (suite green AND new test code AND coverage_complete)
 gate → campaign        as continuation_loop(max_passes), carrying fail_log
@@ -54,6 +61,29 @@ gate → done            (loop exhausted — ship what is banked)
   in-tree `.test_coverage.verify.sh` scratch of v1 is gone).
 - `gate` — deterministic compute:
   `converged = passed && new_test_code && coverage_complete`.
+
+## Plan phase (cross-model pair review, ADR-091)
+
+`plan_review: auto` resolves at launch from the run's credentials: when a
+SECOND model family is available, the coverage plan is authored (claude,
+read-only) from the target and the test-kind selection, critiqued by a
+cross-family peer (`claw` + `openai/gpt-5.6-sol` by default), and revised
+by the SAME author session before the campaign writes tests; otherwise
+the phase is bypassed whole (the v2 shape, unchanged — `plan_topology`
+routes straight to `campaign`). The plan reaches the campaign as a MAP,
+not a contract.
+
+`plan_review_policy` picks the mid-run peer-unavailability behaviour:
+`skip` (default — the reviewer's `action: skip` route completes it with a
+zero-value critique stamped `_skipped`, so the plan proceeds unreviewed
+rather than parking the campaign on a dead peer credential) or `wait`
+(the failure stays `failed_resumable` and the run-level usage-window
+retry resumes it when the window reopens — the deliberate-spend
+posture).
+
+Only the first pass plans: the continuation back-edge blanks the plan
+fields, so later passes read `git log` instead of re-anchoring on a stale
+plan.
 
 The v1 staged pipeline (plan → act → simplify → verify_run_tests →
 repair_tests → alternating cross-family review/fix loop →
