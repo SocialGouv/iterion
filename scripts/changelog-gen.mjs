@@ -26,6 +26,13 @@ const SECTION = /(?=^## \[)/m
 
 const RELEASES_URL = 'https://github.com/SocialGouv/iterion/releases'
 
+// Absolute for the same reason HEADER is (see changelog-writer.mjs): an
+// archive page is read both as `docs/changelog/vN.md` on GitHub and as
+// `/changelog/vN` on the docs site. A relative `../changelog` resolves to the
+// changelog PAGE on the site but to the archive DIRECTORY on GitHub — i.e.
+// back to where the reader already is.
+const CHANGELOG_URL = 'https://github.com/SocialGouv/iterion/blob/main/CHANGELOG.md'
+
 async function generate(opts) {
   const gen = new ConventionalChangelog(ROOT)
   gen.loadPreset(PRESET)
@@ -85,7 +92,7 @@ reachable from \`main\` (the history was rewritten). They remain on the
 
   return `# Changelog — v${major}.x
 
-Archived releases. The current major is in [the changelog](../changelog).
+Archived releases. The current major is in [the changelog](${CHANGELOG_URL}).
 ${gap}
 ${list.join('\n\n')}
 `
