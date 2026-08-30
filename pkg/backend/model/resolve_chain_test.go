@@ -37,6 +37,24 @@ func TestResolveChain_AppendsFallbacksAfterProviderChain(t *testing.T) {
 	}
 }
 
+func TestResolveChain_PreservesRunFallbackStageIndex(t *testing.T) {
+	e := &ClawExecutor{}
+	node := chainAgentNode("x", delegate.BackendClaudeCode, "zai,anthropic", []ir.Fallback{
+		{
+			Name:        ir.RunFallbackName,
+			Backend:     delegate.BackendClaw,
+			Model:       "openai/gpt-5.5",
+			RunStage:    1,
+			RunStageSet: true,
+		},
+	})
+	chain := e.resolveChain(node)
+	stage := chain[len(chain)-1].FallbackIndex
+	if stage == nil || *stage != 1 {
+		t.Fatalf("run fallback index = %v, want original launch stage 1", stage)
+	}
+}
+
 // TestResolveChain_DefaultTriggers: a route that declares no `on:` gets
 // the closed positive default. `any` is excluded because a budget cap or
 // a schema-shape failure re-fails identically on every route; `auth` is

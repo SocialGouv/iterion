@@ -118,6 +118,9 @@ type ProviderFallbackInfo struct {
 	Reason   string
 	Attempts int   // retry attempts spent on the failed provider; 0 for a cooldown skip
 	Err      error // the hard failure that triggered the fall-through
+	// FallbackIndex is the zero-based destination stage for a launch-time
+	// run fallback. Nil for authored and legacy provider chains.
+	FallbackIndex *int
 	// Cooldown is true when dispatch skipped an attempt using a refusal a
 	// previous node already observed. CooldownUntil is that refusal's reset.
 	Cooldown      bool

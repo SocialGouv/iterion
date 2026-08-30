@@ -1090,6 +1090,7 @@ func (e *ClawExecutor) noteCooldownFallback(
 		ToBackend:     toBackend,
 		Reason:        string(cd.Category),
 		Attempts:      0,
+		FallbackIndex: to.FallbackIndex,
 		Cooldown:      true,
 		CooldownUntil: cd.Until,
 		ToSkip:        to.Skip,
@@ -1116,17 +1117,18 @@ func (e *ClawExecutor) noteFallback(
 		return
 	}
 	e.hooks.OnProviderFallback(nodeID, ProviderFallbackInfo{
-		BackendName: backendName,
-		From:        from.Provider,
-		To:          to.Provider,
-		FromModel:   fromModel,
-		ToModel:     toModel,
-		FromBackend: fromBackend,
-		ToBackend:   toBackend,
-		Reason:      string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
-		Attempts:    e.retry.maxAttempts(),
-		Err:         err,
-		ToSkip:      to.Skip,
+		BackendName:   backendName,
+		From:          from.Provider,
+		To:            to.Provider,
+		FromModel:     fromModel,
+		ToModel:       toModel,
+		FromBackend:   fromBackend,
+		ToBackend:     toBackend,
+		Reason:        string(delegate.ClassifyFallback(err, isDelegateRetryable(err))),
+		Attempts:      e.retry.maxAttempts(),
+		FallbackIndex: to.FallbackIndex,
+		Err:           err,
+		ToSkip:        to.Skip,
 	})
 }
 

@@ -29,6 +29,41 @@ func decodeLikeCursor(t *testing.T, in, out any) {
 	}
 }
 
+func TestRunFallbackBSONAcceptsObjectAndArray(t *testing.T) {
+	legacy := bson.D{
+		{Key: "_id", Value: "legacy-fallback"},
+		{Key: "fallback", Value: bson.D{
+			{Key: "backend", Value: "codex"},
+			{Key: "model", Value: "gpt-5.5"},
+		}},
+	}
+	var fromObject store.Run
+	decodeLikeCursor(t, legacy, &fromObject)
+	if len(fromObject.Fallback) != 1 || fromObject.Fallback[0].Backend != "codex" || fromObject.Fallback[0].Model != "gpt-5.5" {
+		t.Fatalf("legacy BSON fallback = %+v, want one promoted stage", fromObject.Fallback)
+	}
+
+	canonical := store.Run{
+		ID: "array-fallback",
+		Fallback: store.RunFallback{
+			{Backend: "codex", Model: "gpt-5.5"},
+			{Backend: "claw", Model: "openai/gpt-5.5"},
+		},
+	}
+	var fromArray store.Run
+	decodeLikeCursor(t, canonical, &fromArray)
+	if len(fromArray.Fallback) != 2 || fromArray.Fallback[1].Backend != "claw" {
+		t.Fatalf("array BSON fallback = %+v, want two ordered stages", fromArray.Fallback)
+	}
+	raw, err := bson.Marshal(canonical)
+	if err != nil {
+		t.Fatalf("marshal canonical run: %v", err)
+	}
+	if got := bson.Raw(raw).Lookup("fallback").Type; got != bson.TypeArray {
+		t.Fatalf("canonical BSON fallback type = %s, want array", got)
+	}
+}
+
 // TestEventDataDecodeShape pins the store's decode contract for the
 // open-shaped Event.Data payload: nested documents surface as plain
 // map[string]any, nested arrays as plain []any, and int32-width wire
