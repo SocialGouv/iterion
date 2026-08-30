@@ -1769,7 +1769,17 @@ committed, PR-reviewable record. Index + template:
 
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
-- **version.yml** — conventional changelog via release-it, version from `package.json`
+- **version.yml** — conventional changelog via release-it, version from `package.json`.
+  release-it writes the new section into [CHANGELOG.md](CHANGELOG.md) as part of the
+  release commit itself (`infile` + `git add . --update`), so the file cannot drift
+  from the tags — never hand-edit it. It holds the **current major only**; earlier
+  ones are archived under [docs/changelog/](docs/changelog/) because GitHub stops
+  rendering markdown past 512 KB. Each entry carries a collapsed `why` excerpt taken
+  from the commit body — the rendering lives in
+  [scripts/changelog-writer.mjs](scripts/changelog-writer.mjs), shared by release-it
+  ([.release-it.mjs](.release-it.mjs)) and the regenerator (`task changelog:gen`), so
+  a rebuilt section is byte-identical to a released one. Re-run `task changelog:gen`
+  after a major bump, or when it warns the file is nearing the ceiling.
 
 **`main` is protected by a merge queue** (ruleset "main protected — merge
 queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which

@@ -15,7 +15,7 @@ A box left unticked is a release that ships broken. Resist the urge to bypass.
 
 - [ ] `package.json` version bumped (or `release-it` ran successfully and bumped it).
 - [ ] `charts/iterion/Chart.yaml` `appVersion` matches `package.json` (CI guard would block otherwise; verify locally with `task chart:sync-version`).
-- [ ] `CHANGELOG.md` updated (release-it generates from conventional commits; spot-check for missing entries).
+- [ ] `CHANGELOG.md` updated — release-it writes it into the release commit itself; spot-check the new section for missing entries.
 
 ## 3. Signing prerequisites
 
