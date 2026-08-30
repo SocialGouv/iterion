@@ -245,6 +245,13 @@
           "cost_usd_total": {
             "type": "number"
           },
+          "fired_events": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
           "interaction_id": {
             "type": "string"
           },

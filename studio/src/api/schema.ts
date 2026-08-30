@@ -5077,6 +5077,11 @@ export interface components {
             budget_unpriced_nodes?: number;
             budget_unpriced_tokens?: number;
             cost_usd_total?: number;
+            fired_events?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
             interaction_id: string;
             interaction_questions?: {
                 [key: string]: unknown;
