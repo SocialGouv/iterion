@@ -21,6 +21,10 @@ var (
 	changelogH1       = regexp.MustCompile(`(?m)^# Changelog[ \t]*$`)
 	changelogAlnum    = regexp.MustCompile(`[a-zA-Z0-9]`)
 	changelogCodeSpan = regexp.MustCompile("`[^`]*`")
+	// A `## ` release heading that is not `## [x.y.z](compare-url)`. The
+	// `## [undefined]` case has its own check below and is deliberately not
+	// matched here, so each failure reports once with its own explanation.
+	changelogBareHeading = regexp.MustCompile(`(?m)^## [^[\n].*$`)
 	// The `export const HEADER = ` + "`...`" + ` template literal. It contains no
 	// backtick and no ${} interpolation, so a lazy match to the closing
 	// backtick is exact — and if someone introduces either, this stops
@@ -98,6 +102,16 @@ func TestChangelogStructure(t *testing.T) {
 
 	if open, closed := strings.Count(md, "<details>"), strings.Count(md, "</details>"); open != closed {
 		t.Errorf("unbalanced excerpt markup: %d <details> vs %d </details>", open, closed)
+	}
+
+	// Every release heading carries a compare link. When the generator's tag
+	// lookup comes back short, the affected release is emitted bare
+	// (`## 3.68.5`) and its successor's link reaches back past it — and since
+	// the section splitter keys on `## [`, the orphan is absorbed into the
+	// preceding section rather than reported. That reached a commit once
+	// (cf644cf2, reverted in 7ddcd905); this is what would have caught it.
+	for _, h := range changelogBareHeading.FindAllString(md, -1) {
+		t.Errorf("release heading without a compare link (degraded generator read): %q", h)
 	}
 
 	// An excerpt with nothing readable in it renders as an empty disclosure —

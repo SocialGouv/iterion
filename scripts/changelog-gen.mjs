@@ -55,6 +55,24 @@ function sections(changelog) {
     .filter(s => s.startsWith('## [') && !s.startsWith('## [undefined]'))
 }
 
+// Every release heading must carry its compare link. A transient failure in
+// the generator's tag lookup drops one tag from the chain: that release is
+// still emitted, but as a bare `## 3.68.5` with no compare URL, and its
+// successor's link reaches back PAST it. `sections()` splits on `## [`, so the
+// orphan is silently absorbed into the preceding section instead of raising
+// anything — observed once, written, and committed before anyone noticed.
+// Refuse to write a degraded read rather than produce phantom churn.
+function assertLinkedHeadings(changelog, label) {
+  const bare = [...changelog.matchAll(/^## (?!\[).*$/gm)].map(m => m[0])
+  if (bare.length) {
+    throw new Error(
+      `${label}: ${bare.length} release heading(s) generated without a compare link ` +
+        `— the tag list came back incomplete. Re-run; do not commit this output.\n  ` +
+        bare.join('\n  ')
+    )
+  }
+}
+
 function versionOf(section) {
   const m = section.match(/^## \[(\d+\.\d+\.\d+[^\]]*)\]/)
   if (!m) throw new Error(`section without a parsable version: ${section.slice(0, 80)}`)
@@ -108,6 +126,9 @@ async function main() {
     generate({ writer: writerOpts }),
     generate()
   ])
+
+  assertLinkedHeadings(enriched, 'enriched pass')
+  assertLinkedHeadings(plain, 'plain pass')
 
   const enrichedByMajor = groupByMajor(sections(enriched))
   const plainByMajor = groupByMajor(sections(plain))
