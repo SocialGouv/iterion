@@ -142,6 +142,48 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 	}
 }
 
+func TestFanOutWaitAllAllDoneStillRunsDeclaredCollector(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "fanout_wait_all_all_done_collector",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"a":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}},
+			"b":        &ir.AgentNode{BaseNode: ir.BaseNode{ID: "b"}},
+			"done_a":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done_a"}},
+			"done_b":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done_b"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"finished": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "finished"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "a"},
+			{From: "router", To: "b"},
+			{From: "a", To: "done_a", Condition: "nothing"},
+			{From: "a", To: "collect", Condition: "nothing", Negated: true},
+			{From: "b", To: "done_b", Condition: "nothing"},
+			{From: "b", To: "collect", Condition: "nothing", Negated: true},
+			{From: "collect", To: "finished"},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{}, Loops: map[string]*ir.Loop{},
+	}
+	var collectCalls int32
+	exec := newStubExecutor()
+	exec.on("a", func(map[string]any) (map[string]any, error) { return map[string]any{"nothing": true}, nil })
+	exec.on("b", func(map[string]any) (map[string]any, error) { return map[string]any{"nothing": true}, nil })
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		atomic.AddInt32(&collectCalls, 1)
+		return map[string]any{"ok": true}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "fanout-wait-all-all-done-collector", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&collectCalls); got != 1 {
+		t.Fatalf("collector calls = %d, want 1", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: a ping-pong fan-out under max_parallel_branches=1 where EACH branch
 // both emits and waits, so whichever branch the scheduler runs first eventually

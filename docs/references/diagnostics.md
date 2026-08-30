@@ -151,6 +151,8 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C245** | error | Trunk-only human mode in parallel branch | A human node inside a `fan_out_all`, `fan_out_each`, or `llm multi: true` body declares `interaction: review` or `interaction: llm_or_human`; their companion/auto-answer orchestration is trunk-only | Use a plain `interaction: human` branch gate, or move the review/LLM-assisted gate after the collector |
 | **C246** | warning | Implicit fan-out collector execution moved into branches | A node was previously elected as an implicit collector only because a bounded back-edge counted as its second predecessor; bounded iteration is now branch-local, so the node executes once per branch | Add `await: wait_all` or `await: best_effort` to the intended collector to preserve one trunk execution, or keep it unmarked when per-branch iteration is intentional |
 
+Parallel-branch migration note: expression-form guards (`when "..."`) are now evaluated against each branch's private runtime scope. Older runtimes skipped those edges inside `fan_out_all`, `fan_out_each`, and `llm multi: true` bodies and selected the fallback instead. This is a runtime behavior change, not a new diagnostic; validate the guarded and fallback routes when upgrading.
+
 > **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
 > the adaptive-recovery firewall on deterministic ACTION tool nodes. The
 > enum-literal type check that earlier releases emitted as `C103` is now

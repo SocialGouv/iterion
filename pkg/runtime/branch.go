@@ -117,6 +117,16 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	if branchCP != nil && branchCP.CurrentNodeID != "" {
 		currentNodeID = branchCP.CurrentNodeID
 	}
+	defer func() {
+		// A sibling pause cancels the invocation after its interaction is
+		// durable. Persist this branch's current in-memory cursor once at that
+		// cancellation boundary so completed linear work is not replayed on
+		// every sibling resume. This is one write per interrupted branch/pause,
+		// not one write per node.
+		if result.err != nil && (errors.Is(result.err, ErrRunCancelled) || errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded)) {
+			e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
+		}
+	}()
 	if branchCP != nil && branchCP.Completed {
 		result.joinNodeID = branchCP.JoinNodeID
 		result.terminatedAtDone = branchCP.TerminatedAtDone
@@ -231,19 +241,24 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			e.onNodeFinished(runID, currentNodeID, output)
 		}
 
-		nextNodeID, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result, branchRS)
+		selected, err := e.selectEdgeBranch(ctx, runID, branchID, currentNodeID, output, result, branchRS)
 		if err != nil {
 			result.err = err
 			return result
 		}
 
-		currentNodeID = nextNodeID
+		currentNodeID = selected.To
 		if resumedHuman {
 			// Persist the successor and clear the old pending identity in one
 			// snapshot before releasing siblings.
 			e.checkpointResumedBranch(rs, branchRS, result, currentNodeID, parallel)
 			resumeGate = ""
-		} else {
+		} else if selected.IsBoundedIteration() {
+			// A loop/foreach crossing is a restart boundary: persist its private
+			// counters and successor cursor. Linear edges deliberately stay
+			// in-memory; the next gate, iteration boundary, or branch completion
+			// snapshots all progress at once instead of serializing every node on
+			// the invocation-wide save mutex.
 			e.checkpointBranch(rs, branchRS, result, currentNodeID, false, parallel)
 		}
 	}
@@ -325,8 +340,10 @@ func branchCheckpointFromState(rs *runState, result *branchResult, currentNodeID
 }
 
 // checkpointBranch persists a complete branch-local cursor while keeping the
-// trunk anchored on the router. SaveCheckpoint is best-effort, matching the
-// sequential node-boundary path; the next completed branch boundary retries.
+// trunk anchored on the router. Callers use restart boundaries only (bounded
+// iteration crossings and branch completion); human gates persist their cursor
+// in pauseBranchAtHuman. SaveCheckpoint is best-effort, and the next durable
+// branch boundary retries.
 func (e *Engine) checkpointBranch(parent, branchRS *runState, result *branchResult, currentNodeID string, completed bool, parallel *parallelExecutionState) {
 	e.checkpointBranchState(parent, branchRS, result, currentNodeID, completed, parallel, false)
 }
@@ -403,7 +420,11 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	parallel.saveMu.Lock()
 	defer parallel.saveMu.Unlock()
 	branch := branchCheckpointFromState(branchRS, result, nodeID, false)
-	if !parallel.beginPause(branchID, nodeID, branch) {
+	elected, parked := parallel.beginPause(branchID, nodeID, branch)
+	if !elected {
+		if parked {
+			e.persistParallelCheckpointLocked(parent, parallel, branchID, nodeID)
+		}
 		return errBranchPauseDeferred
 	}
 	pausePersisted := false
@@ -468,6 +489,26 @@ func (e *Engine) pauseBranchAtHuman(parent, branchRS *runState, branchID, nodeID
 	}
 	pausePersisted = true
 	return ErrRunPaused
+}
+
+// persistParallelCheckpointLocked writes the current invocation snapshot while
+// the caller holds parallel.saveMu. It is used for a branch that reached a
+// human gate but lost the one-interaction election: the elected sibling stays
+// pending, while this branch's gate cursor must survive the next resume.
+func (e *Engine) persistParallelCheckpointLocked(parent *runState, parallel *parallelExecutionState, branchID, nodeID string) {
+	ps := parallel.snapshot()
+	if ps == nil {
+		return
+	}
+	cp := buildCheckpointWithoutParallel(parent, ps.RouterNodeID)
+	cp.Parallel = ps
+	if ps.PendingInteractionID != "" {
+		cp.InteractionID = ps.PendingInteractionID
+		cp.InteractionQuestions = deepCopyAnyMap(ps.PendingInteractionQuestions)
+	}
+	if err := e.store.SaveCheckpoint(parent.ctx, parent.runID, cp); err != nil && e.logger != nil {
+		e.logger.Error("failed to save deferred branch checkpoint %s at %q: %v", branchID, nodeID, err)
+	}
 }
 
 // emitBranchNodeStarted records one logical branch-node attempt. Human gates
@@ -725,10 +766,10 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 // selectEdgeBranch is the branch-local twin of selectEdgeRS. It applies the
 // same bounded loop/foreach bookkeeping to a private runState and emits the
 // selection with the branch identity.
-func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult, rs *runState) (string, error) {
+func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any, result *branchResult, rs *runState) (*ir.Edge, error) {
 	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, fmt.Sprintf("branch %s", branchID), output, rs)
 	if selected == nil {
-		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
+		return nil, fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
 
 	if selected.LoopName == "" {
@@ -785,7 +826,7 @@ func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNode
 	if result != nil {
 		recordIncoming(result.selectedIncoming, selected, true)
 	}
-	return selected.To, nil
+	return selected, nil
 }
 
 // ---------------------------------------------------------------------------

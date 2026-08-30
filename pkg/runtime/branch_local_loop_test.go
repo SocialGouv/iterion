@@ -258,7 +258,7 @@ func TestRetiredBranchStillRecordsCompletedNodeUsage(t *testing.T) {
 func TestRetiredParallelInvocationRefusesHumanPause(t *testing.T) {
 	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{"branch": "gate"}, nil)
 	parallel.retire()
-	if parallel.beginPause("branch", "gate", &store.BranchCheckpoint{BranchID: "branch"}) {
+	if elected, parked := parallel.beginPause("branch", "gate", &store.BranchCheckpoint{BranchID: "branch"}); elected || parked {
 		t.Fatal("retired invocation elected a late human pause")
 	}
 }
@@ -777,6 +777,79 @@ type pauseFailStore struct {
 
 func (s *pauseFailStore) PauseRun(context.Context, string, *store.Checkpoint) error {
 	return s.err
+}
+
+type parallelCheckpointCountingStore struct {
+	store.RunStore
+	mu             sync.Mutex
+	parallelWrites int
+}
+
+func (s *parallelCheckpointCountingStore) SaveCheckpoint(ctx context.Context, runID string, cp *store.Checkpoint) error {
+	if cp != nil && cp.Parallel != nil {
+		s.mu.Lock()
+		s.parallelWrites++
+		s.mu.Unlock()
+	}
+	return s.RunStore.SaveCheckpoint(ctx, runID, cp)
+}
+
+func (s *parallelCheckpointCountingStore) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.parallelWrites
+}
+
+func TestFanOutEachLinearBranchCheckpointsOnlyAtRestartBoundaries(t *testing.T) {
+	wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 1)
+	wf.Nodes["middle"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "middle"}}
+	wf.Nodes["last"] = &ir.AgentNode{BaseNode: ir.BaseNode{ID: "last"}}
+	for _, edge := range wf.Edges {
+		if edge.From == "handle" && edge.To == "collect" {
+			edge.To = "middle"
+		}
+	}
+	wf.Edges = append(wf.Edges,
+		&ir.Edge{From: "middle", To: "last"},
+		&ir.Edge{From: "last", To: "collect"},
+	)
+
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("only")}}, nil
+	})
+	base := tmpStore(t)
+	runStore := &parallelCheckpointCountingStore{RunStore: base}
+	if err := New(wf, runStore, exec).Run(context.Background(), "linear-branch-checkpoint-boundaries", nil); err != nil {
+		t.Fatal(err)
+	}
+	// One write initializes the invocation and one records branch completion.
+	// The three linear node boundaries must not add full ParallelCheckpoint
+	// rewrites under the invocation-wide save mutex.
+	if got := runStore.count(); got != 2 {
+		t.Fatalf("parallel checkpoint writes = %d, want 2 (initialization + completion)", got)
+	}
+}
+
+func TestParallelCheckpointPrunesDurableArtifactAllocationKeys(t *testing.T) {
+	const branchID = "branch_dispatch_0"
+	parallel := newParallelInvocation("dispatch", "dispatch@root", map[string]string{branchID: "work"}, nil)
+	if got := parallel.artifactVersion("work", branchID+"/work/retry=0", 0); got != 0 {
+		t.Fatalf("first artifact version = %d, want 0", got)
+	}
+	if got := parallel.artifactVersion("work", branchID+"/work/retry=1", 0); got != 1 {
+		t.Fatalf("second artifact version = %d, want 1", got)
+	}
+	if !parallel.updateBranch(&store.BranchCheckpoint{BranchID: branchID, CurrentNodeID: "next"}) {
+		t.Fatal("branch cursor update was rejected")
+	}
+	snapshot := parallel.snapshot()
+	if len(snapshot.ArtifactAllocations) != 0 {
+		t.Fatalf("durable artifact allocations = %#v, want pruned after cursor advance", snapshot.ArtifactAllocations)
+	}
+	if got := parallel.artifactVersion("work", branchID+"/work/retry=2", 0); got != 2 {
+		t.Fatalf("version after pruning = %d, want monotonic version 2", got)
+	}
 }
 
 func TestFanOutPausePersistenceFailureIsNotReportedAsPaused(t *testing.T) {

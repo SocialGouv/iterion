@@ -114,6 +114,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	// Empty array: nothing to fan out. Continue straight to the convergence
 	// point (with an empty aggregate) rather than failing the run.
 	if len(items) == 0 {
+		// No invocation is launched. A checkpoint restored before `over:` was
+		// re-resolved must not survive this exit or it would attach its stale
+		// pending branch gate to an unrelated later pause.
+		rs.parallel = nil
 		rs.outputs[routerNodeID]["count"] = 0
 		if convergence == "" {
 			// No reconvergence node: the template subgraph runs ONCE with
@@ -334,7 +338,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		}
 	}
 	if convergenceNodeID == "" {
-		if allTerminatedAtDone(results) {
+		if allTerminatedAtDone(results) && (isBestEffort || convergence == "") {
 			strategy := ir.AwaitWaitAll
 			if isBestEffort {
 				strategy = ir.AwaitBestEffort

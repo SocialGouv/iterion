@@ -327,6 +327,7 @@ func (p *parallelExecutionState) updateBranch(branch *store.BranchCheckpoint) bo
 	if p.retired {
 		return false
 	}
+	p.pruneArtifactAllocationsLocked(branch.BranchID)
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
 	return true
 }
@@ -352,6 +353,7 @@ func (p *parallelExecutionState) abandonResume(branch *store.BranchCheckpoint) b
 	}
 	branch.ResumeAnswers = nil
 	branch.ResumeAnswered = false
+	p.pruneArtifactAllocationsLocked(branch.BranchID)
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
 	p.cp.PendingBranchID = ""
 	p.cp.PendingNodeID = ""
@@ -373,6 +375,7 @@ func (p *parallelExecutionState) updateResumedBranch(branch *store.BranchCheckpo
 	if p.retired {
 		return false, nil
 	}
+	p.pruneArtifactAllocationsLocked(branch.BranchID)
 	p.cp.Branches[branch.BranchID] = cloneBranchCheckpoint(branch)
 	if p.resumePending != branch.BranchID {
 		return true, nil
@@ -388,28 +391,53 @@ func (p *parallelExecutionState) updateResumedBranch(branch *store.BranchCheckpo
 }
 
 // beginPause elects at most one pending branch interaction for a fan-out.
-func (p *parallelExecutionState) beginPause(branchID, nodeID string, branch *store.BranchCheckpoint) bool {
+func (p *parallelExecutionState) beginPause(branchID, nodeID string, branch *store.BranchCheckpoint) (elected, parked bool) {
 	if p == nil {
-		return false
+		return false, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.retired {
-		return false
+		return false, false
 	}
 	if p.cp.PendingBranchID != "" {
 		if p.cp.PendingBranchID != branchID || p.cp.PendingNodeID != nodeID {
-			return false
+			// The sibling that owns the interaction remains pending, but this
+			// branch has still reached a durable restart boundary. Parking its
+			// gate cursor prevents the linear prefix from replaying on every
+			// subsequent sibling resume.
+			p.pruneArtifactAllocationsLocked(branchID)
+			p.cp.Branches[branchID] = cloneBranchCheckpoint(branch)
+			return false, true
 		}
 		// Re-prompting the elected gate (for example after schema-invalid
 		// answers) replaces its durable cursor and clears ResumeAnswers.
+		p.pruneArtifactAllocationsLocked(branchID)
 		p.cp.Branches[branchID] = cloneBranchCheckpoint(branch)
-		return true
+		return true, true
 	}
 	p.cp.PendingBranchID = branchID
 	p.cp.PendingNodeID = nodeID
+	p.pruneArtifactAllocationsLocked(branchID)
 	p.cp.Branches[branchID] = cloneBranchCheckpoint(branch)
-	return true
+	return true, true
+}
+
+// pruneArtifactAllocationsLocked drops retry-stability keys whose effects are
+// already covered by a durable branch cursor. NextArtifactVersion remains the
+// monotonic allocator; if the branch later publishes again it receives a fresh
+// version, while old loop-iteration execution keys cannot grow the checkpoint
+// for the lifetime of a wide fan-out. p.mu must be held by the caller.
+func (p *parallelExecutionState) pruneArtifactAllocationsLocked(branchID string) {
+	if p == nil || p.cp == nil || len(p.cp.ArtifactAllocations) == 0 {
+		return
+	}
+	prefix := branchID + "/"
+	for key := range p.cp.ArtifactAllocations {
+		if strings.HasPrefix(key, prefix) {
+			delete(p.cp.ArtifactAllocations, key)
+		}
+	}
 }
 
 // abortPause releases an election whose interaction could not be durably

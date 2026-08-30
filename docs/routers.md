@@ -125,6 +125,8 @@ Workspace safety remains fail-closed. Concurrent template replays may contain re
 
 Migration note: bounded back-edges no longer count as evidence of fan-out convergence. A node previously elected as an implicit collector only because its loop back-edge supplied a second predecessor now runs once per branch; validation emits warning C246 for this shape. Add `await: wait_all` or `await: best_effort` to the intended collector to preserve one trunk execution, or leave it unmarked when the loop is intentionally branch-local.
 
+Migration note: quoted expression guards such as `when "outputs.check.score > 0"` are now evaluated inside `fan_out_all`, `fan_out_each`, and `llm multi: true` branch bodies. Older runtimes skipped expression-form branch edges and fell through to `else` or an unconditional edge. Revalidate workflows that used quoted `when` inside a parallel branch and confirm that the newly active route is intended.
+
 When item paths reconverge into one collector, declare `await: wait_all` or `await: best_effort` on that collector. A bounded back-edge is local to each item branch and does not prove convergence; without an explicit await marker, a single-predecessor node remains part of every item replay.
 
 ---

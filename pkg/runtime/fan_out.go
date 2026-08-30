@@ -423,7 +423,7 @@ func (e *Engine) resolveConvergence(rs *runState, routerNodeID string, results [
 		}
 	}
 	if convergenceNodeID == "" {
-		if allTerminatedAtDone(results) {
+		if allTerminatedAtDone(results) && (isBestEffort || plan.preComputedConvergence == "") {
 			strategy := ir.AwaitWaitAll
 			if isBestEffort {
 				strategy = ir.AwaitBestEffort
