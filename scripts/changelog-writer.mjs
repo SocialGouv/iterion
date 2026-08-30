@@ -22,8 +22,17 @@ const MAX_PROSE = 500
 
 // Trailer lines the parser leaves in the body (it routes most of them to
 // `footer`, but a squashed PR can carry them mid-body).
+//
+// Matching the trailer FORM, not the bare keyword, is load-bearing: this test
+// runs against every line of the chosen paragraph, so `^closes\b` also deleted
+// hard-wrapped prose opening on the English word ("Closes the review→fix loop
+// with no human in it — for repos that opt in, and"), decapitating 79 lines
+// across this history. Hence the mandatory `:` or issue-ref anchor. The
+// attribution line carries an emoji the old `^generated with` never reached,
+// so its prefix is spelled out — restricted to non-letters so it cannot eat a
+// sentence starting "Regenerated with [...]".
 const TRAILER =
-  /^(co-authored-by|signed-off-by|generated with|updated-dependencies|release-as|refs|closes|fixes)\b/i
+  /^(?:(?:co-authored-by|signed-off-by|updated-dependencies|release-as|refs|closes|fixes)\s*:|(?:refs|closes|fixes)\s+(?:#|https?:\/\/)|[^a-z0-9]{0,4}generated with \[)/i
 
 // A paragraph that is a bullet list: the per-commit summary GitHub writes into
 // a squashed PR body (32% of v3 entries). It restates the subjects we already
