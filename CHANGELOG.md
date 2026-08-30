@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.77.2](https://github.com/SocialGouv/iterion/compare/v3.77.1...v3.77.2) (2026-08-30)
+
+### Bug Fixes
+
+* **test:** deflake the launch tests at their cost, not their timeout ([#586](https://github.com/SocialGouv/iterion/issues/586)) ([003d155](https://github.com/SocialGouv/iterion/commit/003d1559f4fffaa44bac34b834fb981a25a413ea))
+
+    <details><summary>why</summary>
+
+    TestLaunch_AppliesBudgetOverrides (30s) and TestEngineRunner_SubbotChildHoldsRunLock (60s) both failed on wall-clock this week. Neither timeout is raised here.
+
+    </details>
+
 ## [3.77.1](https://github.com/SocialGouv/iterion/compare/v3.77.0...v3.77.1) (2026-08-30)
 
 ### Bug Fixes
