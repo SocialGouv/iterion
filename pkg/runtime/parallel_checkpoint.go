@@ -297,6 +297,27 @@ func (p *parallelExecutionState) matches(routerNodeID, invocationKey string, bra
 	return true
 }
 
+// matchesInvocation reports whether the run is re-entering the same durable
+// router invocation. Unlike matches it intentionally ignores the branch set:
+// callers use it before re-planning branches only to suppress duplicate router
+// lifecycle events on resume; ensureParallelInvocation still performs the
+// strict branch-set validation afterward.
+func (p *parallelExecutionState) matchesInvocation(routerNodeID, invocationKey string) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cp != nil && p.cp.RouterNodeID == routerNodeID && p.cp.InvocationKey == invocationKey
+}
+
+func (e *Engine) resumingParallelInvocation(rs *runState, routerNodeID string) bool {
+	return rs != nil && rs.parallel != nil && rs.parallel.matchesInvocation(
+		routerNodeID,
+		e.parallelInvocationKey(routerNodeID, rs.loopCounters),
+	)
+}
+
 func (p *parallelExecutionState) snapshot() *store.ParallelCheckpoint {
 	if p == nil {
 		return nil

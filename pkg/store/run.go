@@ -842,6 +842,10 @@ type Checkpoint struct {
 	// restarting from 0 — otherwise post-resume spend stays invisible to the
 	// cap until it re-exceeds the pre-pause peak.
 	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
+	// FiredEvents is the sticky run-scoped emit/wait registry. Persisting it
+	// prevents a resumed branch from waiting forever on an event emitted by a
+	// sibling whose durable cursor is already Completed and will not replay.
+	FiredEvents map[string]map[string]any `json:"fired_events,omitempty" bson:"fired_events,omitempty"`
 
 	// Parallel captures an in-flight fan-out invocation. The router remains
 	// the trunk checkpoint NodeID; each branch carries its own cursor and loop

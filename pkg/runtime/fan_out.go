@@ -39,8 +39,17 @@ func defaultBranchCancelGracePeriod() time.Duration {
 // branches for each outgoing edge, bounded by MaxParallelBranches.
 // It returns the next node ID to continue from (after the join).
 func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
-	if err := e.emitRouterPassThrough(rs, routerNodeID); err != nil {
-		return "", err
+	if e.resumingParallelInvocation(rs, routerNodeID) {
+		// The initial invocation already emitted the router lifecycle pair and
+		// persisted its pass-through output. A legacy/forced checkpoint missing
+		// that output can rebuild it without manufacturing another execution.
+		if rs.outputs[routerNodeID] == nil {
+			rs.outputs[routerNodeID] = e.buildNodeInputRS(routerNodeID, rs.scope())
+		}
+	} else {
+		if err := e.emitRouterPassThrough(rs, routerNodeID); err != nil {
+			return "", err
+		}
 	}
 
 	plan, err := e.prepareFanOut(rs, routerNodeID)

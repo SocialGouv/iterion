@@ -941,6 +941,26 @@ func TestFanOutEachHumanGateEventsStayPairedAcrossSiblingResumes(t *testing.T) {
 			t.Errorf("%s gate events = %+v, want one started/finished/requested", branchID, *got)
 		}
 	}
+	assertSingleRouterLifecyclePair(t, events, "dispatch")
+}
+
+func assertSingleRouterLifecyclePair(t *testing.T, events []*store.Event, routerNodeID string) {
+	t.Helper()
+	var started, finished int
+	for _, event := range events {
+		if event.NodeID != routerNodeID || event.BranchID != "" {
+			continue
+		}
+		switch event.Type {
+		case store.EventNodeStarted:
+			started++
+		case store.EventNodeFinished:
+			finished++
+		}
+	}
+	if started != 1 || finished != 1 {
+		t.Fatalf("router %s lifecycle events = started:%d finished:%d, want one pair across resumes", routerNodeID, started, finished)
+	}
 }
 
 // A plain (non-pause, non-budget) error in the answered branch — here an
@@ -1116,6 +1136,11 @@ func TestFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 	if err := resumeWithinDeadline(t, wf, runStore, exec, runID, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("final resume = %v, want completion", err)
 	}
+	events, err := runStore.LoadEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSingleRouterLifecyclePair(t, events, "router")
 	mu.Lock()
 	defer mu.Unlock()
 	if workCalls["a"] == 0 || workCalls["b"] == 0 {

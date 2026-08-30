@@ -42,6 +42,7 @@ func buildCheckpointWithoutParallel(rs *runState, nodeID string) *store.Checkpoi
 		BudgetUnpricedTokens:   unpricedTokens,
 		BudgetUnpricedNodes:    unpricedNodes,
 		CostUSDTotal:           rs.costUSDTotal,
+		FiredEvents:            rs.events.snapshot(),
 		NodeSessions:           cloneNodeSessions(rs.nodeSessions),
 		BackendSessionStateRef: rs.pauseSessionRef,
 	}

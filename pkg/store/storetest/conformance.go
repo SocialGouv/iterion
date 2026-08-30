@@ -88,6 +88,7 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	cp := &store.Checkpoint{
 		NodeID:        "dispatch",
 		InteractionID: "interaction-1",
+		FiredEvents:   map[string]map[string]any{"ready": {"value": "ok"}},
 		Parallel: &store.ParallelCheckpoint{
 			RouterNodeID:                "dispatch",
 			InvocationKey:               "dispatch@outer=2",
@@ -127,6 +128,9 @@ func testParallelCheckpointRoundTrip(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint == nil || r.Checkpoint.Parallel == nil {
 		t.Fatalf("parallel checkpoint missing after round-trip: %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.FiredEvents["ready"]["value"] != "ok" {
+		t.Fatalf("fired events after round-trip = %#v", r.Checkpoint.FiredEvents)
 	}
 	got := r.Checkpoint.Parallel
 	branch := got.Branches["branch_dispatch_0"]

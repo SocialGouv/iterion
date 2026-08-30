@@ -58,14 +58,19 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	if dag {
 		mode = "fan_out_each_dag"
 	}
+	resumingInvocation := e.resumingParallelInvocation(rs, routerNodeID)
 
-	// Emit router node_started.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
-		"kind":      "router",
-		"mode":      mode,
-		"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
-	}); err != nil {
-		return "", err
+	// The initial invocation owns the router lifecycle pair. Resume still
+	// rebuilds the pass-through output and item plan below, but does not create
+	// a spurious new router execution in the timeline.
+	if !resumingInvocation {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
+			"kind":      "router",
+			"mode":      mode,
+			"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	// Router is a pass-through: its base output = its input from incoming edges.
@@ -89,11 +94,13 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_finished with the resolved cardinality.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
-		"count": len(items),
-		"dag":   dag,
-	}); err != nil {
-		return "", err
+	if !resumingInvocation {
+		if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
+			"count": len(items),
+			"dag":   dag,
+		}); err != nil {
+			return "", err
+		}
 	}
 
 	// The single outgoing template edge (validated at compile time).
