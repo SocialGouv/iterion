@@ -718,7 +718,7 @@ workflow — so adding a language or harness style needs no DSL edit.
   tests). Endy's axis is the FEATURE-level e2e completeness of the
   whole application, made checkable by the matrix.
 - **Triggers**: e2e, e2e-coverage, end-to-end, coverage-matrix, e2e-tests, regression-net, feature-coverage
-- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `matrix_path` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `workspace_dir` (string)
 - **Path**: `bots/e2e-coverage/main.bot`
 
 ### `evolve` — Evoly
@@ -806,7 +806,7 @@ without re-architecting what already works.
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
-- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### `feed-watch` — Vigie
@@ -1381,7 +1381,7 @@ not in the workflow — so adding a language needs no DSL edit.
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
-- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `plan_review` (string), `plan_review_policy` (string), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
 
 ### `ultra11y` — Ally
