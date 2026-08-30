@@ -265,7 +265,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A binary built between releases — or from a release whose sandbox image did not ship — pins ghcr.io/socialgouv/iterion-sandbox-slim:<version>, a tag nobody pushed. The pull then fails with a raw 'manifest unknown' and the run dies at startup, before any node: observed on v3.58.3, where neither 3.58.3 nor v3.58.3 exists at the registry, so every local sandboxed run needed a manual --sandbox-default-image.
+    A binary built between releases — or from a release whose sandbox image did not ship — pins ghcr.io/socialgouv/iterion-sandbox-slim:\<version>, a tag nobody pushed. The pull then fails with a raw 'manifest unknown' and the run dies at startup, before any node: observed on v3.58.3, where neither 3.58.3 nor v3.58.3 exists at the registry, so every local sandboxed run needed a manual --sandbox-default-image.
 
     </details>
 
@@ -1138,7 +1138,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A compute expression written concat('prefix: ', outputs.x.log) parses, compiles and validates clean, then dies at evaluation with "want array". It lives in notice/fail_log fields inside if(converged, …, <the concat>) — the FAILURE branch — so it crashes only once something else has already gone wrong, turning a reported failure into a dead run. It had shipped in a bundled subbot's refusal path; a sibling bot hit the same shape on its first real run and exposed the class.
+    A compute expression written concat('prefix: ', outputs.x.log) parses, compiles and validates clean, then dies at evaluation with "want array". It lives in notice/fail_log fields inside if(converged, …, \<the concat>) — the FAILURE branch — so it crashes only once something else has already gone wrong, turning a reported failure into a dead run. It had shipped in a bundled subbot's refusal path; a sibling bot hit the same shape on its first real run and exposed the class.
 
     </details>
 * **review-env:** an attached skill is a FILE, not a registry entry ([82b8eff](https://github.com/SocialGouv/iterion/commit/82b8efffba96580dece24df0f9c63afe2cb2073f))
@@ -1603,7 +1603,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Auto-memory behaved differently on each backend, silently, and no .bot author could control it: claude_code's own default is ON, so every node of every run read and wrote the operator's personal ~/.claude/projects/<cwd>/memory/, while claw and pi had no MEMORY.md at all. On a cloud pod, anything written to a pod-local directory died with the run.
+    Auto-memory behaved differently on each backend, silently, and no .bot author could control it: claude_code's own default is ON, so every node of every run read and wrote the operator's personal ~/.claude/projects/\<cwd>/memory/, while claw and pi had no MEMORY.md at all. On a cloud pod, anything written to a pod-local directory died with the run.
 
     </details>
 
@@ -1910,7 +1910,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A generic engine failure Naks for redelivery, and every failed delivery fired the completion webhook + run.<outcome> event anyway — one 'run failed' notification episode per redelivery (the episode key folds updated_at precisely so a later REAL re-failure notifies again), i.e. up to MaxDeliver pushes for a single deterministic failure within a minute (observed live: feed-watch run 019fc65e re-failed 8 times in 70s on its checkpointed verify input).
+    A generic engine failure Naks for redelivery, and every failed delivery fired the completion webhook + run.\<outcome> event anyway — one 'run failed' notification episode per redelivery (the episode key folds updated_at precisely so a later REAL re-failure notifies again), i.e. up to MaxDeliver pushes for a single deterministic failure within a minute (observed live: feed-watch run 019fc65e re-failed 8 times in 70s on its checkpointed verify input).
 
     </details>
 * **studio:** render token-only run reports instead of the no-cost placeholder ([86f2bfb](https://github.com/SocialGouv/iterion/commit/86f2bfb48951b2c7b9d2d043dae219d25c061864))
@@ -2024,7 +2024,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Adversarial review found a HIGH regression: the shutdown-vs-operator distinction inferred "shutdown cancel" from parent.Err() (the loop ctx), which only means "a SIGTERM happened" — not "this run's cancel came from shutdown". In the default lame-duck mode the pod holds the run for up to DrainTimeout (8h), during which an operator cancel (via the iterion.cancel.<run_id> subject) would be misclassified as a shutdown interruption, promoted cancelled→failed_resumable, and auto-resumed —…
+    Adversarial review found a HIGH regression: the shutdown-vs-operator distinction inferred "shutdown cancel" from parent.Err() (the loop ctx), which only means "a SIGTERM happened" — not "this run's cancel came from shutdown". In the default lame-duck mode the pod holds the run for up to DrainTimeout (8h), during which an operator cancel (via the iterion.cancel.\<run_id> subject) would be misclassified as a shutdown interruption, promoted cancelled→failed_resumable, and auto-resumed —…
 
     </details>
 * **runtime:** route mid-node interruptions through the cause-aware handler ([b14e11c](https://github.com/SocialGouv/iterion/commit/b14e11c39bce44dabfb64184307956d66b7fcc68))
@@ -2173,7 +2173,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Five review rounds in a row found holes in the guards protecting <WorkDir>/.iterion/pi — a symlink at a component, at the leaf, at the .gitignore inside it; a relative root that made containment fail open; a pre-seeded .gitignore whose last effective rule re-included our files. Each fix was correct and each left an adjacent hole, because they all patch the same premise: iterion writes a credential and a session transcript into a directory the target repository controls.
+    Five review rounds in a row found holes in the guards protecting \<WorkDir>/.iterion/pi — a symlink at a component, at the leaf, at the .gitignore inside it; a relative root that made containment fail open; a pre-seeded .gitignore whose last effective rule re-included our files. Each fix was correct and each left an adjacent hole, because they all patch the same premise: iterion writes a credential and a session transcript into a directory the target repository controls.
 
     </details>
 * **reviews:** the review hand-off carries the patch it already wrote ([208852f](https://github.com/SocialGouv/iterion/commit/208852fb4be4f2fc00b15dd97928387123b07838))
@@ -2232,7 +2232,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    The --skill flag was gated on `len(task.SkillHints) > 0`, which is the wrong signal. SkillHints carries ONLY the DSL `skills:` field — the skill LIBRARY — while every BUNDLE skill is mirrored into <workDir>/.claude/skills/ without ever touching it. So for a bundle bot the flag was never emitted: pi had zero skill awareness, and an agent whose own prompt ordered "LOAD YOUR SKILLS FIRST" was left hunting for files it had no way to see.
+    The --skill flag was gated on `len(task.SkillHints) > 0`, which is the wrong signal. SkillHints carries ONLY the DSL `skills:` field — the skill LIBRARY — while every BUNDLE skill is mirrored into \<workDir>/.claude/skills/ without ever touching it. So for a bundle bot the flag was never emitted: pi had zero skill awareness, and an agent whose own prompt ordered "LOAD YOUR SKILLS FIRST" was left hunting for files it had no way to see.
 
     </details>
 * **pi:** a relative workdir disarmed the guard entirely, and the walk covered only the credential ([67fd79e](https://github.com/SocialGouv/iterion/commit/67fd79e50c25130df3e39f90e32b296222f0d2bb))
@@ -2281,7 +2281,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Revi caught an asymmetry I created in the previous commit: I added the ignore-guard verification to the SANDBOXED branch only, while the store branch writes to <StoreDir>/pi with no equivalent check — and this repo's own dogfood instructions prescribe `--store-dir "$PWD/.iterion"`, which puts the store inside the git repo. So the non-sandboxed path carried the exact `git add -A` exposure the sandboxed one had just been hardened against, and the new refusal made the inconsistency look deliberate.
+    Revi caught an asymmetry I created in the previous commit: I added the ignore-guard verification to the SANDBOXED branch only, while the store branch writes to \<StoreDir>/pi with no equivalent check — and this repo's own dogfood instructions prescribe `--store-dir "$PWD/.iterion"`, which puts the store inside the git repo. So the non-sandboxed path carried the exact `git add -A` exposure the sandboxed one had just been hardened against, and the new refusal made the inconsistency look…
 
     </details>
 * **pi:** ITERION_PI_BIN is a host path, and a source name is not a set variable ([f36e7e1](https://github.com/SocialGouv/iterion/commit/f36e7e1b33890066fadff531bc2159861998f1af))
@@ -2365,7 +2365,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Third instance of one shape, so this shares the CHECK rather than adding a third copy of it. piHideWorkspaceSessionDir used a FOLLOWING os.Stat on <WorkDir>/.iterion/.gitignore, which a repo can ship as a tracked symlink. Both outcomes were bad and the second was silent: a DANGLING link made os.WriteFile create an attacker-chosen host file, and a link to any existing path made the stat succeed, so the function returned as if the workspace were guarded — leaving pi's session transcripts and the…
+    Third instance of one shape, so this shares the CHECK rather than adding a third copy of it. piHideWorkspaceSessionDir used a FOLLOWING os.Stat on \<WorkDir>/.iterion/.gitignore, which a repo can ship as a tracked symlink. Both outcomes were bad and the second was silent: a DANGLING link made os.WriteFile create an attacker-chosen host file, and a link to any existing path made the stat succeed, so the function returned as if the workspace were guarded — leaving pi's session transcripts and the…
 
     </details>
 * **pi:** treat Revi's five findings on the pi follow-ups ([d269907](https://github.com/SocialGouv/iterion/commit/d269907f6c19b8c9ed1c2bb848c0d58e5b80e2ec))
@@ -2400,7 +2400,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A flat bundle source writes <stem>/SKILL.md, and MkdirAll succeeds happily on a <stem>/ the checkout already ships. Reporting that DIRECTORY as owned therefore vouched for whatever the target repo planted beside our
+    A flat bundle source writes \<stem>/SKILL.md, and MkdirAll succeeds happily on a \<stem>/ the checkout already ships. Reporting that DIRECTORY as owned therefore vouched for whatever the target repo planted beside our
 
     </details>
 * **runtime:** plugin skills reach pi, and directory skills survive a resume ([65227b0](https://github.com/SocialGouv/iterion/commit/65227b04ffdfc2a41c247c45148a413ec167210a))
@@ -2426,7 +2426,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    `iterion run project/bots/x/main.bot` resolved its store from the .bot's own directory, so a bot living inside the project it drives was keyed on that subdirectory: the run landed in ~/.iterion/projects/<project-bots-x-key>/ while resume, inspect, issue, dispatch and the studio all resolve <project>/.iterion. Launching succeeded and every follow-up reported "run not found" — the run was invisible to the board and could not be resumed.
+    `iterion run project/bots/x/main.bot` resolved its store from the .bot's own directory, so a bot living inside the project it drives was keyed on that subdirectory: the run landed in ~/.iterion/projects/\<project-bots-x-key>/ while resume, inspect, issue, dispatch and the studio all resolve \<project>/.iterion. Launching succeeded and every follow-up reported "run not found" — the run was invisible to the board and could not be resumed.
 
     </details>
 
@@ -2615,7 +2615,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    In mono only one reviewer runs, and an {{outputs.<absent node>.<field>}} reference renders as a LITERAL placeholder rather than as nothing — so the merging agent was shown what looks like a broken template instead of "that family did not run". Observed live: a mono review's own reviewer mistook it for a reviewer failure and said so in its report.
+    In mono only one reviewer runs, and an {{outputs.\<absent node>.\<field>}} reference renders as a LITERAL placeholder rather than as nothing — so the merging agent was shown what looks like a broken template instead of "that family did not run". Observed live: a mono review's own reviewer mistook it for a reviewer failure and said so in its report.
 
     </details>
 * **golden-master:** the emitted runner names a missing interpreter instead of blaming its own tests ([446f9bf](https://github.com/SocialGouv/iterion/commit/446f9bfb1f06cd2b77511e733fd8eefbc44bc8a7))
@@ -3131,7 +3131,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A cloud/sandboxed run reaches the internet through iterion's egress proxy, injected as HTTPS_PROXY and advertised at the runner's own (necessarily private) pod IP — the trusted egress boundary and the secret-redaction point (started even in `network: open` whenever a SecretRewriter is present). urllib then dials the PROXY, not the feed host, so Vigie's socket-level getaddrinfo guard rejected our own proxy as "SSRF-unsafe address <pod-ip>" and every feed failed (run 019f8feb: all 69 fetches…
+    A cloud/sandboxed run reaches the internet through iterion's egress proxy, injected as HTTPS_PROXY and advertised at the runner's own (necessarily private) pod IP — the trusted egress boundary and the secret-redaction point (started even in `network: open` whenever a SecretRewriter is present). urllib then dials the PROXY, not the feed host, so Vigie's socket-level getaddrinfo guard rejected our own proxy as "SSRF-unsafe address \<pod-ip>" and every feed failed (run 019f8feb: all 69 fetches…
 
     </details>
 
@@ -3166,7 +3166,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    A live 3-way benchmark (this repo, 2026-07-23) settled why 3.0/3.1 shipped tiny PRs: a SINGLE campaign agent — exactly like a free native agent handed the same one-liner — self-scopes to the headline docs and misses the long tail. By rising coverage: Doki (~3 commits/pass, docs/ only) < native one-liner (6 fixes, missed cloud + bot READMEs) < native with a demanding prompt (reached the WHOLE corpus). The only run that got there DECOMPOSED into per-cluster sub-auditors ON ITS OWN.
+    A live 3-way benchmark (this repo, 2026-07-23) settled why 3.0/3.1 shipped tiny PRs: a SINGLE campaign agent — exactly like a free native agent handed the same one-liner — self-scopes to the headline docs and misses the long tail. By rising coverage: Doki (~3 commits/pass, docs/ only) \< native one-liner (6 fixes, missed cloud + bot READMEs) \< native with a demanding prompt (reached the WHOLE corpus). The only run that got there DECOMPOSED into per-cluster sub-auditors ON ITS OWN.
 
     </details>
 * **server,studio:** full cloud bot editing — team-authored bot store ([8850fd6](https://github.com/SocialGouv/iterion/commit/8850fd630020be5f84bceb6da074d09d90e95711))
@@ -3218,7 +3218,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    tenantBotEntries re-keys a discovered tenant bundle to its store slug, since a forked bot's manifest name (e.g. "docs-refresh") differs from its slug and would otherwise collide with the catalog bot of that name and never surface under its own id. slugFromMaterializedPath wrongly required ≥2 path segments, but botregistry sets Entry.Path to the bundle DIRECTORY ("<root>/<slug>"), a single segment — so the slug was never applied and the tenant bot vanished from the gallery / 404'd on GET.
+    tenantBotEntries re-keys a discovered tenant bundle to its store slug, since a forked bot's manifest name (e.g. "docs-refresh") differs from its slug and would otherwise collide with the catalog bot of that name and never surface under its own id. slugFromMaterializedPath wrongly required ≥2 path segments, but botregistry sets Entry.Path to the bundle DIRECTORY ("\<root>/\<slug>"), a single segment — so the slug was never applied and the tenant bot vanished from the gallery / 404'd on GET.
 
     </details>
 * **studio:** reach editor home with tabs open + in-editor "Duplicate & edit" ([d877725](https://github.com/SocialGouv/iterion/commit/d8777255bc80db5eefa61e64c2735e359f0243a5))
@@ -3232,7 +3232,7 @@ under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/cha
 
     <details><summary>why</summary>
 
-    Opening a baked catalog bot in the cloud editor bound a filesystem path (/opt/iterion/bots/<bot>/main.bot); Save then hit /api/files/save and 500'd with "permission denied" (the image is read-only, and cloud has no writable workspace). Only a team-authored bot (botsource:// path) is writable in cloud.
+    Opening a baked catalog bot in the cloud editor bound a filesystem path (/opt/iterion/bots/\<bot>/main.bot); Save then hit /api/files/save and 500'd with "permission denied" (the image is read-only, and cloud has no writable workspace). Only a team-authored bot (botsource:// path) is writable in cloud.
 
     </details>
 * **studio:** replace window.confirm/prompt with accessible dialogs ([5511004](https://github.com/SocialGouv/iterion/commit/551100473e5616234a96770091d236da81c45c41))

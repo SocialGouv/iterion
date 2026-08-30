@@ -17,9 +17,10 @@ import (
 
 var (
 	// The `why` excerpt block scripts/changelog-writer.mjs appends to an entry.
-	changelogExcerpt = regexp.MustCompile(`(?s)<details><summary>why</summary>\n\n(.*?)\n\n\s*</details>`)
-	changelogH1      = regexp.MustCompile(`(?m)^# Changelog[ \t]*$`)
-	changelogAlnum   = regexp.MustCompile(`[a-zA-Z0-9]`)
+	changelogExcerpt  = regexp.MustCompile(`(?s)<details><summary>why</summary>\n\n(.*?)\n\n\s*</details>`)
+	changelogH1       = regexp.MustCompile(`(?m)^# Changelog[ \t]*$`)
+	changelogAlnum    = regexp.MustCompile(`[a-zA-Z0-9]`)
+	changelogCodeSpan = regexp.MustCompile("`[^`]*`")
 	// The `export const HEADER = ` + "`...`" + ` template literal. It contains no
 	// backtick and no ${} interpolation, so a lazy match to the closing
 	// backtick is exact — and if someone introduces either, this stops
@@ -105,6 +106,21 @@ func TestChangelogStructure(t *testing.T) {
 	for _, m := range changelogExcerpt.FindAllStringSubmatch(md, -1) {
 		if !changelogAlnum.MatchString(m[1]) {
 			t.Errorf("excerpt with no readable content: %q", strings.TrimSpace(m[1]))
+		}
+
+		// Commit bodies are full of `<placeholder>` notation. Unescaped and
+		// outside a code span, GitHub's sanitizer reads it as an unknown tag
+		// and DELETES it, so the rendered changelog silently loses the word
+		// ("iterion-sandbox-slim:, a tag nobody pushed"). escapeAngles in
+		// scripts/changelog-writer.mjs backslash-escapes them; a `<` that
+		// arrives here bare means it stopped doing so.
+		outside := changelogCodeSpan.ReplaceAllString(m[1], "")
+		for i := 0; i < len(outside); i++ {
+			if outside[i] == '<' && (i == 0 || outside[i-1] != '\\') {
+				t.Errorf("unescaped `<` outside a code span (GitHub will strip the token): %q",
+					strings.TrimSpace(outside[max(0, i-40):min(len(outside), i+40)]))
+				break
+			}
 		}
 	}
 }

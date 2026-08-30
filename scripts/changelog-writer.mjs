@@ -51,11 +51,30 @@ function isProse(paragraph) {
   return lines.some(l => !TRAILER.test(l) && /[a-z0-9]/i.test(l))
 }
 
+// Commit bodies use `<placeholder>` notation freely, and an excerpt is emitted
+// as markdown. A BARE `<version>` parses as an HTML tag, so GitHub's sanitizer
+// drops it and the word disappears from the rendered CHANGELOG.md — leaving
+// "iterion-sandbox-slim:, a tag nobody pushed" and "~/.claude/projects//memory/"
+// (14 excerpts at the time of writing).
+//
+// Backslash-escaping is CommonMark, so GitHub and VitePress both render the
+// literal text. Only `<` is escaped: nothing can open a tag without it, so the
+// closing `>` needs no help — and leaving it alone keeps `->` and `>=`, which
+// are all over these bodies, out of the diff. Inside an inline-code span the
+// character is already literal and a backslash would SHOW, hence the code-span
+// alternative that returns its match untouched.
+function escapeAngles(text) {
+  return text.replace(/(`[^`]*`)|</g, (m, code) => code || '\\<')
+}
+
 function truncate(text) {
   if (text.length <= MAX_PROSE) return text
   const cut = text.slice(0, MAX_PROSE)
   const boundary = cut.lastIndexOf(' ')
-  return `${(boundary > MAX_PROSE * 0.6 ? cut.slice(0, boundary) : cut).trimEnd()}…`
+  const kept = (boundary > MAX_PROSE * 0.6 ? cut.slice(0, boundary) : cut).trimEnd()
+  // A hard cut can land between a backslash and the character it escapes; a
+  // dangling `\` would render as a literal backslash.
+  return `${kept.replace(/\\$/, '')}…`
 }
 
 /**
@@ -77,7 +96,9 @@ export function firstProse(commit) {
     .replace(/\s+/g, ' ')
     .trim()
 
-  return text ? truncate(text) : ''
+  // Escape before truncating, so code-span detection sees the whole string
+  // rather than a span the cut left unterminated.
+  return text ? truncate(escapeAngles(text)) : ''
 }
 
 const preset = createPreset()
