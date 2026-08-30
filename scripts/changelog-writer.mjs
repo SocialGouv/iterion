@@ -26,8 +26,10 @@ const MAX_PROSE = 500
 // Matching the trailer FORM, not the bare keyword, is load-bearing: this test
 // runs against every line of the chosen paragraph, so `^closes\b` also deleted
 // hard-wrapped prose opening on the English word ("Closes the review→fix loop
-// with no human in it — for repos that opt in, and"), decapitating 79 lines
-// across this history. Hence the mandatory `:` or issue-ref anchor. The
+// with no human in it — for repos that opt in, and"), decapitating 79 lines of
+// commit-body prose across this history — one of which reached a published
+// excerpt (057be3aa), the rest sitting in bodies the parser had already cut at
+// their first trailer-shaped line. Hence the mandatory `:` or issue-ref anchor. The
 // attribution line carries an emoji the old `^generated with` never reached,
 // so its prefix is spelled out — restricted to non-letters so it cannot eat a
 // sentence starting "Regenerated with [...]".
