@@ -96,6 +96,15 @@ The webhook tail resolves everything from the PR and the repo integration:
   `usage cap: … window` is `failed_resumable` with the usage-window retry
   armed — it resumes at the provider reset by itself
   ([usage-caps.md](usage-caps.md)). Don't relaunch it by hand.
+- **"Don't hand-fix" assumes Billy can run.** When the *weekly* cap is
+  hard-blocking, the reset can be days out and the habit has no path: fix the
+  findings yourself, say so on the PR against their finding ids, and write the
+  bilan for the launches that failed. Same when he burns his duration cap
+  without banking a commit — on a repo whose verify gate re-runs the whole
+  build+test (~10 min a pass here), 2h30 buys few passes, so a run sitting at
+  `running` with nothing pushed is worth cancelling rather than waiting out
+  (measured 2026-08-30: 2h31 for zero commits, see
+  [bot-runs/branch-improve-loop.md](bot-runs/branch-improve-loop.md)).
 
 ## Dogfood duty
 
