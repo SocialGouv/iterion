@@ -135,6 +135,30 @@ tool" — the audience is anyone who operates agent work. But don't make git
 optional in the core, and don't ship a view that needs the engine to know a
 specific bot (see 2).
 
+**Backend parity doctrine — claw ↔ claude_code (pre-arbitrated).** `claw`
+(claw-code-go, the sibling repo) is meant to be feature-paritary with
+`claude_code`, and the two backends are meant to be **interchangeable** on
+the same node: `claude_code` is the more stable and mature harness today;
+`claw` reaches every provider the registry knows. This doctrine is an
+**addendum** to the numbered five above, not a sixth principle — equally
+settled, equally not to re-litigate. Consequences, settled:
+
+- A claw error, gap or limitation met in real use is a **claw-code-go
+  backlog item, not a disqualification** — fix the harness, then re-judge
+  the model. (Known gap to burn down: session resume parity — `claw`
+  never reads `SessionID`, replaying from the run's own store. MCP
+  servers and mid-tool-loop `ask_user` under the sandboxed
+  `__claw-runner` shipped in V2-2/V2-3 — see
+  [docs/sandbox.md](docs/sandbox.md).)
+- Every engine-side capability wired for one of the two (credentials,
+  fingerprinting/meters, permission gate, session resume, events) must be
+  wired — or explicitly refused with a typed diagnostic — for the other.
+  A feature that silently works on one backend only is a defect (see 1).
+- Backend fallback/switching (run-level `fallback`, per-node overrides) is
+  the interchangeability mechanism: every production switch is also a
+  parity measurement. Keep switches observable (events name the backend
+  and the served model).
+
 ## Operational-knowledge reflex — capture what a session cost you to discover
 
 When a work session burns real time **discovering how to configure or operate
