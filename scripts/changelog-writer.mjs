@@ -39,11 +39,16 @@ const TRAILER =
 // render, so skip past it to the first real prose paragraph.
 const BULLETS = /^\s*[-*]\s+\S/
 
+// A paragraph carries an excerpt only if something READABLE survives the
+// trailer filter. Without the alphanumeric test, the `---------` rule GitHub
+// writes above the trailers of a squashed PR is neither a bullet nor a
+// trailer, so it qualified as prose and rendered as a bare <hr> inside the
+// <details>.
 function isProse(paragraph) {
   const lines = paragraph.split('\n').map(l => l.trim()).filter(Boolean)
   if (!lines.length) return false
   if (BULLETS.test(lines[0])) return false
-  return lines.some(l => !TRAILER.test(l))
+  return lines.some(l => !TRAILER.test(l) && /[a-z0-9]/i.test(l))
 }
 
 function truncate(text) {
