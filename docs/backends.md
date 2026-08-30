@@ -36,6 +36,24 @@ flowchart LR
 | `grok` | Same generic CLI-agent protocol, and the same **`deny`-only** gate, `sandbox: none` requirement and unwired session resume/fork. | Explicit only. |
 | `codex` | Supported Codex CLI backend. Uses Codex's native tool loop and sandbox; see its capability boundaries below. | Per-node/workflow opt-in, or explicit addition to `ITERION_BACKEND_PREFERENCE`. |
 
+### Parity doctrine: `claw` ↔ `claude_code`
+
+These two are not alternatives at different tiers — they are meant to be
+**feature-paritary and interchangeable on the same node**. `claude_code` is
+the more stable, mature harness today; `claw` is the in-process twin that
+reaches every provider the registry knows (including providers the CLI
+cannot speak to). The settled rules:
+
+- A claw gap, error or limitation found in real use is a **claw-code-go
+  backlog item, not a disqualification**: fix the harness first, then
+  re-judge the model that ran on it.
+- Engine capabilities (credentials, fingerprints/meters, permission gate,
+  session resume, events) must land on **both** backends — or refuse with
+  a typed diagnostic on the one that cannot honour them yet.
+- Run-level `fallback` and per-node overrides are the switching mechanism;
+  every production switch doubles as a parity measurement, so switches
+  stay observable (events carry the backend and the served model).
+
 ## TL;DR
 
 If you have **at least one** of:
