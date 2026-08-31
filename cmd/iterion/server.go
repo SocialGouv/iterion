@@ -246,6 +246,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		StreamName:          cfg.NATS.Stream,
 		DLQStream:           cfg.NATS.DLQStream,
 		KVBucket:            cfg.NATS.KVBucket,
+		StreamReplicas:      cfg.NATS.StreamReplicas,
 		MaxAckPending:       cfg.NATS.MaxAckPending,
 		AckWait:             cfg.NATS.AckWait,
 		SchemaMismatchDelay: cfg.Runner.SchemaMismatchDelay,

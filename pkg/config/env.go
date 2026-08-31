@@ -21,6 +21,9 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_NATS_STREAM", &cfg.NATS.Stream)
 	lookupString("ITERION_NATS_KV_BUCKET", &cfg.NATS.KVBucket)
 	lookupString("ITERION_NATS_DLQ_STREAM", &cfg.NATS.DLQStream)
+	if err := lookupInt("ITERION_NATS_STREAM_REPLICAS", &cfg.NATS.StreamReplicas); err != nil {
+		return err
+	}
 	if err := lookupInt("ITERION_NATS_MAX_ACK_PENDING", &cfg.NATS.MaxAckPending); err != nil {
 		return err
 	}

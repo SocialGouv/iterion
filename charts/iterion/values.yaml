@@ -201,6 +201,8 @@ config:
     stream: ITERION_RUNS
     kvBucket: iterion-run-locks
     dlqStream: ITERION_RUNS_DLQ
+    # Clustered NATS needs this >1 for data-HA; CreateOrUpdateStream migrates existing streams in place at the next server boot.
+    streamReplicas: 1
   s3:
     endpoint: ""      # required when mode=cloud and minio.enabled=false
     region: us-east-1
