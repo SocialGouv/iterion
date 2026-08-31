@@ -34,6 +34,10 @@ const (
 	IssuesCollection = "board_issues"
 	ConfigCollection = "board_config"
 	EventsCollection = "board_events"
+	// EffectsCollection holds the trigger-effect outbox rows (ADR-094):
+	// one durable row per matched (board event, subscription) pair,
+	// materialized BEFORE the trigger cursor advances.
+	EffectsCollection = "trigger_effects"
 )
 
 // opTimeout bounds every Mongo call (the BoardStore interface carries no
@@ -42,19 +46,21 @@ const opTimeout = 10 * time.Second
 
 // Store is a tenant-scoped Mongo board.
 type Store struct {
-	tenant string
-	issues *mongo.Collection
-	config *mongo.Collection
-	events *mongo.Collection
+	tenant  string
+	issues  *mongo.Collection
+	config  *mongo.Collection
+	events  *mongo.Collection
+	effects *mongo.Collection
 }
 
 // New builds a tenant-scoped Mongo board store over db.
 func New(db *mongo.Database, tenantID string) *Store {
 	return &Store{
-		tenant: tenantID,
-		issues: db.Collection(IssuesCollection),
-		config: db.Collection(ConfigCollection),
-		events: db.Collection(EventsCollection),
+		tenant:  tenantID,
+		issues:  db.Collection(IssuesCollection),
+		config:  db.Collection(ConfigCollection),
+		events:  db.Collection(EventsCollection),
+		effects: db.Collection(EffectsCollection),
 	}
 }
 
@@ -111,6 +117,15 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("boardmongo: ensure events index: %w", err)
+	}
+	effects := db.Collection(EffectsCollection)
+	_, err = effects.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		// Serves ClaimDue: eligible rows by tenant + state, ordered by their
+		// next-eligibility instant.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "state", Value: 1}, {Key: "not_before", Value: 1}}, Options: options.Index().SetName("tenant_state_due")},
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("boardmongo: ensure effects index: %w", err)
 	}
 	return nil
 }

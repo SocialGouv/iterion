@@ -1,6 +1,7 @@
 package boardmongo
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
 // This file holds the trigger-spine primitives of the Mongo board: the
@@ -106,6 +108,106 @@ func (s *Store) TriggerCursor() (int64, error) {
 		options.UpdateOne().SetUpsert(true),
 	)
 	return tip, nil
+}
+
+// --- trigger-effect outbox (ADR-094) ---
+//
+// One durable row per matched (board event, subscription) pair, written by
+// the cloud board source BEFORE the cursor advances and drained by the
+// trigger.EffectWorker under an atomic leased claim. Implements
+// trigger.EffectOutbox.
+
+// UpsertPending inserts rows that do not exist yet; an existing row (a racing
+// replica's materialization, a re-scan after an aborted batch) is untouched
+// whatever state it reached — $setOnInsert is the idempotency.
+func (s *Store) UpsertPending(_ context.Context, rows []trigger.EffectRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	models := make([]mongo.WriteModel, 0, len(rows))
+	for _, r := range rows {
+		r.TenantID = s.tenant
+		if r.State == "" {
+			r.State = trigger.EffectPending
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": r.ID}).
+			SetUpdate(bson.M{"$setOnInsert": r}).
+			SetUpsert(true))
+	}
+	if _, err := s.effects.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
+		return fmt.Errorf("boardmongo: upsert trigger effects: %w", err)
+	}
+	return nil
+}
+
+// ClaimDue flips up to limit eligible rows to claimed with a fresh lease.
+// One FindOneAndUpdate per row keeps the flip atomic per document — two
+// replicas' workers cannot claim the same row.
+func (s *Store) ClaimDue(_ context.Context, now time.Time, limit int) ([]trigger.EffectRow, error) {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	if limit <= 0 {
+		limit = 20
+	}
+	var out []trigger.EffectRow
+	for len(out) < limit {
+		var row trigger.EffectRow
+		err := s.effects.FindOneAndUpdate(ctx,
+			bson.M{
+				"tenant_id":  s.tenant,
+				"state":      bson.M{"$in": bson.A{trigger.EffectPending, trigger.EffectClaimed}},
+				"not_before": bson.M{"$lte": now},
+			},
+			bson.M{"$set": bson.M{
+				"state":      trigger.EffectClaimed,
+				"not_before": now.Add(trigger.EffectLease),
+				"updated_at": now,
+			}},
+			options.FindOneAndUpdate().
+				SetSort(bson.D{{Key: "created_at", Value: 1}}).
+				SetReturnDocument(options.After),
+		).Decode(&row)
+		if err == mongo.ErrNoDocuments {
+			break
+		}
+		if err != nil {
+			return out, fmt.Errorf("boardmongo: claim trigger effect: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (s *Store) setEffect(id string, fields bson.M) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	fields["updated_at"] = time.Now().UTC()
+	if _, err := s.effects.UpdateOne(ctx, bson.M{"_id": id, "tenant_id": s.tenant}, bson.M{"$set": fields}); err != nil {
+		return fmt.Errorf("boardmongo: update trigger effect %s: %w", id, err)
+	}
+	return nil
+}
+
+func (s *Store) MarkConsumed(_ context.Context, id string) error {
+	return s.setEffect(id, bson.M{"consume_marked": true})
+}
+
+func (s *Store) MarkDone(_ context.Context, id string) error {
+	return s.setEffect(id, bson.M{"state": trigger.EffectDone})
+}
+
+func (s *Store) MarkRetry(_ context.Context, id string, attempts int, notBefore time.Time, lastErr string) error {
+	return s.setEffect(id, bson.M{
+		"state": trigger.EffectPending, "attempts": attempts,
+		"not_before": notBefore, "last_error": lastErr,
+	})
+}
+
+func (s *Store) MarkFailed(_ context.Context, id string, lastErr string) error {
+	return s.setEffect(id, bson.M{"state": trigger.EffectFailed, "last_error": lastErr})
 }
 
 // AdvanceTriggerCursor CAS-advances the cursor from `from` to `to`,

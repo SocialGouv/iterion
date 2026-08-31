@@ -25,6 +25,11 @@ const (
 	TickGuardBlocked TickDecision = "guard_blocked"
 	// TickGuardError: the guard failed to execute (spawn error/timeout).
 	TickGuardError TickDecision = "guard_error"
+	// TickLaunchFailed: overlap + guard passed but the launch itself
+	// errored. The slot is spent (at-most-once per occurrence; the next
+	// cron slot is the retry) — recording it distinctly is what keeps a
+	// "fired" audit from claiming a run that never started.
+	TickLaunchFailed TickDecision = "launch_failed"
 )
 
 // TickRecord is the shared audit row written by every surface — as a

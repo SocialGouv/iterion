@@ -103,7 +103,11 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 			t.warn("launch %s (%s): %v", sb.ID, sb.BotID, lerr)
 		}
 		if t.Audit != nil {
-			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, schedgate.TickFired)
+			decision := schedgate.TickFired
+			if lerr != nil {
+				decision = schedgate.TickLaunchFailed
+			}
+			rec := schedgate.NewTickRecord(schedgate.SurfaceCloud, sb.ID, now, decision)
 			rec.ScheduleName = sb.BotID
 			rec.BotID = sb.BotID
 			rec.TenantID = sb.TenantID
