@@ -248,9 +248,12 @@ run's base): every recorded path is a PURE addition — a refs/ file absent at b
 entries where every base entry survives equal. A rewrite, a delete, or a rename (its delete side
 loses) is the masking vector wearing an addition's name → refused, re-baseline ledger, human. An
 added entry no acted request claims is smuggling → refused. An added entry whose observation
-tuple (the entry minus its `id`) equals an existing one is a COLLISION — two references for one
-observation resolve later by a cleanup that picks the masking direction → refused. The ledger is
-append-only: an edited trail audits nothing.
+tuple equals an existing one is a COLLISION — the tuple is the `OBSERVATION_FIELDS` allowlist
+(`method`, `path`, `persona`, `surface`, `fields`, `steps`, `params`, `query`, `body`,
+`readback`, `no_redirect`, `csrf_field`), NOT "the entry minus its id": a distinguishing field
+outside the allowlist does not disambiguate, and absent and empty compare equal. Two references
+for one observation resolve later by a cleanup that picks the masking direction → refused. The
+ledger is append-only: an edited trail audits nothing.
 
 ## The `write` surface — the only one a read-only capture cannot reach
 

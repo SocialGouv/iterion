@@ -504,14 +504,19 @@ tool lot_verify:
         # et un vert ne peut pas rapporter ce retrecissement (mesure au tour
         # 6). Un changement legitime de ces fichiers est une EXTENSION du
         # filet : elle appartient a son proprietaire, par le registre.
-        judged = [refs_dir,
-                  os.path.join(gm_dir, "verify-oracle.sh"),
-                  os.path.join(gm_dir, "harness.py"),
-                  os.path.join(gm_dir, "canon"),
-                  os.path.join(gm_dir, "config.json"),
-                  os.path.join(gm_dir, "corpus.json"),
-                  os.path.join(gm_dir, "route-coverage.json"),
-                  os.path.join(gm_dir, "feature-coverage.json")]
+        # The WHOLE net directory is judged, not a fixed file list: a fixed
+        # list leaves a NEW file invisible, and `python3 <net>/harness.py`
+        # puts that directory at sys.path[0] — a dropped <net>/json.py
+        # executes before any verdict is read, so an unjudged new file is a
+        # certifier hijack, not clutter (review finding). Three exclusions,
+        # each owned by another deterministic check: the two ledgers (the
+        # lot legitimately writes its requests there; the harness judges
+        # append-only and act shape), and mutants/ (reanchor's own scope
+        # check owns every path under it).
+        judged = [gm_dir]
+        unjudged_prefixes = (os.path.join(gm_dir, "mutants") + "/",)
+        unjudged_exact = {os.path.join(gm_dir, "EXTENSIONS.md"),
+                          os.path.join(gm_dir, "REBASELINE.md")}
 
         # The extension ledger, read and judged by the HARNESS's own code —
         # never by this bot's. Pending requests route to the net's extension
@@ -523,10 +528,30 @@ tool lot_verify:
             hp = os.path.join(ws, gm_dir, "harness.py")
             if not os.path.isfile(hp):
                 return None
+            # A net materialised BEFORE this feature has no extension modes:
+            # its main() would fall through to the FULL gate path — boot the
+            # app, run the campaign — and die on this call's timeout (review
+            # finding, executed against the merge-base harness). Capability
+            # is read from the file, and its absence is the legal state of
+            # an older net: no extension machinery, no exemption, exactly
+            # the pre-feature behaviour until the net's owner re-materialises.
+            try:
+                with open(hp, encoding="utf-8") as f:
+                    if 'mode == "extend-verify"' not in f.read():
+                        return None
+            except OSError as e:
+                problems.append("cannot read %s to probe its capabilities: %s"
+                                % (hp, e))
+                return None
             env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws,
                        GM_DIR=gm_dir, **extra)
-            p = subprocess.run(["python3", hp], cwd=ws, env=env,
-                               capture_output=True, text=True, timeout=300)
+            try:
+                p = subprocess.run(["python3", hp], cwd=ws, env=env,
+                                   capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                problems.append("the harness did not answer GM_MODE=%s "
+                                "within 300s — refusing, not exempting" % mode)
+                return None
             try:
                 return json.loads((p.stdout or "").strip().splitlines()[-1])
             except (ValueError, IndexError):
@@ -561,12 +586,33 @@ tool lot_verify:
         exempt = {p for p in exempt
                   if p == corpus_path or p.startswith(surface_prefix)}
 
+        # The certificate is judged on COMMITTED content (git show), while
+        # the diff below reads the WORKING TREE — so an exempted path with
+        # uncommitted worktree damage would escape the verdict wearing its
+        # certificate (review finding, executed: additions-only committed,
+        # entry deleted in the worktree, green). A dirty net voids the
+        # certificate: commit, then verify.
+        code, log = run("git -c core.quotePath=false status --porcelain -- %s"
+                        % shlex.quote(gm_dir))
+        if code != 0:
+            problems.append("cannot read the net's worktree state: %s" % log)
+            exempt = set()
+        elif log.strip():
+            dirty = sorted(l[3:] for l in log.splitlines() if l.strip())
+            problems.append("%d uncommitted path(s) under the net (%s) — the "
+                            "extension certificate reads commits, the verdict "
+                            "reads the tree; a dirty net voids the certificate."
+                            % (len(dirty), ", ".join(dirty[:12])))
+            exempt = set()
+
         code, log = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
-            raw = [l.strip() for l in log.splitlines() if l.strip()]
+            raw = [l.strip() for l in log.splitlines()
+                   if l.strip() and l.strip() not in unjudged_exact
+                   and not any(l.strip().startswith(u) for u in unjudged_prefixes)]
             if any(p != corpus_path and not p.startswith(surface_prefix)
                    for p in raw):
                 exempt = set()

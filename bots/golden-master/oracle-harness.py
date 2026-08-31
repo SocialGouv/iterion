@@ -1359,6 +1359,14 @@ def extension_verdict(ws, gm_rel, base):
             verdict["ok_paths"].extend(row["paths"])
         verdict["acted"].append(row)
 
+    # Corpus damage must surface even when NO act recorded corpus.json —
+    # otherwise a hand-run of this mode shows every row ok and an empty
+    # problems list while the corpus sits amputated, and the reader walks
+    # away reassured by the very command meant to warn them (review note).
+    if corpus_changed and corpus_problems and \
+            not any(corpus_rel in (a.get("recorded_paths") or []) for a in acts):
+        verdict["problems"].extend(corpus_problems)
+
     verdict["ok_paths"] = sorted(set(verdict["ok_paths"]))
     return verdict
 
