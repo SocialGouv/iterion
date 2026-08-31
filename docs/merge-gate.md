@@ -371,8 +371,10 @@ context that will never arrive, and no error appears on the run, the PR or the
 check. That is worse than a red check, because nothing points at the cause.
 
 It happened twice in one day in production. A rolling deploy drained a review
-mid-flight (the lame-duck drain is not deployed, so a rollout cancels in-flight
-runs). Separately, a bot bug made the publish step skip on every run, so
+mid-flight (at the time the lame-duck drain was not deployed, so a rollout
+cancelled in-flight runs; the chart has rendered `config.runner.drainMode`
+since 3.78.0 — see docs/probes-and-graceful-shutdown.md). Separately, a bot
+bug made the publish step skip on every run, so
 `revi/review` stopped landing repo-wide and every pull request became
 unmergeable — with every other check green.
 

@@ -197,7 +197,7 @@ the FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_ws_connections` | server | WS open / close |
 | `iterion_mongo_change_stream_lag_seconds` | server | Per event delivered |
 | `iterion_nats_pending_messages` | runner | Polled every 15s |
-| `iterion_workspace_clone_duration_seconds` | runner | Per workspace clone — **registered but not yet observed** (no runtime `.Observe()` call), so it currently emits no samples |
+| `iterion_workspace_clone_duration_seconds` | runner | Time spent in `prepareRepoWorkspace` (clone + checkout) before engine start, observed once per repo-bound run |
 | `iterion_llm_tokens_total{backend,model,direction}` | runner | Per LLM call |
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Per claw-priced call (delegate calls don't carry a price table) |
 | `iterion_runner_heartbeat_errors_total` | runner | Per KV refresh failure |

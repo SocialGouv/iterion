@@ -1340,10 +1340,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	// the server pod, which has no worktree, serves the panels from that.
 	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
+		cloneStart := time.Now()
 		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
 		if derr != nil {
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
+		r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
 		workDir = repoDir
 		if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
 			gitBase = head

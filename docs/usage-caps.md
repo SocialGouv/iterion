@@ -282,5 +282,9 @@ kubectl -n iterion annotate scaledobject iterion-runner \
   autoscaling.keda.sh/paused-replicas-                  # thaw
 ```
 
-Cancel in-flight runs *before* freezing: a pod killed mid-run ends
-`failed` (not resumable), where a cancel checkpoints it.
+In-flight runs survive the freeze: a scaled-down pod SIGTERMs into the
+lame-duck drain (`ErrRunInterrupted` → `failed_resumable`, auto-resumed
+when capacity returns), and even a SIGKILL leaves the run to the orphan
+sweeper, which flips it to `failed_resumable` within minutes. Cancel
+first only when you do NOT want the run to come back after the thaw —
+a cancel is terminal until an explicit resume.
