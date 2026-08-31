@@ -25,9 +25,9 @@ type EffectWorker struct {
 	Now func() time.Time
 }
 
-// effectSkipSpent is the sentinel applyClaimedEffect returns when the
+// errEffectOneShotSpent is the sentinel applyClaimedEffect returns when the
 // one-shot was spent by another event — terminal success for THIS row.
-var effectSkipSpent = errors.New("trigger: one-shot already spent")
+var errEffectOneShotSpent = errors.New("trigger: one-shot already spent")
 
 // Tick claims up to limit due rows and executes each. Returns the number of
 // rows it acted on (tests + callers pacing on activity).
@@ -47,7 +47,7 @@ func (w *EffectWorker) Tick(ctx context.Context, limit int) int {
 func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 	err := w.applyClaimedEffect(ctx, row)
 	switch {
-	case err == nil, errors.Is(err, effectSkipSpent):
+	case err == nil, errors.Is(err, errEffectOneShotSpent):
 		if merr := w.Outbox.MarkDone(ctx, row.ID); merr != nil {
 			// The effect ran; a failed done-write means one redundant retry
 			// of an idempotent/one-shot-guarded effect, not a loss.
@@ -73,7 +73,7 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 }
 
 // applyClaimedEffect runs one (subscription, event) effect under the row's
-// claim. Error semantics: nil = executed; effectSkipSpent = the one-shot was
+// claim. Error semantics: nil = executed; errEffectOneShotSpent = the one-shot was
 // consumed by another event (terminal for this row); anything else = retry.
 func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) error {
 	sub, err := w.Subs.Get(ctx, row.SubID)
@@ -109,7 +109,7 @@ func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) e
 				return fmt.Errorf("consume labels: %w", err)
 			}
 			if !consumed {
-				return effectSkipSpent
+				return errEffectOneShotSpent
 			}
 			// Persist "the one-shot is OURS" BEFORE launching: a launch
 			// failure (or a crash) then retries the launch WITHOUT

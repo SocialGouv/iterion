@@ -51,7 +51,7 @@ type Registry struct {
 	AuthLoginsTotal         *prometheus.CounterVec // result (success|invalid|locked|password_change_required|error)
 	AuthPasswordResetsTotal *prometheus.CounterVec // step (requested|confirmed)
 	LaunchDeniedTotal       *prometheus.CounterVec // reason (org_suspended|monthly_run_quota_exceeded|…)
-	RunsOrphanRecovered prometheus.Counter
+	RunsOrphanRecovered     prometheus.Counter
 	// OrphanSweepErrors counts sweep-pass steps that could not do their
 	// job (scan failed, lease state unknown, CAS flip failed), by stage.
 	// Flat at 0 with RunsOrphanRecovered also flat is health; a growing

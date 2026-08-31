@@ -59,12 +59,12 @@ const EffectLease = 2 * time.Minute
 type EffectRow struct {
 	// ID is EffectID(event, subID) — the idempotency key a duplicate
 	// materialization (two replicas racing the same batch) collapses on.
-	ID       string    `bson:"_id" json:"id"`
-	TenantID string    `bson:"tenant_id" json:"tenant_id"`
-	Event    Event     `bson:"event" json:"event"`
-	SubID    string    `bson:"sub_id" json:"sub_id"`
-	State    string    `bson:"state" json:"state"`
-	Attempts int       `bson:"attempts" json:"attempts"`
+	ID       string `bson:"_id" json:"id"`
+	TenantID string `bson:"tenant_id" json:"tenant_id"`
+	Event    Event  `bson:"event" json:"event"`
+	SubID    string `bson:"sub_id" json:"sub_id"`
+	State    string `bson:"state" json:"state"`
+	Attempts int    `bson:"attempts" json:"attempts"`
 	// ConsumeMarked records that THIS row's atomic label consume succeeded,
 	// so a retry/reclaim must not re-consume (it would read "already spent"
 	// and drop the launch).
