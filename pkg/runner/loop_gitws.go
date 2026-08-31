@@ -728,11 +728,13 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 	// parks live runs there), so the skip is recorded on the timeline,
 	// never silent. Bounded read, fail-open on error: the read is a
 	// courtesy to the operator, not a gate on preserving work — and not
-	// a licence for a wedged store to pin the pod. It rides the doc
-	// pair's generous bound (a merely SLOW store must not fail the guard
-	// open — proven at 7s); a store that cannot answer within it is the
-	// documented preservation-wins residue.
-	rctx, rcancel := context.WithTimeout(ctx, bankDocOpTimeout)
+	// a licence for a wedged store to pin the pod. Its own tight bound:
+	// wide enough that a merely SLOW store does not fail the guard open
+	// (proven at 7s), tight enough that a wedged store cannot buy its
+	// whole window in pre-Nak recovery latency (measured at 30s when
+	// this rode the doc pair's bound). Past it, the documented
+	// preservation-wins residue applies.
+	rctx, rcancel := context.WithTimeout(ctx, parkDocReadTimeout)
 	run, lerr := r.cfg.Store.LoadRun(store.WithIdentity(rctx, msg.TenantID, msg.OwnerID), msg.RunID)
 	rcancel()
 	if lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
@@ -779,9 +781,20 @@ const parkStoreOpTimeout = 5 * time.Second
 // redeliver. A deadline here fails LOUDLY on the existing error paths.
 const bankDocOpTimeout = 30 * time.Second
 
-// bankStoreCtx is the one choke point building the bank's doc-pair
-// store context: detached (the run ctx may already be cancelled),
-// identity-carrying, always deadlined.
+// parkDocReadTimeout bounds the park's doc-cancel courtesy read alone —
+// tighter than the doc pair's bound on purpose: this read sits on the
+// interrupted pre-Nak path, where a wedged store buys its whole window
+// in added recovery latency (measured at 30s when it rode
+// bankDocOpTimeout). 10s covers the slow-but-healthy store the guard
+// exists for (proven at 7s) with margin.
+const parkDocReadTimeout = 10 * time.Second
+
+// bankStoreCtx builds one bounded store context PER DOC OP: detached
+// (the run ctx may already be cancelled), identity-carrying, always
+// deadlined. Per op, not per pair — a load that eats the shared window
+// starves the save, and a save that dies after the push loses the
+// merge truth the pair exists to record (proven: 28s load, 3s save
+// that would have fit its own bound, branch orphaned on the forge).
 func bankStoreCtx(msg *queue.RunMessage) (context.Context, context.CancelFunc) {
 	wctx, cancel := context.WithTimeout(context.Background(), bankDocOpTimeout)
 	return store.WithIdentity(wctx, msg.TenantID, msg.OwnerID), cancel
@@ -875,24 +888,42 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// claim-time token stays only as the redaction key for error output.
 	pushErr := r.runGit(ctx, workDir, tok, bankPushArgs(branch, head, oldHead)...)
 
-	// Persist on a detached, deadlined ctx carrying the run's tenant
-	// identity (the run ctx may already be cancelled) — and bounded,
-	// because this runs pre-Nak with the lease still refreshing.
-	idCtx, idCancel := bankStoreCtx(msg)
-	defer idCancel()
-	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	// Persist on detached, deadlined ctxs carrying the run's tenant
+	// identity (the run ctx may already be cancelled) — bounded PER OP,
+	// because this runs pre-Nak with the lease still refreshing, and a
+	// load that eats a shared window starves the save. Every exit past
+	// this point that leaves the pushed branch unrecorded goes on the
+	// timeline: the doc is what `runs merge` trusts, and a branch the
+	// doc does not name is invisible everywhere but the pod log.
+	lctx, lcancel := bankStoreCtx(msg)
+	run, lerr := r.cfg.Store.LoadRun(lctx, msg.RunID)
+	lcancel()
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
+		data := map[string]any{
+			"branch": branch, "head": head,
+			"reason": "doc_load_failed",
+			"error":  fmt.Sprintf("the doc read died, nothing recorded: %v", lerr),
+		}
+		if pushErr != nil {
+			// Both died: the push failure would otherwise vanish with the
+			// doc write that was meant to carry it.
+			data["push_error"] = pushErr.Error()
+		}
+		r.recordBankRefused(msg, data)
 		return
 	}
 	// Re-read just before the write: an operator cancel that landed while
 	// the push was in flight must not become merge-eligible through this
 	// SaveRun — the branch may exist on the forge, but the doc is what
 	// `runs merge` trusts, and a cancel is the operator refusing the
-	// work. (The remaining load→save window is the same one the success
-	// path has always had.)
+	// work.
 	if run.Status == store.RunStatusCancelled {
 		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
+		r.recordBankRefused(msg, map[string]any{
+			"branch": branch, "head": head,
+			"reason": "cancelled_while_banking",
+		})
 		return
 	}
 	// The three fields must stay mutually consistent ACROSS ATTEMPTS. A
@@ -932,8 +963,15 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 		run.FinalBranchError = ""
 		r.cfg.Logger.Info("runner: run %s banked: %s @ %.12s", msg.RunID, branch, head)
 	}
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+	sctx, scancel := bankStoreCtx(msg)
+	defer scancel()
+	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+		r.recordBankRefused(msg, map[string]any{
+			"branch": branch, "head": head,
+			"reason": "doc_save_failed",
+			"error":  serr.Error(),
+		})
 	}
 }
 
@@ -1160,11 +1198,19 @@ func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
 // recorded, on the timeline, exactly like a refused chain comparison.
 func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 	r.cfg.Logger.Error("runner: run %s: %s", msg.RunID, cause)
-	idCtx, idCancel := bankStoreCtx(msg)
-	defer idCancel()
-	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
+	lctx, lcancel := bankStoreCtx(msg)
+	run, lerr := r.cfg.Store.LoadRun(lctx, msg.RunID)
+	lcancel()
 	if lerr != nil || run == nil {
+		// The refusal is often the ONLY information the run leaves (an
+		// export mismatch has no branch) — a dead doc read must not
+		// erase it; the timeline carries it instead.
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record refusal: %v", msg.RunID, lerr)
+		r.recordBankRefused(msg, map[string]any{
+			"cause":  cause,
+			"reason": "doc_load_failed",
+			"error":  fmt.Sprintf("%v", lerr),
+		})
 		return
 	}
 	if run.FinalBranch != "" {
@@ -1178,7 +1224,14 @@ func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 		return
 	}
 	run.FinalBranchError = cause
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
+	sctx, scancel := bankStoreCtx(msg)
+	defer scancel()
+	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, serr)
+		r.recordBankRefused(msg, map[string]any{
+			"cause":  cause,
+			"reason": "doc_save_failed",
+			"error":  serr.Error(),
+		})
 	}
 }

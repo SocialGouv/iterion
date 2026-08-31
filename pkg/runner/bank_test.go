@@ -479,6 +479,15 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 	if after.FinalBranch != "" || after.FinalCommit != "" {
 		t.Fatalf("cancelled run recorded FinalBranch=%q FinalCommit=%q, want both empty (not merge-eligible)", after.FinalBranch, after.FinalCommit)
 	}
+	// The branch exists on the forge with nothing on the doc pointing at
+	// it — that state must be on the timeline, not only in a pod log.
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+	if ev == nil {
+		t.Fatal("a pushed-but-unrecorded branch left no run_bank_refused — invisible outside the pod log")
+	}
+	if got := ev.Data["reason"]; got != "cancelled_while_banking" {
+		t.Errorf("reason = %v, want cancelled_while_banking", got)
+	}
 }
 
 // The wall-clock death is the class the death bank most exists for, and
@@ -1079,6 +1088,8 @@ type parkIOProbeStore struct {
 	saveWindow  chan time.Duration
 	eventWindow chan time.Duration
 	loadDelay   time.Duration // simulates a slow-but-healthy store
+	loadErr     error         // injected LoadRun failure
+	saveErr     error         // injected SaveRun failure
 }
 
 func window(ctx context.Context) time.Duration {
@@ -1101,6 +1112,9 @@ func (s *parkIOProbeStore) LoadRun(ctx context.Context, id string) (*store.Run, 
 			return nil, ctx.Err()
 		}
 	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
 	return s.RunStore.LoadRun(ctx, id)
 }
 
@@ -1110,6 +1124,9 @@ func (s *parkIOProbeStore) SaveRun(ctx context.Context, run *store.Run) error {
 		case s.saveWindow <- window(ctx):
 		default:
 		}
+	}
+	if s.saveErr != nil {
+		return s.saveErr
 	}
 	return s.RunStore.SaveRun(ctx, run)
 }
@@ -1279,5 +1296,141 @@ func TestParkEventLandsWhenTheBudgetIsSpent(t *testing.T) {
 	}
 	if _, hasErr := ev.Data["error"]; !hasErr {
 		t.Errorf("event data = %v, want the budget-death error named", ev.Data)
+	}
+}
+
+// ── Round 4: the storage bank's doc I/O exits must be loud and per-op ──
+
+// One shared 30s ctx for load->save meant the save only got what the
+// load left (proven: a 28s load starved a 3s save — branch pushed, doc
+// empty, merge truth lost in silence). Per-op contexts: the save's
+// window must not depend on the load's spend.
+func TestStorageBankSaveGetsItsOwnWindow(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1),
+		loadDelay: 6 * time.Second}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("nominal bank broken: %q (present=%v)", got, ok)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranch == "" {
+		t.Fatal("the doc pair was not recorded")
+	}
+	<-probe.loadWindow
+	select {
+	case w := <-probe.saveWindow:
+		if w < bankDocOpTimeout-3*time.Second {
+			t.Errorf("save window = %s after a 6s load — the save inherited only what the load left; each doc op must ride its own bound", w)
+		}
+	default:
+		t.Fatal("the bank never saved the doc")
+	}
+}
+
+// Every doc-I/O exit of the storage bank that leaves an accomplished
+// side effect (branch pushed, refusal computed) must land on the
+// timeline — the park already honours this on every exit; these were
+// the five log-only ones.
+func TestStorageBankDocIOFailuresAreLoud(t *testing.T) {
+	t.Run("load failure after the push", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+			t.Fatalf("push should precede the doc read: %q (present=%v)", got, ok)
+		}
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("branch on the forge, doc read dead, timeline EMPTY — the silent merge-truth loss")
+		}
+		if got := ev.Data["reason"]; got != "doc_load_failed" {
+			t.Errorf("reason = %v, want doc_load_failed", got)
+		}
+		if ev.Data["head"] != head {
+			t.Errorf("event head = %v, want the pushed head %s", ev.Data["head"], head)
+		}
+	})
+	t.Run("save failure after the push", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("SaveRun died and the timeline is empty — the doc pair is lost in silence")
+		}
+		if got := ev.Data["reason"]; got != "doc_save_failed" {
+			t.Errorf("reason = %v, want doc_save_failed", got)
+		}
+	})
+	t.Run("refusal recording load failure keeps the cause", func(t *testing.T) {
+		r, msg, _, _, _ := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+
+		r.recordBankFailure(msg, "bank refused: the exported workspace lost the run's final tree")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("the integrity refusal vanished entirely — neither FinalBranchError nor the timeline carries it")
+		}
+		if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "bank refused") {
+			t.Errorf("cause = %v, want the original refusal preserved", ev.Data["cause"])
+		}
+	})
+	t.Run("refusal recording save failure keeps the cause", func(t *testing.T) {
+		r, msg, _, _, _ := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+
+		r.recordBankFailure(msg, "bank refused: probe cause")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("the refusal's save failure is invisible outside the pod log")
+		}
+		if cause, _ := ev.Data["cause"].(string); !strings.Contains(cause, "probe cause") {
+			t.Errorf("cause = %v, want the original refusal preserved", ev.Data["cause"])
+		}
+	})
+}
+
+// The park's doc-cancel courtesy read rides its own tight bound — NOT
+// the doc pair's 30s: on the interrupted path a wedged store was
+// measured costing 30s of pre-Nak latency, 6x the round-2 figure the
+// budget comment argues against.
+func TestParkDocReadBoundIsTight(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("nominal park broken: %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w > parkDocReadTimeout+time.Second {
+			t.Errorf("doc-cancel read window = %s — it must ride its own tight bound (%s), not the doc pair's %s: a wedged store buys that much pre-Nak latency", w, parkDocReadTimeout, bankDocOpTimeout)
+		}
+	default:
+		t.Fatal("the park never re-read the doc")
 	}
 }

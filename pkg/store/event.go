@@ -162,6 +162,12 @@ const (
 	//     integrity-check refusal only
 	//   - reason ("push_failed") / error: the forge refused this
 	//     attempt's push — the push-failure refusal only
+	//   - reason ("doc_load_failed" / "doc_save_failed" /
+	//     "cancelled_while_banking") + head/branch/error/push_error: the
+	//     bank's doc I/O died or was refused AFTER the side effect — the
+	//     branch may sit on the forge with the doc naming nothing, or an
+	//     integrity refusal may have lost its FinalBranchError write; the
+	//     event is then the only durable carrier of what happened
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
