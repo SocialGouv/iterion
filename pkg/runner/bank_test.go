@@ -1251,7 +1251,7 @@ func TestParkDocCancelGuardSurvivesASlowStore(t *testing.T) {
 		t.Fatalf("flip to cancelled: %v", err)
 	}
 	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
-		loadWindow: make(chan time.Duration, 1), loadDelay: parkDocReadTimeout - 3*time.Second}
+		loadWindow: make(chan time.Duration, 1), loadDelay: parkDocReadTimeout * 7 / 10}
 	r.cfg.Store = probe
 	gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
 	head := gitOut(t, work, "rev-parse", "HEAD")
@@ -1481,8 +1481,56 @@ func TestStorageBankDeadPushExitsNameThePushError(t *testing.T) {
 		if ev == nil {
 			t.Fatal("no event at all")
 		}
+		if got := ev.Data["reason"]; got != "cancelled_while_banking" {
+			t.Errorf("reason = %v, want cancelled_while_banking", got)
+		}
 		if pe, _ := ev.Data["push_error"].(string); pe == "" {
 			t.Fatalf("event %v hides the dead push behind cancelled_while_banking", ev.Data)
+		}
+	})
+	// M1 — the hysterical-judge face: a LIVE push must never be declared
+	// dead. push_error present on a succeeded push would be the exact
+	// inverse of the bug this family fixes.
+	t.Run("live push x dead save carries NO push_error", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+			t.Fatalf("push should have landed: %q (present=%v)", got, ok)
+		}
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if _, has := ev.Data["push_error"]; has {
+			t.Fatalf("event %v declares dead a branch that IS on the forge", ev.Data)
+		}
+	})
+	// M2 — the third post-push exit, uncovered until a mutant proved it
+	// could be nil'ed in silence.
+	t.Run("dead push x dead load", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, loadErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if got := ev.Data["reason"]; got != "doc_load_failed" {
+			t.Errorf("reason = %v, want doc_load_failed", got)
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v — both push and doc read died and the push failure has no carrier", ev.Data)
 		}
 	})
 }

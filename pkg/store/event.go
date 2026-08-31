@@ -170,7 +170,13 @@ const (
 	//     event is then the only durable carrier of what happened. On
 	//     these shapes head sits on the forge ONLY when push_error is
 	//     absent — a present push_error is the explicit marker that the
-	//     head never reached it
+	//     push was not confirmed (a deadline can kill the client after
+	//     the server applied the update, so "unconfirmed", not "never
+	//     arrived"). Two producers share the doc_*_failed reasons:
+	//     pushBank's post-push exits carry head/branch (a possibly
+	//     orphaned branch), recordBankFailure's pre-push ones carry
+	//     cause and no head (an integrity refusal that lost its
+	//     FinalBranchError write) — head-vs-cause is the discriminant
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
