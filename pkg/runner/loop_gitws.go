@@ -728,8 +728,11 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 	// parks live runs there), so the skip is recorded on the timeline,
 	// never silent. Bounded read, fail-open on error: the read is a
 	// courtesy to the operator, not a gate on preserving work — and not
-	// a licence for a wedged store to pin the pod.
-	rctx, rcancel := context.WithTimeout(ctx, parkStoreOpTimeout)
+	// a licence for a wedged store to pin the pod. It rides the doc
+	// pair's generous bound (a merely SLOW store must not fail the guard
+	// open — proven at 7s); a store that cannot answer within it is the
+	// documented preservation-wins residue.
+	rctx, rcancel := context.WithTimeout(ctx, bankDocOpTimeout)
 	run, lerr := r.cfg.Store.LoadRun(store.WithIdentity(rctx, msg.TenantID, msg.OwnerID), msg.RunID)
 	rcancel()
 	if lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
@@ -748,12 +751,16 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 	r.recordBankAttempt(msg, map[string]any{"cause": cause, "ref": ref, "head": head})
 }
 
-// attemptBankBudget bounds the park end to end. Deliberately far below
-// bankBudget: the park is ONE push, not the bank's four network ops —
-// and on the interrupted path it runs BEFORE the Nak that triggers
-// redelivery, so every second spent here is added recovery latency for
-// a run another pod should already be picking up.
-const attemptBankBudget = 2 * time.Minute
+// attemptBankBudget bounds the park's GIT work end to end; each store
+// op rides its own short bound on top (parkStoreOpTimeout for the
+// event write — detached on purpose, so the event still lands when the
+// push just died on this budget; bankDocOpTimeout for the doc read).
+// Deliberately far below bankBudget: the park is ONE push, not the
+// bank's four network ops — and on the interrupted path it runs BEFORE
+// the Nak that triggers redelivery, so every second spent here is
+// added recovery latency for a run another pod should already be
+// picking up. A var so tests can exercise the spent-budget divergence.
+var attemptBankBudget = 2 * time.Minute
 
 // parkStoreOpTimeout bounds each of the park's individual STORE ops (the
 // doc courtesy read, the timeline event write) — the store is the same
@@ -761,6 +768,24 @@ const attemptBankBudget = 2 * time.Minute
 // and the mongo client carries no timeout of its own. Same 5s
 // teardown-write convention as runtime's run_failure/pause paths.
 const parkStoreOpTimeout = 5 * time.Second
+
+// bankDocOpTimeout bounds the storage bank's run-doc pair I/O
+// (pushBank's load→save, recordBankFailure's) — load-bearing for merge
+// truth, hence far more generous than parkStoreOpTimeout, but bounded
+// all the same: the storage bank is PRE-Nak too (a generic `failed` is
+// bankable and naks only after banking returns, with the heartbeat
+// still refreshing the lease), and a doc write that never returns does
+// not serve merge truth — it replaces it with a pod nothing can
+// redeliver. A deadline here fails LOUDLY on the existing error paths.
+const bankDocOpTimeout = 30 * time.Second
+
+// bankStoreCtx is the one choke point building the bank's doc-pair
+// store context: detached (the run ctx may already be cancelled),
+// identity-carrying, always deadlined.
+func bankStoreCtx(msg *queue.RunMessage) (context.Context, context.CancelFunc) {
+	wctx, cancel := context.WithTimeout(context.Background(), bankDocOpTimeout)
+	return store.WithIdentity(wctx, msg.TenantID, msg.OwnerID), cancel
+}
 
 // attemptBankContext builds the park's detached context — ALWAYS
 // deadlined, including when the operator disabled per-op git bounds
@@ -850,9 +875,11 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// claim-time token stays only as the redaction key for error output.
 	pushErr := r.runGit(ctx, workDir, tok, bankPushArgs(branch, head, oldHead)...)
 
-	// Persist on a background ctx carrying the run's tenant identity (the
-	// run ctx may already be cancelled) — recordRunGitMeta's rationale.
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	// Persist on a detached, deadlined ctx carrying the run's tenant
+	// identity (the run ctx may already be cancelled) — and bounded,
+	// because this runs pre-Nak with the lease still refreshing.
+	idCtx, idCancel := bankStoreCtx(msg)
+	defer idCancel()
 	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
@@ -1133,7 +1160,8 @@ func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
 // recorded, on the timeline, exactly like a refused chain comparison.
 func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 	r.cfg.Logger.Error("runner: run %s: %s", msg.RunID, cause)
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	idCtx, idCancel := bankStoreCtx(msg)
+	defer idCancel()
 	run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID)
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record refusal: %v", msg.RunID, lerr)

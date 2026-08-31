@@ -1076,7 +1076,9 @@ func TestBankAttemptRefUnreadableHeadIsLoud(t *testing.T) {
 type parkIOProbeStore struct {
 	store.RunStore
 	loadWindow  chan time.Duration // -1 when no deadline
+	saveWindow  chan time.Duration
 	eventWindow chan time.Duration
+	loadDelay   time.Duration // simulates a slow-but-healthy store
 }
 
 func window(ctx context.Context) time.Duration {
@@ -1092,7 +1094,24 @@ func (s *parkIOProbeStore) LoadRun(ctx context.Context, id string) (*store.Run, 
 	case s.loadWindow <- window(ctx):
 	default:
 	}
+	if s.loadDelay > 0 {
+		select {
+		case <-time.After(s.loadDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return s.RunStore.LoadRun(ctx, id)
+}
+
+func (s *parkIOProbeStore) SaveRun(ctx context.Context, run *store.Run) error {
+	if s.saveWindow != nil {
+		select {
+		case s.saveWindow <- window(ctx):
+		default:
+		}
+	}
+	return s.RunStore.SaveRun(ctx, run)
 }
 
 func (s *parkIOProbeStore) AppendEvent(ctx context.Context, runID string, ev store.Event) (*store.Event, error) {
@@ -1133,5 +1152,132 @@ func TestParkStoreIOIsBounded(t *testing.T) {
 		}
 	default:
 		t.Error("the park never wrote its event")
+	}
+}
+
+// The storage bank's doc pair is PRE-Nak too: a generic `failed` is
+// bankable and naks only after bankIfBankable returns, with the
+// heartbeat still refreshing the lease — so its load->save must be
+// deadlined like every other store op on the teardown traversal. A
+// write that never returns does not serve merge truth; it replaces it
+// with a pod nothing can redeliver.
+func TestStorageBankDocIOIsBounded(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
+		t.Fatalf("nominal bank broken by the probe: %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("pushBank's doc load ran with NO deadline — a wedged store pins the pod pre-Nak, lease still refreshing")
+		}
+	default:
+		t.Error("the bank never loaded the doc")
+	}
+	select {
+	case w := <-probe.saveWindow:
+		if w < 0 {
+			t.Error("pushBank's doc save ran with NO deadline")
+		}
+	default:
+		t.Error("the bank never saved the doc")
+	}
+}
+
+// recordBankFailure carries the same doc pair on the same pre-Nak path.
+func TestBankFailureRecordingIsBounded(t *testing.T) {
+	r, msg, _, _, _ := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+
+	r.recordBankFailure(msg, "bank refused: probe")
+
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("recordBankFailure's doc load ran with NO deadline")
+		}
+	default:
+		t.Error("recordBankFailure never loaded the doc")
+	}
+	select {
+	case w := <-probe.saveWindow:
+		if w < 0 {
+			t.Error("recordBankFailure's doc save ran with NO deadline")
+		}
+	default:
+		t.Error("recordBankFailure never saved the doc")
+	}
+}
+
+// A slow-but-HEALTHY store must not defeat the doc-cancel guard: the
+// round-3 probe answered the cancelled doc in 7s and the 5s-bounded
+// read failed open, pushing refused work. The read now rides the doc
+// pair's more generous bound; fail-open remains only for a store that
+// cannot answer within it (the documented preservation-wins residue).
+func TestParkDocCancelGuardSurvivesASlowStore(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	run := loadRun(t, r, msg.RunID)
+	run.Status = store.RunStatusCancelled
+	if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+		t.Fatalf("flip to cancelled: %v", err)
+	}
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), loadDelay: parkStoreOpTimeout + 2*time.Second}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+		t.Fatal("a slow store defeated the doc-cancel guard: the refused work was pushed anyway")
+	}
+}
+
+// The event write's detachment, exercised at the ONLY moment where the
+// detached and the park-derived shapes diverge: the park budget spent.
+// The push dies on the exhausted budget; the failure event must still
+// land, on a window of its own.
+func TestParkEventLandsWhenTheBudgetIsSpent(t *testing.T) {
+	old := attemptBankBudget
+	attemptBankBudget = time.Millisecond
+	t.Cleanup(func() { attemptBankBudget = old })
+
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store, eventWindow: make(chan time.Duration, 1),
+		loadWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+		t.Fatal("a spent budget still pushed — the probe premise is broken")
+	}
+	select {
+	case w := <-probe.eventWindow:
+		if w < 0 {
+			t.Errorf("the failure event rode the spent park budget (window %s) — it must ride its own bound precisely when the push just died on that budget", w)
+		}
+	default:
+		t.Fatal("the spent-budget park emitted NO event — the exact silence the detached write exists to prevent")
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("no run_bank_attempt persisted")
+	}
+	if _, hasErr := ev.Data["error"]; !hasErr {
+		t.Errorf("event data = %v, want the budget-death error named", ev.Data)
 	}
 }
