@@ -581,6 +581,24 @@ tool lot_verify:
                                 "edited to hide that it did. Both are stop conditions."
                                 % (len(changed), ", ".join(changed[:20])))
 
+        # The certifier's REFUSALS are as binding as its certificates. The
+        # ledger is not in the judged diff (a lot legitimately writes its
+        # requests there), so without this term a lot could rewrite the
+        # ledger or append a sham act, extinguish the pending term, and ride
+        # a green — extension_verdict SEES both frauds and its verdict was
+        # read for ok_paths only (consolidation finding, executed: emptied
+        # ledger and act recording "peu-importe-quoi" both came out green).
+        if verdict is not None and not verdict.get("error"):
+            bad = [r for r in (verdict.get("acted") or []) if not r.get("ok")]
+            if verdict.get("problems") or bad \
+                    or not verdict.get("ledger_append_only", True):
+                problems.extend(verdict.get("problems") or [])
+                problems.extend("extension %s refused: %s"
+                                % (r.get("id"),
+                                   "; ".join(r.get("problems") or []))
+                                for r in bad)
+                report["refs_untouched"] = False
+
     report["log_tail"] = "\n".join(problems)[-6000:]
     print(json.dumps(report))
 

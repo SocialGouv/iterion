@@ -67,9 +67,17 @@ prompt extend_system:
      rewritten one.
 
   A new corpus entry needs its reference captured the way the net captures
-  everything: through the harness's own record path for exactly the entries
-  you added, never by hand-writing what you believe the response is — an
-  invented reference asserts nothing.
+  everything: through the harness's own record path, scoped to exactly the
+  entries you added —
+
+      GM_MODE=record GM_RECORD_IDS=<id,...> \
+        python3 {{vars.oracle_dir}}/harness.py
+
+  — never a full re-record (inside a lot, behaviour may have legitimately
+  moved: re-recording everything rewrites every reference and is refused
+  wholesale), and never by hand-writing what you believe the response is —
+  an invented reference asserts nothing. Record the captured reference path
+  in the act: a claimed entry claims its derived refs/<id>.txt.
 
   Commit your work. The verdict is read from git; uncommitted work is
   invisible to it.

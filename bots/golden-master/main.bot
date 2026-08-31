@@ -1334,14 +1334,15 @@ tool oracle_run:
     ## never a masked duplicate.
     OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
                           "steps", "params", "query", "body", "readback",
-                          "no_redirect")
+                          "no_redirect", "csrf_field")
 
 
     def _entry_observation_key(entry):
         """What an entry OBSERVES: two entries equal under this key are two
-        references for one observation — a collision, not an addition."""
-        return json.dumps({k: entry.get(k) for k in OBSERVATION_FIELDS
-                           if k in entry},
+        references for one observation — a collision, not an addition. Absent
+        and empty collapse together — a twin carrying `"query": ""` must not
+        split the key on mere PRESENCE (consolidation finding, executed)."""
+        return json.dumps({k: (entry.get(k) or None) for k in OBSERVATION_FIELDS},
                           sort_keys=True, ensure_ascii=False)
 
 
@@ -1469,6 +1470,20 @@ tool oracle_run:
                             "entry %r was MODIFIED — a rewrite is the masking "
                             "vector, not an extension" % bid)
                 added_ids = set(head_by_id) - set(base_by_id)
+                # An entry id DERIVES a reference path (refs/<id>.txt) in the
+                # record and gate paths, unvalidated there — so an added id
+                # carrying a separator is a write to an EXISTING reference
+                # wearing an addition's name, the corpus-surface twin of the
+                # refs/ symlink (consolidation finding, executed with
+                # id "../refs/1").
+                for aid in sorted(added_ids):
+                    if not isinstance(aid, str) or not aid or aid in (".", "..") \
+                            or any(c in aid for c in "/\\") \
+                            or aid != os.path.basename(aid):
+                        corpus_problems.append(
+                            "added entry id %r derives a reference path outside "
+                            "refs/ — a write to an existing reference wearing an "
+                            "addition's name" % (aid,))
                 claimed = set()
                 for act in acts:
                     req = requests.get(act.get("id"))
@@ -1536,13 +1551,22 @@ tool oracle_run:
                             "%s is not a regular file (mode %s) — a link is a "
                             "write to somewhere else wearing an addition's name"
                             % (p, blob_mode("HEAD", p) or "?"))
-                    elif req is not None and p not in (req.get("paths") or []):
-                        # Added refs are claimed against the request the way
-                        # entries are claimed against corpus_entries — acting
-                        # more than was asked is smuggling, whichever surface.
+                    elif req is not None and p not in (req.get("paths") or []) \
+                            and p not in {refs_prefix + e["id"] + ".txt"
+                                          for e in (req.get("corpus_entries") or [])
+                                          if isinstance(e, dict)
+                                          and isinstance(e.get("id"), str)
+                                          and e["id"] == os.path.basename(e["id"])}:
+                        # Added refs are claimed against the request — explicitly
+                        # in `paths` (add-file), or implicitly as the reference an
+                        # add-entry's claimed entry DERIVES (the gate demands
+                        # refs/<id>.txt for every entry, so a claimed entry claims
+                        # its reference; ids carrying separators derive nothing —
+                        # they are refused above). Anything else is smuggling.
                         row["problems"].append(
-                            "%s is not declared in the request's `paths` — "
-                            "acting more than was asked is smuggling" % p)
+                            "%s is neither declared in the request's `paths` nor "
+                            "derived from a claimed corpus entry — acting more "
+                            "than was asked is smuggling" % p)
                 else:
                     row["problems"].append(
                         "%s is outside the extension surface (refs/ and "
@@ -2989,6 +3013,53 @@ tool oracle_run:
             check("corpus malforme -> refuse, pas une traceback",
                   extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
 
+            # 8g. Les refus du tour de CONSOLIDATION — la classe id-derive-un-
+            #     chemin et la cle sensible a la presence, plus le flux add-entry
+            #     legitime que le durcissement du tour 1 avait ferme.
+
+            # Un id ajoute portant un separateur derive refs/<id>.txt HORS de
+            # refs/ — le jumeau corpus du symlink.
+            xreset()
+            traversal = {"id": "../refs/1", "method": "GET", "path": "/t", "persona": "p"}
+            xledger(("request", '{"id": "E-5", "lot": "L", "corpus_entries": [{"id": "../refs/1"}]}'),
+                    ("act", '{"id": "E-5", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, traversal]}, f)
+            xcommit()
+            check("id en traversee (../refs/1) -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # La PRESENCE d'un champ allowliste vide ne scinde pas la cle.
+            xreset()
+            present_twin = dict(base_entry, id="9", query="")
+            xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                    ("act", '{"id": "E-3", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, present_twin]}, f)
+            xcommit()
+            check("collision masquee par un champ allowliste VIDE -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Le flux add-entry LEGITIME : l'entree revendiquee revendique sa
+            # reference derivee — corpus.json ET refs/2.txt exemptes, sans
+            # `paths` dans la demande (la forme que la doctrine prescrit).
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
+                                ' "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L", "recorded_paths":'
+                            ' [".golden-master/corpus.json", ".golden-master/refs/2.txt"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, new_entry]}, f)
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            v = extension_verdict(xroot, ".golden-master", xbase)
+            check("add-entry avec sa ref derivee, sans `paths` -> ok, les deux exemptes",
+                  [v["acted"][0]["ok"], v["ok_paths"]],
+                  [True, [".golden-master/corpus.json", ".golden-master/refs/2.txt"]])
+
             # 9. Scellement : derivable partout, jamais dans le parent du worktree
             #    (lecture seule en sandbox), et sans collision entre worktrees
             #    freres qui partagent le meme basename.
@@ -3370,7 +3441,22 @@ tool oracle_run:
 
         try:
             if mode == "record":
-                snap = capture(config, corpus, canon)
+                # GM_RECORD_IDS scopes the record to named entries — the extension
+                # subbot needs to capture EXACTLY the entries it added: a full
+                # re-record inside a lot where behaviour legitimately moved would
+                # rewrite every reference and be refused wholesale as smuggling.
+                only = [i for i in os.environ.get("GM_RECORD_IDS", "").split(",")
+                        if i.strip()]
+                if only:
+                    known = {e["id"] for e in corpus["entries"]}
+                    missing = [i for i in only if i not in known]
+                    if missing:
+                        bail("GM_RECORD_IDS names %d entr%s absent from the "
+                             "corpus: %s — recording an unknown id writes a "
+                             "reference nothing will ever compare"
+                             % (len(missing), "y" if len(missing) == 1 else "ies",
+                                ", ".join(missing)))
+                snap = capture(config, corpus, canon, ids=only or None)
                 for k, v in snap.items():
                     with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8", newline="") as f:
                         f.write(v)

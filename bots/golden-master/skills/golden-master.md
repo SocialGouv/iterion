@@ -231,6 +231,13 @@ divergence, it can only add a constraint. Same block idiom:
 -->
 ```
 
+An `add-entry` implies its reference: the gate demands `refs/<id>.txt` for
+every corpus entry, so the acting bot captures it (`GM_MODE=record` scoped
+with `GM_RECORD_IDS=<id,…>` — never a full re-record) and records it in the
+act; a claimed entry claims its derived reference, no `paths` line needed.
+Entry ids are file-name-safe by construction — an id carrying a path
+separator would derive a reference OUTSIDE refs/ and is refused.
+
 **A pending extension request is a conjunction term too** (`pending_extensions` in the verdict),
 for the mirrored reason: it names coverage the intent already knows is missing, and a green built
 while it waits reports that coverage anyway. No `replaces` chain here — a request that no longer
