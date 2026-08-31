@@ -719,14 +719,23 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 		}
 		return
 	}
-	// Same re-read pushBank does before recording: an operator cancel can
-	// land without ever cancelling THIS pod's ctx (the cancel
-	// subscription is best-effort — "continuing without"), and refused
-	// work parks nowhere. Fail-open on a read error: the read is a
-	// courtesy to the operator, not a gate on preserving work.
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
-	if run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID); lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
+	// Doc re-read before the push: an operator cancel can land without
+	// ever cancelling THIS pod's ctx (the cancel subscription is
+	// best-effort — "continuing without"), and refused work parks
+	// nowhere. Unlike pushBank's re-read — which runs AFTER its push and
+	// only withholds merge eligibility — this one withholds the push
+	// itself, and `cancelled` is a status the product RESUMES (rewind
+	// parks live runs there), so the skip is recorded on the timeline,
+	// never silent. Bounded read, fail-open on error: the read is a
+	// courtesy to the operator, not a gate on preserving work — and not
+	// a licence for a wedged store to pin the pod.
+	rctx, rcancel := context.WithTimeout(ctx, parkStoreOpTimeout)
+	run, lerr := r.cfg.Store.LoadRun(store.WithIdentity(rctx, msg.TenantID, msg.OwnerID), msg.RunID)
+	rcancel()
+	if lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
 		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the run doc reads cancelled; the operator refused the work.", msg.RunID, cause)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "head": head,
+			"error": "not parked — the run doc reads cancelled (the work stays in the git-meta snapshot)"})
 		return
 	}
 	ref := "iterion/run-" + msg.RunID + "-parked-" + shortSHA(head)
@@ -746,6 +755,13 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 // a run another pod should already be picking up.
 const attemptBankBudget = 2 * time.Minute
 
+// parkStoreOpTimeout bounds each of the park's individual STORE ops (the
+// doc courtesy read, the timeline event write) — the store is the same
+// class of external resource as the forge, on the same pre-Nak path,
+// and the mongo client carries no timeout of its own. Same 5s
+// teardown-write convention as runtime's run_failure/pause paths.
+const parkStoreOpTimeout = 5 * time.Second
+
 // attemptBankContext builds the park's detached context — ALWAYS
 // deadlined, including when the operator disabled per-op git bounds
 // (ITERION_RUNNER_GIT_TIMEOUT<=0). That choice bounds one git op; it is
@@ -759,11 +775,16 @@ func attemptBankContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), attemptBankBudget)
 }
 
-// recordBankAttempt puts an attempt-ref outcome on the run's timeline —
-// the only durable record of the parked ref, since the run doc is
-// deliberately left untouched on every bankAttemptRef path.
+// recordBankAttempt puts a park outcome on the run's timeline — the
+// only durable record of the parked ref, since the run doc is
+// deliberately left untouched on every bankAttemptRef path. The write
+// rides its OWN detached short bound, not the park budget: the event
+// must land precisely when the push just died on that budget, and a
+// wedged store must not pin the pod either way.
 func (r *Runner) recordBankAttempt(msg *queue.RunMessage, data map[string]any) {
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunBankAttempt,
 		Data: data,
@@ -1008,7 +1029,11 @@ func (r *Runner) recordBankSuperseded(msg *queue.RunMessage, branch, oldHead, ne
 	if archiveErr != "" {
 		data["archive_error"] = archiveErr
 	}
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	// Bounded like every best-effort timeline write on a teardown path
+	// (parkStoreOpTimeout): a wedged store must not pin the pod.
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunBankSuperseded,
 		Data: data,
@@ -1078,7 +1103,11 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 // already be dead): a store that refuses the append must never change
 // the run's outcome.
 func (r *Runner) recordBankRefused(msg *queue.RunMessage, data map[string]any) {
-	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	// Bounded like every best-effort timeline write on a teardown path
+	// (parkStoreOpTimeout): a wedged store must not pin the pod.
+	wctx, cancel := context.WithTimeout(context.Background(), parkStoreOpTimeout)
+	defer cancel()
+	idCtx := store.WithIdentity(wctx, msg.TenantID, msg.OwnerID)
 	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
 		Type: store.EventRunBankRefused,
 		Data: data,

@@ -938,6 +938,19 @@ func TestBankAttemptRefOperatorCancelParksNothing(t *testing.T) {
 		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
 			t.Fatal("a doc-cancelled run must not park")
 		}
+		// But never in silence: cancelled is a status the product RESUMES
+		// (rewind parks live runs there), so discarding forge-side work
+		// must leave its trace on the timeline.
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+		if ev == nil {
+			t.Fatal("the doc-cancelled skip left no run_bank_attempt — work discarded with zero durable trace on a resumable status")
+		}
+		if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "cancelled") {
+			t.Errorf("event error = %v, want the cancelled-doc skip named", ev.Data["error"])
+		}
+		if ev.Data["head"] != head {
+			t.Errorf("event head = %v, want %s so the work stays findable in the snapshot", ev.Data["head"], head)
+		}
 	})
 	t.Run("bankable death on an operator-cancelled ctx", func(t *testing.T) {
 		r, msg, work, origin, base := bankFixture(t)
@@ -1052,5 +1065,73 @@ func TestBankAttemptRefUnreadableHeadIsLoud(t *testing.T) {
 	}
 	if run := loadRun(t, r, msg.RunID); run.FinalBranchError != "" {
 		t.Fatalf("FinalBranchError = %q, want the park refusal kept off the run doc", run.FinalBranchError)
+	}
+}
+
+// parkIOProbeStore wraps a real store and records the deadline state of
+// the park's store I/O — the round-2 probe made permanent. A wedged
+// store must never pin the pod: the forge got its deadline in round 1,
+// and the store is the same class of external resource, sitting on the
+// same pre-Nak path.
+type parkIOProbeStore struct {
+	store.RunStore
+	loadWindow  chan time.Duration // -1 when no deadline
+	eventWindow chan time.Duration
+}
+
+func window(ctx context.Context) time.Duration {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return -1
+	}
+	return time.Until(d)
+}
+
+func (s *parkIOProbeStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	select {
+	case s.loadWindow <- window(ctx):
+	default:
+	}
+	return s.RunStore.LoadRun(ctx, id)
+}
+
+func (s *parkIOProbeStore) AppendEvent(ctx context.Context, runID string, ev store.Event) (*store.Event, error) {
+	select {
+	case s.eventWindow <- window(ctx):
+	default:
+	}
+	return s.RunStore.AppendEvent(ctx, runID, ev)
+}
+
+func TestParkStoreIOIsBounded(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
+		loadWindow: make(chan time.Duration, 1), eventWindow: make(chan time.Duration, 1)}
+	r.cfg.Store = probe
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("nominal park broken by the probe: ref %q (present=%v)", got, ok)
+	}
+	select {
+	case w := <-probe.loadWindow:
+		if w < 0 {
+			t.Error("the park's doc re-read ran with NO deadline — a wedged store pins the pod forever (round 1's forge class, by another resource)")
+		}
+	default:
+		t.Error("the park never re-read the doc")
+	}
+	select {
+	case w := <-probe.eventWindow:
+		if w < 0 {
+			t.Error("the park's event write ran with NO deadline")
+		} else if w > 30*time.Second {
+			t.Errorf("the event write's window is %s — it must ride its OWN short bound, not the park budget, so the event still lands when the push just died on that budget", w)
+		}
+	default:
+		t.Error("the park never wrote its event")
 	}
 }
