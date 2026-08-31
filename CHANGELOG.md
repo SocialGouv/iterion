@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.78.1](https://github.com/SocialGouv/iterion/compare/v3.78.0...v3.78.1) (2026-08-31)
+
+### Bug Fixes
+
+* **queue:** configurable JetStream stream replication (data-HA) ([#592](https://github.com/SocialGouv/iterion/issues/592)) ([578f1c1](https://github.com/SocialGouv/iterion/commit/578f1c134a1c48434e517ef66d2188089aa7ff78))
+
+    <details><summary>why</summary>
+
+    Production on 2026-08-31 exposed a connection-HA/data-HA gap: a three-node JetStream cluster still held the engine streams and locks bucket at R1. During a broker blip, publishing returned 'nats: no response from stream', in-flight work was interrupted, and resume requests failed.
+
+    </details>
+
 ## [3.78.0](https://github.com/SocialGouv/iterion/compare/v3.77.2...v3.78.0) (2026-08-31)
 
 ### Features
