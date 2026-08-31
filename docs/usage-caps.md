@@ -120,6 +120,16 @@ Semantics that stay put:
   2026-08-31 Vigie outage, where a 70% DB record was the whole story — and
   where the morning's first signal, the 04:00 docs-refresh run, was the
   pre-flight shape.
+- **Don't wait for the silent morning: wire the operator webhook.** With
+  `ITERION_ALERTS_WEBHOOK_URL` set on the server deployment, every run that
+  parks `failed_resumable` (usage cap, provider window — with the armed
+  retry's reset ETA) or fails hard produces ONE message on the webhook
+  (Mattermost/Slack `{"text": ...}` shape), deduped across replicas and
+  backed by a 2-minute reconciliation sweep, with a `/runs/<id>` deep link.
+  The five silent Monday digests would have been five messages at 06:0x
+  instead of a manual discovery hours later. (This is the cloud
+  `alert.OpsDispatcher`; the same env var also feeds the in-process alert
+  Manager for local runs.)
 - **Settings reads fail toward the last-known value** (env defaults before
   the first successful read), retried once per TTL window: a settings-store
   blip changes nothing abruptly in either direction.

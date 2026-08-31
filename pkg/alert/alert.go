@@ -38,6 +38,12 @@ const (
 	KindBudgetExceeded Kind = "budget_exceeded"
 	// KindRunFailed fires when a run transitions to a failed status.
 	KindRunFailed Kind = "run_failed"
+	// KindRunParked fires when a run parks failed_resumable — waiting out a
+	// provider/usage window (an armed retry, with an ETA in the reason) or
+	// waiting for an operator resume (no retry armed). The 2026-08 pattern
+	// this closes: five digests parked on a usage cap over a whole morning
+	// with nobody told.
+	KindRunParked Kind = "run_parked"
 )
 
 // Alert is the structured payload delivered to every sink. It carries
@@ -74,6 +80,8 @@ func (a Alert) Title() string {
 		return fmt.Sprintf("Budget exceeded: %s", name)
 	case KindRunFailed:
 		return fmt.Sprintf("Run failed: %s", name)
+	case KindRunParked:
+		return fmt.Sprintf("Run parked: %s", name)
 	default:
 		return fmt.Sprintf("Run alert: %s", name)
 	}

@@ -412,6 +412,14 @@ type Config struct {
 	// store's ListNotifiableRuns). nil → no sweep (bus-only delivery).
 	NotifiableRuns usernotify.ListNotifiableRuns
 
+	// AlertsWebhookURL enables the OPERATOR alert dispatcher
+	// (alert.OpsDispatcher): parked/failed runs from the runner pods
+	// delivered to a deployment webhook (Mattermost/Slack shape) — the
+	// cloud twin of the in-process alert Manager, which only sees local
+	// runs. Requires NotificationSent (the episode-claim store) to dedup
+	// across replicas and against the sweep; empty ⇒ feature off.
+	AlertsWebhookURL string
+
 	// CloudBoardFor returns a tenant-scoped board store for cloud mode (a
 	// boardmongo.Store). When set, a board-mode slash-command materialises a
 	// tracked kanban card on that tenant's board (in addition to launching the

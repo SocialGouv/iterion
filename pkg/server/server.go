@@ -78,6 +78,9 @@ type Server struct {
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
 	userNotifyCancel func()
+	// opsAlertsCancel detaches the operator-alert dispatcher's bus
+	// subscription on Close.
+	opsAlertsCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.

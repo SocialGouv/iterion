@@ -7,11 +7,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
@@ -108,6 +110,7 @@ func (s *Server) ListenAndServe() error {
 		}
 	}
 	s.startUserNotify()
+	s.startOperatorAlerts()
 	s.startGateReconciler()
 	s.startGateAutofix()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
@@ -398,6 +401,76 @@ func (s *Server) startUserNotify() {
 	s.logger.Info("server: user notifications enabled (web push)")
 }
 
+// startOperatorAlerts builds the operator-alert dispatcher — the cloud twin
+// of the in-process alert Manager, which is fed by file tails and in-process
+// engine observers only and therefore never sees a runner pod's failures
+// (the 2026-08-31 five silent parked digests). Bus-fed with a sweep net,
+// episodes deduped through the shared sent-notifications claim store.
+func (s *Server) startOperatorAlerts() {
+	if s.cfg.AlertsWebhookURL == "" || s.runs == nil {
+		return
+	}
+	rs := s.runs.RunStore()
+	if rs == nil {
+		return
+	}
+	var sinks []alert.Sink
+	if wh := alert.NewWebhookSink(s.cfg.AlertsWebhookURL, s.logger); wh != nil {
+		sinks = append(sinks, wh)
+	}
+	if tk := alert.NewTrackerSink(); tk != nil {
+		sinks = append(sinks, tk)
+	}
+	d := &alert.OpsDispatcher{
+		Runs:    rs,
+		Claims:  s.cfg.NotificationSent,
+		Sinks:   sinks,
+		BaseURL: s.cfg.PublicURL,
+		Logger:  s.logger,
+	}
+	if s.cfg.NotificationSent == nil {
+		// Without the claim store every replica AND the sweep would re-send
+		// each episode. Loud refusal beats a spamming alert channel.
+		s.logger.Warn("server: operator alerts configured but no episode-claim store wired — disabled (wire NotificationSent)")
+		return
+	}
+	bus := s.cfg.EventsBus
+	if bus == nil && s.triggerCoord != nil {
+		bus = s.triggerCoord.Bus()
+	}
+	if bus != nil {
+		cancel, err := bus.Subscribe(alert.OpsSubscriberName, trigger.Matcher{
+			Sources: []trigger.Source{trigger.SourceRun},
+			Kinds:   []string{trigger.KindRunFailed},
+		}, d.Handle)
+		if err != nil {
+			s.logger.Warn("server: operator-alert bus subscribe failed (sweep-only delivery): %v", err)
+		} else {
+			s.opsAlertsCancel = cancel
+		}
+	}
+	if s.cfg.NotifiableRuns != nil {
+		list := func(ctx context.Context, since, before time.Time, limit int) ([]alert.OpsRunRef, error) {
+			refs, err := s.cfg.NotifiableRuns(ctx, since, before, limit)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]alert.OpsRunRef, 0, len(refs))
+			for _, r := range refs {
+				out = append(out, alert.OpsRunRef{ID: r.ID, Status: store.RunStatus(r.Status), UpdatedAt: r.UpdatedAt})
+			}
+			return out, nil
+		}
+		sweepCtx, cancelSweep := context.WithCancel(context.Background())
+		go func() {
+			<-s.shutdown
+			cancelSweep()
+		}()
+		go d.RunOpsSweep(sweepCtx, list)
+	}
+	s.logger.Info("server: operator alerts enabled (parked/failed runs → webhook)")
+}
+
 // drainBudgetShare is the fraction of the caller's shutdown deadline the
 // run-console drain may consume; the remainder is reserved for the HTTP
 // shutdown so in-flight requests keep a real window.
@@ -493,6 +566,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.triggerCoord != nil {
 		s.triggerCoord.Close()
+	}
+	if s.opsAlertsCancel != nil {
+		s.opsAlertsCancel()
 	}
 	if s.userNotifyCancel != nil {
 		s.userNotifyCancel()

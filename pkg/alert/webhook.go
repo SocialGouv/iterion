@@ -8,6 +8,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 )
 
 // WebhookSink POSTs alerts to a generic incoming webhook. The body is
@@ -29,8 +30,14 @@ func NewWebhookSink(url string, logger *iterlog.Logger) *WebhookSink {
 		return nil
 	}
 	return &WebhookSink{
-		url:    url,
-		client: &http.Client{Timeout: 15 * time.Second},
+		url: url,
+		// The shared SSRF-guarded client: DNS pinned per connection, no
+		// auto-redirects (each 3xx hop would re-target an unvalidated
+		// host). Non-strict — the URL is operator-pinned deployment
+		// config, and an internal (RFC-1918) Mattermost is a legitimate
+		// receiver — so the guard closes rebinding + redirect games
+		// without breaking private-network operators.
+		client: httpdial.SafeClient(false, 15*time.Second),
 		logger: logger,
 	}
 }

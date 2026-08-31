@@ -410,33 +410,39 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	var pushSubs usernotifywebpush.SubscriptionStore
 	var notifPrefs usernotify.PrefsStore
-	var notifSent usernotify.SentStore
-	var notifiableRuns usernotify.ListNotifiableRuns
+	// The episode-claim store + terminal-run window scan serve BOTH
+	// notification families — user web push (gated on VAPID keys below)
+	// and the operator-alert dispatcher (gated on the alerts webhook URL)
+	// — so they are built whenever the Mongo store is, not only when web
+	// push is on.
+	sentStore := usernotify.NewMongoSentStore(st.DB())
+	if sErr := sentStore.EnsureSchema(rootCtx); sErr != nil {
+		return fmt.Errorf("server: ensure sent notifications schema: %w", sErr)
+	}
+	notifSent := usernotify.SentStore(sentStore)
+	notifiableRuns := usernotify.ListNotifiableRuns(func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+		refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
+		if lErr != nil {
+			return nil, lErr
+		}
+		out := make([]usernotify.RunRef, 0, len(refs))
+		for _, ref := range refs {
+			out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
+		}
+		return out, nil
+	})
 	if cfg.WebPush.Enabled() {
 		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
 		prefsStore := usernotify.NewMongoPrefsStore(st.DB())
-		sentStore := usernotify.NewMongoSentStore(st.DB())
 		for name, ensure := range map[string]func(context.Context) error{
 			"push subscriptions": subsStore.EnsureSchema,
 			"notification prefs": prefsStore.EnsureSchema,
-			"sent notifications": sentStore.EnsureSchema,
 		} {
 			if sErr := ensure(rootCtx); sErr != nil {
 				return fmt.Errorf("server: ensure %s schema: %w", name, sErr)
 			}
 		}
-		pushSubs, notifPrefs, notifSent = subsStore, prefsStore, sentStore
-		notifiableRuns = func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
-			refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
-			if lErr != nil {
-				return nil, lErr
-			}
-			out := make([]usernotify.RunRef, 0, len(refs))
-			for _, ref := range refs {
-				out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
-			}
-			return out, nil
-		}
+		pushSubs, notifPrefs = subsStore, prefsStore
 	}
 
 	// The studio Home "Bots" panel lists first-class bots via /api/examples
@@ -554,6 +560,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		NotificationPrefs:      notifPrefs,
 		NotificationSent:       notifSent,
 		NotifiableRuns:         notifiableRuns,
+		AlertsWebhookURL:       cfg.Alerts.Webhook.URL,
 		WebPushVAPIDPublicKey:  cfg.WebPush.VAPIDPublicKey,
 		WebPushVAPIDPrivateKey: cfg.WebPush.VAPIDPrivateKey,
 		WebPushSubscriber:      cfg.WebPush.Subscriber,
