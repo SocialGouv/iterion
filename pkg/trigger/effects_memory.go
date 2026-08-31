@@ -55,7 +55,13 @@ func (m *MemoryEffectOutbox) ClaimDue(_ context.Context, now time.Time, limit in
 	}
 	out := make([]EffectRow, 0, len(due))
 	for _, r := range due {
+		if r.State == EffectClaimed {
+			// Reclaim of an expired lease: the previous attempt never
+			// returned — it still spends the budget (mirrors boardmongo).
+			r.Attempts++
+		}
 		r.State = EffectClaimed
+		r.ClaimID = NewEffectClaimID()
 		r.NotBefore = now.Add(EffectLease)
 		r.UpdatedAt = now
 		out = append(out, *r)
@@ -63,26 +69,31 @@ func (m *MemoryEffectOutbox) ClaimDue(_ context.Context, now time.Time, limit in
 	return out, nil
 }
 
-func (m *MemoryEffectOutbox) mutate(id string, fn func(*EffectRow)) error {
+// mutate applies fn under the claim fence: a caller whose claimID no longer
+// matches (lease stolen) mutates nothing — mirrors boardmongo's setEffect.
+func (m *MemoryEffectOutbox) mutate(id, claimID string, fn func(*EffectRow)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if r, ok := m.rows[id]; ok {
+		if claimID != "" && r.ClaimID != claimID {
+			return nil
+		}
 		fn(r)
 		r.UpdatedAt = time.Now().UTC()
 	}
 	return nil
 }
 
-func (m *MemoryEffectOutbox) MarkConsumed(_ context.Context, id string) error {
-	return m.mutate(id, func(r *EffectRow) { r.ConsumeMarked = true })
+func (m *MemoryEffectOutbox) MarkConsumed(_ context.Context, id, claimID string) error {
+	return m.mutate(id, claimID, func(r *EffectRow) { r.ConsumeMarked = true })
 }
 
-func (m *MemoryEffectOutbox) MarkDone(_ context.Context, id string) error {
-	return m.mutate(id, func(r *EffectRow) { r.State = EffectDone })
+func (m *MemoryEffectOutbox) MarkDone(_ context.Context, id, claimID string) error {
+	return m.mutate(id, claimID, func(r *EffectRow) { r.State = EffectDone })
 }
 
-func (m *MemoryEffectOutbox) MarkRetry(_ context.Context, id string, attempts int, notBefore time.Time, lastErr string) error {
-	return m.mutate(id, func(r *EffectRow) {
+func (m *MemoryEffectOutbox) MarkRetry(_ context.Context, id, claimID string, attempts int, notBefore time.Time, lastErr string) error {
+	return m.mutate(id, claimID, func(r *EffectRow) {
 		r.State = EffectPending
 		r.Attempts = attempts
 		r.NotBefore = notBefore
@@ -90,8 +101,8 @@ func (m *MemoryEffectOutbox) MarkRetry(_ context.Context, id string, attempts in
 	})
 }
 
-func (m *MemoryEffectOutbox) MarkFailed(_ context.Context, id string, lastErr string) error {
-	return m.mutate(id, func(r *EffectRow) {
+func (m *MemoryEffectOutbox) MarkFailed(_ context.Context, id, claimID string, lastErr string) error {
+	return m.mutate(id, claimID, func(r *EffectRow) {
 		r.State = EffectFailed
 		r.LastError = lastErr
 	})

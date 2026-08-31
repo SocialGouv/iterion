@@ -476,11 +476,20 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 	}
 	rs, err := c.openRunStore()
 	if err != nil {
-		return false
+		// A pointer we cannot check must HOLD: fail-open here is what turns
+		// a held operator cancel into a fresh sibling the moment the store
+		// blips (the mint guard downstream is bypassed once a retry entry
+		// exists).
+		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but the run store cannot be opened — holding", prev))
+		return true
 	}
-	r, err := rs.LoadRun(context.Background(), prev)
+	r, err := c.loadRunForDecision(rs, prev, "pre-claim hold check")
+	if errors.Is(err, store.ErrRunNotFound) {
+		return false // pruned run — the legitimate fresh start
+	}
 	if err != nil {
-		return false
+		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but cannot be read — holding", prev))
+		return true
 	}
 	status := r.Status
 	if status == store.RunStatusRunning {
@@ -802,7 +811,18 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// the card: dragging it back to an eligible column is the
 	// operator's re-queue gesture (see lastRunForbidsFresh).
 	if prev := c.lastRunID(iss.ID); prev != "" && !missingResumeWorkspace {
-		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
+		status, known := c.runStatusOnDisk(prev)
+		if !known {
+			// The pointer exists but its record is unreadable (store fault,
+			// truncated run.json). Minting here would fail OPEN — the run
+			// might be an operator cancel, a pause, anything the guards
+			// below exist to hold. Hold until it reads again.
+			reason := fmt.Sprintf("last run %s exists but cannot be read — holding rather than minting a sibling blind", prev)
+			c.recordLastRunHold(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
+		}
+		if lastRunForbidsFresh(status) {
 			// An empty retry target was authoritative when the retry was
 			// scheduled, but the durable run can become resumable later (for
 			// example after orphan promotion). Adopt that now-current target

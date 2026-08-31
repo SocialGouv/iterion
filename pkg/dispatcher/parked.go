@@ -284,7 +284,10 @@ func (c *Dispatcher) openRunStore() (*store.FilesystemRunStore, error) {
 // is being taken blind, which warns once per run until it reads again.
 func (c *Dispatcher) loadRunForDecision(s *store.FilesystemRunStore, runID, what string) (*store.Run, error) {
 	r, err := s.LoadRun(context.Background(), runID)
-	key := "run-read:" + runID
+	// ONE key for the class: the episode is "run records are unreadable",
+	// not "this run's record" — a per-run key would grow the dedup map by
+	// one entry per broken run for the daemon's lifetime.
+	const key = "run-read"
 	switch {
 	case err == nil:
 		c.clearDegraded(key)
@@ -334,17 +337,27 @@ func (c *Dispatcher) runStatusFrom(s *store.FilesystemRunStore, runID string) st
 }
 
 // runStatusOnDisk reads a run's persisted status straight from the store.
-// Best-effort — any read error returns the empty status, which the guard
-// treats as "leave the card alone". One-shot callers only; sweeps open
-// the store once and use runStatusFrom.
-func (c *Dispatcher) runStatusOnDisk(runID string) store.RunStatus {
+// One-shot callers only; sweeps open the store once and use runStatusFrom.
+// known=false means the record EXISTS-OR-MAY-EXIST but could not be read
+// (store unreachable, truncated run.json) — the caller must fail CLOSED on
+// a mint decision: "no information" is not "no run". A missing record
+// (ErrRunNotFound — a pruned run) reads as ("", true): the documented
+// legitimate fresh-start case.
+func (c *Dispatcher) runStatusOnDisk(runID string) (status store.RunStatus, known bool) {
 	if runID == "" || c.storeDir == "" {
-		return ""
+		return "", true
 	}
 	s, err := c.openRunStore()
 	if err != nil {
-		c.logger.Debug("dispatcher: open store for status check: %v", err)
-		return ""
+		return "", false
 	}
-	return c.runStatusFrom(s, runID)
+	r, err := c.loadRunForDecision(s, runID, "status check")
+	switch {
+	case err == nil:
+		return r.Status, true
+	case errors.Is(err, store.ErrRunNotFound):
+		return "", true
+	default:
+		return "", false
+	}
 }

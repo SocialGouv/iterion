@@ -1342,10 +1342,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		cloneStart := time.Now()
 		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
+		// Observed on BOTH outcomes (a clone that limps 10 minutes into an
+		// auth failure is exactly what the histogram exists to show), with
+		// the same nil guard every other Metrics site carries.
+		if r.cfg.Metrics != nil {
+			r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
+		}
 		if derr != nil {
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
-		r.cfg.Metrics.WorkspaceCloneDuration.Observe(time.Since(cloneStart).Seconds())
 		workDir = repoDir
 		if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
 			gitBase = head

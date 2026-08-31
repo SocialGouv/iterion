@@ -324,6 +324,35 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 	})
 
+	// A settled head must cost ZERO forge round-trips on re-offer: the sweep
+	// net re-offers every gating run ~once a minute for an hour on every
+	// replica, against the same App quota the merge-gate reconciler lives
+	// on — without the early claim probe the net starves the gate it backs.
+	t.Run("a settled head costs no forge traffic", func(t *testing.T) {
+		w := build(t, nil)
+		counter := &countingGateClient{inner: stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return counter, nil
+		}
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "settled", TenantID: team, WebhookID: "w1",
+			IdempotencyKey: autofixIdemKey(team, repo, 7, head),
+			Status:         webhooks.StatusLaunched, RunID: "r-done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		for i := 0; i < 5; i++ {
+			w.s.autofixOffer(context.Background(), runID)
+		}
+		if *w.launched != 0 {
+			t.Fatal("a settled head launched again")
+		}
+		if counter.calls != 0 {
+			t.Fatalf("%d forge calls for a settled head, want 0 — the sweep amplifies this ~57× per hour per replica", counter.calls)
+		}
+	})
+
 	// The per-head claim is what bounds the loop: the fixer pushes, the head
 	// moves, and only then is another attempt available. Without it a red gate
 	// that nobody fixes relaunches on every re-review, forever, on real money.
@@ -451,6 +480,26 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 }
 
 // stubGateClient answers with one commit status on one head.
+// countingGateClient counts forge round-trips (the early-claim probe's
+// whole point is that a settled head makes none).
+type countingGateClient struct {
+	inner stubGateClient
+	calls int
+}
+
+func (c *countingGateClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	c.calls++
+	return c.inner.GetPullRequest(ctx, repo, number)
+}
+func (c *countingGateClient) SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error {
+	c.calls++
+	return c.inner.SetCommitStatus(ctx, repo, sha, st)
+}
+func (c *countingGateClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
+	c.calls++
+	return c.inner.ListCommitStatuses(ctx, repo, sha)
+}
+
 type stubGateClient struct {
 	head    string
 	state   forge.CommitState

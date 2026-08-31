@@ -20,6 +20,12 @@ import (
 // `failed_resumable` on a usage cap over a whole morning, with a configured
 // webhook that never fired because nothing feeding it ever saw the runs.
 //
+// SCOPE: this is the PLATFORM operator's channel — deliberately
+// cross-tenant (the webhook URL is deployment config, the listing and run
+// loads run WithoutTenantFilter), so run names and error excerpts from
+// every org reach it. Point it at a channel with platform-operator
+// visibility only.
+//
 // It consumes run.failed outcome events from the shared event spine (queue
 // group ⇒ one replica per event), classifies the persisted run
 // (parked-with-retry / parked-needs-operator / hard-failed), dedups episodes
@@ -50,64 +56,148 @@ const (
 	// shared sent-notifications collection.
 	opsEpisodePrefix = "ops|"
 	// Sweep pacing — the reconciliation net under the lossy bus, mirroring
-	// the usernotify sweep's constants and sharing its bounded-window
-	// terminal-run query (one index serves every net).
+	// the usernotify sweep (same bounded-window terminal-run query, same
+	// keyset pagination so a backlog cannot starve the oldest episodes,
+	// same 24h lookback so a control-plane outage of a morning — the KEDA
+	// freeze, the incident this component closes — does not fall off the
+	// window; the IsMarked pre-check keeps the long window cheap).
 	opsSweepInterval = 2 * time.Minute
-	opsSweepGrace    = time.Minute
-	opsSweepLookback = 30 * time.Minute
-	opsSweepBatch    = 200
+	opsSweepLookback = 24 * time.Hour
+	opsSweepBatch    = 500
+	opsSweepMaxPages = 20
 )
 
 // Handle processes one run-outcome event — the eventbus.Handler and the
 // sweep's replay entry point. Non-failure outcomes exit on a kind check.
+//
+// Two claim keys per episode, for two different jobs:
+//   - the EPISODE key (opsEpisodeKey) is the delivery dedup. For a parked
+//     run it is STABLE across the retry cycle's updated_at bumps
+//     (ScheduleRunRetry / ClaimRunRetry / AbandonRunRetry all rewrite the
+//     row every sweep-minute while the status never leaves
+//     failed_resumable) — keyed on the monotonic RetryState.Attempts, so
+//     the operator gets one message per actual retry cycle, never one per
+//     bookkeeping write.
+//   - the TRANSITION marker (the event id) only feeds the sweep's cheap
+//     pre-check: it is stamped once the episode is settled, so a bumped
+//     row stops costing a run load on every sweep pass.
 func (d *OpsDispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 	if ev.Kind != trigger.KindRunFailed || ev.Subject.ID == "" || d.Runs == nil {
 		return nil
 	}
-	a, ok := d.classify(ctx, ev)
+	a, run, ok := d.classify(ctx, ev)
 	if !ok {
 		return nil
 	}
-	key := opsEpisodePrefix + ev.ID
+	evKey := opsEpisodePrefix + ev.ID
+	epKey := opsEpisodeKey(run)
 	if d.Claims != nil {
-		won, err := d.Claims.TryMark(ctx, key)
+		won, err := d.Claims.TryMark(ctx, epKey)
 		if err != nil {
-			return fmt.Errorf("alert: claim ops episode %s: %w", key, err)
+			return fmt.Errorf("alert: claim ops episode %s: %w", epKey, err)
 		}
 		if !won {
+			// The incident already alerted; stamp THIS transition's marker
+			// so the sweep pre-check skips the bumped row without a load.
+			d.stampSeen(ctx, evKey)
 			return nil
 		}
 	}
+
+	// Fan out. Sinks that can report failure (ErrorReportingSink) decide
+	// the episode's fate: if EVERY one of them fails, the claim is
+	// RELEASED so the 2-minute sweep retries — a Mattermost rolling
+	// restart or an ingress 502 must not consume the one alert this
+	// component exists to deliver (usernotify.SentStore.Unmark documents
+	// exactly this contract). Fire-and-forget sinks (tracker breadcrumbs)
+	// never count as delivery.
 	var wg sync.WaitGroup
-	for _, sink := range d.Sinks {
+	var attempted, failed int
+	errs := make([]error, len(d.Sinks))
+	for i, sink := range d.Sinks {
 		wg.Add(1)
-		go func(sink Sink) {
+		go func(i int, sink Sink) {
 			defer wg.Done()
 			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultNotifyTimeout)
 			defer cancel()
+			if es, ok := sink.(ErrorReportingSink); ok {
+				errs[i] = es.NotifyErr(sctx, a)
+				return
+			}
 			sink.Notify(sctx, a)
-		}(sink)
+		}(i, sink)
 	}
 	wg.Wait()
-	// Sink.Notify reports failures by logging, not by error (the Manager's
-	// contract) — so a delivered episode is confirmed unconditionally. The
-	// webhook's own Warn is the operator's signal that the channel itself
-	// is broken; retrying an alert whose channel is down would spam the
-	// moment it recovers.
-	d.markDelivered(ctx, key)
+	for i, sink := range d.Sinks {
+		if _, ok := sink.(ErrorReportingSink); ok {
+			attempted++
+			if errs[i] != nil {
+				failed++
+			}
+		}
+	}
+	if attempted > 0 && failed == attempted {
+		if d.Claims != nil {
+			if err := d.Claims.Unmark(ctx, epKey); err != nil && d.Logger != nil {
+				d.Logger.Warn("alert: release ops episode %s after failed delivery: %v", epKey, err)
+			}
+		}
+		if d.Logger != nil {
+			d.Logger.Warn("alert: operator alert %s for run %s failed on every channel — released for the sweep to retry", a.Kind, a.RunID)
+		}
+		return nil
+	}
+	d.markDelivered(ctx, epKey)
+	d.stampSeen(ctx, evKey)
 	if d.Logger != nil {
-		d.Logger.Info("alert: operator alert %s for run %s delivered (%s)", a.Kind, a.RunID, ev.ID)
+		d.Logger.Info("alert: operator alert %s for run %s delivered (%s)", a.Kind, a.RunID, epKey)
 	}
 	return nil
+}
+
+// opsEpisodeKey derives the delivery-dedup key from the persisted run. A
+// parked run's key rides (status, attempts) — stable across the retry
+// bookkeeping writes, advancing once per real retry cycle. A hard failure
+// keeps the per-transition derivation (nothing rewrites a failed run, and a
+// resumed-then-refailed run is a genuinely new episode).
+func opsEpisodeKey(run *store.Run) string {
+	if run.Status == store.RunStatusFailedResumable {
+		attempts := 0
+		if run.RetryState != nil {
+			attempts = run.RetryState.Attempts
+		}
+		return fmt.Sprintf("%srun:%s:parked:%d", opsEpisodePrefix, run.ID, attempts)
+	}
+	return opsEpisodePrefix + trigger.RunOutcomeEventID(run.ID, string(run.Status), "", run.UpdatedAt)
+}
+
+// ErrorReportingSink is the optional Sink capability the ops dispatcher
+// uses to decide an episode's fate: a sink that can say "this delivery
+// FAILED" participates in the release-and-retry contract; fire-and-forget
+// sinks (tracker breadcrumbs) never count as delivery.
+type ErrorReportingSink interface {
+	NotifyErr(ctx context.Context, a Alert) error
+}
+
+// stampSeen marks a transition id as settled for the sweep pre-check.
+// Best-effort — a lost stamp costs one redundant run load next pass.
+func (d *OpsDispatcher) stampSeen(ctx context.Context, evKey string) {
+	if d.Claims == nil {
+		return
+	}
+	if _, err := d.Claims.TryMark(ctx, evKey); err != nil {
+		return
+	}
+	_ = d.Claims.MarkDelivered(ctx, evKey)
 }
 
 // classify maps the persisted run onto an operator alert. failed_resumable
 // is the interesting one — the status the in-process Manager never alerted
 // on and the one that goes quiet for DAYS when nobody is told.
-func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, bool) {
+func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, *store.Run, bool) {
 	run, err := d.Runs.LoadRun(store.WithoutTenantFilter(ctx), ev.Subject.ID)
 	if err != nil || run == nil {
-		return Alert{}, false
+		return Alert{}, nil, false
 	}
 	a := Alert{
 		RunID:     run.ID,
@@ -134,14 +224,14 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 		if run.Error != "" {
 			a.Reason += " · " + truncate(run.Error, 200)
 		}
-		return a, true
+		return a, run, true
 	case store.RunStatusFailed:
 		a.Kind = KindRunFailed
 		a.Reason = truncate(run.Error, 200)
-		return a, true
+		return a, run, true
 	default:
 		// Already resumed/finished by the time we looked — nothing owed.
-		return Alert{}, false
+		return Alert{}, nil, false
 	}
 }
 
@@ -154,7 +244,7 @@ func (d *OpsDispatcher) RunOpsSweep(ctx context.Context, list usernotify.ListNot
 		return
 	}
 	if d.Logger != nil {
-		d.Logger.Info("alert: operator-alert sweep active (every %s, %s grace, %s lookback) — the net under the lossy outcome event", opsSweepInterval, opsSweepGrace, opsSweepLookback)
+		d.Logger.Info("alert: operator-alert sweep active (every %s, %s lookback, keyset-paginated) — the net under the lossy outcome event", opsSweepInterval, opsSweepLookback)
 	}
 	t := time.NewTicker(opsSweepInterval)
 	defer t.Stop()
@@ -169,16 +259,36 @@ func (d *OpsDispatcher) RunOpsSweep(ctx context.Context, list usernotify.ListNot
 }
 
 // SweepOnce performs one reconciliation pass (exported: the ticker's unit
-// of work, and the tests' entry point).
+// of work, and the tests' entry point), keyset-paginated by updated_at so a
+// backlog larger than one page cannot starve the oldest unclaimed episodes —
+// a burst of newer parked runs (which the retry cycle keeps re-floating to
+// the top of the newest-first sort) must not push the run waiting longest
+// off the page forever (usernotify's sweep documents the same trap).
 func (d *OpsDispatcher) SweepOnce(ctx context.Context, list usernotify.ListNotifiableRuns) {
-	now := d.now()
-	refs, err := list(store.WithoutTenantFilter(ctx), now.Add(-opsSweepLookback), now.Add(-opsSweepGrace), opsSweepBatch)
-	if err != nil {
-		if d.Logger != nil {
-			d.Logger.Warn("alert: operator-alert sweep scan: %v", err)
+	fctx := store.WithoutTenantFilter(ctx)
+	since := d.now().Add(-opsSweepLookback)
+	var before time.Time
+	for page := 0; page < opsSweepMaxPages; page++ {
+		refs, err := list(fctx, since, before, opsSweepBatch)
+		if err != nil {
+			if d.Logger != nil {
+				d.Logger.Warn("alert: operator-alert sweep scan: %v", err)
+			}
+			return
 		}
-		return
+		d.sweepRefs(ctx, refs)
+		if len(refs) < opsSweepBatch {
+			return
+		}
+		last := refs[len(refs)-1].UpdatedAt
+		if last.IsZero() || (!before.IsZero() && !last.Before(before)) {
+			return // a lister without updated_at cannot cursor — stop, don't loop
+		}
+		before = last
 	}
+}
+
+func (d *OpsDispatcher) sweepRefs(ctx context.Context, refs []usernotify.RunRef) {
 	for _, ref := range refs {
 		if store.RunStatus(ref.Status) != store.RunStatusFailed && store.RunStatus(ref.Status) != store.RunStatusFailedResumable {
 			continue

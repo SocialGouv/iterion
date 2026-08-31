@@ -122,7 +122,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	// cannot distinguish from "nothing to do". Each failure increments the
 	// stage counter; the pass summary below is edge-triggered so the log
 	// carries one Warn per episode, not one per tick.
-	var leaseErrs, flipErrs int
+	var scanErrs, leaseErrs, flipErrs, probed int
 	var lastErr error
 	countErr := func(stage string, err error) {
 		lastErr = err
@@ -137,13 +137,19 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	for _, p := range passes {
 		refs, err := lister.ListStaleActiveRuns(scanCtx, p.statuses, p.before, 100)
 		if err != nil {
-			countErr("scan", err) // metric only: a failed scan skips the pass, the episode tracks lease/flip
+			// A dead scan is orphan recovery 100% disabled — strictly worse
+			// than a partial lease failure, so it opens the episode too.
+			// The per-tick line stays Debug: the episode summary is the
+			// Warn, once, with the error.
+			countErr("scan", err)
+			scanErrs++
 			if s.logger != nil {
-				s.logger.Warn("sweeper: scan %v: %v", p.statuses, err)
+				s.logger.Debug("sweeper: scan %v: %v", p.statuses, err)
 			}
 			continue
 		}
 		for _, ref := range refs {
+			probed++
 			locked, err := leases.IsRunLocked(ctx, ref.ID)
 			if err != nil {
 				// Lease state unknown — fail safe (skip), but count it: a
@@ -182,17 +188,23 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	// Edge-triggered episode summary. Per replica by design: there is no
 	// shared "definitive" instant on a lock-less sweeper, so each replica
 	// brackets its own episode and the aggregate lives in the counter.
-	degraded := leaseErrs+flipErrs > 0
-	if degraded && !s.sweepDegraded {
+	// A pass that neither probed a candidate nor errored proves NOTHING —
+	// most minutes have no stale run at all — so it leaves the episode
+	// untouched instead of flapping "back to healthy" while the backend is
+	// still down.
+	degraded := scanErrs+leaseErrs+flipErrs > 0
+	switch {
+	case degraded && !s.sweepDegraded:
 		if s.logger != nil {
-			s.logger.Warn("sweeper: orphan recovery degraded — %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", leaseErrs, flipErrs, lastErr)
+			s.logger.Warn("sweeper: orphan recovery degraded — %d scan failure(s), %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", scanErrs, leaseErrs, flipErrs, lastErr)
 		}
-	} else if !degraded && s.sweepDegraded {
+		s.sweepDegraded = true
+	case !degraded && s.sweepDegraded && probed > 0:
 		if s.logger != nil {
 			s.logger.Info("sweeper: orphan recovery back to healthy")
 		}
+		s.sweepDegraded = false
 	}
-	s.sweepDegraded = degraded
 }
 
 // ---- DLQ admin REST ----

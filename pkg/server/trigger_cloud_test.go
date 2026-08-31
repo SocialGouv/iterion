@@ -153,3 +153,34 @@ func TestDrainTenant_DeletedCardIsADefinitiveSkip(t *testing.T) {
 		t.Fatalf("cursor must advance over the deleted card's event: advanced=%v to=%d", st.advanced, st.advanceTo)
 	}
 }
+
+// TestTrimAtYoungGap pins the contiguous-prefix guard: emit allocates the
+// seq BEFORE inserting, so seq N can be visible while N-1 is in flight —
+// advancing over that hole loses N-1 forever. A young hole truncates the
+// batch; a hole older than the grace is a dead allocation and is stepped
+// over.
+func TestTrimAtYoungGap(t *testing.T) {
+	src := &cloudBoardSource{}
+	now := time.Now().UTC()
+	events := []native.Event{{Seq: 1}, {Seq: 3}, {Seq: 4}} // hole at 2
+
+	got := src.trimAtYoungGap("t1", 0, events, now)
+	if len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("young hole: kept %d events, want just seq 1 (advancing would lose seq 2)", len(got))
+	}
+	// Still young → still truncated.
+	got = src.trimAtYoungGap("t1", 0, events, now.Add(boardTailHoleGrace/2))
+	if len(got) != 1 {
+		t.Fatalf("hole under the grace: kept %d events, want 1", len(got))
+	}
+	// Past the grace → dead allocation, stepped over.
+	got = src.trimAtYoungGap("t1", 0, events, now.Add(boardTailHoleGrace+time.Second))
+	if len(got) != 3 {
+		t.Fatalf("expired hole: kept %d events, want all 3", len(got))
+	}
+	// Contiguous batch untouched, and the watch state cleared.
+	got = src.trimAtYoungGap("t1", 0, []native.Event{{Seq: 1}, {Seq: 2}}, now)
+	if len(got) != 2 || len(src.holes) != 0 {
+		t.Fatalf("contiguous batch: kept %d, holes=%d", len(got), len(src.holes))
+	}
+}

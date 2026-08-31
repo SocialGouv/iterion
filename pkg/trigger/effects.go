@@ -2,6 +2,8 @@ package trigger
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 )
 
@@ -69,6 +71,11 @@ type EffectRow struct {
 	// so a retry/reclaim must not re-consume (it would read "already spent"
 	// and drop the launch).
 	ConsumeMarked bool `bson:"consume_marked" json:"consume_marked"`
+	// ClaimID fences the row's writes to its CURRENT claim: ClaimDue mints
+	// one per claim, and every Mark* filters on it — a worker whose lease
+	// was stolen finds its late writes no-ops instead of resurrecting or
+	// clobbering the new owner's state.
+	ClaimID string `bson:"claim_id,omitempty" json:"claim_id,omitempty"`
 	// NotBefore is the row's next eligibility instant: retry backoff for
 	// pending rows, the lease horizon for claimed ones.
 	NotBefore time.Time `bson:"not_before" json:"not_before"`
@@ -95,14 +102,25 @@ type EffectOutbox interface {
 	// same row.
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]EffectRow, error)
 	// MarkConsumed persists ConsumeMarked=true on a claimed row — written
-	// between the atomic label consume and the launch.
-	MarkConsumed(ctx context.Context, id string) error
+	// between the atomic label consume and the launch. Every Mark* takes
+	// the caller's claimID and is a no-op when the claim was stolen.
+	MarkConsumed(ctx context.Context, id, claimID string) error
 	// MarkDone terminates a row successfully.
-	MarkDone(ctx context.Context, id string) error
+	MarkDone(ctx context.Context, id, claimID string) error
 	// MarkRetry returns a row to pending with its backoff and error.
-	MarkRetry(ctx context.Context, id string, attempts int, notBefore time.Time, lastErr string) error
+	MarkRetry(ctx context.Context, id, claimID string, attempts int, notBefore time.Time, lastErr string) error
 	// MarkFailed parks a row as terminally failed (visible dead-letter).
-	MarkFailed(ctx context.Context, id string, lastErr string) error
+	MarkFailed(ctx context.Context, id, claimID string, lastErr string) error
+}
+
+// NewEffectClaimID mints a claim fence token (crypto-random, no clock).
+func NewEffectClaimID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// A degraded fence is still a fence between honest workers.
+		return "claim-fallback"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // EffectBackoff is the retry schedule: attempt n (1-based) waits base<<(n-1).

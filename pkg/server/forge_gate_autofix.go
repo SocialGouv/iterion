@@ -147,6 +147,22 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		return nil
 	}
 
+	// The per-head claim probe comes BEFORE every forge round-trip: the
+	// sweep re-offers each gating run ~once a minute for an hour, on every
+	// replica, and without this exit each offer costs GetPullRequest +
+	// ListCommitStatuses (+ GetIssue with hold labels) against the same App
+	// quota the merge-gate reconciler lives on — the net would starve the
+	// gate it backs. `reviewed` is the only sha a launch is possible for
+	// (the head must still equal it), so the key needs nothing from the
+	// forge. A launch_error row does not settle the head: the launch may
+	// legitimately retry.
+	idem := autofixIdemKey(grant.TeamID, repo, number, reviewed)
+	if s.webhookDeliveries != nil {
+		if d, derr := s.webhookDeliveries.GetByIdempotencyKey(store.WithoutTenantFilter(ctx), idem); derr == nil && d.Status != webhooks.StatusLaunchError {
+			return nil // this head already had its pass — zero forge traffic
+		}
+	}
+
 	integration, err := s.forgeIntegrations.GetByConnRepo(store.WithoutTenantFilter(ctx), grant.TeamID, grant.ConnectionID, repo)
 	if err != nil || !integration.AutoFixOnGateFailure {
 		return nil
@@ -285,7 +301,6 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 		SubjectURL:  prURL,
 		SubjectSHA:  pr.HeadSHA,
 	}
-	idem := knowledge.ChecksumHex([]byte(fmt.Sprintf("autofix|%s|%s|%d|%s", grant.TeamID, repo, number, pr.HeadSHA)))
 	res := s.launchWebhookTarget(launchCtx, nil, cfg, meta, forgeLaunchTarget{
 		BotID:   fixer,
 		IdemKey: idem,
@@ -301,6 +316,14 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 			gateCtx, repo, number, pr.HeadSHA[:7], fixer, res.RunID)
 	}
 	return nil
+}
+
+// autofixIdemKey derives the per-(PR, head) claim key. The sha is lowercased
+// so the early probe (fed by the run's head_sha input) and the launch (fed by
+// the forge's pr.HeadSHA) always derive the SAME key — the two are only ever
+// compared case-insensitively.
+func autofixIdemKey(teamID, repo string, number int, sha string) string {
+	return knowledge.ChecksumHex([]byte(fmt.Sprintf("autofix|%s|%s|%d|%s", teamID, repo, number, strings.ToLower(sha))))
 }
 
 // reviewFixerFor picks the bot this repo has enabled that declares it CONSUMES a

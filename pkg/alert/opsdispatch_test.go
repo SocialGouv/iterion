@@ -2,6 +2,7 @@ package alert_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -149,5 +150,111 @@ func TestOpsDispatcher_ClassificationBoundaries(t *testing.T) {
 	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, fin.ID, nil))
 	if len(sink.alerts()) != 1 {
 		t.Fatal("a finished run produced an operator alert")
+	}
+}
+
+// failingSink is an ErrorReportingSink with a switchable fault — the
+// transient-channel-outage shape (Mattermost rolling restart, ingress 502).
+type failingSink struct {
+	captureSink
+	err error
+}
+
+func (f *failingSink) NotifyErr(ctx context.Context, a alert.Alert) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.Notify(ctx, a)
+	return nil
+}
+
+// TestOpsDispatcher_RetryBookkeepingDoesNotRespam pins the stable episode
+// key: the retry cycle rewrites a parked run every sweep-minute
+// (ScheduleRunRetry/ClaimRunRetry bump updated_at while the status never
+// leaves failed_resumable) — the operator must get ONE message per real
+// retry cycle, not one per bookkeeping write.
+func TestOpsDispatcher_RetryBookkeepingDoesNotRespam(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	reset := time.Now().Add(3 * time.Hour).UTC()
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "usage cap: weekly window"
+		r.RetryState = &store.RunRetryState{RetryAfter: &reset, Reason: "usage_window", Attempts: 1}
+	})
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+
+	// A claim/re-arm write: updated_at moves, status and attempts do not.
+	run2, _ := rs.LoadRun(context.Background(), run.ID)
+	run2.UpdatedAt = run2.UpdatedAt.Add(90 * time.Second)
+	_ = rs.SaveRun(context.Background(), run2)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("%d alerts after a bookkeeping bump, want 1 — this is the Mattermost-killing spam", got)
+	}
+
+	// A REAL new retry cycle (attempts advanced) alerts once more.
+	run3, _ := rs.LoadRun(context.Background(), run.ID)
+	run3.RetryState.Attempts = 2
+	run3.UpdatedAt = run3.UpdatedAt.Add(4 * time.Hour)
+	_ = rs.SaveRun(context.Background(), run3)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 2 {
+		t.Fatalf("%d alerts after a new retry cycle, want 2", got)
+	}
+}
+
+// TestOpsDispatcher_TransientChannelOutageRetries pins the Unmark contract:
+// a 15-second receiver outage must not consume the one alert this component
+// exists to deliver — the claim is released and the sweep redelivers.
+func TestOpsDispatcher_TransientChannelOutageRetries(t *testing.T) {
+	d, rs, _ := opsWorld(t)
+	sink := &failingSink{err: context.DeadlineExceeded}
+	d.Sinks = []alert.Sink{sink}
+	run := seedOpsRun(t, rs, store.RunStatusFailed, func(r *store.Run) { r.Error = "boom" })
+	ev := trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil)
+
+	_ = d.Handle(context.Background(), ev) // channel down — claim must release
+	if got := len(sink.alerts()); got != 0 {
+		t.Fatalf("delivered %d during the outage?", got)
+	}
+	sink.err = nil
+	_ = d.Handle(context.Background(), ev) // the sweep's replay
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("%d alerts after the channel recovered, want 1 — a 15s outage silenced the episode forever", got)
+	}
+}
+
+// TestOpsDispatcher_SweepPaginatesPastAFullPage pins the keyset cursor: a
+// burst of newer (already-claimed) episodes larger than one page must not
+// starve the oldest unclaimed run forever.
+func TestOpsDispatcher_SweepPaginatesPastAFullPage(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	old := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) { r.Error = "oldest, unclaimed" })
+
+	// Page 1: a full page of newer refs whose episodes are already settled
+	// (pre-marked), so they cost only the IsMarked pre-check.
+	now := time.Now().UTC()
+	var page1 []usernotify.RunRef
+	for i := 0; i < 500; i++ {
+		ref := usernotify.RunRef{ID: fmt.Sprintf("newer-%03d", i), Status: string(store.RunStatusFailedResumable), UpdatedAt: now.Add(-time.Duration(i) * time.Second)}
+		key := "ops|" + trigger.RunOutcomeEventID(ref.ID, ref.Status, "", ref.UpdatedAt)
+		if won, _ := d.Claims.TryMark(context.Background(), key); won {
+			_ = d.Claims.MarkDelivered(context.Background(), key)
+		}
+		page1 = append(page1, ref)
+	}
+	pages := 0
+	list := func(_ context.Context, _, before time.Time, _ int) ([]usernotify.RunRef, error) {
+		pages++
+		if before.IsZero() {
+			return page1, nil
+		}
+		return []usernotify.RunRef{{ID: old.ID, Status: string(old.Status), UpdatedAt: old.UpdatedAt}}, nil
+	}
+	d.SweepOnce(context.Background(), list)
+	if pages < 2 {
+		t.Fatalf("sweep stopped after %d page(s) — the oldest episode is starved forever", pages)
+	}
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("%d alerts, want 1 (the starved oldest run)", got)
 	}
 }

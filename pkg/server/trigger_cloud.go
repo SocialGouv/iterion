@@ -134,10 +134,21 @@ type cloudBoardSource struct {
 	tick    time.Duration
 	// ticks counts tickOnce passes (single goroutine) for the slow-cadence
 	// outbox drain.
-	ticks  int
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	ticks int
+	// holes tracks, per tenant, the first seq gap the tail is currently
+	// refusing to advance past (emit allocates the seq BEFORE inserting, so
+	// a younger gap is usually an insert still in flight — skipping it
+	// would lose the event forever). Older than boardTailHoleGrace = a dead
+	// allocation (failed insert), franchissable. Single goroutine.
+	holes map[string]tailHole
+	// poisons tracks, per tenant, the event seq whose normalize/match keeps
+	// failing; past boardTailPoisonTicks the tail logs once at Error and
+	// skips it — a head-of-line poison event must not freeze the tenant's
+	// triggers forever. Single goroutine.
+	poisons map[string]tailPoison
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 func (s *cloudBoardSource) run() {
@@ -172,6 +183,26 @@ func (s *cloudBoardSource) tickOnce() {
 	// buy nothing but load.
 	s.ticks++
 	slowTick := s.ticks%effectDrainEveryNTicks == 0
+	if slowTick {
+		// Union with the tenants holding live effect rows: disabling a
+		// tenant's last board subscription must not hibernate its already-
+		// materialized rows (they would fire all at once on re-enable,
+		// days late) — they still execute, retry or park on the slow
+		// cadence.
+		if extra, err := s.coord.DistinctEffectTenants(s.ctx); err != nil {
+			s.warn("trigger: cloud board source: list effect tenants: %v", err)
+		} else {
+			seen := make(map[string]bool, len(tenants))
+			for _, t := range tenants {
+				seen[t] = true
+			}
+			for _, t := range extra {
+				if !seen[t] {
+					tenants = append(tenants, t)
+				}
+			}
+		}
+	}
 	for _, tenant := range tenants {
 		st := s.coord.StoreFor(tenant)
 		materialized, err := s.drainTenant(tenant, st)
@@ -189,6 +220,26 @@ func (s *cloudBoardSource) tickOnce() {
 // materialized: every 5th board tick (~15s at the default 3s interval),
 // matching the smallest retry backoff.
 const effectDrainEveryNTicks = 5
+
+// boardTailHoleGrace bounds how long the tail waits on a seq gap before
+// treating it as a dead allocation. Must exceed boardmongo's per-op timeout
+// (10s) so a slow-but-live insert always lands inside the grace.
+const boardTailHoleGrace = 30 * time.Second
+
+// boardTailPoisonTicks is how many consecutive failed reads of ONE event the
+// tail tolerates before skipping it (with a single Error log).
+const boardTailPoisonTicks = 20
+
+type tailHole struct {
+	seq       int64
+	firstSeen time.Time
+}
+
+type tailPoison struct {
+	seq   int64
+	fails int
+	said  bool
+}
 
 // drainTenant materializes one tenant's new board events. The ORDER is the
 // whole point (the pre-outbox shape lost events forever on a crash or a
@@ -211,6 +262,16 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		return false, err
 	}
 	now := time.Now().UTC()
+	// Contiguous-prefix guard: emit allocates the seq BEFORE inserting, so
+	// a concurrent emitter can make seq N visible while N-1's insert is
+	// still in flight — advancing over that gap would lose N-1 forever.
+	// Truncate the batch at the first YOUNG gap (watched < grace); a gap
+	// older than the grace is a dead allocation (failed insert) the tail
+	// steps over.
+	events = s.trimAtYoungGap(tenant, cursor, events, now)
+	if len(events) == 0 {
+		return false, nil
+	}
 	var rows []trigger.EffectRow
 	for _, evt := range events {
 		if !trigger.IsCardEvent(evt.Type) || evt.IssueID == "" {
@@ -218,6 +279,9 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		}
 		te, ok, nerr := trigger.NormalizeBoardEvent(st.Get, evt, tenant, "", "cloud")
 		if nerr != nil {
+			if s.poisoned(tenant, evt.Seq) {
+				continue // logged once at Error inside poisoned — step over
+			}
 			return false, fmt.Errorf("normalize event seq %d (issue %s): %w — batch aborted before the cursor, will retry", evt.Seq, evt.IssueID, nerr)
 		}
 		if !ok {
@@ -225,6 +289,9 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		}
 		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, te, now)
 		if merr != nil {
+			if s.poisoned(tenant, evt.Seq) {
+				continue
+			}
 			return false, fmt.Errorf("match subscriptions for event seq %d: %w — batch aborted before the cursor, will retry", evt.Seq, merr)
 		}
 		rows = append(rows, evRows...)
@@ -241,6 +308,62 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		return len(rows) > 0, err
 	}
 	return len(rows) > 0, nil
+}
+
+// trimAtYoungGap cuts the batch before the first seq gap the tail has not
+// yet watched past the grace. Only the FIRST gap per tick is examined; the
+// remainder is re-read next tick once the gap resolves or expires.
+func (s *cloudBoardSource) trimAtYoungGap(tenant string, cursor int64, events []native.Event, now time.Time) []native.Event {
+	if s.holes == nil {
+		s.holes = map[string]tailHole{}
+	}
+	expected := cursor + 1
+	for i, evt := range events {
+		if evt.Seq == expected {
+			expected = evt.Seq + 1
+			continue
+		}
+		// Gap at [expected, evt.Seq-1].
+		h, watching := s.holes[tenant]
+		if !watching || h.seq != expected {
+			s.holes[tenant] = tailHole{seq: expected, firstSeen: now}
+			return events[:i]
+		}
+		if now.Sub(h.firstSeen) < boardTailHoleGrace {
+			return events[:i]
+		}
+		// Dead allocation — a failed insert holds no event. Step over.
+		s.warn("trigger: cloud board source: tenant %s: seq gap at %d unfilled for %s — treating as a dead allocation and advancing", tenant, expected, now.Sub(h.firstSeen))
+		delete(s.holes, tenant)
+		expected = evt.Seq + 1
+	}
+	delete(s.holes, tenant)
+	return events
+}
+
+// poisoned counts consecutive failures on one event seq; past the threshold
+// it logs ONCE at Error and answers true (skip). Head-of-line poison must
+// not freeze every trigger behind it forever — but a skip is a deliberate,
+// loud loss, never a silent one.
+func (s *cloudBoardSource) poisoned(tenant string, seq int64) bool {
+	if s.poisons == nil {
+		s.poisons = map[string]tailPoison{}
+	}
+	p := s.poisons[tenant]
+	if p.seq != seq {
+		p = tailPoison{seq: seq}
+	}
+	p.fails++
+	if p.fails < boardTailPoisonTicks {
+		s.poisons[tenant] = p
+		return false
+	}
+	if !p.said && s.logger != nil {
+		s.logger.Error("trigger: cloud board source: tenant %s: event seq %d unreadable after %d ticks — SKIPPING it; the triggers behind it resume, this one is lost (inspect board_events seq %d)", tenant, seq, p.fails, seq)
+		p.said = true
+	}
+	s.poisons[tenant] = p
+	return true
 }
 
 func (s *cloudBoardSource) warn(format string, args ...any) {

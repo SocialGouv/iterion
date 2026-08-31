@@ -55,7 +55,10 @@ func (TrackerSink) Notify(_ context.Context, a Alert) {
 	switch a.Kind {
 	case KindRunFailed, KindBudgetExceeded:
 		errtrack.CaptureMessage(sentry.LevelError, msg, fields)
-	case KindStall, KindBudgetWarning:
+	case KindStall, KindBudgetWarning, KindRunParked:
+		// Parked is a real incident for the operator (a run waiting out a
+		// window or a resume) — a breadcrumb alone is never sent to the
+		// tracker, and the webhook must not be the only channel.
 		errtrack.CaptureMessage(sentry.LevelWarning, msg, fields)
 	default:
 		// A recovery (stall_recovered) closes an episode; it is context

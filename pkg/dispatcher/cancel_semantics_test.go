@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -118,6 +121,62 @@ func TestReconcileStalled_InterruptsWithCause(t *testing.T) {
 	}
 	if cause := context.Cause(runCtx); !errors.Is(cause, runtime.ErrRunInterrupted) {
 		t.Fatalf("stall cancel cause = %v, want runtime.ErrRunInterrupted — a stall reap is an internal stop, not an operator cancel", cause)
+	}
+}
+
+// TestFinishRun_OperatorCancelSchedulesNoRetry pins the tracker-agnostic
+// choke point: on github/forgejo there is no last_run seam, so the guards
+// that hold a cancelled ticket do not exist — the ONLY thing standing
+// between an operator's cancel and a fresh replay from the workflow entry
+// is finishRun refusing to schedule a retry for ErrRunCancelled.
+func TestFinishRun_OperatorCancelSchedulesNoRetry(t *testing.T) {
+	ft := newFakeTracker()
+	c := newTestDispatcher(t, &StubRunner{}, ft, time.Hour)
+	c.state.running["fake:1"] = &runningEntry{IssueID: "fake:1", Identifier: "fake#1", RunID: "r1", WorkflowState: "ready"}
+	ft.claims["fake:1"] = c.hostMarker
+
+	c.finishRun(context.Background(), "fake:1", fmt.Errorf("%w: run cancelled by user", runtime.ErrRunCancelled))
+
+	if _, ok := c.state.retries["fake:1"]; ok {
+		t.Fatal("operator cancel scheduled a retry — on a non-native tracker its empty PrevRunID mints a FRESH run from the workflow entry")
+	}
+	if _, held := ft.claims["fake:1"]; !held {
+		t.Fatal("operator cancel released the claim — the ticket must stay held until an explicit resume")
+	}
+
+	// Contrast: an INTERNAL interruption keeps retrying (stall recovery).
+	c.state.running["fake:2"] = &runningEntry{IssueID: "fake:2", Identifier: "fake#2", RunID: "r2", WorkflowState: "ready"}
+	c.finishRun(context.Background(), "fake:2", fmt.Errorf("%w: at node x", runtime.ErrRunInterrupted))
+	if _, ok := c.state.retries["fake:2"]; !ok {
+		t.Fatal("an internal interruption no longer schedules a retry — stall recovery regressed")
+	}
+}
+
+// TestRunStatusOnDisk_UnreadableRecordIsKnownFalse pins the fail-closed
+// primitive: "no information" is not "no run" — a truncated run.json must
+// read as unknown (the mint path holds), while a genuinely missing record
+// stays the legitimate fresh start.
+func TestRunStatusOnDisk_UnreadableRecordIsKnownFalse(t *testing.T) {
+	c, s := newStoreBackedDispatcher(t)
+	ctx := context.Background()
+	run, err := s.CreateRun(ctx, "trunc-1", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusCancelled
+	if err := s.SaveRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	// Truncate run.json mid-write (the crash shape).
+	path := filepath.Join(c.storeDir, "runs", "trunc-1", "run.json")
+	if err := os.Truncate(path, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, known := c.runStatusOnDisk("trunc-1"); known {
+		t.Fatal("a truncated run.json read as known — the mint guard would fail open over a held cancel")
+	}
+	if status, known := c.runStatusOnDisk("never-existed"); !known || status != "" {
+		t.Fatalf("a missing record must stay the legitimate fresh start: status=%q known=%v", status, known)
 	}
 }
 

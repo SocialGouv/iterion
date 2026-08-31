@@ -524,13 +524,29 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// before postFinished — so a shell hook can't block the actor and
 		// the directory is gone before the claim is released. See
 		// cleanupWorkspace + runWorker.
+	case errors.Is(err, runtime.ErrRunCancelled):
+		// OPERATOR cancel — terminal for the retry policy on EVERY tracker.
+		// This choke point is what makes the invariant tracker-agnostic:
+		// the last_run guards below only exist on the native tracker, so
+		// without this arm a github/forgejo card would schedule a retry
+		// whose empty PrevRunID minted a FRESH run from the workflow entry
+		// — replaying the operator's cancelled work. Keep the claim + a
+		// visible skip (the source-changed arm's shape); the way out is an
+		// explicit resume (or, on native, --clear-last-run).
+		c.stampLastRun(issueID, r)
+		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
+			"run cancelled by the operator — resume it explicitly to continue; the ticket stays held")
+		c.logger.Info("dispatcher: %s cancelled by the operator (run=%s) — NOT retried; the ticket stays held until an explicit resume", r.Identifier, r.RunID)
+		c.fireSnapshot()
+		return
 	case errors.Is(err, context.Canceled):
-		// Cancellation is a soft stop. Keep the workspace and any
-		// pending retry entry so the next tick can re-pick the issue.
-		// Revert the in-progress transition so the next dispatch sees
-		// the issue back in its source state (typically "ready"). The
-		// safety check inside revertTransition skips when the workflow
-		// or operator already moved the state elsewhere.
+		// Only the force-reap paths pass a literal context.Canceled
+		// (finishRun(ctx, id, context.Canceled) after a worker refused to
+		// exit): soft-stop bookkeeping — keep the workspace and any pending
+		// retry entry so the next tick can re-pick the issue, revert the
+		// in-progress transition. Engine outcomes never land here: an
+		// operator cancel arrives as ErrRunCancelled (above), an internal
+		// stop as ErrRunInterrupted (default arm → retry).
 		c.logger.Info("dispatcher: %s cancelled (run=%s)", r.Identifier, r.RunID)
 		plan.kind = finishRevert
 	default:

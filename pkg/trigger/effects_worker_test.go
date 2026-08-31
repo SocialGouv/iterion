@@ -102,7 +102,7 @@ func TestEffectWorker_LaunchFailureDoesNotLoseTheOneShot(t *testing.T) {
 
 	// Make the row due again and retry: the launch must fire WITHOUT a
 	// second consume (the one-shot is already ours).
-	_ = out.MarkRetry(context.Background(), row.ID, row.Attempts, time.Now().Add(-time.Second), row.LastError)
+	_ = out.MarkRetry(context.Background(), row.ID, row.ClaimID, row.Attempts, time.Now().Add(-time.Second), row.LastError)
 	// MarkRetry resets state but must keep ConsumeMarked.
 	if r2, _ := out.Row(row.ID); !r2.ConsumeMarked {
 		t.Fatal("MarkRetry lost ConsumeMarked — the retry would re-consume or drop the launch")
@@ -152,7 +152,7 @@ func TestEffectWorker_ExhaustionParksVisibly(t *testing.T) {
 		if row.State == EffectFailed {
 			break
 		}
-		_ = out.MarkRetry(context.Background(), row.ID, row.Attempts, time.Now().Add(-time.Second), "")
+		_ = out.MarkRetry(context.Background(), row.ID, row.ClaimID, row.Attempts, time.Now().Add(-time.Second), "")
 		w.Tick(context.Background(), 10)
 	}
 	row, _ := out.Row(EffectID(ev.ID, "s1"))
@@ -181,7 +181,7 @@ func TestEffectWorker_BoardPromoteRetries(t *testing.T) {
 		t.Fatalf("promote error: state=%s attempts=%d, want pending/1", row.State, row.Attempts)
 	}
 	board.promoteErr = nil
-	_ = out.MarkRetry(context.Background(), row.ID, row.Attempts, time.Now().Add(-time.Second), "")
+	_ = out.MarkRetry(context.Background(), row.ID, row.ClaimID, row.Attempts, time.Now().Add(-time.Second), "")
 	w.Tick(context.Background(), 10)
 	if row, _ := out.Row(EffectID(ev.ID, "s1")); row.State != EffectDone {
 		t.Fatalf("state = %s after retry, want done", row.State)

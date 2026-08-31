@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -46,17 +47,26 @@ type webhookPayload struct {
 	Text string `json:"text"`
 }
 
-// Notify implements Sink.
+// Notify implements Sink (fire-and-forget shape, kept for the in-process
+// Manager). The OpsDispatcher path uses NotifyErr so a failed delivery can
+// release its episode claim.
 func (w *WebhookSink) Notify(ctx context.Context, a Alert) {
+	_ = w.NotifyErr(ctx, a)
+}
+
+// NotifyErr implements ErrorReportingSink: a transport failure or a non-2xx
+// status (including the 3xx the SSRF-guarded client refuses to follow) is a
+// FAILED delivery the caller may retry.
+func (w *WebhookSink) NotifyErr(ctx context.Context, a Alert) error {
 	if w == nil {
-		return
+		return nil
 	}
 	body, err := json.Marshal(webhookPayload{Text: a.WebhookText()})
 	if err != nil {
 		if w.logger != nil {
 			w.logger.Warn("alert webhook: marshal payload: %v", err)
 		}
-		return
+		return fmt.Errorf("alert webhook: marshal payload: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
@@ -64,7 +74,7 @@ func (w *WebhookSink) Notify(ctx context.Context, a Alert) {
 		if w.logger != nil {
 			w.logger.Warn("alert webhook: build request failed")
 		}
-		return
+		return fmt.Errorf("alert webhook: build request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -73,12 +83,14 @@ func (w *WebhookSink) Notify(ctx context.Context, a Alert) {
 		if w.logger != nil {
 			w.logger.Warn("alert webhook: delivery failed for %s alert (run %s)", a.Kind, a.RunID)
 		}
-		return
+		return fmt.Errorf("alert webhook: delivery failed for run %s", a.RunID)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		if w.logger != nil {
 			w.logger.Warn("alert webhook: receiver returned %d for %s alert (run %s)", resp.StatusCode, a.Kind, a.RunID)
 		}
+		return fmt.Errorf("alert webhook: receiver returned %d for run %s", resp.StatusCode, a.RunID)
 	}
+	return nil
 }

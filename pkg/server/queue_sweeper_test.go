@@ -121,11 +121,38 @@ func TestSweepOrphanRuns_LeaseFaultIsVisible(t *testing.T) {
 		t.Fatal("sweepDegraded not set — the episode Warn would re-fire every tick or never")
 	}
 
-	// Recovery closes the episode.
+	// An EMPTY pass proves nothing: no candidate was probed, so the episode
+	// must stay open instead of flapping "back to healthy" while NATS-KV is
+	// still down (most minutes have no stale run at all).
+	s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("an empty pass closed the degradation episode — false 'back to healthy'")
+	}
+
+	// A pass that actually probed a candidate cleanly closes it.
 	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{}, time.Now().UTC())
 	if s.sweepDegraded {
-		t.Fatal("sweepDegraded still set after a clean pass")
+		t.Fatal("sweepDegraded still set after a clean probing pass")
 	}
+}
+
+// TestSweepOrphanRuns_DeadScanOpensTheEpisode: a failing scan is orphan
+// recovery 100% disabled — it must open the degraded episode, not just tick
+// a per-minute Warn.
+func TestSweepOrphanRuns_DeadScanOpensTheEpisode(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	s.sweepOrphanRuns(context.Background(), failingLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("a dead scan did not open the degradation episode")
+	}
+}
+
+type failingLister struct{}
+
+func (failingLister) ListStaleActiveRuns(context.Context, []store.RunStatus, time.Time, int) ([]mongostore.StaleRunRef, error) {
+	return nil, context.DeadlineExceeded
 }
 
 func TestQueuedSweepCutoff(t *testing.T) {

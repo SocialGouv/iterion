@@ -79,6 +79,39 @@ delivery. The evaluator's bus subscription remains for the other sources
   deliberate — the outbox exists to protect the only path where a loss was
   unrecoverable.
 
+## Round-1 adversarial hardenings (2026-09-01)
+
+The first adversarial pass (4 executed-proof reviewers) found and closed
+five holes in the initial cut:
+
+- **Upstream seq holes.** `emit` allocates the per-tenant seq ($inc)
+  *before* inserting, so seq N can be visible while N−1's insert is in
+  flight — and the cursor would sail past N−1 forever. The tail now
+  advances only over the **contiguous prefix**: a young gap (watched <
+  30s, > boardmongo's 10s op timeout) truncates the batch; an older gap
+  is a dead allocation (failed insert) stepped over with a Warn. The
+  cursor **seed** reads the max *inserted* seq, not the allocator
+  counter, for the same reason.
+- **Claim fencing.** `ClaimDue` mints a `claim_id` per claim and every
+  `Mark*` filters on it: a worker whose lease was stolen (its batch
+  outlived the horizon) finds its late writes no-ops instead of
+  resurrecting a done row. The worker also skips rows whose lease
+  expired before it reached them.
+- **Hung effects burn the budget.** A reclaim of an expired lease
+  `$inc`s `attempts`; a row reclaimed past `MaxEffectAttempts` parks as
+  the dead-letter — an effect that never returns can no longer be
+  re-executed every lease forever.
+- **Transient ≠ definitive, one seam lower.** A failing
+  `SubscriptionStore.Get` retries; only `ErrSubscriptionNotFound`
+  drops. Execution re-verifies `Match` (an operator-edited rule decides
+  by its CURRENT terms) and refuses cross-tenant rows.
+- **Liveness.** The drain unions the subscription-derived tenant list
+  with tenants holding live effect rows (disabling the last
+  subscription must not hibernate materialized rows); a head-of-line
+  poison event (unreadable after 20 ticks) is skipped with ONE Error
+  log instead of freezing the tenant; `done` rows carry a 7-day partial
+  TTL (failed rows — the dead-letter — never expire).
+
 ## Consequences
 
 - `NormalizeBoardEvent` now returns `(Event, bool, error)` — callers must
