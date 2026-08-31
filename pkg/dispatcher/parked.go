@@ -60,7 +60,7 @@ func (c *Dispatcher) reconcileParked(ctx context.Context) {
 			continue
 		}
 		var target string
-		switch runStatusFrom(rs, runID) {
+		switch c.runStatusFrom(rs, runID) {
 		case store.RunStatusFinished:
 			target = cfg.Agent.CompletedState
 			c.logger.Info("dispatcher: %s resumed out-of-band and finished (run=%s) — moving awaiting-input card to %q", iss.Identifier, runID, target)
@@ -152,9 +152,8 @@ func (c *Dispatcher) reparkClaimedIfLastRunWaiting(iss tracker.Issue) bool {
 		c.logger.Debug("dispatcher: open store for re-park check: %v", err)
 		return false
 	}
-	r, err := rs.LoadRun(context.Background(), runID)
+	r, err := c.loadRunForDecision(rs, runID, "re-park check")
 	if err != nil {
-		c.logger.Debug("dispatcher: cannot read run %s for re-park check: %v", runID, err)
 		return false
 	}
 	if !isDispatcherPausedRun(r) {
@@ -267,14 +266,70 @@ func (c *Dispatcher) openRunStore() (*store.FilesystemRunStore, error) {
 	if c.storeDir == "" {
 		return nil, errors.New("no store dir")
 	}
-	return store.New(c.storeDir, store.WithLogger(c.logger))
+	s, err := store.New(c.storeDir, store.WithLogger(c.logger))
+	// The choke point every resume/park/status decision reads through: an
+	// unreachable store silently degrades all of them to "no information",
+	// so the episode must be visible at production log levels.
+	if err != nil {
+		c.warnDegraded("run-store", "dispatcher: cannot open the run store at %s: %v — resume/park/status decisions degraded to 'no information' until it recovers", c.storeDir, err)
+		return nil, err
+	}
+	c.clearDegraded("run-store")
+	return s, nil
+}
+
+// loadRunForDecision reads a run whose status is about to change a
+// dispatch decision. A MISSING record stays Debug — a pruned run is
+// normal and self-describing; any other read error means the decision
+// is being taken blind, which warns once per run until it reads again.
+func (c *Dispatcher) loadRunForDecision(s *store.FilesystemRunStore, runID, what string) (*store.Run, error) {
+	r, err := s.LoadRun(context.Background(), runID)
+	key := "run-read:" + runID
+	switch {
+	case err == nil:
+		c.clearDegraded(key)
+		return r, nil
+	case errors.Is(err, store.ErrRunNotFound):
+		c.logger.Debug("dispatcher: run %s not found (%s)", runID, what)
+		return nil, err
+	default:
+		c.warnDegraded(key, "dispatcher: cannot read run %s (%s): %v — deciding as if it held no information", runID, what, err)
+		return nil, err
+	}
+}
+
+// warnDegraded logs a decision-changing degradation at Warn once per
+// episode (keyed); repeats stay Debug until clearDegraded closes the
+// episode. Actor-goroutine-owned state, like every other c.state map.
+func (c *Dispatcher) warnDegraded(key, format string, args ...any) {
+	if c.state.degradedWarned == nil {
+		c.state.degradedWarned = map[string]bool{}
+	}
+	if c.state.degradedWarned[key] {
+		c.logger.Debug(format, args...)
+		return
+	}
+	c.state.degradedWarned[key] = true
+	c.logger.Warn(format, args...)
+}
+
+// clearDegraded closes a degradation episode opened by warnDegraded,
+// logging the recovery once so the two log lines bracket the episode.
+func (c *Dispatcher) clearDegraded(key string) {
+	if c.state.degradedWarned == nil || !c.state.degradedWarned[key] {
+		return
+	}
+	delete(c.state.degradedWarned, key)
+	c.logger.Info("dispatcher: %s degradation recovered", key)
 }
 
 // runStatusFrom reads a run's persisted status from an already-open
 // store. Best-effort — any read error returns the empty status, which
-// the sweeps treat as "leave the card alone".
-func runStatusFrom(s *store.FilesystemRunStore, runID string) store.RunStatus {
-	r, err := s.LoadRun(context.Background(), runID)
+// the sweeps treat as "leave the card alone". A missing record stays
+// Debug (a pruned run is normal); any other read error is a real
+// degradation and warns once per run.
+func (c *Dispatcher) runStatusFrom(s *store.FilesystemRunStore, runID string) store.RunStatus {
+	r, err := c.loadRunForDecision(s, runID, "status check")
 	if err != nil {
 		return ""
 	}
@@ -294,5 +349,5 @@ func (c *Dispatcher) runStatusOnDisk(runID string) store.RunStatus {
 		c.logger.Debug("dispatcher: open store for status check: %v", err)
 		return ""
 	}
-	return runStatusFrom(s, runID)
+	return c.runStatusFrom(s, runID)
 }

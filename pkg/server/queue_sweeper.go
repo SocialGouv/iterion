@@ -117,12 +117,33 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 		{[]store.RunStatus{store.RunStatusQueued}, now.Add(-queuedSweepCutoff(leases))},
 		{[]store.RunStatus{store.RunStatusRunning}, now.Add(-sweepRunningAfter)},
 	}
+	// Per-pass error accounting: any failed step means orphan recovery is
+	// DEGRADED for the runs it skipped — a state a success-only counter
+	// cannot distinguish from "nothing to do". Each failure increments the
+	// stage counter; the pass summary below is edge-triggered so the log
+	// carries one Warn per episode, not one per tick.
+	var leaseErrs, flipErrs int
+	var lastErr error
+	countErr := func(stage string, err error) {
+		lastErr = err
+		if s.cfg.Metrics != nil {
+			s.cfg.Metrics.OrphanSweepErrors.WithLabelValues(stage).Inc()
+		}
+		switch stage {
+		case "lease":
+			leaseErrs++
+		case "flip":
+			flipErrs++
+		}
+	}
+
 	// Platform-level scan — the per-run tenant comes back on each ref
 	// and is re-stamped for the CAS below.
 	scanCtx := store.WithoutTenantFilter(ctx)
 	for _, p := range passes {
 		refs, err := lister.ListStaleActiveRuns(scanCtx, p.statuses, p.before, 100)
 		if err != nil {
+			countErr("scan", err)
 			if s.logger != nil {
 				s.logger.Warn("sweeper: scan %v: %v", p.statuses, err)
 			}
@@ -130,14 +151,22 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 		}
 		for _, ref := range refs {
 			locked, err := leases.IsRunLocked(ctx, ref.ID)
-			if err != nil || locked {
-				continue // in flight (or lease state unknown — fail safe, retry next pass)
+			if err != nil {
+				// Lease state unknown — fail safe (skip), but count it: a
+				// persistent NATS-KV fault would otherwise disable orphan
+				// recovery with no signal at all.
+				countErr("lease", err)
+				continue
+			}
+			if locked {
+				continue // in flight
 			}
 			runCtx := store.WithIdentity(ctx, ref.TenantID, "sweeper")
 			changed, err := s.cfg.Store.UpdateRunStatusIf(runCtx, ref.ID, store.RunStatusFailedResumable,
 				"orphaned by a runner crash or exhausted redelivery — resume to retry",
 				p.statuses)
 			if err != nil {
+				countErr("flip", err)
 				if s.logger != nil {
 					s.logger.Warn("sweeper: flip %s: %v", ref.ID, err)
 				}
@@ -153,6 +182,21 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 			}
 		}
 	}
+
+	// Edge-triggered episode summary. Per replica by design: there is no
+	// shared "definitive" instant on a lock-less sweeper, so each replica
+	// brackets its own episode and the aggregate lives in the counter.
+	degraded := leaseErrs+flipErrs > 0
+	if degraded && !s.sweepDegraded {
+		if s.logger != nil {
+			s.logger.Warn("sweeper: orphan recovery degraded — %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", leaseErrs, flipErrs, lastErr)
+		}
+	} else if !degraded && s.sweepDegraded {
+		if s.logger != nil {
+			s.logger.Info("sweeper: orphan recovery back to healthy")
+		}
+	}
+	s.sweepDegraded = degraded
 }
 
 // ---- DLQ admin REST ----

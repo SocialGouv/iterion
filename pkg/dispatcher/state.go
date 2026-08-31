@@ -68,6 +68,13 @@ type state struct {
 	// dispatch proceeds, or pruned when the issue leaves the candidate set.
 	// Actor-goroutine-owned; no mutex needed.
 	lastRunHoldWarned map[string]string
+	// degradedWarned dedups the Warn for decision-changing degradations
+	// (run store unreachable, unreadable run record): the FIRST failure of
+	// an episode warns, repeats stay Debug, and recovery clears the key
+	// with an Info. Without it these paths logged Debug only — invisible
+	// at production log levels while they silently changed dispatch
+	// decisions. Actor-goroutine-owned; no mutex needed.
+	degradedWarned map[string]bool
 }
 
 func newState() *state {
@@ -78,6 +85,7 @@ func newState() *state {
 		tombstones:        map[string]struct{}{},
 		dispatchSkips:     map[string]DispatchSkipView{},
 		lastRunHoldWarned: map[string]string{},
+		degradedWarned:    map[string]bool{},
 	}
 }
 

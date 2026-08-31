@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
@@ -23,9 +24,15 @@ func (f *fakeStaleLister) ListStaleActiveRuns(_ context.Context, statuses []stor
 	return out, nil
 }
 
-type fakeLeases struct{ locked map[string]bool }
+type fakeLeases struct {
+	locked map[string]bool
+	err    error // returned for every probe when set
+}
 
 func (f *fakeLeases) IsRunLocked(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
 	return f.locked[runID], nil
 }
 
@@ -81,6 +88,43 @@ func TestSweepOrphanRuns(t *testing.T) {
 	}
 	if _, ok := fs.flipped["r-healthy"]; ok {
 		t.Fatal("leased (in-flight) run was flipped — the lease check must protect it")
+	}
+}
+
+// TestSweepOrphanRuns_LeaseFaultIsVisible pins the degradation contract: a
+// broken lease probe must (a) fail safe (flip nothing), (b) count on the
+// stage metric, and (c) bracket the episode edge-triggered — one Warn on
+// entry, none while it persists, recovery flips the flag back.
+func TestSweepOrphanRuns_LeaseFaultIsVisible(t *testing.T) {
+	s := newOrgTestServer(t)
+	fs := &fakeSweepStore{}
+	s.cfg.Store = fs
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	broken := &fakeLeases{err: context.DeadlineExceeded}
+
+	before := counterValue(t, s.cfg.Metrics.OrphanSweepErrors.WithLabelValues("lease"))
+	s.sweepOrphanRuns(context.Background(), lister, broken, time.Now().UTC())
+
+	fs.mu.Lock()
+	if len(fs.flipped) != 0 {
+		fs.mu.Unlock()
+		t.Fatalf("lease-unknown candidates were flipped: %+v", fs.flipped)
+	}
+	fs.mu.Unlock()
+	if got := counterValue(t, s.cfg.Metrics.OrphanSweepErrors.WithLabelValues("lease")); got != before+1 {
+		t.Fatalf("lease error counter = %v, want %v — a disarmed sweeper must be measurable", got, before+1)
+	}
+	if !s.sweepDegraded {
+		t.Fatal("sweepDegraded not set — the episode Warn would re-fire every tick or never")
+	}
+
+	// Recovery closes the episode.
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("sweepDegraded still set after a clean pass")
 	}
 }
 

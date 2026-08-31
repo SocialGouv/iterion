@@ -179,20 +179,20 @@ const orphanRunGraceWindow = 2 * time.Minute
 // "running" on disk by a SIGKILL/host crash would hold its ticket
 // forever. Local disk I/O only; context.Background is fine on the
 // actor per the ADR-028 Step 3 boundary (same as runStatusOnDisk).
-// Best-effort: store IO errors are debug-logged, never fatal.
+// Best-effort: store IO errors never abort a tick, but a
+// decision-changing failure warns once per episode (openRunStore /
+// loadRunForDecision).
 func (c *Dispatcher) resumableRunID(runID string) string {
 	if runID == "" || c.storeDir == "" {
 		return ""
 	}
-	s, err := store.New(c.storeDir, store.WithLogger(c.logger))
+	s, err := c.openRunStore()
 	if err != nil {
-		c.logger.Debug("dispatcher: open store for resume check: %v", err)
 		return ""
 	}
 	ctx := context.Background()
-	r, err := s.LoadRun(ctx, runID)
+	r, err := c.loadRunForDecision(s, runID, "resume check")
 	if err != nil {
-		c.logger.Debug("dispatcher: cannot read run %s for resume check: %v", runID, err)
 		return ""
 	}
 	status := r.Status
@@ -255,7 +255,9 @@ func (c *Dispatcher) promoteIfOrphaned(ctx context.Context, s *store.FilesystemR
 		newStatus = store.RunStatusFailedResumable
 	}
 	if err := s.UpdateRunStatus(ctx, cur.ID, newStatus, "process orphaned: dispatcher found run '"+string(cur.Status)+"' with no live owner"); err != nil {
-		c.logger.Debug("dispatcher: orphan promotion %s: %v", cur.ID, err)
+		// Decision-changing: the dead run keeps reading `running` and holds
+		// its ticket until this write lands — worth a Warn, not a Debug.
+		c.logger.Warn("dispatcher: orphan promotion of run %s → %s failed: %v — the ticket stays held until the status write succeeds", cur.ID, newStatus, err)
 		return status
 	}
 	c.logger.Info("dispatcher: last run %s was %s with no live owner — promoted to %s", cur.ID, cur.Status, newStatus)

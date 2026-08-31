@@ -51,8 +51,14 @@ type Registry struct {
 	AuthLoginsTotal         *prometheus.CounterVec // result (success|invalid|locked|password_change_required|error)
 	AuthPasswordResetsTotal *prometheus.CounterVec // step (requested|confirmed)
 	LaunchDeniedTotal       *prometheus.CounterVec // reason (org_suspended|monthly_run_quota_exceeded|…)
-	RunsOrphanRecovered     prometheus.Counter
-	DLQDepth                prometheus.Gauge
+	RunsOrphanRecovered prometheus.Counter
+	// OrphanSweepErrors counts sweep-pass steps that could not do their
+	// job (scan failed, lease state unknown, CAS flip failed), by stage.
+	// Flat at 0 with RunsOrphanRecovered also flat is health; a growing
+	// error count is the sweeper silently disarmed — the state a
+	// success-only counter cannot distinguish from "nothing to do".
+	OrphanSweepErrors *prometheus.CounterVec // stage (scan|lease|flip)
+	DLQDepth          prometheus.Gauge
 	// Provider usage-window retries. The pair is what makes the wait
 	// auditable: scheduled counts runs parked for a later reset, resumed
 	// counts the ones a sweeper actually brought back. A growing gap means
@@ -147,6 +153,10 @@ func New() *Registry {
 		Name: "iterion_runs_orphan_recovered_total",
 		Help: "Stranded queued/running runs the sweeper flipped to failed_resumable.",
 	})
+	r.OrphanSweepErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_orphan_sweep_errors_total",
+		Help: "Orphan-sweeper steps that failed (scan, lease probe, CAS flip). Growth means orphan recovery is degraded.",
+	}, []string{"stage"})
 	r.RunsUsageWindowBlocked = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "iterion_runs_usage_window_blocked_total",
 		Help: "Runs that failed because the LLM provider's quota window was exhausted.",
@@ -179,7 +189,7 @@ func New() *Registry {
 		r.LLMTokensTotal, r.LLMCostUSDTotal, r.RunnerHeartbeatErrors,
 		r.WebhookDeliveriesTotal, r.WebhookThrottledTotal,
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
-		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.DLQDepth,
+		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
 		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps,
 	)

@@ -219,12 +219,16 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 
 // pollPending samples the JetStream consumer info on a fixed cadence
 // and republishes the Pending count to nats_pending_messages. Exits
-// when ctx is cancelled. Errors are logged at debug level — the
-// scaler is the source of truth for autoscaling, so a transient miss
-// here is observability noise, not a correctness issue.
+// when ctx is cancelled. A transient miss stays Debug — the scaler is
+// the source of truth for autoscaling — but a PERSISTENT failure means
+// the gauge is frozen at its last value and KEDA is scaling on stale
+// data, so the episode is surfaced once at Warn (and its recovery once
+// at Info) instead of never.
 func (r *Runner) pollPending(ctx context.Context) {
+	const staleAfter = 5 // consecutive failed samples before the gauge counts as stale
 	t := time.NewTicker(r.cfg.PendingPoll)
 	defer t.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,9 +236,18 @@ func (r *Runner) pollPending(ctx context.Context) {
 		case <-t.C:
 			pending, err := r.consumer.Pending(ctx)
 			if err != nil {
-				r.cfg.Logger.Debug("runner: pending poll: %v", err)
+				failures++
+				if failures == staleAfter {
+					r.cfg.Logger.Warn("runner: pending poll failing for %s (%v) — iterion_nats_pending_messages is frozen at its last value, KEDA is scaling on stale data", time.Duration(failures)*r.cfg.PendingPoll, err)
+				} else {
+					r.cfg.Logger.Debug("runner: pending poll: %v", err)
+				}
 				continue
 			}
+			if failures >= staleAfter {
+				r.cfg.Logger.Info("runner: pending poll recovered after %d failed samples", failures)
+			}
+			failures = 0
 			r.cfg.Metrics.NATSPendingMessages.Set(float64(pending))
 		}
 	}
