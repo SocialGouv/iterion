@@ -2458,12 +2458,12 @@ tool oracle_run:
             saved_env = {k: os.environ.get(k) for k in ("GM_SEALED_DIR", "GM_SCRATCH")}
             os.environ.pop("GM_SEALED_DIR", None)
             os.environ.pop("GM_SCRATCH", None)
-            a, b = sealed_dir_for("/w/replay/poss"), sealed_dir_for("/w/replay2/poss")
+            a, b = sealed_dir_for("/w/replay/app"), sealed_dir_for("/w/replay2/app")
             check("meme basename, deux worktrees -> deux piles", a != b, True)
             check("la pile ne vit pas dans le parent du worktree",
                   a.startswith("/w/"), False)
             check("deux processus, meme workspace -> meme pile",
-                  sealed_dir_for("/w/replay/poss") == a, True)
+                  sealed_dir_for("/w/replay/app") == a, True)
             os.environ["GM_SEALED_DIR"] = "/elsewhere/pile"
             check("GM_SEALED_DIR impose sa pile", sealed_dir_for("/w/x"), "/elsewhere/pile")
             for k, v in saved_env.items():
