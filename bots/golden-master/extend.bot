@@ -1,0 +1,384 @@
+## ═══════════════════════════════════════════════════════════════════
+## extend — act an EXTENSION request: give the net an observation point its
+## owner was asked for, by pure addition.
+##
+## Run as a subbot from inside a modernisation lot's run. A lot whose intent
+## requires observing a surface the net does not cover yet (a new route, a
+## state only the modernised code reaches) must not write under the net to
+## get it — that is the separation of powers. It writes a REQUEST in the
+## extension ledger instead, and this bot — the net's own — acts it.
+##
+## Why an addition may be acted by a bot when a re-baseline may not: an
+## addition is CHECKABLE. It cannot mask an existing divergence; it can only
+## add a constraint. Everything that merely wears an addition's name is the
+## masking vector and is refused mechanically, by the harness's own code
+## (`GM_MODE=extend-verify`), never by this prompt:
+##
+##   ADD a reference file    → new path under refs/, absent at base.
+##   ADD a corpus entry      → every base entry survives equal, the entry is
+##                             claimed by the request, its observation tuple
+##                             collides with nothing.
+##   REWRITE / DELETE / RENAME → NEVER. The delete side of a rename is judged
+##                             separately and loses. Those go to the
+##                             re-baseline ledger and a human act.
+##
+## The line is held in git by `extend_verify` below, not by the prompt: this
+## bot runs inside the lot's own workspace, so anything it can write, the lot
+## can write through it — the check is the boundary.
+## ═══════════════════════════════════════════════════════════════════
+
+vars:
+  workspace_dir: string = "${PROJECT_DIR}"
+  oracle_dir:    string = ".golden-master"
+  ## Which lot requested the extensions — context for the work, never
+  ## authority: the requests themselves are read from the ledger.
+  lot_id: string = ""
+  ## One acting pass, then a second only if the first was refused. A third
+  ## pass on the same refusal is an agent arguing with a deterministic check.
+  max_passes: int = 2
+
+## ─── Prompts ───────────────────────────────────────────────────────
+
+prompt extend_system:
+  You extend a behavioural non-regression net by PURE ADDITION, acting
+  requests its owner's ledger carries.
+
+  Read the bundled skills first: `golden-master` for the method the net rests
+  on and what a reference is; `surface-discovery` for how an observation
+  point is written so it actually observes.
+
+  Four rules override any instinct to make the check pass:
+
+  1. Additions ONLY, on the extension surface ONLY: new files under `refs/`,
+     new entries in `corpus.json`. A deterministic check reads the git diff
+     against the run's base and refuses anything else — a rewritten file, a
+     deleted file, a touched entry, a path under canon/ or mutants/ or the
+     harness. It names what you touched.
+  2. Act EXACTLY what each request declares — its paths, its entries. An
+     addition beside the request is smuggling and is refused as such; do not
+     improve, complete, or tidy while you are here.
+  3. Never write a request. You act them. A request you cannot satisfy by
+     pure addition (it needs a rewrite, a rename, a removal) is REFUSED in
+     your report with the reason — its requester takes it to the re-baseline
+     ledger and a human. Do not close it, do not work around it.
+  4. Record every path you touched in the act block
+     (`iterion:extension-act`, one JSON object, `recorded_paths`), APPENDED
+     to the ledger — the ledger is an audit trail and the check refuses a
+     rewritten one.
+
+  A new corpus entry needs its reference captured the way the net captures
+  everything: through the harness's own record path for exactly the entries
+  you added, never by hand-writing what you believe the response is — an
+  invented reference asserts nothing.
+
+  Commit your work. The verdict is read from git; uncommitted work is
+  invisible to it.
+
+prompt extend_user:
+  Repository: `{{vars.workspace_dir}}`. Net: `{{vars.oracle_dir}}`.
+  Ledger: `{{vars.oracle_dir}}/EXTENSIONS.md`.
+
+  Lot `{{vars.lot_id}}` left these extension requests pending:
+
+  {{input.pending}}
+
+  For each: read its request block in the ledger, apply it by pure addition,
+  capture the reference through the harness's record path, append the act
+  block with every path you touched, and commit. Check your work the way the
+  gate will:
+
+      GM_MODE=extend-verify GM_BASE=<base sha> \
+        python3 {{vars.oracle_dir}}/harness.py
+
+  That is the harness deciding whether each acted extension is a pure
+  addition. It says NOTHING about whether the net now OBSERVES the new
+  surface — only the full gate captures and compares, and it runs after you.
+
+  {{input.fail_log}}
+
+  Report ONE short line in `summary` — including which requests you REFUSED
+  and why, if any. Anything longer belongs in the commit message.
+
+## ─── Schemas ───────────────────────────────────────────────────────
+
+schema campaign_input:
+  pending: string
+  fail_log: string
+
+## One field, and it is not believed. The deterministic check below is the
+## sole authority on whether the extension holds.
+schema campaign_output:
+  summary: string
+
+schema base_state:
+  head: string
+  dirty: string
+  pending: json
+  notice: string
+
+## Not one field here is an opinion.
+schema verify_report:
+  committed: bool
+  scope_clean: bool
+  out_of_scope: string[]
+  additions_ok: bool
+  refused: json
+  no_new_requests: bool
+  still_pending: json
+  extended: int
+  log_tail: string
+
+schema gate_state:
+  converged: bool
+  fail_log: string
+
+## What the parent reads back.
+schema extend_result:
+  converged: bool
+  extended: int
+  notice: string
+
+## ─── Nodes ─────────────────────────────────────────────────────────
+
+## extend_base — the commit this run starts from, and the requests to act.
+##
+## Captured BEFORE the agent, because every check below compares against it.
+## Reading it afterwards would compare the work with itself and pass by
+## construction. The pending list is read by the harness's own code — the
+## party that decides what is pending is the harness, and asking twice
+## invites two answers.
+tool extend_base:
+  output: base_state
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    gm = {{vars.oracle_dir}}
+
+    head = subprocess.run(["git", "-C", ws, "rev-parse", "HEAD"],
+                          capture_output=True, text=True)
+    dirty = subprocess.run(["git", "-C", ws, "status", "--porcelain"],
+                           capture_output=True, text=True)
+
+    pending, notice = [], ""
+    if head.returncode != 0:
+        notice = "git cannot answer on %s: %s" % (ws, (head.stderr or "").strip())
+    else:
+        env = dict(os.environ, GM_MODE="extensions", GM_WORKSPACE=ws, GM_DIR=gm)
+        p = subprocess.run(["python3", os.path.join(ws, gm, "harness.py")],
+                           cwd=ws, env=env, capture_output=True, text=True,
+                           timeout=300)
+        try:
+            pending = json.loads((p.stdout or "").strip().splitlines()[-1]).get("pending") or []
+        except (ValueError, IndexError):
+            notice = ("the harness did not answer GM_MODE=extensions (exit %d): %s"
+                      % (p.returncode, (p.stdout + p.stderr)[-400:]))
+    if dirty.returncode == 0 and dirty.stdout.strip() and not notice:
+        # Said, not refused: the parent commits its lot before verifying, so a
+        # dirty tree here means something else is in flight — and this run's
+        # additions would be indistinguishable from it in the diff.
+        notice = ("the workspace was already dirty when this extension started "
+                  "(%d path(s)); the checks below compare against HEAD, so those "
+                  "changes will be read as this run's."
+                  % len([l for l in dirty.stdout.splitlines() if l.strip()]))
+
+    print(json.dumps({"head": head.stdout.strip(), "dirty": dirty.stdout.strip(),
+                      "pending": pending, "notice": notice}))
+
+agent extend_campaign:
+  backend: "claude_code"
+  model: "${ITERION_GOLDEN_MASTER_MODEL_CLAUDE:-claude-opus-5}"
+  reasoning_effort: "${ITERION_GOLDEN_MASTER_EFFORT:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: extend_system
+  user: extend_user
+  session: fresh
+  skills: ["golden-master", "surface-discovery"]
+
+## extend_verify — the whole verdict, deterministic, in one node.
+##
+## Scope first, for the same reason as everywhere in this bundle: a run that
+## touched the judge's territory has already done the damage, and nothing it
+## did afterwards matters. Then the additions-only verdict, decided by the
+## HARNESS's code — the same code that will refuse at the gate.
+tool extend_verify:
+  input: verify_input
+  output: verify_report
+  language: py
+  script: |
+    import json
+    import os
+    import subprocess
+
+    ws = {{vars.workspace_dir}}
+    gm = {{vars.oracle_dir}}
+    base = {{input.head}}
+    before = {p.get("id") for p in ({{input.pending}} or []) if p.get("id")}
+
+    report = {"committed": False, "scope_clean": False, "out_of_scope": [],
+              "additions_ok": False, "refused": [], "no_new_requests": False,
+              "still_pending": [], "extended": 0, "log_tail": ""}
+    problems = []
+
+    def git(*args):
+        p = subprocess.run(["git", "-C", ws] + list(args),
+                           capture_output=True, text=True, timeout=120)
+        return p.returncode, p.stdout, p.stderr
+
+    # 1. Committed. The verdict below reads git; uncommitted work is a tree
+    #    the verdict never sees.
+    code, out, err = git("status", "--porcelain")
+    if code != 0:
+        problems.append("git cannot answer on %s: %s" % (ws, err.strip()))
+    else:
+        report["committed"] = not out.strip()
+        if out.strip():
+            paths = sorted(l[3:] for l in out.splitlines() if l.strip())
+            problems.append("the extension is NOT COMMITTED (%d path(s): %s). "
+                            "Commit, then verify."
+                            % (len(paths), ", ".join(paths[:12])))
+
+    # 2. Scope — THE line. Every path this run touched must be on the
+    #    extension surface: refs/, corpus.json, the ledger. Canon, mutants,
+    #    configuration, coverage, the harness and all product code are the
+    #    judge's territory, and naming them is the failure.
+    gmp = gm.rstrip("/")
+    allowed_exact = {gmp + "/corpus.json", gmp + "/EXTENSIONS.md"}
+    allowed_prefix = gmp + "/refs/"
+    code, out, err = git("diff", "--name-only", base, "HEAD")
+    if code != 0:
+        problems.append("cannot diff against %s: %s" % (base, err.strip()))
+    else:
+        touched = sorted(l.strip() for l in out.splitlines() if l.strip())
+        outside = [p for p in touched
+                   if p not in allowed_exact and not p.startswith(allowed_prefix)]
+        report["out_of_scope"] = outside
+        report["scope_clean"] = not outside
+        if outside:
+            problems.append(
+                "%d path(s) OUTSIDE the extension surface were changed: %s. "
+                "This bot runs inside the lot's own workspace — anything it "
+                "may write, the lot may write through it. The check is the "
+                "boundary." % (len(outside), ", ".join(outside[:20])))
+
+    def harness(mode, **extra):
+        env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws, GM_DIR=gm, **extra)
+        p = subprocess.run(["python3", os.path.join(ws, gm, "harness.py")],
+                           cwd=ws, env=env, capture_output=True, text=True,
+                           timeout=300)
+        try:
+            return json.loads((p.stdout or "").strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            problems.append("the harness did not answer GM_MODE=%s (exit %d): %s"
+                            % (mode, p.returncode, (p.stdout + p.stderr)[-400:]))
+            return None
+
+    # 3. Additions-only, decided by the harness's own code — the same code
+    #    that refuses at the gate, so passing here and failing there is not a
+    #    state that exists.
+    verdict = harness("extend-verify", GM_BASE=base)
+    if verdict is not None:
+        if verdict.get("error"):
+            problems.append(str(verdict["error"]))
+        bad = [r for r in (verdict.get("acted") or []) if not r.get("ok")]
+        report["additions_ok"] = (not bad and not verdict.get("problems")
+                                  and bool(verdict.get("acted")))
+        report["extended"] = len([r for r in (verdict.get("acted") or [])
+                                  if r.get("ok")])
+        for r in bad:
+            problems.append("extension %s refused: %s"
+                            % (r.get("id"), "; ".join(r.get("problems") or [])))
+        for p_ in (verdict.get("problems") or []):
+            problems.append(p_)
+        if not verdict.get("acted"):
+            problems.append("no act block was appended — a run that acted "
+                            "nothing extended nothing (refusals are reported, "
+                            "not silently skipped)")
+
+    # 4. No new requests. This bot ACTS requests; writing one would let it
+    #    hand itself work the lot never asked for.
+    if verdict is not None:
+        report["no_new_requests"] = int(verdict.get("requests_added") or 0) == 0
+        if not report["no_new_requests"]:
+            problems.append("%d request(s) were ADDED during this run — this "
+                            "bot acts requests, it never writes them"
+                            % verdict.get("requests_added"))
+
+    # What is STILL pending is reported, not judged: a request refused with a
+    # written reason legitimately remains pending — it goes back to its
+    # requester, and the parent's gate keeps refusing until someone with the
+    # authority closes it. This bot failing to act everything must never be
+    # quieter than the requests not existing.
+    listing = harness("extensions")
+    if listing is not None:
+        report["still_pending"] = listing.get("pending") or []
+        report["refused"] = [p_ for p_ in report["still_pending"]
+                             if p_.get("id") in before]
+
+    report["log_tail"] = "\n".join(problems)[-6000:]
+    print(json.dumps(report))
+
+schema verify_input:
+  head: string
+  pending: json
+
+## A pure CONJUNCTION, never an aggregate. An extension that is additions-ok
+## but out of scope is not "mostly fine" — it is a lot writing in the judge's
+## territory through the net's own bot.
+compute extend_gate:
+  output: gate_state
+  expr:
+    converged: "outputs.extend_verify.committed && outputs.extend_verify.scope_clean && outputs.extend_verify.additions_ok && outputs.extend_verify.no_new_requests"
+    fail_log: "outputs.extend_verify.log_tail"
+
+## What the parent reads back. `extended` is the harness's count, never the
+## agent's claim.
+compute extend_result:
+  output: extend_result
+  publish: notice
+  expr:
+    converged: "outputs.extend_gate.converged"
+    extended: "outputs.extend_verify.extended"
+    notice: "if(outputs.extend_gate.converged, 'extensions acted by pure addition; whether the net now OBSERVES them is the gate to say', 'the extension was REFUSED: ' + outputs.extend_gate.fail_log)"
+
+workflow extend:
+  entry: extend_base
+
+  ## No `sandbox:` block (ADR-082): this runs inside the parent lot's
+  ## workspace, on the toolchain the target repository declares for itself.
+
+  budget:
+    max_parallel_branches: 1
+    max_duration: "1h"
+    max_cost_usd: 20
+
+  extend_base -> extend_campaign with {
+    pending:  "{{outputs.extend_base.pending}}",
+    fail_log: ""
+  }
+
+  extend_campaign -> extend_verify with {
+    head:    "{{outputs.extend_base.head}}",
+    pending: "{{outputs.extend_base.pending}}"
+  }
+
+  extend_verify -> extend_gate
+  extend_gate -> extend_result when converged
+
+  ## Refused → one more pass, carrying the deterministic refusal so the agent
+  ## fixes the cause instead of re-deriving it.
+  extend_gate -> extend_campaign as repair_loop("{{vars.max_passes}}") with {
+    pending:  "{{outputs.extend_base.pending}}",
+    fail_log: "{{outputs.extend_gate.fail_log}}"
+  }
+
+  ## Loop exhausted → report the refusal rather than swallow it. The parent's
+  ## gate keeps refusing on the pending requests, so this bot failing must
+  ## never be quieter than this bot not existing.
+  extend_gate -> extend_result
+
+  extend_result -> done

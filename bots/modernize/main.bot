@@ -33,6 +33,11 @@ vars:
   ## report and the surface they probed uncovered — which is the status quo, and
   ## which nothing goes red about.
   reanchor: bool = true
+  ## Act the lot's EXTENSION requests (new observation points, by pure
+  ## addition) by running the net's own bot as a subbot. Off leaves the
+  ## requests pending in the ledger, where the oracle gate refuses until a
+  ## human acts them — pending is loud by design, never a silent skip.
+  extend: bool = true
   source_issue_ref: string = ""
 
 secrets:
@@ -140,6 +145,10 @@ schema lot_report:
   ## read it and nothing ever did — a signal that exists in a log and not in the
   ## contract is not a signal.
   oracle_invalid: json
+  ## Extension requests the lot left pending in the net's ledger — read by the
+  ## harness's own code, and routed to the net's extension subbot. A lot may
+  ## ASK for a new observation point; it may never write one.
+  extension_pending: json
   log_tail: string
 
 schema gate_state:
@@ -148,6 +157,7 @@ schema gate_state:
   stop: bool
   fail_log: string
   needs_reanchor: bool
+  needs_extend: bool
 
 schema verify_input:
   lot_id: string
@@ -407,7 +417,7 @@ tool lot_verify:
 
     report = {"gate_passed": False, "oracle_passed": False, "refs_untouched": False,
               "refs_changed": [], "lot_blocked": False, "block_reason": "", "log_tail": "",
-              "oracle_invalid": []}
+              "oracle_invalid": [], "extension_pending": []}
     problems = []
 
     # Did the campaign declare this lot blocked? Read from the contract, which
@@ -502,12 +512,45 @@ tool lot_verify:
                   os.path.join(gm_dir, "corpus.json"),
                   os.path.join(gm_dir, "route-coverage.json"),
                   os.path.join(gm_dir, "feature-coverage.json")]
+
+        # The extension ledger, read and judged by the HARNESS's own code —
+        # never by this bot's. Pending requests route to the net's extension
+        # subbot; ACTED extensions that the harness certifies as pure
+        # additions are exempted from the immutability verdict below, and
+        # ONLY those: an addition cannot mask an existing divergence, which
+        # is the one property that makes the exemption safe to grant.
+        def harness_json(mode, **extra):
+            hp = os.path.join(ws, gm_dir, "harness.py")
+            if not os.path.isfile(hp):
+                return None
+            env = dict(os.environ, GM_MODE=mode, GM_WORKSPACE=ws,
+                       GM_DIR=gm_dir, **extra)
+            p = subprocess.run(["python3", hp], cwd=ws, env=env,
+                               capture_output=True, text=True, timeout=300)
+            try:
+                return json.loads((p.stdout or "").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                problems.append("the harness did not answer GM_MODE=%s "
+                                "(exit %d): %s"
+                                % (mode, p.returncode,
+                                   (p.stdout + p.stderr)[-400:]))
+                return None
+
+        listing = harness_json("extensions")
+        if listing is not None:
+            report["extension_pending"] = listing.get("pending") or []
+        exempt = set()
+        verdict = harness_json("extend-verify", GM_BASE=base)
+        if verdict is not None and not verdict.get("error"):
+            exempt = set(verdict.get("ok_paths") or [])
+
         code, log = run("git diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
-            changed = [l.strip() for l in log.splitlines() if l.strip()]
+            changed = [l.strip() for l in log.splitlines()
+                       if l.strip() and l.strip() not in exempt]
             report["refs_changed"] = changed
             report["refs_untouched"] = not changed
             if changed:
@@ -535,6 +578,10 @@ compute lot_gate:
     ## stops being covered in silence. A lot can therefore go green while the
     ## net gets narrower — which is the one failure mode a green cannot report.
     needs_reanchor: "vars.reanchor && length(outputs.lot_verify.oracle_invalid) > 0"
+    ## Unlike needs_reanchor, a pending extension CANNOT ride a green: the
+    ## oracle gate refuses on it, so this only routes the repair — it never
+    ## decides the verdict.
+    needs_extend: "vars.extend && length(outputs.lot_verify.extension_pending) > 0"
 
 ## reanchor — the net's OWN bot, run as a subbot, to repair a mutant this lot
 ## invalidated.
@@ -561,6 +608,27 @@ subbot reanchor:
 schema reanchor_result:
   converged: bool
   repaired: int
+  notice: string
+
+## extend — the net's OWN bot, run as a subbot, to act the extension requests
+## this lot wrote in the ledger.
+##
+## Same placement logic as reanchor, and the same missing `isolated:`: the
+## child works on THIS lot's checkout, and what keeps it honest is its own
+## deterministic check — every path it touches must be a pure ADDITION on the
+## extension surface, judged by the harness's code. The lot may ASK for an
+## observation point; only the net's bot may grant one, and only additively —
+## a rewrite, a delete or a rename goes to the re-baseline ledger and a human.
+subbot extend:
+  source: "../golden-master/extend.bot"
+  with {
+    lot_id: "{{outputs.work_gate.lot_id}}"
+  }
+  output: extend_result
+
+schema extend_result:
+  converged: bool
+  extended: int
   notice: string
 
 workflow modernize:
@@ -618,6 +686,25 @@ workflow modernize:
   ## is part of that verdict, so reading it again is what stops a failed repair
   ## from looking like a successful one.
   reanchor -> lot_verify with {
+    lot_id:    "{{outputs.work_gate.lot_id}}",
+    plan_path: "{{vars.plan_path}}",
+    base_sha:  "{{outputs.work_gate.base_sha}}",
+    refs_dir:  "{{outputs.work_gate.refs_dir}}",
+    exit_gate: "{{outputs.work_gate.exit_gate}}"
+  }
+
+  ## Act the lot's extension requests, after any reanchor and before the lot
+  ## is decided: the oracle gate refuses on a pending request, so a lot that
+  ## asked for an observation point cannot converge until the net's bot has
+  ## granted it — or refused it in writing, which stays pending and loud.
+  ## Bounded to a single attempt for the same reason as reanchor: the child
+  ## has its own repair loop.
+  lot_gate -> extend when needs_extend as extend_loop("1")
+
+  ## The verdict is re-taken on the extended net. The harness re-certifies
+  ## the additions inside lot_verify — exemption is re-derived every pass,
+  ## never remembered.
+  extend -> lot_verify with {
     lot_id:    "{{outputs.work_gate.lot_id}}",
     plan_path: "{{vars.plan_path}}",
     base_sha:  "{{outputs.work_gate.base_sha}}",
