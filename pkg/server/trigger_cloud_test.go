@@ -93,7 +93,7 @@ func newDrainWorld(t *testing.T) (*cloudBoardSource, *stubCloudBoardStore, trigg
 // point loses a matched event.
 func TestDrainTenant_RowsAreDurableBeforeTheCursorMoves(t *testing.T) {
 	src, st, _ := newDrainWorld(t)
-	if err := src.drainTenant("t1", st); err != nil {
+	if _, err := src.drainTenant("t1", st); err != nil {
 		t.Fatalf("drainTenant: %v", err)
 	}
 	if st.upserted != 2 {
@@ -115,7 +115,7 @@ func TestDrainTenant_TransientReadAbortsBeforeTheCursor(t *testing.T) {
 	src, st, _ := newDrainWorld(t)
 	st.getErr["card2"] = errors.New("mongo: server selection timeout")
 
-	err := src.drainTenant("t1", st)
+	_, err := src.drainTenant("t1", st)
 	if err == nil {
 		t.Fatal("a transient read error must abort the batch, not silently skip the event")
 	}
@@ -128,8 +128,8 @@ func TestDrainTenant_TransientReadAbortsBeforeTheCursor(t *testing.T) {
 
 	// The fault clearing lets the SAME events materialize.
 	delete(st.getErr, "card2")
-	if err := src.drainTenant("t1", st); err != nil {
-		t.Fatalf("retry after fault: %v", err)
+	if materialized, err := src.drainTenant("t1", st); err != nil || !materialized {
+		t.Fatalf("retry after fault: materialized=%v err=%v", materialized, err)
 	}
 	if st.upserted != 2 || !st.advanced {
 		t.Fatalf("retry: upserted=%d advanced=%v, want 2/true", st.upserted, st.advanced)
@@ -143,7 +143,7 @@ func TestDrainTenant_DeletedCardIsADefinitiveSkip(t *testing.T) {
 	src, st, _ := newDrainWorld(t)
 	delete(st.issues, "card2")
 
-	if err := src.drainTenant("t1", st); err != nil {
+	if _, err := src.drainTenant("t1", st); err != nil {
 		t.Fatalf("drainTenant: %v", err)
 	}
 	if st.upserted != 1 {

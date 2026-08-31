@@ -32,6 +32,16 @@ const (
 	TickLaunchFailed TickDecision = "launch_failed"
 )
 
+// LaunchDecision maps a launch attempt's error onto the audit decision —
+// the one place the "launch error ⇒ launch_failed, slot spent" semantics
+// live, so the three scheduled-launch surfaces cannot drift.
+func LaunchDecision(err error) TickDecision {
+	if err != nil {
+		return TickLaunchFailed
+	}
+	return TickFired
+}
+
 // TickRecord is the shared audit row written by every surface — as a
 // JSONL line locally (~/.iterion/logs/tick-audit.jsonl), as audit.Event
 // Meta in cloud mode. It answers "why didn't my scheduled bot fire last

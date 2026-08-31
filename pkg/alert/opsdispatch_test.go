@@ -120,8 +120,8 @@ func TestOpsDispatcher_SweepRepaysTheDroppedEvent(t *testing.T) {
 		r.Error = "provider window closed"
 	})
 
-	list := func(_ context.Context, _, _ time.Time, _ int) ([]alert.OpsRunRef, error) {
-		return []alert.OpsRunRef{{ID: run.ID, Status: run.Status, UpdatedAt: run.UpdatedAt}}, nil
+	list := func(_ context.Context, _, _ time.Time, _ int) ([]usernotify.RunRef, error) {
+		return []usernotify.RunRef{{ID: run.ID, Status: string(run.Status), UpdatedAt: run.UpdatedAt}}, nil
 	}
 	d.SweepOnce(context.Background(), list)
 	if len(sink.alerts()) != 1 {

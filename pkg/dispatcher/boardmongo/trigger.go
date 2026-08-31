@@ -167,7 +167,10 @@ func (s *Store) ClaimDue(_ context.Context, now time.Time, limit int) ([]trigger
 				"updated_at": now,
 			}},
 			options.FindOneAndUpdate().
-				SetSort(bson.D{{Key: "created_at", Value: 1}}).
+				// Sorted on not_before — covered by the tenant_state_due
+				// index (created_at is not), and ≈ creation order for fresh
+				// rows (zero NotBefore) while backoffs naturally sort later.
+				SetSort(bson.D{{Key: "not_before", Value: 1}}).
 				SetReturnDocument(options.After),
 		).Decode(&row)
 		if err == mongo.ErrNoDocuments {

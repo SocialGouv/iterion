@@ -3,10 +3,8 @@ package trigger
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -73,8 +71,11 @@ func (w *EffectWorker) executeOne(ctx context.Context, row *EffectRow) {
 }
 
 // applyClaimedEffect runs one (subscription, event) effect under the row's
-// claim. Error semantics: nil = executed; errEffectOneShotSpent = the one-shot was
-// consumed by another event (terminal for this row); anything else = retry.
+// claim, through the SAME effect body the bus path uses
+// (Evaluator.applyEffect) — the worker only contributes the persisted
+// consume state: alreadyConsumed skips a re-spend on retry, onConsumed
+// persists "the one-shot is OURS" between the atomic consume and the launch
+// (the pre-outbox shape lost the trigger exactly there).
 func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) error {
 	sub, err := w.Subs.Get(ctx, row.SubID)
 	if err != nil {
@@ -86,45 +87,17 @@ func (w *EffectWorker) applyClaimedEffect(ctx context.Context, row *EffectRow) e
 	if !sub.Enabled {
 		return nil // disabled between materialization and execution — operator's call
 	}
-	e := w.Evaluator
-	ev := row.Event
-	switch sub.EffectiveMode() {
-	case bundle.ExecutionBoard:
-		if e.board == nil {
-			return fmt.Errorf("board-mode subscription %s but no board effect wired", sub.ID)
-		}
-		_, err := e.board.Promote(ctx, e.buildPlan(sub, ev))
-		return err
-	default:
-		if e.launcher == nil {
-			return fmt.Errorf("direct-mode subscription %s but no launcher wired", sub.ID)
-		}
-		if sub.ConsumeLabels && ev.Source == SourceBoard && !row.ConsumeMarked {
-			lc, ok := e.board.(LabelConsumer)
-			if !ok {
-				return fmt.Errorf("subscription %s requires consume_labels but the board effect cannot consume", sub.ID)
-			}
-			consumed, err := lc.ConsumeMatchLabels(ctx, ev.TenantID, ev.Subject.ID, sub.Match.Labels)
-			if err != nil {
-				return fmt.Errorf("consume labels: %w", err)
-			}
-			if !consumed {
-				return errEffectOneShotSpent
-			}
-			// Persist "the one-shot is OURS" BEFORE launching: a launch
-			// failure (or a crash) then retries the launch WITHOUT
-			// re-consuming — the pre-outbox shape lost the trigger here.
+	return w.Evaluator.applyEffect(ctx, sub, row.Event, effectOpts{
+		alreadyConsumed: row.ConsumeMarked,
+		onConsumed: func() {
 			if err := w.Outbox.MarkConsumed(ctx, row.ID); err != nil {
 				// The consume happened; without the marker a reclaim would
 				// read "spent by another event" and drop the launch. Press
 				// on to the launch NOW — this attempt is the marker.
 				w.warn("trigger: effect %s consumed but marker write failed (%v) — launching in-line to not lose the one-shot", row.ID, err)
 			}
-			row.ConsumeMarked = true
-		}
-		_, err := e.launcher.Launch(ctx, e.buildPlan(sub, ev))
-		return err
-	}
+		},
+	})
 }
 
 func (w *EffectWorker) now() time.Time {
@@ -144,18 +117,12 @@ func (w *EffectWorker) warn(format string, args ...any) {
 // row per enabled, matching, non-observational subscription. Shared by the
 // cloud board source (the writer) and tests. now stamps CreatedAt.
 func MaterializeEffects(ctx context.Context, subs SubscriptionStore, ev Event, now time.Time) ([]EffectRow, error) {
-	if v, ok := ev.Payload[PayloadLaunchedRunID]; ok && v != nil {
-		return nil, nil // already launched by an authoritative path — observational
-	}
-	cands, err := subs.ListCandidates(ctx, ev)
+	matched, err := matchingSubscriptions(ctx, subs, ev)
 	if err != nil {
 		return nil, err
 	}
 	var rows []EffectRow
-	for _, sub := range cands {
-		if !sub.Enabled || !sub.Match.Match(ev) {
-			continue
-		}
+	for _, sub := range matched {
 		rows = append(rows, EffectRow{
 			ID:        EffectID(ev.ID, sub.ID),
 			TenantID:  ev.TenantID,

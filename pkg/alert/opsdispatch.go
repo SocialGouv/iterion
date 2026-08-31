@@ -10,6 +10,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
+	"github.com/SocialGouv/iterion/pkg/usernotify"
 )
 
 // OpsDispatcher is the CLOUD twin of the in-process Manager for run-outcome
@@ -27,8 +28,13 @@ import (
 // bus gets the usernotify treatment: RunOpsSweep replays the window the bus
 // dropped.
 type OpsDispatcher struct {
-	Runs   store.RunStore
-	Claims EpisodeClaims // nil ⇒ no dedup (tests only)
+	Runs store.RunStore
+	// Claims is the first-writer-wins episode claim — the SAME
+	// usernotify.SentStore contract (and, in cloud, the same Mongo
+	// collection + TTL) the user-notification family already runs; ops
+	// keys are namespaced by opsEpisodePrefix so the two families share
+	// one collection without colliding. nil ⇒ no dedup (tests only).
+	Claims usernotify.SentStore
 	Sinks  []Sink
 	// BaseURL builds the /runs/<id> deep link (the deployment PublicURL).
 	BaseURL string
@@ -37,26 +43,12 @@ type OpsDispatcher struct {
 	Now func() time.Time
 }
 
-// EpisodeClaims is the first-writer-wins claim contract (structurally
-// satisfied by usernotify.SentStore, whose Mongo implementation + TTL this
-// deployment already runs; ops keys are namespaced by opsEpisodePrefix so
-// the two families share one collection without colliding).
-type EpisodeClaims interface {
-	TryMark(ctx context.Context, key string) (bool, error)
-	MarkDelivered(ctx context.Context, key string) error
-	Unmark(ctx context.Context, key string) error
-	IsMarked(ctx context.Context, key string) (bool, error)
-}
-
 const (
 	// OpsSubscriberName is the eventbus subscriber (NATS queue group).
 	OpsSubscriberName = "operator-alerts"
 	// opsEpisodePrefix namespaces this dispatcher's claims inside the
 	// shared sent-notifications collection.
 	opsEpisodePrefix = "ops|"
-	// opsDeliverTimeout bounds one sink delivery.
-	opsDeliverTimeout = 15 * time.Second
-
 	// Sweep pacing — the reconciliation net under the lossy bus, mirroring
 	// the usernotify sweep's constants and sharing its bounded-window
 	// terminal-run query (one index serves every net).
@@ -65,17 +57,6 @@ const (
 	opsSweepLookback = 30 * time.Minute
 	opsSweepBatch    = 200
 )
-
-// ListTerminalRuns is the bounded-window scan the sweep uses (the same
-// store query usernotify and the gate sweeper read).
-type ListTerminalRuns func(ctx context.Context, since, before time.Time, limit int) ([]OpsRunRef, error)
-
-// OpsRunRef is the sweep's lightweight run reference.
-type OpsRunRef struct {
-	ID        string
-	Status    store.RunStatus
-	UpdatedAt time.Time
-}
 
 // Handle processes one run-outcome event — the eventbus.Handler and the
 // sweep's replay entry point. Non-failure outcomes exit on a kind check.
@@ -97,17 +78,12 @@ func (d *OpsDispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 			return nil
 		}
 	}
-	if len(d.Sinks) == 0 {
-		d.markDelivered(ctx, key) // deliberate no-op — never retried
-		return nil
-	}
-
 	var wg sync.WaitGroup
 	for _, sink := range d.Sinks {
 		wg.Add(1)
 		go func(sink Sink) {
 			defer wg.Done()
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opsDeliverTimeout)
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultNotifyTimeout)
 			defer cancel()
 			sink.Notify(sctx, a)
 		}(sink)
@@ -135,7 +111,7 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 	}
 	a := Alert{
 		RunID:     run.ID,
-		RunName:   firstNonEmptyOps(run.Name, run.WorkflowName),
+		RunName:   firstNonEmpty(run.Name, run.WorkflowName),
 		Timestamp: d.now(),
 	}
 	if d.BaseURL != "" {
@@ -148,7 +124,7 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 		switch {
 		case rs != nil && rs.RetryAfter != nil:
 			a.Reason = fmt.Sprintf("waiting out %s — automatic retry armed for %s (attempt %d)",
-				firstNonEmptyOps(rs.Reason, rs.Code, "a provider window"),
+				firstNonEmpty(rs.Reason, rs.Code, "a provider window"),
 				rs.RetryAfter.UTC().Format(time.RFC3339), rs.Attempts)
 		case rs != nil && rs.LastError != "":
 			a.Reason = "automatic retry stopped: " + rs.LastError
@@ -156,12 +132,12 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 			a.Reason = "no automatic retry armed — needs an operator resume"
 		}
 		if run.Error != "" {
-			a.Reason += " · " + truncateOps(run.Error, 200)
+			a.Reason += " · " + truncate(run.Error, 200)
 		}
 		return a, true
 	case store.RunStatusFailed:
 		a.Kind = KindRunFailed
-		a.Reason = truncateOps(run.Error, 200)
+		a.Reason = truncate(run.Error, 200)
 		return a, true
 	default:
 		// Already resumed/finished by the time we looked — nothing owed.
@@ -173,7 +149,7 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 // every recently-terminal run whose episode is unclaimed to Handle. The
 // grace keeps it off runs the live bus path is still delivering; the
 // lookback bounds how far a replica restart can reach back.
-func (d *OpsDispatcher) RunOpsSweep(ctx context.Context, list ListTerminalRuns) {
+func (d *OpsDispatcher) RunOpsSweep(ctx context.Context, list usernotify.ListNotifiableRuns) {
 	if list == nil {
 		return
 	}
@@ -194,7 +170,7 @@ func (d *OpsDispatcher) RunOpsSweep(ctx context.Context, list ListTerminalRuns) 
 
 // SweepOnce performs one reconciliation pass (exported: the ticker's unit
 // of work, and the tests' entry point).
-func (d *OpsDispatcher) SweepOnce(ctx context.Context, list ListTerminalRuns) {
+func (d *OpsDispatcher) SweepOnce(ctx context.Context, list usernotify.ListNotifiableRuns) {
 	now := d.now()
 	refs, err := list(store.WithoutTenantFilter(ctx), now.Add(-opsSweepLookback), now.Add(-opsSweepGrace), opsSweepBatch)
 	if err != nil {
@@ -204,18 +180,24 @@ func (d *OpsDispatcher) SweepOnce(ctx context.Context, list ListTerminalRuns) {
 		return
 	}
 	for _, ref := range refs {
-		if ref.Status != store.RunStatusFailed && ref.Status != store.RunStatusFailedResumable {
+		if store.RunStatus(ref.Status) != store.RunStatusFailed && store.RunStatus(ref.Status) != store.RunStatusFailedResumable {
 			continue
 		}
-		// Rebuild the SAME canonical event the live path consumed, so the
-		// episode key matches and a bus-delivered episode is a cheap
-		// IsMarked exit here.
-		ev := trigger.BuildRunOutcome(ctx, d.Runs, ref.ID, nil)
+		// Cheap pre-check: derive the episode key from the listing alone
+		// (the same derivation the live event carries) and skip claimed
+		// episodes WITHOUT loading the run — in steady state nearly every
+		// listed run is already claimed, and a parked run stays in the
+		// window for the whole lookback (usernotify's sweep sets the
+		// pattern at pkg/usernotify/sweep.go).
 		if d.Claims != nil {
-			if marked, err := d.Claims.IsMarked(ctx, opsEpisodePrefix+ev.ID); err == nil && marked {
+			key := opsEpisodePrefix + trigger.RunOutcomeEventID(ref.ID, ref.Status, ref.InteractionID, ref.UpdatedAt)
+			if marked, err := d.Claims.IsMarked(ctx, key); err == nil && marked {
 				continue
 			}
 		}
+		// Rebuild the SAME canonical event the live path consumed, so the
+		// claim inside Handle dedups against the bus delivery.
+		ev := trigger.BuildRunOutcome(ctx, d.Runs, ref.ID, nil)
 		if err := d.Handle(ctx, ev); err != nil && d.Logger != nil {
 			d.Logger.Warn("alert: operator-alert sweep replay run %s: %v", ref.ID, err)
 		}
@@ -238,7 +220,7 @@ func (d *OpsDispatcher) now() time.Time {
 	return time.Now().UTC()
 }
 
-func firstNonEmptyOps(vals ...string) string {
+func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
 			return v
@@ -247,7 +229,7 @@ func firstNonEmptyOps(vals ...string) string {
 	return ""
 }
 
-func truncateOps(s string, n int) string {
+func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}

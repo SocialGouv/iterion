@@ -13,7 +13,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
-	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/usernotify"
 	"github.com/SocialGouv/iterion/pkg/usernotify/webpush"
@@ -410,6 +409,12 @@ func (s *Server) startOperatorAlerts() {
 	if s.cfg.AlertsWebhookURL == "" || s.runs == nil {
 		return
 	}
+	if s.cfg.NotificationSent == nil {
+		// Without the claim store every replica AND the sweep would re-send
+		// each episode. Loud refusal beats a spamming alert channel.
+		s.logger.Warn("server: operator alerts configured but no episode-claim store wired — disabled (wire NotificationSent)")
+		return
+	}
 	rs := s.runs.RunStore()
 	if rs == nil {
 		return
@@ -428,12 +433,6 @@ func (s *Server) startOperatorAlerts() {
 		BaseURL: s.cfg.PublicURL,
 		Logger:  s.logger,
 	}
-	if s.cfg.NotificationSent == nil {
-		// Without the claim store every replica AND the sweep would re-send
-		// each episode. Loud refusal beats a spamming alert channel.
-		s.logger.Warn("server: operator alerts configured but no episode-claim store wired — disabled (wire NotificationSent)")
-		return
-	}
 	bus := s.cfg.EventsBus
 	if bus == nil && s.triggerCoord != nil {
 		bus = s.triggerCoord.Bus()
@@ -450,23 +449,12 @@ func (s *Server) startOperatorAlerts() {
 		}
 	}
 	if s.cfg.NotifiableRuns != nil {
-		list := func(ctx context.Context, since, before time.Time, limit int) ([]alert.OpsRunRef, error) {
-			refs, err := s.cfg.NotifiableRuns(ctx, since, before, limit)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]alert.OpsRunRef, 0, len(refs))
-			for _, r := range refs {
-				out = append(out, alert.OpsRunRef{ID: r.ID, Status: store.RunStatus(r.Status), UpdatedAt: r.UpdatedAt})
-			}
-			return out, nil
-		}
 		sweepCtx, cancelSweep := context.WithCancel(context.Background())
 		go func() {
 			<-s.shutdown
 			cancelSweep()
 		}()
-		go d.RunOpsSweep(sweepCtx, list)
+		go d.RunOpsSweep(sweepCtx, s.cfg.NotifiableRuns)
 	}
 	s.logger.Info("server: operator alerts enabled (parked/failed runs → webhook)")
 }

@@ -419,8 +419,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if sErr := sentStore.EnsureSchema(rootCtx); sErr != nil {
 		return fmt.Errorf("server: ensure sent notifications schema: %w", sErr)
 	}
-	notifSent := usernotify.SentStore(sentStore)
-	notifiableRuns := usernotify.ListNotifiableRuns(func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
+	notifSent := sentStore
+	notifiableRuns := func(ctx context.Context, since, before time.Time, limit int) ([]usernotify.RunRef, error) {
 		refs, lErr := st.ListNotifiableRuns(ctx, since, before, limit)
 		if lErr != nil {
 			return nil, lErr
@@ -430,7 +430,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			out = append(out, usernotify.RunRef{ID: ref.ID, Status: ref.Status, InteractionID: ref.Checkpoint.InteractionID, UpdatedAt: ref.UpdatedAt})
 		}
 		return out, nil
-	})
+	}
 	if cfg.WebPush.Enabled() {
 		subsStore := usernotifywebpush.NewMongoSubscriptionStore(st.DB())
 		prefsStore := usernotify.NewMongoPrefsStore(st.DB())

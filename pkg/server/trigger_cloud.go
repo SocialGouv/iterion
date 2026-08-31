@@ -22,14 +22,17 @@ import (
 //     consume = boardmongo.ConsumeLabels, a single atomic UpdateOne so
 //     concurrent replicas cannot double-launch a consume_labels trigger).
 //   - cloudBoardSource: a poll-tailer over the board_events collection.
-//     Every replica polls; the per-tenant CAS cursor
-//     (AdvanceTriggerCursor) elects the batch's publisher, so each board
-//     event enters the NATS bus exactly once. The tailed tenant set is
-//     the tenants holding enabled board-kind subscriptions.
+//     Every replica polls; matched (event, subscription) pairs are
+//     materialized into the durable effect outbox BEFORE the per-tenant
+//     CAS cursor advances, and executed by the EffectWorker under leased
+//     claims (ADR-094 — board events no longer ride the lossy bus). The
+//     tailed tenant set is the tenants holding enabled board-kind
+//     subscriptions.
 //   - StartCloudTriggerCoordinator: evaluator subscription on the shared
-//     bus + the source. The cloud board DISPATCHER (boarddispatch.go, 5s
-//     poll) remains the promote path's launch authority and safety net —
-//     no nudger exists (or is needed) on cloud.
+//     bus (run-outcome and other non-board sources) + the source. The
+//     cloud board DISPATCHER (boarddispatch.go, 5s poll) remains the
+//     promote path's launch authority and safety net — no nudger exists
+//     (or is needed) on cloud.
 
 // defaultCloudBoardTickInterval paces the board_events poll. Override with
 // ITERION_CLOUD_BOARD_TICK (a Go duration).
@@ -129,9 +132,12 @@ type cloudBoardSource struct {
 	eval    *trigger.Evaluator
 	logger  *iterlog.Logger
 	tick    time.Duration
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
+	// ticks counts tickOnce passes (single goroutine) for the slow-cadence
+	// outbox drain.
+	ticks  int
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func (s *cloudBoardSource) run() {
@@ -158,15 +164,31 @@ func (s *cloudBoardSource) tickOnce() {
 		s.warn("trigger: cloud board source: list tenants: %v", err)
 		return
 	}
+	// The drain pass runs every tick (it is two indexed reads when idle);
+	// the effect worker's claim query only runs when this tick materialized
+	// rows (the latency-sensitive case) or on the slow cadence — retries
+	// and lease reclaims have a ≥15s backoff, so polling the outbox with a
+	// primary-routed FindOneAndUpdate every 3s per tenant per replica would
+	// buy nothing but load.
+	s.ticks++
+	slowTick := s.ticks%effectDrainEveryNTicks == 0
 	for _, tenant := range tenants {
 		st := s.coord.StoreFor(tenant)
-		if err := s.drainTenant(tenant, st); err != nil && s.ctx.Err() == nil {
+		materialized, err := s.drainTenant(tenant, st)
+		if err != nil && s.ctx.Err() == nil {
 			s.warn("trigger: cloud board source: tenant %s: %v", tenant, err)
 		}
-		w := &trigger.EffectWorker{Outbox: st, Subs: s.subs, Evaluator: s.eval, Logger: s.logger}
-		w.Tick(s.ctx, 20)
+		if materialized || slowTick {
+			w := &trigger.EffectWorker{Outbox: st, Subs: s.subs, Evaluator: s.eval, Logger: s.logger}
+			w.Tick(s.ctx, 20)
+		}
 	}
 }
+
+// effectDrainEveryNTicks paces the outbox claim poll when nothing was just
+// materialized: every 5th board tick (~15s at the default 3s interval),
+// matching the smallest retry backoff.
+const effectDrainEveryNTicks = 5
 
 // drainTenant materializes one tenant's new board events. The ORDER is the
 // whole point (the pre-outbox shape lost events forever on a crash or a
@@ -179,14 +201,14 @@ func (s *cloudBoardSource) tickOnce() {
 //     a racing replica's duplicates collapse on the row key);
 //  3. only then CAS-advance the cursor. A crash before 3 re-materializes
 //     idempotently; after 3 the rows are already durable.
-func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) error {
+func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool, error) {
 	cursor, err := st.TriggerCursor()
 	if err != nil {
-		return err
+		return false, err
 	}
 	events, err := st.EventsAfter(cursor, 200)
 	if err != nil || len(events) == 0 {
-		return err
+		return false, err
 	}
 	now := time.Now().UTC()
 	var rows []trigger.EffectRow
@@ -196,29 +218,29 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) error 
 		}
 		te, ok, nerr := trigger.NormalizeBoardEvent(st.Get, evt, tenant, "", "cloud")
 		if nerr != nil {
-			return fmt.Errorf("normalize event seq %d (issue %s): %w — batch aborted before the cursor, will retry", evt.Seq, evt.IssueID, nerr)
+			return false, fmt.Errorf("normalize event seq %d (issue %s): %w — batch aborted before the cursor, will retry", evt.Seq, evt.IssueID, nerr)
 		}
 		if !ok {
 			continue // card deleted between the transition and the read — definitive
 		}
 		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, te, now)
 		if merr != nil {
-			return fmt.Errorf("match subscriptions for event seq %d: %w — batch aborted before the cursor, will retry", evt.Seq, merr)
+			return false, fmt.Errorf("match subscriptions for event seq %d: %w — batch aborted before the cursor, will retry", evt.Seq, merr)
 		}
 		rows = append(rows, evRows...)
 	}
 	if len(rows) > 0 {
 		if err := st.UpsertPending(s.ctx, rows); err != nil {
-			return fmt.Errorf("materialize %d effect(s): %w — batch aborted before the cursor, will retry", len(rows), err)
+			return false, fmt.Errorf("materialize %d effect(s): %w — batch aborted before the cursor, will retry", len(rows), err)
 		}
 	}
 	last := events[len(events)-1].Seq
 	if _, err := st.AdvanceTriggerCursor(cursor, last); err != nil {
 		// The rows are durable; a failed advance only means re-materializing
 		// the same batch next tick, which the upsert collapses.
-		return err
+		return len(rows) > 0, err
 	}
-	return nil
+	return len(rows) > 0, nil
 }
 
 func (s *cloudBoardSource) warn(format string, args ...any) {

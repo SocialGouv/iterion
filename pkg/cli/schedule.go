@@ -540,11 +540,7 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 	p.Line("▶ schedule %q: iterion run %s", e.Name, e.Bot)
 	runErr := runRunFn(ctx, runOpts, p)
 
-	decision := schedgate.TickFired
-	if runErr != nil {
-		decision = schedgate.TickLaunchFailed
-	}
-	rec := newHostCronTickRecord(*e, decision)
+	rec := newHostCronTickRecord(*e, schedgate.LaunchDecision(runErr))
 	rec.RunID = runID
 	if runErr != nil {
 		rec.Error = runErr.Error()

@@ -302,9 +302,6 @@ func (c *Dispatcher) loadRunForDecision(s *store.FilesystemRunStore, runID, what
 // episode (keyed); repeats stay Debug until clearDegraded closes the
 // episode. Actor-goroutine-owned state, like every other c.state map.
 func (c *Dispatcher) warnDegraded(key, format string, args ...any) {
-	if c.state.degradedWarned == nil {
-		c.state.degradedWarned = map[string]bool{}
-	}
 	if c.state.degradedWarned[key] {
 		c.logger.Debug(format, args...)
 		return
@@ -316,7 +313,7 @@ func (c *Dispatcher) warnDegraded(key, format string, args ...any) {
 // clearDegraded closes a degradation episode opened by warnDegraded,
 // logging the recovery once so the two log lines bracket the episode.
 func (c *Dispatcher) clearDegraded(key string) {
-	if c.state.degradedWarned == nil || !c.state.degradedWarned[key] {
+	if !c.state.degradedWarned[key] {
 		return
 	}
 	delete(c.state.degradedWarned, key)

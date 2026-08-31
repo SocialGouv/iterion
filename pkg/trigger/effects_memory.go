@@ -44,7 +44,12 @@ func (m *MemoryEffectOutbox) ClaimDue(_ context.Context, now time.Time, limit in
 			due = append(due, r)
 		}
 	}
-	sort.Slice(due, func(i, j int) bool { return due[i].CreatedAt.Before(due[j].CreatedAt) })
+	sort.Slice(due, func(i, j int) bool {
+		if !due[i].NotBefore.Equal(due[j].NotBefore) {
+			return due[i].NotBefore.Before(due[j].NotBefore)
+		}
+		return due[i].CreatedAt.Before(due[j].CreatedAt)
+	})
 	if limit > 0 && len(due) > limit {
 		due = due[:limit]
 	}

@@ -129,12 +129,6 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 		if s.cfg.Metrics != nil {
 			s.cfg.Metrics.OrphanSweepErrors.WithLabelValues(stage).Inc()
 		}
-		switch stage {
-		case "lease":
-			leaseErrs++
-		case "flip":
-			flipErrs++
-		}
 	}
 
 	// Platform-level scan — the per-run tenant comes back on each ref
@@ -143,7 +137,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	for _, p := range passes {
 		refs, err := lister.ListStaleActiveRuns(scanCtx, p.statuses, p.before, 100)
 		if err != nil {
-			countErr("scan", err)
+			countErr("scan", err) // metric only: a failed scan skips the pass, the episode tracks lease/flip
 			if s.logger != nil {
 				s.logger.Warn("sweeper: scan %v: %v", p.statuses, err)
 			}
@@ -156,6 +150,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 				// persistent NATS-KV fault would otherwise disable orphan
 				// recovery with no signal at all.
 				countErr("lease", err)
+				leaseErrs++
 				continue
 			}
 			if locked {
@@ -167,6 +162,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 				p.statuses)
 			if err != nil {
 				countErr("flip", err)
+				flipErrs++
 				if s.logger != nil {
 					s.logger.Warn("sweeper: flip %s: %v", ref.ID, err)
 				}
