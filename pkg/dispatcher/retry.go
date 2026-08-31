@@ -37,7 +37,7 @@ const sandboxParkDelay = 1 * time.Hour
 // backoff capped by cfg.MaxRetryBackoff. Must be called from the actor.
 //
 // When the prior run terminated in a resumable status (failed_resumable,
-// cancelled, paused_operator), prev.RunID is captured on the retry
+// paused_operator), prev.RunID is captured on the retry
 // entry so the next dispatch resumes the same run via
 // runtime.Engine.Resume instead of minting a fresh one. A live last_run
 // is never discarded to mint a sibling planner from entry — see
@@ -115,8 +115,9 @@ func (c *Dispatcher) scheduleRetry(issueID string, prev *runningEntry, runErr er
 // run started (pkg/runtime/resume.go: "workflow source has changed ...
 // re-run from scratch or use --force"). finishRun parks the ticket
 // instead of minting a sibling: the operator resumes THIS run with
-// --force. Cancelling is not an escape: cancelled last_runs are resumed
-// from their checkpoint and still forbid a fresh sibling. The runtime
+// --force. Cancelling does not free the ticket either: a cancelled
+// last_run still forbids a fresh sibling (lastRunForbidsFresh) — the
+// way out is an explicit resume or --clear-last-run. The runtime
 // exposes a typed sentinel in-process and retains a compatibility
 // fallback for detached/mixed-version boundaries that flatten errors
 // to text.
@@ -161,7 +162,7 @@ const orphanRunGraceWindow = 2 * time.Minute
 
 // resumableRunID returns the runID iff the corresponding run record
 // can be resumed by an already-authorized dispatcher retry — i.e. its
-// on-disk status is failed_resumable, cancelled, or paused_operator.
+// on-disk status is failed_resumable or paused_operator.
 // On restart, reparkClaimedIfLastRunWaiting intercepts dispatcher-owned
 // paused_operator before this helper is reached; the status remains here for
 // an in-memory retry decision in the same process. paused_waiting_human is
@@ -200,10 +201,15 @@ func (c *Dispatcher) resumableRunID(runID string) string {
 	}
 	switch status {
 	case store.RunStatusFailedResumable,
-		store.RunStatusCancelled,
 		store.RunStatusPausedOperator:
 		return runID
 	}
+	// RunStatusCancelled is deliberately NOT here: since internal stops
+	// (stall reap, external state change, shutdown) cancel with
+	// runtime.ErrRunInterrupted and persist failed_resumable, a `cancelled`
+	// run can only be an OPERATOR's cancel — auto-resuming it undoes their
+	// decision. The ticket stays held (lastRunForbidsFresh) until they
+	// resume it or clear last_run.
 	return ""
 }
 

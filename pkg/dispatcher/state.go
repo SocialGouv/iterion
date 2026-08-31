@@ -122,7 +122,14 @@ type runningEntry struct {
 	LastEventAt               time.Time
 	LastEventName             string
 	Attempt                   int
-	Cancel                    context.CancelFunc
+	// Cancel tears down the run's context WITH a cause. The cause is the
+	// contract with the engine's interruption classifier
+	// (runtime.handleContextDoneWithCheckpoint): runtime.ErrRunInterrupted
+	// marks an INTERNAL stop (stall reap, external state change, dispatcher
+	// shutdown) and persists failed_resumable so the ticket auto-resumes;
+	// a nil cause is an OPERATOR cancel and persists terminal `cancelled`,
+	// which the dispatcher never auto-resumes.
+	Cancel context.CancelCauseFunc
 
 	// CancelIssuedAt is non-zero once reconcileStalled has called
 	// Cancel(); subsequent ticks suppress the cancel + warn re-spam

@@ -18,7 +18,7 @@ import (
 // with its claim retained forever.
 //
 // finished → CompletedState; hard-failed (non-resumable) → FailedState.
-// Resumable statuses (paused_*, failed_resumable, cancelled) and in-flight
+// Operator-owned statuses (paused_*, failed_resumable, cancelled) and in-flight
 // ones (running, queued) stay parked — the card genuinely still awaits the
 // operator. Native-tracker only (optional-interface seam, same as
 // stampLastRun/setAwaitingInput); every call is local disk I/O, safe on
