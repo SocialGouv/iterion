@@ -730,7 +730,7 @@ func TestLoad_NATSQueueTuningYAML(t *testing.T) {
 }
 
 func TestLoad_InvalidNATSStreamReplicas(t *testing.T) {
-	for _, value := range []string{"0", "-1"} {
+	for _, value := range []string{"-1", "-3"} {
 		t.Run(value, func(t *testing.T) {
 			clearITERION(t)
 			t.Setenv("ITERION_NATS_STREAM_REPLICAS", value)
@@ -740,6 +740,33 @@ func TestLoad_InvalidNATSStreamReplicas(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "ITERION_NATS_STREAM_REPLICAS") {
 				t.Fatalf("error %q does not name ITERION_NATS_STREAM_REPLICAS", err)
+			}
+		})
+	}
+}
+
+// Zero is the documented "inherit the default" value for every numeric NATS
+// knob, and what NATS itself means by "server default" — rejecting it turned
+// a values file into a CrashLoopBackOff on both the server and the runner.
+func TestLoad_ZeroNATSStreamReplicasInheritsDefault(t *testing.T) {
+	for _, mode := range []string{"local", "cloud"} {
+		t.Run(mode, func(t *testing.T) {
+			clearITERION(t)
+			t.Setenv("ITERION_MODE", mode)
+			if mode == "cloud" {
+				t.Setenv("ITERION_NATS_URL", "nats://nats:4222")
+				t.Setenv("ITERION_MONGO_URI", "mongodb://mongo:27017")
+				t.Setenv("ITERION_S3_ENDPOINT", "http://minio:9000")
+				t.Setenv("ITERION_JWT_SECRET", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+				t.Setenv("ITERION_SECRETS_KEY", "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=")
+			}
+			t.Setenv("ITERION_NATS_STREAM_REPLICAS", "0")
+			cfg, err := Load(LoadOptions{})
+			if err != nil {
+				t.Fatalf("zero must load (natsq applies the default): %v", err)
+			}
+			if cfg.NATS.StreamReplicas != 0 {
+				t.Fatalf("StreamReplicas = %d, want 0 left for natsq to default", cfg.NATS.StreamReplicas)
 			}
 		})
 	}

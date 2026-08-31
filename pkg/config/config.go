@@ -517,8 +517,10 @@ func (c *Config) Validate() error {
 	if c.Alerts.StallTimeout < 0 {
 		return fmt.Errorf("ITERION_ALERTS_STALL_TIMEOUT %s invalid (want >= 0)", c.Alerts.StallTimeout)
 	}
-	if c.NATS.StreamReplicas < 1 {
-		return fmt.Errorf("ITERION_NATS_STREAM_REPLICAS %d invalid (want >= 1)", c.NATS.StreamReplicas)
+	// 0 inherits the queue default (documented contract for every numeric
+	// NATS knob, and what NATS itself means by "server default").
+	if c.NATS.StreamReplicas < 0 {
+		return fmt.Errorf("ITERION_NATS_STREAM_REPLICAS %d invalid (want >= 0)", c.NATS.StreamReplicas)
 	}
 
 	if c.Mode == ModeCloud {

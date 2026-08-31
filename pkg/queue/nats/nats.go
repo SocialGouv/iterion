@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -259,6 +260,9 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	slog.Info("jetstream schema pinned",
+		"stream", c.cfg.StreamName, "dlq", c.cfg.DLQStream,
+		"kv_bucket", c.cfg.KVBucket, "replicas", c.cfg.StreamReplicas)
 	c.kv = kv
 
 	return nil

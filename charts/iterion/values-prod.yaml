@@ -61,8 +61,12 @@ config:
   # empty makes the ScaledObject silently fail to scrape — runners
   # stay at minReplicas regardless of queue depth. Format: host:port
   # (no scheme).
-  # nats:
-  #   monitoringEndpoint: "your-nats-host:8222"
+  nats:
+    #   monitoringEndpoint: "your-nats-host:8222"
+    # A clustered NATS still serves R1 streams unless told otherwise, so one
+    # node restart silences the queue while its peers idle. Match the cluster
+    # size (3 on the usual three-node JetStream).
+    streamReplicas: 3
 
 # Always reference an existing Secret in prod — never inline credentials.
 secrets:

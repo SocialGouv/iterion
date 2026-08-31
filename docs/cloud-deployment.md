@@ -143,6 +143,7 @@ default).
 | `ITERION_NATS_STREAM` | Runs stream name (default `ITERION_RUNS`) |
 | `ITERION_NATS_KV_BUCKET` | Per-run distributed-lease KV bucket (default `iterion-run-locks`) |
 | `ITERION_NATS_DLQ_STREAM` | Dead-letter stream for max-deliver-exhausted messages (default `ITERION_RUNS_DLQ`) |
+| `ITERION_NATS_STREAM_REPLICAS` | JetStream replication for the runs stream, the DLQ and the lease KV (default `1`). A clustered NATS still serves R1 assets unless this is raised: one node restart then silences the queue while its peers idle. Set it to the cluster size; existing streams migrate in place at the next server boot. |
 | `ITERION_NATS_MAX_ACK_PENDING` | Fleet-wide in-flight (delivered-unacked) ceiling on the durable consumer |
 | `ITERION_NATS_MAX_DELIVER` | Redelivery budget before a message parks on the DLQ (default 8) |
 | `ITERION_NATS_ACK_WAIT` | Per-message ack deadline, refreshed by runner heartbeats |
