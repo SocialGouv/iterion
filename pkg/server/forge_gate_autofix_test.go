@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -263,6 +264,63 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		})
 		if *w.launched != 0 {
 			t.Errorf("a %dth unattended pass fired on a PR that has not converged", maxAutofixAttemptsPerPR+1)
+		}
+	})
+
+	// The ceiling is a whole-audit count, not a recent-window scan: 300
+	// unrelated deliveries on the same busy webhook must not push the spent
+	// attempts out of a page and silently re-arm the bound.
+	t.Run("the ceiling survives a busy audit", func(t *testing.T) {
+		w := build(t, nil)
+		for i := 0; i < maxAutofixAttemptsPerPR; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "spent-busy-" + string(rune('a'+i)), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: "kb" + string(rune('a'+i)), Status: webhooks.StatusLaunched,
+				EventKind: autofixEventKind, ProjectPath: repo, SubjectID: "pr:7", RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 300; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: fmt.Sprintf("noise-%d", i), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: fmt.Sprintf("noise-%d", i), Status: webhooks.StatusLaunched,
+				EventKind: "merge_request", ProjectPath: repo, RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Error("noise deliveries re-armed the per-PR ceiling — the count must be exact over the whole audit")
+		}
+	})
+
+	// The sweep net offers EVERY run in the notifiable window, cancelled rows
+	// included — the event path never carried them (kind filter), so the
+	// status gate is what keeps an operator's stop from becoming a code push.
+	t.Run("a cancelled run never fixes", func(t *testing.T) {
+		w := build(t, nil)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), id, "reviewer-bot", gatingInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = "reviewer-bot"
+		run.Status = store.RunStatusCancelled
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.autofixOffer(context.Background(), run.ID)
+		if *w.launched != 0 {
+			t.Error("the sweep offer launched a fixer off a cancelled run — an operator's stop is not a verdict")
 		}
 	})
 

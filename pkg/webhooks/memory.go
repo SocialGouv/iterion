@@ -87,6 +87,14 @@ func (s *MemoryDeliveryStore) ListByWebhook(_ context.Context, tenantID, webhook
 	return out, nil
 }
 
+func (s *MemoryDeliveryStore) CountLaunched(_ context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error) {
+	return len(s.kit.List(func(d Delivery) bool {
+		return d.TenantID == tenantID && d.WebhookID == webhookID &&
+			d.EventKind == eventKind && d.ProjectPath == projectPath &&
+			d.SubjectID == subjectID && d.RunID != ""
+	})), nil
+}
+
 // MemoryCounter is an in-process monthly Counter. Production uses the
 // Mongo CAS variant; this one is mutex-serialised.
 type MemoryCounter struct {

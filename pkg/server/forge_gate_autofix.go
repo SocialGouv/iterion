@@ -46,9 +46,6 @@ const autofixEventKind = "gate_autofix"
 // no bound at all.
 const maxAutofixAttemptsPerPR = 5
 
-// autofixAuditScan bounds the delivery scan behind that ceiling.
-const autofixAuditScan = 200
-
 // startGateAutofix attaches the lane to the event spine, alongside the gate
 // reconciler and on the same bus — queue-group delivery in cloud, so exactly one
 // replica reacts to a given run outcome.
@@ -81,6 +78,15 @@ func (s *Server) attachGateAutofix(bus eventbus.Bus) (func(), error) {
 	}, s.autofixForRun)
 }
 
+// autofixOffer re-offers a run to the lane by id — the sweep net's entry
+// point (the bus event only carries the run id anyway). Idempotent end to
+// end: the guards below exit on a local field read for the overwhelming
+// majority, and a genuine launch is deduped by the per-head idempotency key
+// plus the launch tail's atomic claim, so a double offer costs one read.
+func (s *Server) autofixOffer(ctx context.Context, runID string) {
+	_ = s.autofixForRun(ctx, trigger.Event{Subject: trigger.Subject{Type: "run", ID: runID}})
+}
+
 // autofixForRun is the eventbus handler. Every refusal below is silent by
 // design: the overwhelming majority of runs are not gating runs at all.
 func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
@@ -95,14 +101,20 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	if err != nil || run == nil {
 		return nil
 	}
+	// The sweep net offers every run in the notifiable window, cancelled and
+	// paused rows included (the event path pre-filters by kind; the sweep
+	// cannot). One explicit status gate serves both paths: a cancelled run is
+	// an operator's stop — its verdict, if any, is not an invitation to push
+	// code — and a paused one is still expected to post its own.
+	if run.Status == store.RunStatusCancelled ||
+		run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+		return nil
+	}
 	// A run that will resume is still expected to post its own verdict; acting
 	// on the interim state would fire on a gate that is about to change. Only
 	// an ARMED retry makes that true (same distinction as the reconciler): a
 	// failed_resumable with nothing coming back for it is final, and a red
 	// verdict it did post before dying deserves its fix pass.
-	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
-		return nil
-	}
 	if run.Status == store.RunStatusFailedResumable &&
 		run.RetryState != nil && run.RetryState.RetryAfter != nil {
 		return nil
@@ -354,19 +366,16 @@ func (s *Server) pullRequestHoldLabel(ctx context.Context, conn forge.Connection
 // the only place they are recorded, and it is what an operator reads to see
 // them, so counting there keeps one source of truth rather than a second ledger.
 func (s *Server) autofixAttemptsSpent(ctx context.Context, cfg webhooks.Config, repo, subject string) (int, bool) {
-	rows, err := s.webhookDeliveries.ListByWebhook(store.WithoutTenantFilter(ctx), cfg.TenantID, cfg.ID, autofixAuditScan)
+	// Exact, whole-audit count — a recent-window scan is not a ceiling: 200
+	// unrelated deliveries on a busy webhook would push this lane's rows out
+	// of the page and silently re-arm the bound.
+	spent, err := s.webhookDeliveries.CountLaunched(store.WithoutTenantFilter(ctx), cfg.TenantID, cfg.ID, autofixEventKind, repo, subject)
 	if err != nil {
 		// Unreadable audit means the ceiling cannot be evaluated. This lane
 		// pushes code with nobody watching, so an unevaluable bound is not a
 		// cleared one — the same rule the hold label follows.
-		s.logWarn("gate auto-fix: cannot read the delivery audit for %s (%v) — not launching, since the per-PR ceiling could not be checked", repo, err)
+		s.logWarn("gate auto-fix: cannot count the delivery audit for %s (%v) — not launching, since the per-PR ceiling could not be checked", repo, err)
 		return 0, true
-	}
-	spent := 0
-	for _, d := range rows {
-		if d.EventKind == autofixEventKind && d.ProjectPath == repo && d.SubjectID == subject && d.RunID != "" {
-			spent++
-		}
 	}
 	return spent, spent >= maxAutofixAttemptsPerPR
 }
