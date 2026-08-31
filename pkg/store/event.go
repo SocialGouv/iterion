@@ -180,7 +180,10 @@ const (
 	//     shape; exactly one of the two is present
 	EventRunBankSuperseded EventType = "run_bank_superseded"
 	// EventRunBankAttempt marks an attempt's work being parked on its own
-	// uniquely-named ref (iterion/run-<id>-attempt-<sha12>) because the
+	// uniquely-named ref (iterion/run-<id>-parked-<sha12> — a distinct
+	// infix from the supersede archives' -attempt-, so a pruning policy
+	// can tell a dead attempt's archive from a live run's parked work by
+	// name alone) because the
 	// STORAGE branch must not be touched: an interrupted delivery (the
 	// lease may already belong to another pod — a ref named after this
 	// chain's own head cannot contest anything), a paused run (recording

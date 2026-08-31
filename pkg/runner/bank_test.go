@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -812,7 +813,7 @@ func TestBankFinishedContainedChainLeavesNoArchive(t *testing.T) {
 
 func attemptRefAt(t *testing.T, origin, runID, head string) (string, bool) {
 	t.Helper()
-	return refAt(t, origin, "refs/heads/iterion/run-"+runID+"-attempt-"+head[:12])
+	return refAt(t, origin, "refs/heads/iterion/run-"+runID+"-parked-"+head[:12])
 }
 
 func TestBankAttemptRefParksInterruptedAndPaused(t *testing.T) {
@@ -898,6 +899,46 @@ func TestBankAttemptRefOperatorCancelParksNothing(t *testing.T) {
 			t.Fatalf("cancelled left a run_bank_attempt event: %v", ev.Data)
 		}
 	})
+	t.Run("paused on an operator-cancelled ctx", func(t *testing.T) {
+		// The proven minutes-wide window: the pause persisted, then the
+		// operator cancelled while the sandbox export/teardown ran. The
+		// non-bankable road must honour the refusal exactly like the
+		// bankable one.
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(runtime.ErrRunCancelled)
+		t.Cleanup(func() { cancel(nil) })
+
+		r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("a pause on an operator-cancelled ctx must not park")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("refused work left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+	t.Run("doc already cancelled parks nothing even on a live ctx", func(t *testing.T) {
+		// The cancel can land without ever cancelling THIS pod's ctx (the
+		// cancel subscription is best-effort). The park re-reads the doc
+		// before pushing, exactly like pushBank does before recording.
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		run := loadRun(t, r, msg.RunID)
+		run.Status = store.RunStatusCancelled
+		if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+			t.Fatalf("flip to cancelled: %v", err)
+		}
+
+		r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunPaused)
+
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("a doc-cancelled run must not park")
+		}
+	})
 	t.Run("bankable death on an operator-cancelled ctx", func(t *testing.T) {
 		r, msg, work, origin, base := bankFixture(t)
 		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
@@ -965,5 +1006,51 @@ func TestBankAttemptRefIntegrityRefusalIsLoudOnTheTimeline(t *testing.T) {
 	}
 	if _, hasRef := ev.Data["ref"]; hasRef {
 		t.Errorf("refusal event carries a ref: %v — exactly one of ref/error may be present", ev.Data)
+	}
+}
+
+// The park's detached ctx must ALWAYS carry a deadline — including when
+// the operator disabled per-op git bounds. That choice bounds one git
+// op; it is not a licence to make a best-effort parking uninterruptible
+// on a pod that already lost its lease (proven: an accept-and-never-
+// answer forge pinned the push forever, and the Nak that triggers
+// redelivery only fires after the park returns).
+func TestAttemptBankContextIsAlwaysBounded(t *testing.T) {
+	old := gitOpTimeout
+	gitOpTimeout = 0 // the operator disabled per-op bounds
+	t.Cleanup(func() { gitOpTimeout = old })
+
+	ctx, cancel := attemptBankContext()
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("the park ctx has no deadline with gitOpTimeout<=0 — an unanswering forge pins the pod forever and delays the redelivery Nak")
+	}
+}
+
+// "Never silence" must hold on the one shape resolveBankHead cannot
+// classify: HEAD unreadable with no integrity signal. The storage bank
+// keeps its historical warn-only behaviour; the PARK path's event is
+// the only durable record, so it must say the work was not parked.
+func TestBankAttemptRefUnreadableHeadIsLoud(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
+	if err := os.WriteFile(filepath.Join(work, ".git", "HEAD"), []byte("ref: refs/heads/vanished\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunInterrupted)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("an unreadable HEAD parked something: %q (%v)", out, err)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("an unreadable HEAD left no run_bank_attempt — total silence on the path whose event is the only record")
+	}
+	if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "HEAD") {
+		t.Errorf("event error = %v, want the unreadable HEAD named", ev.Data["error"])
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranchError != "" {
+		t.Fatalf("FinalBranchError = %q, want the park refusal kept off the run doc", run.FinalBranchError)
 	}
 }

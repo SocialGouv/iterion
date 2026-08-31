@@ -400,6 +400,12 @@ func bankableStatus(finalStatus string) bool {
 // which every direct bankRepoWorkspace test is blind to.
 func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
 	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
+	// The operator refusing the work is honoured on EVERY road out of
+	// here — including a cancel that lands while the run was pausing or
+	// tearing down (the cancel subscription cancels the run ctx from a
+	// NATS goroutine, and the sandbox export gives it a minutes-wide
+	// window to race the engine's own paused/interrupted return).
+	operatorRefused := errors.Is(context.Cause(ctx), runtime.ErrRunCancelled)
 	if bankableStatus(finalStatus) {
 		bankCtx, cancel, ok := bankContext(ctx)
 		if ok {
@@ -407,18 +413,21 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 			r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
 			return
 		}
-		cause := context.Cause(ctx)
-		if errors.Is(cause, runtime.ErrRunCancelled) {
+		if operatorRefused {
 			// The operator refused the work — it is not parked anywhere.
-			r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled by the operator (%v). This attempt's work stays in the git-meta snapshot.", msg.RunID, cause)
+			r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled by the operator. This attempt's work stays in the git-meta snapshot.", msg.RunID)
 			return
 		}
 		// The refusal protects the STORAGE branch from a lease that may
 		// already belong to another pod; a ref named after this chain's
 		// own head cannot contest anything, so the work parks there
 		// instead of stranding in the snapshot.
-		r.cfg.Logger.Warn("runner: run %s: NOT banking the storage branch — the run ctx was cancelled (%v), not merely deadlined: this pod's lease may already have moved. Parking this attempt's work on its own attempt ref instead.", msg.RunID, cause)
+		r.cfg.Logger.Warn("runner: run %s: NOT banking the storage branch — the run ctx was cancelled (%v), not merely deadlined: this pod's lease may already have moved. Parking this attempt's work on its own ref instead.", msg.RunID, context.Cause(ctx))
 		r.bankAttemptRef(msg, workDir, base, integ, "lease-loss death ("+finalStatus+")")
+		return
+	}
+	if operatorRefused {
+		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the operator cancelled the run; refused work parks nowhere.", msg.RunID, finalStatus)
 		return
 	}
 	switch finalStatus {
@@ -427,8 +436,8 @@ func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, work
 		// its successor banks that branch; recording FinalBranch on a
 		// paused run would make it merge-eligible mid-flight — but the
 		// work itself is as stranded as a death's (the successor
-		// re-clones at base), so it parks on a uniquely-named attempt
-		// ref, run doc untouched.
+		// re-clones at base), so it parks on a uniquely-named ref, run
+		// doc untouched.
 		r.bankAttemptRef(msg, workDir, base, integ, finalStatus)
 	}
 	// cancelled stays unbanked entirely: the operator refused the work.

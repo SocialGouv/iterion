@@ -665,8 +665,13 @@ func (r *Runner) resolveBankHead(ctx context.Context, runID, workDir, base strin
 }
 
 // bankAttemptRef parks an attempt's work on a uniquely-named ref —
-// iterion/run-<id>-attempt-<head12>, the naming preserveSupersededChain
-// established — when the STORAGE branch must not be touched: an
+// iterion/run-<id>-parked-<head12>. Same head-derived shape as
+// preserveSupersededChain's archives, but a DISTINCT infix on purpose:
+// an archive names the complete chain of a dead attempt (a once-valid
+// FinalBranch), a parked ref names the half-done work of a run that may
+// still be alive, and a future pruning policy must be able to tell the
+// two apart by name alone. Parked when the STORAGE branch must not be
+// touched: an
 // interrupted delivery (the lease may already belong to another pod,
 // and two pods force-pushing one branch is the split-brain the bank
 // refusal exists to prevent — but a ref carrying this chain's own head
@@ -689,16 +694,13 @@ func (r *Runner) resolveBankHead(ctx context.Context, runID, workDir, base strin
 // precisely because the ref is uncontested: the anti-clobber machinery
 // (ls-remote, lease, supersede) exists for a SHARED name and would be
 // dead weight on a name derived from the pushed head itself. The push
-// is plain (no force): a ref that already exists at this head is a
-// no-op, and anything else — a 12-hex prefix collision — is refused by
-// git and reported, never overwritten.
+// is plain (no force): a ref already at this head is a no-op, an
+// existing ANCESTOR is fast-forwarded (contained in the new chain —
+// nothing lost), and a divergent squatter — a 12-hex prefix collision —
+// is refused by git and reported, never overwritten.
 func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, cause string) {
-	ctx := context.Background()
-	if gitOpTimeout > 0 {
-		bounded, cancel := context.WithTimeout(ctx, bankBudget)
-		defer cancel()
-		ctx = bounded
-	}
+	ctx, cancel := attemptBankContext()
+	defer cancel()
 	head, refusal := r.resolveBankHead(ctx, msg.RunID, workDir, base, integ)
 	if refusal != "" {
 		r.cfg.Logger.Error("runner: run %s: attempt ref not parked (%s): %s", msg.RunID, cause, refusal)
@@ -706,9 +708,28 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 		return
 	}
 	if head == "" {
+		// A verified no-op stays silent — but an unreadable HEAD is not a
+		// no-op, and on THIS path the event is the only durable record.
+		// (The storage bank keeps its historical warn-only behaviour: its
+		// refusals land on FinalBranchError, a field this path never
+		// touches.)
+		if _, err := gitlib.RevParseHead(workDir); err != nil {
+			r.recordBankAttempt(msg, map[string]any{"cause": cause,
+				"error": "workspace HEAD unreadable — nothing parked, the work stays in the git-meta snapshot: " + err.Error()})
+		}
 		return
 	}
-	ref := "iterion/run-" + msg.RunID + "-attempt-" + shortSHA(head)
+	// Same re-read pushBank does before recording: an operator cancel can
+	// land without ever cancelling THIS pod's ctx (the cancel
+	// subscription is best-effort — "continuing without"), and refused
+	// work parks nowhere. Fail-open on a read error: the read is a
+	// courtesy to the operator, not a gate on preserving work.
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	if run, lerr := r.cfg.Store.LoadRun(idCtx, msg.RunID); lerr == nil && run != nil && run.Status == store.RunStatusCancelled {
+		r.cfg.Logger.Warn("runner: run %s: NOT parking (%s) — the run doc reads cancelled; the operator refused the work.", msg.RunID, cause)
+		return
+	}
+	ref := "iterion/run-" + msg.RunID + "-parked-" + shortSHA(head)
 	if err := r.runGit(ctx, workDir, "", "push", "origin", head+":refs/heads/"+ref); err != nil {
 		r.cfg.Logger.Error("runner: run %s: attempt ref push %s FAILED — the work exists only in this pod's clone and the git-meta snapshot: %v", msg.RunID, ref, err)
 		r.recordBankAttempt(msg, map[string]any{"cause": cause, "error": fmt.Sprintf("push %s: %v", ref, err)})
@@ -716,6 +737,26 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 	}
 	r.cfg.Logger.Info("runner: run %s: attempt work parked at %s @ %.12s (%s)", msg.RunID, ref, head, cause)
 	r.recordBankAttempt(msg, map[string]any{"cause": cause, "ref": ref, "head": head})
+}
+
+// attemptBankBudget bounds the park end to end. Deliberately far below
+// bankBudget: the park is ONE push, not the bank's four network ops —
+// and on the interrupted path it runs BEFORE the Nak that triggers
+// redelivery, so every second spent here is added recovery latency for
+// a run another pod should already be picking up.
+const attemptBankBudget = 2 * time.Minute
+
+// attemptBankContext builds the park's detached context — ALWAYS
+// deadlined, including when the operator disabled per-op git bounds
+// (ITERION_RUNNER_GIT_TIMEOUT<=0). That choice bounds one git op; it is
+// not a licence to make a best-effort parking uninterruptible: the
+// caller's ctx is already cancelled on these paths, so nothing else can
+// ever stop the push, and a forge that accepts the connection and never
+// answers would pin the pod forever (proven by probe). Unlike
+// bankContext's unbounded arm, this pod has already lost the run — a
+// park it cannot finish in the budget is a park it forfeits, loudly.
+func attemptBankContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), attemptBankBudget)
 }
 
 // recordBankAttempt puts an attempt-ref outcome on the run's timeline —
