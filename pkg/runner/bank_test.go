@@ -799,3 +799,171 @@ func TestBankFinishedContainedChainLeavesNoArchive(t *testing.T) {
 		t.Fatalf("a contained supersede must stay silent, got run_bank_superseded with data=%v", ev.Data)
 	}
 }
+
+// ── Attempt-ref parking (interrupted / paused / lease-loss deaths) ──
+//
+// Those outcomes must not touch the STORAGE branch (another pod may own
+// the lease; FinalBranch on a half-done run would be merge-eligible) —
+// but their work is as stranded as a death's, so it parks on a
+// uniquely-named ref with the run doc left untouched. Falsified both
+// ways: the parking outcomes leave the ref + the timeline event and
+// nothing on the doc; an operator cancel and a verified no-op leave
+// NOTHING; an unverifiable export refuses loudly on the timeline.
+
+func attemptRefAt(t *testing.T, origin, runID, head string) (string, bool) {
+	t.Helper()
+	return refAt(t, origin, "refs/heads/iterion/run-"+runID+"-attempt-"+head[:12])
+}
+
+func TestBankAttemptRefParksInterruptedAndPaused(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		err   error
+		cause string
+	}{
+		{"interrupted delivery parks", runtime.ErrRunInterrupted, "interrupted"},
+		{"paused run parks", runtime.ErrRunPaused, "paused"},
+		{"operator pause parks", runtime.ErrRunPausedOperator, "paused_operator"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, msg, work, origin, base := bankFixture(t)
+			gitOut(t, work, "commit", "--allow-empty", "-m", "work in flight")
+			head := gitOut(t, work, "rev-parse", "HEAD")
+
+			r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, c.err)
+
+			if got, present := bankedBranch(t, origin, msg.RunID); present {
+				t.Fatalf("the storage branch must stay untouched, found it at %q", got)
+			}
+			if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+				t.Fatalf("attempt ref = %q (present=%v), want the in-flight head %s parked", got, ok, head)
+			}
+			run := loadRun(t, r, msg.RunID)
+			if run.FinalBranch != "" || run.FinalCommit != "" || run.FinalBranchError != "" {
+				t.Fatalf("run doc = %q/%q/%q, want it untouched (an attempt ref must not be merge-eligible)", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
+			}
+			ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+			if ev == nil {
+				t.Fatal("no run_bank_attempt on the timeline — the parked ref is invisible outside the pod log")
+			}
+			if ev.Data["head"] != head || ev.Data["cause"] != c.cause {
+				t.Errorf("event data = %v, want head %s and cause %q", ev.Data, head, c.cause)
+			}
+		})
+	}
+}
+
+// A bankable death on a ctx cancelled for LEASE LOSS: the storage branch
+// stays with whoever owns the lease, but the work parks on the attempt
+// ref — the case that used to strand it in the snapshot outright.
+func TestBankAttemptRefParksLeaseLossDeath(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work the dying pod holds")
+	head := gitOut(t, work, "rev-parse", "HEAD")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(runtime.ErrRunInterrupted)
+	t.Cleanup(func() { cancel(nil) })
+
+	r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, errors.New("boom"))
+
+	if got, present := bankedBranch(t, origin, msg.RunID); present {
+		t.Fatalf("a lease-loss death must not touch the storage branch, found %q", got)
+	}
+	if got, ok := attemptRefAt(t, origin, msg.RunID, head); !ok || got != head {
+		t.Fatalf("attempt ref = %q (present=%v), want %s parked", got, ok, head)
+	}
+	if run := loadRun(t, r, msg.RunID); run.FinalBranch != "" || run.FinalBranchError != "" {
+		t.Fatalf("run doc = %q/%q, want it untouched", run.FinalBranch, run.FinalBranchError)
+	}
+}
+
+// The operator refusing the work is the one outcome that parks NOTHING —
+// on both roads a cancel can arrive by (classified status, and a
+// bankable death whose ctx cause is the cancel sentinel).
+func TestBankAttemptRefOperatorCancelParksNothing(t *testing.T) {
+	t.Run("classified cancelled", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+
+		r.bankIfBankable(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, runtime.ErrRunCancelled)
+
+		if _, present := bankedBranch(t, origin, msg.RunID); present {
+			t.Fatal("cancelled must not bank the storage branch")
+		}
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("cancelled must not park an attempt ref either")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("cancelled left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+	t.Run("bankable death on an operator-cancelled ctx", func(t *testing.T) {
+		r, msg, work, origin, base := bankFixture(t)
+		gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
+		head := gitOut(t, work, "rev-parse", "HEAD")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(runtime.ErrRunCancelled)
+		t.Cleanup(func() { cancel(nil) })
+
+		r.bankIfBankable(ctx, msg, work, base, runtime.WorkspaceIntegrity{}, errors.New("boom"))
+
+		if _, present := bankedBranch(t, origin, msg.RunID); present {
+			t.Fatal("an operator-cancelled ctx must not bank the storage branch")
+		}
+		if _, ok := attemptRefAt(t, origin, msg.RunID, head); ok {
+			t.Fatal("an operator-cancelled ctx must not park an attempt ref")
+		}
+		if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+			t.Fatalf("operator cancel left a run_bank_attempt event: %v", ev.Data)
+		}
+	})
+}
+
+// A verified no-op (pod-side HEAD confirms the baseline) parks nothing
+// and stays silent — the attempt ref must not manufacture refs for runs
+// that produced no commits.
+func TestBankAttemptRefVerifiedNoopStaysSilent(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+
+	r.bankIfBankable(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: base}, runtime.ErrRunPaused)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("a workless pause parked something anyway: %q (%v)", out, err)
+	}
+	if ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt); ev != nil {
+		t.Fatalf("a verified no-op left a run_bank_attempt event: %v", ev.Data)
+	}
+}
+
+// The attempt ref rides the SAME integrity oracle as the storage bank: an
+// export that did not deliver the pod's final tree is refused — but the
+// refusal lands on the TIMELINE, never on FinalBranchError (the run is
+// not terminally unbanked; it may resume, and the field would raise a
+// terminal alarm over a non-terminal outcome).
+func TestBankAttemptRefIntegrityRefusalIsLoudOnTheTimeline(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	podHead := "feedfacefeedfacefeedfacefeedfacefeedface"
+
+	r.bankIfBankable(context.Background(), msg, work, base,
+		runtime.WorkspaceIntegrity{Applicable: true, PodHead: podHead}, runtime.ErrRunInterrupted)
+
+	if out, err := exec.Command("git", "-C", origin, "for-each-ref", "refs/heads/iterion/").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("an unverifiable export parked a ref anyway: %q (%v)", out, err)
+	}
+	run := loadRun(t, r, msg.RunID)
+	if run.FinalBranchError != "" {
+		t.Fatalf("FinalBranchError = %q, want the attempt-path refusal kept OFF the run doc", run.FinalBranchError)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankAttempt)
+	if ev == nil {
+		t.Fatal("the integrity refusal left no run_bank_attempt — a silent loss of the parked-work promise")
+	}
+	if errStr, _ := ev.Data["error"].(string); !strings.Contains(errStr, "export") {
+		t.Errorf("event error = %v, want the export refusal named", ev.Data["error"])
+	}
+	if _, hasRef := ev.Data["ref"]; hasRef {
+		t.Errorf("refusal event carries a ref: %v — exactly one of ref/error may be present", ev.Data)
+	}
+}

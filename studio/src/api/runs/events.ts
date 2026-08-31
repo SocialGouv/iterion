@@ -408,6 +408,7 @@ export type PassthroughEventType =
   | "run_workspace_reset"
   | "run_bank_refused"
   | "run_bank_superseded"
+  | "run_bank_attempt"
   | "review_turn"
   | "review_verdict"
   | "review_merged"

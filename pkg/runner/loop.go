@@ -400,16 +400,38 @@ func bankableStatus(finalStatus string) bool {
 // which every direct bankRepoWorkspace test is blind to.
 func (r *Runner) bankIfBankable(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, runErr error) {
 	finalStatus := classifyExecResult(runErr, msg.RunID).finalStatus
-	if !bankableStatus(finalStatus) {
+	if bankableStatus(finalStatus) {
+		bankCtx, cancel, ok := bankContext(ctx)
+		if ok {
+			defer cancel()
+			r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+			return
+		}
+		cause := context.Cause(ctx)
+		if errors.Is(cause, runtime.ErrRunCancelled) {
+			// The operator refused the work — it is not parked anywhere.
+			r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled by the operator (%v). This attempt's work stays in the git-meta snapshot.", msg.RunID, cause)
+			return
+		}
+		// The refusal protects the STORAGE branch from a lease that may
+		// already belong to another pod; a ref named after this chain's
+		// own head cannot contest anything, so the work parks there
+		// instead of stranding in the snapshot.
+		r.cfg.Logger.Warn("runner: run %s: NOT banking the storage branch — the run ctx was cancelled (%v), not merely deadlined: this pod's lease may already have moved. Parking this attempt's work on its own attempt ref instead.", msg.RunID, cause)
+		r.bankAttemptRef(msg, workDir, base, integ, "lease-loss death ("+finalStatus+")")
 		return
 	}
-	bankCtx, cancel, ok := bankContext(ctx)
-	if !ok {
-		r.cfg.Logger.Warn("runner: run %s: NOT banking — the run ctx was cancelled (%v), not merely deadlined: this pod's lease on the run may already have moved, and banking from here could race the new owner's push. This attempt's work stays in the git-meta snapshot.", msg.RunID, context.Cause(ctx))
-		return
+	switch finalStatus {
+	case "interrupted", "paused", "paused_operator":
+		// Not the storage branch — an interrupted delivery redelivers and
+		// its successor banks that branch; recording FinalBranch on a
+		// paused run would make it merge-eligible mid-flight — but the
+		// work itself is as stranded as a death's (the successor
+		// re-clones at base), so it parks on a uniquely-named attempt
+		// ref, run doc untouched.
+		r.bankAttemptRef(msg, workDir, base, integ, finalStatus)
 	}
-	defer cancel()
-	r.bankRepoWorkspace(bankCtx, msg, workDir, base, integ, finalStatus)
+	// cancelled stays unbanked entirely: the operator refused the work.
 }
 
 // bankContext decides whether the bank may outlive the run ctx.
@@ -1641,18 +1663,16 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// in the git-meta snapshot above, and turning that snapshot back
 		// into a branch takes a manual replay every time (measured: nine
 		// manual recoveries in three days of one campaign). An interrupted
-		// delivery does NOT bank — not because its work survives (the
-		// redelivery re-clones at RepoSHA and banks only its OWN later
-		// commits; this attempt's work strands in the snapshot exactly
-		// like a death's) but because interruption means the lease may
+		// delivery must NOT touch the storage branch — the lease may
 		// already belong to another pod, and a bank from here could race
-		// the new owner's push (bankContext refuses on the same oracle).
-		// A cancel is the operator saying the work is not wanted. Paused runs do
-		// not bank either — NOT because the work is safe (a cloud resume
-		// re-clones at the base, so a paused run's committed work is as
-		// stranded as a death's until it ends) but because FinalBranch on
-		// a half-done run would make it merge-eligible mid-flight; that
-		// trade-off is a product decision deferred, not an oversight.
+		// the new owner's push (bankContext refuses on the same oracle) —
+		// and a paused run must not either: FinalBranch on a half-done
+		// run would make it merge-eligible mid-flight. But their work is
+		// as stranded as a death's (the successor re-clones at RepoSHA
+		// and banks only its OWN later commits), so both park it on a
+		// uniquely-named attempt ref instead — doc untouched, no name
+		// contested (bankAttemptRef). A cancel is the operator saying
+		// the work is not wanted; it parks nowhere.
 		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 

@@ -590,6 +590,28 @@ func injectGitToken(rawURL, token string) string {
 // by overwriting the pair or the field whose meaning is "this commit has
 // no branch guarding it".
 func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, finalStatus string) {
+	head, refusal := r.resolveBankHead(ctx, msg.RunID, workDir, base, integ)
+	if refusal != "" {
+		r.recordBankFailure(msg, refusal)
+		return
+	}
+	if head == "" {
+		return
+	}
+	r.pushBank(ctx, msg, workDir, head, finalStatus)
+}
+
+// resolveBankHead applies the export-integrity oracle to the host clone
+// and answers which commit a bank may push. The one head-resolution
+// authority for BOTH bank shapes (storage branch and attempt ref), so
+// the two cannot drift on what "the run's final tree" means. Outcomes:
+//   - head != "": bankable (a caveat, when any, is already logged);
+//   - head == "" && refusal == "": nothing to bank — a verified no-op,
+//     or an unreadable HEAD with no integrity signal (warned, as before);
+//   - head == "" && refusal != "": refuse loudly — the CALLER records it
+//     (FinalBranchError for a terminal bank, the timeline for an
+//     attempt ref), because where the refusal must land differs.
+func (r *Runner) resolveBankHead(ctx context.Context, runID, workDir, base string, integ runtime.WorkspaceIntegrity) (string, string) {
 	head, headErr := gitlib.RevParseHead(workDir)
 	if integ.Applicable {
 		// The workspace is a pod-side COPY streamed back at sandbox
@@ -602,14 +624,13 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 		switch {
 		case integ.CaptureErr != "":
 			if headErr != nil || (base != "" && head == base) {
-				r.recordBankFailure(msg, fmt.Sprintf(
+				return "", fmt.Sprintf(
 					"bank refused: pod-side HEAD unknown (%s) and the exported workspace shows no new work (HEAD %s, baseline %s) — cannot tell 'no commits' from 'the export lost the work'",
-					integ.CaptureErr, strutil.FirstNonBlank(head, "unreadable"), strutil.FirstNonBlank(base, "unknown")))
-				return
+					integ.CaptureErr, strutil.FirstNonBlank(head, "unreadable"), strutil.FirstNonBlank(base, "unknown"))
 			}
 			// The host tree does carry new commits; completeness is
 			// unverifiable but preserving the visible work wins.
-			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", msg.RunID, integ.CaptureErr)
+			r.cfg.Logger.Warn("runner: run %s: banking WITHOUT pod-side verification (capture failed: %s) — the branch may be missing commits that never left the pod", runID, integ.CaptureErr)
 		case headErr != nil || head != integ.PodHead:
 			// The export can deliver every OBJECT yet leave the clone's
 			// ref system stale: tar cannot delete, so when a pod-side
@@ -620,29 +641,94 @@ func (r *Runner) bankRepoWorkspace(ctx context.Context, msg *queue.RunMessage, w
 			// THAT exact commit by SHA — it is the tree the run
 			// finished on. Otherwise refuse loudly.
 			if headErr == nil && r.hostHasCommit(ctx, workDir, integ.PodHead) {
-				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", msg.RunID, head, integ.PodHead)
-				r.pushBank(ctx, msg, workDir, integ.PodHead, finalStatus)
-				return
+				r.cfg.Logger.Warn("runner: run %s: exported workspace reads %s but the pod-side HEAD %s IS present host-side (stale ref shadowing) — banking the pod's final commit by SHA", runID, head, integ.PodHead)
+				return integ.PodHead, ""
 			}
-			r.recordBankFailure(msg, fmt.Sprintf(
+			return "", fmt.Sprintf(
 				"bank refused: the run finished at pod-side HEAD %s but the exported workspace reads %s — the export did not deliver the run's final tree",
-				integ.PodHead, strutil.FirstNonBlank(head, "unreadable")))
-			return
+				integ.PodHead, strutil.FirstNonBlank(head, "unreadable"))
 		}
 	}
 	if headErr != nil {
-		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", msg.RunID, headErr)
-		return
+		r.cfg.Logger.Warn("runner: run %s: bank: read HEAD: %v", runID, headErr)
+		return "", ""
 	}
 	if base != "" && head == base {
 		confirmed := ""
 		if integ.Applicable {
 			confirmed = " (pod-side HEAD confirms it)"
 		}
-		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", msg.RunID, confirmed)
+		r.cfg.Logger.Info("runner: run %s: nothing to bank — HEAD is still the clone baseline%s", runID, confirmed)
+		return "", ""
+	}
+	return head, ""
+}
+
+// bankAttemptRef parks an attempt's work on a uniquely-named ref —
+// iterion/run-<id>-attempt-<head12>, the naming preserveSupersededChain
+// established — when the STORAGE branch must not be touched: an
+// interrupted delivery (the lease may already belong to another pod,
+// and two pods force-pushing one branch is the split-brain the bank
+// refusal exists to prevent — but a ref carrying this chain's own head
+// in its NAME cannot contest anything), a paused run (recording
+// FinalBranch would make a half-done run merge-eligible mid-flight),
+// and a bankable death whose run ctx was cancelled for lease loss.
+//
+// Without it, those attempts' commits exist only in the git-meta
+// snapshot, and turning that snapshot back into a branch takes a manual
+// replay every time — the same measured cost the death bank closed for
+// budget/failure outcomes, still being paid for these.
+//
+// Deliberately DOC-LESS: no FinalBranch (merge eligibility), no
+// FinalCommit, no FinalBranchError (the run is not terminally
+// unbanked — it may resume or redeliver). The ref lands on the run's
+// timeline as run_bank_attempt, success or failure — never silence.
+//
+// The run ctx on these paths is typically already cancelled, so the
+// push runs on its own detached, bounded context. That is safe here
+// precisely because the ref is uncontested: the anti-clobber machinery
+// (ls-remote, lease, supersede) exists for a SHARED name and would be
+// dead weight on a name derived from the pushed head itself. The push
+// is plain (no force): a ref that already exists at this head is a
+// no-op, and anything else — a 12-hex prefix collision — is refused by
+// git and reported, never overwritten.
+func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, integ runtime.WorkspaceIntegrity, cause string) {
+	ctx := context.Background()
+	if gitOpTimeout > 0 {
+		bounded, cancel := context.WithTimeout(ctx, bankBudget)
+		defer cancel()
+		ctx = bounded
+	}
+	head, refusal := r.resolveBankHead(ctx, msg.RunID, workDir, base, integ)
+	if refusal != "" {
+		r.cfg.Logger.Error("runner: run %s: attempt ref not parked (%s): %s", msg.RunID, cause, refusal)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "error": refusal})
 		return
 	}
-	r.pushBank(ctx, msg, workDir, head, finalStatus)
+	if head == "" {
+		return
+	}
+	ref := "iterion/run-" + msg.RunID + "-attempt-" + shortSHA(head)
+	if err := r.runGit(ctx, workDir, "", "push", "origin", head+":refs/heads/"+ref); err != nil {
+		r.cfg.Logger.Error("runner: run %s: attempt ref push %s FAILED — the work exists only in this pod's clone and the git-meta snapshot: %v", msg.RunID, ref, err)
+		r.recordBankAttempt(msg, map[string]any{"cause": cause, "error": fmt.Sprintf("push %s: %v", ref, err)})
+		return
+	}
+	r.cfg.Logger.Info("runner: run %s: attempt work parked at %s @ %.12s (%s)", msg.RunID, ref, head, cause)
+	r.recordBankAttempt(msg, map[string]any{"cause": cause, "ref": ref, "head": head})
+}
+
+// recordBankAttempt puts an attempt-ref outcome on the run's timeline —
+// the only durable record of the parked ref, since the run doc is
+// deliberately left untouched on every bankAttemptRef path.
+func (r *Runner) recordBankAttempt(msg *queue.RunMessage, data map[string]any) {
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	if _, err := r.cfg.Store.AppendEvent(idCtx, msg.RunID, store.Event{
+		Type: store.EventRunBankAttempt,
+		Data: data,
+	}); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: could not emit run_bank_attempt: %v", msg.RunID, err)
+	}
 }
 
 // hostHasCommit reports whether sha resolves to a commit object present

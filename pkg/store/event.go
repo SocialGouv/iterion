@@ -179,6 +179,24 @@ const (
 	//     recoverable from the run's git-meta snapshot) — the failure
 	//     shape; exactly one of the two is present
 	EventRunBankSuperseded EventType = "run_bank_superseded"
+	// EventRunBankAttempt marks an attempt's work being parked on its own
+	// uniquely-named ref (iterion/run-<id>-attempt-<sha12>) because the
+	// STORAGE branch must not be touched: an interrupted delivery (the
+	// lease may already belong to another pod — a ref named after this
+	// chain's own head cannot contest anything), a paused run (recording
+	// FinalBranch would make a half-done run merge-eligible), or a
+	// bankable death whose run ctx was cancelled for lease loss. The run
+	// doc is deliberately left alone — no FinalBranch/FinalCommit/
+	// FinalBranchError — so this event is the ONLY durable record that
+	// the ref exists (or why it could not be pushed). Data:
+	//   - ref / head: the parked ref and the commit it holds — the
+	//     success shape
+	//   - cause: which outcome parked it (interrupted, paused,
+	//     paused_operator, or the lease-loss death)
+	//   - error: why the head could not be resolved or pushed (the work
+	//     stays recoverable from the git-meta snapshot) — the failure
+	//     shape; exactly one of ref/error is present
+	EventRunBankAttempt EventType = "run_bank_attempt"
 	// EventRunRewound marks an in-place rewind: the operator re-anchored
 	// THIS run's checkpoint on an already-executed node and invalidated
 	// the outputs downstream of it, so the next resume re-executes from
