@@ -249,7 +249,12 @@ tool extend_verify:
     gmp = gm.rstrip("/")
     allowed_exact = {gmp + "/corpus.json", gmp + "/EXTENSIONS.md"}
     allowed_prefix = gmp + "/refs/"
-    code, out, err = git("diff", "--name-only", base, "HEAD")
+    # quotePath=false: a non-ASCII reference path comes back quoted and no
+    # longer matches the allowed prefix — the subbot would refuse its own
+    # correct work (adversarial finding, executed).
+    code, out, err = git("-c", "core.quotePath=false",
+                         "diff", "--name-only", base, "HEAD")
+    touched = []
     if code != 0:
         problems.append("cannot diff against %s: %s" % (base, err.strip()))
     else:
@@ -285,7 +290,18 @@ tool extend_verify:
         if verdict.get("error"):
             problems.append(str(verdict["error"]))
         bad = [r for r in (verdict.get("acted") or []) if not r.get("ok")]
+        # Every surface path this run touched must be CERTIFIED, not merely
+        # in scope: a refs file added beside the acted ones is smuggling,
+        # and it must be refused here, not discovered at the parent's gate.
+        certified = set(verdict.get("ok_paths") or [])
+        certified.add(gmp + "/EXTENSIONS.md")
+        uncertified = [p for p in touched if p not in certified]
+        if uncertified:
+            problems.append("%d touched path(s) no certified act covers: %s "
+                            "— acting more than was asked is smuggling"
+                            % (len(uncertified), ", ".join(uncertified[:12])))
         report["additions_ok"] = (not bad and not verdict.get("problems")
+                                  and not uncertified
                                   and bool(verdict.get("acted")))
         report["extended"] = len([r for r in (verdict.get("acted") or [])
                                   if r.get("ok")])

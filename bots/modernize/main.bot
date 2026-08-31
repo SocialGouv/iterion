@@ -544,13 +544,33 @@ tool lot_verify:
         if verdict is not None and not verdict.get("error"):
             exempt = set(verdict.get("ok_paths") or [])
 
-        code, log = run("git diff --name-only %s -- %s"
+        # The certifier is the TARGET's harness copy — a file the lot could
+        # write. Two mechanical bounds keep its word from mattering when it
+        # shouldn't (adversarial finding, executed: a 12-line harness.py
+        # exempted itself and every reference):
+        #   1. only the extension surface is ever exemptible, whatever the
+        #      harness claims;
+        #   2. if ANY judged path outside that surface moved — the harness,
+        #      the canon, the runner, the config — the certifier itself is
+        #      suspect and its certificate is worth nothing: exempt nothing.
+        # quotePath=false, or a non-ASCII reference path comes back quoted
+        # and the exemption misses it — a legitimate extension accused of
+        # rewriting the net (same finding, same class in the two subbots).
+        surface_prefix = refs_dir.rstrip("/") + "/"
+        corpus_path = os.path.join(gm_dir, "corpus.json")
+        exempt = {p for p in exempt
+                  if p == corpus_path or p.startswith(surface_prefix)}
+
+        code, log = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
         if code != 0:
             problems.append("cannot diff the references against %s: %s" % (base, log))
         else:
-            changed = [l.strip() for l in log.splitlines()
-                       if l.strip() and l.strip() not in exempt]
+            raw = [l.strip() for l in log.splitlines() if l.strip()]
+            if any(p != corpus_path and not p.startswith(surface_prefix)
+                   for p in raw):
+                exempt = set()
+            changed = [p for p in raw if p not in exempt]
             report["refs_changed"] = changed
             report["refs_untouched"] = not changed
             if changed:

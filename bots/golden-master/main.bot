@@ -1310,18 +1310,38 @@ tool oracle_run:
         if not text:
             return []
         requests = _extension_blocks(text, "request")
-        acted = {b.get("id") for b in _extension_blocks(text, "act")}
-        if any(r.get("id") == "UNPARSEABLE" for r in requests) or "UNPARSEABLE" in acted:
+        acts = _extension_blocks(text, "act")
+        if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
             return [{"id": "UNPARSEABLE",
                      "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+        # Only a WELL-FORMED act closes a request: an act with no recorded path
+        # acted nothing, and letting it close the term would let the constrained
+        # party silence the conjunction with four lines of JSON — the
+        # additions-only verdict never runs at gate time, so this shape check is
+        # the whole defence here (adversarial finding, executed).
+        acted = {b["id"] for b in acts
+                 if isinstance(b.get("recorded_paths"), list) and b["recorded_paths"]}
         return [{"id": r["id"], "lot": r.get("lot", "?")}
                 for r in requests if r["id"] not in acted]
 
 
+    ## The fields that DECIDE what an entry observes. An allowlist, not
+    ## "everything but id": a stripped-everything key is defeated by one cosmetic
+    ## key (`note`, `comment`) that makes two identical observations compare
+    ## different (adversarial finding, executed). Fields outside this list do not
+    ## discriminate; if the harness later grows a discriminating field, the
+    ## failure mode is a FALSE collision — refused, escalated to the requester —
+    ## never a masked duplicate.
+    OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
+                          "steps", "params", "query", "body", "readback",
+                          "no_redirect")
+
+
     def _entry_observation_key(entry):
-        """What an entry OBSERVES, id stripped: two entries equal under this key
-        are two references for one observation — a collision, not an addition."""
-        return json.dumps({k: v for k, v in entry.items() if k != "id"},
+        """What an entry OBSERVES: two entries equal under this key are two
+        references for one observation — a collision, not an addition."""
+        return json.dumps({k: entry.get(k) for k in OBSERVATION_FIELDS
+                           if k in entry},
                           sort_keys=True, ensure_ascii=False)
 
 
@@ -1352,9 +1372,23 @@ tool oracle_run:
             code, out, _ = git("show", "%s:%s" % (ref, path))
             return out if code == 0 else None
 
+        def blob_mode(ref, path):
+            code, out, _ = git("ls-tree", ref, "--", path)
+            return out.split()[0] if code == 0 and out.strip() else ""
+
         ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
         corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
         refs_prefix = gm_rel.rstrip("/") + "/refs/"
+
+        # An unresolvable base and an honest "absent at base" both read as None
+        # below, so a bad sha would certify everything as an addition — a guard
+        # whose failure mode is a full pass (adversarial finding, executed).
+        # Refuse it the way an empty base is refused.
+        code, _, err = git("rev-parse", "--verify", "--quiet", base + "^{commit}")
+        if code != 0:
+            return {"error": "GM_BASE %r does not resolve to a commit (%s) — "
+                             "judging additions against nothing would pass by "
+                             "construction" % (base, err.strip() or "unknown ref")}
 
         verdict = {"acted": [], "ok_paths": [], "ledger_append_only": True,
                    "requests_added": 0, "problems": []}
@@ -1392,13 +1426,38 @@ tool oracle_run:
                 base_c = json.loads(base_corpus_txt or "{}")
             except ValueError as e:
                 corpus_problems.append("corpus.json does not parse: %s" % e)
+            if head_c is not None and base_c is not None and \
+                    not isinstance(head_c, dict):
+                corpus_problems.append("corpus.json is not an object")
+                head_c = base_c = None
+            if head_c is not None and base_c is not None and (
+                    not isinstance(head_c.get("entries", []), list)
+                    or not all(isinstance(e, dict)
+                               for e in head_c.get("entries", []))):
+                corpus_problems.append(
+                    "corpus.json `entries` is not a list of objects — refused, "
+                    "not crashed")
+                head_c = base_c = None
             if head_c is not None and base_c is not None:
                 if {k: v for k, v in head_c.items() if k != "entries"} != \
                         {k: v for k, v in base_c.items() if k != "entries"}:
                     corpus_problems.append(
                         "corpus.json keys outside `entries` changed — an "
                         "extension adds entries and touches nothing else")
-                base_by_id = {e.get("id"): e for e in base_c.get("entries", [])}
+                # An id names ONE observation. Duplicated ids collapse in every
+                # by-id index (this one, the capture map, the refs map), so the
+                # equality check would read the surviving twin while the capture
+                # hands the reference to the other — an existing observation
+                # hijacked through the channel (adversarial finding, executed).
+                head_ids = [e.get("id") for e in head_c.get("entries", [])]
+                dupes = sorted({i for i in head_ids if head_ids.count(i) > 1})
+                if dupes:
+                    corpus_problems.append(
+                        "duplicate entry id(s) %s — an id is one observation, "
+                        "and a twin id hands the capture to whichever entry "
+                        "wins an ordering nobody audits" % ", ".join(map(repr, dupes)))
+                base_by_id = {e.get("id"): e for e in base_c.get("entries", [])
+                              if isinstance(e, dict)}
                 head_by_id = {e.get("id"): e for e in head_c.get("entries", [])}
                 for bid, be in base_by_id.items():
                     if bid not in head_by_id:
@@ -1468,6 +1527,22 @@ tool oracle_run:
                         row["problems"].append(
                             "%s is recorded but absent at HEAD — a recorded "
                             "delete, and a delete is the masking vector" % p)
+                    elif blob_mode("HEAD", p) not in ("100644", "100755"):
+                        # A symlink's content is its target string, so it passes
+                        # every text check while the next record pass writes
+                        # THROUGH it onto an existing reference — an addition
+                        # that masks (adversarial finding, executed).
+                        row["problems"].append(
+                            "%s is not a regular file (mode %s) — a link is a "
+                            "write to somewhere else wearing an addition's name"
+                            % (p, blob_mode("HEAD", p) or "?"))
+                    elif req is not None and p not in (req.get("paths") or []):
+                        # Added refs are claimed against the request the way
+                        # entries are claimed against corpus_entries — acting
+                        # more than was asked is smuggling, whichever surface.
+                        row["problems"].append(
+                            "%s is not declared in the request's `paths` — "
+                            "acting more than was asked is smuggling" % p)
                 else:
                     row["problems"].append(
                         "%s is outside the extension surface (refs/ and "
@@ -2840,6 +2915,78 @@ tool oracle_run:
                 f.write("ref-2\n")
             xcommit()
             check("acte sans demande -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # 8f. Les refus arraches par la revue adversariale — chaque
+            #     deguisement executee contre le verdict doit rester rouge.
+
+            # Un acte VIDE ne ferme pas le terme de conjonction : quatre lignes
+            # de JSON suffiraient a la partie contrainte pour eteindre la porte.
+            xledger(("request", req2), ("act", '{"id": "E-1", "lot": "L"}'))
+            check("acte sans recorded_paths -> la demande RESTE pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L", "recorded_paths": []}'))
+            check("acte a recorded_paths vide -> la demande RESTE pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+
+            # Un symlink sous refs/ : son contenu est sa cible, la prochaine
+            # passe record ecrit A TRAVERS lui sur une reference existante.
+            xreset()
+            xledger(("request", req2), ("act", act2))
+            os.symlink("1.txt", os.path.join(xgm, "refs", "2.txt"))
+            xcommit()
+            check("symlink sous refs/ -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Un chemin refs/ enregistre mais non declare par la demande.
+            xreset()
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/refs/3.txt"]}'))
+            with open(os.path.join(xgm, "refs", "3.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-3\n")
+            xcommit()
+            check("ref ajoutee non declaree par la demande -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "1"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            twin = dict(base_entry, path="/detournee")
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [twin, base_entry]}, f)
+            xcommit()
+            check("id duplique dans le corpus -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Une cle cosmetique ne neutralise pas la collision d'observation.
+            xreset()
+            cosmetic = dict(base_entry, id="9", note="differente en apparence")
+            xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                    ("act", '{"id": "E-3", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, cosmetic]}, f)
+            xcommit()
+            check("collision masquee par une cle cosmetique -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Une base irresoluble ne tamponne rien : elle refuse.
+            check("GM_BASE irresoluble -> erreur, pas un laissez-passer",
+                  "error" in extension_verdict(xroot, ".golden-master", "d" * 40), True)
+
+            # Un corpus malforme refuse, il ne crashe pas.
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                f.write('{"entries": {"E1": {}}}')
+            xcommit()
+            check("corpus malforme -> refuse, pas une traceback",
                   extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
 
             # 9. Scellement : derivable partout, jamais dans le parent du worktree
