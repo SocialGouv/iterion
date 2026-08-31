@@ -756,7 +756,7 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 // attemptBankBudget bounds the park's GIT work end to end; each store
 // op rides its own short bound on top (parkStoreOpTimeout for the
 // event write — detached on purpose, so the event still lands when the
-// push just died on this budget; bankDocOpTimeout for the doc read).
+// push just died on this budget; parkDocReadTimeout for the doc read).
 // Deliberately far below bankBudget: the park is ONE push, not the
 // bank's four network ops — and on the interrupted path it runs BEFORE
 // the Nak that triggers redelivery, so every second spent here is
@@ -764,8 +764,8 @@ func (r *Runner) bankAttemptRef(msg *queue.RunMessage, workDir, base string, int
 // picking up. A var so tests can exercise the spent-budget divergence.
 var attemptBankBudget = 2 * time.Minute
 
-// parkStoreOpTimeout bounds each of the park's individual STORE ops (the
-// doc courtesy read, the timeline event write) — the store is the same
+// parkStoreOpTimeout bounds the park's timeline event write (the doc
+// courtesy read rides parkDocReadTimeout) — the store is the same
 // class of external resource as the forge, on the same pre-Nak path,
 // and the mongo client carries no timeout of its own. Same 5s
 // teardown-write convention as runtime's run_failure/pause paths.
@@ -900,16 +900,8 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	lcancel()
 	if lerr != nil || run == nil {
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
-		data := map[string]any{
-			"branch": branch, "head": head,
-			"reason": "doc_load_failed",
-			"error":  fmt.Sprintf("the doc read died, nothing recorded: %v", lerr),
-		}
-		if pushErr != nil {
-			// Both died: the push failure would otherwise vanish with the
-			// doc write that was meant to carry it.
-			data["push_error"] = pushErr.Error()
-		}
+		data := bankExitData(branch, head, "doc_load_failed", pushErr)
+		data["error"] = fmt.Sprintf("the doc read died, nothing recorded: %v", lerr)
 		r.recordBankRefused(msg, data)
 		return
 	}
@@ -920,10 +912,7 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// work.
 	if run.Status == store.RunStatusCancelled {
 		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
-		r.recordBankRefused(msg, map[string]any{
-			"branch": branch, "head": head,
-			"reason": "cancelled_while_banking",
-		})
+		r.recordBankRefused(msg, bankExitData(branch, head, "cancelled_while_banking", pushErr))
 		return
 	}
 	// The three fields must stay mutually consistent ACROSS ATTEMPTS. A
@@ -967,12 +956,24 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	defer scancel()
 	if serr := r.cfg.Store.SaveRun(sctx, run); serr != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
-		r.recordBankRefused(msg, map[string]any{
-			"branch": branch, "head": head,
-			"reason": "doc_save_failed",
-			"error":  serr.Error(),
-		})
+		data := bankExitData(branch, head, "doc_save_failed", pushErr)
+		data["error"] = serr.Error()
+		r.recordBankRefused(msg, data)
 	}
+}
+
+// bankExitData shapes a post-push doc-I/O exit for the timeline. head
+// sits on the forge only when the push SUCCEEDED, so a dead push is
+// named on every such exit: without it the event is key-for-key
+// identical to the push-succeeded shape, and once the doc write meant
+// to carry FinalBranchError has died too, push_error is the cause's
+// only durable carrier.
+func bankExitData(branch, head, reason string, pushErr error) map[string]any {
+	data := map[string]any{"branch": branch, "head": head, "reason": reason}
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	return data
 }
 
 // bankPushArgs builds the bank's push, binding it to the ref state the

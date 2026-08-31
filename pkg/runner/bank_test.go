@@ -1238,9 +1238,11 @@ func TestBankFailureRecordingIsBounded(t *testing.T) {
 
 // A slow-but-HEALTHY store must not defeat the doc-cancel guard: the
 // round-3 probe answered the cancelled doc in 7s and the 5s-bounded
-// read failed open, pushing refused work. The read now rides the doc
-// pair's more generous bound; fail-open remains only for a store that
-// cannot answer within it (the documented preservation-wins residue).
+// read failed open, pushing refused work. The read rides its own
+// parkDocReadTimeout — wide enough for this case, tight enough that a
+// wedged store cannot spend the doc pair's window in pre-Nak latency
+// (TestParkDocReadBoundIsTight asserts that ceiling); past it,
+// fail-open is the documented preservation-wins residue.
 func TestParkDocCancelGuardSurvivesASlowStore(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	run := loadRun(t, r, msg.RunID)
@@ -1249,7 +1251,7 @@ func TestParkDocCancelGuardSurvivesASlowStore(t *testing.T) {
 		t.Fatalf("flip to cancelled: %v", err)
 	}
 	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
-		loadWindow: make(chan time.Duration, 1), loadDelay: parkStoreOpTimeout + 2*time.Second}
+		loadWindow: make(chan time.Duration, 1), loadDelay: parkDocReadTimeout - 3*time.Second}
 	r.cfg.Store = probe
 	gitOut(t, work, "commit", "--allow-empty", "-m", "refused work")
 	head := gitOut(t, work, "rev-parse", "HEAD")
@@ -1309,7 +1311,7 @@ func TestStorageBankSaveGetsItsOwnWindow(t *testing.T) {
 	r, msg, work, origin, base := bankFixture(t)
 	probe := &parkIOProbeStore{RunStore: r.cfg.Store,
 		loadWindow: make(chan time.Duration, 1), saveWindow: make(chan time.Duration, 1),
-		loadDelay: 6 * time.Second}
+		loadDelay: 3 * time.Second}
 	r.cfg.Store = probe
 	gitOut(t, work, "commit", "--allow-empty", "-m", "the run's work")
 	head := gitOut(t, work, "rev-parse", "HEAD")
@@ -1319,14 +1321,16 @@ func TestStorageBankSaveGetsItsOwnWindow(t *testing.T) {
 	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != head {
 		t.Fatalf("nominal bank broken: %q (present=%v)", got, ok)
 	}
-	if run := loadRun(t, r, msg.RunID); run.FinalBranch == "" {
-		t.Fatal("the doc pair was not recorded")
+	// Read through the UNDECORATED store: the delayed probe would charge
+	// the test a second loadDelay for its own assertion.
+	if run, err := probe.RunStore.LoadRun(store.WithIdentity(context.Background(), msg.TenantID, ""), msg.RunID); err != nil || run.FinalBranch == "" {
+		t.Fatalf("the doc pair was not recorded (err=%v)", err)
 	}
 	<-probe.loadWindow
 	select {
 	case w := <-probe.saveWindow:
-		if w < bankDocOpTimeout-3*time.Second {
-			t.Errorf("save window = %s after a 6s load — the save inherited only what the load left; each doc op must ride its own bound", w)
+		if w < bankDocOpTimeout-1500*time.Millisecond {
+			t.Errorf("save window = %s after a 3s load — the save inherited only what the load left; each doc op must ride its own bound", w)
 		}
 	default:
 		t.Fatal("the bank never saved the doc")
@@ -1433,4 +1437,52 @@ func TestParkDocReadBoundIsTight(t *testing.T) {
 	default:
 		t.Fatal("the park never re-read the doc")
 	}
+}
+
+// A dead push must be NAMED on every post-push doc-I/O exit: without
+// push_error the event is key-for-key identical to the push-succeeded
+// shape, and once the doc write meant to carry FinalBranchError has
+// died too, push_error is the cause's only durable carrier.
+func TestStorageBankDeadPushExitsNameThePushError(t *testing.T) {
+	deadRemote := func(t *testing.T, work string) {
+		t.Helper()
+		gitOut(t, work, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote.git"))
+	}
+	t.Run("dead push x dead save", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		probe := &parkIOProbeStore{RunStore: r.cfg.Store, saveErr: errors.New("store down")}
+		r.cfg.Store = probe
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "finished")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v claims {branch, head} with no push_error — indistinguishable from a pushed branch, and the push failure has no durable carrier left", ev.Data)
+		}
+	})
+	t.Run("dead push x cancelled doc", func(t *testing.T) {
+		r, msg, work, _, base := bankFixture(t)
+		run := loadRun(t, r, msg.RunID)
+		run.Status = store.RunStatusCancelled
+		if err := r.cfg.Store.SaveRun(store.WithIdentity(context.Background(), msg.TenantID, ""), run); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, work, "commit", "--allow-empty", "-m", "work")
+		deadRemote(t, work)
+
+		r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "failed")
+
+		ev := findEvent(t, r, msg.RunID, store.EventRunBankRefused)
+		if ev == nil {
+			t.Fatal("no event at all")
+		}
+		if pe, _ := ev.Data["push_error"].(string); pe == "" {
+			t.Fatalf("event %v hides the dead push behind cancelled_while_banking", ev.Data)
+		}
+	})
 }

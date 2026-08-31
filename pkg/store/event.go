@@ -167,7 +167,10 @@ const (
 	//     bank's doc I/O died or was refused AFTER the side effect — the
 	//     branch may sit on the forge with the doc naming nothing, or an
 	//     integrity refusal may have lost its FinalBranchError write; the
-	//     event is then the only durable carrier of what happened
+	//     event is then the only durable carrier of what happened. On
+	//     these shapes head sits on the forge ONLY when push_error is
+	//     absent — a present push_error is the explicit marker that the
+	//     head never reached it
 	EventRunBankRefused EventType = "run_bank_refused"
 	// EventRunBankSuperseded marks a finished outcome force-taking the
 	// storage branch from an earlier dead attempt whose banked chain the
@@ -199,7 +202,8 @@ const (
 	// FinalBranchError — so this event is the ONLY durable record that
 	// the ref exists (or why it could not be pushed). Data:
 	//   - ref / head: the parked ref and the commit it holds — the
-	//     success shape
+	//     success shape (head also rides the doc-cancelled skip, naming
+	//     the commit that was NOT parked)
 	//   - cause: which outcome parked it (interrupted, paused,
 	//     paused_operator, or the lease-loss death)
 	//   - error: why the head could not be resolved or pushed (the work
