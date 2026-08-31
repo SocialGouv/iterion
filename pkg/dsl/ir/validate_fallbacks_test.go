@@ -397,3 +397,50 @@ func TestGatedExternalHookFallbackWarnsAboutSandbox(t *testing.T) {
 		t.Fatalf("expected C136 for a gated fallback route to kimi: %+v", cr.Diagnostics)
 	}
 }
+
+// TestSandboxedClawAskCapablePolicyWarns: claw enforces the gate inside the
+// sandbox runner (pre-task policy envelope), EXCEPT an Ask decision — no seam
+// pauses the parent run from inside the container. A policy that can produce
+// one must warn at compile time (warning, not error: --sandbox none and
+// ITERION_SANDBOX_DEFAULT=none make the run legal without the workflow
+// saying anything).
+func TestSandboxedClawAskCapablePolicyWarns(t *testing.T) {
+	cases := map[string]string{
+		"mode ask, claw primary": "agent x:\n  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  system: p\n  permission: ask\n  tools: [read_file]\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+		"mode deny + ask rule, claw fallback": "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
+			"  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"openai/gpt-5.5\"\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  ask: [\"Bash(git push:*)\"]\n  x -> done\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			cr := compileFallbackSrc(t, src)
+			if !hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("expected C136 for an ask-capable policy on a sandboxed claw route: %+v", cr.Diagnostics)
+			}
+			if cr.HasErrors() {
+				t.Errorf("C136 must WARN, not reject: the run may be launched unsandboxed")
+			}
+		})
+	}
+}
+
+// TestSandboxedClawDenyPolicySilent: a deny policy with no ask rules is
+// enforceable inside the sandbox runner — no C136.
+func TestSandboxedClawDenyPolicySilent(t *testing.T) {
+	cases := map[string]string{
+		"claw primary": "agent x:\n  backend: \"claw\"\n  model: \"anthropic/claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [read_file]\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+		"claw fallback": "agent x:\n  backend: \"claude_code\"\n  model: \"claude-opus-5\"\n  system: p\n  permission: deny\n  tools: [web_fetch]\n" +
+			"  fallbacks:\n    api:\n      backend: \"claw\"\n      model: \"openai/gpt-5.5\"\n" +
+			"\nprompt p:\n  hi\n\nworkflow w:\n  entry: x\n  x -> done\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			cr := compileFallbackSrc(t, src)
+			if hasDiag(cr.Diagnostics, DiagGatedCLIBackendSandbox) {
+				t.Fatalf("C136 fired for a deny-only policy claw can enforce sandboxed: %+v", cr.Diagnostics)
+			}
+		})
+	}
+}

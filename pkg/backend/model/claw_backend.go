@@ -235,22 +235,19 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	}
 
 	if task.Sandbox != nil {
-		// The permission gate does NOT survive the sandbox IPC boundary:
-		// delegate.IOTask carries no Permission field, so the
-		// in-container `iterion __claw-runner` rebuilds a task whose
-		// policy is disabled and runs bash / file_edit / write_file
-		// ungated. Refusing is the only honest option — pi already
-		// treats the same combination as fail-not-degrade rather than
-		// running a gated node with an inert gate, and a boundary the
-		// author declared must not silently not exist.
-		//
-		// This is a pre-existing hole (sandbox is on by default), not
-		// one the fallback chain introduced; the chain merely adds
-		// another way to reach it. Closing it properly means carrying
-		// the policy on IOTask — a named follow-on.
-		if task.Permission.Enabled() {
+		// The permission gate crosses the sandbox IPC boundary as a
+		// pre-task permission_policy envelope: the in-container
+		// `iterion __claw-runner` rebuilds the policy through the same
+		// parser and enforces it in its own tool loop (see
+		// executeViaSandboxRunner). What CANNOT cross is an Ask
+		// decision — the runner has no seam to pause the parent run for
+		// a human — so a policy that can ever produce one (mode ask, or
+		// any explicit ask rule, which outranks mode deny) is refused
+		// loudly rather than silently degraded to deny; pi treats the
+		// same combination as fail-not-degrade.
+		if task.Permission.CanAsk() {
 			return delegate.Result{}, fmt.Errorf(
-				"claw backend: node %q declares permission: %s but runs sandboxed, where the gate cannot be enforced (the IPC task carries no policy) — run this node unsandboxed, or route it to claude_code/pi",
+				"claw backend: node %q declares a permission policy that can produce an Ask decision (mode %s), which a sandboxed runner cannot pause for — drop the ask rules / use deny, run this node unsandboxed, or route it to claude_code",
 				task.NodeID, task.Permission.Mode)
 		}
 		return b.executeViaSandboxRunner(ctx, task)
@@ -955,6 +952,25 @@ func (b *ClawBackend) executeViaSandboxRunner(ctx context.Context, task delegate
 				_ = cmd.Wait()
 				return delegate.Result{}, fmt.Errorf("claw backend: send session_replay: %w", err)
 			}
+		}
+	}
+
+	// A gated node ships its policy BEFORE the task envelope. The
+	// position is the fail-closed guarantee on a mixed-version fleet: a
+	// runner binary too old to know the type fatals on "unexpected
+	// envelope before task" instead of executing the node with an empty
+	// policy. Execute() already refused any policy that can Ask.
+	if task.Permission.Enabled() {
+		permEnv, err := delegate.NewPermissionPolicyEnvelope(task.Permission.Config())
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: build permission_policy envelope: %w", err)
+		}
+		if err := mux.Send(permEnv); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return delegate.Result{}, fmt.Errorf("claw backend: send permission_policy: %w", err)
 		}
 	}
 
