@@ -109,10 +109,17 @@ Semantics that stay put:
   EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
   `db+env`) — curl it after a change and watch the new number appear within
   the propagation bound. This is also the FIRST diagnostic for "a scheduled
-  bot posted nothing this morning": every LLM-bearing run failing
-  `rate_limited … usage cap` while zero-LLM runs (collectors) pass is the
-  cap's signature, and `/healthz` names the ceiling in one curl — measured
-  on the 2026-08-31 Vigie outage, where a 70% DB record was the whole story.
+  bot posted nothing this morning": every LLM-bearing run failing on
+  `usage cap: <window> at N% ≥ M%` while zero-LLM runs (collectors) pass is
+  the cap's signature, and `/healthz` names the ceiling in one curl. Grep
+  the `usage cap:` substring, NOT `rate_limited`: a workflow whose every
+  path reaches a model is refused before its first node by the runner
+  pre-flight and carries the bare reason (no `rate_limited` prefix, no node
+  id), while a workflow with a model-free path is let through and stops
+  mid-run with `rate_limited (<backend>): usage cap: …`. Measured on the
+  2026-08-31 Vigie outage, where a 70% DB record was the whole story — and
+  where the morning's first signal, the 04:00 docs-refresh run, was the
+  pre-flight shape.
 - **Settings reads fail toward the last-known value** (env defaults before
   the first successful read), retried once per TTL window: a settings-store
   blip changes nothing abruptly in either direction.

@@ -22,9 +22,10 @@ there, not in the bot.
 Remediation: cap raised to 90 (runtime PUT, ≤30s), the five runs resumed
 **one by one** (each restarts at `synthesize`; the pending queue is
 checkpointed) — all five delivered to Mattermost within the hour (2 sinks
-each, no partials). The Friday cyber digest parked at the older 95% cap was
-**cancelled, not resumed**: its content had shipped in Saturday/Sunday's
-digests and a resume would have double-posted.
+each, no partials). The Saturday cyber digest (run `01a04c1a`, parked at the
+older 95% cap) was **cancelled, not resumed**: its queue had already been
+drained by Sunday's digest (`01a05140`, 41 items) and Monday's, so a resume
+would have double-posted.
 
 ### Two real defects found on the way
 
@@ -34,8 +35,11 @@ digests and a resume would have double-posted.
   overflow purged unpublished. Surfaced by the cross-family plan review,
   confirmed by reading; `snapshot_ids` is now built after the cut and the
   overflow stays queued. (Operational guard while the fix rolls out: check
-  `overflow_count` in a parked run's `load_pending` artifact before
-  resuming it.)
+  `overflow_count` in a parked run's `load_pending` output — the run's
+  checkpoint (`iterion remote api GET /api/runs/<id>` →
+  `.run.checkpoint.outputs.load_pending.overflow_count`) or its
+  `node_finished` event; the cloud `/api/runs/{id}/artifacts` surface
+  comes back empty for these runs — before resuming it.)
 - **The codex forfait was dead on the platform, silently.** A one-node
   claw+`openai/gpt-5.5` probe 401'd ("token invalidated") from the pod while
   the same session worked locally. Root causes, in order of discovery: the
