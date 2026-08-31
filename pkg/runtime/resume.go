@@ -474,9 +474,6 @@ func (e *Engine) seedRepoRootForResume(r *store.Run) {
 func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
-	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
-		return nil, nil, err
-	}
 
 	// Clone (not alias) the counter maps: the engine mutates them in place
 	// during the resumed run, so aliasing r.Checkpoint's maps would race a

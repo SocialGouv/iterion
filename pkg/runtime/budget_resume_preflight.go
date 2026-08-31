@@ -36,6 +36,13 @@ func (e *Engine) failSpentBudgetBeforeResume(ctx context.Context, r *store.Run) 
 
 	checks := b.Check()
 	if exc := findExceeded(checks); exc != nil {
+		// A run already inside its bounded exit allowance must take the same
+		// path as an uninterrupted run. Let resume rebuild its state and reach
+		// checkBudgetBeforeExec, which grants and audits the grace while the
+		// loop guard prevents another iteration from starting.
+		if _, ok := e.withinSharedBudgetGrace(b); ok {
+			return nil
+		}
 		return e.finalizeSpentBudgetBeforeResume(ctx, r, exc, false)
 	}
 	// The in-run pre-exec gate refuses a new node at 90% to reserve room for

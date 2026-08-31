@@ -80,6 +80,18 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	if rs == nil || rs.budget == nil {
 		return "", false
 	}
+	return e.withinSharedBudgetGrace(rs.budget)
+}
+
+// withinSharedBudgetGrace is the policy predicate shared by the normal
+// pre-exec gate and the failed-resume preflight. The latter deliberately
+// returns without finalizing when this is true so the rebuilt run reaches
+// checkBudgetBeforeExec, which emits the ordinary grace events and keeps the
+// same bounded forward-only behavior as an uninterrupted run.
+func (e *Engine) withinSharedBudgetGrace(b *SharedBudget) (dimension string, ok bool) {
+	if e == nil || b == nil {
+		return "", false
+	}
 	// The "no further ITERATION can start" half of the safety argument
 	// is the loop guard's, not the grace's — and that guard is an
 	// operator escape hatch (`loop_budget_guard: off`,
@@ -92,14 +104,14 @@ func (e *Engine) withinBudgetGrace(rs *runState) (dimension string, ok bool) {
 	// An externally-imposed cap (platform ceiling, pool donor allowance —
 	// ir.Budget.CapImposed) is an absolute promise to a third party: no
 	// grace, the declared figure IS the wall.
-	if rs.budget.capIsImposed() {
+	if b.capIsImposed() {
 		return "", false
 	}
 	ratio := budgetExitGraceRatio()
 	if ratio <= 0 {
 		return "", false
 	}
-	return rs.budget.exitGraceRoom(ratio)
+	return b.exitGraceRoom(ratio)
 }
 
 // GracedRemainingDuration is the wall-clock room left before the GRACED

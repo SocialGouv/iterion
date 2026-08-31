@@ -11,11 +11,82 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+type queueOutageTestPublisher struct {
+	err error
+}
+
+func (p *queueOutageTestPublisher) SubmitLaunch(context.Context, string, runview.LaunchSpec, *ir.Workflow, string) (int, error) {
+	return 0, p.err
+}
+
+func (*queueOutageTestPublisher) CancelRun(context.Context, string) error { return nil }
+
+func (*queueOutageTestPublisher) CancelRunWithReason(context.Context, string, string) error {
+	return nil
+}
+
+func (p *queueOutageTestPublisher) SubmitResume(context.Context, runview.ResumeSpec, *ir.Workflow, string) error {
+	return p.err
+}
+
+func installQueueOutageTestPublisher(t *testing.T, srv *Server, publishErr error) {
+	t.Helper()
+	svc, err := runview.NewService(srv.cfg.StoreDir,
+		runview.WithLogger(iterlog.Nop()),
+		runview.WithLaunchPublisher(&queueOutageTestPublisher{err: publishErr}),
+	)
+	if err != nil {
+		t.Fatalf("NewService with queue outage publisher: %v", err)
+	}
+	srv.runs = svc
+}
+
+func newQueueOutageHTTPTestServer(t *testing.T) *Server {
+	t.Helper()
+	workDir := t.TempDir()
+	srv := New(Config{
+		WorkDir:                 workDir,
+		StoreDir:                filepath.Join(workDir, ".iterion"),
+		SkipProjectRegistration: true,
+	}, iterlog.Nop())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv
+}
+
+func assertQueueUnavailableResponse(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	var body struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Retryable bool   `json:"retryable"`
+	}
+	decodeJSONResp(t, resp, &body)
+	if body.ErrorCode != runview.QueueUnavailableErrorCode {
+		t.Errorf("error_code = %q, want %q", body.ErrorCode, runview.QueueUnavailableErrorCode)
+	}
+	if !body.Retryable {
+		t.Error("retryable = false, want true")
+	}
+	if body.Error == "" {
+		t.Error("human-readable error should remain populated")
+	}
+}
 
 func TestWriteResumeError_SourceChangedCarriesStableCode(t *testing.T) {
 	tests := []struct {
@@ -97,6 +168,82 @@ func TestWriteResumeError_QueueUnavailableIsRetryableServiceUnavailable(t *testi
 	if !body.Retryable {
 		t.Error("retryable = false, want true")
 	}
+}
+
+func TestQueueUnavailableLaunchAndResumeReturnRetryableServiceUnavailable(t *testing.T) {
+	const source = "workflow queue_outage:\n  entry: done\n"
+
+	t.Run("launch", func(t *testing.T) {
+		srv := newQueueOutageHTTPTestServer(t)
+		queueErr := &runview.QueueUnavailableError{Cause: errors.New("broker recovering")}
+		// SubmitLaunch wraps the queue error in production, and may join it
+		// with a failed status rollback. Keep that outer shape in the proof.
+		installQueueOutageTestPublisher(t, srv, errors.Join(
+			fmt.Errorf("cloudpublisher: publish: %w", queueErr),
+			errors.New("status rollback also failed"),
+		))
+		body, err := json.Marshal(map[string]any{
+			"file_path": "queue_outage.bot",
+			"source":    source,
+			"run_id":    "run-queue-outage-launch",
+		})
+		if err != nil {
+			t.Fatalf("marshal launch request: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/runs", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.handleLaunchRun(rec, req)
+		assertQueueUnavailableResponse(t, rec.Result())
+	})
+
+	t.Run("resume", func(t *testing.T) {
+		srv := newQueueOutageHTTPTestServer(t)
+		queueErr := &runview.QueueUnavailableError{Cause: errors.New("broker recovering")}
+		installQueueOutageTestPublisher(t, srv, fmt.Errorf("cloudpublisher: republish: %w", queueErr))
+
+		logicalPath := filepath.Join(srv.cfg.WorkDir, "queue_outage.bot")
+		_, workflowHash, err := runview.CompileWorkflowFromSource(logicalPath, source)
+		if err != nil {
+			t.Fatalf("compile workflow: %v", err)
+		}
+		st, err := store.New(srv.cfg.StoreDir)
+		if err != nil {
+			t.Fatalf("open run store: %v", err)
+		}
+		const runID = "run-queue-outage-resume"
+		if _, err := st.CreateRun(context.Background(), runID, "queue_outage", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		r, err := st.LoadRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		r.FilePath = logicalPath
+		r.WorkflowSource = source
+		r.WorkflowHash = workflowHash
+		r.Status = store.RunStatusPausedOperator
+		if err := st.SaveRun(context.Background(), r); err != nil {
+			t.Fatalf("SaveRun: %v", err)
+		}
+		if err := st.SaveCheckpoint(context.Background(), runID, &store.Checkpoint{NodeID: "done"}); err != nil {
+			t.Fatalf("SaveCheckpoint: %v", err)
+		}
+
+		body, err := json.Marshal(map[string]any{
+			"file_path": logicalPath,
+			"source":    source,
+		})
+		if err != nil {
+			t.Fatalf("marshal resume request: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/runs/"+runID+"/resume", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", runID)
+		rec := httptest.NewRecorder()
+		srv.handleResumeRun(rec, req)
+		assertQueueUnavailableResponse(t, rec.Result())
+	})
 }
 
 func TestResumeRun_SourceChangedReturnsStableCodeBeforeAsyncLaunch(t *testing.T) {

@@ -62,3 +62,34 @@ func TestPublishWithRetryPersistentFailureReturnsQueueUnavailable(t *testing.T) 
 		t.Fatalf("publish calls = %d, want 4", calls)
 	}
 }
+
+func TestPublishWithRetrySlowSuccessfulAck(t *testing.T) {
+	var calls int
+	p := &Publisher{
+		logger:             iterlog.Nop(),
+		publishRetryDelays: []time.Duration{},
+		publishRun: func(ctx context.Context, _ *queue.RunMessage) error {
+			calls++
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+
+	started := time.Now()
+	err := p.publish(context.Background(), &queue.RunMessage{RunID: "run-slow-ack"})
+	if err != nil {
+		t.Fatalf("publish with a 3s successful acknowledgement: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls = %d, want 1", calls)
+	}
+	if elapsed := time.Since(started); elapsed < 3*time.Second {
+		t.Errorf("publish returned after %s, want it to wait for the successful acknowledgement", elapsed)
+	}
+}

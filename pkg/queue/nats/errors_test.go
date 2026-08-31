@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -24,6 +25,11 @@ func TestIsTransientPublishError(t *testing.T) {
 		{name: "legacy stream unavailable", err: natsgo.ErrNoStreamResponse, want: true},
 		{name: "stream unavailable", err: jetstream.ErrNoStreamResponse, want: true},
 		{name: "wrapped transient", err: errors.Join(errors.New("publish failed"), jetstream.ErrConnectionClosed), want: true},
+		{name: "api cluster temporarily unavailable", err: fmt.Errorf("publish failed: %w", &jetstream.APIError{Code: 503, ErrorCode: jetstream.ErrorCode(10008)}), want: true},
+		{name: "api insufficient resources", err: fmt.Errorf("publish failed: %w", &jetstream.APIError{Code: 503, ErrorCode: jetstream.ErrorCode(10023)}), want: true},
+		{name: "api cluster peer not member", err: fmt.Errorf("publish failed: %w", &jetstream.APIError{Code: 503, ErrorCode: jetstream.ErrorCode(10040)}), want: true},
+		{name: "api stream not found", err: fmt.Errorf("publish failed: %w", &jetstream.APIError{Code: 404, ErrorCode: jetstream.ErrorCode(10059)}), want: false},
+		{name: "api bad request", err: fmt.Errorf("publish failed: %w", &jetstream.APIError{Code: 400, ErrorCode: jetstream.ErrorCode(10003)}), want: false},
 		{name: "payload refusal", err: errors.New("maximum payload exceeded"), want: false},
 		{name: "caller cancellation", err: context.Canceled, want: false},
 	}

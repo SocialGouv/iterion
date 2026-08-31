@@ -489,6 +489,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "usage cap reached")
 			return
 		}
+		if s.writeQueueOutageError(w, r, "launch", err) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "queue unavailable")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusBadRequest, "launch: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "launch failed")
@@ -664,13 +669,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 // writeResumeError preserves the normal human-readable error response and
 // adds a stable code for the one resume failure the studio must act on.
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
-	var queueErr *runview.QueueUnavailableError
-	if errors.As(err, &queueErr) {
-		s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
-			"error":      fmt.Sprintf("resume: %v", queueErr),
-			"error_code": queueErr.Code(),
-			"retryable":  queueErr.Retryable(),
-		})
+	if s.writeQueueOutageError(w, r, "resume", err) {
 		return
 	}
 	if runtime.IsWorkflowSourceChanged(err) {
@@ -681,6 +680,23 @@ func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err er
 		return
 	}
 	s.httpErrorFor(w, r, http.StatusBadRequest, "resume: %v", err)
+}
+
+// writeQueueOutageError is shared by launch and both resume error sites
+// (upload preflight and publication). errors.As deliberately handles the
+// wrapping and errors.Join shapes produced when queue publication and the
+// compensating run-status update both fail.
+func (s *Server) writeQueueOutageError(w http.ResponseWriter, r *http.Request, operation string, err error) bool {
+	var queueErr *runview.QueueUnavailableError
+	if !errors.As(err, &queueErr) {
+		return false
+	}
+	s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
+		"error":      fmt.Sprintf("%s: %v", operation, queueErr),
+		"error_code": queueErr.Code(),
+		"retryable":  queueErr.Retryable(),
+	})
+	return true
 }
 
 // parseTimeout accepts an empty string (no timeout) or a Go duration

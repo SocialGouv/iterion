@@ -1302,10 +1302,7 @@ func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
 	return p.publishWithRetry(ctx, msg)
 }
 
-const (
-	publishRetryWindow  = 10 * time.Second
-	publishAttemptLimit = 2 * time.Second
-)
+const publishRetryWindow = 10 * time.Second
 
 var defaultPublishRetryDelays = []time.Duration{
 	250 * time.Millisecond,
@@ -1327,9 +1324,11 @@ func (p *Publisher) publishWithRetry(ctx context.Context, msg *queue.RunMessage)
 	attempts := len(delays) + 1
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		attemptCtx, attemptCancel := context.WithTimeout(retryCtx, publishAttemptLimit)
-		lastErr = p.publishOnce(attemptCtx, msg)
-		attemptCancel()
+		// PublishRun owns its 5s acknowledgement deadline. Do not impose a
+		// shorter outer attempt timeout: cancelling only the ack wait after the
+		// broker accepted the message can turn a successful publish into retries
+		// and finally a false QUEUE_UNAVAILABLE response.
+		lastErr = p.publishOnce(retryCtx, msg)
 		if lastErr == nil {
 			return nil
 		}
