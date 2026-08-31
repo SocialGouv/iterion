@@ -569,17 +569,23 @@ CLI contract that structurally cannot return an error, so no typed
 trigger can fire for them; Codex is not included in the v1 fallback lane. A sandboxed `claw` route
 works — the trigger comes from the failing route, which `claude_code`
 types correctly — but its own failure is always unclassifiable, and it
-**cannot serve a node with `permission: ask|deny`**.
+**cannot serve a node whose permission policy can produce an Ask
+decision** (mode `ask`, or any explicit `ask:` rule — which outranks
+mode `deny`).
 
-> ⚠️ **Sandboxed `claw` cannot enforce the permission gate**, chain or no
-> chain. The IPC task the in-container `iterion __claw-runner` rebuilds
-> carries no policy, so `bash` / `file_edit` / `write_file` run ungated.
-> Since sandbox is on by default, a `permission:`-declaring claw node has
-> silently had no gate. That combination now **fails loudly at dispatch**
-> rather than running with an inert boundary — the same fail-not-degrade
-> posture `pi` already takes. Run the node unsandboxed, or route it to
-> `claude_code`/`pi`. Carrying the policy across the IPC boundary is a
-> named follow-on.
+> **Sandboxed `claw` enforces the permission gate for deny-shaped
+> policies.** The policy crosses the IPC as a pre-task
+> `permission_policy` envelope (`permission.PolicyConfig`, re-parsed
+> in-container by the same parser), and the `__claw-runner`'s own tool
+> loop applies it before every tool — local builtins and proxied tools
+> alike. The pre-task position is the mixed-fleet guarantee: a runner
+> binary too old to know the envelope fatals on "unexpected envelope
+> before task" instead of running the gated node with an empty policy,
+> so the combination fails CLOSED, never open. What cannot cross is an
+> **Ask decision** — nothing inside the container can pause the parent
+> run — so an ask-capable policy is refused loudly at dispatch (and
+> C136 warns at compile time). Run such a node unsandboxed, or route it
+> to `claude_code`.
 
 ## Transient-error & network resilience
 
