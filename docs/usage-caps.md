@@ -108,7 +108,11 @@ Semantics that stay put:
 - **Verification without DB access.** `/healthz` (and `/readyz`) echo the
   EFFECTIVE policy plus a `usage_cap_source` marker (`env`, `db` or
   `db+env`) — curl it after a change and watch the new number appear within
-  the propagation bound.
+  the propagation bound. This is also the FIRST diagnostic for "a scheduled
+  bot posted nothing this morning": every LLM-bearing run failing
+  `rate_limited … usage cap` while zero-LLM runs (collectors) pass is the
+  cap's signature, and `/healthz` names the ceiling in one curl — measured
+  on the 2026-08-31 Vigie outage, where a 70% DB record was the whole story.
 - **Settings reads fail toward the last-known value** (env defaults before
   the first successful read), retried once per TTL window: a settings-store
   blip changes nothing abruptly in either direction.
