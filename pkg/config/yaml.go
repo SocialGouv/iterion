@@ -99,10 +99,11 @@ type yamlOAuthForfaitConfig struct {
 }
 
 type yamlNATSConfig struct {
-	URL       *string `yaml:"url"`
-	Stream    *string `yaml:"stream"`
-	KVBucket  *string `yaml:"kv_bucket"`
-	DLQStream *string `yaml:"dlq_stream"`
+	URL            *string `yaml:"url"`
+	Stream         *string `yaml:"stream"`
+	KVBucket       *string `yaml:"kv_bucket"`
+	DLQStream      *string `yaml:"dlq_stream"`
+	StreamReplicas *int    `yaml:"stream_replicas"`
 
 	MaxAckPending *int    `yaml:"max_ack_pending"`
 	AckWait       *string `yaml:"ack_wait"`
@@ -160,6 +161,7 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 		applyString(y.NATS.Stream, &cfg.NATS.Stream)
 		applyString(y.NATS.KVBucket, &cfg.NATS.KVBucket)
 		applyString(y.NATS.DLQStream, &cfg.NATS.DLQStream)
+		applyInt(y.NATS.StreamReplicas, &cfg.NATS.StreamReplicas)
 		applyInt(y.NATS.MaxAckPending, &cfg.NATS.MaxAckPending)
 		applyInt(y.NATS.MaxDeliver, &cfg.NATS.MaxDeliver)
 		applyInt(y.NATS.MaxPayload, &cfg.NATS.MaxPayload)

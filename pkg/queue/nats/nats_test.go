@@ -9,7 +9,23 @@ import (
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+type recordingSchemaManager struct {
+	streams []jetstream.StreamConfig
+	kvs     []jetstream.KeyValueConfig
+}
+
+func (r *recordingSchemaManager) CreateOrUpdateStream(_ context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+	r.streams = append(r.streams, cfg)
+	return nil, nil
+}
+
+func (r *recordingSchemaManager) CreateOrUpdateKeyValue(_ context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	r.kvs = append(r.kvs, cfg)
+	return nil, nil
+}
 
 // NOTE on coverage scope. The bulk of pkg/queue/nats wraps the NATS
 // client + JetStream + KV; meaningful coverage of Connect, EnsureSchema,
@@ -33,6 +49,9 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	}
 	if got.KVBucket != KVRunLocks {
 		t.Errorf("KVBucket: got %q want %q", got.KVBucket, KVRunLocks)
+	}
+	if got.StreamReplicas != DefaultStreamReplicas {
+		t.Errorf("StreamReplicas: got %d want %d", got.StreamReplicas, DefaultStreamReplicas)
 	}
 	if got.ConsumerName != ConsumerRunners {
 		t.Errorf("ConsumerName: got %q want %q", got.ConsumerName, ConsumerRunners)
@@ -72,6 +91,7 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		StreamName:          "X",
 		DLQStream:           "Y",
 		KVBucket:            "Z",
+		StreamReplicas:      3,
 		ConsumerName:        "C",
 		MaxAge:              1 * time.Hour,
 		DLQMaxAge:           2 * time.Hour,
@@ -85,6 +105,43 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	got := applyDefaults(in)
 	if got != in {
 		t.Errorf("explicit fields should be preserved verbatim; got %+v want %+v", got, in)
+	}
+}
+
+func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
+	recorder := &recordingSchemaManager{}
+	cfg := applyDefaults(Config{StreamReplicas: 3})
+	if _, err := ensureSchema(context.Background(), recorder, cfg); err != nil {
+		t.Fatalf("ensureSchema: %v", err)
+	}
+	if len(recorder.streams) != 2 {
+		t.Fatalf("stream configs: got %d want 2", len(recorder.streams))
+	}
+	wantStreams := map[string]bool{StreamRuns: true, StreamRunsDLQ: true}
+	for _, stream := range recorder.streams {
+		if !wantStreams[stream.Name] {
+			t.Errorf("unexpected stream config %q", stream.Name)
+		}
+		delete(wantStreams, stream.Name)
+		if stream.Replicas != 3 {
+			t.Errorf("stream %s replicas: got %d want 3", stream.Name, stream.Replicas)
+		}
+	}
+	if len(wantStreams) != 0 {
+		t.Errorf("missing stream configs: %v", wantStreams)
+	}
+	if len(recorder.kvs) != 1 {
+		t.Fatalf("KV configs: got %d want 1", len(recorder.kvs))
+	}
+	if got := recorder.kvs[0].Replicas; got != 3 {
+		t.Errorf("KV replicas: got %d want 3", got)
+	}
+}
+
+func TestConnect_RejectsInvalidStreamReplicas(t *testing.T) {
+	_, err := Connect(context.Background(), Config{URL: "nats://127.0.0.1:4222", StreamReplicas: -1})
+	if err == nil || !strings.Contains(err.Error(), "stream replicas -1 invalid") {
+		t.Fatalf("Connect error = %v, want invalid stream replicas", err)
 	}
 }
 
