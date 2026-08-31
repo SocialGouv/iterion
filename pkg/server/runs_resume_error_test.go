@@ -74,6 +74,31 @@ func TestWriteResumeError_UnrelatedFailureHasNoSourceChangedCode(t *testing.T) {
 	}
 }
 
+func TestWriteResumeError_QueueUnavailableIsRetryableServiceUnavailable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/r1/resume", nil)
+
+	(&Server{}).writeResumeError(rec, req, &runview.QueueUnavailableError{Cause: errors.New("broker unavailable")})
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	var body struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response %q: %v", rec.Body.String(), err)
+	}
+	if body.ErrorCode != runview.QueueUnavailableErrorCode {
+		t.Errorf("error_code = %q, want %q", body.ErrorCode, runview.QueueUnavailableErrorCode)
+	}
+	if !body.Retryable {
+		t.Error("retryable = false, want true")
+	}
+}
+
 func TestResumeRun_SourceChangedReturnsStableCodeBeforeAsyncLaunch(t *testing.T) {
 	t.Setenv("ITERION_RUNS_DETACHED", "0")
 	srv, httpServer := newTestServer(t)

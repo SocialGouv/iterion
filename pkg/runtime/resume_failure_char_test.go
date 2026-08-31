@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -600,5 +602,84 @@ func TestResumeFromFailure_BudgetSpendRestored(t *testing.T) {
 	r, _ := s.LoadRun(ctx, runID)
 	if r.Status != store.RunStatusFailedResumable {
 		t.Errorf("status = %s, want failed_resumable (raise the cap + resume)", r.Status)
+	}
+}
+
+// TestResumeFromFailure_ExhaustedDurationFinalizesBeforeSandbox pins the
+// redelivery guard: persisted active time that already exhausted the run's
+// duration budget must produce the ordinary resumable budget death before
+// the sandbox lifecycle is invoked.
+func TestResumeFromFailure_ExhaustedDurationFinalizesBeforeSandbox(t *testing.T) {
+	wf := charResumeWF()
+	wf.Budget = &ir.Budget{MaxDuration: "10m"}
+	// Make sandbox provisioning observable if the guard ever moves too late.
+	wf.Sandbox = &ir.SandboxSpec{Mode: "inline", Image: "must-not-be-provisioned.invalid/test:latest"}
+
+	s := tmpStore(t)
+	ctx := context.Background()
+	const runID = "run-char-duration-preflight"
+	if _, err := s.CreateRun(ctx, runID, "resume_char", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &store.Checkpoint{
+		NodeID:          "step_b",
+		Outputs:         map[string]map[string]any{"step_a": {"result": "ok"}},
+		BudgetElapsedNS: (11 * time.Minute).Nanoseconds(),
+	}
+	if err := s.FailRunResumable(ctx, runID, cp, "queue backend interrupted the prior attempt"); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+
+	var nodeCalls, sandboxStarts int
+	exec := newStubExecutor()
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
+		nodeCalls++
+		return map[string]any{"result": "unexpected"}, nil
+	})
+	err := New(wf, s, exec, WithSandboxRunObserver(func(sandbox.Run) {
+		sandboxStarts++
+	})).Resume(ctx, runID, nil)
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) || rtErr.Code != ErrCodeBudgetExceeded {
+		t.Fatalf("error = %v, want RuntimeError BUDGET_EXCEEDED", err)
+	}
+	if nodeCalls != 0 {
+		t.Errorf("restart node executed %d times, want 0", nodeCalls)
+	}
+	if sandboxStarts != 0 {
+		t.Errorf("sandbox provisioning invoked %d times, want 0", sandboxStarts)
+	}
+
+	r, loadErr := s.LoadRun(ctx, runID)
+	if loadErr != nil {
+		t.Fatalf("LoadRun: %v", loadErr)
+	}
+	if r.Status != store.RunStatusFailedResumable {
+		t.Errorf("status = %s, want failed_resumable", r.Status)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "step_b" {
+		t.Fatalf("checkpoint = %+v, want preserved at step_b", r.Checkpoint)
+	}
+
+	events, eventsErr := s.LoadEvents(ctx, runID)
+	if eventsErr != nil {
+		t.Fatalf("LoadEvents: %v", eventsErr)
+	}
+	var sawBudgetExceeded, sawBudgetRunFailed bool
+	for _, evt := range events {
+		switch evt.Type {
+		case store.EventBudgetExceeded:
+			sawBudgetExceeded = evt.Data["dimension"] == "duration"
+		case store.EventRunFailed:
+			if evt.Data["code"] == string(ErrCodeBudgetExceeded) {
+				sawBudgetRunFailed = true
+			}
+		case store.EventSandboxHostStateMounted, store.EventSandboxDevboxProvisioned,
+			store.EventSandboxStarted, store.EventNodeStarted:
+			t.Errorf("preflight emitted post-provision event %s: %+v", evt.Type, evt.Data)
+		}
+	}
+	if !sawBudgetExceeded || !sawBudgetRunFailed {
+		t.Errorf("events missing normal budget death: budget_exceeded=%v run_failed=%v", sawBudgetExceeded, sawBudgetRunFailed)
 	}
 }

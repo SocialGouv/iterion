@@ -664,6 +664,15 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 // writeResumeError preserves the normal human-readable error response and
 // adds a stable code for the one resume failure the studio must act on.
 func (s *Server) writeResumeError(w http.ResponseWriter, r *http.Request, err error) {
+	var queueErr *runview.QueueUnavailableError
+	if errors.As(err, &queueErr) {
+		s.writeJSONError(w, r, http.StatusServiceUnavailable, map[string]any{
+			"error":      fmt.Sprintf("resume: %v", queueErr),
+			"error_code": queueErr.Code(),
+			"retryable":  queueErr.Retryable(),
+		})
+		return
+	}
 	if runtime.IsWorkflowSourceChanged(err) {
 		s.writeJSONError(w, r, http.StatusBadRequest, map[string]any{
 			"error":      fmt.Sprintf("resume: %v", err),
