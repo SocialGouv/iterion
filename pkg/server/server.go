@@ -217,9 +217,12 @@ type Server struct {
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
 	// sweepDegraded brackets the orphan sweeper's degradation episode
-	// (edge-triggered Warn on entry, Info on recovery). Owned by the single
-	// sweeper goroutine; no lock.
-	sweepDegraded bool
+	// (edge-triggered Warn on entry, Info on recovery); sweepDegradedByScan
+	// records which stage opened it, because the two recover on different
+	// evidence (a clean scan vs a cleanly probed candidate). Owned by the
+	// single sweeper goroutine; no lock.
+	sweepDegraded       bool
+	sweepDegradedByScan bool
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →

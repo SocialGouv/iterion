@@ -258,3 +258,40 @@ func TestOpsDispatcher_SweepPaginatesPastAFullPage(t *testing.T) {
 		t.Fatalf("%d alerts, want 1 (the starved oldest run)", got)
 	}
 }
+
+
+// TestOpsDispatcher_LoserNeverCertifiesAPendingClaim pins the round-2 race:
+// replica A wins the episode claim and is mid-fan-out when replica B's offer
+// loses — B must NOT stamp the transition marker off A's PENDING claim,
+// because A may fail every sink and release; a stamped marker would make
+// every later sweep skip the released episode before Handle runs, silencing
+// a parked-no-retry alert forever.
+func TestOpsDispatcher_LoserNeverCertifiesAPendingClaim(t *testing.T) {
+	d, rs, _ := opsWorld(t)
+	sink := &failingSink{err: context.DeadlineExceeded}
+	d.Sinks = []alert.Sink{sink}
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "no automatic retry armed"
+	})
+	ev := trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil)
+
+	// Replica A: wins, all sinks fail, claim released (Unmark).
+	// Replica B (interleaved): loses while A's claim is still pending.
+	// Simulate B's offer between A's TryMark and A's Unmark by pre-claiming.
+	epWon, _ := d.Claims.TryMark(context.Background(), "ops|run:"+run.ID+":parked:0")
+	if !epWon {
+		t.Fatal("setup: could not pre-claim the episode")
+	}
+	_ = d.Handle(context.Background(), ev) // B: loses, must not stamp evKey
+	_ = d.Claims.Unmark(context.Background(), "ops|run:"+run.ID+":parked:0") // A fails → releases
+
+	// The sweep replays with a healthy channel: the alert MUST go out.
+	sink.err = nil
+	list := func(_ context.Context, _, _ time.Time, _ int) ([]usernotify.RunRef, error) {
+		return []usernotify.RunRef{{ID: run.ID, Status: string(run.Status), UpdatedAt: run.UpdatedAt}}, nil
+	}
+	d.SweepOnce(context.Background(), list)
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("%d alerts after release + healthy sweep, want 1 — the loser's stamp silenced the episode forever", got)
+	}
+}

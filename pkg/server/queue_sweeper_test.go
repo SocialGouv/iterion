@@ -147,6 +147,15 @@ func TestSweepOrphanRuns_DeadScanOpensTheEpisode(t *testing.T) {
 	if !s.sweepDegraded {
 		t.Fatal("a dead scan did not open the degradation episode")
 	}
+
+	// A SCAN episode closes on any pass whose scans return — an empty
+	// healthy minute IS positive evidence for the scan stage. Without this
+	// the flag latches forever (probed stays 0 on a healthy deployment)
+	// and the edge-triggered Warn goes mute for every LATER outage.
+	s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("a recovered scan + empty healthy pass did not close the episode — the next outage would be silent")
+	}
 }
 
 type failingLister struct{}

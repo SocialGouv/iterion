@@ -122,7 +122,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	// cannot distinguish from "nothing to do". Each failure increments the
 	// stage counter; the pass summary below is edge-triggered so the log
 	// carries one Warn per episode, not one per tick.
-	var scanErrs, leaseErrs, flipErrs, probed int
+	var scanErrs, leaseErrs, flipErrs, probed, scanned int
 	var lastErr error
 	countErr := func(stage string, err error) {
 		lastErr = err
@@ -148,6 +148,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 			}
 			continue
 		}
+		scanned++
 		for _, ref := range refs {
 			probed++
 			locked, err := leases.IsRunLocked(ctx, ref.ID)
@@ -188,10 +189,14 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 	// Edge-triggered episode summary. Per replica by design: there is no
 	// shared "definitive" instant on a lock-less sweeper, so each replica
 	// brackets its own episode and the aggregate lives in the counter.
-	// A pass that neither probed a candidate nor errored proves NOTHING —
-	// most minutes have no stale run at all — so it leaves the episode
-	// untouched instead of flapping "back to healthy" while the backend is
-	// still down.
+	//
+	// The CLOSE needs positive evidence about the stage that failed, or
+	// the flag either flaps or latches: a SCAN episode closes on any pass
+	// whose scans returned (most minutes list zero candidates — that IS a
+	// healthy scan), while a LEASE/FLIP episode closes only on a pass that
+	// re-probed a candidate cleanly (an empty pass says nothing about a
+	// broken NATS-KV). A latched flag would make every later outage
+	// silent: the Warn only fires on the healthy→degraded edge.
 	degraded := scanErrs+leaseErrs+flipErrs > 0
 	switch {
 	case degraded && !s.sweepDegraded:
@@ -199,11 +204,15 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 			s.logger.Warn("sweeper: orphan recovery degraded — %d scan failure(s), %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", scanErrs, leaseErrs, flipErrs, lastErr)
 		}
 		s.sweepDegraded = true
-	case !degraded && s.sweepDegraded && probed > 0:
-		if s.logger != nil {
-			s.logger.Info("sweeper: orphan recovery back to healthy")
+		s.sweepDegradedByScan = scanErrs > 0
+	case !degraded && s.sweepDegraded:
+		recovered := probed > 0 || (s.sweepDegradedByScan && scanned > 0)
+		if recovered {
+			if s.logger != nil {
+				s.logger.Info("sweeper: orphan recovery back to healthy")
+			}
+			s.sweepDegraded = false
 		}
-		s.sweepDegraded = false
 	}
 }
 

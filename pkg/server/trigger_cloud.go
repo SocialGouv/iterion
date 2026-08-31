@@ -141,11 +141,14 @@ type cloudBoardSource struct {
 	// would lose the event forever). Older than boardTailHoleGrace = a dead
 	// allocation (failed insert), franchissable. Single goroutine.
 	holes map[string]tailHole
-	// poisons tracks, per tenant, the event seq whose normalize/match keeps
-	// failing; past boardTailPoisonTicks the tail logs once at Error and
-	// skips it — a head-of-line poison event must not freeze the tenant's
-	// triggers forever. Single goroutine.
-	poisons map[string]tailPoison
+	// poisons tracks, per (tenant, seq), how often an event's normalize/
+	// match failed; past boardTailPoisonTicks the tail logs once at Error
+	// and skips it — a head-of-line poison event must not freeze the
+	// tenant's triggers forever. Keyed per SEQ (not per tenant): two
+	// adjacent poison events would otherwise reset each other's counter on
+	// every pass and freeze the tenant for good. Entries at or below the
+	// advanced cursor are pruned. Single goroutine.
+	poisons map[string]*tailPoison
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -236,9 +239,10 @@ type tailHole struct {
 }
 
 type tailPoison struct {
-	seq   int64
-	fails int
-	said  bool
+	tenant string
+	seq    int64
+	fails  int
+	said   bool
 }
 
 // drainTenant materializes one tenant's new board events. The ORDER is the
@@ -302,6 +306,7 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		}
 	}
 	last := events[len(events)-1].Seq
+	s.prunePoisons(tenant, last)
 	if _, err := st.AdvanceTriggerCursor(cursor, last); err != nil {
 		// The rows are durable; a failed advance only means re-materializing
 		// the same batch next tick, which the upsert collapses.
@@ -341,29 +346,40 @@ func (s *cloudBoardSource) trimAtYoungGap(tenant string, cursor int64, events []
 	return events
 }
 
-// poisoned counts consecutive failures on one event seq; past the threshold
-// it logs ONCE at Error and answers true (skip). Head-of-line poison must
-// not freeze every trigger behind it forever — but a skip is a deliberate,
-// loud loss, never a silent one.
+// poisoned counts failures per (tenant, seq); past the threshold it logs
+// ONCE at Error and answers true (skip) — and KEEPS answering true, so a
+// second poison event counting up cannot resurrect the first (that reset
+// froze a tenant with two adjacent poisons permanently). Head-of-line
+// poison must not freeze every trigger behind it forever — but a skip is a
+// deliberate, loud loss, never a silent one.
 func (s *cloudBoardSource) poisoned(tenant string, seq int64) bool {
 	if s.poisons == nil {
-		s.poisons = map[string]tailPoison{}
+		s.poisons = map[string]*tailPoison{}
 	}
-	p := s.poisons[tenant]
-	if p.seq != seq {
-		p = tailPoison{seq: seq}
+	key := fmt.Sprintf("%s|%d", tenant, seq)
+	p := s.poisons[key]
+	if p == nil {
+		p = &tailPoison{tenant: tenant, seq: seq}
+		s.poisons[key] = p
 	}
 	p.fails++
 	if p.fails < boardTailPoisonTicks {
-		s.poisons[tenant] = p
 		return false
 	}
 	if !p.said && s.logger != nil {
 		s.logger.Error("trigger: cloud board source: tenant %s: event seq %d unreadable after %d ticks — SKIPPING it; the triggers behind it resume, this one is lost (inspect board_events seq %d)", tenant, seq, p.fails, seq)
 		p.said = true
 	}
-	s.poisons[tenant] = p
 	return true
+}
+
+// prunePoisons drops counters the advanced cursor has passed.
+func (s *cloudBoardSource) prunePoisons(tenant string, cursor int64) {
+	for key, p := range s.poisons {
+		if p.tenant == tenant && p.seq <= cursor {
+			delete(s.poisons, key)
+		}
+	}
 }
 
 func (s *cloudBoardSource) warn(format string, args ...any) {

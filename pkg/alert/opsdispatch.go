@@ -97,9 +97,15 @@ func (d *OpsDispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 			return fmt.Errorf("alert: claim ops episode %s: %w", epKey, err)
 		}
 		if !won {
-			// The incident already alerted; stamp THIS transition's marker
-			// so the sweep pre-check skips the bumped row without a load.
-			d.stampSeen(ctx, evKey)
+			// Stamp this transition's marker ONLY when the incident is
+			// CONFIRMED delivered. A pending claim is a live fan-out that
+			// may still fail and Unmark — a loser certifying its evKey then
+			// would make every later sweep skip the released episode before
+			// Handle runs, silencing a parked-no-retry alert forever (the
+			// exact run this component exists to surface).
+			if delivered, derr := d.Claims.WasDelivered(ctx, epKey); derr == nil && delivered {
+				d.stampSeen(ctx, evKey)
+			}
 			return nil
 		}
 	}

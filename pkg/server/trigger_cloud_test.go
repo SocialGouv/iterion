@@ -184,3 +184,28 @@ func TestTrimAtYoungGap(t *testing.T) {
 		t.Fatalf("contiguous batch: kept %d, holes=%d", len(got), len(src.holes))
 	}
 }
+
+
+// TestDrainTenant_TwoPoisonEventsBothClear pins the per-seq poison counter:
+// two adjacent unreadable events must not reset each other's count (the
+// per-tenant single-slot version froze the tenant forever with an Error
+// line every ~60s — the opposite of its contract).
+func TestDrainTenant_TwoPoisonEventsBothClear(t *testing.T) {
+	src, st, _ := newDrainWorld(t)
+	st.getErr["card1"] = errors.New("decode: corrupt doc")
+	st.getErr["card2"] = errors.New("decode: corrupt doc")
+
+	for i := 0; i < 3*boardTailPoisonTicks; i++ {
+		_, _ = src.drainTenant("t1", st)
+		if st.advanced {
+			break
+		}
+	}
+	if !st.advanced || st.advanceTo != 2 {
+		t.Fatalf("two adjacent poison events froze the tenant: advanced=%v to=%d (threshold=%d, ticks=%d)",
+			st.advanced, st.advanceTo, boardTailPoisonTicks, 3*boardTailPoisonTicks)
+	}
+	if len(src.poisons) != 0 {
+		t.Fatalf("poison counters not pruned after the cursor passed them: %d entries", len(src.poisons))
+	}
+}
