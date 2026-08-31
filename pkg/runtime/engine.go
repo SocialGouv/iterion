@@ -244,9 +244,9 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 //     (fanOutPlan.parentOutputs via copyOutputs) and write only into
 //     their own branchResult; the merge back into rs happens
 //     mono-thread in processConvergence after collection;
-//   - the explicitly synchronized exceptions are branchLedgerSeq
-//     (atomic), budget (SharedBudget, internal mutex), events
-//     (runEvents, internal mutex) and resourceSemaphores (channels).
+//   - the explicitly synchronized exceptions are budget
+//     (SharedBudget, internal mutex), events (runEvents, internal
+//     mutex) and resourceSemaphores (channels).
 //
 // Two rules keep this sound — breaking either introduces a silent data
 // race the compiler cannot catch:
@@ -317,7 +317,13 @@ type runState struct {
 	// entry. Branch-local counters remain private in loopCounters; execution
 	// identity and model iteration compose both maps.
 	enclosingLoopCounters map[string]int
-	roundRobinCounters    map[string]int
+	// enclosingLoopPreviousOutput is the trunk (or outer-branch) snapshot
+	// of {{loop.<name>.previous_output}} at fan-out entry. It is not
+	// persisted on the branch cursor: C244 already forbids a branch-local
+	// loop from reusing an enclosing name, so resolvers compose this map
+	// with the branch-private loopPreviousOutput without collision.
+	enclosingLoopPreviousOutput map[string]map[string]any
+	roundRobinCounters          map[string]int
 	// selectedIncoming records, per destination node, the incoming edges
 	// routing actually selected for the current visit of that node. Fan-out
 	// branches keep a private copy on branchResult so concurrent writers
@@ -402,14 +408,6 @@ type runState struct {
 	// and incremented on the post-exec path (recordAndCheckBudget);
 	// recorded into the shared daily ledger via Engine.dailyCap.
 	costUSDTotal float64
-
-	// branchLedgerSeq hands each execBranch invocation a unique suffix for
-	// its daily-cap ledger key. Without it, a fan-out INSIDE a loop reuses
-	// the same "<runID>#<branchID>" key every iteration (branchID encodes
-	// router+index, not the iteration), and the ledger's monotonic-max would
-	// keep only the single costliest iteration instead of summing them.
-	// Atomic: incremented concurrently from parallel branch goroutines.
-	branchLedgerSeq atomic.Uint64
 
 	// nodeAttempts counts prior failed attempts per (nodeID, ErrorCode)
 	// so the recovery dispatcher can apply per-class retry budgets and

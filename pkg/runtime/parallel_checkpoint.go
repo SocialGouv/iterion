@@ -50,6 +50,47 @@ func runStateIterationCounters(rs *runState) map[string]int {
 	return rs.loopCounters
 }
 
+// loopPreviousOutputView is the composed {{loop.<name>.previous_output}}
+// map resolvers and prompt templates read. Inside a branch it unions the
+// enclosing trunk snapshots with any branch-local loop snapshots; C244
+// makes the two maps name-disjoint.
+func loopPreviousOutputView(rs *runState) map[string]map[string]any {
+	if rs == nil {
+		return nil
+	}
+	if !rs.branchLocal {
+		return rs.loopPreviousOutput
+	}
+	combined := copyOutputs(rs.enclosingLoopPreviousOutput)
+	for name, out := range rs.loopPreviousOutput {
+		inner := make(map[string]any, len(out))
+		for k, v := range out {
+			inner[k] = deepCopyValue(v)
+		}
+		combined[name] = inner
+	}
+	return combined
+}
+
+func enclosingLoopPreviousOutputFrom(parent *runState) map[string]map[string]any {
+	if parent == nil {
+		return nil
+	}
+	combined := copyOutputs(parent.enclosingLoopPreviousOutput)
+	for name, out := range parent.loopPreviousOutput {
+		inner := make(map[string]any, len(out))
+		for k, v := range out {
+			inner[k] = deepCopyValue(v)
+		}
+		combined[name] = inner
+	}
+	return combined
+}
+
+func branchLedgerKey(runID, branchID string, rs *runState) string {
+	return fmt.Sprintf("%s#%s#%s", runID, branchID, branchCounterPath(runStateIterationCounters(rs)))
+}
+
 func (e *Engine) parallelInvocationKey(routerNodeID string, counters map[string]int) string {
 	return routerNodeID + "@" + branchCounterPath(counters)
 }
@@ -94,9 +135,9 @@ type parallelExecutionState struct {
 	saveMu  sync.Mutex // orders durable writes so an older snapshot cannot win last
 	cp      *store.ParallelCheckpoint
 	retired bool // collector returned; late abandoned branches may no longer persist
-	// base is captured by the trunk before goroutines start. Copying a live
-	// runState inside a branch would race its atomic branchLedgerSeq with a
-	// sibling's Add; branches clone this immutable snapshot instead.
+	// base is captured by the trunk before goroutines start. Branches clone
+	// this immutable snapshot instead of a live runState so they never race
+	// the trunk's unsynchronized maps.
 	base *runState
 	// resumeBarrier lets the answered branch reach a durable terminal cursor
 	// before incomplete siblings resume. Completed dependencies may pass it.
@@ -141,54 +182,53 @@ func (p *parallelExecutionState) captureBase(rs *runState) {
 }
 
 // cloneRunStateForBranch copies the branch-readable trunk state without a
-// struct assignment. runState contains atomic.Uint64 (and therefore noCopy),
-// while the maps below are immutable for the lifetime of a fan-out by the
-// runState concurrency contract. Branch-private mutable maps are replaced by
-// newBranchRunState immediately after this clone.
+// struct assignment. The maps below are immutable for the lifetime of a
+// fan-out by the runState concurrency contract. Branch-private mutable maps
+// are replaced by newBranchRunState immediately after this clone.
 func cloneRunStateForBranch(parent *runState) *runState {
 	if parent == nil {
 		return &runState{}
 	}
 	local := &runState{
-		ctx:                   parent.ctx,
-		runID:                 parent.runID,
-		runInputs:             parent.runInputs,
-		vars:                  parent.vars,
-		outputs:               parent.outputs,
-		artifacts:             parent.artifacts,
-		loopCounters:          parent.loopCounters,
-		loopOverrides:         parent.loopOverrides,
-		permissionGrants:      parent.permissionGrants,
-		loopPreviousOutput:    parent.loopPreviousOutput,
-		loopCurrentOutput:     parent.loopCurrentOutput,
-		loopProgressSig:       parent.loopProgressSig,
-		loopStaleness:         parent.loopStaleness,
-		loopBudgetMarks:       parent.loopBudgetMarks,
-		enclosingLoopCounters: cloneMap(parent.enclosingLoopCounters),
-		roundRobinCounters:    cloneMap(parent.roundRobinCounters),
-		selectedIncoming:      parent.selectedIncoming,
-		parallel:              parent.parallel,
-		events:                parent.events,
-		artifactVersions:      parent.artifactVersions,
-		nodeSessions:          cloneNodeSessions(parent.nodeSessions),
-		pauseSessionRef:       parent.pauseSessionRef,
-		lastGraceNode:         parent.lastGraceNode,
-		lastGraceDim:          parent.lastGraceDim,
-		gateAnchors:           cloneMap(parent.gateAnchors),
-		lastWorkspaceSnapshot: parent.lastWorkspaceSnapshot,
-		lastSnapshotCommit:    parent.lastSnapshotCommit,
-		preMarked:             cloneMap(parent.preMarked),
-		stopCaptured:          cloneMap(parent.stopCaptured),
-		resumed:               parent.resumed,
-		budget:                parent.budget,
-		resourceSemaphores:    parent.resourceSemaphores,
-		costUSDTotal:          parent.costUSDTotal,
-		nodeAttempts:          cloneNodeAttempts(parent.nodeAttempts),
-		attachments:           parent.attachments,
-		resumeBackend:         parent.resumeBackend,
-		isWorktree:            parent.isWorktree,
+		ctx:                         parent.ctx,
+		runID:                       parent.runID,
+		runInputs:                   parent.runInputs,
+		vars:                        parent.vars,
+		outputs:                     parent.outputs,
+		artifacts:                   parent.artifacts,
+		loopCounters:                parent.loopCounters,
+		loopOverrides:               parent.loopOverrides,
+		permissionGrants:            parent.permissionGrants,
+		loopPreviousOutput:          parent.loopPreviousOutput,
+		loopCurrentOutput:           parent.loopCurrentOutput,
+		loopProgressSig:             parent.loopProgressSig,
+		loopStaleness:               parent.loopStaleness,
+		loopBudgetMarks:             parent.loopBudgetMarks,
+		enclosingLoopCounters:       cloneMap(parent.enclosingLoopCounters),
+		enclosingLoopPreviousOutput: copyOutputs(parent.enclosingLoopPreviousOutput),
+		roundRobinCounters:          cloneMap(parent.roundRobinCounters),
+		selectedIncoming:            parent.selectedIncoming,
+		parallel:                    parent.parallel,
+		events:                      parent.events,
+		artifactVersions:            parent.artifactVersions,
+		nodeSessions:                cloneNodeSessions(parent.nodeSessions),
+		pauseSessionRef:             parent.pauseSessionRef,
+		lastGraceNode:               parent.lastGraceNode,
+		lastGraceDim:                parent.lastGraceDim,
+		gateAnchors:                 cloneMap(parent.gateAnchors),
+		lastWorkspaceSnapshot:       parent.lastWorkspaceSnapshot,
+		lastSnapshotCommit:          parent.lastSnapshotCommit,
+		preMarked:                   cloneMap(parent.preMarked),
+		stopCaptured:                cloneMap(parent.stopCaptured),
+		resumed:                     parent.resumed,
+		budget:                      parent.budget,
+		resourceSemaphores:          parent.resourceSemaphores,
+		costUSDTotal:                parent.costUSDTotal,
+		nodeAttempts:                cloneNodeAttempts(parent.nodeAttempts),
+		attachments:                 parent.attachments,
+		resumeBackend:               parent.resumeBackend,
+		isWorktree:                  parent.isWorktree,
 	}
-	local.branchLedgerSeq.Store(parent.branchLedgerSeq.Load())
 	return local
 }
 

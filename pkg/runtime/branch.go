@@ -85,17 +85,19 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	runID := rs.runID
 
 	// result.costUSD is this branch's cumulative LLM spend, recorded into the
-	// shared daily-cap ledger under ledgerKey. The key carries a per-invocation
-	// sequence ("<runID>#<branchID>#<seq>") so concurrent branches don't
-	// clobber each other's monotonic-max entry AND a fan-out re-run inside a
-	// loop gets a fresh key each iteration (branchID alone repeats across
+	// shared daily-cap ledger under ledgerKey. The key is
+	// "<runID>#<branchID>#<loop-path>" so concurrent branches don't clobber
+	// each other's monotonic-max entry AND a fan-out re-run inside a loop
+	// gets a fresh key each iteration (branchID alone repeats across
 	// iterations, which would make the monotonic-max keep only the costliest
-	// one instead of summing) — see recordBranchUsage. branchLedgerSeq is
-	// process-local and restarts at zero on resume, so a resumed branch
-	// re-uses its pre-pause key; initBranchResult seeds the accumulator from
-	// the durable cursor so the monotonic-max entry keeps growing instead of
-	// discarding everything the resumed pass spent.
-	ledgerKey := fmt.Sprintf("%s#%s#%d", runID, branchID, rs.branchLedgerSeq.Add(1))
+	// one instead of summing) — see recordBranchUsage. The suffix is the
+	// enclosing loop path of this invocation, which the checkpoint restores
+	// verbatim, so a resumed branch re-uses its pre-pause key;
+	// initBranchResult seeds the accumulator from the durable cursor so the
+	// monotonic-max entry keeps growing instead of double-counting the
+	// pre-pause spend under a second key (a process-local atomic seq is
+	// handed out in goroutine-race order and does not survive a resume).
+	ledgerKey := branchLedgerKey(runID, branchID, rs)
 
 	// Emit branch_started (best-effort — branch can proceed without the event).
 	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
@@ -314,6 +316,7 @@ func newBranchRunState(parent *runState, cp *store.BranchCheckpoint, result *bra
 	local.loopBudgetMarks = make(map[string]loopBudgetMark)
 	local.branchLocal = true
 	local.enclosingLoopCounters = branchIterationCounters(parent)
+	local.enclosingLoopPreviousOutput = enclosingLoopPreviousOutputFrom(parent)
 	local.parallel = nil
 	if cp != nil {
 		local.loopCounters = cloneMap(cp.LoopCounters)
@@ -693,8 +696,9 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // recordBranchUsage records a node's token/cost usage against the per-branch
 // daily-cap ledger and the run budget, emits budget warnings, and fails the
 // branch (returning true with result.err set) when a budget dimension is
-// exceeded. The daily-cap key is "<runID>#<branchID>" so concurrent branches
-// accumulate independently; the per-run budget pause decision stays on the
+// exceeded. The daily-cap key is "<runID>#<branchID>#<loop-path>" so concurrent
+// branches accumulate independently and a fan-out inside a loop sums
+// across iterations; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
 func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) bool {
 	tokens, costUSD := extractUsage(output)

@@ -754,6 +754,157 @@ func TestFanOutEachBranchLocalForeachUsesPrivateIndex(t *testing.T) {
 	}
 }
 
+func TestResolveLoopAndEachSeeEnclosingTrunkNamespaces(t *testing.T) {
+	wf := branchLocalLoopWorkflow()
+	wf.Loops["outer"] = &ir.Loop{Name: "outer", Body: map[string]bool{"work": true}}
+	wf.Foreaches["scan"] = &ir.Foreach{
+		Name:           "scan",
+		Item:           "item",
+		CollectionRaw:  "{{outputs.entry.rounds}}",
+		CollectionRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "rounds"}}},
+	}
+	eng := &Engine{workflow: wf}
+	parent := &runState{
+		outputs: map[string]map[string]any{
+			"entry": {"rounds": []any{"alpha", "beta", "gamma"}},
+		},
+		loopCounters:       map[string]int{"outer": 2, foreachCounterKey("scan"): 1},
+		loopPreviousOutput: map[string]map[string]any{"outer": {"tag": "prior"}},
+	}
+	result := initBranchResult(parent, "branch_dispatch_0", nil)
+	branch := newBranchRunState(parent, nil, result)
+	sc := resolveScope{outputs: parent.outputs, rs: branch}
+
+	if got := eng.resolveLoopPath([]string{"outer", "iteration"}, branch); got != int64(2) {
+		t.Fatalf("loop.outer.iteration = %#v, want 2", got)
+	}
+	if got := eng.resolveLoopPath([]string{"outer", "previous_output", "tag"}, branch); got != "prior" {
+		t.Fatalf("loop.outer.previous_output.tag = %#v, want prior", got)
+	}
+	if got := eng.resolveEachPath([]string{"scan", "item"}, sc); got != "beta" {
+		t.Fatalf("each.scan.item = %#v, want beta", got)
+	}
+	if got := eng.resolveEachPath([]string{"scan", "index"}, sc); got != int64(1) {
+		t.Fatalf("each.scan.index = %#v, want 1", got)
+	}
+	td := eng.buildTemplateData(branch)
+	if td.LoopCounters["outer"] != 2 || td.LoopPreviousOutput["outer"]["tag"] != "prior" {
+		t.Fatalf("template data = %+v, want enclosing loop snapshots", td)
+	}
+}
+
+func TestFanOutInsideTrunkLoopResolvesEnclosingPreviousOutput(t *testing.T) {
+	loopIter := &ir.Ref{Kind: ir.RefLoop, Path: []string{"outer", "iteration"}, Raw: "{{loop.outer.iteration}}"}
+	loopPrev := &ir.Ref{Kind: ir.RefLoop, Path: []string{"outer", "previous_output", "tag"}, Raw: "{{loop.outer.previous_output.tag}}"}
+	wf := &ir.Workflow{
+		Name:  "fanout_enclosing_loop",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "plan"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach, Over: "{{outputs.entry.items}}", OverRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "items"}}}, ItemBinding: "item"},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "plan"},
+			{From: "plan", To: "dispatch"},
+			{From: "dispatch", To: "work", With: []*ir.DataMapping{
+				{Key: "iter", Refs: []*ir.Ref{loopIter}, Raw: loopIter.Raw},
+				{Key: "prev", Refs: []*ir.Ref{loopPrev}, Raw: loopPrev.Raw},
+			}},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "plan", LoopName: "outer", Condition: "again"},
+			{From: "collect", To: "done", IsElse: true},
+		},
+		Loops: map[string]*ir.Loop{
+			"outer": {Name: "outer", MaxIterations: 5, Entries: map[string]bool{"plan": true}, Body: map[string]bool{"plan": true, "dispatch": true, "work": true, "collect": true}},
+		},
+		Foreaches: map[string]*ir.Foreach{},
+		Schemas:   map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("plan", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	var got []map[string]any
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		got = append(got, map[string]any{"iter": input["iter"], "prev": input["prev"]})
+		return map[string]any{}, nil
+	})
+	n := 0
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		n++
+		return map[string]any{"tag": fmt.Sprintf("c%d", n), "again": n < 3}, nil
+	})
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "fanout-enclosing-loop", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("work calls = %d (%#v), want 3", len(got), got)
+	}
+	if got[0]["iter"] != int64(0) || got[0]["prev"] != nil {
+		t.Fatalf("first branch input = %#v, want iter=0 prev=nil", got[0])
+	}
+	if got[1]["iter"] != int64(1) || got[1]["prev"] != nil {
+		t.Fatalf("second branch input = %#v, want iter=1 prev=nil (previous_output lags one crossing)", got[1])
+	}
+	if got[2]["iter"] != int64(2) || got[2]["prev"] != "c1" {
+		t.Fatalf("third branch input = %#v, want iter=2 prev=c1", got[2])
+	}
+}
+
+func TestFanOutInsideTrunkForeachResolvesEnclosingItem(t *testing.T) {
+	eachItem := &ir.Ref{Kind: ir.RefEach, Path: []string{"scan", "item"}, Raw: "{{each.scan.item}}"}
+	wf := &ir.Workflow{
+		Name:  "fanout_enclosing_foreach",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"wrap":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "wrap"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach, Over: "{{outputs.entry.items}}", OverRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "items"}}}, ItemBinding: "item"},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "wrap", With: []*ir.DataMapping{{Key: "round", Refs: []*ir.Ref{eachItem}, Raw: eachItem.Raw}}},
+			{From: "wrap", To: "dispatch"},
+			{From: "dispatch", To: "work", With: []*ir.DataMapping{{Key: "round", Refs: []*ir.Ref{eachItem}, Raw: eachItem.Raw}}},
+			{From: "work", To: "collect"},
+			{From: "collect", To: "wrap", ForeachName: "scan", With: []*ir.DataMapping{{Key: "round", Refs: []*ir.Ref{eachItem}, Raw: eachItem.Raw}}},
+			{From: "collect", To: "done"},
+		},
+		Loops: map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{
+			"scan": {Name: "scan", Item: "item", CollectionRaw: "{{outputs.entry.rounds}}", CollectionRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "rounds"}}}},
+		},
+		Schemas: map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}, "rounds": []any{"alpha", "beta"}}, nil
+	})
+	exec.on("wrap", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	var rounds []string
+	exec.on("work", func(input map[string]any) (map[string]any, error) {
+		round, _ := input["round"].(string)
+		rounds = append(rounds, round)
+		return map[string]any{}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	if err := New(wf, tmpStore(t), exec).Run(context.Background(), "fanout-enclosing-foreach", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(rounds); got != "[alpha beta]" {
+		t.Fatalf("foreach rounds inside fan-out = %s, want [alpha beta]", got)
+	}
+}
+
 // resumeWithinDeadline runs Resume on a fresh engine and fails the test when it
 // does not return before the deadline — the shape of a leaked resume barrier.
 func resumeWithinDeadline(t *testing.T, wf *ir.Workflow, runStore store.RunStore, exec NodeExecutor, runID string, answers map[string]any) error {
@@ -1151,12 +1302,12 @@ func TestFanOutAllPendingBranchErrorReleasesResumeBarrier(t *testing.T) {
 
 // TestBranchDailyCapLedgerSurvivesResume proves a branch that pauses at a
 // human gate and resumes contributes BOTH passes' spend to the daily cap.
-// The ledger key is "<runID>#<branchID>#<seq>" and AddSpend keeps the
-// monotonic MAX per key; branchLedgerSeq is process-local and restarts at
-// zero on a fresh engine, so the resumed branch re-uses its pre-pause key.
-// With branch-local cursors the resumed pass executes only the nodes after
-// the gate, so an accumulator restarting at zero would be max()'d away and
-// every post-resume dollar would vanish from the cap.
+// The ledger key is "<runID>#<branchID>#<loop-path>" and AddSpend keeps the
+// monotonic MAX per key; the loop path is restored from the checkpoint, so
+// the resumed branch re-uses its pre-pause key. With branch-local cursors
+// the resumed pass executes only the nodes after the gate, so an
+// accumulator restarting at zero would be max()'d away and every
+// post-resume dollar would vanish from the cap.
 func TestBranchDailyCapLedgerSurvivesResume(t *testing.T) {
 	wf := branchLocalLoopWorkflow()
 	wf.Nodes["gate"] = &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}}
@@ -1214,8 +1365,8 @@ func TestBranchDailyCapLedgerSurvivesResume(t *testing.T) {
 		t.Fatalf("durable branch cursor = %+v, want CostUSD=2", branch)
 	}
 
-	// A fresh engine restarts branchLedgerSeq at zero, so the resumed branch
-	// writes the same ledger key its pre-pause pass used.
+	// A fresh engine rebuilds runState from the checkpoint, so the resumed
+	// branch writes the same loop-path ledger key its pre-pause pass used.
 	eng = New(wf, runStore, exec, WithDailyCap(guard))
 	if err := eng.Resume(ctx, runID, map[string]any{"approved": true}); err != nil {
 		t.Fatalf("resume: %v", err)
@@ -1226,5 +1377,82 @@ func TestBranchDailyCapLedgerSurvivesResume(t *testing.T) {
 	}
 	if st.SpentUSD != 5.0 {
 		t.Fatalf("spend after resume = %v, want 5 (the resumed pass must add to the cap, not be max()'d away)", st.SpentUSD)
+	}
+}
+
+// TestBranchDailyCapLedgerKeyStableAcrossSiblingResume proves a completed
+// sibling cannot rotate the paused branch onto a new ledger suffix. A
+// process-local seq handed out in goroutine order would leave the pre-pause
+// key in place AND write X+Y under a second key, inflating the day's cap.
+func TestBranchDailyCapLedgerKeyStableAcrossSiblingResume(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "fan_out_all_daily_cap_sibling",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutAll},
+			"once":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "once"}},
+			"work":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "work"}},
+			"gate":     &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman}},
+			"judge":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "judge"}},
+			"collect":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "dispatch"},
+			{From: "dispatch", To: "once"},
+			{From: "dispatch", To: "work"},
+			{From: "once", To: "collect"},
+			{From: "work", To: "gate"},
+			{From: "gate", To: "judge"},
+			{From: "judge", To: "collect"},
+			{From: "collect", To: "done"},
+		},
+		Loops:     map[string]*ir.Loop{},
+		Foreaches: map[string]*ir.Foreach{},
+		Schemas:   map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	exec.on("once", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"_cost_usd": 2.0}, nil
+	})
+	exec.on("work", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"_cost_usd": 2.0}, nil
+	})
+	exec.on("judge", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"_cost_usd": 3.0}, nil
+	})
+	exec.on("collect", func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil })
+
+	runStore := tmpStore(t)
+	guard := NewDailyCapGuard(store.AsSpendStore(runStore), clock.Default, DailyCapConfig{MaxCostPerDayUSD: 100})
+	if guard == nil {
+		t.Fatal("expected a non-nil daily-cap guard")
+	}
+	ctx := context.Background()
+	runID := "branch-daily-cap-sibling-resume"
+	eng := New(wf, runStore, exec, WithDailyCap(guard))
+	if err := eng.Run(ctx, runID, nil); !errors.Is(err, ErrRunPaused) {
+		t.Fatalf("first run = %v, want ErrRunPaused", err)
+	}
+	st, err := guard.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SpentUSD != 4.0 {
+		t.Fatalf("spend before resume = %v, want 4 (completed sibling + paused branch)", st.SpentUSD)
+	}
+	eng = New(wf, runStore, exec, WithDailyCap(guard))
+	if err := eng.Resume(ctx, runID, map[string]any{"approved": true}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	st, err = guard.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SpentUSD != 7.0 {
+		t.Fatalf("spend after resume = %v, want 7 (completed sibling 2 + paused 2 + judge 3, not a swapped-seq double count)", st.SpentUSD)
 	}
 }
