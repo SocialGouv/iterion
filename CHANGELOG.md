@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.78.0](https://github.com/SocialGouv/iterion/compare/v3.77.2...v3.78.0) (2026-08-31)
+
+### Features
+
+* **sandbox:** permission policy crosses the claw IPC — gated claw fallbacks under sandbox + feed-watch usage_window fallback ([#589](https://github.com/SocialGouv/iterion/issues/589)) ([93878cd](https://github.com/SocialGouv/iterion/commit/93878cdda6121b08a5c24cfe447398c1ec5d93ad))
+
+    <details><summary>why</summary>
+
+    A sandboxed claw node with an enabled permission gate was refused outright: delegate.IOTask carried no policy, so the in-container __claw-runner would have executed bash/file_edit/write_file ungated. That blanket refusal also made a claw fallback route useless for any gated node under the shipped sandbox: auto default — e.g. feed-watch's synthesize, which cannot degrade to the OpenAI forfait when the Anthropic usage window closes.
+
+    </details>
+
 ## [3.77.2](https://github.com/SocialGouv/iterion/compare/v3.77.1...v3.77.2) (2026-08-30)
 
 ### Bug Fixes
