@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/spf13/cobra"
 )
 
@@ -68,6 +69,7 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	var (
 		ioTask          delegate.IOTask
 		replaySnapshots [][]byte
+		policyCfg       *permission.PolicyConfig
 	)
 	for {
 		env, err := dispatcher.readNextEnvelope()
@@ -87,6 +89,17 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 			replaySnapshots = append(replaySnapshots, append([]byte(nil), env.Data...))
 			continue
 		}
+		if env.Type == delegate.EnvelopePermissionPolicy {
+			// The node's permission gate, in serialisable form. A
+			// malformed payload is fatal BEFORE any model call: a gate
+			// the author declared must never silently not exist.
+			var cfg permission.PolicyConfig
+			if uerr := json.Unmarshal(env.Data, &cfg); uerr != nil {
+				return emitFatal(dispatcher, stderr, fmt.Errorf("decode permission_policy envelope: %w", uerr))
+			}
+			policyCfg = &cfg
+			continue
+		}
 		return emitFatal(dispatcher, stderr, fmt.Errorf("unexpected envelope %q before task", env.Type))
 	}
 
@@ -99,6 +112,18 @@ func runClawRunner(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 	task := delegate.FromIOTask(ioTask)
 	// Sandbox is intentionally nil — we ARE the sandbox now.
 	task.Sandbox = nil
+	// Rebuild the permission gate the launcher shipped pre-task, through
+	// the same parser it was authored against. From here the ordinary
+	// unsandboxed Execute path applies it (opts.Permission), so builtins
+	// running locally in this container and proxied tools alike hit the
+	// same gate as an unsandboxed run.
+	if policyCfg != nil {
+		pol, perr := permission.NewPolicyFromConfig(*policyCfg)
+		if perr != nil {
+			return emitFatal(dispatcher, stderr, fmt.Errorf("rebuild permission policy: %w", perr))
+		}
+		task.Permission = pol
+	}
 	// V2-2 (refined): builtins (bash, read_file, glob, grep, file_edit,
 	// web_fetch, write_file) execute LOCALLY inside the runner so their
 	// filesystem effects land on the sandbox bind-mount, not on the

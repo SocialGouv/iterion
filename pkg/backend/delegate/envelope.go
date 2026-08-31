@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/SocialGouv/iterion/pkg/backend/permission"
 )
 
 // EnvelopeType discriminates the payload carried over the multiplexed
@@ -56,6 +58,18 @@ const (
 	// pre-loads a previously captured store at startup so the
 	// runner resumes from it. Data is the same opaque JSON.
 	EnvelopeSessionReplay EnvelopeType = "session_replay"
+
+	// EnvelopePermissionPolicy: launcher → runner. Sent BEFORE the task
+	// envelope when the node carries an enabled permission policy, so
+	// the in-container runner enforces the same gate the launcher
+	// would. Data is [permission.PolicyConfig] — the raw rule strings,
+	// re-parsed runner-side by the same parser (NewPolicyFromConfig).
+	//
+	// The pre-task position is load-bearing: a runner binary too old to
+	// know this type fatals on "unexpected envelope before task" instead
+	// of running the gated node with an empty policy, so a mixed-version
+	// fleet fails CLOSED with no protocol handshake.
+	EnvelopePermissionPolicy EnvelopeType = "permission_policy"
 
 	// EnvelopeEvent: runner → launcher. Observability passthrough —
 	// the runner forwards events that should be appended to the run's
@@ -322,4 +336,15 @@ func NewSessionCaptureEnvelope(snapshot json.RawMessage) Envelope {
 // the runner can pre-load it before the LLM loop starts.
 func NewSessionReplayEnvelope(snapshot json.RawMessage) Envelope {
 	return Envelope{Type: EnvelopeSessionReplay, Data: snapshot}
+}
+
+// NewPermissionPolicyEnvelope carries the node's permission policy in
+// its serialisable form so the in-container runner enforces the same
+// gate as an unsandboxed run.
+func NewPermissionPolicyEnvelope(cfg permission.PolicyConfig) (Envelope, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("marshal permission policy: %w", err)
+	}
+	return Envelope{Type: EnvelopePermissionPolicy, Data: data}, nil
 }
