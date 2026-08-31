@@ -1075,8 +1075,34 @@ def _extension_blocks(text, kind):
         if not isinstance(obj, dict) or \
                 not (isinstance(obj.get("id"), str) and obj.get("id")):
             obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+        else:
+            # The list-shaped fields are iterated by every judgement below. A
+            # scalar here raised TypeError inside the verdict, and a verdict
+            # that cannot answer was read as "nothing to refuse" by the lot
+            # gate — the ledger disabling its own guard (adversarial finding,
+            # executed). Normalising at the single parse point makes such a
+            # block refusable instead of fatal.
+            for field in ("recorded_paths", "paths", "corpus_entries"):
+                if field in obj and not isinstance(obj[field], list):
+                    obj[field] = []
         out.append(obj)
     return out
+
+
+def _records_extension_surface(paths):
+    """An act closes a request only by recording the SURFACE an extension can
+    reach: a reference, or the corpus. An act naming only the ledger records
+    the paperwork of its own filing — it closed the conjunction term while the
+    reference it declared did not exist (adversarial finding, executed)."""
+    if not isinstance(paths, list):
+        return False
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        rel = p.split("/", 1)[1] if p.startswith(".golden-master/") else p
+        if rel.startswith("refs/") or rel == "corpus.json":
+            return True
+    return False
 
 
 def pending_extensions(gm_dir, text=None):
@@ -1101,7 +1127,7 @@ def pending_extensions(gm_dir, text=None):
     # additions-only verdict never runs at gate time, so this shape check is
     # the whole defence here (adversarial finding, executed).
     acted = {b["id"] for b in acts
-             if isinstance(b.get("recorded_paths"), list) and b["recorded_paths"]}
+             if _records_extension_surface(b.get("recorded_paths"))}
     return [{"id": r["id"], "lot": r.get("lot", "?")}
             for r in requests if r["id"] not in acted]
 
@@ -1114,8 +1140,8 @@ def pending_extensions(gm_dir, text=None):
 ## failure mode is a FALSE collision — refused, escalated to the requester —
 ## never a masked duplicate.
 OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
-                      "steps", "params", "query", "body", "readback",
-                      "no_redirect", "csrf_field")
+                      "steps", "readback", "no_redirect", "csrf_field",
+                      "static_prefix", "template_prefix", "probes")
 
 
 def _entry_observation_key(entry):
@@ -1161,6 +1187,31 @@ def extension_verdict(ws, gm_rel, base):
     ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
     corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
     refs_prefix = gm_rel.rstrip("/") + "/refs/"
+
+    def introducing_commits():
+        """First commit in which each ledger block id appears, oldest first.
+
+        Separation of powers is a claim about WHO wrote what, and the
+        ledger's own history is the only record of it neither party writes
+        twice. A request and its act sharing an introducing commit means the
+        constrained party filed and answered in one gesture, so the net's
+        subbot never ran — production cannot produce that shape, because the
+        parent commits its lot before the subbot starts (adversarial finding,
+        executed)."""
+        code, out, _ = git("log", "--format=%H", "--reverse", "--", ledger_rel)
+        if code != 0:
+            return None
+        first = {}
+        for sha in out.split():
+            text = at(sha, ledger_rel)
+            if text is None:
+                continue
+            for kind in ("request", "act"):
+                for b in _extension_blocks(text, kind):
+                    bid = b.get("id")
+                    if isinstance(bid, str) and bid:
+                        first.setdefault((kind, bid), sha)
+        return first
 
     # An unresolvable base and an honest "absent at base" both read as None
     # below, so a bad sha would certify everything as an addition — a guard
@@ -1293,11 +1344,23 @@ def extension_verdict(ws, gm_rel, base):
                 seen_new[key] = "added entry %r" % aid
         corpus_ok = not corpus_problems
 
+    intro = introducing_commits()
     for act in acts:
         row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
         req = requests.get(act.get("id"))
         if req is None:
             row["problems"].append("an act without a request acts nothing")
+        elif intro is None:
+            row["problems"].append(
+                "cannot read the ledger's history — provenance unproven, and "
+                "an unprovable act is refused, not assumed")
+        elif intro.get(("act", act.get("id"))) is not None \
+                and intro.get(("act", act.get("id"))) == intro.get(("request", act.get("id"))):
+            row["problems"].append(
+                "the requester acted its own request: %s introduced both the "
+                "request and the act, so the net's subbot never judged it — "
+                "filing and answering are different powers"
+                % intro[("act", act.get("id"))][:12])
         paths = [p for p in (act.get("recorded_paths") or [])
                  if isinstance(p, str) and p]
         row["paths"] = paths
@@ -1353,6 +1416,13 @@ def extension_verdict(ws, gm_rel, base):
                     "%s is outside the extension surface (refs/ and "
                     "corpus.json) — the canon, the mutants, the harness and "
                     "the configuration are the judge's territory" % p)
+        if req is not None and not _records_extension_surface(paths):
+            # The ledger is the paperwork of the filing, not the extension:
+            # an act recording only it certified paths the net never gained
+            # (adversarial finding, executed).
+            row["problems"].append(
+                "the act records no path on the extension surface (refs/ or "
+                "corpus.json) — filing paperwork is not an extension")
         row["ok"] = (req is not None and not row["problems"]
                      and verdict["ledger_append_only"])
         if row["ok"]:
@@ -2592,6 +2662,14 @@ def _selftest():
             run("git -c user.email=t@t -c user.name=t commit -qm x",
                 xroot, timeout=60)
 
+        def xrequest(req):
+            """The lot files its request and commits. A fixture that stages a
+            request and its act in ONE commit models a sequence production
+            cannot produce (the parent commits its lot before the subbot
+            starts) — and hides the provenance the verdict checks."""
+            xledger(("request", req))
+            xcommit()
+
         def xreset():
             run("git reset -q --hard %s" % xbase, xroot, timeout=60)
             run("git clean -qfd", xroot, timeout=60)
@@ -2614,6 +2692,7 @@ def _selftest():
 
         # Extension legitime : un fichier de ref NEUF, acte, registre commite.
         xreset()
+        xrequest(req2)
         xledger(("request", req2), ("act", act2))
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
@@ -2644,6 +2723,8 @@ def _selftest():
         # Entree de corpus legitime, revendiquee par la demande.
         xreset()
         new_entry = {"id": "2", "method": "GET", "path": "/b", "persona": "p"}
+        xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                 ' "corpus_entries": [{"id": "2"}]}')
         xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
                             ' "corpus_entries": [{"id": "2"}]}'),
                 ("act", '{"id": "E-2", "lot": "L",'
@@ -2727,6 +2808,53 @@ def _selftest():
         with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
             f.write("ref-2\n")
         xcommit()
+        # Un acte introduit par le commit qui depose sa propre demande : le
+        # lot a filed and answered, le subbot du filet n'a jamais juge.
+        xreset()
+        xledger(("request", req2), ("act", act2))
+        with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+            f.write("ref-2\n")
+        xcommit()
+        v_self = extension_verdict(xroot, ".golden-master", xbase)
+        check("demande et acte dans UN commit (le lot s'auto-sert) -> refuse",
+              [v_self["acted"][0]["ok"], v_self["ok_paths"]], [False, []])
+
+        # Un acte qui n'enregistre que le registre : il ne laisse pas la
+        # demande pendante, et il n'est pas certifie.
+        xreset()
+        ledger_only = ('{"id": "E-1", "lot": "L", "recorded_paths":'
+                       ' [".golden-master/EXTENSIONS.md"]}')
+        xrequest(req2)
+        xledger(("request", req2), ("act", ledger_only))
+        xcommit()
+        check("acte n'enregistrant QUE le registre -> la demande RESTE pendante",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        check("acte n'enregistrant QUE le registre -> refuse",
+              extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"],
+              False)
+
+        # Un scalaire la ou le juge itere : le bloc devient refusable, il ne
+        # fait plus tomber le verdict (qui etait lu comme "rien a refuser").
+        xreset()
+        scalar_act = '{"id": "E-1", "lot": "L", "recorded_paths": 1}'
+        xrequest(req2)
+        xledger(("request", req2), ("act", scalar_act))
+        xcommit()
+        check("recorded_paths scalaire -> la demande RESTE pendante, pas de crash",
+              [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+        v_scalar = extension_verdict(xroot, ".golden-master", xbase)
+        check("recorded_paths scalaire -> verdict rendu et acte refuse",
+              ["error" not in v_scalar, v_scalar["acted"][0]["ok"]], [True, False])
+
+        # Deux entrees d'assets aux prefixes DISTINCTS observent deux choses
+        # differentes : refuser l'ajout serait un faux positif bloquant.
+        a1 = {"id": "a1", "surface": "asset", "persona": "p",
+              "static_prefix": "s/", "template_prefix": "t/"}
+        a2 = {"id": "a2", "surface": "asset", "persona": "p",
+              "static_prefix": "admin-s/", "template_prefix": "admin-t/"}
+        check("deux entrees asset a prefixes distincts -> pas de collision",
+              _entry_observation_key(a1) == _entry_observation_key(a2), False)
+
         check("acte sans demande -> refuse",
               extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
 
@@ -2835,6 +2963,8 @@ def _selftest():
         # reference derivee — corpus.json ET refs/2.txt exemptes, sans
         # `paths` dans la demande (la forme que la doctrine prescrit).
         xreset()
+        xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                 ' "corpus_entries": [{"id": "2"}]}')
         xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
                             ' "corpus_entries": [{"id": "2"}]}'),
                 ("act", '{"id": "E-2", "lot": "L", "recorded_paths":'

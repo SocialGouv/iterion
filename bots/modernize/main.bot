@@ -604,6 +604,12 @@ tool lot_verify:
                             "reads the tree; a dirty net voids the certificate."
                             % (len(dirty), ", ".join(dirty[:12])))
             exempt = set()
+            # A voided certificate is a REFUSAL, not a remark: the pending
+            # term reads the worktree while every ledger judgement reads
+            # HEAD, so an uncommitted ledger edit could retire a committed
+            # request from the term with nothing to refuse it (adversarial
+            # finding, executed).
+            report["refs_untouched"] = False
 
         code, log = run("git -c core.quotePath=false diff --name-only %s -- %s"
                         % (base, " ".join(shlex.quote(p) for p in judged)))
@@ -644,6 +650,19 @@ tool lot_verify:
                                    "; ".join(r.get("problems") or []))
                                 for r in bad)
                 report["refs_untouched"] = False
+        else:
+            # No verdict is not "nothing to refuse". The certifier runs on
+            # ledger content the constrained party writes, so a crash there
+            # is reachable from the ledger itself — reading its silence as
+            # absolution let a rewritten ledger ride a green (adversarial
+            # finding, executed).
+            problems.append(
+                "the extension certifier returned no usable verdict (%s) — "
+                "a certifier that cannot answer is a refusal, not an absence"
+                % ((verdict or {}).get("error")
+                   or (verdict or {}).get("__unparsed__")
+                   or "no output")[:300])
+            report["refs_untouched"] = False
 
     report["log_tail"] = "\n".join(problems)[-6000:]
     print(json.dumps(report))
