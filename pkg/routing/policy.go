@@ -31,7 +31,11 @@ const (
 	DecisionEscalate Decision = "escalate"
 	// DecisionRelaunch: the run failed in a way the policy permits
 	// retrying fresh ("relaunch" allowed). The consumer enforces
-	// MaxRelaunches — the decision only states permission.
+	// MaxRelaunches — the decision only states permission. NOTE: no
+	// shipped consumer enforces it yet (there is no relaunch counter or
+	// lineage on the run); until one exists the field is declared,
+	// validated and persisted but NOT applied — a consumer wiring
+	// relaunch must ship the counter with it.
 	DecisionRelaunch Decision = "relaunch"
 )
 
@@ -67,11 +71,27 @@ const CurrentPolicyVersion = 1
 //   - SuccessWhen true → merge if allowed, else escalate;
 //   - SuccessWhen false → relaunch if allowed, else escalate.
 func Evaluate(r *store.Run) Verdict {
+	// LoadRun returns nil on error and half the repo writes
+	// `err == nil && r != nil` for exactly that; a consumer that
+	// forgets panics in a goroutine outside net/http's recover.
+	if r == nil {
+		return Verdict{Decision: DecisionEscalate, Reason: "no run to evaluate"}
+	}
 	p := r.RoutingPolicy
 	if p == nil {
 		return Verdict{Decision: DecisionEscalate, Reason: "no routing policy on the run"}
 	}
-	v := Verdict{PolicyHash: p.Hash}
+	// The hash is the audit's claim of WHICH contract decided; recopying
+	// a stale stamp would let a verdict ride under a hash that does not
+	// describe the applied contract, and an unstamped policy (a future
+	// surface skipping ComputeHash) would audit as "". Recompute — and
+	// refuse a mismatch rather than guess which of the two is the truth.
+	recomputed := p.ComputeHash()
+	if p.Hash != "" && p.Hash != recomputed {
+		return Verdict{Decision: DecisionEscalate, PolicyHash: recomputed,
+			Reason: "policy hash mismatch: the stored contract does not match its stamp"}
+	}
+	v := Verdict{PolicyHash: recomputed}
 	if p.Version > CurrentPolicyVersion {
 		v.Decision = DecisionEscalate
 		v.Reason = fmt.Sprintf("contract version %d is newer than this reader (max %d)", p.Version, CurrentPolicyVersion)

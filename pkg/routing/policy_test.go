@@ -215,3 +215,35 @@ func TestComputeHash_CanonicalAndSelfExcluding(t *testing.T) {
 		t.Fatalf("hash not self-excluding: %q vs %q", got, a.Hash)
 	}
 }
+
+// A consumer that forgets the `err == nil && r != nil` idiom must get
+// the default decision, not a panic in a goroutine outside net/http's
+// recover.
+func TestEvaluateNilRunEscalates(t *testing.T) {
+	v := Evaluate(nil)
+	if v.Decision != DecisionEscalate {
+		t.Fatalf("Evaluate(nil) = %q, want escalate", v.Decision)
+	}
+}
+
+// The verdict's hash is the audit's claim of WHICH contract decided:
+// a stored stamp that does not match the stored contract must refuse,
+// never ride the stale stamp onto a merge verdict.
+func TestEvaluateTamperedHashEscalates(t *testing.T) {
+	r := runWith(map[string]map[string]any{"review": {"approved": true}},
+		policy("outputs.review.approved", nil, "merge"))
+	r.RoutingPolicy.Hash = r.RoutingPolicy.ComputeHash()
+	// Sanity: untampered decides merge.
+	if v := Evaluate(r); v.Decision != DecisionMerge {
+		t.Fatalf("untampered verdict = %q, want merge", v.Decision)
+	}
+	// Tamper the contract after stamping.
+	r.RoutingPolicy.SuccessWhen = []string{"outputs.review.rubber_stamp"}
+	v := Evaluate(r)
+	if v.Decision != DecisionEscalate {
+		t.Fatalf("tampered-contract verdict = %q, want escalate", v.Decision)
+	}
+	if v.PolicyHash == r.RoutingPolicy.Hash {
+		t.Fatalf("verdict rode the stale stamp %q", v.PolicyHash)
+	}
+}
