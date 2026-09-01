@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "iterion": {
+      "command": "iterion",
+      "args": ["mcp"]
+    },
+    "sentry": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@sentry/mcp-server@latest",
+        "--access-token=${SENTRY_ACCESS_TOKEN}",
+        "--host=sentry2.fabrique.social.gouv.fr",
+        "--organization-slug=incubateur",
+        "--project-slug=iterion"
+      ]
+    }
+  }
+}

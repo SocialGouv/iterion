@@ -265,6 +265,12 @@ the hours this one spent.
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
   reverted, or when a run fails on "version drift".
+- [docs/sentry-feedback-loop.md](docs/sentry-feedback-loop.md) — reading
+  production errors BACK from the platform Sentry (org `incubateur`, project
+  `iterion`/62 on sentry2): the user-auth-token setup, the repo's `.mcp.json`
+  (iterion + Sentry MCP servers, `SENTRY_ACCESS_TOKEN` env), raw-API recipes,
+  and the error-watch sentinel design (detect→card→fix→resolve). Read it to
+  triage a prod crash or wire an agent session to live errors.
 - [docs/observability.md](docs/observability.md) — process logs, error
   tracking and tracing: the env vars (`SENTRY_DSN`, `SENTRY_ENVIRONMENT`,
   `SENTRY_TRACES_SAMPLE_RATE`, `ITERION_LOG_FORMAT`, `ITERION_LOG_LEVEL`),
