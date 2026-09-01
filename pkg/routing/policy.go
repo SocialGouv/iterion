@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -29,7 +30,8 @@ const (
 	// richer consumer) owns the next step. Escalation is the DEFAULT:
 	// every uncertain path lands here, never on merge.
 	DecisionEscalate Decision = "escalate"
-	// DecisionRelaunch: the run failed in a way the policy permits
+	// DecisionRelaunch: the run's terminal state does not satisfy the
+	// contract and the policy permits
 	// retrying fresh ("relaunch" allowed). The consumer enforces
 	// MaxRelaunches — the decision only states permission. NOTE: no
 	// shipped consumer enforces it yet (there is no relaunch counter or
@@ -97,6 +99,16 @@ func Evaluate(r *store.Run) Verdict {
 		v.Reason = fmt.Sprintf("contract version %d is newer than this reader (max %d)", p.Version, CurrentPolicyVersion)
 		return v
 	}
+	if !r.Status.IsTerminal() {
+		// The contract describes a TERMINAL run: while the run is still
+		// moving (or parked on a human gate) the checkpoint's outputs
+		// are not its final word, and acting on them would land work in
+		// flight. The reactor pre-filters too, but this is the single
+		// trusted reading — the precondition lives HERE, not in a doc.
+		v.Decision = DecisionEscalate
+		v.Reason = fmt.Sprintf("run is not terminal (status %s) — nothing to decide yet", r.Status)
+		return v
+	}
 	if r.Checkpoint == nil || len(r.Checkpoint.Outputs) == 0 {
 		// Defence in depth, independent of the per-ref checks below:
 		// with no terminal outputs there is nothing to read a verdict
@@ -129,6 +141,15 @@ func Evaluate(r *store.Run) Verdict {
 		return v
 	}
 	if success {
+		if !r.Status.IsFinalSuccess() {
+			// A cancelled or failed_resumable run can carry a checkpoint
+			// whose outputs still satisfy success_when — the gate spoke
+			// on an EARLIER pass. Only a run that completed its workflow
+			// may land its work.
+			v.Decision = DecisionEscalate
+			v.Reason = fmt.Sprintf("success_when held but the run's status is %s, not finished — the outputs describe an earlier pass", r.Status)
+			return v
+		}
 		if allows(p, "merge") {
 			v.Decision = DecisionMerge
 			v.Reason = "success_when held: " + p.SuccessWhen
@@ -139,6 +160,14 @@ func Evaluate(r *store.Run) Verdict {
 		return v
 	}
 	if allows(p, "relaunch") {
+		if p.MaxRelaunches <= 0 {
+			// The omitempty default IS the documented "never relaunch
+			// automatically": a contract that lists the action but
+			// leaves the cap at zero has not granted anything.
+			v.Decision = DecisionEscalate
+			v.Reason = "success_when did not hold and max_relaunches is 0 — relaunch is listed but not granted"
+			return v
+		}
 		v.Decision = DecisionRelaunch
 		v.Reason = "success_when did not hold: " + p.SuccessWhen
 		return v
@@ -212,18 +241,17 @@ func validateExpr(field, src string) error {
 	return nil
 }
 
-// validateBranchName refuses target names git would misread or a shell
-// wrapper could trip on — the value comes from an HTTP body and feeds a
-// git operation.
+// validateBranchName refuses target names git would misread — the value
+// comes from an HTTP body and feeds a git operation. "" is allowed (the
+// run's RepoRef default); everything else goes through the repo's ONE
+// canonical rule (gitlib.ValidateBranchName), which is strictly stronger
+// than the ad-hoc check it replaces (length, HEAD, refspec sigils,
+// control bytes, @{ …).
 func validateBranchName(name string) error {
 	if name == "" {
 		return nil
 	}
-	if strings.HasPrefix(name, "-") || strings.Contains(name, "..") ||
-		strings.ContainsAny(name, " \t\n~^:?*[\\") {
-		return fmt.Errorf("invalid branch name %q", name)
-	}
-	return nil
+	return gitlib.ValidateBranchName(name)
 }
 
 // allows reports whether action is in the policy's allowed set. An
@@ -287,10 +315,10 @@ func resolveRef(ctx *expr.Context, ref expr.Ref) any {
 	}
 }
 
-// exprContext resolves the DSL namespaces against the run's persisted
-// terminal state: outputs.<node>.<key>… reads the checkpoint's output
-// map (the gates the bot published), run.<field> reads a curated set
-// of run document fields.
+// exprContext resolves the ONE namespace the contract grammar admits —
+// outputs.<node>.<key>…, the checkpoint's output map (the gates the bot
+// published). validateExpr refuses every other namespace at launch; a
+// run.* resolver existed once and was dropped as unreachable.
 func exprContext(r *store.Run) *expr.Context {
 	return &expr.Context{
 		Outputs: func(path []string) any {
