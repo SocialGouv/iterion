@@ -30,8 +30,13 @@ package store
 type FailureCode string
 
 const (
-	FailureNodeNotFound     FailureCode = "NODE_NOT_FOUND"
-	FailureNoOutgoingEdge   FailureCode = "NO_OUTGOING_EDGE"
+	FailureNodeNotFound   FailureCode = "NODE_NOT_FOUND"
+	FailureNoOutgoingEdge FailureCode = "NO_OUTGOING_EDGE"
+	// FailureLoopExhausted, FailureJoinFailed and FailureResumeInvalid
+	// are RESERVED: declared for the event vocabulary but with no
+	// persisting writer today — a run record never carries them until
+	// their sites are classified. Kept so the wire vocabulary and the
+	// runtime aliases stay stable.
 	FailureLoopExhausted    FailureCode = "LOOP_EXHAUSTED"
 	FailureBudgetExceeded   FailureCode = "BUDGET_EXCEEDED"
 	FailureExecutionFailed  FailureCode = "EXECUTION_FAILED"
@@ -146,11 +151,14 @@ func (s RunStatus) CanOperatorResume() bool {
 func (s RunStatus) RequiresResumeAnswers() bool { return s == RunStatusPausedWaitingHuman }
 
 // CanAutoResume answers the AUTOMATIC eligibility question: may
-// machinery (dispatcher retry, --auto-resume, usage-window retries)
-// resume this run with no human in the loop? Deliberately excludes
-// cancelled — an operator's cancel is a decision automation must never
-// override — and the paused statuses, which wait on a human by
-// definition.
+// machinery (--auto-resume, usage-window retries) resume this run with
+// no human in the loop? Deliberately excludes cancelled — an operator's
+// cancel is a decision automation must never override — and the paused
+// statuses, which wait on a human by definition. One documented
+// divergence: the dispatcher's resumableRunID additionally re-dispatches
+// its OWN paused_operator tickets (pkg/dispatcher/retry.go) — a
+// dispatcher-owned pause is machinery state there, not an operator's;
+// do not "align" it onto this predicate.
 func (s RunStatus) CanAutoResume() bool { return s == RunStatusFailedResumable }
 
 // CountsAgainstLaunchLimit: the run occupies launch-admission capacity

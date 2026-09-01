@@ -141,9 +141,11 @@ func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID stri
 	n.deliver(ctx, run.CallbackURL, payload)
 }
 
-// shouldNotify reports whether a status warrants a completion callback:
-// exactly the canonical terminal set (failed_resumable counts as final
-// for delivery; the paused states do not).
+// shouldNotify reports whether a status warrants a completion callback.
+// It deliberately BORROWS IsTerminal (the stop-polling contract):
+// delivery-finality and polling share the same set today, and this
+// comment is the tripwire — if IsTerminal ever moves for a polling
+// reason, delivery needs its own predicate, not a silent ride-along.
 func shouldNotify(s store.RunStatus) bool {
 	return s.IsTerminal()
 }

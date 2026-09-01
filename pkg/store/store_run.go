@@ -140,6 +140,12 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	if err := s.guardNotDeleted(r.ID); err != nil {
 		return err
 	}
+	// A full-document write must not resurrect a failure code a copy
+	// loaded before a status change still carries (the rewind claim
+	// learned this the hard way) — normalize at the choke point.
+	if !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeRun(r)
@@ -194,9 +200,10 @@ func healRun(r *Run) bool {
 		r.FinishedAt = nil
 		changed = true
 	}
-	// A failure code may only persist on a failure status (the
-	// transition machinery clears it, but a whole-document writer on
-	// an older binary can resurrect a stale one — heal on read).
+	// A failure code may only persist on a failure status. The
+	// transition machinery clears it and SaveRun normalizes, so the
+	// remaining sources are historical rows written before those
+	// guards and hand-edited run.json — heal on read.
 	if r.FailureCode != "" && !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 		changed = true
@@ -358,6 +365,13 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 // classification — code and status land in one atomic write, never a
 // separate read-modify-write.
 func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (bool, error) {
+	if len(expectedFrom) == 0 {
+		// A CAS with no expected set is a bug at the caller (a derived
+		// slice gone empty) — refuse loudly instead of silently
+		// matching nothing (while the Mongo twin would write
+		// unconditionally).
+		return false, fmt.Errorf("store: update status if %s: empty expectedFrom", id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -439,6 +453,11 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 		// FinishedAt — otherwise the studio's duration ticker uses the
 		// stale terminal timestamp and freezes mid-run.
 		r.FinishedAt = nil
+		if status == RunStatusRunning {
+			// Mirror the Mongo twin: a running run carries no failure
+			// message, whatever the caller passed.
+			r.Error = ""
+		}
 	}
 	// Clear checkpoint when leaving paused state (preserved for
 	// failed_resumable, cancelled, and failed). `failed` keeps its
@@ -482,8 +501,11 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	r.Status = RunStatusPausedWaitingHuman
 	// A paused run carries no failure classification — same discipline
 	// as the transition choke point, which this checkpoint-coupled
-	// write bypasses.
+	// write bypasses. FinishedAt likewise: a paused run is not over,
+	// and a stale terminal timestamp freezes the studio duration
+	// ticker (mirrors the Mongo twin's $unset).
 	r.FailureCode = ""
+	r.FinishedAt = nil
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }

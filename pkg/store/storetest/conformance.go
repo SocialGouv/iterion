@@ -57,6 +57,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
+	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
+	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -1183,6 +1185,108 @@ func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
 	r, _ = s.LoadRun(ctx, "run_fc")
 	if r.FailureCode != "SOME_FUTURE_CODE_V9" {
 		t.Fatalf("unknown code mangled: %q", r.FailureCode)
+	}
+}
+
+// testTransitionSideEffects pins the transition side effects BOTH twins
+// must share (each was a live FS↔Mongo divergence): the running claim
+// clears checkpoint AND error, PauseRun clears FinishedAt and the code,
+// SaveRun normalizes a stale code, and an empty-expectedFrom CAS is a
+// loud error — never a silent no-op on one twin and an unconditional
+// write on the other.
+func testTransitionSideEffects(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tse", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	// The running claim drops the previous attempt's checkpoint on both
+	// twins — a pod crashing before its first own checkpoint must not
+	// resume from a stale node on one backend and the entry on the other.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, "should not persist"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_tse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint != nil {
+		t.Errorf("running claim must clear the checkpoint, got node %q", r.Checkpoint.NodeID)
+	}
+	if r.Error != "" {
+		t.Errorf("running run must carry no failure message, got %q", r.Error)
+	}
+	// PauseRun: not over, so no terminal timestamp and no failure code.
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_tse", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FinishedAt != nil {
+		t.Error("paused run kept a stale FinishedAt")
+	}
+	if r.FailureCode != "" {
+		t.Errorf("paused run kept a stale code %q", r.FailureCode)
+	}
+	// SaveRun normalizes: a copy loaded before a status change must not
+	// resurrect its failure code through the full-document write.
+	r.Status = store.RunStatusRunning
+	r.FailureCode = store.FailureUsageLimitBlocked
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FailureCode != "" {
+		t.Errorf("SaveRun resurrected a stale code %q on a running run", r.FailureCode)
+	}
+	// Empty expectedFrom: a loud error on both twins (FS used to no-op
+	// silently while Mongo wrote unconditionally).
+	if _, err := s.UpdateRunStatusIf(ctx, "run_tse", store.RunStatusCancelled, "x", nil); err == nil {
+		t.Error("empty-expectedFrom CAS must be refused")
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Status == store.RunStatusCancelled {
+		t.Error("empty-expectedFrom CAS wrote anyway")
+	}
+}
+
+// testTombstoneRefusesWriters pins that a deleted run stays dead on both
+// twins: no status/checkpoint/pause/failure writer may mutate the
+// tombstone (Mongo used to write status, code and checkpoint onto the
+// skeleton and report success).
+func testTombstoneRefusesWriters(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tomb", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, "run_tomb"); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tomb", cp, "post-delete", store.FailureFailNode); err == nil {
+		t.Error("FailRunResumable succeeded on a tombstone")
+	}
+	if err := s.FailRunTerminal(ctx, "run_tomb", cp, "post-delete", ""); err == nil {
+		t.Error("FailRunTerminal succeeded on a tombstone")
+	}
+	if err := s.PauseRun(ctx, "run_tomb", cp); err == nil {
+		t.Error("PauseRun succeeded on a tombstone")
+	}
+	if err := s.SaveCheckpoint(ctx, "run_tomb", cp); err == nil {
+		t.Error("SaveCheckpoint succeeded on a tombstone")
+	}
+	if changed, _ := s.UpdateRunStatusIf(ctx, "run_tomb", store.RunStatusCancelled, "x", []store.RunStatus{store.RunStatusRunning, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusQueued, store.RunStatusFinished, store.RunStatusCancelled, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, "deleted"}); changed {
+		t.Error("status CAS wrote onto a tombstone")
+	}
+	if _, err := s.LoadRun(ctx, "run_tomb"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("tombstone must read as ErrRunDeleted, got %v", err)
 	}
 }
 

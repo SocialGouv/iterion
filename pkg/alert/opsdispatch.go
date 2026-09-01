@@ -172,7 +172,14 @@ func opsEpisodeKey(run *store.Run) string {
 		if run.RetryState != nil {
 			attempts = run.RetryState.Attempts
 		}
-		return fmt.Sprintf("%srun:%s:parked:%d", opsEpisodePrefix, run.ID, attempts)
+		// The failure code joins the key because attempts alone can
+		// stand still across two DIFFERENT parks: ScheduleRunRetry is
+		// the only writer that advances it, so a resumed run re-parking
+		// on an unretryable cause (no retry armed) reuses the old
+		// count — and the operator would never hear about the new,
+		// manual-intervention failure. Same code repeated = still one
+		// episode, so the retry-cycle anti-spam is intact.
+		return fmt.Sprintf("%srun:%s:parked:%d:%s", opsEpisodePrefix, run.ID, attempts, run.FailureCode)
 	}
 	return opsEpisodePrefix + trigger.RunOutcomeEventID(run.ID, string(run.Status), "", run.UpdatedAt)
 }

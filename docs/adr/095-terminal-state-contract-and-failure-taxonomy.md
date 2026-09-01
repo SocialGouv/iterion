@@ -74,10 +74,14 @@ failure status** — it annotates `Run.Error` and follows it exactly:
   **Synthetic parkings write an empty code** (fork shell, rewind/restore
   claims): they are not failures. A cancel of an already-parked run writes
   CANCELLED; the prior cause survives in the composed text, as before.
-- Declared-but-deferred writers: `PROCESS_ORPHANED` (orphan sweeps,
-  reconciles, force-stale, dead-pid), `QUEUE_SCHEMA_MISMATCH` (schema park),
-  the DLQ park — a follow-up card wires them; until then those paths
-  honestly persist unknown.
+- The resume-after-source-edit wall persists `NODE_NOT_FOUND` (the
+  auto-resume gate refuses to re-hit a deterministic wall only when the
+  code names it); `LOOP_EXHAUSTED`/`JOIN_FAILED`/`RESUME_INVALID` are
+  declared RESERVED with no persisting writer yet. The runview orphan
+  reconciles persist `PROCESS_ORPHANED`; the server orphan sweeper, the
+  dispatcher promote, force-stale and dead-pid writers, plus
+  `QUEUE_SCHEMA_MISMATCH` (schema park) and the DLQ park, are the
+  follow-up card — until then those paths honestly persist unknown.
 
 ### 4. Mixed-fleet note
 

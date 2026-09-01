@@ -226,6 +226,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
 	// trips the duplicate-_id error instead of resurrecting the run.
+	// A full-document write must not resurrect a failure code a copy
+	// loaded before a status change still carries (the rewind claim
+	// learned this the hard way) — normalize at the choke point.
+	if !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+	}
 	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -636,16 +642,21 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 		"error":      runErr,
 	}
 	unset := bson.M{}
-	if status.CarriesFailureCode() {
+	if status.CarriesFailureCode() && code != "" {
 		set["failure_code"] = code
 	} else {
 		// $unset, not $set "": keeps the persisted shape identical to
-		// the FS twin's omitempty JSON.
+		// the FS twin's omitempty JSON — including an UNKNOWN (empty)
+		// code on a failure status, so {$exists: false} means exactly
+		// "unclassified" on both twins.
 		unset["failure_code"] = ""
 	}
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
+		if status == store.RunStatusFinished {
+			unset["checkpoint"] = ""
+		}
 	case store.RunStatusQueued:
 		set["queued_at"] = now
 		unset["finished_at"] = ""
@@ -654,6 +665,11 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 		// freezes mid-run (mirrors FilesystemRunStore).
 		set["error"] = ""
 		unset["finished_at"] = ""
+		// And the checkpoint, like the FS twin's applyStatusTransition:
+		// a pod claiming queued→running must not keep a previous
+		// attempt's checkpoint, or a crash before its first own
+		// checkpoint resumes from a stale node.
+		unset["checkpoint"] = ""
 	case store.RunStatusPausedWaitingHuman:
 		// Mirror the FS store: a generic UpdateRunStatus that crosses
 		// from a previously-terminal (failed_resumable) state into
@@ -698,10 +714,14 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id})
-	if len(expectedFrom) > 0 {
-		filter["status"] = bson.M{"$in": expectedFrom}
+	if len(expectedFrom) == 0 {
+		// A CAS with no expected set is an unconditional write in
+		// disguise (and the FS twin would silently no-op instead) —
+		// refuse loudly rather than diverge.
+		return false, fmt.Errorf("store/mongo: update status if %s: empty expectedFrom", id)
 	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	filter["status"] = bson.M{"$in": expectedFrom}
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
@@ -731,11 +751,12 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 	}))
 	// Queue-park classification is follow-up; the empty code reads as
 	// unknown, which is honest here.
-	set, _ := runStatusUpdate(store.RunStatusFailedResumable, runErr, "", now)
-	res, err := s.runs.UpdateOne(ctx, filter, bson.M{
-		"$set": set,
-		"$inc": bson.M{"version": 1},
-	})
+	set, unset := runStatusUpdate(store.RunStatusFailedResumable, runErr, "", now)
+	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)
 	}
@@ -755,7 +776,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpo
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: save checkpoint %s", id))
 }
 
@@ -775,7 +796,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		// write bypasses.
 		"$unset": bson.M{"finished_at": "", "failure_code": ""},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
 }
 
@@ -786,10 +807,13 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // failure racing in behind it, and the failure would win simply by
 // writing last, auto-resuming a run somebody deliberately stopped.
 func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
-	set, _ := runStatusUpdate(status, runErr, code, time.Now().UTC())
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
 	set["checkpoint"] = cp
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}}))
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)

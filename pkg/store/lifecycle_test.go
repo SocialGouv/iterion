@@ -2,6 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -123,4 +127,53 @@ func TestFailureCodeUnknownRoundTrip(t *testing.T) {
 	if legacy.FailureCode != "" {
 		t.Fatalf("legacy row grew a code: %q", legacy.FailureCode)
 	}
+}
+
+// TestAllRunStatusesIsExhaustive pins the derived-set safety net: the
+// cloud publisher (and any future caller) derives production CAS sets
+// from AllRunStatuses × a predicate, so a status declared in run.go but
+// missing from the list would silently shrink those sets. The const
+// block is read from source, the same way the negative-space guard
+// works.
+func TestAllRunStatusesIsExhaustive(t *testing.T) {
+	src, err := os.ReadFile("run.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := regexp.MustCompile(`(?m)^\s*(RunStatus\w+)\s+RunStatus\s*=\s*"`).FindAllStringSubmatch(string(src), -1)
+	if len(declared) == 0 {
+		t.Fatal("no RunStatus constants found in run.go — the regex drifted")
+	}
+	listed := map[RunStatus]bool{}
+	for _, st := range AllRunStatuses {
+		listed[st] = true
+	}
+	if len(listed) != len(declared) {
+		t.Errorf("AllRunStatuses lists %d statuses, run.go declares %d", len(listed), len(declared))
+	}
+	for _, m := range declared {
+		name := m[1]
+		found := false
+		for _, st := range AllRunStatuses {
+			if fmt.Sprintf("RunStatus%s", exportedName(st)) == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("run.go declares %s but AllRunStatuses does not list it — derived CAS sets silently shrink", name)
+		}
+	}
+}
+
+// exportedName maps a status value back to its constant suffix.
+func exportedName(st RunStatus) string {
+	parts := strings.Split(string(st), "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, "")
 }

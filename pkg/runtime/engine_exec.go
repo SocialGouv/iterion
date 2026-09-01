@@ -62,8 +62,15 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
-			return e.failRunWithCheckpoint(rs, currentNodeID,
-				fmt.Sprintf("node %q not found", currentNodeID))
+			// Typed, not the EXECUTION_FAILED catch-all: this is the
+			// resume-after-source-edit wall, and the auto-resume gate
+			// refuses to re-hit a deterministic wall only when the code
+			// says which wall it is.
+			return e.failRunErrWithCheckpoint(rs, currentNodeID, &RuntimeError{
+				Code:    ErrCodeNodeNotFound,
+				Message: fmt.Sprintf("node %q not found", currentNodeID),
+				NodeID:  currentNodeID,
+			})
 		}
 
 		// A specially-dispatched node (fan-out, round-robin, LLM router,

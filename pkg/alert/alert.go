@@ -102,9 +102,13 @@ func (a Alert) WebhookText() string {
 	}
 	if a.Reason != "" {
 		fmt.Fprintf(&b, "\nReason: %s", a.Reason)
-	}
-	if a.FailureCode != "" {
-		fmt.Fprintf(&b, " [%s]", a.FailureCode)
+		if a.FailureCode != "" {
+			fmt.Fprintf(&b, " [%s]", a.FailureCode)
+		}
+	} else if a.FailureCode != "" {
+		// No prose to annotate — the code gets its own line rather
+		// than visually qualifying the node or the run name above.
+		fmt.Fprintf(&b, "\nCode: %s", a.FailureCode)
 	}
 	// Only when there IS a ratio. A dimension whose budget_warning payload
 	// carries no used/limit pair (cost_usd_unpriced: tokens burned at an

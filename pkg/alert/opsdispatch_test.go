@@ -294,3 +294,50 @@ func TestOpsDispatcher_LoserNeverCertifiesAPendingClaim(t *testing.T) {
 		t.Fatalf("%d alerts after release + healthy sweep, want 1 — the loser's stamp silenced the episode forever", got)
 	}
 }
+
+// A SECOND park with a DIFFERENT failure code is a genuinely new
+// incident even when RetryState.Attempts stands still (ScheduleRunRetry
+// is its only writer, and an unretryable re-park never calls it). The
+// episode key must discriminate on the code, or the operator never
+// hears that the run now needs a manual resume.
+func TestOpsDispatcher_NewFailureCodeIsANewEpisode(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	reset := time.Now().Add(3 * time.Hour).UTC()
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "usage cap: weekly window"
+		r.FailureCode = store.FailureUsageLimitBlocked
+		r.RetryState = &store.RunRetryState{RetryAfter: &reset, Reason: "usage_window", Attempts: 1}
+	})
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("first park: %d alerts, want 1", got)
+	}
+
+	// Resume, then re-park on an UNRETRYABLE cause: attempts unchanged,
+	// no retry armed, different code.
+	run2, _ := rs.LoadRun(context.Background(), run.ID)
+	run2.Status = store.RunStatusFailedResumable
+	run2.Error = "anthropic: invalid api key"
+	run2.FailureCode = store.FailureAuthFailed
+	run2.RetryState = &store.RunRetryState{Attempts: 1}
+	run2.UpdatedAt = run2.UpdatedAt.Add(10 * time.Minute)
+	if err := rs.SaveRun(context.Background(), run2); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	alerts := sink.alerts()
+	if len(alerts) != 2 {
+		t.Fatalf("second park with a new failure code: %d alerts, want 2 — the manual-intervention incident was silenced", len(alerts))
+	}
+	if alerts[1].FailureCode != string(store.FailureAuthFailed) {
+		t.Errorf("second alert code = %q, want AUTH_FAILED", alerts[1].FailureCode)
+	}
+	// Same code repeated (a bookkeeping bump) stays ONE episode.
+	run3, _ := rs.LoadRun(context.Background(), run.ID)
+	run3.UpdatedAt = run3.UpdatedAt.Add(90 * time.Second)
+	_ = rs.SaveRun(context.Background(), run3)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 2 {
+		t.Fatalf("repeat of the same code: %d alerts, want still 2", got)
+	}
+}
