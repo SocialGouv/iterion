@@ -478,6 +478,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    cron) whose owner is a synthetic identity with no personal
 	//    forfait. The runner falls back to env when neither an API key
 	//    nor an OAuth bundle is present.
+	skippedForfaits := map[string]skippedForfait{}
 	if p.oauthForfait != nil {
 		addOAuth := func(ownerKey, label string) {
 			if ownerKey == "" {
@@ -508,6 +509,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
 					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
 						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+					// Remembered: if the end of the resolution finds the
+					// wire still empty, this forfait is restored — a
+					// parked run with a durable retry beats a stuck one.
+					if _, seen := skippedForfaits[string(rec.Kind)]; !seen {
+						skippedForfaits[string(rec.Kind)] = skippedForfait{payload: payload, fp: rec.Fingerprint}
+					}
 					continue
 				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
@@ -555,6 +562,30 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	//    credential while still consuming the donor's quota and slot.
 	if res.grant == nil {
 		p.fillFromPlatform(ctx, runID, &bundle)
+	}
+
+	// A skipped forfait is only an improvement when some other tier could
+	// actually serve its wire. If nothing did — no second forfait, no
+	// pool grant, no platform credential — restore it: the run then
+	// parks on the provider refusal with a DURABLE usage-window retry,
+	// instead of failing on a no-credential auth error nothing retries.
+	if len(skippedForfaits) > 0 {
+		taken := map[string]bool{}
+		for prov := range bundle.APIKeys {
+			taken[secrets.WireFamily(string(prov))] = true
+		}
+		for kind := range bundle.OAuthCredentials {
+			taken[secrets.WireFamily(kind)] = true
+		}
+		for kind, sf := range skippedForfaits {
+			if taken[secrets.WireFamily(kind)] {
+				continue
+			}
+			bundle.OAuthCredentials[kind] = sf.payload
+			setOAuthFingerprint(&bundle, kind, sf.fp)
+			taken[secrets.WireFamily(kind)] = true
+			p.logger.Info("cloudpublisher: window-closed forfait RESTORED for run=%s kind=%s fp=%s — no other tier could serve; a parked run with a durable retry beats a stuck one", runID, kind, sf.fp)
+		}
 	}
 
 	// Record which review families the resolved credentials back — every
@@ -721,16 +752,12 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 			if !fillable(string(rec.Kind)) {
 				continue
 			}
-			// The platform forfait obeys the same rule as the tenant tiers:
-			// a provider-refused window makes it unusable, and handing it
-			// over anyway costs one LLM call and a park until the reset.
-			// Skipping leaves the slot for the runner's env backstop — the
-			// documented tier below this one.
-			if until, why := p.forfaitWindowClosed(ctx, "", secrets.PlatformOwnerKey, rec); !until.IsZero() {
-				p.logger.Info("cloudpublisher: platform oauth-forfait SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); the env backstop remains",
-					runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
-				continue
-			}
+			// Deliberately NO window skip here: the platform tier is the
+			// last DB-backed tier, and the runner's env backstop is
+			// invisible from the publisher. Skipping a refused platform
+			// forfait could only trade a self-healing park (one refused
+			// call, durable usage-window retry) for a possibly-stuck run
+			// with no credential at all.
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
@@ -768,6 +795,13 @@ var poolWantOrder = func() []credpool.Credential {
 	}
 	return out
 }()
+
+// skippedForfait remembers a window-closed forfait so the end of the
+// resolution can restore it when no other tier served its wire.
+type skippedForfait struct {
+	payload []byte
+	fp      string
+}
 
 // usageCapLookupTimeout bounds the meter read on the launch path — the
 // same ceiling the runner puts on the identical call. The meter is an
@@ -825,6 +859,15 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey 
 	var why string
 	for _, r := range readings {
 		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
+			continue
+		}
+		// Windows usagecap itself never blocks on are no evidence here
+		// either: a rejected OVERAGE reading is about the pay-as-you-go
+		// money channel, and an unknown window must not be folded into
+		// a rule that was never meant to govern it (usagecap.FamilyOf's
+		// own contract). The store is populated unfiltered, so the
+		// filter has to live at the consumer.
+		if usagecap.FamilyOf(r.Window) == usagecap.FamilyNone {
 			continue
 		}
 		reopen := r.ResetsAt

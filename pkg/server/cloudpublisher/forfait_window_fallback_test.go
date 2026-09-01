@@ -128,6 +128,25 @@ func TestForfaitWindowClosed_staysConservative(t *testing.T) {
 				ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
 			},
 		},
+		{
+			// usagecap itself never blocks on overage (it is the
+			// pay-as-you-go MONEY channel, bounded by budget flags, not
+			// quota) — a rejected overage reading is no refusal evidence.
+			name: "rejected overage window is not quota evidence",
+			reading: usagecap.Reading{
+				Window: usagecap.WindowOverage, Status: usagecap.StatusRejected, Utilization: 1,
+				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
+			},
+		},
+		{
+			// FamilyOf's contract: an unknown window is not silently
+			// folded into a rule that was never meant to govern it.
+			name: "rejected unknown window is not quota evidence",
+			reading: usagecap.Reading{
+				Window: usagecap.Window("five_minute_burst"), Status: usagecap.StatusRejected, Utilization: 1,
+				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -159,49 +178,35 @@ func (failingUsageStore) Latest(context.Context, string) ([]usagecap.Reading, er
 	return nil, context.DeadlineExceeded
 }
 
-// The deployment's own forfait (tier 5, fillFromPlatform) obeys the same
-// rule. It meters under ScopePlatform and the reserved owner key, and it
-// is only reached when no tenant tier and no pool served — so the fixture
-// here deliberately has NO pool: a vacuous path would leave the platform
-// skip untested (measured: the previous version of this test never
-// reached fillFromPlatform at all, and passed with the skip deleted).
-func TestForfaitWindowClosed_platformScope(t *testing.T) {
+// The last-tier rule is DELIBERATELY the opposite of the tenant tiers:
+// the platform forfait is handed over even when the provider refused it.
+// The platform tier is the last DB-backed tier and the runner's env
+// backstop is invisible from the publisher — skipping here could only
+// trade a self-healing park (one refused call, durable usage-window
+// retry) for a possibly-stuck run with no credential at all.
+func TestForfaitWindowClosed_platformTierHandsOverRegardless(t *testing.T) {
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("sealer: %v", err)
 	}
-	newPlatformPub := func(t *testing.T) (*poolFixture, string) {
-		t.Helper()
-		oauth := secrets.NewMemoryOAuthStore()
-		seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
-		recs, err := oauth.ListByUser(context.Background(), secrets.PlatformOwnerKey)
-		if err != nil || len(recs) != 1 {
-			t.Fatalf("seeded platform forfait unreadable: %v (%d records)", err, len(recs))
-		}
-		rs := secrets.NewMemoryRunSecretsStore()
-		f := &poolFixture{
-			pub: &Publisher{
-				runSecrets:   rs,
-				sealer:       sealer,
-				oauthForfait: oauth,
-				logger:       iterlog.New(iterlog.LevelError, nil),
-			},
-			rs: rs, sealer: sealer,
-		}
-		return f, recs[0].Fingerprint
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
+	recs, err := oauth.ListByUser(context.Background(), secrets.PlatformOwnerKey)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("seeded platform forfait unreadable: %v (%d records)", err, len(recs))
 	}
-
-	// Baseline: the platform forfait serves a credential-less run.
-	f, _ := newPlatformPub(t)
-	if got := bundleToken(t, f, "run-platform-baseline"); !contains(got, "sk-ant-platform") {
-		t.Fatalf("baseline: the platform forfait must serve, got %q", got)
+	rs := secrets.NewMemoryRunSecretsStore()
+	f := &poolFixture{
+		pub: &Publisher{
+			runSecrets:   rs,
+			sealer:       sealer,
+			oauthForfait: oauth,
+			logger:       iterlog.New(iterlog.LevelError, nil),
+		},
+		rs: rs, sealer: sealer,
 	}
-
-	// Refused: the same run must NOT get the platform forfait — the slot
-	// stays empty for the runner's env backstop.
-	f, fp := newPlatformPub(t)
 	st := usagecap.NewMemStore()
-	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp)
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, recs[0].Fingerprint)
 	if err := st.Record(context.Background(), key, usagecap.Reading{
 		Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
 		ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
@@ -209,23 +214,49 @@ func TestForfaitWindowClosed_platformScope(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	f.pub.usageCaps = st
-	if got := bundleToken(t, f, "run-platform-window"); contains(got, "sk-ant-platform") {
-		t.Fatalf("the refused platform forfait was handed over: %q", got)
+	if got := bundleToken(t, f, "run-platform-window"); !contains(got, "sk-ant-platform") {
+		t.Fatalf("the platform forfait must be handed over even refused (park beats stuck), got %q", got)
 	}
+}
 
-	// The scope must be the platform's: the same refusal recorded under a
-	// tenant scope describes a DIFFERENT meter and must not skip.
-	f, fp = newPlatformPub(t)
-	st = usagecap.NewMemStore()
-	wrongKey := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), fp)
-	if err := st.Record(context.Background(), wrongKey, usagecap.Reading{
-		Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
-		ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+// A skipped forfait is only an improvement when another tier can serve.
+// With NO pool and NO platform credential, the refused tenant forfait is
+// RESTORED at the end of the resolution: the run then parks on the
+// provider refusal with a durable usage-window retry, instead of failing
+// on a no-credential auth error nothing retries.
+func TestForfaitWindowClosed_restoredWhenNoTierCanServe(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	oauth := secrets.NewMemoryOAuthStore()
+	seedOAuth(t, oauth, sealer, secrets.OrgOwnerKey(poolTeam), "sk-ant-tenant-own")
+	recs, err := oauth.ListByUser(context.Background(), secrets.OrgOwnerKey(poolTeam))
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("seeded forfait unreadable: %v (%d records)", err, len(recs))
+	}
+	rs := secrets.NewMemoryRunSecretsStore()
+	f := &poolFixture{
+		pub: &Publisher{
+			// NO credPool, NO platform records: the skip has nowhere to
+			// fall through to.
+			runSecrets:   rs,
+			sealer:       sealer,
+			oauthForfait: oauth,
+			logger:       iterlog.New(iterlog.LevelError, nil),
+		},
+		rs: rs, sealer: sealer,
+	}
+	st := usagecap.NewMemStore()
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), recs[0].Fingerprint)
+	if err := st.Record(context.Background(), key, usagecap.Reading{
+		Window: usagecap.WindowFiveHour, Status: usagecap.StatusRejected, Utilization: 1,
+		ResetsAt: time.Now().Add(3 * time.Hour), ObservedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	f.pub.usageCaps = st
-	if got := bundleToken(t, f, "run-platform-wrong-scope"); !contains(got, "sk-ant-platform") {
-		t.Fatalf("a tenant-scoped refusal skipped the platform forfait, got %q", got)
+	if got := bundleToken(t, f, "run-restore"); !contains(got, "sk-ant-tenant-own") {
+		t.Fatalf("the refused forfait must be RESTORED when no tier can serve, got %q", got)
 	}
 }
