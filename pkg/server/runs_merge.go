@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
+
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -383,18 +384,19 @@ func (s *Server) handleAbortMergeConflict(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// sameForgeHost reports whether two URLs point at the same forge host
-// (case-insensitive hostname comparison; ports and paths ignored — a
-// connection's base URL is canonicalised to scheme+host at connect
-// time).
+// sameForgeHost reports whether two git URLs point at the same forge
+// host (case-insensitive; ports and paths ignored — a connection's
+// base URL is canonicalised to scheme+host at connect time). Uses the
+// shared extractor so the scp-like form a schedule can carry
+// ([user@]host:path) matches instead of being refused as hostless.
 func sameForgeHost(baseURL, repoURL string) bool {
-	b, err := url.Parse(baseURL)
-	if err != nil || b.Hostname() == "" {
+	b, err := gitlib.RepoHost(baseURL)
+	if err != nil {
 		return false
 	}
-	r, err := url.Parse(repoURL)
-	if err != nil || r.Hostname() == "" {
+	r, err := gitlib.RepoHost(repoURL)
+	if err != nil {
 		return false
 	}
-	return strings.EqualFold(b.Hostname(), r.Hostname())
+	return strings.EqualFold(b, r)
 }

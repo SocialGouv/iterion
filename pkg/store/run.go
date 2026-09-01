@@ -860,6 +860,15 @@ type RunMergeUpdate struct {
 	MergeStrategy       MergeStrategy
 	PendingMergeMessage string
 	PendingMergeInto    string
+	// ExpectClaimedAt scopes an exit from "merging" to ONE claim: when
+	// non-zero, the CAS additionally requires the persisted
+	// MergeClaimedAt to equal it (the token ClaimMerge returned). A
+	// claimant whose claim was stolen for staleness then matches
+	// nothing — it cannot consume the live claimant's claim, so a late
+	// failure write can never overwrite the state of the worker that
+	// took over. Zero skips the check (exits from non-merging states,
+	// which carry no claim).
+	ExpectClaimedAt time.Time
 }
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).

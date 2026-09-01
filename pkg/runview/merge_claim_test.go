@@ -152,7 +152,7 @@ func TestPerformMerge_HeldClaimRejects(t *testing.T) {
 	st, svc, runID := seedMergeableRun(t)
 	ctx := context.Background()
 
-	claimed, prior, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
+	claimed, prior, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
 	if err != nil || !claimed {
 		t.Fatalf("seed claim: claimed=%v err=%v", claimed, err)
 	}
@@ -176,7 +176,7 @@ func TestPerformMerge_StaleClaimIsStolen(t *testing.T) {
 	st, svc, runID := seedMergeableRun(t)
 	ctx := context.Background()
 
-	if claimed, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter)); err != nil || !claimed {
+	if claimed, _, _, err := st.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter)); err != nil || !claimed {
 		t.Fatalf("seed claim: claimed=%v err=%v", claimed, err)
 	}
 	// Age the claim past the staleness bound.
@@ -248,5 +248,66 @@ func TestUpdateRunMergeIf_CannotClobberMerged(t *testing.T) {
 	r, _ := st.LoadRun(ctx, runID)
 	if r.MergeStatus != store.MergeStatusMerged || r.MergedCommit == "" {
 		t.Fatalf("merged record damaged: status=%q commit=%q", r.MergeStatus, r.MergedCommit)
+	}
+}
+
+// A run RecoverFinalize left as "skipped" stays mergeable — on main it
+// was, and refusing it would strand every recovered run.
+func TestPerformMerge_SkippedIsMergeable(t *testing.T) {
+	st, svc, runID := seedMergeableRun(t)
+	ctx := context.Background()
+
+	r, err := st.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	r.MergeStatus = store.MergeStatusSkipped
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	if _, err := svc.PerformMergeCtx(ctx, runID, MergeRequest{}); err != nil {
+		t.Fatalf("a skipped run must stay mergeable, got: %v", err)
+	}
+	r, _ = st.LoadRun(ctx, runID)
+	if r.MergeStatus != store.MergeStatusMerged {
+		t.Fatalf("MergeStatus=%q, want merged", r.MergeStatus)
+	}
+}
+
+// cancelSensitiveStore refuses merge-state writes on a dead context —
+// the behaviour of a real remote store (Mongo), which the filesystem
+// store cannot exhibit because it ignores ctx.
+type cancelSensitiveStore struct {
+	store.RunStore
+}
+
+func (c cancelSensitiveStore) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return c.RunStore.UpdateRunMergeIf(ctx, id, upd, expectedFrom)
+}
+
+// The merge outcome must not ride the request context: once the claim
+// is held, a client disconnect (cancelled request ctx) must neither
+// lose the outcome nor leak the claim. Against a ctx-honouring store,
+// a merge driven by an already-cancelled request still lands and
+// persists — proof the state writes are detached.
+func TestPerformMerge_OutcomeSurvivesRequestCancel(t *testing.T) {
+	st, _, runID := seedMergeableRun(t)
+
+	svc, err := NewService("", WithLogger(iterlog.Nop()), WithStore(cancelSensitiveStore{st}))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := svc.PerformMergeCtx(cancelled, runID, MergeRequest{}); err != nil {
+		t.Fatalf("merge under a cancelled request ctx must still persist, got: %v", err)
+	}
+	r, _ := st.LoadRun(context.Background(), runID)
+	if r.MergeStatus != store.MergeStatusMerged {
+		t.Fatalf("MergeStatus=%q, want merged (outcome lost to the request ctx)", r.MergeStatus)
 	}
 }

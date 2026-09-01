@@ -768,12 +768,17 @@ func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
 // the flip to "merging" only lands when the persisted status is
 // claimable — unset/pending/failed, or a "merging" whose claim stamp
 // predates staleBefore (the previous claimant crashed mid-merge).
-func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, error) {
-	now := time.Now().UTC()
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+	// Millisecond precision: BSON stores times in ms, and the token
+	// must compare equal after a round-trip.
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	claimable := bson.M{"$or": bson.A{
-		bson.M{"merge_status": bson.M{"$in": bson.A{"", store.MergeStatusPending, store.MergeStatusFailed}}},
+		bson.M{"merge_status": bson.M{"$in": bson.A{"", store.MergeStatusPending, store.MergeStatusFailed, store.MergeStatusSkipped, store.MergeStatusConflicted}}},
 		bson.M{"merge_status": bson.M{"$exists": false}},
 		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$lt": staleBefore}},
+		// A "merging" without a stamp (a full-document writer dropped
+		// it) counts as infinitely stale — it must not wedge the run.
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
 	}}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
 	update := bson.M{
@@ -788,10 +793,10 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 	}
 	err := s.runs.FindOneAndUpdate(ctx, filter, update, opts).Decode(&before)
 	if err == nil {
-		return true, before.MergeStatus, nil
+		return true, before.MergeStatus, now, nil
 	}
 	if !errors.Is(err, mongo.ErrNoDocuments) {
-		return false, "", fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
 	}
 	// Not claimable (or missing): read the current status so the caller
 	// can say WHY the claim was refused.
@@ -802,11 +807,11 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 		options.FindOne().SetProjection(bson.M{"merge_status": 1})).Decode(&cur)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return false, "", fmt.Errorf("store/mongo: claim merge: run %s not found", id)
+			return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge: run %s not found", id)
 		}
-		return false, "", fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
 	}
-	return false, cur.MergeStatus, nil
+	return false, cur.MergeStatus, time.Time{}, nil
 }
 
 // UpdateRunMergeIf is the compare-and-set exit from the merge state
@@ -830,12 +835,32 @@ func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMe
 	stringField("pending_merge_message", upd.PendingMergeMessage)
 	stringField("pending_merge_into", upd.PendingMergeInto)
 	update := bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}}
-	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{mergeStatusFilter(expectedFrom)}}))
+	cas := bson.A{mergeStatusFilter(expectedFrom)}
+	if !upd.ExpectClaimedAt.IsZero() {
+		// Scope the exit to ONE claim: a claimant whose claim was
+		// stolen must not consume its successor's (see RunMergeUpdate).
+		cas = append(cas, bson.M{"merge_claimed_at": upd.ExpectClaimedAt})
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": cas}))
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
 	}
-	return res.MatchedCount > 0, nil
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	// Distinguish "state drifted" (a CAS outcome the caller handles)
+	// from "run missing" (an error — a silently absorbed write would
+	// masquerade as a lost race).
+	exists := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"_id": 1}))
+	if err := exists.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, fmt.Errorf("store/mongo: update merge if: run %s not found", id)
+		}
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	return false, nil
 }
 
 // FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the

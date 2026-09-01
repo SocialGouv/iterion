@@ -414,10 +414,16 @@ func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id stri
 // once stale (the previous claimant crashed mid-merge).
 func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
 	switch cur {
-	case "", MergeStatusPending, MergeStatusFailed:
+	case "", MergeStatusPending, MergeStatusFailed, MergeStatusSkipped, MergeStatusConflicted:
+		// skipped and conflicted stay claimable: /merge is the only
+		// path that re-materialises a lost server-side merge clone, and
+		// a recovered run (RecoverFinalize lands "skipped") must stay
+		// mergeable. The exit CAS still serialises the outcome.
 		return true
 	case MergeStatusMerging:
-		return claimedAt.Before(staleBefore)
+		// A zero claimedAt (a full-document writer dropped the stamp)
+		// counts as infinitely stale — it must not wedge the run.
+		return claimedAt.IsZero() || claimedAt.Before(staleBefore)
 	default:
 		return false
 	}
@@ -426,25 +432,28 @@ func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
 // ClaimMerge is the compare-and-set entry to the merge state machine
 // (see store.RunStore). Guarded by the store mutex, so concurrent
 // claimants in one process serialize here.
-func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefore time.Time) (bool, MergeStatus, error) {
+func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefore time.Time) (bool, MergeStatus, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	r, err := s.loadRunRaw(id)
 	if err != nil {
-		return false, "", err
+		return false, "", time.Time{}, err
 	}
 	prior := r.MergeStatus
 	if !mergeClaimable(prior, r.MergeClaimedAt, staleBefore) {
-		return false, prior, nil
+		return false, prior, time.Time{}, nil
 	}
+	// Millisecond precision: the token must survive a Mongo round-trip
+	// identically on both backends, and BSON stores times in ms.
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	r.MergeStatus = MergeStatusMerging
-	r.MergeClaimedAt = time.Now().UTC()
-	r.UpdatedAt = time.Now().UTC()
+	r.MergeClaimedAt = now
+	r.UpdatedAt = now
 	if err := s.writeRun(r); err != nil {
-		return false, prior, err
+		return false, prior, time.Time{}, err
 	}
-	return true, prior, nil
+	return true, prior, now, nil
 }
 
 // UpdateRunMergeIf is the compare-and-set exit from the merge state
@@ -466,6 +475,11 @@ func (s *FilesystemRunStore) UpdateRunMergeIf(_ context.Context, id string, upd 
 		}
 	}
 	if !matched {
+		return false, nil
+	}
+	if !upd.ExpectClaimedAt.IsZero() && !r.MergeClaimedAt.Equal(upd.ExpectClaimedAt) {
+		// The claim this writer holds was stolen — its exit consumes
+		// nothing.
 		return false, nil
 	}
 	r.MergeStatus = upd.Status

@@ -384,32 +384,10 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 // determined (defence in depth — ValidateCloneSource has already rejected
 // hostless and unsupported-transport forms above).
 func extractRepoHost(repoURL string) (string, error) {
-	s := strings.TrimSpace(repoURL)
-	if i := strings.Index(s, "://"); i >= 0 {
-		u, err := url.Parse(s)
-		if err != nil {
-			return "", fmt.Errorf("parse: %w", err)
-		}
-		host := u.Hostname()
-		if host == "" {
-			return "", fmt.Errorf("missing host in %q", repoURL)
-		}
-		return host, nil
-	}
-	// scp-like: `[user@]host:path`. ValidateCloneSource already requires
-	// the colon to come before any slash and the host to be non-empty.
-	colon := strings.Index(s, ":")
-	if colon <= 0 {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	host := s[:colon]
-	if at := strings.LastIndex(host, "@"); at >= 0 {
-		host = host[at+1:]
-	}
-	if host == "" {
-		return "", fmt.Errorf("missing host in %q", repoURL)
-	}
-	return host, nil
+	// ValidateCloneSource already requires the scp-like colon to come
+	// before any slash and the host to be non-empty; the shared helper
+	// enforces the same shape.
+	return gitlib.RepoHost(repoURL)
 }
 
 // gitOpTimeout bounds a single runner-side git subprocess. Without it a

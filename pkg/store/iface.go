@@ -134,13 +134,16 @@ type RunStore interface {
 	// ClaimMerge is the compare-and-set entry to the merge state
 	// machine: it flips MergeStatus to "merging" and stamps
 	// MergeClaimedAt, iff the current status is claimable — "",
-	// "pending" or "failed", or a "merging" whose MergeClaimedAt is
-	// before staleBefore (the previous claimant crashed; a wedged claim
-	// must not block the run forever). Returns the status the run held
-	// before the claim so an aborted attempt can restore it, and
-	// claimed=false (with the current status) when someone else holds
-	// the claim or the run is already merged/skipped/conflicted.
-	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, err error)
+	// "pending", "failed", "skipped" or "conflicted", or a "merging"
+	// whose MergeClaimedAt is before staleBefore or unset (the previous
+	// claimant crashed; a wedged claim must not block the run forever).
+	// Returns the status the run held before the claim so an aborted
+	// attempt can restore it, plus the claim token (the exact
+	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
+	// every exit so a stolen claim cannot consume its successor's), and
+	// claimed=false (with the current status) when someone else holds a
+	// fresh claim or the run is already merged.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
 	// UpdateRunMergeIf is the compare-and-set exit from the merge state
 	// machine: it persists upd's merge fields iff the current
 	// MergeStatus is in expectedFrom (empty string matches an unset

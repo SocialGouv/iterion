@@ -364,7 +364,7 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// build a squash for the same run — the loser stops HERE, before
 	// any clone or push. The claim is released on every early exit and
 	// consumed by exactly one conditional persist below.
-	claimed, prior, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
+	claimed, prior, claimToken, err := s.store.ClaimMerge(ctx, runID, time.Now().Add(-mergeClaimStaleAfter))
 	if err != nil {
 		return nil, err
 	}
@@ -378,6 +378,12 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 			return nil, fmt.Errorf("run %q is not mergeable from merge_status=%q", runID, prior)
 		}
 	}
+	// Merge-state writes ride a context detached from the request: once
+	// the claim is held (and a fortiori once git has run), a client
+	// disconnect or ingress timeout must not be able to leak the claim
+	// or lose the outcome — a cancelled release would wedge the run in
+	// "merging" for the whole staleness window.
+	wctx := context.WithoutCancel(ctx)
 	r.MergeStatus = store.MergeStatusMerging
 	// Until an outcome is persisted, every exit restores the pre-claim
 	// state so an aborted attempt (bad token, unreachable repo) leaves
@@ -395,7 +401,8 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 		}
 		upd := mergeUpdateFromRun(r)
 		upd.Status = restoreTo
-		if changed, rerr := s.store.UpdateRunMergeIf(ctx, runID, upd, []store.MergeStatus{store.MergeStatusMerging}); rerr != nil || !changed {
+		upd.ExpectClaimedAt = claimToken
+		if changed, rerr := s.store.UpdateRunMergeIf(wctx, runID, upd, []store.MergeStatus{store.MergeStatusMerging}); rerr != nil || !changed {
 			if s.logger != nil {
 				s.logger.Warn("runview: release merge claim for %s (restore to %q): changed=%v err=%v", runID, restoreTo, changed, rerr)
 			}
@@ -427,7 +434,7 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	// outside the studio), there's nothing to squash — a redundant squash
 	// would just build a confusing empty commit. Reconcile to "merged" and
 	// return a no-op success instead.
-	if ok, rcErr := s.reconcileOutOfBandMerge(ctx, r, repoRoot, resolveMergeTargetForPersistence(req.MergeInto, repoRoot), []store.MergeStatus{store.MergeStatusMerging}); rcErr != nil {
+	if ok, rcErr := s.reconcileOutOfBandMergeClaimed(wctx, r, repoRoot, resolveMergeTargetForPersistence(req.MergeInto, repoRoot), claimToken); rcErr != nil {
 		return nil, rcErr
 	} else if ok {
 		persisted = true
@@ -473,18 +480,30 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 			r.MergeStrategy = store.MergeStrategySquash
 			r.PendingMergeMessage = message
 			r.PendingMergeInto = resolveMergeTargetForPersistence(req.MergeInto, repoRoot)
-			if changed, saveErr := s.store.UpdateRunMergeIf(ctx, runID, mergeUpdateFromRun(r), []store.MergeStatus{store.MergeStatusMerging}); (saveErr != nil || !changed) && s.logger != nil {
-				s.logger.Warn("runview: persist merge conflict for %s: changed=%v err=%v", runID, changed, saveErr)
+			upd := mergeUpdateFromRun(r)
+			upd.ExpectClaimedAt = claimToken
+			changed, saveErr := s.store.UpdateRunMergeIf(wctx, runID, upd, []store.MergeStatus{store.MergeStatusMerging})
+			if saveErr != nil || !changed {
+				if s.logger != nil {
+					s.logger.Warn("runview: persist merge conflict for %s: changed=%v err=%v", runID, changed, saveErr)
+				}
+			} else {
+				persisted = true
 			}
-			persisted = true
 			return nil, mergeErr
 		}
 		// Persist the failure so the studio can show "Retry merge".
 		r.MergeStatus = store.MergeStatusFailed
-		if changed, saveErr := s.store.UpdateRunMergeIf(ctx, runID, mergeUpdateFromRun(r), []store.MergeStatus{store.MergeStatusMerging}); (saveErr != nil || !changed) && s.logger != nil {
-			s.logger.Warn("runview: persist merge failure for %s: changed=%v err=%v", runID, changed, saveErr)
+		upd := mergeUpdateFromRun(r)
+		upd.ExpectClaimedAt = claimToken
+		changed, saveErr := s.store.UpdateRunMergeIf(wctx, runID, upd, []store.MergeStatus{store.MergeStatusMerging})
+		if saveErr != nil || !changed {
+			if s.logger != nil {
+				s.logger.Warn("runview: persist merge failure for %s: changed=%v err=%v", runID, changed, saveErr)
+			}
+		} else {
+			persisted = true
 		}
-		persisted = true
 		return nil, mergeErr
 	}
 
@@ -493,15 +512,21 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 	if remote {
 		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, res.MergedInto); pushErr != nil {
 			r.MergeStatus = store.MergeStatusFailed
-			if changed, saveErr := s.store.UpdateRunMergeIf(ctx, runID, mergeUpdateFromRun(r), []store.MergeStatus{store.MergeStatusMerging}); (saveErr != nil || !changed) && s.logger != nil {
-				s.logger.Warn("runview: persist merge failure for %s: changed=%v err=%v", runID, changed, saveErr)
+			upd := mergeUpdateFromRun(r)
+			upd.ExpectClaimedAt = claimToken
+			changed, saveErr := s.store.UpdateRunMergeIf(wctx, runID, upd, []store.MergeStatus{store.MergeStatusMerging})
+			if saveErr != nil || !changed {
+				if s.logger != nil {
+					s.logger.Warn("runview: persist merge failure for %s: changed=%v err=%v", runID, changed, saveErr)
+				}
+			} else {
+				persisted = true
 			}
-			persisted = true
 			return nil, fmt.Errorf("merged in the server-side clone but the push failed — %s does NOT carry the merge: %w", res.MergedInto, pushErr)
 		}
 	}
 	persisted = true
-	resp, err := s.persistMergeSuccess(ctx, r, res.MergedCommit, res.MergedInto, store.MergeStrategy(res.Strategy), []store.MergeStatus{store.MergeStatusMerging})
+	resp, err := s.persistMergeSuccess(wctx, r, res.MergedCommit, res.MergedInto, store.MergeStrategy(res.Strategy), []store.MergeStatus{store.MergeStatusMerging}, claimToken)
 	if err == nil && remote {
 		s.removeRepoTargetedMergeRoot(r.ID)
 	}
@@ -517,7 +542,17 @@ func (s *Service) PerformMergeCtx(ctx context.Context, runID string, req MergeRe
 // it reconciled, (false, nil) when there's nothing to do, and
 // (false, err) when the persist failed — the caller decides whether
 // that is fatal (PerformMerge) or best-effort (snapshot read).
+// reconcileOutOfBandMergeClaimed is the under-claim variant: the exit
+// is scoped to the caller's claim token.
+func (s *Service) reconcileOutOfBandMergeClaimed(ctx context.Context, r *store.Run, repoRoot, target string, claimToken time.Time) (bool, error) {
+	return s.reconcileOutOfBand(ctx, r, repoRoot, target, []store.MergeStatus{store.MergeStatusMerging}, claimToken)
+}
+
 func (s *Service) reconcileOutOfBandMerge(ctx context.Context, r *store.Run, repoRoot, target string, expectedFrom []store.MergeStatus) (bool, error) {
+	return s.reconcileOutOfBand(ctx, r, repoRoot, target, expectedFrom, time.Time{})
+}
+
+func (s *Service) reconcileOutOfBand(ctx context.Context, r *store.Run, repoRoot, target string, expectedFrom []store.MergeStatus, claimToken time.Time) (bool, error) {
 	if r == nil || r.FinalCommit == "" {
 		return false, nil
 	}
@@ -535,7 +570,9 @@ func (s *Service) reconcileOutOfBandMerge(ctx context.Context, r *store.Run, rep
 	r.MergeStatus = store.MergeStatusMerged
 	r.PendingMergeMessage = ""
 	r.PendingMergeInto = ""
-	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, mergeUpdateFromRun(r), expectedFrom)
+	upd := mergeUpdateFromRun(r)
+	upd.ExpectClaimedAt = claimToken
+	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, upd, expectedFrom)
 	if err != nil {
 		return false, fmt.Errorf("runview: persist out-of-band merge reconcile for %s: %w", r.ID, err)
 	}
@@ -779,13 +816,13 @@ func (s *Service) FinalizeMergeAfterConflict(ctx context.Context, runID, message
 		if pushErr := s.pushRepoTargetedMerge(ctx, repoRoot, token, target); pushErr != nil {
 			return nil, fmt.Errorf("conflict resolved and committed in the server-side clone but the push failed — %s does NOT carry the merge: %w", target, pushErr)
 		}
-		resp, perr := s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash, []store.MergeStatus{store.MergeStatusConflicted})
+		resp, perr := s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash, []store.MergeStatus{store.MergeStatusConflicted}, time.Time{})
 		if perr == nil {
 			s.removeRepoTargetedMergeRoot(r.ID)
 		}
 		return resp, perr
 	}
-	return s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash, []store.MergeStatus{store.MergeStatusConflicted})
+	return s.persistMergeSuccess(ctx, r, sha, target, store.MergeStrategySquash, []store.MergeStatus{store.MergeStatusConflicted}, time.Time{})
 }
 
 // AbortMergeConflict discards the in-progress squash merge: runs
@@ -805,15 +842,19 @@ func (s *Service) AbortMergeConflict(ctx context.Context, runID string) error {
 	r.MergeStatus = store.MergeStatusFailed
 	r.PendingMergeMessage = ""
 	r.PendingMergeInto = ""
-	if changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, mergeUpdateFromRun(r), []store.MergeStatus{store.MergeStatusConflicted}); err != nil {
-		return fmt.Errorf("runview: persist abort: %w", err)
-	} else if !changed {
-		return fmt.Errorf("runview: abort merge for %s: merge state changed concurrently — nothing aborted", r.ID)
-	}
+	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, mergeUpdateFromRun(r), []store.MergeStatus{store.MergeStatusConflicted})
 	if mergeRepoRoot(r) == "" && r.RepoURL != "" {
 		// Repo-targeted run: the server-side clone is disposable — drop
-		// it so a retried merge starts from a fresh checkout.
+		// it so a retried merge starts from a fresh checkout. Done even
+		// when the CAS below lost: `git reset --merge` already ran, the
+		// clone no longer matches any persisted state.
 		s.removeRepoTargetedMergeRoot(r.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("runview: persist abort: %w", err)
+	}
+	if !changed {
+		return fmt.Errorf("runview: abort merge for %s: merge state changed concurrently — nothing aborted", r.ID)
 	}
 	return nil
 }
@@ -873,14 +914,16 @@ func requireConflict(r *store.Run, runID string) error {
 // uses res.MergedInto from the runtime call; Finalize defaults
 // PendingMergeInto / current-branch). Strategy is supplied as a
 // pre-typed MergeStatus so this helper does no coercion.
-func (s *Service) persistMergeSuccess(ctx context.Context, r *store.Run, sha, target string, strategy store.MergeStrategy, expectedFrom []store.MergeStatus) (*MergeResponse, error) {
+func (s *Service) persistMergeSuccess(ctx context.Context, r *store.Run, sha, target string, strategy store.MergeStrategy, expectedFrom []store.MergeStatus, claimToken time.Time) (*MergeResponse, error) {
 	r.MergedCommit = sha
 	r.MergedInto = target
 	r.MergeStrategy = strategy
 	r.MergeStatus = store.MergeStatusMerged
 	r.PendingMergeMessage = ""
 	r.PendingMergeInto = ""
-	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, mergeUpdateFromRun(r), expectedFrom)
+	upd := mergeUpdateFromRun(r)
+	upd.ExpectClaimedAt = claimToken
+	changed, err := s.store.UpdateRunMergeIf(ctx, r.ID, upd, expectedFrom)
 	if err != nil {
 		return nil, fmt.Errorf("runview: persist merge result: %w", err)
 	}
@@ -890,7 +933,7 @@ func (s *Service) persistMergeSuccess(ctx context.Context, r *store.Run, sha, ta
 		// Do NOT overwrite: the next merge attempt reconciles via the
 		// out-of-band ancestry check. Surface the split-brain instead
 		// of hiding it.
-		return nil, fmt.Errorf("runview: merge of %s landed on %s at %s but the run record changed concurrently — record NOT updated (a later attempt reconciles via ancestry)", r.ID, target, sha)
+		return nil, fmt.Errorf("runview: merge of %s landed on %s at %s but the run record changed concurrently — record NOT updated (a retried merge heals the record — re-squashing an already-squashed branch is a no-op)", r.ID, target, sha)
 	}
 	return &MergeResponse{
 		MergedCommit:  r.MergedCommit,
