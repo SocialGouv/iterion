@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,7 +43,14 @@ func (s *FilesystemRunStore) writeRouteDecisions(runID string, ds []RouteDecisio
 	if err != nil {
 		return fmt.Errorf("store: marshal route decisions %s: %w", runID, err)
 	}
-	if err := os.WriteFile(s.routeDecisionsPath(runID), data, 0o644); err != nil {
+	// Atomic like every other run-scoped JSON persister in the package
+	// (store_atomic.go): a SIGKILL between truncate and write left a
+	// partial file that loadRouteDecisions could never decode again, so
+	// ClaimRouteDecision would error on every later offer and the run
+	// could not be routed at all — with its whole decision audit gone.
+	// Being fsync+rename is also what lets ListRoutableRuns read these
+	// files without the store mutex: a reader sees old-or-new, never torn.
+	if err := writeFileAtomic(s.routeDecisionsPath(runID), data, filePerm); err != nil {
 		return fmt.Errorf("store: write route decisions %s: %w", runID, err)
 	}
 	return nil
@@ -232,8 +241,28 @@ func (s *FilesystemRunStore) EnsureRouterWatermark(_ context.Context) (time.Time
 	if err != nil {
 		return time.Time{}, fmt.Errorf("store: marshal router watermark: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return time.Time{}, fmt.Errorf("store: write router watermark: %w", err)
+	// Exclusive-create, not a plain write: the store mutex only
+	// serialises THIS process, and the doc's own claim ("a second
+	// replica sharing the store reads the instant the switch FIRST went
+	// live") is exactly what a read-ENOENT-then-write pair cannot keep —
+	// both replicas would write and the later instant would win, moving
+	// the watermark forward and skipping the terminals in between. On a
+	// lost race the winner's file is read back below.
+	if err := WriteFileAtomicNew(path, data, filePerm); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return time.Time{}, fmt.Errorf("store: write router watermark: %w", err)
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return time.Time{}, fmt.Errorf("store: read router watermark after a lost create race: %w", rerr)
+		}
+		var wm struct {
+			ActivatedAt time.Time `json:"activated_at"`
+		}
+		if uerr := json.Unmarshal(raw, &wm); uerr != nil {
+			return time.Time{}, fmt.Errorf("store: parse router watermark: %w", uerr)
+		}
+		return wm.ActivatedAt, nil
 	}
 	return now, nil
 }
