@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.79.0](https://github.com/SocialGouv/iterion/compare/v3.78.1...v3.79.0) (2026-09-01)
+
+### Features
+
+* **runner:** park an unbankable attempt's work on its own ref ([#590](https://github.com/SocialGouv/iterion/issues/590)) ([14ea91e](https://github.com/SocialGouv/iterion/commit/14ea91ef065c745d88a6a5718434216c8f36f113))
+
+    <details><summary>why</summary>
+
+    An interrupted delivery, a paused run, and a bankable death on a lease-lost ctx all leave their commits stranded in the git-meta snapshot: the storage branch must not be touched (another pod may own the lease; FinalBranch on a half-done run would be merge-eligible mid-flight), so until now nothing was pushed at all, and turning the snapshot back into a branch takes a manual replay every time — the same measured cost the death bank closed for budget/failure outcomes (nine manual recoveries in…
+
+    </details>
+
 ## [3.78.1](https://github.com/SocialGouv/iterion/compare/v3.78.0...v3.78.1) (2026-08-31)
 
 ### Bug Fixes
