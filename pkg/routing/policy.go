@@ -262,11 +262,6 @@ func resolveRef(ctx *expr.Context, ref expr.Ref) any {
 			return nil
 		}
 		return ctx.Outputs(ref.Path)
-	case "run":
-		if ctx.Run == nil {
-			return nil
-		}
-		return ctx.Run(ref.Path)
 	default:
 		return nil
 	}
@@ -298,23 +293,6 @@ func exprContext(r *store.Run) *expr.Context {
 				}
 			}
 			return cur
-		},
-		Run: func(path []string) any {
-			if len(path) != 1 {
-				return nil
-			}
-			switch path[0] {
-			case "status":
-				return string(r.Status)
-			case "terminal_code":
-				return string(r.FailureCode)
-			case "final_branch":
-				return r.FinalBranch
-			case "final_commit":
-				return r.FinalCommit
-			default:
-				return nil
-			}
 		},
 	}
 }
