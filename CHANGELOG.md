@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.83.1](https://github.com/SocialGouv/iterion/compare/v3.83.0...v3.83.1) (2026-09-01)
+
+### Bug Fixes
+
+* **server:** a queued run waiting for a free runner is not an orphan ([#602](https://github.com/SocialGouv/iterion/issues/602)) ([a6d6fb9](https://github.com/SocialGouv/iterion/commit/a6d6fb987901c3fe9b808ca59b8b3890df243268))
+
+    <details><summary>why</summary>
+
+    The orphan sweeper reads "queued row, stale, no lease" as "the message is gone" and flips the run to failed_resumable. That is one of TWO causes with the same shape, and the other one is normal operation: a runner pod takes ONE run at a time, so a frozen pool is a hard parallelism ceiling — a campaign of multi-hour runs fills every pod and short runs simply wait their turn, unfetched, lease-less, and stale.
+
+    </details>
+
 ## [3.83.0](https://github.com/SocialGouv/iterion/compare/v3.82.1...v3.83.0) (2026-09-01)
 
 ### Features
