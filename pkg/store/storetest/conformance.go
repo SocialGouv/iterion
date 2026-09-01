@@ -58,6 +58,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
+	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -2217,5 +2218,103 @@ func testOutputsSurviveTerminal(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint == nil || r.Checkpoint.Outputs["gate"]["converged"] != true {
 		t.Fatalf("terminal outputs destroyed by the finish transition: %+v", r.Checkpoint)
+	}
+}
+
+// testRouteDecisionRegistry holds both registry backends to one
+// contract: the unique episode claim, the leased steal of an orphaned
+// "claimed" row, the bounded retry of "failed", the finish states, the
+// audit ordering and the sweep query.
+func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rds := store.AsRouteDecisionStore(s)
+	if rds == nil {
+		t.Skip("backend has no route-decision registry")
+	}
+	ctx := testCtx()
+	const runID = "run-route-registry"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Fresh claim; duplicate refused with the existing row.
+	claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge", Reason: "r1"})
+	if err != nil || !claimed {
+		t.Fatalf("first claim = (%t, %v)", claimed, err)
+	}
+	claimed, existing, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge"})
+	if err != nil || claimed || existing == nil || existing.State != store.RouteDecisionClaimed {
+		t.Fatalf("dup claim = (%t, %+v, %v), want refused with the claimed row", claimed, existing, err)
+	}
+
+	// Finish → succeeded; a succeeded episode is never reclaimable.
+	if err := rds.FinishRouteDecision(ctx, runID, 1, store.RouteDecisionSucceeded, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1}); err != nil || claimed {
+		t.Fatalf("succeeded episode reclaimed = (%t, %v)", claimed, err)
+	}
+
+	// A failed episode is reclaimable, but bounded by the attempt cap.
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}); err != nil || !claimed {
+		t.Fatalf("claim ep2 = (%t, %v)", claimed, err)
+	}
+	for attempt := 1; ; attempt++ {
+		if err := rds.FinishRouteDecision(ctx, runID, 2, store.RouteDecisionFailed, "transient"); err != nil {
+			t.Fatalf("fail ep2 (attempt %d): %v", attempt, err)
+		}
+		claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"})
+		if err != nil {
+			t.Fatalf("reclaim ep2: %v", err)
+		}
+		if !claimed {
+			if attempt < store.MaxRouteDecisionAttempts-1 {
+				t.Fatalf("failed episode refused after only %d attempts (cap %d)", attempt, store.MaxRouteDecisionAttempts)
+			}
+			break
+		}
+		if attempt > store.MaxRouteDecisionAttempts {
+			t.Fatalf("failed episode reclaimable beyond the cap (%d attempts)", attempt)
+		}
+	}
+
+	// The audit lists newest episode first.
+	ds, err := rds.ListRouteDecisions(ctx, runID)
+	if err != nil || len(ds) != 2 || ds[0].OutcomeSeq != 2 || ds[1].OutcomeSeq != 1 {
+		t.Fatalf("ListRouteDecisions = %+v (%v)", ds, err)
+	}
+
+	// The sweep query: only policy-carrying terminal runs, oldest first.
+	pol := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.g.ok", AllowedActions: []string{"merge"}}
+	pol.Hash = pol.ComputeHash()
+	mk := func(id string, terminal bool, withPolicy bool) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, _ := s.LoadRun(ctx, id)
+		if withPolicy {
+			r.RoutingPolicy = pol
+		}
+		if terminal {
+			r.Status = store.RunStatusFinished
+		}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	mk("routable-a", true, true)
+	mk("not-terminal", false, true)
+	mk("no-policy", true, false)
+	ids, err := rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["routable-a"] || found["not-terminal"] || found["no-policy"] {
+		t.Fatalf("sweep query = %v, want exactly the policy-carrying terminal run", ids)
 	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +20,9 @@ import (
 // service over the same store (so a merge decision performs a REAL
 // claimed merge).
 type routerHarness struct {
-	s  *Server
-	st *store.FilesystemRunStore
+	s   *Server
+	st  *store.FilesystemRunStore
+	dir string
 }
 
 func newRouterHarness(t *testing.T) *routerHarness {
@@ -34,10 +36,32 @@ func newRouterHarness(t *testing.T) *routerHarness {
 	if err != nil {
 		t.Fatalf("runview.NewService: %v", err)
 	}
+	t.Setenv(outcomeRouterEnv, "on")
 	s := newOrgTestServer(t)
 	s.cfg.Store = st
 	s.runs = svc
-	return &routerHarness{s: s, st: st}
+	return &routerHarness{s: s, st: st, dir: filepath.Join(dir, "store")}
+}
+
+// ageRun rewrites the run's persisted updated_at directly in the store
+// layout — no API refreshes it, which is exactly the point: the sweep
+// must find runs whose document has NOT moved.
+func (h *routerHarness) ageRun(t *testing.T, id string, to time.Time) {
+	t.Helper()
+	p := filepath.Join(h.dir, "runs", id, "run.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse run.json: %v", err)
+	}
+	doc["updated_at"] = to.UTC().Format(time.RFC3339Nano)
+	out, _ := json.Marshal(doc)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatalf("write run.json: %v", err)
+	}
 }
 
 // seedRun creates a terminal run with the given shape. outputs nil ⇒ no
@@ -133,16 +157,33 @@ func TestOutcomeRouter_IncidentFixtures(t *testing.T) {
 	}
 
 	// I5 — success claimed but the bank is empty (work_gate passed,
-	// store empty): escalate on integrity, never merge.
+	// store empty): never merged, and — per the adversarial review —
+	// never DECIDED either: the terminal status lands before the bank
+	// push, so consuming the episode here would burn it while a
+	// legitimate branch is still on its way. Silence; an explicit bank
+	// ERROR (FinalBranchError) escalates instead.
 	r = h.seedRun(t, "i5-empty-bank", func(r *store.Run) {
 		r.Status = store.RunStatusFinished
 		r.RoutingPolicy = mergePolicy("merge")
 		r.Checkpoint = outputs(true, false)
 	})
 	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds = h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("I5: an empty bank must not consume the episode, got %+v", ds)
+	}
+	if got, _ := h.st.LoadRun(ctx, r.ID); got.MergeStatus == store.MergeStatusMerged {
+		t.Fatal("I5: the bankless run was merged")
+	}
+	r = h.seedRun(t, "i5b-bank-error", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, false)
+		r.FinalBranchError = "branch create failed: reflog only"
+	})
+	h.s.routeOutcomeOffer(ctx, r.ID)
 	ds = h.decisions(t, r.ID)
-	if len(ds) != 1 || ds[0].Decision != "escalate" || !strings.Contains(ds[0].Reason, "bank is not intact") {
-		t.Fatalf("I5: want escalate on bank integrity, got %+v", ds)
+	if len(ds) != 1 || ds[0].Decision != "escalate" || !strings.Contains(ds[0].Reason, "bank recorded an error") {
+		t.Fatalf("I5b: want escalate on the recorded bank error, got %+v", ds)
 	}
 
 	// I6 — an interrupted run whose STALE checkpoint still shows green
@@ -291,8 +332,9 @@ func TestOutcomeRouter_NoEpisodeNoAction(t *testing.T) {
 	}
 }
 
-// The sweep net finds a policy-carrying terminal run the bus never
-// mentioned (the six silent terminal paths) — after the grace.
+// The sweep net — end to end, no bypass — finds a policy-carrying
+// terminal run the bus never mentioned (the six silent terminal paths)
+// once it leaves the grace, and waits while inside it.
 func TestOutcomeRouter_SweepFindsSilentTerminal(t *testing.T) {
 	h := newRouterHarness(t)
 	ctx := context.Background()
@@ -307,18 +349,89 @@ func TestOutcomeRouter_SweepFindsSilentTerminal(t *testing.T) {
 	if ds := h.decisions(t, r.ID); len(ds) != 0 {
 		t.Fatalf("inside grace, sweep must wait: %+v", ds)
 	}
-	// Age it past the grace and sweep again.
+	// Age the persisted document past the grace: the REAL sweep pass —
+	// ListRoutableRuns included — must now decide it.
+	h.ageRun(t, r.ID, time.Now().Add(-routerSweepGrace-time.Minute))
+	h.s.outcomeRouterSweepPass(ctx)
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].Decision != "escalate" {
+		t.Fatalf("sweep must decide the silent terminal: %+v", ds)
+	}
+}
+
+// H2 regression: an empty bank is NOT a decision. The terminal status
+// lands before the bank push; deciding "escalate" there would burn the
+// episode while the branch is still on its way. The router waits, and
+// once the bank lands the SAME episode merges.
+func TestOutcomeRouter_EmptyBankWaitsForThePush(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	r := h.seedRun(t, "bank-in-flight", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, false)
+		// No FinalBranch/FinalCommit yet: the push is still running.
+	})
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("an in-flight bank must not be decided: %+v", ds)
+	}
+	// The bank lands (same episode — the bank write does not transition
+	// status). Merge preconditions are checked against a real repo in
+	// TestOutcomeRouter_MergesAndCountsEpisodes; here assert the
+	// decision path claims the SAME episode once the bank exists.
 	raw, _ := h.st.LoadRun(ctx, r.ID)
-	raw.UpdatedAt = time.Now().Add(-routerSweepGrace - time.Minute)
+	seq := raw.OutcomeSeq
+	raw.FinalBranch, raw.FinalCommit = "iterion/run/late-bank", "abc"
 	if err := h.st.SaveRun(ctx, raw); err != nil {
 		t.Fatal(err)
 	}
-	// SaveRun refreshes UpdatedAt; write the aged stamp directly via the
-	// status-preserving save is not possible through the API — instead
-	// shrink the effective grace by offering with an explicit cutoff.
-	h.s.routeOutcomeOfferBefore(ctx, r.ID, time.Now().Add(time.Minute))
+	h.s.routeOutcomeOffer(ctx, r.ID)
 	ds := h.decisions(t, r.ID)
-	if len(ds) != 1 || ds[0].Decision != "escalate" {
-		t.Fatalf("sweep path must decide the silent terminal: %+v", ds)
+	if len(ds) != 1 || ds[0].OutcomeSeq != seq {
+		t.Fatalf("the same episode must be decided once the bank lands: %+v", ds)
+	}
+}
+
+// H1 regression: a "claimed" registry row whose holder died must not
+// strand a green run forever — the claim is leased, and a later offer
+// steals a stale one and completes the merge.
+func TestOutcomeRouter_OrphanClaimIsStolenAfterLease(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	r := h.seedRun(t, "orphan-claim", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, true) // blocker → escalate (no git needed)
+		r.FinalBranch, r.FinalCommit = "iterion/run/oc", "abc"
+	})
+	// A replica claimed this episode and died before acting.
+	if claimed, _, err := h.st.ClaimRouteDecision(ctx, store.RouteDecision{RunID: r.ID, OutcomeSeq: r.OutcomeSeq, Decision: "merge"}); err != nil || !claimed {
+		t.Fatalf("seed claim: %v", err)
+	}
+	// Fresh claim holds: the offer must NOT steal it.
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); len(ds) != 1 || ds[0].State != store.RouteDecisionClaimed {
+		t.Fatalf("fresh claim must hold: %+v", ds)
+	}
+	// Age the claim past the lease; the next offer steals and finishes.
+	dsPath := filepath.Join(h.dir, "runs", r.ID, "route_decisions.json")
+	raw, err := os.ReadFile(dsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []store.RouteDecision
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	rows[0].ClaimedAt = time.Now().Add(-store.RouteClaimLease - time.Minute)
+	out, _ := json.Marshal(rows)
+	if err := os.WriteFile(dsPath, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].State != store.RouteDecisionSucceeded || ds[0].Decision != "escalate" {
+		t.Fatalf("stale claim must be stolen and finished: %+v", ds)
 	}
 }

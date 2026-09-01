@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -14,6 +15,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
+// Contract fields the router does not execute yet, on purpose:
+// MaxRelaunches and the "resume" allowed action are validated at launch
+// and recorded with the decision, but relaunch/resume execution is not
+// wired — the registry row says so explicitly and an operator acts.
+//
 // The outcome router: the instance-side answer to "a run produced work
 // and nobody routed it". A terminal run that carries a RoutingPolicy is
 // offered here from two independent paths — the run-outcome bus (fast,
@@ -46,8 +52,8 @@ const (
 
 	// routerSweepLookback bounds a pass. Generous on purpose: a
 	// sleeping episode is the exact class this router exists for, and
-	// re-offering an already-decided run costs one registry read (the
-	// unique claim stops it).
+	// re-offering an already-decided run is cheap (on Mongo: a refused
+	// insert plus one conditional read — measured ~0.3ms per offer).
 	routerSweepLookback = 24 * time.Hour
 
 	// routerSweepBatch bounds one pass's candidate list.
@@ -82,7 +88,7 @@ func (s *Server) startOutcomeRouter() {
 			s.outcomeRouterCancel = cancel
 		}
 	}
-	go s.outcomeRouterSweepLoop()
+	errtrack.Go("server.outcomeRouterSweep", s.outcomeRouterSweepLoop)
 	if s.logger != nil {
 		s.logger.Info("server: outcome router attached (policy-carrying terminal runs are decided by their launch-frozen contract)")
 	}
@@ -115,6 +121,12 @@ func (s *Server) outcomeRouterSweepLoop() {
 }
 
 func (s *Server) outcomeRouterSweepPass(ctx context.Context) {
+	// Hot kill-switch: turning the router ON is an explicit rollout,
+	// but turning it OFF during an incident must not require one — a
+	// router that merges needs a stop that works immediately.
+	if !outcomeRouterEnabled() {
+		return
+	}
 	rds := store.AsRouteDecisionStore(s.cfg.Store)
 	if rds == nil {
 		return
@@ -140,7 +152,7 @@ func (s *Server) routeOutcomeOffer(ctx context.Context, runID string) {
 // design (the sweep offers plenty of runs that need nothing); every
 // DECISION leaves a registry row.
 func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, updatedBefore time.Time) {
-	if runID == "" || s.cfg.Store == nil || s.runs == nil {
+	if runID == "" || s.cfg.Store == nil || s.runs == nil || !outcomeRouterEnabled() {
 		return
 	}
 	rds := store.AsRouteDecisionStore(s.cfg.Store)
@@ -193,9 +205,19 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		decision = routing.DecisionEscalate
 		reason = fmt.Sprintf("contract says merge but the run is %s — stale checkpoint outputs are not a verdict (%s)", run.Status, verdict.Reason)
 	}
-	if decision == routing.DecisionMerge && (run.FinalBranch == "" || run.FinalCommit == "" || run.FinalBranchError != "") {
+	if decision == routing.DecisionMerge && run.FinalBranchError != "" {
 		decision = routing.DecisionEscalate
-		reason = fmt.Sprintf("contract says merge but the bank is not intact (branch=%q commit=%q err=%q)", run.FinalBranch, run.FinalCommit, run.FinalBranchError)
+		reason = fmt.Sprintf("contract says merge but the bank recorded an error: %s", run.FinalBranchError)
+	}
+	if decision == routing.DecisionMerge && (run.FinalBranch == "" || run.FinalCommit == "") {
+		// NOT a decision: the terminal status lands BEFORE the bank
+		// push (measured up to 10+ minutes on large repos, and the run
+		// doc's updated_at does not move in between). Claiming
+		// "escalate" here would burn the episode while the branch is
+		// still on its way — the bank write does not open a new one.
+		// Refuse silently; the bank's SaveRun refreshes updated_at and
+		// the sweep re-offers.
+		return
 	}
 
 	// --- One decision per episode: the registry claim. ---
@@ -212,11 +234,28 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		return
 	}
 	if !claimed {
-		_ = existing // episode already decided (possibly by another replica) — stop.
+		if existing != nil && s.logger != nil {
+			s.logger.Debug("server: outcome router: episode %s:%d already decided (%s/%s at %s)", run.ID, run.OutcomeSeq, existing.Decision, existing.State, existing.ClaimedAt.Format(time.RFC3339))
+		}
 		return
 	}
 
 	// --- Act. Every branch finishes the registry row. ---
+	// Re-read the run under the claim before any effect: the claim
+	// serialises DECISIONS, not the run document — an operator resume
+	// or a new episode landing between the guards above and this point
+	// must void the action, not race it.
+	if decision == routing.DecisionMerge {
+		fresh, ferr := s.cfg.Store.LoadRun(tctx, run.ID)
+		if ferr != nil || fresh == nil ||
+			fresh.Status != store.RunStatusFinished ||
+			fresh.OutcomeSeq != run.OutcomeSeq ||
+			fresh.MergeStatus == store.MergeStatusMerged {
+			s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed,
+				fmt.Sprintf("run moved between decision and action (err=%v) — nothing merged", ferr))
+			return
+		}
+	}
 	switch decision {
 	case routing.DecisionMerge:
 		req := runview.MergeRequest{}

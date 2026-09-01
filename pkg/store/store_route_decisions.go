@@ -61,15 +61,33 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 	if err != nil {
 		return false, nil, err
 	}
+	now := time.Now().UTC()
 	for i := range ds {
-		if ds[i].OutcomeSeq == d.OutcomeSeq {
-			existing := ds[i]
+		if ds[i].OutcomeSeq != d.OutcomeSeq {
+			continue
+		}
+		cur := ds[i]
+		reclaimable := (cur.State == RouteDecisionClaimed && now.Sub(cur.ClaimedAt) > RouteClaimLease) ||
+			(cur.State == RouteDecisionFailed && cur.Attempts < MaxRouteDecisionAttempts)
+		if !reclaimable {
+			existing := cur
 			return false, &existing, nil
 		}
+		ds[i].State = RouteDecisionClaimed
+		ds[i].Decision = d.Decision
+		ds[i].Reason = d.Reason
+		ds[i].PolicyHash = d.PolicyHash
+		ds[i].ClaimedAt = now
+		ds[i].Attempts = cur.Attempts + 1
+		if err := s.writeRouteDecisions(d.RunID, ds); err != nil {
+			return false, nil, err
+		}
+		return true, nil, nil
 	}
 	d.ID = fmt.Sprintf("%s:%d", d.RunID, d.OutcomeSeq)
 	d.State = RouteDecisionClaimed
-	d.ClaimedAt = time.Now().UTC()
+	d.ClaimedAt = now
+	d.Attempts = 1
 	ds = append(ds, d)
 	if err := s.writeRouteDecisions(d.RunID, ds); err != nil {
 		return false, nil, err
@@ -121,7 +139,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Dir(s.runJSONPath("x")))
+	entries, err := os.ReadDir(filepath.Join(s.root, "runs"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

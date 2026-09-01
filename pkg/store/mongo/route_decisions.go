@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -24,16 +25,41 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision) (
 	d.State = store.RouteDecisionClaimed
 	d.ClaimedAt = time.Now().UTC()
 	stampTenantDecision(ctx, &d)
+	d.Attempts = 1
 	if _, err := s.routeDecisions.InsertOne(ctx, d); err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			var existing store.RouteDecision
-			ferr := s.routeDecisions.FindOne(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq}).Decode(&existing)
-			if ferr != nil {
-				return false, nil, fmt.Errorf("store/mongo: route decision %s exists but is unreadable: %w", d.ID, ferr)
-			}
-			return false, &existing, nil
+		if !mongo.IsDuplicateKeyError(err) {
+			return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
 		}
-		return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
+		// The episode has a row. Two bounded re-claim arms (see the
+		// interface doc): a stale "claimed" (the claimant died between
+		// claim and action) and a "failed" under the attempt cap. The
+		// CAS is a conditional update, so replicas racing on the steal
+		// still elect exactly one winner.
+		res := s.routeDecisions.FindOneAndUpdate(ctx,
+			withTenantFilter(ctx, bson.M{
+				"run_id": d.RunID, "outcome_seq": d.OutcomeSeq,
+				"$or": bson.A{
+					bson.M{"state": store.RouteDecisionClaimed, "claimed_at": bson.M{"$lt": d.ClaimedAt.Add(-store.RouteClaimLease)}},
+					bson.M{"state": store.RouteDecisionFailed, "attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts}},
+				},
+			}),
+			bson.M{
+				"$set": bson.M{"state": store.RouteDecisionClaimed, "decision": d.Decision, "reason": d.Reason,
+					"policy_hash": d.PolicyHash, "claimed_at": d.ClaimedAt, "error": ""},
+				"$inc": bson.M{"attempts": 1},
+			})
+		if res.Err() == nil {
+			return true, nil, nil
+		}
+		if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+			return false, nil, fmt.Errorf("store/mongo: reclaim route decision %s: %w", d.ID, res.Err())
+		}
+		var existing store.RouteDecision
+		ferr := s.routeDecisions.FindOne(ctx, withTenantFilter(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})).Decode(&existing)
+		if ferr != nil {
+			return false, nil, fmt.Errorf("store/mongo: route decision %s exists but is unreadable: %w", d.ID, ferr)
+		}
+		return false, &existing, nil
 	}
 	return true, nil, nil
 }
@@ -45,7 +71,7 @@ func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSe
 	}
 	now := time.Now().UTC()
 	res, err := s.routeDecisions.UpdateOne(ctx,
-		bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed},
+		withTenantFilter(ctx, bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed}),
 		bson.M{"$set": bson.M{"state": state, "error": actionErr, "finished_at": now}})
 	if err != nil {
 		return fmt.Errorf("store/mongo: finish route decision %s:%d: %w", runID, outcomeSeq, err)
@@ -58,7 +84,7 @@ func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSe
 
 // ListRouteDecisions returns a run's decisions, newest episode first.
 func (s *Store) ListRouteDecisions(ctx context.Context, runID string) ([]store.RouteDecision, error) {
-	cur, err := s.routeDecisions.Find(ctx, bson.M{"run_id": runID},
+	cur, err := s.routeDecisions.Find(ctx, withTenantFilter(ctx, bson.M{"run_id": runID}),
 		options.Find().SetSort(bson.D{{Key: "outcome_seq", Value: -1}}))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list route decisions %s: %w", runID, err)
@@ -95,7 +121,10 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 		"updated_at": bson.M{"$gte": since},
 	}), options.Find().
 		SetProjection(bson.M{"_id": 1}).
-		SetSort(bson.D{{Key: "updated_at", Value: -1}}).
+		// Ascending: a backlog sweeper must reach the OLDEST sleeping
+		// terminal first — newest-first plus a limit made the very runs
+		// this net exists for structurally unreachable past 200 rows.
+		SetSort(bson.D{{Key: "updated_at", Value: 1}}).
 		SetLimit(int64(limit)))
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list routable runs: %w", err)

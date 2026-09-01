@@ -30,6 +30,9 @@ type RouteDecision struct {
 	State     string    `json:"state" bson:"state"`
 	Error     string    `json:"error,omitempty" bson:"error,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at" bson:"claimed_at"`
+	// Attempts counts how many times this episode's decision was
+	// claimed (first claim = 1). Bounds the failed-retry loop.
+	Attempts int `json:"attempts,omitempty" bson:"attempts,omitempty"`
 	// FinishedAt is stamped by FinishRouteDecision.
 	FinishedAt *time.Time `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
 }
@@ -46,12 +49,16 @@ const (
 // store lacking the capability disables the router rather than running
 // it unclaimed (fail safe, same doctrine as QueuedAttemptStore).
 type RouteDecisionStore interface {
-	// ClaimRouteDecision atomically inserts the row for
-	// (run_id, outcome_seq) in state "claimed". claimed=false with the
-	// EXISTING row when the episode is already decided — the caller
-	// stops, whatever state the prior row is in (a failed action is
-	// retried by an operator through the registry, not by every sweep
-	// pass forever).
+	// ClaimRouteDecision atomically claims the (run_id, outcome_seq)
+	// episode. Fresh episode ⇒ a "claimed" row is inserted. An existing
+	// row is RE-claimable in exactly two cases, both bounded:
+	//   - "claimed" older than RouteClaimLease — the claimant died
+	//     between claim and action; without the steal the row is
+	//     orphaned forever and a green run never lands (the router's
+	//     own worst case);
+	//   - "failed" with fewer than MaxRouteDecisionAttempts — a
+	//     transient action error must not burn the episode permanently.
+	// Everything else returns claimed=false with the existing row.
 	ClaimRouteDecision(ctx context.Context, d RouteDecision) (claimed bool, existing *RouteDecision, err error)
 	// FinishRouteDecision moves the claimed row to succeeded/failed.
 	FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error
@@ -66,6 +73,13 @@ type RouteDecisionStore interface {
 	// backstop).
 	ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error)
 }
+
+// RouteClaimLease bounds how long a "claimed" registry row protects
+// its holder; MaxRouteDecisionAttempts bounds failed-action retries.
+const (
+	RouteClaimLease          = 15 * time.Minute
+	MaxRouteDecisionAttempts = 3
+)
 
 // AsRouteDecisionStore returns the registry capability, or nil when the
 // backend has none. Callers must treat nil as "router disabled".
