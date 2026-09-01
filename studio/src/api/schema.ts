@@ -5446,6 +5446,7 @@ export interface components {
             bundle_display_name?: string;
             bundle_name?: string;
             checkpoint?: components["schemas"]["Checkpoint"];
+            continuation_state?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -5478,6 +5479,7 @@ export interface components {
             nodes_served?: {
                 [key: string]: components["schemas"]["NodeServed"];
             };
+            outcome_seq?: number;
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
@@ -5488,6 +5490,7 @@ export interface components {
             shard_label?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
+            terminal_code?: string;
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];
