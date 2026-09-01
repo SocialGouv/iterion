@@ -489,7 +489,7 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
-	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot)
+	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot) && !operatorGateDisabled(operatorVars)
 
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
@@ -1121,21 +1121,31 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 		return nil
 	}
 	want := resolveBotRules(bots, frByBot, invByBot)
-	wantSync := anyBotGatesMerges(bots, frByBot)
 	cfg, err := o.Webhooks.Get(ctx, webhookID)
 	if err != nil {
 		// A missing config is reported by the surrounding provision paths; a
 		// backfill is best-effort reconciliation, not the authority on it.
 		return nil //nolint:nilerr
 	}
-	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) {
+	// An operator pin of gate_enabled=false is an explicit per-repo decision
+	// to run without a merge gate — the "gate needs re-review-on-sync to
+	// survive" derivation no longer applies, in EITHER direction: don't force
+	// sync on, and release a sync the derivation itself had forced.
+	gateOff := operatorGateDisabled(cfg.OperatorLaunchVars)
+	wantSync := anyBotGatesMerges(bots, frByBot) && !gateOff
+	dropSync := gateOff && cfg.ReviewOnSync
+	if reflect.DeepEqual(cfg.BotRules, want) && (!wantSync || cfg.ReviewOnSync) && !dropSync {
 		return nil
 	}
 	cfg.BotRules = want
-	// Only ever turned ON: an operator who deliberately disabled re-review on
-	// a repo whose bots gate must not have it silently re-enabled under them.
+	// With no gate pin this only ever turns ON: an operator who deliberately
+	// disabled re-review on a repo whose bots gate must not have it silently
+	// re-enabled under them.
 	if wantSync {
 		cfg.ReviewOnSync = true
+	}
+	if dropSync {
+		cfg.ReviewOnSync = false
 	}
 	cfg.UpdatedAt = o.clock()
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
@@ -1154,6 +1164,20 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 // re-review on sync is not an operator preference on such a repo, it is what
 // makes the gate survivable. Derived from the DECLARED capability, never from
 // a bot id.
+// operatorGateDisabled reports whether the repo's operator launch vars pin the
+// merge gate off (`gate_enabled` set to a falsy value). The pin is what turns
+// the review bot advisory-only — the publish step skips the commit status and
+// the server-side gate machinery never arms — so the anyBotGatesMerges
+// derivation below must not force re-review-on-sync for such a repo: the
+// forced sync exists solely to keep a REQUIRED check alive across pushes.
+func operatorGateDisabled(vars map[string]string) bool {
+	switch strings.ToLower(strings.TrimSpace(vars["gate_enabled"])) {
+	case "false", "0", "off", "no":
+		return true
+	}
+	return false
+}
+
 func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
 	for _, b := range bots {
 		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
