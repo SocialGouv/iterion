@@ -6,24 +6,34 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ErrorCode categorizes runtime errors for programmatic handling.
-type ErrorCode string
+//
+// It IS the persisted store.FailureCode vocabulary (a type alias, so
+// values are interchangeable across the package boundary) — the same
+// code the engine classifies with in-process is what lands on
+// Run.FailureCode at the store, instead of dying into free text
+// (ADR-095). The constants below re-export the store's values under
+// the historical runtime names; codes the engine does not emit itself
+// (INTERRUPTED, FAIL_NODE, PROCESS_ORPHANED, QUEUE_SCHEMA_MISMATCH)
+// live only under their store.Failure* names.
+type ErrorCode = store.FailureCode
 
 const (
-	ErrCodeNodeNotFound     ErrorCode = "NODE_NOT_FOUND"
-	ErrCodeNoOutgoingEdge   ErrorCode = "NO_OUTGOING_EDGE"
-	ErrCodeLoopExhausted    ErrorCode = "LOOP_EXHAUSTED"
-	ErrCodeBudgetExceeded   ErrorCode = "BUDGET_EXCEEDED"
-	ErrCodeExecutionFailed  ErrorCode = "EXECUTION_FAILED"
-	ErrCodeWorkspaceSafety  ErrorCode = "WORKSPACE_SAFETY"
-	ErrCodeTimeout          ErrorCode = "TIMEOUT"
-	ErrCodeCancelled        ErrorCode = "CANCELLED"
-	ErrCodeJoinFailed       ErrorCode = "JOIN_FAILED"
-	ErrCodeResumeInvalid    ErrorCode = "RESUME_INVALID"
-	ErrCodeSchemaValidation ErrorCode = "SCHEMA_VALIDATION"
-	ErrCodeRateLimited      ErrorCode = "RATE_LIMITED"
+	ErrCodeNodeNotFound     = store.FailureNodeNotFound
+	ErrCodeNoOutgoingEdge   = store.FailureNoOutgoingEdge
+	ErrCodeLoopExhausted    = store.FailureLoopExhausted
+	ErrCodeBudgetExceeded   = store.FailureBudgetExceeded
+	ErrCodeExecutionFailed  = store.FailureExecutionFailed
+	ErrCodeWorkspaceSafety  = store.FailureWorkspaceSafety
+	ErrCodeTimeout          = store.FailureTimeout
+	ErrCodeCancelled        = store.FailureCancelled
+	ErrCodeJoinFailed       = store.FailureJoinFailed
+	ErrCodeResumeInvalid    = store.FailureResumeInvalid
+	ErrCodeSchemaValidation = store.FailureSchemaValidation
+	ErrCodeRateLimited      = store.FailureRateLimited
 	// ErrCodeUsageLimitBlocked: the provider's subscription/quota WINDOW
 	// is exhausted (Anthropic forfait 5h / session / weekly cap) —
 	// distinct from ErrCodeRateLimited because retrying inside the
@@ -31,10 +41,10 @@ const (
 	// In-node recovery fails terminal immediately; the run lands
 	// failed_resumable and the run-level auto-resume loop waits with a
 	// reset-aware delay (see pkg/cli/auto_resume.go).
-	ErrCodeUsageLimitBlocked     ErrorCode = "USAGE_LIMIT_BLOCKED"
-	ErrCodeContextLengthExceeded ErrorCode = "CONTEXT_LENGTH_EXCEEDED"
-	ErrCodeToolFailedTransient   ErrorCode = "TOOL_FAILED_TRANSIENT"
-	ErrCodeToolFailedPermanent   ErrorCode = "TOOL_FAILED_PERMANENT"
+	ErrCodeUsageLimitBlocked     = store.FailureUsageLimitBlocked
+	ErrCodeContextLengthExceeded = store.FailureContextLengthExceeded
+	ErrCodeToolFailedTransient   = store.FailureToolFailedTransient
+	ErrCodeToolFailedPermanent   = store.FailureToolFailedPermanent
 	// ErrCodeNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
 	// reaching the upstream model API. Distinct from ErrCodeExecutionFailed
 	// so the recovery dispatcher can apply a longer exponential-backoff
@@ -44,7 +54,7 @@ const (
 	// Surfaced via Classify when the error string matches a known
 	// network-failure phrase (FailedToOpenSocket, "Unable to connect to
 	// API", "no such host", "connection refused", "i/o timeout", etc.).
-	ErrCodeNetworkTransient ErrorCode = "NETWORK_TRANSIENT"
+	ErrCodeNetworkTransient = store.FailureNetworkTransient
 	// ErrCodeAuthFailed: the upstream model provider rejected the
 	// request for credential reasons (HTTP 401/403, "authentication
 	// token is expired", "invalid api key", …). NOT transient — retrying
@@ -53,7 +63,7 @@ const (
 	// rotating an API key). The recovery dispatcher pauses for human
 	// instead of burning the retry budget; the run is resumable once the
 	// credential is refreshed.
-	ErrCodeAuthFailed ErrorCode = "AUTH_FAILED"
+	ErrCodeAuthFailed = store.FailureAuthFailed
 )
 
 // RuntimeError is a structured error carrying a machine-readable code,
