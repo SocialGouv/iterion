@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.85.0](https://github.com/SocialGouv/iterion/compare/v3.84.1...v3.85.0) (2026-09-01)
+
+### Features
+
+* **webhooks:** on-demand re-review via the forge-native re-request button; per-repo merge-gate opt-out ([#604](https://github.com/SocialGouv/iterion/issues/604)) ([c5eb318](https://github.com/SocialGouv/iterion/commit/c5eb31847c545dadaf61f98c888a3787e77fb8c6)), references [iterion#300](https://github.com/iterion/issues/300)
+
+    <details><summary>why</summary>
+
+    An operator who pins gate_enabled=false on a repo integration turns the review bot advisory-only — no commit status ever lands — so the statuses-scope derivation that forces re-review-on-sync (whose sole purpose is keeping a REQUIRED check alive across pushes) no longer applies. The pin now disables the forcing on fresh provisions AND releases an already-forced sync through the backfill, in both cases surviving re-provisions — unlike a bare review_on_sync PATCH, which the next provision…
+
+    </details>
+
 ## [3.84.1](https://github.com/SocialGouv/iterion/compare/v3.84.0...v3.84.1) (2026-09-01)
 
 ### Bug Fixes
