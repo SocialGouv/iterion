@@ -158,7 +158,10 @@ Audience (pick what fits; they combine):
                        borrow")
 
 Only the flags you set are sent, so ` + "`pool policy --enabled=false`" + ` pauses
-a pool without restating its audience.`,
+a pool without restating its audience. The AUDIENCE itself is the one
+exception: it is a set, sent and replaced WHOLE — naming any audience
+flag clears the dials you do not restate, so repeat every one you mean
+to keep on each call.`,
 	Args: cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
@@ -177,12 +180,7 @@ a pool without restating its audience.`,
 		// keep a forgotten --all-teams from a previous call.
 		if cmd.Flags().Changed("all-teams") || cmd.Flags().Changed("orgs") ||
 			cmd.Flags().Changed("teams") || cmd.Flags().Changed("contributors") {
-			pol.Audience = &struct {
-				Teams        []string `json:"teams,omitempty"`
-				Orgs         []string `json:"orgs,omitempty"`
-				Contributors bool     `json:"contributors,omitempty"`
-				AllTeams     bool     `json:"all_teams,omitempty"`
-			}{
+			pol.Audience = &credpool.Audience{
 				Teams:        remotePoolAudTeams,
 				Orgs:         remotePoolAudOrgs,
 				Contributors: remotePoolAudContributors,

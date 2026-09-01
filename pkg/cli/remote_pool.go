@@ -130,14 +130,13 @@ func RemotePoolDonors(ctx context.Context, c *RemoteClient, p *Printer, teamID s
 // the ones the caller sets are sent, so `pool policy --enabled=false`
 // pauses a pool without restating its audience.
 type PoolPolicy struct {
-	Name     *string `json:"name,omitempty"`
-	Enabled  *bool   `json:"enabled,omitempty"`
-	Audience *struct {
-		Teams        []string `json:"teams,omitempty"`
-		Orgs         []string `json:"orgs,omitempty"`
-		Contributors bool     `json:"contributors,omitempty"`
-		AllTeams     bool     `json:"all_teams,omitempty"`
-	} `json:"audience,omitempty"`
+	Name    *string `json:"name,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
+	// The DOMAIN type, not a wire mirror of it — same rule as the
+	// ceilings/window on PoolPledgeInput: a second copy of the shape is
+	// a second thing to keep in step every time it changes, and the
+	// server decodes into this exact type (poolRequest).
+	Audience *credpool.Audience `json:"audience,omitempty"`
 }
 
 // RemotePoolPolicy creates or updates the pool of the team's org. The
@@ -145,6 +144,30 @@ type PoolPolicy struct {
 // server enforces that; the CLI says so in its help rather than letting
 // an admin discover it through a 403.
 func RemotePoolPolicy(ctx context.Context, c *RemoteClient, p *Printer, teamID string, pol PoolPolicy) error {
+	if pol.Enabled == nil {
+		// A PUT that CREATES the pool defaults its master switch to
+		// off — a pool the broker's ListEnabled never reads, so no
+		// pledge under it can ever serve and nothing says why. Probe:
+		// an absent pool (the server describes "the pool that would be
+		// created" with an empty id) demands the switch stated
+		// explicitly rather than a silent dead-on-arrival create.
+		status, body, err := c.API(ctx, "GET", "/api/teams/"+teamID+"/pool", nil)
+		if err != nil {
+			return fmt.Errorf("probe pool before policy write: %w", err)
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("probe pool before policy write: HTTP %d: %s", status, body)
+		}
+		var v struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(body, &v); err != nil {
+			return fmt.Errorf("probe pool before policy write: decode: %w", err)
+		}
+		if v.ID == "" {
+			return fmt.Errorf("no pool exists for this org yet — creating one requires the master switch stated explicitly: rerun with --enabled (or --enabled=false)")
+		}
+	}
 	body, err := json.Marshal(pol)
 	if err != nil {
 		return fmt.Errorf("encode pool policy: %w", err)
