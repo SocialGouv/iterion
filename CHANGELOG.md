@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.84.0](https://github.com/SocialGouv/iterion/compare/v3.83.1...v3.84.0) (2026-09-01)
+
+### Features
+
+* **routing:** the launch-frozen outcome contract — a run carries what success means ([#598](https://github.com/SocialGouv/iterion/issues/598)) ([1253dc4](https://github.com/SocialGouv/iterion/commit/1253dc4b50204f236c81bbe89072e1309a81f48b)), references [#597](https://github.com/SocialGouv/iterion/issues/597)
+
+    <details><summary>why</summary>
+
+    'converged + nothing blocking' has no generic representation: outputs are an opaque per-bot bag, and a consumer reading only a convergence flag would have auto-landed exactly the blocked run a measured incident came from (a converged branch carrying an explicit blocker — 190 min of downstream work reddened). Only a contract can know the fields.
+
+    </details>
+
 ## [3.83.1](https://github.com/SocialGouv/iterion/compare/v3.83.0...v3.83.1) (2026-09-01)
 
 ### Bug Fixes
