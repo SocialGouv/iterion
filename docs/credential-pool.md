@@ -238,14 +238,15 @@ lend and borrow, with no extra setup.
 iterion remote api-keys create --provider anthropic --name mine --from-file ~/key
 iterion remote pool share --source api_key --ref anthropic   --key-id <id from `iterion remote api-keys list`> --max-usd-day 3
 
-# 1. Operator: create/enable the pool for the org (default audience:
-#    the org's own teams only).
-iterion remote api PUT /api/teams/<team-id>/pool --data '{"enabled":true}'
+# 1. Operator: create the pool for the org (default audience: the org's
+#    own teams only). A pool that does not exist yet comes up ENABLED;
+#    --enabled=false writes a policy while keeping it paused.
+iterion remote pool policy --team <team-id> --enabled
 
 # Widen it only if you mean to — this lets more runs spend contributors'
-# personal subscriptions:
-iterion remote api PUT /api/teams/<team-id>/pool \
-  --data '{"enabled":true,"audience":{"contributors":true}}'
+# personal subscriptions. The audience is replaced WHOLE, so restate
+# every dial you mean to keep:
+iterion remote pool policy --team <team-id> --contributors
 
 # 2. Contributor: connect the subscription (once), then pledge it.
 iterion remote api POST /api/me/oauth/claude_code/authorize/start
@@ -275,7 +276,7 @@ Studio equivalents: **Account settings → Share my quota** for a contributor,
 | `DELETE /api/me/pool/{source}/{ref}` | donor | Withdraw |
 | `GET /api/me/pool/history` | donor | The runs this quota served |
 | `GET /api/teams/{id}/pool` | member | Pool policy. The donor roster is included only for org admins — who lends, and how much, is the contributors' business |
-| `PUT /api/teams/{id}/pool` | **org** admin | Enable/disable + audience. The pool document is org-keyed, so this is an org-level decision and is audited on the org |
+| `PUT /api/teams/{id}/pool` | **org** admin | Enable/disable + audience (`iterion remote pool policy`). Partial: `name`/`enabled`/`audience` are applied only when present, but a pool this call has to CREATE comes up `enabled: true` — the zero value would be invisible to the broker, which only ever lists enabled pools. `audience` is replaced whole. The pool document is org-keyed, so this is an org-level decision and is audited on the org |
 
 A donor's credential is never returned by any of these — it stays sealed in
 `pkg/secrets` and is only ever unsealed into a run bundle.
