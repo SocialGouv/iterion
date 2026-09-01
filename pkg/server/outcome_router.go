@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/routing"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -313,11 +315,26 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		_, mergeErr := s.runs.PerformMergeCtx(tctx, run.ID, req)
 		if mergeErr != nil {
 			s.logWarn("server: outcome router: merge %s: %v", run.ID, mergeErr)
-			s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, mergeErr.Error())
-			// Best-effort: the failed row's bounded re-claim retries the
+			// A CONTENT CONFLICT is not a transient error: PerformMergeCtx
+			// deliberately persists merge_status=conflicted and leaves the
+			// tree conflicted so the resolver UI can take over, and a
+			// conflicted run stays mergeClaimable. Retrying it would run
+			// `git merge --squash` against an already-conflicted index,
+			// fail on something that is NOT a MergeConflictError, and
+			// overwrite the status with "failed" — which is the exact
+			// status requireConflict needs, so the operator's only path to
+			// resolve the conflict would disappear, unattended, in one
+			// sweep interval. Stop here and let the human continue.
+			state, why := store.RouteDecisionFailed, "contract-decided merge failed: "+mergeErr.Error()
+			var conflictErr *runtime.MergeConflictError
+			if errors.As(mergeErr, &conflictErr) {
+				state = store.RouteDecisionRequiresAction
+				why = "contract-decided merge hit a content conflict — resolve it in the run's merge view: " + mergeErr.Error()
+			}
+			s.finishRouteDecision(tctx, rds, run, state, mergeErr.Error())
+			// Best-effort: a "failed" row's bounded re-claim retries the
 			// MERGE; the alert claim keys per episode so retries don't spam.
-			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
-				"contract-decided merge failed: "+mergeErr.Error(),
+			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed, why,
 				fmt.Sprintf("route:%s:%d:action_failed", run.ID, run.OutcomeSeq))
 			return
 		}
@@ -330,8 +347,11 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		// branch) is not wired yet: record the decision honestly and
 		// leave the act to an operator. The registry row IS the
 		// escalation record; the alert is what makes it heard.
+		// requires_action, NOT failed: the missing wiring is not a
+		// transient error, so the bounded re-claim must not re-decide
+		// and re-warn the same episode once per sweep until the cap.
 		s.logWarn("server: outcome router: run %s episode %d — contract permits relaunch, execution not enabled: operator action required (%s)", run.ID, run.OutcomeSeq, reason)
-		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, "relaunch execution not enabled — operator action required")
+		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionRequiresAction, "relaunch execution not enabled — operator action required")
 		s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
 			"contract permits relaunch but execution is not enabled — operator action required ("+reason+")",
 			fmt.Sprintf("route:%s:%d:action_failed", run.ID, run.OutcomeSeq))

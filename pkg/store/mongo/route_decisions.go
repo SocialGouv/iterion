@@ -67,7 +67,8 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 
 // FinishRouteDecision moves the claimed row to its terminal state.
 func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
-	if state != store.RouteDecisionSucceeded && state != store.RouteDecisionFailed {
+	if state != store.RouteDecisionSucceeded && state != store.RouteDecisionFailed &&
+		state != store.RouteDecisionRequiresAction {
 		return fmt.Errorf("store/mongo: finish route decision: invalid state %q", state)
 	}
 	now := time.Now().UTC()
@@ -140,8 +141,12 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$run_id", "$$rid"}},
 					bson.M{"$eq": bson.A{"$outcome_seq", "$$seq"}},
+					// Must mirror the ClaimRouteDecision reclaim predicate
+					// exactly: a state that is not re-claimable but reads
+					// unsettled clogs the sweep batch forever.
 					bson.M{"$or": bson.A{
 						bson.M{"$eq": bson.A{"$state", store.RouteDecisionSucceeded}},
+						bson.M{"$eq": bson.A{"$state", store.RouteDecisionRequiresAction}},
 						bson.M{"$and": bson.A{
 							bson.M{"$eq": bson.A{"$state", store.RouteDecisionFailed}},
 							bson.M{"$gte": bson.A{bson.M{"$ifNull": bson.A{"$attempts", 0}}, store.MaxRouteDecisionAttempts}},

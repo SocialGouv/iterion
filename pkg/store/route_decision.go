@@ -26,7 +26,10 @@ type RouteDecision struct {
 	// PolicyHash pins WHICH contract decided — an audit replays why.
 	PolicyHash string `json:"policy_hash,omitempty" bson:"policy_hash,omitempty"`
 	// State tracks execution: "claimed" (decided, acting), "succeeded",
-	// "failed" (the action errored; Error carries the cause).
+	// "failed" (the action errored TRANSIENTLY; Error carries the cause
+	// and the bounded re-claim retries it), "requires_action" (the
+	// action stopped on something no retry can move — Error says what
+	// the operator must do).
 	State     string    `json:"state" bson:"state"`
 	Error     string    `json:"error,omitempty" bson:"error,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at" bson:"claimed_at"`
@@ -37,11 +40,19 @@ type RouteDecision struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
 }
 
-// RouteDecision states.
+// RouteDecision states. "failed" is the RETRYABLE terminal (the
+// bounded re-claim tries the action again); "requires_action" is the
+// terminal for an action that stopped on a condition no retry can move
+// and a human must — a merge that hit a content conflict (retrying it
+// runs git against an already-conflicted tree and overwrites the
+// merge_status the conflict resolver needs), or a decision whose
+// execution is not wired. Both are terminal for the sweep: neither is
+// re-claimable, both count as settled by the anti-join.
 const (
-	RouteDecisionClaimed   = "claimed"
-	RouteDecisionSucceeded = "succeeded"
-	RouteDecisionFailed    = "failed"
+	RouteDecisionClaimed        = "claimed"
+	RouteDecisionSucceeded      = "succeeded"
+	RouteDecisionFailed         = "failed"
+	RouteDecisionRequiresAction = "requires_action"
 )
 
 // RouteDecisionStore is the optional registry capability. The router
@@ -62,7 +73,9 @@ type RouteDecisionStore interface {
 	//     ClaimMerge precedent, which is what makes the steal testable;
 	//   - "failed" with fewer than MaxRouteDecisionAttempts — a
 	//     transient action error must not burn the episode permanently.
-	// Everything else returns claimed=false with the existing row.
+	// Everything else returns claimed=false with the existing row —
+	// including "requires_action", whose whole point is that no retry
+	// helps and re-running the action would make things worse.
 	ClaimRouteDecision(ctx context.Context, d RouteDecision, staleBefore time.Time) (claimed bool, existing *RouteDecision, err error)
 	// EnsureRouterWatermark returns the router's activation instant,
 	// establishing it first-writer-wins on the first call. The sweep

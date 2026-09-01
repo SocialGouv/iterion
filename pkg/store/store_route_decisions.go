@@ -97,7 +97,7 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 
 // FinishRouteDecision — see RouteDecisionStore.
 func (s *FilesystemRunStore) FinishRouteDecision(_ context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
-	if state != RouteDecisionSucceeded && state != RouteDecisionFailed {
+	if state != RouteDecisionSucceeded && state != RouteDecisionFailed && state != RouteDecisionRequiresAction {
 		return fmt.Errorf("store: finish route decision: invalid state %q", state)
 	}
 	s.mu.Lock()
@@ -186,7 +186,9 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 
 // episodeSettled is the FS half of the sweep anti-join: the run's
 // CURRENT episode already has a decision no offer can act on again —
-// succeeded, or failed at the attempt cap. Caller holds s.mu.
+// succeeded, requires_action, or failed at the attempt cap. Must mirror
+// the ClaimRouteDecision reclaim predicate exactly: a state that is not
+// re-claimable but reads unsettled clogs the sweep batch forever.
 func (s *FilesystemRunStore) episodeSettled(runID string, outcomeSeq int64) (bool, error) {
 	ds, err := s.loadRouteDecisions(runID)
 	if err != nil {
@@ -196,7 +198,7 @@ func (s *FilesystemRunStore) episodeSettled(runID string, outcomeSeq int64) (boo
 		if ds[i].OutcomeSeq != outcomeSeq {
 			continue
 		}
-		if ds[i].State == RouteDecisionSucceeded ||
+		if ds[i].State == RouteDecisionSucceeded || ds[i].State == RouteDecisionRequiresAction ||
 			(ds[i].State == RouteDecisionFailed && ds[i].Attempts >= MaxRouteDecisionAttempts) {
 			return true, nil
 		}

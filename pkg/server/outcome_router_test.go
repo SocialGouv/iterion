@@ -313,6 +313,118 @@ func TestOutcomeRouter_MergesAndCountsEpisodes(t *testing.T) {
 	}
 }
 
+// A contract-decided merge that hits a CONTENT CONFLICT must stop, not
+// retry. PerformMergeCtx persists merge_status=conflicted and leaves the
+// tree conflicted on purpose so the resolver UI can take over — but a
+// conflicted run stays mergeClaimable, so a retryable "failed" row would
+// have the next sweep run `git merge --squash` against the conflicted
+// index, fail on a non-conflict error, and overwrite merge_status with
+// "failed" — the exact status requireConflict needs. The operator's only
+// path out of the conflict would vanish, unattended, in 60 seconds.
+func TestOutcomeRouter_MergeConflictIsNotRetried(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	sink := &advSink{}
+	h.s.opsAlerts = &alert.OpsDispatcher{Sinks: []alert.Sink{sink}, Logger: iterlog.Nop()}
+
+	// A repo where main and the run's branch changed the SAME line: the
+	// squash merge cannot apply cleanly.
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.t",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@t.t")
+	git("config", "user.name", "t")
+	git("config", "commit.gpgsign", "false")
+	write("base\n")
+	git("add", "f.txt")
+	git("commit", "-qm", "base")
+	git("checkout", "-qb", "iterion/run/conflict")
+	write("from the run\n")
+	git("commit", "-qam", "run work")
+	sha := func() string {
+		out, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}()
+	git("checkout", "-q", "main")
+	write("from main\n")
+	git("commit", "-qam", "divergent")
+
+	r := h.seedRun(t, "merge-conflict", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.Worktree = true
+		r.RepoRoot = repo
+		r.WorkDir = repo
+		r.FinalBranch = "iterion/run/conflict"
+		r.FinalCommit = sha
+		r.MergeStrategy = store.MergeStrategySquash
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, false)
+	})
+
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	got, _ := h.st.LoadRun(ctx, r.ID)
+	if got.MergeStatus != store.MergeStatusConflicted {
+		t.Fatalf("setup: want merge_status=conflicted after the router's merge, got %q (decisions %+v)", got.MergeStatus, h.decisions(t, r.ID))
+	}
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].State != store.RouteDecisionRequiresAction {
+		t.Fatalf("a content conflict must finish requires_action, got %+v", ds)
+	}
+	if !strings.Contains(ds[0].Error, "conflict") {
+		t.Fatalf("the row must name the conflict: %+v", ds[0])
+	}
+
+	// The regression itself: further offers — the sweep runs one every
+	// 60s — must neither re-claim nor touch the conflicted status.
+	h.ageRun(t, r.ID, time.Now().Add(-routerSweepGrace-time.Minute))
+	for i := 0; i < 3; i++ {
+		h.s.outcomeRouterSweepPass(ctx)
+	}
+	if ds := h.decisions(t, r.ID); len(ds) != 1 || ds[0].State != store.RouteDecisionRequiresAction || ds[0].Attempts != 1 {
+		t.Fatalf("requires_action must be terminal for the sweep, got %+v", ds)
+	}
+	got, _ = h.st.LoadRun(ctx, r.ID)
+	if got.MergeStatus != store.MergeStatusConflicted {
+		t.Fatalf("the sweep destroyed the conflict resolver's status: merge_status=%q", got.MergeStatus)
+	}
+	// And a settled episode leaves the sweep list rather than clogging it.
+	ids, err := h.st.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == r.ID {
+			t.Fatalf("requires_action run still occupies the sweep batch: %v", ids)
+		}
+	}
+	if len(sink.kinds()) == 0 {
+		t.Fatal("a conflict the router cannot resolve must reach the operator")
+	}
+}
+
 // A run without the episode bookkeeping (outcome_seq 0 — terminal
 // written by a pre-episode binary) is left alone: no claim key, no
 // unclaimed action.

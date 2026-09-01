@@ -709,6 +709,20 @@ func testRouteDecisionRegistry(t *testing.T, s RunStore) {
 		t.Fatalf("ListRouteDecisions = %+v (%v)", ds, err)
 	}
 
+	// requires_action is the NON-retryable terminal (a merge that hit a
+	// content conflict, a decision whose execution is not wired): the
+	// retry is what makes things worse, so no threshold reclaims it —
+	// not even one that reads every existing claim as stale.
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, RouteDecision{RunID: runID, OutcomeSeq: 4, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim ep4 = (%t, %v)", claimed, err)
+	}
+	if err := rds.FinishRouteDecision(ctx, runID, 4, RouteDecisionRequiresAction, "merge conflict"); err != nil {
+		t.Fatalf("finish ep4 requires_action: %v", err)
+	}
+	if claimed, ex, err := rds.ClaimRouteDecision(ctx, RouteDecision{RunID: runID, OutcomeSeq: 4, Decision: "merge"}, staleAlways()); err != nil || claimed {
+		t.Fatalf("requires_action reclaimed = (%t, %+v, %v), want refused", claimed, ex, err)
+	}
+
 	// The activation watermark: established first-writer-wins, then
 	// stable across every later call (a restart must read the original
 	// activation, not its own boot). Backend round-trips may truncate
