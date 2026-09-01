@@ -563,7 +563,7 @@ func (s *Service) markInterrupted(runID string) {
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusFailedResumable, reason, store.FailureInterrupted); err != nil {
 		s.logger.Warn("runview: drain: update status for %s: %v", runID, err)
 	}
 }

@@ -46,8 +46,9 @@ question, the internal claim-CAS sets (they gate a TRANSITION, not
 eligibility — e.g. the failure-resume claim accepts `queued` for the cloud
 pre-flip). The negative-space test
 ([lifecycle_negative_space_test.go](../../pkg/store/lifecycle_negative_space_test.go))
-forbids NEW hand-rolled sets in store/supervise/runview outside its
-per-file, reason-carrying allowlist.
+forbids NEW hand-rolled sets in store, supervise, runview, runtime and
+cloudpublisher (the two packages where the motivating drift bug lived)
+outside its per-set, reason-carrying allowlist.
 
 ### 3. `Run.FailureCode` — persisted, open-world, zero-means-unknown
 
@@ -59,10 +60,10 @@ failure status** — it annotates `Run.Error` and follows it exactly:
   CAS paths — never a separate read-modify-write).
 - **Cleared by every transition to a non-failure status** — `running`,
   `queued` (the cloud resume pre-flip), paused, finished. The SubmitResume
-  rollback restores the prior code with the prior text. `healRun` repairs a
-  stale code a whole-document writer resurrects.
-- **Open-world**: the registry (`KnownFailureCodes`) is documentation.
-  Readers never validate against it; an unknown non-empty code round-trips
+  rollback restores the prior code (see the mixed-fleet note for the
+  heal story).
+- **Open-world**: the const block is the registry, and it is
+  documentation only. Readers never validate against it; an unknown non-empty code round-trips
   unharmed (conformance + BSON decode-shape tests). Empty = UNKNOWN, never
   "no failure".
 - Writer-by-writer semantics: engine failures persist their
@@ -80,10 +81,14 @@ failure status** — it annotates `Run.Error` and follows it exactly:
 
 ### 4. Mixed-fleet note
 
-An older binary's whole-document `SaveRun` (Mongo `ReplaceOne`) drops the
-field it does not know. Accepted WITHOUT a two-release rollout: the field is
-advisory (unknown is a first-class reading), the loss window is the rolling
-deploy, and `healRun` cleans what it can. Deploy server and runner together
+An older binary's whole-document `SaveRun` (Mongo `ReplaceOne`) DROPS the
+field it does not know — a loss (back to unknown), never a stale lie, since
+a binary old enough to miss the field cannot have written one either.
+Accepted WITHOUT a two-release rollout: the field is advisory and unknown is
+a first-class reading. The FS store additionally heals on read (`healRun`
+clears a code on a non-failure status — covers hand-edited run.json); the
+Mongo twin needs no heal because every transition goes through the coded
+choke points. Deploy server and runner together
 (the runner image is digest-pinned; bump it in the same infra change).
 Rollback is safe: the field stops being written, stale values heal on read.
 

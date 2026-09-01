@@ -5,14 +5,10 @@ import (
 	"testing"
 )
 
-// allStatuses is the exhaustive status vocabulary. If a status is ever
+// allStatuses aliases the canonical vocabulary. If a status is ever
 // added, every predicate row below must take a position on it — the
 // test fails on an unlisted status, which is the point.
-var allStatuses = []RunStatus{
-	RunStatusRunning, RunStatusPausedWaitingHuman, RunStatusPausedOperator,
-	RunStatusFinished, RunStatusFailed, RunStatusFailedResumable,
-	RunStatusCancelled, RunStatusQueued,
-}
+var allStatuses = AllRunStatuses
 
 // TestLifecyclePredicateMatrix pins every predicate's full truth table.
 // This is the single place the sets are spelled out; a drive-by edit to
@@ -55,6 +51,11 @@ func TestLifecyclePredicateMatrix(t *testing.T) {
 		}},
 		{"CountsAgainstLaunchLimit", RunStatus.CountsAgainstLaunchLimit, map[RunStatus]bool{
 			RunStatusQueued: true, RunStatusRunning: true,
+		}},
+		{"CanBeCancelled", RunStatus.CanBeCancelled, map[RunStatus]bool{
+			RunStatusRunning: true, RunStatusPausedWaitingHuman: true,
+			RunStatusPausedOperator: true, RunStatusFailedResumable: true,
+			RunStatusQueued: true,
 		}},
 		{"CarriesFailureCode", RunStatus.CarriesFailureCode, map[RunStatus]bool{
 			RunStatusFailed: true, RunStatusFailedResumable: true,

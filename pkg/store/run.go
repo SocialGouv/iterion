@@ -463,9 +463,12 @@ type Run struct {
 	// the cause of the CURRENT failure status (failed /
 	// failed_resumable / cancelled), cleared by every transition to a
 	// non-failure status. Empty for legacy runs and for writers not
-	// yet classified: empty means UNKNOWN, never "no failure". See
-	// lifecycle.go (ADR-095) for the vocabulary and the open-world
-	// contract.
+	// yet classified: empty means UNKNOWN, never "no failure". One
+	// documented exception to "follows Error exactly": the cloud
+	// resume-publish rollback restores the PRIOR code under its own
+	// rollback text — the code classifies the restored state, not the
+	// rollback message. See lifecycle.go (ADR-095) for the vocabulary
+	// and the open-world contract.
 	FailureCode   FailureCode    `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
 	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
 	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written

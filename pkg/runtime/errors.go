@@ -22,48 +22,24 @@ import (
 type ErrorCode = store.FailureCode
 
 const (
-	ErrCodeNodeNotFound     = store.FailureNodeNotFound
-	ErrCodeNoOutgoingEdge   = store.FailureNoOutgoingEdge
-	ErrCodeLoopExhausted    = store.FailureLoopExhausted
-	ErrCodeBudgetExceeded   = store.FailureBudgetExceeded
-	ErrCodeExecutionFailed  = store.FailureExecutionFailed
-	ErrCodeWorkspaceSafety  = store.FailureWorkspaceSafety
-	ErrCodeTimeout          = store.FailureTimeout
-	ErrCodeCancelled        = store.FailureCancelled
-	ErrCodeJoinFailed       = store.FailureJoinFailed
-	ErrCodeResumeInvalid    = store.FailureResumeInvalid
-	ErrCodeSchemaValidation = store.FailureSchemaValidation
-	ErrCodeRateLimited      = store.FailureRateLimited
-	// ErrCodeUsageLimitBlocked: the provider's subscription/quota WINDOW
-	// is exhausted (Anthropic forfait 5h / session / weekly cap) —
-	// distinct from ErrCodeRateLimited because retrying inside the
-	// window can never succeed: the only cure is waiting for the reset.
-	// In-node recovery fails terminal immediately; the run lands
-	// failed_resumable and the run-level auto-resume loop waits with a
-	// reset-aware delay (see pkg/cli/auto_resume.go).
+	ErrCodeNodeNotFound          = store.FailureNodeNotFound
+	ErrCodeNoOutgoingEdge        = store.FailureNoOutgoingEdge
+	ErrCodeLoopExhausted         = store.FailureLoopExhausted
+	ErrCodeBudgetExceeded        = store.FailureBudgetExceeded
+	ErrCodeExecutionFailed       = store.FailureExecutionFailed
+	ErrCodeWorkspaceSafety       = store.FailureWorkspaceSafety
+	ErrCodeTimeout               = store.FailureTimeout
+	ErrCodeCancelled             = store.FailureCancelled
+	ErrCodeJoinFailed            = store.FailureJoinFailed
+	ErrCodeResumeInvalid         = store.FailureResumeInvalid
+	ErrCodeSchemaValidation      = store.FailureSchemaValidation
+	ErrCodeRateLimited           = store.FailureRateLimited
 	ErrCodeUsageLimitBlocked     = store.FailureUsageLimitBlocked
 	ErrCodeContextLengthExceeded = store.FailureContextLengthExceeded
 	ErrCodeToolFailedTransient   = store.FailureToolFailedTransient
 	ErrCodeToolFailedPermanent   = store.FailureToolFailedPermanent
-	// ErrCodeNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
-	// reaching the upstream model API. Distinct from ErrCodeExecutionFailed
-	// so the recovery dispatcher can apply a longer exponential-backoff
-	// budget — a 2-second single retry is plenty for "stale token" or
-	// "race on the tool subprocess", but useless against a 30-second
-	// captive-portal handoff or a multi-minute datacenter routing blip.
-	// Surfaced via Classify when the error string matches a known
-	// network-failure phrase (FailedToOpenSocket, "Unable to connect to
-	// API", "no such host", "connection refused", "i/o timeout", etc.).
-	ErrCodeNetworkTransient = store.FailureNetworkTransient
-	// ErrCodeAuthFailed: the upstream model provider rejected the
-	// request for credential reasons (HTTP 401/403, "authentication
-	// token is expired", "invalid api key", …). NOT transient — retrying
-	// the same call can never succeed until a human re-authenticates
-	// (e.g. `codex login` for the ChatGPT-forfait OAuth token, or
-	// rotating an API key). The recovery dispatcher pauses for human
-	// instead of burning the retry budget; the run is resumable once the
-	// credential is refreshed.
-	ErrCodeAuthFailed = store.FailureAuthFailed
+	ErrCodeNetworkTransient      = store.FailureNetworkTransient
+	ErrCodeAuthFailed            = store.FailureAuthFailed
 )
 
 // RuntimeError is a structured error carrying a machine-readable code,

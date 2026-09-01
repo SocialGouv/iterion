@@ -635,12 +635,14 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 		"updated_at": now,
 		"error":      runErr,
 	}
+	unset := bson.M{}
 	if status.CarriesFailureCode() {
 		set["failure_code"] = code
 	} else {
-		set["failure_code"] = ""
+		// $unset, not $set "": keeps the persisted shape identical to
+		// the FS twin's omitempty JSON.
+		unset["failure_code"] = ""
 	}
-	unset := bson.M{}
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
@@ -727,16 +729,11 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			bson.M{"queued_at": nil},
 		},
 	}))
+	// Queue-park classification is follow-up; the empty code reads as
+	// unknown, which is honest here.
+	set, _ := runStatusUpdate(store.RunStatusFailedResumable, runErr, "", now)
 	res, err := s.runs.UpdateOne(ctx, filter, bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"updated_at":  now,
-			"finished_at": now,
-			"error":       runErr,
-			// Queue-park classification is follow-up; empty = unknown,
-			// and the field always reflects the LAST transition.
-			"failure_code": "",
-		},
+		"$set": set,
 		"$inc": bson.M{"version": 1},
 	})
 	if err != nil {
@@ -772,37 +769,30 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 			"checkpoint": cp,
 			"updated_at": now,
 		},
-		"$inc":   bson.M{"version": 1},
-		"$unset": bson.M{"finished_at": ""},
+		"$inc": bson.M{"version": 1},
+		// A paused run carries no failure classification — same
+		// discipline as runStatusUpdate, which this checkpoint-coupled
+		// write bypasses.
+		"$unset": bson.M{"finished_at": "", "failure_code": ""},
 	}
 	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
 }
 
-// FailRunResumable writes the checkpoint, flips status to
-// failed_resumable, and records the failure reason. Resume can then
-// re-pick up at NodeID without replaying upstream work.
-func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":       store.RunStatusFailedResumable,
-			"checkpoint":   cp,
-			"error":        runErr,
-			"failure_code": code,
-			"updated_at":   now,
-			"finished_at":  now,
-		},
-		"$inc": bson.M{"version": 1},
-	}
-	// An operator cancel is terminal and outranks a resumable failure. The two
-	// race whenever an interruption and a cancel arrive together, and resumable
-	// would win simply by writing last — auto-resuming a run somebody
-	// deliberately stopped. Excluded in the FILTER so the guard is atomic.
+// failRunCheckpointed is the shared body of FailRunResumable and
+// FailRunTerminal: the shared transition $set (which owns the
+// failure-code discipline) plus the checkpoint, guarded by the atomic
+// cancelled-wins filter — an operator cancel is terminal and outranks a
+// failure racing in behind it, and the failure would win simply by
+// writing last, auto-resuming a run somebody deliberately stopped.
+func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
+	set, _ := runStatusUpdate(status, runErr, code, time.Now().UTC())
+	set["checkpoint"] = cp
+	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
-		return fmt.Errorf("store/mongo: fail resumable %s: %w", id, err)
+		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
 	}
 	if res.MatchedCount == 0 {
 		// Either the run is gone, or it is already cancelled and stays so.
@@ -815,35 +805,17 @@ func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Check
 	return nil
 }
 
+// FailRunResumable writes the checkpoint, flips status to
+// failed_resumable, and records the failure reason + code. Resume can
+// then re-pick up at NodeID without replaying upstream work.
+func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailedResumable, cp, runErr, code, "fail resumable")
+}
+
 // FailRunTerminal writes the checkpoint, flips status to failed, and
-// records the failure reason. The run is terminal — no auto-resume — but
-// the checkpoint is preserved so the operator can still rewind it
-// explicitly. Same atomic cancelled-guard as FailRunResumable.
+// records the failure reason + code. The run is terminal — no
+// auto-resume — but the checkpoint is preserved so the operator can
+// still rewind it explicitly.
 func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":       store.RunStatusFailed,
-			"checkpoint":   cp,
-			"error":        runErr,
-			"failure_code": code,
-			"updated_at":   now,
-			"finished_at":  now,
-		},
-		"$inc": bson.M{"version": 1},
-	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
-	res, err := s.runs.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("store/mongo: fail terminal %s: %w", id, err)
-	}
-	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
-		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
-			return nil
-		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailed, cp, runErr, code, "fail terminal")
 }

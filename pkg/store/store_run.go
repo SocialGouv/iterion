@@ -480,14 +480,22 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
+	// A paused run carries no failure classification — same discipline
+	// as the transition choke point, which this checkpoint-coupled
+	// write bypasses.
+	r.FailureCode = ""
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)
 }
 
-// FailRunResumable atomically sets the checkpoint, error message, and status
-// to failed_resumable in a single write, enabling resume from the last
-// successfully completed node.
-func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
+// failRunCheckpointed is the shared body of FailRunResumable and
+// FailRunTerminal: the atomic cancelled-wins guard, the checkpoint, and
+// the ordinary transition tail (which owns the failure-code
+// discipline). An operator cancel is terminal and outranks a failure
+// racing in behind it — the two race whenever an interruption and a
+// cancel arrive together, and the failure would win simply by writing
+// last, auto-resuming a run somebody deliberately stopped.
+func (s *FilesystemRunStore) failRunCheckpointed(id string, status RunStatus, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -495,21 +503,18 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 	if err != nil {
 		return err
 	}
-	// An operator cancel is terminal and outranks a resumable failure. The
-	// two race whenever an interruption and a cancel arrive together, and
-	// resumable would win simply by writing last — auto-resuming a run
-	// somebody deliberately stopped. Cancelled stands.
 	if r.Status == RunStatusCancelled {
 		return nil
 	}
 	r.Checkpoint = cp
-	r.Status = RunStatusFailedResumable
-	r.Error = runErr
-	r.FailureCode = code
-	t := time.Now().UTC()
-	r.UpdatedAt = t
-	r.FinishedAt = &t
-	return s.writeRun(r)
+	return s.applyStatusTransition(r, status, runErr, code)
+}
+
+// FailRunResumable atomically sets the checkpoint, error message, and status
+// to failed_resumable in a single write, enabling resume from the last
+// successfully completed node.
+func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
+	return s.failRunCheckpointed(id, RunStatusFailedResumable, cp, runErr, code)
 }
 
 // FailRunTerminal atomically sets the checkpoint, error message, and status
@@ -518,26 +523,7 @@ func (s *FilesystemRunStore) FailRunResumable(ctx context.Context, id string, cp
 // rewind it explicitly (a run that reached the DSL fail node has a coherent
 // on-disk state worth recovering from).
 func (s *FilesystemRunStore) FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	r, err := s.loadRunRaw(id)
-	if err != nil {
-		return err
-	}
-	// Same guard as FailRunResumable: an operator cancel is terminal and
-	// outranks a failure racing in behind it. Cancelled stands.
-	if r.Status == RunStatusCancelled {
-		return nil
-	}
-	r.Checkpoint = cp
-	r.Status = RunStatusFailed
-	r.Error = runErr
-	r.FailureCode = code
-	t := time.Now().UTC()
-	r.UpdatedAt = t
-	r.FinishedAt = &t
-	return s.writeRun(r)
+	return s.failRunCheckpointed(id, RunStatusFailed, cp, runErr, code)
 }
 
 // AddWatchedIssues merges issueIDs into the run's WatchedIssueIDs set

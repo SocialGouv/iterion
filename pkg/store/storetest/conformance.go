@@ -1163,6 +1163,19 @@ func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
 	if r.FailureCode != "" {
 		t.Fatalf("queued must clear the code, got %q", r.FailureCode)
 	}
+	// A checkpoint-coupled pause (which bypasses the transition choke
+	// point) still clears the classification: paused is not a failure.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailedResumable, "parked", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_fc", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("pause must clear the code, got %q", r.FailureCode)
+	}
+
 	// Open-world: an unknown, non-empty code survives persistence.
 	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailed, "boom", store.FailureCode("SOME_FUTURE_CODE_V9")); err != nil {
 		t.Fatal(err)

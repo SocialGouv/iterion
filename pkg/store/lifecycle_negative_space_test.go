@@ -10,84 +10,73 @@ import (
 )
 
 // TestNoHandRolledTerminalSets is the negative-space guard of ADR-095:
-// in the three packages the contract card names (pkg/store,
-// pkg/supervise, pkg/runview), every multi-status RunStatus set —
-// a `case` clause or a []RunStatus literal combining two or more
-// terminal-ish statuses — must either live in lifecycle.go or be an
-// ALLOWLISTED, individually-justified divergence. A new hand-rolled set
-// fails here until it is either replaced by a predicate or argued onto
-// the allowlist.
+// in the packages it walks — the three the contract card names plus the
+// two where the motivating drift bug actually lived (pkg/runtime's
+// cancel CAS, pkg/server/cloudpublisher's cancellable set) — every line
+// combining two or more distinct RunStatus identifiers is a policy set
+// and must be either the contract itself or an ALLOWLISTED,
+// individually-justified divergence. The allowlist is keyed by
+// file + status-combo, so a NEW set slipping into an already-known file
+// still fails; an allowlist entry that stops matching fails too (stale
+// justifications are how drift hides).
 func TestNoHandRolledTerminalSets(t *testing.T) {
 	root := "../.." // pkg/store → repo root
-	pkgs := []string{"pkg/store", "pkg/supervise", "pkg/runview"}
+	pkgs := []string{"pkg/store", "pkg/supervise", "pkg/runview", "pkg/runtime", "pkg/server/cloudpublisher"}
 
-	// Statuses whose combination signals a policy set. running/queued
-	// pairs are launch-capacity sets and equally policy-bearing.
 	statusIdent := regexp.MustCompile(`RunStatus(Finished|Failed|FailedResumable|Cancelled|PausedWaitingHuman|PausedOperator|Running|Queued)\b`)
+	// Slice literals span lines (the motivating publisher set did), so
+	// they are matched as whole `[]RunStatus{...}` blocks; everything
+	// else (case clauses, boolean chains) is effectively single-line.
+	sliceLit := regexp.MustCompile(`(?s)\[\](?:store\.)?RunStatus\{[^}]*\}`)
 
-	// One detection = "<rel-path>: <sorted status combo>".
-	// The allowlist maps each accepted detection to its reason; the
-	// reason is printed when the corresponding line disappears so a
-	// stale entry is noticed too.
-	allow := map[string]string{
-		// -- pkg/store: the contract itself and its machinery.
-		"pkg/store/lifecycle.go":             "the canonical contract",
-		"pkg/store/lifecycle_test.go":        "the contract's truth table",
-		"pkg/store/store_run.go":             "transition machinery (applyStatusTransition side-effect switch + cancelled-wins guards), not a policy set",
-		"pkg/store/mongo/runs.go":            "mongo twin of the transition machinery ($set side-effect switches + notifiable filter, kept in lockstep by conformance)",
-		"pkg/store/storetest/conformance.go": "conformance harness exercising transitions",
-		"pkg/store/run.go":                   "IsTerminal/IsPaused: contract predicates declared beside the enum",
-		// -- pkg/runview: individually documented divergences.
-		"pkg/runview/rewind.go":               "rewindableStatuses: deliberately wider than CanOperatorResume (failed kept rewindable, queued claimable)",
-		"pkg/runview/rewind_files.go":         "restore path branches on finished/failed/rewindable — mirrors rewindableStatuses",
-		"pkg/runview/service_control.go":      "CancelInactive flippable set (failed deliberately excluded) + inbox refuse set (failed_resumable deliberately accepted)",
-		"pkg/runview/service_launch.go":       "validateResumable: delegates to CanOperatorResume; retains the answers-path split",
-		"pkg/runview/service_lifecycle.go":    "sandboxContainerReapable: documented wider-than-IsTerminal set (paused_operator reapable)",
-		"pkg/runview/subbot.go":               "subbot outcome routing: finished vs failure-trio vs in-flight, a three-way outcome switch",
-		"pkg/runview/pipeline_scheduler.go":   "queued-only launch guards",
-		"pkg/runview/service_runs.go":         "list filters",
-		"pkg/runview/snapshot.go":             "ExecStatus (node-row) vocabulary, not RunStatus policy",
-		"pkg/runview/service_interactions.go": "paused_waiting_human auto-resume trigger, single-status",
-		"pkg/runview/service_commands.go":     "AnswerHuman requires paused_waiting_human, single-status",
-		"pkg/runview/detached.go":             "IsPaused stream-keepalive, single-status checks",
-		"pkg/runview/fork.go":                 "fork shell parked as synthetic cancelled (empty reason and code)",
-		// -- pkg/supervise: event-level vocabulary, not RunStatus.
-		"pkg/supervise/inproc.go": "steering inbox refuse set: finished/failed/cancelled refuse, failed_resumable deliberately accepted (drained on resume)",
+	// One key = "<rel-path> :: <sorted status combo>", one value = the
+	// reason this exact set is allowed to exist outside lifecycle.go.
+	allow := map[string]string{}
+	for k, v := range negativeSpaceAllowlist {
+		allow[k] = v
 	}
 
-	found := map[string][]string{}
+	found := map[string]bool{}
 	for _, p := range pkgs {
 		dir := filepath.Join(root, p)
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
 				return err
 			}
 			rel, _ := filepath.Rel(root, path)
-			if strings.HasSuffix(rel, "_test.go") && rel != "pkg/store/lifecycle_test.go" {
+			rel = filepath.ToSlash(rel)
+			if strings.HasSuffix(rel, "_test.go") {
 				return nil
 			}
 			data, rerr := os.ReadFile(path)
 			if rerr != nil {
 				return rerr
 			}
-			for _, line := range strings.Split(string(data), "\n") {
-				ms := statusIdent.FindAllString(line, -1)
+			record := func(chunk string) {
+				ms := statusIdent.FindAllString(chunk, -1)
 				if len(ms) < 2 {
-					continue
+					return
 				}
 				set := map[string]bool{}
 				for _, m := range ms {
-					set[m] = true
+					set[strings.TrimPrefix(m, "RunStatus")] = true
 				}
 				if len(set) < 2 {
-					continue
+					return
 				}
 				combo := make([]string, 0, len(set))
 				for k := range set {
 					combo = append(combo, k)
 				}
 				sort.Strings(combo)
-				found[filepath.ToSlash(rel)] = append(found[filepath.ToSlash(rel)], strings.Join(combo, "+"))
+				found[rel+" :: "+strings.Join(combo, "+")] = true
+			}
+			src := string(data)
+			for _, lit := range sliceLit.FindAllString(src, -1) {
+				record(lit)
+			}
+			for _, line := range strings.Split(sliceLit.ReplaceAllString(src, ""), "\n") {
+				record(line)
 			}
 			return nil
 		})
@@ -96,14 +85,47 @@ func TestNoHandRolledTerminalSets(t *testing.T) {
 		}
 	}
 
-	for file, combos := range found {
-		if _, ok := allow[file]; !ok {
-			t.Errorf("hand-rolled RunStatus set in %s (%v) — replace with a lifecycle.go predicate or allowlist it here with its reason", file, combos)
+	for key := range found {
+		if strings.HasPrefix(key, "pkg/store/lifecycle.go ::") || strings.HasPrefix(key, "pkg/store/run.go ::") {
+			continue // the contract and the predicates beside the enum
+		}
+		if _, ok := allow[key]; !ok {
+			t.Errorf("hand-rolled RunStatus set: %q — replace it with a lifecycle.go predicate or allowlist it with its reason", key)
 		}
 	}
-	for file, reason := range allow {
-		if _, ok := found[file]; !ok && !strings.Contains(reason, "contract") {
-			t.Logf("allowlist entry %s no longer matches any set (%s) — consider pruning", file, reason)
+	for key, reason := range allow {
+		if !found[key] {
+			t.Errorf("stale allowlist entry %q (%s) — the set is gone; prune the entry", key, reason)
 		}
 	}
+}
+
+// negativeSpaceAllowlist: every surviving multi-status set outside the
+// contract, each with the reason it is NOT a predicate call. Adding a
+// set means arguing its reason here.
+var negativeSpaceAllowlist = map[string]string{
+	// -- pkg/store: transition machinery, not policy sets.
+	"pkg/store/store_run.go :: Cancelled+Failed+FailedResumable+Finished":  "applyStatusTransition side-effect switch (FinishedAt stamping)",
+	"pkg/store/store_run.go :: Finished+Running":                           "applyStatusTransition checkpoint-clear pair (running/finished drop the recovery point)",
+	"pkg/store/store_run.go :: PausedWaitingHuman+Running":                 "applyStatusTransition FinishedAt-clear pair (resume paths un-freeze the duration ticker)",
+	"pkg/store/mongo/runs.go :: Cancelled+Failed+FailedResumable+Finished": "runStatusUpdate: mongo twin of the transition side-effect switch",
+	"pkg/store/mongo/runs.go :: Queued+Running":                            "CountsAgainstLaunchLimit twin inside a Mongo $in filter (CountActiveRunsByTenant); a bson filter cannot call a predicate",
+
+	// -- pkg/runview: individually documented divergences.
+	"pkg/runview/rewind.go :: Cancelled+Failed+FailedResumable+PausedOperator+PausedWaitingHuman+Queued": "rewindableStatuses: deliberately wider than CanOperatorResume (failed stays rewindable, queued claimable)",
+	"pkg/runview/service_control.go :: FailedResumable+PausedOperator+PausedWaitingHuman":                "CancelInactive flippable arm (queued has its own case; failed deliberately excluded; no running — a live run cancels through its process)",
+	"pkg/runview/service_control.go :: Cancelled+Failed+Finished":                                        "inbox refuse set: failed_resumable deliberately ACCEPTED (drained on resume)",
+	"pkg/runview/service_lifecycle.go :: PausedWaitingHuman+Running":                                     "sandboxContainerReapable keep-set: documented wider-than-IsTerminal reaping (paused_operator reapable)",
+	"pkg/runview/subbot.go :: Cancelled+Failed+FailedResumable":                                          "subbot outcome routing: failure-trio → clear + rerun fresh, a three-way outcome switch",
+
+	// -- pkg/supervise: steering admission.
+	"pkg/supervise/inproc.go :: Cancelled+Failed+Finished": "steering inbox refuse set: failed_resumable deliberately accepted (drained on resume)",
+
+	// -- pkg/runtime: claim-CAS / routing sets (they gate a TRANSITION,
+	// not external eligibility — see CanOperatorResume's doc).
+	"pkg/runtime/run_failure.go :: FailedResumable+PausedOperator+PausedWaitingHuman+Running": "engine ctx-cancel CAS: CanBeCancelled minus queued — a queued doc is a NEWER attempt this engine does not own",
+	"pkg/runtime/resume.go :: Cancelled+FailedResumable+PausedOperator":                       "Resume dispatch: routes the failure-shaped statuses to resumeFromFailure (the answers path is a separate case)",
+	"pkg/runtime/resume.go :: Cancelled+FailedResumable+PausedOperator+Queued":                "failure-resume claim: CanOperatorResume minus paused_waiting_human (answers path) plus queued (cloud pre-flip)",
+	"pkg/runtime/resume.go :: PausedWaitingHuman+Queued":                                      "pause-resume claim: queued accepted for the cloud pre-flip",
+	"pkg/runtime/worktree.go :: Cancelled+Failed+Finished":                                    "RecoverFinalize gate: only fully-stopped shapes finalize; failed_resumable deliberately waits for resume-or-cancel",
 }

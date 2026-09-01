@@ -165,12 +165,12 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	resumingFromFailure := false
-	switch r.Status {
-	case store.RunStatusPausedWaitingHuman:
-		// OK — requires answers
-	case store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+	switch {
+	case r.Status.RequiresResumeAnswers():
+		// OK — the pause path
+	case r.Status.CanOperatorResume():
 		resumingFromFailure = true
-	case store.RunStatusRunning:
+	case r.Status == store.RunStatusRunning:
 		// Status=running on a run whose engine actually died is the
 		// classic orphan case. The server-boot sweep handles most of
 		// these automatically; --force-stale lets the operator unstick

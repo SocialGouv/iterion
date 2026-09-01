@@ -30,24 +30,44 @@ package store
 type FailureCode string
 
 const (
-	FailureNodeNotFound          FailureCode = "NODE_NOT_FOUND"
-	FailureNoOutgoingEdge        FailureCode = "NO_OUTGOING_EDGE"
-	FailureLoopExhausted         FailureCode = "LOOP_EXHAUSTED"
-	FailureBudgetExceeded        FailureCode = "BUDGET_EXCEEDED"
-	FailureExecutionFailed       FailureCode = "EXECUTION_FAILED"
-	FailureWorkspaceSafety       FailureCode = "WORKSPACE_SAFETY"
-	FailureTimeout               FailureCode = "TIMEOUT"
-	FailureCancelled             FailureCode = "CANCELLED"
-	FailureJoinFailed            FailureCode = "JOIN_FAILED"
-	FailureResumeInvalid         FailureCode = "RESUME_INVALID"
-	FailureSchemaValidation      FailureCode = "SCHEMA_VALIDATION"
-	FailureRateLimited           FailureCode = "RATE_LIMITED"
+	FailureNodeNotFound     FailureCode = "NODE_NOT_FOUND"
+	FailureNoOutgoingEdge   FailureCode = "NO_OUTGOING_EDGE"
+	FailureLoopExhausted    FailureCode = "LOOP_EXHAUSTED"
+	FailureBudgetExceeded   FailureCode = "BUDGET_EXCEEDED"
+	FailureExecutionFailed  FailureCode = "EXECUTION_FAILED"
+	FailureWorkspaceSafety  FailureCode = "WORKSPACE_SAFETY"
+	FailureTimeout          FailureCode = "TIMEOUT"
+	FailureCancelled        FailureCode = "CANCELLED"
+	FailureJoinFailed       FailureCode = "JOIN_FAILED"
+	FailureResumeInvalid    FailureCode = "RESUME_INVALID"
+	FailureSchemaValidation FailureCode = "SCHEMA_VALIDATION"
+	FailureRateLimited      FailureCode = "RATE_LIMITED"
+	// FailureUsageLimitBlocked: the provider's subscription/quota WINDOW
+	// is exhausted (Anthropic forfait 5h / session / weekly cap) —
+	// distinct from FailureRateLimited because retrying inside the
+	// window can never succeed: the only cure is waiting for the reset.
+	// In-node recovery fails terminal immediately; the run lands
+	// failed_resumable and the run-level auto-resume loop waits with a
+	// reset-aware delay (see pkg/cli/auto_resume.go).
 	FailureUsageLimitBlocked     FailureCode = "USAGE_LIMIT_BLOCKED"
 	FailureContextLengthExceeded FailureCode = "CONTEXT_LENGTH_EXCEEDED"
 	FailureToolFailedTransient   FailureCode = "TOOL_FAILED_TRANSIENT"
 	FailureToolFailedPermanent   FailureCode = "TOOL_FAILED_PERMANENT"
-	FailureNetworkTransient      FailureCode = "NETWORK_TRANSIENT"
-	FailureAuthFailed            FailureCode = "AUTH_FAILED"
+	// FailureNetworkTransient: occasional ISP / DNS / TCP / TLS hiccup
+	// reaching the upstream model API. Distinct from
+	// FailureExecutionFailed so the recovery dispatcher can apply a
+	// longer exponential-backoff budget — a 2-second single retry is
+	// plenty for "stale token" or "race on the tool subprocess", but
+	// useless against a 30-second captive-portal handoff or a
+	// multi-minute datacenter routing blip.
+	FailureNetworkTransient FailureCode = "NETWORK_TRANSIENT"
+	// FailureAuthFailed: the upstream model provider rejected the
+	// request for credential reasons (HTTP 401/403, expired token,
+	// invalid api key). NOT transient — retrying the same call can
+	// never succeed until a human re-authenticates. The recovery
+	// dispatcher pauses for human instead of burning the retry budget;
+	// the run is resumable once the credential is refreshed.
+	FailureAuthFailed FailureCode = "AUTH_FAILED"
 
 	// FailureInterrupted: an INTERNAL stop (runner drain, dispatcher
 	// stall reap, server shutdown) parked the run failed_resumable.
@@ -68,18 +88,13 @@ const (
 	FailureQueueSchemaMismatch FailureCode = "QUEUE_SCHEMA_MISMATCH"
 )
 
-// KnownFailureCodes documents the codes this binary emits. For humans
-// and docs generation only — never use it to validate a persisted
-// value (open-world contract above).
-var KnownFailureCodes = []FailureCode{
-	FailureNodeNotFound, FailureNoOutgoingEdge, FailureLoopExhausted,
-	FailureBudgetExceeded, FailureExecutionFailed, FailureWorkspaceSafety,
-	FailureTimeout, FailureCancelled, FailureJoinFailed, FailureResumeInvalid,
-	FailureSchemaValidation, FailureRateLimited, FailureUsageLimitBlocked,
-	FailureContextLengthExceeded, FailureToolFailedTransient,
-	FailureToolFailedPermanent, FailureNetworkTransient, FailureAuthFailed,
-	FailureInterrupted, FailureFailNode, FailureProcessOrphaned,
-	FailureQueueSchemaMismatch,
+// AllRunStatuses is the exhaustive status vocabulary, for callers that
+// derive a policy set from a predicate (and for the truth-table tests).
+// Order matches the declaration block above.
+var AllRunStatuses = []RunStatus{
+	RunStatusRunning, RunStatusPausedWaitingHuman, RunStatusPausedOperator,
+	RunStatusFinished, RunStatusFailed, RunStatusFailedResumable,
+	RunStatusCancelled, RunStatusQueued,
 }
 
 // CarriesFailureCode names the only statuses on which a non-empty
@@ -144,4 +159,15 @@ func (s RunStatus) CanAutoResume() bool { return s == RunStatusFailedResumable }
 // launch slot.
 func (s RunStatus) CountsAgainstLaunchLimit() bool {
 	return s == RunStatusQueued || s == RunStatusRunning
+}
+
+// CanBeCancelled is the MAXIMAL set a cancel write may stomp: anything
+// not already finally settled (finished, failed, cancelled). Surfaces
+// with a narrower reach keep their own subset and say why — the
+// engine's ctx-cancel CAS excludes queued because a queued doc is a
+// NEWER attempt that engine does not own (pkg/runtime/run_failure.go),
+// and runview's CancelInactive excludes running (a live run is
+// cancelled through its process, not a store write).
+func (s RunStatus) CanBeCancelled() bool {
+	return !s.IsFinalSuccess() && !s.IsFinalFailure() && s != RunStatusCancelled
 }

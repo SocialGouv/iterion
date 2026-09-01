@@ -1085,9 +1085,8 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: load run %s: %w", runID, err)
 	}
-	switch r.Status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
-		return nil // already terminal
+	if !r.Status.CanBeCancelled() {
+		return nil // already settled
 	}
 	// CAS on the cancellable statuses. A SubmitResume that races this
 	// call can flip queued → running between our LoadRun and the
@@ -1095,16 +1094,16 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	// silently overwrite the in-flight resume back to cancelled with
 	// no visible warning. The expectedFrom set lists every status we
 	// consider cancellable here.
-	// paused_operator included like its peers (the runtime cancel CAS in
-	// pkg/runtime/run_failure.go and runview's CancelInactiveCtx): an
-	// operator-paused run must stay cancellable, or it can only ever be
-	// resumed.
-	cancellable := []store.RunStatus{
-		store.RunStatusQueued,
-		store.RunStatusRunning,
-		store.RunStatusPausedWaitingHuman,
-		store.RunStatusPausedOperator,
-		store.RunStatusFailedResumable,
+	// The cloud publisher owns the queue AND the doc, so its reach is
+	// the full canonical set — including paused_operator (once missing
+	// here, which made an operator-paused cloud run un-cancellable) and
+	// queued (this surface can retract a queued attempt; the engine's
+	// narrower CAS cannot).
+	var cancellable []store.RunStatus
+	for _, st := range store.AllRunStatuses {
+		if st.CanBeCancelled() {
+			cancellable = append(cancellable, st)
+		}
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = "cancelled"
@@ -1122,8 +1121,7 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 		// should surface for the operator to retry.
 		r2, _ := p.store.LoadRun(ctx, runID)
 		if r2 != nil {
-			switch r2.Status {
-			case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusCancelled:
+			if !r2.Status.CanBeCancelled() {
 				return nil
 			}
 			return fmt.Errorf("cloudpublisher: cancel raced (status now %s) — retry", r2.Status)
