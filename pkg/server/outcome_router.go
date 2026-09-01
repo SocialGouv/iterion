@@ -224,17 +224,15 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		return
 	}
 
-	// --- The contract's verdict, adjusted by what the STATE allows.
-	// Only a finished run may merge: an interrupted run's checkpoint
-	// carries outputs from an EARLIER pass — gates that were true then,
-	// not a verdict on the tree as it died. ---
+	// --- The contract's verdict, adjusted by what the BANK allows.
+	// Evaluate is the single trusted reading and enforces its own
+	// status preconditions (a merge verdict only ever names a run that
+	// completed its workflow — an interrupted run's earlier-pass
+	// outputs escalate inside Evaluate itself). What Evaluate cannot
+	// know is the bank: those two guards live here. ---
 	verdict := routing.Evaluate(run)
 	decision := verdict.Decision
 	reason := verdict.Reason
-	if decision == routing.DecisionMerge && run.Status != store.RunStatusFinished {
-		decision = routing.DecisionEscalate
-		reason = fmt.Sprintf("contract says merge but the run is %s — stale checkpoint outputs are not a verdict (%s)", run.Status, verdict.Reason)
-	}
 	if decision == routing.DecisionMerge && run.FinalBranchError != "" {
 		decision = routing.DecisionEscalate
 		reason = fmt.Sprintf("contract says merge but the bank recorded an error: %s", run.FinalBranchError)

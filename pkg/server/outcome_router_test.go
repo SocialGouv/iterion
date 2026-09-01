@@ -213,7 +213,7 @@ func TestOutcomeRouter_IncidentFixtures(t *testing.T) {
 	}
 	h.s.routeOutcomeOffer(ctx, r.ID)
 	ds = h.decisions(t, r.ID)
-	if len(ds) != 1 || ds[0].Decision != "escalate" || !strings.Contains(ds[0].Reason, "stale checkpoint") {
+	if len(ds) != 1 || ds[0].Decision != "escalate" || !strings.Contains(ds[0].Reason, "earlier pass") {
 		t.Fatalf("I6: want escalate on stale outputs, got %+v", ds)
 	}
 
