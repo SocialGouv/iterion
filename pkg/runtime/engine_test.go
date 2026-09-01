@@ -1019,9 +1019,11 @@ func TestHumanPauseAndResume(t *testing.T) {
 	if r.Status != store.RunStatusFinished {
 		t.Errorf("expected status finished, got %s", r.Status)
 	}
-	// Checkpoint should be cleared after resume.
-	if r.Checkpoint != nil {
-		t.Error("checkpoint should be nil after run finishes")
+	// The checkpoint SURVIVES the finish (a status transition never
+	// destroys it — `iterion fork` reads a terminal parent's
+	// checkpoint); resumability is gated on Status alone.
+	if r.Checkpoint == nil {
+		t.Error("finished run lost its checkpoint — fork of a finished run would start empty")
 	}
 
 	// Verify human answers were passed to the integrate node.

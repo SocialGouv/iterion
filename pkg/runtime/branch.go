@@ -79,7 +79,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {
-			result.err = fmt.Errorf("node %q not found in branch %s", currentNodeID, branchID)
+			result.err = &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: currentNodeID, Message: fmt.Sprintf("node %q not found in branch %s", currentNodeID, branchID)}
 			return result
 		}
 

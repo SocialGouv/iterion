@@ -51,15 +51,19 @@ const (
 // human-readable reason, and the budget axis + percentage consumed when
 // the trigger is budget-related.
 type Alert struct {
-	Kind      Kind      `json:"kind"`
-	RunID     string    `json:"run_id"`
-	RunName   string    `json:"run_name,omitempty"`
-	NodeID    string    `json:"node_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
-	Axis      string    `json:"axis,omitempty"`       // budget dimension (tokens/cost_usd/...)
-	BudgetPct float64   `json:"budget_pct,omitempty"` // 0..100, budget alerts only
-	Link      string    `json:"link,omitempty"`       // <baseURL>/runs/<id>
-	Timestamp time.Time `json:"timestamp"`
+	Kind    Kind   `json:"kind"`
+	RunID   string `json:"run_id"`
+	RunName string `json:"run_name,omitempty"`
+	NodeID  string `json:"node_id,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// FailureCode is the run's persisted typed classification (ADR-095)
+	// when one exists — a machine consumer reads it here, never by
+	// parsing Reason.
+	FailureCode string    `json:"failure_code,omitempty"`
+	Axis        string    `json:"axis,omitempty"`       // budget dimension (tokens/cost_usd/...)
+	BudgetPct   float64   `json:"budget_pct,omitempty"` // 0..100, budget alerts only
+	Link        string    `json:"link,omitempty"`       // <baseURL>/runs/<id>
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 // Title is a short one-line headline suitable for a toast or
@@ -98,6 +102,13 @@ func (a Alert) WebhookText() string {
 	}
 	if a.Reason != "" {
 		fmt.Fprintf(&b, "\nReason: %s", a.Reason)
+		if a.FailureCode != "" {
+			fmt.Fprintf(&b, " [%s]", a.FailureCode)
+		}
+	} else if a.FailureCode != "" {
+		// No prose to annotate — the code gets its own line rather
+		// than visually qualifying the node or the run name above.
+		fmt.Fprintf(&b, "\nCode: %s", a.FailureCode)
 	}
 	// Only when there IS a ratio. A dimension whose budget_warning payload
 	// carries no used/limit pair (cost_usd_unpriced: tokens burned at an
@@ -133,6 +144,9 @@ func (a Alert) AsEventData() map[string]any {
 	}
 	if a.Reason != "" {
 		d["reason"] = a.Reason
+	}
+	if a.FailureCode != "" {
+		d["failure_code"] = a.FailureCode
 	}
 	if a.Axis != "" {
 		d["axis"] = a.Axis

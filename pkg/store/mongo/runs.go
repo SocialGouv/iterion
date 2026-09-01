@@ -226,6 +226,25 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
 	// trips the duplicate-_id error instead of resurrecting the run.
+	// Best-effort guard: a copy whose STATUS is already non-failure
+	// must not resurrect its failure code through this full-document
+	// write. A copy stale on the status itself still rewrites
+	// status+code together (the inherent SaveRun read-modify-write
+	// hazard — a version CAS is the real fix, follow-up); callers on
+	// that path re-stamp the fields by hand (see rewind.go).
+	if !r.Status.CarriesFailureCode() {
+		r.FailureCode = ""
+	}
+	// Same discipline for the pause pointer: a full-document write on a
+	// non-carrying status must not resurrect consumed interaction
+	// evidence (mirrors the FS twin).
+	if !r.Status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
+	}
 	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -625,14 +644,37 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 	return nil
 }
 
-func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
-	now := time.Now().UTC()
+// runStatusUpdate builds the shared $set/$unset pair for a status
+// transition — the Mongo twin of the FS store's applyStatusTransition,
+// including the FailureCode discipline: set on a failure status,
+// cleared by every transition to a non-failure one.
+func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCode, now time.Time) (bson.M, bson.M) {
 	set := bson.M{
 		"status":     status,
 		"updated_at": now,
 		"error":      runErr,
 	}
 	unset := bson.M{}
+	// The pause pointer is a consumable (see store.CarriesPausePointer):
+	// a transition into a status that cannot truthfully carry it clears
+	// the interaction evidence off the surviving checkpoint. Dotted
+	// $unset is a no-op when the checkpoint (or field) is absent.
+	// Callers that $set the whole checkpoint document in the same
+	// update (failRunCheckpointed) must DROP these two keys and strip
+	// the value instead — Mongo rejects conflicting paths.
+	if !status.CarriesPausePointer() {
+		unset["checkpoint.interaction_id"] = ""
+		unset["checkpoint.interaction_questions"] = ""
+	}
+	if status.CarriesFailureCode() && code != "" {
+		set["failure_code"] = code
+	} else {
+		// $unset, not $set "": keeps the persisted shape identical to
+		// the FS twin's omitempty JSON — including an UNKNOWN (empty)
+		// code on a failure status, so {$exists: false} means exactly
+		// "unclassified" on both twins.
+		unset["failure_code"] = ""
+	}
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
@@ -651,6 +693,17 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 		// elapsed-time UI doesn't stay frozen.
 		unset["finished_at"] = ""
 	}
+	return set, unset
+}
+
+func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
+	return s.UpdateRunStatusCoded(ctx, id, status, runErr, "")
+}
+
+// UpdateRunStatusCoded is UpdateRunStatus carrying the typed failure
+// classification in the same $set.
+func (s *Store) UpdateRunStatusCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode) error {
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	if len(unset) > 0 {
 		update["$unset"] = unset
@@ -666,33 +719,25 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 // since the caller's last read (concurrent transition by another
 // publisher, runner, or operator).
 func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, runErr string, expectedFrom []store.RunStatus) (bool, error) {
-	now := time.Now().UTC()
-	set := bson.M{
-		"status":     status,
-		"updated_at": now,
-		"error":      runErr,
-	}
-	unset := bson.M{}
-	switch status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		set["finished_at"] = now
-	case store.RunStatusQueued:
-		set["queued_at"] = now
-		unset["finished_at"] = ""
-	case store.RunStatusRunning:
-		set["error"] = ""
-		unset["finished_at"] = ""
-	case store.RunStatusPausedWaitingHuman:
-		unset["finished_at"] = ""
-	}
+	return s.UpdateRunStatusIfCoded(ctx, id, status, runErr, "", expectedFrom)
+}
+
+// UpdateRunStatusIfCoded is the CAS variant carrying the typed failure
+// classification — code and status land in one atomic UpdateOne.
+func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status store.RunStatus, runErr string, code store.FailureCode, expectedFrom []store.RunStatus) (bool, error) {
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id})
-	if len(expectedFrom) > 0 {
-		filter["status"] = bson.M{"$in": expectedFrom}
+	if len(expectedFrom) == 0 {
+		// A CAS with no expected set is an unconditional write in
+		// disguise (and the FS twin would silently no-op instead) —
+		// refuse loudly rather than diverge.
+		return false, fmt.Errorf("store/mongo: update status if %s: empty expectedFrom", id)
 	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	filter["status"] = bson.M{"$in": expectedFrom}
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
@@ -720,15 +765,14 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 			bson.M{"queued_at": nil},
 		},
 	}))
-	res, err := s.runs.UpdateOne(ctx, filter, bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"updated_at":  now,
-			"finished_at": now,
-			"error":       runErr,
-		},
-		"$inc": bson.M{"version": 1},
-	})
+	// Queue-park classification is follow-up; the empty code reads as
+	// unknown, which is honest here.
+	set, unset := runStatusUpdate(store.RunStatusFailedResumable, runErr, "", now)
+	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, fmt.Errorf("store/mongo: fail queued attempt %s: %w", id, err)
 	}
@@ -741,6 +785,25 @@ var _ store.QueuedAttemptStore = (*Store)(nil)
 // §F T-33 layers an explicit version-conditional update on top; this
 // method is the simple "no contention" form used by the engine itself.
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	// Same pointer discipline as runStatusUpdate (mirrors the FS
+	// twin): a checkpoint carrying interaction evidence may only land
+	// while the run's status carries it — otherwise a stale in-memory
+	// copy is being replayed. The status read costs one projection and
+	// only fires when the checkpoint actually carries a pointer (the
+	// rare pause-adjacent writes; ordinary boundary writes skip it).
+	if cp != nil && (cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		var cur struct {
+			Status store.RunStatus `bson:"status"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+			options.FindOne().SetProjection(bson.M{"status": 1})).Decode(&cur); ferr == nil &&
+			!cur.Status.CarriesPausePointer() {
+			c := *cp
+			c.InteractionID = ""
+			c.InteractionQuestions = nil
+			cp = &c
+		}
+	}
 	update := bson.M{
 		"$set": bson.M{
 			"checkpoint": cp,
@@ -748,7 +811,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpo
 		},
 		"$inc": bson.M{"version": 1},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: save checkpoint %s", id))
 }
 
@@ -762,76 +825,71 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 			"checkpoint": cp,
 			"updated_at": now,
 		},
-		"$inc":   bson.M{"version": 1},
-		"$unset": bson.M{"finished_at": ""},
+		"$inc": bson.M{"version": 1},
+		// A paused run carries no failure classification — same
+		// discipline as runStatusUpdate, which this checkpoint-coupled
+		// write bypasses.
+		"$unset": bson.M{"finished_at": "", "failure_code": ""},
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
 }
 
-// FailRunResumable writes the checkpoint, flips status to
-// failed_resumable, and records the failure reason. Resume can then
-// re-pick up at NodeID without replaying upstream work.
-func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailedResumable,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
-		},
-		"$inc": bson.M{"version": 1},
+// failRunCheckpointed is the shared body of FailRunResumable and
+// FailRunTerminal: the shared transition $set (which owns the
+// failure-code discipline) plus the checkpoint, guarded by the atomic
+// cancelled-wins filter — an operator cancel is terminal and outranks a
+// failure racing in behind it, and the failure would win simply by
+// writing last, auto-resuming a run somebody deliberately stopped.
+func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
+	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
+	// The whole-checkpoint $set below conflicts with the dotted pointer
+	// $unset — apply the same consumption to the VALUE instead. (Engine
+	// failure boundaries never set a pointer; this guards the preserved-
+	// checkpoint callers.)
+	delete(unset, "checkpoint.interaction_id")
+	delete(unset, "checkpoint.interaction_questions")
+	if cp != nil && !status.CarriesPausePointer() &&
+		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		consumed := *cp
+		consumed.InteractionID = ""
+		consumed.InteractionQuestions = nil
+		cp = &consumed
 	}
-	// An operator cancel is terminal and outranks a resumable failure. The two
-	// race whenever an interruption and a cancel arrive together, and resumable
-	// would win simply by writing last — auto-resuming a run somebody
-	// deliberately stopped. Excluded in the FILTER so the guard is atomic.
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
+	set["checkpoint"] = cp
+	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}}))
 	res, err := s.runs.UpdateOne(ctx, filter, update)
 	if err != nil {
-		return fmt.Errorf("store/mongo: fail resumable %s: %w", id, err)
+		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
 	}
 	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
+		// Either the run is gone (absent or tombstoned — LoadRun's
+		// typed error says which), or it is already cancelled and
+		// stays so.
 		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
 			return nil
+		} else {
+			return fmt.Errorf("store/mongo: %s %s: %w", opName, id, gerr)
 		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
 	}
 	return nil
 }
 
+// FailRunResumable writes the checkpoint, flips status to
+// failed_resumable, and records the failure reason + code. Resume can
+// then re-pick up at NodeID without replaying upstream work.
+func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailedResumable, cp, runErr, code, "fail resumable")
+}
+
 // FailRunTerminal writes the checkpoint, flips status to failed, and
-// records the failure reason. The run is terminal — no auto-resume — but
-// the checkpoint is preserved so the operator can still rewind it
-// explicitly. Same atomic cancelled-guard as FailRunResumable.
-func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
-	now := time.Now().UTC()
-	update := bson.M{
-		"$set": bson.M{
-			"status":      store.RunStatusFailed,
-			"checkpoint":  cp,
-			"error":       runErr,
-			"updated_at":  now,
-			"finished_at": now,
-		},
-		"$inc": bson.M{"version": 1},
-	}
-	filter := withTenantFilter(ctx, bson.M{"_id": id, "status": bson.M{"$ne": store.RunStatusCancelled}})
-	res, err := s.runs.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return fmt.Errorf("store/mongo: fail terminal %s: %w", id, err)
-	}
-	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
-		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
-			return nil
-		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+// records the failure reason + code. The run is terminal — no
+// auto-resume — but the checkpoint is preserved so the operator can
+// still rewind it explicitly.
+func (s *Store) FailRunTerminal(ctx context.Context, id string, cp *store.Checkpoint, runErr string, code store.FailureCode) error {
+	return s.failRunCheckpointed(ctx, id, store.RunStatusFailed, cp, runErr, code, "fail terminal")
 }

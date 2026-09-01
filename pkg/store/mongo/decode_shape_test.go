@@ -165,3 +165,29 @@ func TestCheckpointOutputsDecodeShape(t *testing.T) {
 		t.Fatalf("detail.nested decoded as %T, want map[string]any", detail["nested"])
 	}
 }
+
+// TestFailureCodeBSONRoundTrip pins the ADR-095 field's wire shape:
+// a known code, an UNKNOWN future code (open-world contract), and the
+// legacy document with no field at all (zero value, never an error).
+func TestFailureCodeBSONRoundTrip(t *testing.T) {
+	coded := store.Run{ID: "fc", Status: store.RunStatusFailedResumable, FailureCode: store.FailureUsageLimitBlocked}
+	var back store.Run
+	decodeLikeCursor(t, coded, &back)
+	if back.FailureCode != store.FailureUsageLimitBlocked {
+		t.Fatalf("known code = %q", back.FailureCode)
+	}
+
+	future := store.Run{ID: "fc2", Status: store.RunStatusFailed, FailureCode: "SOME_FUTURE_CODE_V9"}
+	var back2 store.Run
+	decodeLikeCursor(t, future, &back2)
+	if back2.FailureCode != "SOME_FUTURE_CODE_V9" {
+		t.Fatalf("unknown code mangled: %q", back2.FailureCode)
+	}
+
+	legacy := bson.D{{Key: "_id", Value: "old"}, {Key: "status", Value: "failed"}}
+	var back3 store.Run
+	decodeLikeCursor(t, legacy, &back3)
+	if back3.FailureCode != "" {
+		t.Fatalf("legacy row grew a code: %q", back3.FailureCode)
+	}
+}

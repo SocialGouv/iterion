@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -15,7 +16,7 @@ import (
 func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult) (string, error) {
 	convNode, ok := e.workflow.Nodes[convergenceNodeID]
 	if !ok {
-		return "", fmt.Errorf("convergence node %q not found", convergenceNodeID)
+		return "", &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: convergenceNodeID, Message: fmt.Sprintf("convergence node %q not found", convergenceNodeID)}
 	}
 
 	// Determine await strategy: use node's explicit setting, default to wait_all.
@@ -39,8 +40,18 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	switch strategy {
 	case ir.AwaitWaitAll:
 		if len(failedBranches) > 0 {
-			return "", fmt.Errorf("convergence at %s (wait_all): %d branch(es) failed: %v",
+			msg := fmt.Sprintf("convergence at %s (wait_all): %d branch(es) failed: %v",
 				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
+			// When every failed branch carries the SAME typed code, the
+			// aggregate keeps it — a fan-out hitting one deterministic
+			// wall (a ghost node after a source edit) must not launder
+			// NODE_NOT_FOUND into the EXECUTION_FAILED catch-all — the
+			// in-process auto-resume gate retries the latter and
+			// refuses the former.
+			if code := commonBranchFailureCode(results); code != "" {
+				return "", &RuntimeError{Code: code, NodeID: convergenceNodeID, Message: msg}
+			}
+			return "", fmt.Errorf("%s", msg)
 		}
 	case ir.AwaitBestEffort:
 		// Proceed even with failures — failed branch metadata is exposed.
@@ -256,4 +267,26 @@ func deepCopyValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// commonBranchFailureCode returns the typed failure code shared by
+// EVERY failed branch result, or "" when they disagree (or none is
+// typed) — partial agreement stays the catch-all, never a guess.
+func commonBranchFailureCode(results []*branchResult) ErrorCode {
+	var code ErrorCode
+	for _, r := range results {
+		if r == nil || r.err == nil {
+			continue
+		}
+		var rtErr *RuntimeError
+		if !errors.As(r.err, &rtErr) || rtErr.Code == "" {
+			return ""
+		}
+		if code == "" {
+			code = rtErr.Code
+		} else if code != rtErr.Code {
+			return ""
+		}
+	}
+	return code
 }

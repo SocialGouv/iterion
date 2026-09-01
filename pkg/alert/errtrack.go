@@ -43,6 +43,9 @@ func (TrackerSink) Notify(_ context.Context, a Alert) {
 	if a.Reason != "" {
 		fields["reason"] = a.Reason
 	}
+	if a.FailureCode != "" {
+		fields["failure_code"] = a.FailureCode
+	}
 	if a.Axis != "" {
 		fields["axis"] = a.Axis
 		fields["budget_pct"] = a.BudgetPct

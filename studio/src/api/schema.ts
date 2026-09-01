@@ -5452,6 +5452,7 @@ export interface components {
             current_run_start?: string;
             deployment?: components["schemas"]["DeploymentReport"];
             error?: string;
+            failure_code?: string;
             fallbacks_used?: components["schemas"]["FallbackUsage"][];
             file_path?: string;
             final_branch?: string;
@@ -5533,6 +5534,7 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             error?: string;
+            failure_code?: string;
             file_path?: string;
             final_branch?: string;
             final_branch_error?: string;

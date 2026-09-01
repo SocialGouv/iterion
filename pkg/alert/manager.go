@@ -200,7 +200,12 @@ func (m *Manager) Observe(evt store.Event) {
 			if reason == "" {
 				reason = "see run logs"
 			}
-			fired = append(fired, m.alertLocked(KindRunFailed, rs, evt.NodeID, reason, "", 0, ts))
+			a := m.alertLocked(KindRunFailed, rs, evt.NodeID, reason, "", 0, ts)
+			// The run_failed event has carried the typed code all
+			// along — the in-process path must not drop what the cloud
+			// path (OpsDispatcher.classify) surfaces.
+			a.FailureCode = strData(evt.Data, "code")
+			fired = append(fired, a)
 		}
 	case store.EventRunFinished, store.EventRunCancelled:
 		rs.terminal = true

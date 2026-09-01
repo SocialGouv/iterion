@@ -68,6 +68,13 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`failure_code` (ADR-095) is the machine-readable classification of `error`
+on a failure status (`failed` / `failed_resumable` / `cancelled`), written
+atomically with the status and cleared by every transition to a non-failure
+status. Absent/empty means UNKNOWN (legacy rows, unclassified writers) —
+never "no failure". The vocabulary is open-world: readers must accept codes
+they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)).
+
 `nodes_served` maps each LLM node's id to the last `(backend, model)` that
 served it (`model` is the provider-reported effective model; `declared_model`
 is what the node asked for). It is the run-record half of making a finished
@@ -99,9 +106,11 @@ though an explicit resume can transition them back to `running`.
 The checkpoint embedded in `run.json` is the source of truth for resume.
 `events.jsonl` is an audit/observation stream and is never replayed to rebuild
 execution state. A checkpoint may be present while a run is still `running`
-because it is saved best-effort after successful node boundaries; it is
-preserved for resumable/cancelled/paused states and cleared on ordinary
-finished/failed transitions.
+because it is saved best-effort after successful node boundaries. **A status
+transition never destroys it** (ADR-095): only `DeleteRun` and the rewind
+machinery remove one, and resumability is decided by `Status` alone — a
+terminal run keeps its checkpoint (`iterion fork` reads a finished
+parent's).
 
 ```jsonc
 {

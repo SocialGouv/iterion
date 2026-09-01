@@ -56,6 +56,10 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
+	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
+	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
+	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
+	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -1112,6 +1116,198 @@ func testStatusTransitions(t *testing.T, s store.RunStore) {
 	}
 }
 
+// testFailureCodeLifecycle pins the ADR-095 persistence discipline on
+// BOTH store twins: the typed code lands in the same write as the
+// failure status (plain, coded-CAS and FailRun* forms), an UNKNOWN
+// code round-trips unharmed (open-world contract), and EVERY
+// transition to a non-failure status clears it — the invariant that
+// keeps a resumed run from lying about a past failure.
+func testFailureCodeLifecycle(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_fc", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	// FailRunResumable carries the code atomically.
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_fc", cp, "quota window shut", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_fc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.FailureCode != store.FailureUsageLimitBlocked {
+		t.Fatalf("FailureCode after FailRunResumable: got %q", r.FailureCode)
+	}
+	// Resume (any transition to running) clears code AND error together.
+	if err := s.UpdateRunStatus(ctx, "run_fc", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" || r.Error != "" {
+		t.Fatalf("resume must clear code+error, got code=%q error=%q", r.FailureCode, r.Error)
+	}
+	// Coded CAS: code and status land in one write.
+	changed, err := s.UpdateRunStatusIfCoded(ctx, "run_fc", store.RunStatusCancelled, "run cancelled", store.FailureCancelled, []store.RunStatus{store.RunStatusRunning})
+	if err != nil || !changed {
+		t.Fatalf("coded CAS: changed=%v err=%v", changed, err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != store.FailureCancelled {
+		t.Fatalf("FailureCode after coded CAS: got %q", r.FailureCode)
+	}
+	// Transition to queued (the cloud resume pre-flip) clears it too —
+	// the invariant covers queued, not only running.
+	if _, err := s.UpdateRunStatusIf(ctx, "run_fc", store.RunStatusQueued, "", []store.RunStatus{store.RunStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("queued must clear the code, got %q", r.FailureCode)
+	}
+	// A checkpoint-coupled pause (which bypasses the transition choke
+	// point) still clears the classification: paused is not a failure.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailedResumable, "parked", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_fc", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "" {
+		t.Fatalf("pause must clear the code, got %q", r.FailureCode)
+	}
+
+	// Open-world: an unknown, non-empty code survives persistence.
+	if err := s.UpdateRunStatusCoded(ctx, "run_fc", store.RunStatusFailed, "boom", store.FailureCode("SOME_FUTURE_CODE_V9")); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_fc")
+	if r.FailureCode != "SOME_FUTURE_CODE_V9" {
+		t.Fatalf("unknown code mangled: %q", r.FailureCode)
+	}
+}
+
+// testTransitionSideEffects pins the transition side effects BOTH twins
+// must share (each was a live FS↔Mongo divergence): the running claim
+// clears checkpoint AND error, PauseRun clears FinishedAt and the code,
+// SaveRun normalizes a stale code, and an empty-expectedFrom CAS is a
+// loud error — never a silent no-op on one twin and an unconditional
+// write on the other.
+func testTransitionSideEffects(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tse", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	// The running claim PRESERVES the previous attempt's checkpoint on
+	// both twins: the park writers that follow (drain, usage-cap,
+	// orphan sweeps) flip running→failed_resumable without a
+	// checkpoint of their own, and the resume point must survive that
+	// round trip — a pod dying between its claim and its first own
+	// checkpoint resumes from the previous attempt's node, never from
+	// the workflow entry.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, "should not persist"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "run_tse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "n1" {
+		t.Errorf("running claim destroyed the resume point (checkpoint %v)", r.Checkpoint)
+	}
+	if r.Error != "" {
+		t.Errorf("running run must carry no failure message, got %q", r.Error)
+	}
+	// PauseRun: not over, so no terminal timestamp and no failure code.
+	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "run_tse", &store.Checkpoint{NodeID: "n2"}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FinishedAt != nil {
+		t.Error("paused run kept a stale FinishedAt")
+	}
+	if r.FailureCode != "" {
+		t.Errorf("paused run kept a stale code %q", r.FailureCode)
+	}
+	// SaveRun normalizes: a copy loaded before a status change must not
+	// resurrect its failure code through the full-document write.
+	r.Status = store.RunStatusRunning
+	r.FailureCode = store.FailureUsageLimitBlocked
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.FailureCode != "" {
+		t.Errorf("SaveRun resurrected a stale code %q on a running run", r.FailureCode)
+	}
+	// Finished keeps the checkpoint too: `iterion fork` reads a
+	// terminal parent's checkpoint for its upstream outputs.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusFinished, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Checkpoint == nil {
+		t.Error("finished transition destroyed the checkpoint a fork would read")
+	}
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty expectedFrom: a loud error on both twins (FS used to no-op
+	// silently while Mongo wrote unconditionally).
+	if _, err := s.UpdateRunStatusIf(ctx, "run_tse", store.RunStatusCancelled, "x", nil); err == nil {
+		t.Error("empty-expectedFrom CAS must be refused")
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Status == store.RunStatusCancelled {
+		t.Error("empty-expectedFrom CAS wrote anyway")
+	}
+}
+
+// testTombstoneRefusesWriters pins that a deleted run stays dead on both
+// twins: no status/checkpoint/pause/failure writer may mutate the
+// tombstone (Mongo used to write status, code and checkpoint onto the
+// skeleton and report success).
+func testTombstoneRefusesWriters(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "run_tomb", "demo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRun(ctx, "run_tomb"); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "n1"}
+	if err := s.FailRunResumable(ctx, "run_tomb", cp, "post-delete", store.FailureFailNode); err == nil {
+		t.Error("FailRunResumable succeeded on a tombstone")
+	}
+	if err := s.FailRunTerminal(ctx, "run_tomb", cp, "post-delete", ""); err == nil {
+		t.Error("FailRunTerminal succeeded on a tombstone")
+	}
+	if err := s.PauseRun(ctx, "run_tomb", cp); err == nil {
+		t.Error("PauseRun succeeded on a tombstone")
+	}
+	if err := s.SaveCheckpoint(ctx, "run_tomb", cp); err == nil {
+		t.Error("SaveCheckpoint succeeded on a tombstone")
+	}
+	if changed, _ := s.UpdateRunStatusIf(ctx, "run_tomb", store.RunStatusCancelled, "x", []store.RunStatus{store.RunStatusRunning, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusQueued, store.RunStatusFinished, store.RunStatusCancelled, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, "deleted"}); changed {
+		t.Error("status CAS wrote onto a tombstone")
+	}
+	if _, err := s.LoadRun(ctx, "run_tomb"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("tombstone must read as ErrRunDeleted, got %v", err)
+	}
+}
+
 // testFailRunTerminal pins the checkpoint-preserving terminal failure on
 // BOTH store twins: status failed + checkpoint retained + FinishedAt set,
 // and the atomic cancelled-outranks guard. The DSL fail-node path depends
@@ -1122,7 +1318,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 		t.Fatal(err)
 	}
 	cp := &store.Checkpoint{NodeID: "node-f"}
-	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft", cp, "workflow reached fail node", store.FailureFailNode); err != nil {
 		t.Fatalf("FailRunTerminal: %v", err)
 	}
 	r, err := s.LoadRun(testCtx(), "run_ft")
@@ -1149,7 +1345,7 @@ func testFailRunTerminal(t *testing.T, s store.RunStore) {
 	if err := s.UpdateRunStatus(testCtx(), "run_ft_cancel", store.RunStatusCancelled, "operator stop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure"); err != nil {
+	if err := s.FailRunTerminal(testCtx(), "run_ft_cancel", cp, "late failure", ""); err != nil {
 		t.Fatalf("FailRunTerminal on a cancelled run: %v", err)
 	}
 	r, err = s.LoadRun(testCtx(), "run_ft_cancel")
@@ -1444,5 +1640,119 @@ func testUserMessagesInbox(t *testing.T, s store.RunStore) {
 	// Updating an unknown ID returns ErrQueuedMessageNotFound.
 	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "nonexistent", store.QueuedMessageStatusDelivered); err == nil {
 		t.Fatalf("Update nonexistent: expected error")
+	}
+}
+
+// testPausePointerLifecycle holds both backends to the pause-pointer
+// consumption contract (store.CarriesPausePointer): the checkpoint
+// survives every transition (ADR-095 §5), but its interaction evidence
+// is a consumable — cleared by any transition into a status that
+// cannot truthfully carry it, and PRESERVED on the paused → queued
+// cloud-resume hop, which the runner's queued router reads to route a
+// human-answers resume. Without the consumption, a status-only cancel
+// of a paused run left the pointer live and a cloud resume crossed the
+// human gate with an empty answer.
+func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	cp := func() *store.Checkpoint {
+		return &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+			InteractionQuestions: map[string]any{"approve": "yes?"}}
+	}
+
+	// Cancel consumes: pause → cancelled clears the pointer, keeps the node.
+	if _, err := s.CreateRun(ctx, "pp-cancel", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(ctx, "pp-cancel", store.RunStatusCancelled, "operator cancel"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "gate" {
+		t.Fatalf("cancel must preserve the checkpoint anchor, got %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("cancel left the pause pointer live (%q, %d questions) — a cloud resume would cross the human gate with an empty answer",
+			r.Checkpoint.InteractionID, len(r.Checkpoint.InteractionQuestions))
+	}
+
+	// The queued hop preserves: pause → queued (SubmitResume with answers)
+	// must keep the pointer — it is what routes the runner's Resume into
+	// the pause path where the answers are recorded.
+	if _, err := s.CreateRun(ctx, "pp-queued", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-queued", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("the paused → queued hop must PRESERVE the pause pointer (the runner routes the answers resume on it), got %+v", r.Checkpoint)
+	}
+
+	// SaveRun on a non-carrying status must not resurrect a consumed
+	// pointer through a full-document write.
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Checkpoint.InteractionID = "I-resurrected"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" {
+		t.Errorf("SaveRun resurrected a consumed pause pointer on a cancelled run: %q", r.Checkpoint.InteractionID)
+	}
+
+	// SaveCheckpoint must not resurrect it either: SaveRun normalizes
+	// its own COPY, so a caller that then re-persists its original
+	// checkpoint (the rewind shape: SaveRun(run) then SaveCheckpoint(cp))
+	// would replay the live pointer. Only PauseRun writes one.
+	if err := s.SaveCheckpoint(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("SaveCheckpoint resurrected the pause pointer (%q) — the rewind write shape replays it", r.Checkpoint.InteractionID)
+	}
+
+	// …but on a PAUSED run the write-through is legitimate: budget/
+	// bookkeeping updates on a live pause must keep the pointer, or the
+	// next resume cannot load its interaction.
+	// pp-queued is queued (carries) — reuse it: bump a counter and re-save.
+	if ok, cerr := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusPausedWaitingHuman, "",
+		[]store.RunStatus{store.RunStatusQueued}); cerr != nil || !ok {
+		t.Fatalf("back to paused: ok=%v err=%v", ok, cerr)
+	}
+	pausedCp := cp()
+	pausedCp.BudgetCostUSD = 0.95
+	if err := s.SaveCheckpoint(ctx, "pp-queued", pausedCp); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
 	}
 }

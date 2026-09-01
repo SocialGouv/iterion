@@ -2,6 +2,8 @@ package alert
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -172,7 +174,23 @@ func opsEpisodeKey(run *store.Run) string {
 		if run.RetryState != nil {
 			attempts = run.RetryState.Attempts
 		}
-		return fmt.Sprintf("%srun:%s:parked:%d", opsEpisodePrefix, run.ID, attempts)
+		// The failure CLASS joins the key because attempts alone can
+		// stand still across two DIFFERENT parks: ScheduleRunRetry is
+		// the only writer that advances it, so a resumed run re-parking
+		// on an unretryable cause (no retry armed) reuses the old
+		// count — and the operator would never hear about the new,
+		// manual-intervention failure. Same class repeated = still one
+		// episode, so the retry-cycle anti-spam is intact. When the
+		// writer left the code UNKNOWN (the declared-deferred parks:
+		// sandbox-fail, schema park, DLQ), a fingerprint of the error
+		// text stands in — two distinct unclassified parks are still
+		// two incidents.
+		class := string(run.FailureCode)
+		if class == "" {
+			sum := sha256.Sum256([]byte(run.Error))
+			class = "e:" + hex.EncodeToString(sum[:6])
+		}
+		return fmt.Sprintf("%srun:%s:parked:%d:%s", opsEpisodePrefix, run.ID, attempts, class)
 	}
 	return opsEpisodePrefix + trigger.RunOutcomeEventID(run.ID, string(run.Status), "", run.UpdatedAt)
 }
@@ -230,10 +248,12 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 		if run.Error != "" {
 			a.Reason += " · " + truncate(run.Error, 200)
 		}
+		a.FailureCode = string(run.FailureCode)
 		return a, run, true
 	case store.RunStatusFailed:
 		a.Kind = KindRunFailed
 		a.Reason = truncate(run.Error, 200)
+		a.FailureCode = string(run.FailureCode)
 		return a, run, true
 	default:
 		// Already resumed/finished by the time we looked — nothing owed.

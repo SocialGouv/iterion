@@ -90,12 +90,20 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		case r.Status.IsPaused():
 			kind = KindRunPaused
 		}
-		// A paused run carries the node + pending interaction on its
-		// checkpoint; surface both so a consumer can pinpoint the paused
-		// node and render the answer affordance.
+		// The checkpoint's NodeID is the outcome's anchor — the paused
+		// node on a pause, the failing node on a failure ("The run
+		// failed at node X" in usernotify) — valid on every status. The
+		// interaction id is different: a consumable pause pointer.
+		// Stricter than CarriesPausePointer (paused ∨ queued) on
+		// purpose — an outcome event for a queued run must not
+		// deep-link an answer form that is already in flight; the
+		// store's transition normalization is the enforcing layer,
+		// this gate is belt-and-braces.
 		if r.Checkpoint != nil {
 			nodeID = r.Checkpoint.NodeID
-			interactionID = r.Checkpoint.InteractionID
+			if r.Status.IsPaused() {
+				interactionID = r.Checkpoint.InteractionID
+			}
 		}
 	}
 

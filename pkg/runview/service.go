@@ -400,6 +400,9 @@ type RunSummary struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 	Error      string          `json:"error,omitempty"`
+	// FailureCode is Error's machine-readable classification (ADR-095);
+	// empty = unknown/legacy.
+	FailureCode store.FailureCode `json:"failure_code,omitempty"`
 	// Active reports whether the run is currently held by this
 	// process's manager. A run with status "running" but Active=false
 	// belongs to another process or to a previous boot — Cancel won't

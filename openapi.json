@@ -1390,6 +1390,9 @@
           "error": {
             "type": "string"
           },
+          "failure_code": {
+            "type": "string"
+          },
           "fallbacks_used": {
             "items": {
               "$ref": "#/components/schemas/FallbackUsage"
@@ -1642,6 +1645,9 @@
             "type": "string"
           },
           "error": {
+            "type": "string"
+          },
+          "failure_code": {
             "type": "string"
           },
           "file_path": {

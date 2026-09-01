@@ -294,3 +294,82 @@ func TestOpsDispatcher_LoserNeverCertifiesAPendingClaim(t *testing.T) {
 		t.Fatalf("%d alerts after release + healthy sweep, want 1 — the loser's stamp silenced the episode forever", got)
 	}
 }
+
+// A SECOND park with a DIFFERENT failure code is a genuinely new
+// incident even when RetryState.Attempts stands still (ScheduleRunRetry
+// is its only writer, and an unretryable re-park never calls it). The
+// episode key must discriminate on the code, or the operator never
+// hears that the run now needs a manual resume.
+func TestOpsDispatcher_NewFailureCodeIsANewEpisode(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	reset := time.Now().Add(3 * time.Hour).UTC()
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "usage cap: weekly window"
+		r.FailureCode = store.FailureUsageLimitBlocked
+		r.RetryState = &store.RunRetryState{RetryAfter: &reset, Reason: "usage_window", Attempts: 1}
+	})
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("first park: %d alerts, want 1", got)
+	}
+
+	// Resume, then re-park on an UNRETRYABLE cause: attempts unchanged,
+	// no retry armed, different code.
+	run2, _ := rs.LoadRun(context.Background(), run.ID)
+	run2.Status = store.RunStatusFailedResumable
+	run2.Error = "anthropic: invalid api key"
+	run2.FailureCode = store.FailureAuthFailed
+	run2.RetryState = &store.RunRetryState{Attempts: 1}
+	run2.UpdatedAt = run2.UpdatedAt.Add(10 * time.Minute)
+	if err := rs.SaveRun(context.Background(), run2); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	alerts := sink.alerts()
+	if len(alerts) != 2 {
+		t.Fatalf("second park with a new failure code: %d alerts, want 2 — the manual-intervention incident was silenced", len(alerts))
+	}
+	if alerts[1].FailureCode != string(store.FailureAuthFailed) {
+		t.Errorf("second alert code = %q, want AUTH_FAILED", alerts[1].FailureCode)
+	}
+	// Same code repeated (a bookkeeping bump) stays ONE episode.
+	run3, _ := rs.LoadRun(context.Background(), run.ID)
+	run3.UpdatedAt = run3.UpdatedAt.Add(90 * time.Second)
+	_ = rs.SaveRun(context.Background(), run3)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 2 {
+		t.Fatalf("repeat of the same code: %d alerts, want still 2", got)
+	}
+}
+
+// Unclassified parks (the declared-deferred writers persist an empty
+// code) still discriminate episodes: a fingerprint of the error text
+// stands in for the class, so two DIFFERENT unclassified parks are two
+// incidents while a bookkeeping bump of the same one stays deduped.
+func TestOpsDispatcher_EmptyCodeParksDiscriminateByError(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "sandbox start failed: image pull backoff"
+		r.RetryState = &store.RunRetryState{Attempts: 1}
+	})
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	// Bookkeeping bump, same error: still one episode.
+	r2, _ := rs.LoadRun(context.Background(), run.ID)
+	r2.UpdatedAt = r2.UpdatedAt.Add(time.Minute)
+	_ = rs.SaveRun(context.Background(), r2)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("same unclassified park re-alerted: %d, want 1", got)
+	}
+	// A DIFFERENT unclassified failure, attempts unchanged: new incident.
+	r3, _ := rs.LoadRun(context.Background(), run.ID)
+	r3.Error = "queue schema mismatch: message v12 outside accepted range"
+	r3.UpdatedAt = r3.UpdatedAt.Add(time.Minute)
+	if err := rs.SaveRun(context.Background(), r3); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 2 {
+		t.Fatalf("a NEW unclassified failure was silenced: %d alerts, want 2", got)
+	}
+}

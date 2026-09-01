@@ -948,12 +948,7 @@ func runLockHeld(storeDir, runID string) bool {
 // reclaim. Spared by default, released by --include-resumable, which is
 // the same opt-in `runs prune` requires before it touches them.
 func isResumable(st store.RunStatus) bool {
-	switch st {
-	case store.RunStatusFailedResumable, store.RunStatusCancelled,
-		store.RunStatusPausedOperator, store.RunStatusPausedWaitingHuman:
-		return true
-	}
-	return false
+	return st.CanOperatorResume()
 }
 
 func isPausedResumable(st store.RunStatus) bool {

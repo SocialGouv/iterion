@@ -128,7 +128,7 @@ func (s *Service) CancelInactiveCtx(ctx context.Context, runID string) (bool, er
 	if r.Error != "" {
 		reason += ": " + r.Error
 	}
-	if err := s.store.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, reason); err != nil {
+	if err := s.store.UpdateRunStatusCoded(ctx, runID, store.RunStatusCancelled, reason, store.FailureCancelled); err != nil {
 		return false, fmt.Errorf("update status: %w", err)
 	}
 	// Re-load post-flip so RecoverFinalize sees the new status.

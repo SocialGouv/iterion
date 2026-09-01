@@ -160,8 +160,8 @@ func (r *Runner) usageCapPreflight(ctx context.Context, wf *ir.Workflow, msg *qu
 		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), usageCapStoreTimeout)
 		defer scancel()
 		sctx = store.WithIdentity(sctx, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunStatusIf(sctx, msg.RunID, store.RunStatusFailedResumable,
-			d.Reason,
+		if _, serr := r.cfg.Store.UpdateRunStatusIfCoded(sctx, msg.RunID, store.RunStatusFailedResumable,
+			d.Reason, store.FailureUsageLimitBlocked,
 			[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil && logger != nil {
 			logger.Warn("runner: usage-cap status flip for %s: %v", msg.RunID, serr)
 		}

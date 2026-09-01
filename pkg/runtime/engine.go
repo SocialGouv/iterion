@@ -463,13 +463,13 @@ type resumeBackendState struct {
 // resume then restarts from the entry, which it is built to do.
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
 	writeCtx := context.WithoutCancel(ctx)
-	status, msg := setupFailureStatus(ctx, phase, cause)
+	status, msg, code := setupFailureStatus(ctx, phase, cause)
 	var err error
 	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
 		if attempt > 0 {
 			time.Sleep(delay)
 		}
-		if err = e.store.UpdateRunStatus(writeCtx, runID, status, msg); err == nil {
+		if err = e.store.UpdateRunStatusCoded(writeCtx, runID, status, msg, code); err == nil {
 			return
 		}
 	}
@@ -491,17 +491,27 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // It reads the CTX, not just the error: a drain kills the work by
 // cancelling, so what surfaces is whatever the interrupted step returned
 // (a killed `kubectl exec`, a half-written worktree), never the cause.
-func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string) {
+func setupFailureStatus(ctx context.Context, phase string, cause error) (store.RunStatus, string, store.FailureCode) {
 	if ctx == nil || ctx.Err() == nil {
-		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause)
+		return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
 	}
 	if errors.Is(context.Cause(ctx), ErrRunInterrupted) {
-		return store.RunStatusFailedResumable, fmt.Sprintf("%s interrupted before the first node (resumable): %v", phase, cause)
+		return store.RunStatusFailedResumable, fmt.Sprintf("%s interrupted before the first node (resumable): %v", phase, cause), store.FailureInterrupted
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause)
+		return store.RunStatusCancelled, fmt.Sprintf("%s cancelled before the first node: %v", phase, cause), store.FailureCancelled
 	}
-	return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause)
+	return store.RunStatusFailed, fmt.Sprintf("%s: %v", phase, cause), setupFailureCode(cause)
+}
+
+// setupFailureCode recovers a typed classification from a setup error
+// when one is present; a plain error stays unknown (empty).
+func setupFailureCode(cause error) store.FailureCode {
+	var rtErr *RuntimeError
+	if errors.As(cause, &rtErr) {
+		return rtErr.Code
+	}
+	return ""
 }
 
 // setupErr decorates the error a setup phase returns so an interruption

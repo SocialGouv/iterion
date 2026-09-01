@@ -115,8 +115,14 @@ type RunStore interface {
 	SetSubbotChild(ctx context.Context, parentRunID, key, childRunID string) error
 	ClearSubbotChild(ctx context.Context, parentRunID, key string) error
 
-	// Status & checkpoint
+	// Status & checkpoint. The Coded variants carry the typed
+	// FailureCode (ADR-095) in the SAME write as the status — never a
+	// separate read-modify-write; the plain forms delegate with an
+	// empty (unknown) code. Every transition to a non-failure status
+	// clears the code, which is the invariant that keeps a resumed run
+	// from lying about a past failure.
 	UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error
+	UpdateRunStatusCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode) error
 	// UpdateRunStatusIf is a compare-and-set on the status field: the
 	// write only lands when the current status is in expectedFrom.
 	// Returns changed=true when the write applied, false when the
@@ -124,13 +130,14 @@ type RunStore interface {
 	// firing concurrently with a Resume republish). Used by the
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
+	UpdateRunStatusIfCoded(ctx context.Context, id string, status RunStatus, runErr string, code FailureCode, expectedFrom []RunStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
-	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 	// FailRunTerminal is FailRunResumable's terminal counterpart: status
 	// failed (no auto-resume) but the checkpoint is kept so the run stays
 	// rewindable on an explicit operator action.
-	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string) error
+	FailRunTerminal(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
 
 	// Events (append-only, monotonic seq per run)
 	AppendEvent(ctx context.Context, runID string, evt Event) (*Event, error)
