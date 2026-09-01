@@ -222,6 +222,25 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
 	stampTenant(ctx, r)
+	// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A caller
+	// whose copy predates a live claim (rename, rewind bookkeeping)
+	// must not disavow it through this full-document replace. Best-
+	// effort read-then-replace (a claim landing inside this window can
+	// still be clobbered — the FS twin is atomic under its mutex; a
+	// version CAS on SaveRun is the real fix, follow-up), which closes
+	// the measured window: a stale copy loaded BEFORE the claim.
+	if r.MergeStatus != store.MergeStatusMerging {
+		var cur struct {
+			MergeStatus    store.MergeStatus `bson:"merge_status"`
+			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})),
+			options.FindOne().SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})).Decode(&cur); ferr == nil &&
+			cur.MergeStatus == store.MergeStatusMerging {
+			r.MergeStatus = cur.MergeStatus
+			r.MergeClaimedAt = cur.MergeClaimedAt
+		}
+	}
 	// The notDeleted predicate closes the guard's TOCTOU window: a
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
@@ -743,6 +762,144 @@ func (s *Store) UpdateRunStatusIfCoded(ctx context.Context, id string, status st
 		return false, fmt.Errorf("store/mongo: update status if %s: %w", id, err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// mergeStatusFilter builds the merge_status clause for a CAS filter:
+// the empty status matches both an unset field and an explicit "".
+func mergeStatusFilter(expectedFrom []store.MergeStatus) bson.M {
+	hasEmpty := false
+	vals := make([]store.MergeStatus, 0, len(expectedFrom))
+	for _, st := range expectedFrom {
+		if st == "" {
+			hasEmpty = true
+		}
+		vals = append(vals, st)
+	}
+	in := bson.M{"merge_status": bson.M{"$in": vals}}
+	if !hasEmpty {
+		return in
+	}
+	return bson.M{"$or": bson.A{in, bson.M{"merge_status": bson.M{"$exists": false}}}}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore), implemented as a conditional FindOneAndUpdate:
+// the flip to "merging" only lands when the persisted status is
+// claimable — unset/pending/failed, or a "merging" whose claim stamp
+// predates staleBefore (the previous claimant crashed mid-merge).
+func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (bool, store.MergeStatus, time.Time, error) {
+	// Millisecond precision: BSON stores times in ms, and the token
+	// must compare equal after a round-trip.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claimable := bson.M{"$or": bson.A{
+		bson.M{"merge_status": bson.M{"$in": bson.A{"", store.MergeStatusPending, store.MergeStatusFailed, store.MergeStatusSkipped, store.MergeStatusConflicted}}},
+		bson.M{"merge_status": bson.M{"$exists": false}},
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$lt": staleBefore}},
+		// A "merging" without a stamp (a full-document writer dropped
+		// it) counts as infinitely stale — it must not wedge the run.
+		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
+	}}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
+	// Strictly monotonic vs the stamp being stolen (mirrors the FS
+	// twin): a steal landing in the SAME millisecond would mint an
+	// equal token and the loser's token-scoped exits would pass as the
+	// winner's. The pipeline computes max(now, old+1ms); the Go side
+	// derives the identical token from the pre-image below.
+	tokenExpr := bson.M{"$cond": bson.A{
+		bson.M{"$and": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$type": "$merge_claimed_at"}, "missing"}},
+			bson.M{"$gte": bson.A{"$merge_claimed_at", now}},
+		}},
+		bson.M{"$add": bson.A{"$merge_claimed_at", 1}},
+		now,
+	}}
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"merge_status":     bson.M{"$literal": string(store.MergeStatusMerging)},
+		"merge_claimed_at": tokenExpr,
+		"updated_at":       now,
+		"version":          bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
+	}}}}
+	opts := options.FindOneAndUpdate().
+		SetReturnDocument(options.Before).
+		SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})
+	var before struct {
+		MergeStatus    store.MergeStatus `bson:"merge_status"`
+		MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
+	}
+	err := s.runs.FindOneAndUpdate(ctx, filter, update, opts).Decode(&before)
+	if err == nil {
+		token := now
+		if !before.MergeClaimedAt.IsZero() && !now.After(before.MergeClaimedAt) {
+			token = before.MergeClaimedAt.Add(time.Millisecond)
+		}
+		return true, before.MergeStatus, token, nil
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	// Not claimable (or missing): read the current status so the caller
+	// can say WHY the claim was refused.
+	var cur struct {
+		MergeStatus store.MergeStatus `bson:"merge_status"`
+	}
+	err = s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"merge_status": 1})).Decode(&cur)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge: run %s not found", id)
+		}
+		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)
+	}
+	return false, cur.MergeStatus, time.Time{}, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): a conditional UpdateOne on the full
+// merge bookkeeping. Empty fields are $unset, mirroring the omitempty
+// shape a full SaveRun would produce.
+func (s *Store) UpdateRunMergeIf(ctx context.Context, id string, upd store.RunMergeUpdate, expectedFrom []store.MergeStatus) (bool, error) {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	unset := bson.M{"merge_claimed_at": ""}
+	stringField := func(key, val string) {
+		if val == "" {
+			unset[key] = ""
+		} else {
+			set[key] = val
+		}
+	}
+	stringField("merge_status", string(upd.Status))
+	stringField("merged_commit", upd.MergedCommit)
+	stringField("merged_into", upd.MergedInto)
+	stringField("merge_strategy", string(upd.MergeStrategy))
+	stringField("pending_merge_message", upd.PendingMergeMessage)
+	stringField("pending_merge_into", upd.PendingMergeInto)
+	update := bson.M{"$set": set, "$unset": unset, "$inc": bson.M{"version": 1}}
+	cas := bson.A{mergeStatusFilter(expectedFrom)}
+	if !upd.ExpectClaimedAt.IsZero() {
+		// Scope the exit to ONE claim: a claimant whose claim was
+		// stolen must not consume its successor's (see RunMergeUpdate).
+		cas = append(cas, bson.M{"merge_claimed_at": upd.ExpectClaimedAt})
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": cas}))
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	if res.MatchedCount > 0 {
+		return true, nil
+	}
+	// Distinguish "state drifted" (a CAS outcome the caller handles)
+	// from "run missing" (an error — a silently absorbed write would
+	// masquerade as a lost race).
+	exists := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+		options.FindOne().SetProjection(bson.M{"_id": 1}))
+	if err := exists.Err(); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, fmt.Errorf("store/mongo: update merge if: run %s not found", id)
+		}
+		return false, fmt.Errorf("store/mongo: update merge if %s: %w", id, err)
+	}
+	return false, nil
 }
 
 // FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the

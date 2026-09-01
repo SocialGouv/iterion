@@ -161,6 +161,17 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The merge claim is owned by ClaimMerge/UpdateRunMergeIf. A caller
+	// whose copy predates a live claim (rename, rewind bookkeeping)
+	// must not disavow it through this full-document write: clobbering
+	// merge_status+merge_claimed_at lets the next claimant through
+	// while the first is mid-merge — the double-squash the claim
+	// exists to prevent. Atomic here (under s.mu, same as writeRun).
+	if cur, err := s.loadRunRaw(r.ID); err == nil &&
+		cur.MergeStatus == MergeStatusMerging && r.MergeStatus != MergeStatusMerging {
+		r.MergeStatus = cur.MergeStatus
+		r.MergeClaimedAt = cur.MergeClaimedAt
+	}
 	return s.writeRun(r)
 }
 
@@ -403,6 +414,102 @@ func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id stri
 		return false, nil
 	}
 	if err := s.applyStatusTransition(r, status, runErr, code); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// mergeClaimable reports whether a run in status cur (with claim time
+// claimedAt) can be claimed for merging at staleBefore: unset, pending
+// and failed are always claimable; a "merging" claim is claimable only
+// once stale (the previous claimant crashed mid-merge).
+func mergeClaimable(cur MergeStatus, claimedAt, staleBefore time.Time) bool {
+	switch cur {
+	case "", MergeStatusPending, MergeStatusFailed, MergeStatusSkipped, MergeStatusConflicted:
+		// skipped and conflicted stay claimable: /merge is the only
+		// path that re-materialises a lost server-side merge clone, and
+		// a recovered run (RecoverFinalize lands "skipped") must stay
+		// mergeable. The exit CAS still serialises the outcome.
+		return true
+	case MergeStatusMerging:
+		// A zero claimedAt (a full-document writer dropped the stamp)
+		// counts as infinitely stale — it must not wedge the run.
+		return claimedAt.IsZero() || claimedAt.Before(staleBefore)
+	default:
+		return false
+	}
+}
+
+// ClaimMerge is the compare-and-set entry to the merge state machine
+// (see store.RunStore). Guarded by the store mutex, so concurrent
+// claimants in one process serialize here.
+func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefore time.Time) (bool, MergeStatus, time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, "", time.Time{}, err
+	}
+	prior := r.MergeStatus
+	if !mergeClaimable(prior, r.MergeClaimedAt, staleBefore) {
+		return false, prior, time.Time{}, nil
+	}
+	// Millisecond precision: the token must survive a Mongo round-trip
+	// identically on both backends, and BSON stores times in ms.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	// Strictly monotonic vs the stamp being stolen: a steal landing in
+	// the SAME millisecond as the claim it replaces would mint an equal
+	// token, and the loser's token-scoped exits would pass as the
+	// winner's — the fencing collapses exactly when two claimants are
+	// closest.
+	if !now.After(r.MergeClaimedAt) {
+		now = r.MergeClaimedAt.Add(time.Millisecond)
+	}
+	r.MergeStatus = MergeStatusMerging
+	r.MergeClaimedAt = now
+	r.UpdatedAt = now
+	if err := s.writeRun(r); err != nil {
+		return false, prior, time.Time{}, err
+	}
+	return true, prior, now, nil
+}
+
+// UpdateRunMergeIf is the compare-and-set exit from the merge state
+// machine (see store.RunStore): the write only lands when the current
+// MergeStatus is in expectedFrom.
+func (s *FilesystemRunStore) UpdateRunMergeIf(_ context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	matched := false
+	for _, want := range expectedFrom {
+		if r.MergeStatus == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	if !upd.ExpectClaimedAt.IsZero() && !r.MergeClaimedAt.Equal(upd.ExpectClaimedAt) {
+		// The claim this writer holds was stolen — its exit consumes
+		// nothing.
+		return false, nil
+	}
+	r.MergeStatus = upd.Status
+	r.MergedCommit = upd.MergedCommit
+	r.MergedInto = upd.MergedInto
+	r.MergeStrategy = upd.MergeStrategy
+	r.PendingMergeMessage = upd.PendingMergeMessage
+	r.PendingMergeInto = upd.PendingMergeInto
+	r.MergeClaimedAt = time.Time{}
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
 		return false, err
 	}
 	return true, nil
