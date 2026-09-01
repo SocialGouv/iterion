@@ -50,7 +50,7 @@ var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1
 // then makes it usable: a blob copied out of a terminal (a `cat` of
 // credentials.json under a pager, a screenshot-to-clipboard round trip)
 // carries ANSI escapes, and the server rejected it with a parse error
-// pointing at "" — accurate and useless. The escapes are stripped and
+// pointing at "\x1b" — accurate and useless. The escapes are stripped and
 // the result is validated HERE, so a malformed payload is named before it
 // travels: which file, which JSON error, and what the shape should be.
 //

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,4 +181,22 @@ func readCredentialBlobFromStdin(t *testing.T, payload string) ([]byte, error) {
 	os.Stdin = f
 	defer func() { os.Stdin = saved }()
 	return ReadCredentialBlob("", "", "claude_code")
+}
+
+// The subject of this file is stray terminal escapes, and it shipped one:
+// the doc comment above ReadCredentialBlob quoted the parse error by
+// embedding a literal 0x1B rather than the two-character text \x1b, so
+// every `cat`, `grep` and review diff of the file rendered it as garbage
+// (and a terminal ate the quote). Escapes belong in this file only as
+// source-level escape sequences.
+func TestSourceCarriesNoRawTerminalEscape(t *testing.T) {
+	const name = "remote_admin_llm.go"
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i := bytes.IndexByte(b, 0x1b); i >= 0 {
+		line := 1 + bytes.Count(b[:i], []byte("\n"))
+		t.Errorf("%s:%d carries a raw 0x1B byte — write it as the escape sequence \\x1b", name, line)
+	}
 }
