@@ -316,3 +316,49 @@ func exprContext(r *store.Run) *expr.Context {
 		},
 	}
 }
+
+// ValidateRefs resolves every contract ref against the workflow the run
+// will execute: the node must exist and, when the caller can answer,
+// the field must be declared. A blocker on a field the bot never
+// publishes passes the grammar, survives the launch, and silently
+// disables the automation at the terminal ("unreadable → escalate,
+// forever") — the exact inverse of the launch-refusal promise. hasField
+// may be nil (or answer true) for nodes whose output shape is not
+// statically known; the node check always runs.
+func ValidateRefs(p *store.RoutingPolicy, hasNode func(node string) bool, hasField func(node, field string) bool) error {
+	if p == nil || hasNode == nil {
+		return nil
+	}
+	check := func(label, src string) error {
+		if src == "" {
+			return nil
+		}
+		ast, err := expr.Parse(src)
+		if err != nil {
+			// Validate owns the grammar refusal; this is belt.
+			return fmt.Errorf("routing policy: %s: %w", label, err)
+		}
+		for _, ref := range ast.Refs() {
+			if ref.Namespace != "outputs" || len(ref.Path) < 2 {
+				continue // Validate's refusal, not ours
+			}
+			node, key := ref.Path[0], ref.Path[1]
+			if !hasNode(node) {
+				return fmt.Errorf("routing policy: %s: outputs.%s.%s references node %q, which does not exist in this workflow", label, node, key, node)
+			}
+			if hasField != nil && !hasField(node, key) {
+				return fmt.Errorf("routing policy: %s: outputs.%s.%s references field %q, which node %q never publishes — the contract would evaluate unreadable at the terminal and disable the automation", label, node, key, key, node)
+			}
+		}
+		return nil
+	}
+	if err := check("success_when", p.SuccessWhen); err != nil {
+		return err
+	}
+	for i, b := range p.BlockWhen {
+		if err := check(fmt.Sprintf("block_when[%d]", i), b); err != nil {
+			return err
+		}
+	}
+	return nil
+}

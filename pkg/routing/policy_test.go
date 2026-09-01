@@ -238,12 +238,51 @@ func TestEvaluateTamperedHashEscalates(t *testing.T) {
 		t.Fatalf("untampered verdict = %q, want merge", v.Decision)
 	}
 	// Tamper the contract after stamping.
-	r.RoutingPolicy.SuccessWhen = []string{"outputs.review.rubber_stamp"}
+	r.RoutingPolicy.SuccessWhen = "outputs.review.rubber_stamp"
 	v := Evaluate(r)
 	if v.Decision != DecisionEscalate {
 		t.Fatalf("tampered-contract verdict = %q, want escalate", v.Decision)
 	}
 	if v.PolicyHash == r.RoutingPolicy.Hash {
 		t.Fatalf("verdict rode the stale stamp %q", v.PolicyHash)
+	}
+}
+
+// The launch must refuse a contract whose refs the workflow cannot
+// serve: an author typo would otherwise read "unreadable → escalate"
+// at the terminal, forever, silently.
+func TestValidateRefs(t *testing.T) {
+	p := &store.RoutingPolicy{
+		Version:     CurrentPolicyVersion,
+		SuccessWhen: "outputs.gate.converged",
+		BlockWhen:   []string{"outputs.work.blocked"},
+	}
+	nodes := map[string]map[string]bool{
+		"gate": {"converged": true},
+		"work": {"blocked": true},
+	}
+	hasNode := func(n string) bool { _, ok := nodes[n]; return ok }
+	hasField := func(n, f string) bool { return nodes[n][f] }
+
+	if err := ValidateRefs(p, hasNode, hasField); err != nil {
+		t.Fatalf("valid refs refused: %v", err)
+	}
+	// Unknown node.
+	bad := *p
+	bad.SuccessWhen = "outputs.gone.converged"
+	if err := ValidateRefs(&bad, hasNode, hasField); err == nil {
+		t.Fatal("unknown node accepted")
+	}
+	// Known node, unpublished field.
+	bad = *p
+	bad.BlockWhen = []string{"outputs.work.rubber_stamp"}
+	if err := ValidateRefs(&bad, hasNode, hasField); err == nil {
+		t.Fatal("unpublished field accepted — the automation would be silently disabled at the terminal")
+	}
+	// Dynamic output shape: nil hasField only checks nodes.
+	bad = *p
+	bad.BlockWhen = []string{"outputs.work.anything"}
+	if err := ValidateRefs(&bad, hasNode, nil); err != nil {
+		t.Fatalf("nil hasField must accept unknown fields: %v", err)
 	}
 }
