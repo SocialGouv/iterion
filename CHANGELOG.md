@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.86.1](https://github.com/SocialGouv/iterion/compare/v3.86.0...v3.86.1) (2026-09-01)
+
+### Bug Fixes
+
+* **webhooks:** the re-request replier gate reaches the prforge lane; an authz error never strands a co-riding resync ([#608](https://github.com/SocialGouv/iterion/issues/608)) ([524dabf](https://github.com/SocialGouv/iterion/commit/524dabf83c77fc858968985cccac51f93abad4e8))
+
+    <details><summary>why</summary>
+
+    TestBudgetGraceCoversDuration slept 350ms against a 570ms graced ceiling, leaving ~220ms for engine overhead — a loaded CI runner spends more than that and the run correctly dies past the ceiling, failing the test (seen ejecting merge-queue entries). Scaled to 2s/2.3s/3.8s: same contract, ~1.5s of slack.
+
+    </details>
+
 ## [3.86.0](https://github.com/SocialGouv/iterion/compare/v3.85.1...v3.86.0) (2026-09-01)
 
 ### Features
