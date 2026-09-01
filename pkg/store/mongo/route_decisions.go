@@ -1,0 +1,203 @@
+package mongo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// ClaimRouteDecision atomically inserts the (run_id, outcome_seq) row
+// (see store.RouteDecisionStore). The unique index is the claim: a
+// duplicate key means the episode is already decided — the existing
+// row comes back so the caller can report WHO decided and how it went.
+func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, staleBefore time.Time) (bool, *store.RouteDecision, error) {
+	if d.RunID == "" {
+		return false, nil, fmt.Errorf("store/mongo: claim route decision without run_id")
+	}
+	d.ID = fmt.Sprintf("%s:%d", d.RunID, d.OutcomeSeq)
+	d.State = store.RouteDecisionClaimed
+	d.ClaimedAt = time.Now().UTC()
+	stampTenantDecision(ctx, &d)
+	d.Attempts = 1
+	if _, err := s.routeDecisions.InsertOne(ctx, d); err != nil {
+		if !mongo.IsDuplicateKeyError(err) {
+			return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
+		}
+		// The episode has a row. Two re-claim arms (see the interface
+		// doc), BOTH bounded by the attempt cap: a stale "claimed" (the
+		// claimant died between claim and action) and a "failed" under
+		// the cap. The CAS is a conditional update, so replicas racing
+		// on the steal still elect exactly one winner.
+		res := s.routeDecisions.FindOneAndUpdate(ctx,
+			withTenantFilter(ctx, bson.M{
+				"run_id": d.RunID, "outcome_seq": d.OutcomeSeq,
+				"attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts},
+				"$or": bson.A{
+					bson.M{"state": store.RouteDecisionClaimed, "claimed_at": bson.M{"$lt": staleBefore}},
+					bson.M{"state": store.RouteDecisionFailed},
+				},
+			}),
+			bson.M{
+				"$set": bson.M{"state": store.RouteDecisionClaimed, "decision": d.Decision, "reason": d.Reason,
+					"policy_hash": d.PolicyHash, "claimed_at": d.ClaimedAt, "error": ""},
+				"$inc": bson.M{"attempts": 1},
+			})
+		if res.Err() == nil {
+			return true, nil, nil
+		}
+		if !errors.Is(res.Err(), mongo.ErrNoDocuments) {
+			return false, nil, fmt.Errorf("store/mongo: reclaim route decision %s: %w", d.ID, res.Err())
+		}
+		var existing store.RouteDecision
+		ferr := s.routeDecisions.FindOne(ctx, withTenantFilter(ctx, bson.M{"run_id": d.RunID, "outcome_seq": d.OutcomeSeq})).Decode(&existing)
+		if ferr != nil {
+			return false, nil, fmt.Errorf("store/mongo: route decision %s exists but is unreadable: %w", d.ID, ferr)
+		}
+		return false, &existing, nil
+	}
+	return true, nil, nil
+}
+
+// FinishRouteDecision moves the claimed row to its terminal state.
+func (s *Store) FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error {
+	if state != store.RouteDecisionSucceeded && state != store.RouteDecisionFailed {
+		return fmt.Errorf("store/mongo: finish route decision: invalid state %q", state)
+	}
+	now := time.Now().UTC()
+	res, err := s.routeDecisions.UpdateOne(ctx,
+		withTenantFilter(ctx, bson.M{"run_id": runID, "outcome_seq": outcomeSeq, "state": store.RouteDecisionClaimed}),
+		bson.M{"$set": bson.M{"state": state, "error": actionErr, "finished_at": now}})
+	if err != nil {
+		return fmt.Errorf("store/mongo: finish route decision %s:%d: %w", runID, outcomeSeq, err)
+	}
+	if res.MatchedCount == 0 {
+		return fmt.Errorf("store/mongo: finish route decision %s:%d: no claimed row", runID, outcomeSeq)
+	}
+	return nil
+}
+
+// ListRouteDecisions returns a run's decisions, newest episode first.
+func (s *Store) ListRouteDecisions(ctx context.Context, runID string) ([]store.RouteDecision, error) {
+	cur, err := s.routeDecisions.Find(ctx, withTenantFilter(ctx, bson.M{"run_id": runID}),
+		options.Find().SetSort(bson.D{{Key: "outcome_seq", Value: -1}}))
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list route decisions %s: %w", runID, err)
+	}
+	var out []store.RouteDecision
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("store/mongo: list route decisions %s: %w", runID, err)
+	}
+	return out, nil
+}
+
+// stampTenantDecision mirrors the run-doc tenant stamping: the registry
+// row carries the tenant the context resolved, so per-tenant audit
+// views filter naturally.
+func stampTenantDecision(ctx context.Context, d *store.RouteDecision) {
+	if d.TenantID != "" {
+		return
+	}
+	if tenant, ok := store.TenantFromContext(ctx); ok {
+		d.TenantID = tenant
+	}
+}
+
+// ListRoutableRuns — the sweep net's query (see store.RouteDecisionStore).
+func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: notDeleted(bson.M{
+			"routing_policy": bson.M{"$exists": true, "$ne": nil},
+			"status": bson.M{"$in": bson.A{
+				store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,
+			}},
+			"updated_at": bson.M{"$gte": since},
+		})}},
+		// Ascending: a backlog sweeper must reach the OLDEST sleeping
+		// terminal first — newest-first plus a limit made the very runs
+		// this net exists for structurally unreachable past 200 rows.
+		{{Key: "$sort", Value: bson.D{{Key: "updated_at", Value: 1}}}},
+		// Anti-join on the decision registry: a run whose CURRENT
+		// episode is settled (succeeded, or failed at the attempt cap)
+		// must not occupy the batch — past one batch of decided
+		// terminals per lookback the head of the ascending list is all
+		// settled runs and fresh terminals sit unreachable behind them.
+		// The $lookup rides the registry's (run_id, outcome_seq)
+		// unique index.
+		{{Key: "$lookup", Value: bson.M{
+			"from": colRouteDecisions,
+			"let":  bson.M{"rid": "$_id", "seq": bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$run_id", "$$rid"}},
+					bson.M{"$eq": bson.A{"$outcome_seq", "$$seq"}},
+					bson.M{"$or": bson.A{
+						bson.M{"$eq": bson.A{"$state", store.RouteDecisionSucceeded}},
+						bson.M{"$and": bson.A{
+							bson.M{"$eq": bson.A{"$state", store.RouteDecisionFailed}},
+							bson.M{"$gte": bson.A{bson.M{"$ifNull": bson.A{"$attempts", 0}}, store.MaxRouteDecisionAttempts}},
+						}},
+					}},
+				}}}},
+			},
+			"as": "settled",
+		}}},
+		{{Key: "$match", Value: bson.M{"settled": bson.M{"$size": 0}}}},
+		{{Key: "$limit", Value: int64(limit)}},
+		{{Key: "$project", Value: bson.M{"_id": 1}}},
+	}
+	cur, err := s.runs.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: list routable runs: %w", err)
+	}
+	var rows []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("store/mongo: list routable runs: %w", err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.ID)
+	}
+	return out, nil
+}
+
+// routerWatermarkID is the registry's single deployment-global sentinel
+// row (run_id/outcome_seq chosen to collide with no real episode under
+// the unique index). Its claimed_at IS the watermark.
+const routerWatermarkID = "router:watermark"
+
+// EnsureRouterWatermark — see store.RouteDecisionStore. First-writer-wins
+// across every replica: the winning insert's instant is the activation,
+// later replicas (and every restart) read it back. Deployment-global
+// state, deliberately outside the tenant filter.
+func (s *Store) EnsureRouterWatermark(ctx context.Context) (time.Time, error) {
+	now := time.Now().UTC()
+	_, err := s.routeDecisions.InsertOne(ctx, store.RouteDecision{
+		ID:        routerWatermarkID,
+		RunID:     "__router_watermark__",
+		State:     "watermark",
+		ClaimedAt: now,
+	})
+	if err == nil {
+		return now, nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return time.Time{}, fmt.Errorf("store/mongo: establish router watermark: %w", err)
+	}
+	var existing store.RouteDecision
+	if ferr := s.routeDecisions.FindOne(ctx, bson.M{"_id": routerWatermarkID}).Decode(&existing); ferr != nil {
+		return time.Time{}, fmt.Errorf("store/mongo: router watermark exists but is unreadable: %w", ferr)
+	}
+	return existing.ClaimedAt, nil
+}

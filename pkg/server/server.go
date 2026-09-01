@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
@@ -78,6 +79,10 @@ type Server struct {
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
 	userNotifyCancel func()
+	// opsAlerts is the operator-alert dispatcher when alerts are
+	// configured (nil otherwise) — the outcome router's escalation
+	// channel rides its NotifyOperator.
+	opsAlerts *alert.OpsDispatcher
 	// opsAlertsCancel detaches the operator-alert dispatcher's bus
 	// subscription on Close.
 	opsAlertsCancel func()
@@ -350,6 +355,8 @@ type Server struct {
 	gateReconcileCancel func()
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
 	gateAutofixCancel func()
+	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
+	outcomeRouterCancel func()
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin

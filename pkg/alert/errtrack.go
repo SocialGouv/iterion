@@ -56,12 +56,17 @@ func (TrackerSink) Notify(_ context.Context, a Alert) {
 
 	msg := fmt.Sprintf("run alert: %s", a.Kind)
 	switch a.Kind {
-	case KindRunFailed, KindBudgetExceeded:
+	case KindRunFailed, KindBudgetExceeded, KindRouteActionFailed:
+		// A route action the router could not perform (merge error,
+		// unwired relaunch, exhausted claim) stops the run's automation
+		// outright — error, same weight as the failure it stems from.
 		errtrack.CaptureMessage(sentry.LevelError, msg, fields)
-	case KindStall, KindBudgetWarning, KindRunParked:
+	case KindStall, KindBudgetWarning, KindRunParked, KindRouteEscalated:
 		// Parked is a real incident for the operator (a run waiting out a
 		// window or a resume) — a breadcrumb alone is never sent to the
-		// tracker, and the webhook must not be the only channel.
+		// tracker, and the webhook must not be the only channel. An
+		// escalated route decision is the same shape: a run waiting on a
+		// human, which is exactly what must not stay silent.
 		errtrack.CaptureMessage(sentry.LevelWarning, msg, fields)
 	default:
 		// A recovery (stall_recovered) closes an episode; it is context

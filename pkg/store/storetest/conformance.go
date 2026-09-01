@@ -58,6 +58,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
+	t.Run("RouteDecisionRegistry", func(t *testing.T) { testRouteDecisionRegistry(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -2217,5 +2218,201 @@ func testOutputsSurviveTerminal(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint == nil || r.Checkpoint.Outputs["gate"]["converged"] != true {
 		t.Fatalf("terminal outputs destroyed by the finish transition: %+v", r.Checkpoint)
+	}
+}
+
+// testRouteDecisionRegistry holds both registry backends to one
+// contract: the unique episode claim, the leased steal of an orphaned
+// "claimed" row, the bounded retry of "failed", the finish states, the
+// audit ordering and the sweep query.
+func testRouteDecisionRegistry(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rds := store.AsRouteDecisionStore(s)
+	if rds == nil {
+		t.Skip("backend has no route-decision registry")
+	}
+	ctx := testCtx()
+	const runID = "run-route-registry"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// staleNever: the production threshold — a claim just taken is
+	// fresh. staleAlways: a future threshold, which reads every existing
+	// claim as expired (the ClaimMerge testability precedent).
+	staleNever := func() time.Time { return time.Now().Add(-store.RouteClaimLease) }
+	staleAlways := func() time.Time { return time.Now().Add(time.Hour) }
+
+	// Fresh claim; duplicate refused with the existing row.
+	claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge", Reason: "r1"}, staleNever())
+	if err != nil || !claimed {
+		t.Fatalf("first claim = (%t, %v)", claimed, err)
+	}
+	claimed, existing, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1, Decision: "merge"}, staleNever())
+	if err != nil || claimed || existing == nil || existing.State != store.RouteDecisionClaimed {
+		t.Fatalf("dup claim = (%t, %+v, %v), want refused with the claimed row", claimed, existing, err)
+	}
+
+	// Finish → succeeded; a succeeded episode is never reclaimable —
+	// not even under a threshold that reads every claim as stale.
+	if err := rds.FinishRouteDecision(ctx, runID, 1, store.RouteDecisionSucceeded, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 1}, staleAlways()); err != nil || claimed {
+		t.Fatalf("succeeded episode reclaimed = (%t, %v)", claimed, err)
+	}
+
+	// A failed episode is reclaimable, but bounded by the attempt cap.
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim ep2 = (%t, %v)", claimed, err)
+	}
+	for attempt := 1; ; attempt++ {
+		if err := rds.FinishRouteDecision(ctx, runID, 2, store.RouteDecisionFailed, "transient"); err != nil {
+			t.Fatalf("fail ep2 (attempt %d): %v", attempt, err)
+		}
+		claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever())
+		if err != nil {
+			t.Fatalf("reclaim ep2: %v", err)
+		}
+		if !claimed {
+			if attempt < store.MaxRouteDecisionAttempts-1 {
+				t.Fatalf("failed episode refused after only %d attempts (cap %d)", attempt, store.MaxRouteDecisionAttempts)
+			}
+			break
+		}
+		if attempt > store.MaxRouteDecisionAttempts {
+			t.Fatalf("failed episode reclaimable beyond the cap (%d attempts)", attempt)
+		}
+	}
+
+	// The leased steal: a stale "claimed" row is re-claimable — but the
+	// steal is bounded by the SAME attempt cap, or a poison episode that
+	// keeps killing its claimant re-arms forever (measured 9 steals
+	// against a cap of 3 before the bound).
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim ep3 = (%t, %v)", claimed, err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleNever()); err != nil || claimed {
+		t.Fatalf("fresh claim stolen under the production threshold = (%t, %v)", claimed, err)
+	}
+	for steal := 2; steal <= store.MaxRouteDecisionAttempts; steal++ {
+		claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleAlways())
+		if err != nil || !claimed {
+			t.Fatalf("steal %d of stale claim = (%t, %v)", steal, claimed, err)
+		}
+	}
+	claimed, existing, err = rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: runID, OutcomeSeq: 3, Decision: "merge"}, staleAlways())
+	if err != nil || claimed {
+		t.Fatalf("steal beyond the cap = (%t, %v), want refused", claimed, err)
+	}
+	if existing == nil || existing.Attempts < store.MaxRouteDecisionAttempts {
+		t.Fatalf("cap-refused steal must return the exhausted row, got %+v", existing)
+	}
+
+	// The audit lists newest episode first.
+	ds, err := rds.ListRouteDecisions(ctx, runID)
+	if err != nil || len(ds) != 3 || ds[0].OutcomeSeq != 3 || ds[1].OutcomeSeq != 2 || ds[2].OutcomeSeq != 1 {
+		t.Fatalf("ListRouteDecisions = %+v (%v)", ds, err)
+	}
+
+	// The activation watermark: established first-writer-wins, then
+	// stable across every later call (a restart must read the original
+	// activation, not its own boot). Backend round-trips may truncate
+	// sub-millisecond precision — equality within a second is the claim.
+	wm1, err := rds.EnsureRouterWatermark(ctx)
+	if err != nil || wm1.IsZero() {
+		t.Fatalf("EnsureRouterWatermark = (%v, %v)", wm1, err)
+	}
+	wm2, err := rds.EnsureRouterWatermark(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRouterWatermark (second): %v", err)
+	}
+	if d := wm2.Sub(wm1); d < -time.Second || d > time.Second {
+		t.Fatalf("watermark moved between calls: %v vs %v", wm1, wm2)
+	}
+
+	// The sweep query: only policy-carrying terminal runs, oldest first.
+	pol := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.g.ok", AllowedActions: []string{"merge"}}
+	pol.Hash = pol.ComputeHash()
+	mk := func(id string, terminal bool, withPolicy bool) {
+		t.Helper()
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, _ := s.LoadRun(ctx, id)
+		if withPolicy {
+			r.RoutingPolicy = pol
+		}
+		if terminal {
+			r.Status = store.RunStatusFinished
+		}
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	mk("routable-a", true, true)
+	mk("not-terminal", false, true)
+	mk("no-policy", true, false)
+	ids, err := rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns: %v", err)
+	}
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["routable-a"] || found["not-terminal"] || found["no-policy"] {
+		t.Fatalf("sweep query = %v, want exactly the policy-carrying terminal run", ids)
+	}
+
+	// The anti-join: a run whose CURRENT episode is settled (succeeded)
+	// leaves the sweep list — decided terminals must not clog the batch
+	// head — while a failed-under-cap episode stays routable (its
+	// bounded retry still wants the re-offer).
+	ra, err := s.LoadRun(ctx, "routable-a")
+	if err != nil {
+		t.Fatalf("LoadRun routable-a: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: ra.ID, OutcomeSeq: ra.OutcomeSeq, Decision: "escalate"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim routable-a = (%t, %v)", claimed, err)
+	}
+	if err := rds.FinishRouteDecision(ctx, ra.ID, ra.OutcomeSeq, store.RouteDecisionSucceeded, ""); err != nil {
+		t.Fatalf("finish routable-a: %v", err)
+	}
+	mk("routable-b", true, true)
+	rb, err := s.LoadRun(ctx, "routable-b")
+	if err != nil {
+		t.Fatalf("LoadRun routable-b: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, store.RouteDecision{RunID: rb.ID, OutcomeSeq: rb.OutcomeSeq, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("claim routable-b = (%t, %v)", claimed, err)
+	}
+	if err := rds.FinishRouteDecision(ctx, rb.ID, rb.OutcomeSeq, store.RouteDecisionFailed, "transient"); err != nil {
+		t.Fatalf("fail routable-b: %v", err)
+	}
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("ListRoutableRuns (anti-join): %v", err)
+	}
+	found = map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if found["routable-a"] {
+		t.Fatalf("settled (succeeded) run still swept: %v", ids)
+	}
+	if !found["routable-b"] {
+		t.Fatalf("failed-under-cap run dropped from the sweep: %v", ids)
+	}
+
+	// Oldest first is the contract, and the limit truncates AFTER the
+	// sort: with limit 1 the oldest sleeping terminal must surface —
+	// not the lexically-first or insertion-first one (a directory-order
+	// truncation starves exactly the run the sweep net exists for).
+	time.Sleep(5 * time.Millisecond)
+	mk("aaa-routable-newer", true, true)
+	ids, err = rds.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 1)
+	if err != nil || len(ids) != 1 || ids[0] != "routable-b" {
+		t.Fatalf("ListRoutableRuns(limit=1) = (%v, %v), want the oldest routable run [routable-b]", ids, err)
 	}
 }

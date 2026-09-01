@@ -153,6 +153,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		{"run_turns", s.runTurns},
 		{"run_logs", s.runLogs},
 		{"run_tags", s.runTags},
+		{"run_route_decisions", s.routeDecisions},
 	}
 	for _, c := range children {
 		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
