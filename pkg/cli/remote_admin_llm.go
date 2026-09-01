@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // remote admin llm — platform LLM credentials (super-admin): the DB-backed
@@ -51,7 +54,7 @@ var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1
 // then makes it usable: a blob copied out of a terminal (a `cat` of
 // credentials.json under a pager, a screenshot-to-clipboard round trip)
 // carries ANSI escapes, and the server rejected it with a parse error
-// pointing at "" — accurate and useless. The escapes are stripped and
+// pointing at "\x1b" — accurate and useless. The escapes are stripped and
 // the result is validated HERE, so a malformed payload is named before it
 // travels: which file, which JSON error, and what the shape should be.
 //
@@ -77,26 +80,69 @@ func ReadCredentialBlob(fromEnv, fromFile, kind string) ([]byte, error) {
 			return nil, fmt.Errorf("%s: no %q key — got %v%s", credentialSourceLabel(fromEnv, fromFile), want, keys, credentialShapeHint(kind))
 		}
 	}
+	// The key being PRESENT is not the payload being usable. A key probe
+	// reads json.RawMessage, so `{"claudeAiOauth":{}}` — or a value that
+	// is not even an object — passes it, and the server refuses it for a
+	// missing access token with no file name left to name: exactly the
+	// round trip this function exists to close.
+	if err := credentialCheckShape(kind, clean); err != nil {
+		return nil, fmt.Errorf("%s: %v%s", credentialSourceLabel(fromEnv, fromFile), err, credentialShapeHint(kind))
+	}
 	return clean, nil
 }
 
 // credentialTopKey is the object key each forfait blob must carry; ""
-// for a kind whose shape this CLI does not pin.
+// for a kind whose shape this CLI does not pin. It owns the DIAGNOSTIC
+// for the commonest mistake — pasting the other CLI's blob — because it
+// can print `no "claudeAiOauth" key — got [auth_mode tokens]`, which a
+// typed parse cannot: unmarshalling ignores unknown keys and would
+// report an empty access token instead, losing the "wrong file" signal.
+// Validity itself is credentialCheckShape's, not this function's.
 func credentialTopKey(kind string) string {
 	switch kind {
-	case "claude_code":
+	case string(secrets.OAuthKindClaudeCode):
 		return "claudeAiOauth"
-	case "codex":
+	case string(secrets.OAuthKindCodex):
 		return "tokens"
 	}
 	return ""
 }
 
+// credentialCheckShape refuses what the server's sealOAuthRecord would
+// refuse, by the SAME reading: the shared view parsers are the authority,
+// so there is no second copy of the shape here to drift from theirs. The
+// access token is the field checked because it is the one that makes the
+// blob usable at all — stored without it, no run can spend the forfait.
+//
+// A kind this CLI does not pin returns nil: the server stays the
+// authority on validity, and an unrecognised blob still travels.
+func credentialCheckShape(kind string, blob []byte) error {
+	switch kind {
+	case string(secrets.OAuthKindClaudeCode):
+		v, err := secrets.ParseAnthropicView(blob)
+		if err != nil {
+			return err
+		}
+		if v.ClaudeAIOauth.AccessToken == "" {
+			return errors.New(`"claudeAiOauth" carries no accessToken`)
+		}
+	case string(secrets.OAuthKindCodex):
+		v, err := secrets.ParseCodexView(blob)
+		if err != nil {
+			return err
+		}
+		if v.Tokens.AccessToken == "" {
+			return errors.New(`"tokens" carries no access_token`)
+		}
+	}
+	return nil
+}
+
 func credentialShapeHint(kind string) string {
 	switch kind {
-	case "claude_code":
+	case string(secrets.OAuthKindClaudeCode):
 		return "\nexpected the Claude Code credentials.json: {\"claudeAiOauth\":{\"accessToken\":…,\"refreshToken\":…,\"expiresAt\":…}}"
-	case "codex":
+	case string(secrets.OAuthKindCodex):
 		return "\nexpected the Codex auth.json: {\"tokens\":{\"access_token\":…,\"refresh_token\":…},\"auth_mode\":\"chatgpt\"}"
 	}
 	return ""
@@ -104,12 +150,18 @@ func credentialShapeHint(kind string) string {
 
 // credentialSourceLabel names WHERE the payload came from, so the error
 // points at the thing to fix rather than at an anonymous blob.
+//
+// The order MIRRORS ReadSecretValue's: env before file. The two flags are
+// not mutually exclusive, so with both set the payload is read from the
+// env var — and a label that tested the file first would send the
+// operator to edit a file that was never opened, in precisely the case
+// where they are already confused about which source is live.
 func credentialSourceLabel(fromEnv, fromFile string) string {
 	switch {
-	case fromFile != "":
-		return fromFile
 	case fromEnv != "":
 		return "$" + fromEnv
+	case fromFile != "":
+		return fromFile
 	}
 	return "stdin"
 }

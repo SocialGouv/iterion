@@ -76,6 +76,42 @@ func TestReadCredentialBlob_RefusesWithAnActionableError(t *testing.T) {
 			kind:    "claude_code",
 			wantIn:  []string{`no "claudeAiOauth" key`, "credentials.json"},
 		},
+		// The key being PRESENT is not the payload being usable: each of
+		// these passes a top-level key probe and is refused by the server
+		// for the missing access token — the unlabelled round trip this
+		// function exists to close.
+		{
+			name:    "right key, empty object",
+			content: `{"claudeAiOauth":{}}`,
+			kind:    "claude_code",
+			wantIn:  []string{"no accessToken", "credentials.json"},
+		},
+		{
+			name:    "right key, blank access token",
+			content: `{"claudeAiOauth":{"accessToken":"","refreshToken":"r"}}`,
+			kind:    "claude_code",
+			wantIn:  []string{"no accessToken"},
+		},
+		{
+			// A json.RawMessage probe accepts ANY JSON value for the key,
+			// so no map-based check can catch this — only a typed parse.
+			name:    "right key, not even an object",
+			content: `{"claudeAiOauth":"garbage"}`,
+			kind:    "claude_code",
+			wantIn:  []string{"claudeAiOauth", "credentials.json"},
+		},
+		{
+			name:    "codex, right key, empty object",
+			content: `{"auth_mode":"chatgpt","tokens":{}}`,
+			kind:    "codex",
+			wantIn:  []string{"no access_token", "auth.json"},
+		},
+		{
+			name:    "codex, right key, null",
+			content: `{"tokens":null}`,
+			kind:    "codex",
+			wantIn:  []string{"no access_token"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -97,6 +133,49 @@ func TestReadCredentialBlob_RefusesWithAnActionableError(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --from-env and --from-file are independent flags, and ReadSecretValue
+// resolves ENV first. The refusal must name the source that was actually
+// read — pointing at a file that was never opened sends the operator to
+// edit the wrong thing, which is the very failure this labelling exists
+// to prevent.
+func TestReadCredentialBlob_LabelsTheSourceActuallyRead(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "real-credentials.json")
+	if err := os.WriteFile(good, []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-OK"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_TEST_BLOB", `{"nope":1}`)
+
+	_, err := ReadCredentialBlob("ITERION_TEST_BLOB", good, "claude_code")
+	if err == nil {
+		t.Fatal("want a refusal: the env payload is the one read, and it is the wrong shape")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "$ITERION_TEST_BLOB") {
+		t.Errorf("error must name the env var that was read, got: %s", msg)
+	}
+	if strings.Contains(msg, good) {
+		t.Errorf("error must NOT name the file, which was never opened, got: %s", msg)
+	}
+}
+
+// The file that defends against terminal escapes must not CARRY one: a
+// raw ESC pasted into a comment (instead of the text `\x1b`) renders the
+// sentence meaningless AND spills a control byte into the terminal of
+// anyone who cats it. gofmt and go vet do not look at control bytes, so
+// without this nothing in the build would catch the recurrence.
+func TestSourceCarriesNoRawControlBytes(t *testing.T) {
+	src, err := os.ReadFile("remote_admin_llm.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, b := range src {
+		if b < 0x20 && b != '\n' && b != '\t' {
+			t.Fatalf("raw control byte %#02x at offset %d — write it as text (e.g. the four characters %q), never the byte itself", b, i, `\x1b`)
+		}
 	}
 }
 
