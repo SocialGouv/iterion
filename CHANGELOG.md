@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.80.1](https://github.com/SocialGouv/iterion/compare/v3.80.0...v3.80.1) (2026-09-01)
+
+### Bug Fixes
+
+* **queue:** survive a queue-backend outage — bounded republish retry, typed 503, budget guard before the sandbox ([#593](https://github.com/SocialGouv/iterion/issues/593)) ([e598ebc](https://github.com/SocialGouv/iterion/commit/e598ebc1712a41e1ac6dd72f913777870a6faa1c))
+
+    <details><summary>why</summary>
+
+    A production outage of the queue backend lasted about ten minutes and exposed three measured failure modes:
+
+    </details>
+
 ## [3.80.0](https://github.com/SocialGouv/iterion/compare/v3.79.0...v3.80.0) (2026-09-01)
 
 ### Features
