@@ -490,6 +490,12 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	botRules := resolveBotRules(desiredBots, frByBot, invByBot)
 
 	reviewOnSync := anyBotGatesMerges(desiredBots, frByBot) && !operatorGateDisabled(operatorVars)
+	// Same release-visibility rule as the backfill: a full provision that
+	// rebuilds the config without the sync a previous one carried is the
+	// definitive moment of a repo-wide posture change.
+	if hasPrevCfg && prevCfg.ReviewOnSync && !reviewOnSync && o.LogWarn != nil {
+		o.LogWarn("forge: webhook %s (%s): rebuilt without review_on_sync — pushes no longer auto-review; re-review is on-demand", prevCfg.ID, req.RepoFullName)
+	}
 
 	// Mint a fresh iwh_ on every mutating provision (create OR event-widen):
 	// it keeps the forge hook secret and the iterion config hash in lockstep
@@ -1146,6 +1152,13 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 	}
 	if dropSync {
 		cfg.ReviewOnSync = false
+		// The moment the release becomes definitive is the moment to say so:
+		// this is a repo-wide posture change (every co-enabled gating bot
+		// stops re-reviewing pushes), and it is reachable from an ordinary
+		// launch-vars update.
+		if o.LogWarn != nil {
+			o.LogWarn("forge: webhook %s: operator pinned gate_enabled off — releasing forced review_on_sync (pushes no longer auto-review; re-review is on-demand)", webhookID)
+		}
 	}
 	cfg.UpdatedAt = o.clock()
 	if err := o.Webhooks.Update(ctx, cfg); err != nil {
@@ -1165,17 +1178,31 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 // makes the gate survivable. Derived from the DECLARED capability, never from
 // a bot id.
 // operatorGateDisabled reports whether the repo's operator launch vars pin the
-// merge gate off (`gate_enabled` set to a falsy value). The pin is what turns
-// the review bot advisory-only — the publish step skips the commit status and
-// the server-side gate machinery never arms — so the anyBotGatesMerges
-// derivation below must not force re-review-on-sync for such a repo: the
-// forced sync exists solely to keep a REQUIRED check alive across pushes.
+// merge gate off. The pin is what turns the review bot advisory-only — the
+// publish step skips the commit status and the server-side gate machinery
+// never arms — so the anyBotGatesMerges derivation below must not force
+// re-review-on-sync for such a repo: the forced sync exists solely to keep a
+// REQUIRED check alive across pushes.
+//
+// The predicate deliberately mirrors the gating bots' own truthy test
+// (`'1','true','yes','on'` — bots/review-pr publish step): the release must
+// track "will the bot post a status?" EXACTLY. Any explicit pin that does not
+// affirmatively enable the gate leaves the bot silent — including the empty
+// string (the runtime coerces "" to false) and unparsable values (passed
+// through raw, failing the bot's truthy test) — and a silent bot with a
+// still-forced re-review is the deadlock-at-full-cost shape: every push
+// reviewed, the required check never answered. An ABSENT key keeps the gate
+// derivation untouched.
 func operatorGateDisabled(vars map[string]string) bool {
-	switch strings.ToLower(strings.TrimSpace(vars["gate_enabled"])) {
-	case "false", "0", "off", "no":
-		return true
+	v, ok := vars["gate_enabled"]
+	if !ok {
+		return false
 	}
-	return false
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return false
+	}
+	return true
 }
 
 func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {

@@ -22,6 +22,7 @@ type Parsed struct {
 	MRURL          string
 	HeadSHA        string
 	OldRev         string
+	State          string // opened|closed|merged|locked
 	UpdatedAt      string // object_attributes.updated_at — distinguishes successive update events on one head
 	Labels         []string
 	SenderUsername string // the actor that opened/reopened the MR (e.g. "renovate")
@@ -101,6 +102,7 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 		MRURL:          oa.URL,
 		HeadSHA:        oa.LastCommit.ID,
 		OldRev:         oa.OldRev,
+		State:          oa.State,
 		UpdatedAt:      oa.UpdatedAt,
 		Labels:         labels,
 		SenderUsername: e.User.Username,

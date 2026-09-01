@@ -356,15 +356,6 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			conn.Provider, grant.Repo, number, res.CommentsPosted, res.Verified, res.Fallback)
 	}
 
-	// Self-assign the connection's identity as an MR reviewer — what makes
-	// the forge-native "Re-request review" button exist on the reviewed MR
-	// (clicking it on the bot reviewer relaunches the review through the
-	// inbound webhook's on-demand lane). Additive + best-effort: a miss is
-	// logged and never degrades the publish. Providers whose admin client
-	// doesn't carry the capability are a deliberate non-implementation —
-	// see forge.ReviewerAssigner.
-	s.selfAssignReviewer(r.Context(), conn, grant.Repo, number)
-
 	// Merge gate: post the deterministic revi/review commit status on the PR
 	// head SHA. Additive — a failure here never fails the publish (the review
 	// already landed), it is reported in the response + logged.
@@ -391,6 +382,23 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 		GateContext:       gate.context,
 		GateSHA:           gate.sha,
 		GateError:         gate.errText,
+	})
+
+	// Self-assign the connection's identity as an MR reviewer — what makes
+	// the forge-native "Re-request review" button exist on the reviewed MR
+	// (clicking it on the bot reviewer relaunches the review through the
+	// inbound webhook's on-demand lane). STRICTLY behind the gate status and
+	// the response: it is cosmetic, and its up-to-three forge round-trips
+	// must never sit in front of a required check (a client disconnect in
+	// that window used to kill the gate post on a review that had landed).
+	// Detached from the request context (a disconnect must not cancel it),
+	// bounded, and recover-carrying via goSafe. Providers whose admin client
+	// doesn't carry the capability are a deliberate non-implementation — see
+	// forge.ReviewerAssigner.
+	saCtx, saCancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	s.goSafe("forge-publish-self-assign", func() {
+		defer saCancel()
+		s.selfAssignReviewer(saCtx, conn, grant.Repo, number)
 	})
 }
 

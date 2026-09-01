@@ -105,12 +105,15 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// the "Re-request review" button (or first "Request review") on the bot
 	// reviewer — is the button form of `/revi`: a deliberate on-demand
 	// re-review. The forge itself gates who may edit a PR's reviewers (write
-	// access), so no extra replier authz applies. Never when the actor IS
-	// the bot: the publish tail self-assigns the bot as reviewer after each
-	// review, and that request echoes straight back to this handler. On
-	// GitHub an App cannot be a reviewer at all, so this lane lights up on
-	// PAT/OAuth-account connections (and on Forgejo, App included).
-	reviewRequested := s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
+	// access), so no extra replier authz applies — but only on an OPEN PR
+	// (reviewer edits arrive freely on closed/merged ones). Never when the
+	// actor IS the bot: its own reviewer-write echoing back must not launch
+	// a review of itself. The identity matched is iterionBotLogins — on
+	// GitHub/Forgejo that is the App bot login only (a PAT/OAuth account may
+	// be a HUMAN's), and a GitHub App cannot be a reviewer at all, so on
+	// GitHub this lane stays inert and `/revi` is the on-demand path.
+	reviewRequested := strings.EqualFold(p.State, "open") &&
+		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
 		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
@@ -217,7 +220,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// — per bot once the delivery fans out (see forgeIdemKey).
 	idemBase := fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)
 	extra := map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
-	if reviewRequested {
+	// !gateResync mirrors the GitLab lane; here the two are already mutually
+	// exclusive by action (review_requested vs synchronize) — the guard pins
+	// the invariant against a forge overloading one action with both.
+	if reviewRequested && !gateResync {
 		// A deliberate re-request must relaunch even on a head the auto-review
 		// already claimed — and again on a second click. The PR's updated_at
 		// salts the key so each click is its own delivery; "rereq|" keeps it

@@ -185,3 +185,45 @@ func TestGitLabAddSelfAsPullReviewer(t *testing.T) {
 		t.Fatalf("already-present must not write: puts=%d", len(puts))
 	}
 }
+
+// Two decode traps around the read-modify-write, both of which must refuse
+// loudly instead of writing:
+//   - a 200 /user body without an `id` decodes to 0, and GitLab reads a 0 in
+//     reviewer_ids as "add nobody" — the PUT would be a silent no-op logged
+//     as success;
+//   - a merge-request body without a `reviewers` field means the read half
+//     saw nothing, and the replace-PUT would wipe reviewers it couldn't see.
+func TestGitLabAddSelfAsPullReviewer_RefusesBlindWrites(t *testing.T) {
+	run := func(userBody, mrBody string) (puts int, err error) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(userBody))
+		})
+		mux.HandleFunc("GET /api/v4/projects/g%2Fp/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(mrBody))
+		})
+		mux.HandleFunc("PUT /api/v4/projects/g%2Fp/merge_requests/1", func(w http.ResponseWriter, r *http.Request) {
+			puts++
+			_, _ = w.Write([]byte(`{}`))
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+		c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+		err = c.AddSelfAsPullReviewer(context.Background(), "g/p", 1)
+		return puts, err
+	}
+
+	if puts, err := run(`{"message":"401 Unauthorized"}`, `{"reviewers":[]}`); err == nil || puts != 0 {
+		t.Fatalf("id-less /user body must refuse, not PUT a 0: puts=%d err=%v", puts, err)
+	}
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{}`); err == nil || puts != 0 {
+		t.Fatalf("reviewers-less MR body must refuse the replace-write: puts=%d err=%v", puts, err)
+	}
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{"reviewers":null}`); err == nil || puts != 0 {
+		t.Fatalf("null reviewers must refuse the replace-write: puts=%d err=%v", puts, err)
+	}
+	// And the honest empty set still writes.
+	if puts, err := run(`{"id":575,"username":"bot"}`, `{"reviewers":[]}`); err != nil || puts != 1 {
+		t.Fatalf("empty reviewer set is a real read — must write: puts=%d err=%v", puts, err)
+	}
+}

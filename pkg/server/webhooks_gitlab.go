@@ -93,10 +93,13 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// GitLab "Re-request review" sidebar button, or adding the bot to the
 	// reviewer set — is the button form of `/revi`: a deliberate on-demand
 	// re-review. GitLab itself gates who can edit an MR's reviewers, so no
-	// extra replier authz applies here. Never when the actor IS the bot:
-	// the publish tail self-assigns the bot as reviewer after each review,
-	// and that PUT echoes straight back to this handler.
+	// extra replier authz applies here. Only on an OPEN MR (reviewer edits
+	// arrive freely on closed/merged ones — mirroring the Note lane's
+	// closed-MR filter). Never when the actor IS the bot: the publish tail
+	// self-assigns the bot as reviewer after each review, and that PUT
+	// echoes straight back to this handler.
 	reviewRequested := p.Action == "update" &&
+		strings.EqualFold(p.State, "opened") &&
 		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
 		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername)
 	reviewable := p.IsReviewable() || gateResync || reviewRequested
@@ -154,12 +157,16 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// collide with the open.
 	idemBase := fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)
 	extra := map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
-	if reviewRequested {
+	if reviewRequested && !gateResync {
 		// A deliberate re-request must relaunch even on a head the auto-review
 		// already claimed — and again on a second click. The MR's updated_at
 		// salts the key so each click is its own delivery, and the "rereq|"
 		// prefix keeps it disjoint from the open/resync space. re_review marks
-		// the posted summary like the `/revi` note path does.
+		// the posted summary like the `/revi` note path does. NOT when the
+		// same event is also a gate resync (a push carrying a reviewers diff):
+		// the resync already reviews this head under the per-head key, and
+		// swapping key spaces would let the following pure resync review it a
+		// second time.
 		idemBase = fmt.Sprintf("rereq|%s|%s|%d|%d|%s|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA, p.UpdatedAt)
 		extra["re_review"] = "true"
 	}

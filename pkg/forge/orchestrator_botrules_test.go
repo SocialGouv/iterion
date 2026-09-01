@@ -216,6 +216,30 @@ func TestProvision_NoGatingBotLeavesReviewOnSyncAlone(t *testing.T) {
 	}
 }
 
+// operatorGateDisabled must mirror the gating bots' own truthy test exactly:
+// the release tracks "will the bot post a status?". Three truthiness tables
+// exist along this var's path (this predicate, the runtime bool coercion,
+// the bot's publish check) — any explicit pin the bot won't read as truthy
+// leaves it silent, and a silent bot with forced re-review is the
+// deadlock-at-full-cost shape. Absent key = derivation untouched.
+func TestOperatorGateDisabled_MirrorsBotTruthiness(t *testing.T) {
+	if operatorGateDisabled(nil) || operatorGateDisabled(map[string]string{}) {
+		t.Error("absent key must not disable")
+	}
+	for _, v := range []string{"true", "1", "yes", "on", " TRUE ", "On"} {
+		if operatorGateDisabled(map[string]string{"gate_enabled": v}) {
+			t.Errorf("%q affirmatively enables the gate — must not disable", v)
+		}
+	}
+	// Everything else leaves the bot silent (coerced false, or passed raw
+	// and failing the bot's truthy test) — the sync must be released.
+	for _, v := range []string{"false", "0", "no", "off", "", "banana"} {
+		if !operatorGateDisabled(map[string]string{"gate_enabled": v}) {
+			t.Errorf("%q leaves the bot silent — the forced sync must be released", v)
+		}
+	}
+}
+
 // An operator pin of gate_enabled=false turns the review bot advisory-only —
 // no commit status is ever posted — so the statuses-scope derivation must not
 // force re-review-on-sync: the forced sync exists solely to keep a REQUIRED

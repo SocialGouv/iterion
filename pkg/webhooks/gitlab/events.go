@@ -67,6 +67,7 @@ type Project struct {
 type ObjectAttributes struct {
 	IID          int64  `json:"iid"`
 	Action       string `json:"action"`
+	State        string `json:"state"` // opened|closed|merged|locked
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
 	Title        string `json:"title"`

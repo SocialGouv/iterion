@@ -119,10 +119,17 @@ func (c *AdminClient) AddSelfAsPullReviewer(ctx context.Context, repo string, nu
 	if err != nil {
 		return fmt.Errorf("own account id %q is not numeric: %w", me.ID, err)
 	}
+	if myID <= 0 {
+		// A 200 whose body lacks `id` (an SSO interstitial, an error
+		// envelope) decodes to 0 — and GitLab treats a 0 in reviewer_ids as
+		// "add nobody", so the PUT would be a silent no-op reported here as
+		// success. Refuse loudly instead.
+		return fmt.Errorf("own account id %q is not a usable GitLab user id", me.ID)
+	}
 
 	mrPath := "/projects/" + projectID(repo) + "/merge_requests/" + strconv.Itoa(number)
 	var mr struct {
-		Reviewers []struct {
+		Reviewers *[]struct {
 			ID int64 `json:"id"`
 		} `json:"reviewers"`
 	}
@@ -133,8 +140,15 @@ func (c *AdminClient) AddSelfAsPullReviewer(ctx context.Context, repo string, nu
 	if code != http.StatusOK {
 		return statusErr("get merge request reviewers", code)
 	}
-	ids := make([]int64, 0, len(mr.Reviewers)+1)
-	for _, r := range mr.Reviewers {
+	if mr.Reviewers == nil {
+		// The PUT below REPLACES the reviewer set. A response that carries
+		// no `reviewers` field at all means the read half of the
+		// read-modify-write saw nothing — writing would replace reviewers we
+		// could not see. Refuse rather than risk a destructive write.
+		return fmt.Errorf("merge request response carries no reviewers field — refusing a replace-write that cannot prove itself additive")
+	}
+	ids := make([]int64, 0, len(*mr.Reviewers)+1)
+	for _, r := range *mr.Reviewers {
 		if r.ID == myID {
 			return nil // already a reviewer — the re-request button is up
 		}

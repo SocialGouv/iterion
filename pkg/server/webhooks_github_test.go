@@ -173,6 +173,20 @@ func TestGitHubWebhook_ReviewRequestedLaunches(t *testing.T) {
 	if w3.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("bot actor: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
 	}
+
+	// A re-request on a CLOSED or MERGED PR never burns a run — reviewer
+	// edits arrive freely on dead PRs.
+	for _, state := range []string{"closed", "merged"} {
+		closed := strings.Replace(ghReviewRequested("alice", "iterion-bot", "2026-09-01T11:00:00Z"), `"state": "open"`, `"state": "`+state+`"`, 1)
+		if closed == ghReviewRequested("alice", "iterion-bot", "2026-09-01T11:00:00Z") {
+			t.Fatal("fixture state replacement did not apply")
+		}
+		wc := httptest.NewRecorder()
+		s.handleGitHubWebhook(wc, ghReq(ghCtx(cfg), closed, prforge.EventHeaderPullRequest, pt))
+		if wc.Code != http.StatusOK || calls != 2 {
+			t.Fatalf("state=%s: code=%d calls=%d body=%s", state, wc.Code, calls, wc.Body.String())
+		}
+	}
 }
 
 // ghTicketPR: a same-repo PR (head.repo == base repo) that closes an issue.
