@@ -112,6 +112,7 @@ func (s *Server) ListenAndServe() error {
 	s.startOperatorAlerts()
 	s.startGateReconciler()
 	s.startGateAutofix()
+	s.startOutcomeRouter()
 	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
 	// "Sign in with Google" then closes the tab never returns to
 	// trigger the lazy eviction inside Take, so without this the
@@ -564,6 +565,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.gateAutofixCancel != nil {
 		s.gateAutofixCancel()
 		s.gateAutofixCancel = nil
+	}
+	if s.outcomeRouterCancel != nil {
+		s.outcomeRouterCancel()
+		s.outcomeRouterCancel = nil
 	}
 	if s.gateReconcileCancel != nil {
 		s.gateReconcileCancel()

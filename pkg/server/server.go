@@ -350,6 +350,8 @@ type Server struct {
 	gateReconcileCancel func()
 	// gateAutofixCancel unsubscribes the opt-in gate auto-fix lane at shutdown.
 	gateAutofixCancel func()
+	// outcomeRouterCancel unsubscribes the outcome router lane at shutdown.
+	outcomeRouterCancel func()
 
 	// forgeReviewClientFor is a test seam overriding how the publish-review
 	// handler resolves a connection's forge.ReviewClient. Nil → real admin
