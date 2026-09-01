@@ -601,6 +601,43 @@ func TestOutcomeRouter_BanklessRunEscalatesPastTheDeadline(t *testing.T) {
 	}
 }
 
+// A draining server stops routing. A single candidate can perform a real
+// merge — a server-side clone and a forge push for a repo-targeted run —
+// taking minutes, so a pass that started just before Shutdown would keep
+// landing merges through the lame-duck window and could be SIGKILLed
+// mid-merge past the grace period. The gate is s.draining (set at the top
+// of Shutdown), NOT s.shutdown (closed last, after the run drain and the
+// HTTP teardown — by which point stopping the sweep buys nothing).
+func TestOutcomeRouter_DrainStopsTheSweep(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	r := h.seedRun(t, "drain-candidate", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, true) // blocker → escalate, no git needed
+		r.FinalBranch, r.FinalCommit = "iterion/run/d", "abc"
+	})
+	h.ageRun(t, r.ID, time.Now().Add(-routerSweepGrace-time.Minute))
+
+	h.s.draining.Store(true)
+	h.s.outcomeRouterSweepPass(ctx)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("a draining server kept routing: %+v", ds)
+	}
+	// The bus fast path is gated too — its handler can sit just as long.
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("a draining server kept routing off the bus: %+v", ds)
+	}
+	// The control that keeps this non-vacuous: not draining, same run,
+	// same pass — it IS decided, so the silence above was the gate.
+	h.s.draining.Store(false)
+	h.s.outcomeRouterSweepPass(ctx)
+	if ds := h.decisions(t, r.ID); len(ds) != 1 {
+		t.Fatalf("the candidate was not routable to begin with: %+v", ds)
+	}
+}
+
 // H1 regression: a "claimed" registry row whose holder died must not
 // strand a green run forever — the claim is leased, and a later offer
 // steals a stale one and completes the merge.

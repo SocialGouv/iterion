@@ -188,6 +188,20 @@ func (s *Server) outcomeRouterSweepPass(ctx context.Context) {
 	}
 	cutoff := time.Now().Add(-routerSweepGrace)
 	for _, id := range ids {
+		// Stop AT DRAIN, between candidates. One candidate can perform a
+		// real `git merge --squash` — and for a repo-targeted run a
+		// server-side clone and a push to the forge — taking minutes, so
+		// a pass that started just before Shutdown would otherwise keep
+		// landing merges through the whole lame-duck window and could be
+		// SIGKILLed mid-merge past the grace period, leaving a
+		// half-applied merge and a `claimed` row that only unblocks
+		// after the 15-minute lease. s.draining is what to watch, not
+		// s.shutdown: draining is set at the very top of Shutdown while
+		// shutdown closes last, after the run drain and the HTTP
+		// teardown — a check on it would stop nothing that matters.
+		if s.draining.Load() {
+			return
+		}
 		s.routeOutcomeOfferBefore(ctx, id, cutoff)
 	}
 }
@@ -203,6 +217,13 @@ func (s *Server) routeOutcomeOffer(ctx context.Context, runID string) {
 // DECISION leaves a registry row.
 func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, updatedBefore time.Time) {
 	if runID == "" || s.cfg.Store == nil || s.runs == nil || !outcomeRouterEnabled() {
+		return
+	}
+	// No new action once the drain has started — on the bus path too,
+	// whose handler can equally sit for minutes inside a merge. A run
+	// left undecided here is picked up by the next replica's sweep;
+	// a merge cut in half by the grace period is not.
+	if s.draining.Load() {
 		return
 	}
 	rds := store.AsRouteDecisionStore(s.cfg.Store)
