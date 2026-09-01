@@ -57,13 +57,6 @@ type LaunchPublisher interface {
 	SubmitResume(ctx context.Context, spec ResumeSpec, wf *ir.Workflow, hash string) error
 }
 
-// Launch starts a workflow asynchronously and returns once the run
-// handle has been registered with the manager (i.e. Cancel will work
-// from the moment Launch returns nil error).
-//
-// The caller is expected to have already validated spec.FilePath
-// against any sandbox / origin policy. The service does not double-
-// check origins — its job is lifecycle, not authentication.
 // validateRoutingPolicyForLaunch is the ONE choke point freezing the
 // outcome contract (adversarial gate F2/F3): every launch surface that
 // reaches an engine — HTTP handler, MCP, a future reactor relaunch —
@@ -110,6 +103,13 @@ func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) err
 	return nil
 }
 
+// Launch starts a workflow asynchronously and returns once the run
+// handle has been registered with the manager (i.e. Cancel will work
+// from the moment Launch returns nil error).
+//
+// The caller is expected to have already validated spec.FilePath
+// against any sandbox / origin policy. The service does not double-
+// check origins — its job is lifecycle, not authentication.
 func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult, error) {
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
