@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.81.0](https://github.com/SocialGouv/iterion/compare/v3.80.1...v3.81.0) (2026-09-01)
+
+### Features
+
+* **reliability:** silent-failure pack — effect outbox, terminal cancel, cloud operator alerts, sweep nets ([#594](https://github.com/SocialGouv/iterion/issues/594)) ([940cb43](https://github.com/SocialGouv/iterion/commit/940cb43969af297d030cafc4b41d83f0711be3d4))
+
+    <details><summary>why</summary>
+
+    The dispatcher resumed `cancelled` runs from their checkpoint (bilan issue-triage friction 7): an operator's cancel was undone on the next tick. The status was in the auto-resume set because the dispatcher's OWN stops (stall reap, external state change, daemon shutdown) used a bare context.CancelFunc, so the engine persisted `cancelled` for them too — removing the status alone would have turned stall recovery into a permanent park.
+
+    </details>
+
 ## [3.80.1](https://github.com/SocialGouv/iterion/compare/v3.80.0...v3.80.1) (2026-09-01)
 
 ### Bug Fixes
