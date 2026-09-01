@@ -67,6 +67,21 @@ func (s *Server) handleCreatePAT(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "not a member of team %q", req.TeamID)
 		return
 	}
+	// Pin the creator's ACTIVE team when none is requested — and refuse
+	// outright when there is neither: a PAT identity is fixed, so an
+	// unpinned token whose owner has no team could never authenticate
+	// (identityFromPAT refuses it), yet it would still be minted 201
+	// with its plaintext shown once — a dead credential and a support
+	// ticket. Super-admins keep unpinned tokens (the /api/admin
+	// surfaces are tenant-free by design). Gate F1 of the PR review.
+	if req.TeamID == "" && !id.IsSuperAdmin {
+		if id.TeamID == "" {
+			httpError(w, http.StatusBadRequest,
+				"team_id required — your account has no active team, so an unpinned token could never authenticate")
+			return
+		}
+		req.TeamID = id.TeamID
+	}
 	now := time.Now().UTC()
 	var expiresAt *time.Time
 	if req.ExpiresInDays > 0 {

@@ -133,12 +133,25 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 //     irrelevant there by design
 //   - /api/admin/ : super-admin surfaces (WithoutTenantFilter by design;
 //     non-admins are 403'd by requireSuperAdmin)
+//
 // Prefixes end with "/" and are matched segment-exactly below —
 // "/api/me/" must NOT admit "/api/memory/..." (tenant-scoped workspace
 // memory), which a bare HasPrefix("/api/me") would.
 var tenantFreePrefixes = []string{"/api/auth/", "/api/me/", "/api/orgs/", "/api/teams/", "/api/admin/"}
 
 func tenantFreePath(p string) bool {
+	return tenantFreePathMethod("", p)
+}
+
+// tenantFreePathMethod is tenantFreePath plus the method-scoped public
+// surfaces: marketplace READS are public for anonymous callers, so a
+// signed-in but team-less viewer must not get LESS than an anonymous
+// one (gate F2 — the choke used to 403 before the routing bypass could
+// apply). The handlers are tenant-agnostic for a caller with no tenant.
+func tenantFreePathMethod(method, p string) bool {
+	if isPublicMarketplaceRead(method, p) {
+		return true
+	}
 	for _, pre := range tenantFreePrefixes {
 		if strings.HasPrefix(p, pre) || p == strings.TrimSuffix(pre, "/") {
 			return true
@@ -155,9 +168,9 @@ func tenantFreePath(p string) bool {
 func (s *Server) stampAuthedContext(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
 	ctx := auth.WithIdentity(r.Context(), id)
 	if id.TeamID == "" {
-		if !tenantFreePath(r.URL.Path) {
+		if !tenantFreePathMethod(r.Method, r.URL.Path) {
 			httpError(w, http.StatusForbidden,
-				"credential has no active team — switch to a team (or re-issue the token with one) before calling tenant-scoped endpoints")
+				"credential has no active team — switch to a team in the studio, or re-create the token/ticket with an explicit team, before calling tenant-scoped endpoints")
 			return nil, false
 		}
 		// No tenant to stamp: tenant-free handlers read the auth

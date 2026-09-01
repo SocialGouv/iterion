@@ -103,3 +103,15 @@ func TestTenantFreePathIsSegmentExact(t *testing.T) {
 		}
 	}
 }
+
+// Gate F2: a signed-in but team-less viewer must not get LESS than an
+// anonymous one on the public marketplace reads.
+func TestTenantFreeAdmitsPublicMarketplaceReads(t *testing.T) {
+	t.Parallel()
+	if !tenantFreePathMethod("GET", "/api/v1/marketplace/bots") {
+		t.Fatal("GET /api/v1/marketplace/bots must stay reachable for a team-less signed-in viewer")
+	}
+	if tenantFreePathMethod("POST", "/api/v1/marketplace/bots") {
+		t.Fatal("marketplace WRITES are not public")
+	}
+}
