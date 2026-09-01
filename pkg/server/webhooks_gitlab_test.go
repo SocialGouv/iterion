@@ -397,7 +397,8 @@ func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
 		t.Fatalf("refused re-request must filter: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
 	}
 
-	// An authz ERROR is a 502 so the forge redelivers (mirror of the note gate).
+	// An authz ERROR on a re-request-only delivery is a 502 so the forge
+	// redelivers (mirror of the note gate).
 	s.webhookReviewRequestGate = func(context.Context, webhooks.Config, gitlab.Parsed, string) (bool, string, error) {
 		return false, "", context.DeadlineExceeded
 	}
@@ -405,6 +406,26 @@ func TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered(t *testing.T) {
 	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("mallory", "iterion-bot", "2026-09-01 10:02:00 UTC", true), gitlab.EventHeaderMergeRequest))
 	if w3.Code != http.StatusBadGateway || calls != 0 {
 		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w3.Code, calls, w3.Body.String())
+	}
+
+	// R34eb8c: when an automatic lane co-rides the event (push + reviewers
+	// diff, ReviewOnSync on), the same authz error must NOT strand it — the
+	// gesture is demoted and the resync launches.
+	cfg2 := glConfig()
+	cfg2.ReviewOnSync = true
+	coRiding := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "mallory"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "state": "opened", "oldrev": "sha0", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "2026-09-01 10:03:00 UTC", "last_commit": {"id": "sha-co"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot", "re_requested": true}]}}
+	}`
+	w4 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w4, glReq(gitlabCtx(cfg2), coRiding, gitlab.EventHeaderMergeRequest))
+	if w4.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("authz error must not strand the co-riding resync: code=%d calls=%d body=%s", w4.Code, calls, w4.Body.String())
 	}
 }
 

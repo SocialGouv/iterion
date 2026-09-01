@@ -141,6 +141,9 @@ func TestGitHubWebhook_ReviewRequestedLaunches(t *testing.T) {
 	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
 		return login == "iterion-bot"
 	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return true, "test-gate", nil
+	}
 	cfg, pt := ghConfig(t, s)
 
 	// The open claims the head under the ordinary key space…
@@ -747,6 +750,76 @@ func TestGitHubWebhook_BotNotAllowed(t *testing.T) {
 	if got := w.Body.String(); !strings.Contains(got, webhooks.StatusFiltered) {
 		t.Fatalf("bot not allowed: want filtered status, got %s", got)
 	}
+}
+
+// R6a15fe: the GitHub/Forgejo re-request lane rides the same replier gate as
+// its GitLab twin — with no stub the production gate fail-closes on the
+// missing forge token, an explicit refusal filters, and an authz ERROR 502s
+// only when the click was the delivery's sole reason (R34eb8c).
+func TestGitHubWebhook_ReviewRequestedUnauthorizedFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "run1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg, pt := ghConfig(t, s)
+
+	// Production gate, no stub: no forge token → refused, filtered.
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("mallory", "iterion-bot", "2026-09-01T10:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("unauthorized: code=%d calls=%d body=%s", w.Code, calls, w.Body.String())
+	}
+
+	// Authz error on a re-request-only delivery → 502 (forge redelivers).
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		return false, "", context.DeadlineExceeded
+	}
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), ghReviewRequested("mallory", "iterion-bot", "2026-09-01T10:01:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w2.Code != http.StatusBadGateway || calls != 0 {
+		t.Fatalf("authz error must 502: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+}
+
+// R0c3aab: the replier gate runs AFTER the event/project/author scope filter
+// — an out-of-scope delivery must never cost a forge API call nor be able to
+// 502 the endpoint. And when the gate demotes the gesture, the hold label it
+// had provisionally waived is re-applied.
+func TestGitHubWebhook_ReviewRequestScopeFilterBeforeGate(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var launches, gateCalls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		gateCalls++
+		return false, "", context.DeadlineExceeded // would 502 if ever reached
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ProjectAllowlist = []string{"other/repo"} // acme/widgets is out of scope
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T12:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || launches != 0 {
+		t.Fatalf("out-of-scope must filter: code=%d launches=%d body=%s", w.Code, launches, w.Body.String())
+	}
+	if gateCalls != 0 {
+		t.Fatalf("out-of-scope delivery reached the forge authz gate (%d calls) — scope filters must run first", gateCalls)
+	}
+	// (The demote+hold-label re-apply branch is defensive here: on prforge
+	// the review_requested / synchronize / opened actions are mutually
+	// exclusive, so a demoted gesture never co-rides an admissible lane.
+	// The reachable version of that path is the GitLab lane's, covered by
+	// TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered.)
 }
 
 // The gate-resync lane shares the closed-PR rule with the re-request lane
