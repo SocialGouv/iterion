@@ -244,6 +244,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
+		FailureCode:       r.FailureCode,
 		Active:            active,
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,

@@ -230,10 +230,16 @@ func (d *OpsDispatcher) classify(ctx context.Context, ev trigger.Event) (Alert, 
 		if run.Error != "" {
 			a.Reason += " · " + truncate(run.Error, 200)
 		}
+		if run.FailureCode != "" {
+			a.Reason += " [" + string(run.FailureCode) + "]"
+		}
 		return a, run, true
 	case store.RunStatusFailed:
 		a.Kind = KindRunFailed
 		a.Reason = truncate(run.Error, 200)
+		if run.FailureCode != "" {
+			a.Reason += " [" + string(run.FailureCode) + "]"
+		}
 		return a, run, true
 	default:
 		// Already resumed/finished by the time we looked — nothing owed.

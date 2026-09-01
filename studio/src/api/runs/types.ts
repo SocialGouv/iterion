@@ -65,6 +65,8 @@ export interface RunSummary {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   active: boolean;
   // When a failed_resumable run will be resumed automatically, once the
   // provider quota window that killed it reopens. Absent when no retry is
@@ -271,6 +273,8 @@ export interface RunHeader {
   updated_at: string;
   finished_at?: string;
   error?: string;
+  // Machine-readable classification of `error` (ADR-095); absent = unknown.
+  failure_code?: string;
   // Typed for the budget-consumption + paused-node fields the UI reads;
   // the rest of the checkpoint stays opaque. See RunCheckpoint.
   checkpoint?: RunCheckpoint;
