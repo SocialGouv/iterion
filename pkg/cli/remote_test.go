@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -508,13 +509,7 @@ func TestRemotePoolPolicy_AudienceTravelsWhole(t *testing.T) {
 	p, _ := remotePrinter(cli.OutputJSON)
 
 	name := "devthejo"
-	pol := cli.PoolPolicy{Name: &name}
-	pol.Audience = &struct {
-		Teams        []string `json:"teams,omitempty"`
-		Orgs         []string `json:"orgs,omitempty"`
-		Contributors bool     `json:"contributors,omitempty"`
-		AllTeams     bool     `json:"all_teams,omitempty"`
-	}{AllTeams: true}
+	pol := cli.PoolPolicy{Name: &name, Audience: &credpool.Audience{AllTeams: true}}
 	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
 		t.Fatalf("RemotePoolPolicy: %v", err)
 	}

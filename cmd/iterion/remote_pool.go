@@ -182,12 +182,7 @@ write a policy while keeping it paused.`,
 		// keep a forgotten --all-teams from a previous call.
 		if cmd.Flags().Changed("all-teams") || cmd.Flags().Changed("orgs") ||
 			cmd.Flags().Changed("teams") || cmd.Flags().Changed("contributors") {
-			pol.Audience = &struct {
-				Teams        []string `json:"teams,omitempty"`
-				Orgs         []string `json:"orgs,omitempty"`
-				Contributors bool     `json:"contributors,omitempty"`
-				AllTeams     bool     `json:"all_teams,omitempty"`
-			}{
+			pol.Audience = &credpool.Audience{
 				Teams:        remotePoolAudTeams,
 				Orgs:         remotePoolAudOrgs,
 				Contributors: remotePoolAudContributors,

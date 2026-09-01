@@ -134,16 +134,13 @@ func RemotePoolDonors(ctx context.Context, c *RemoteClient, p *Printer, teamID s
 // the server replaces it whole, so sending a partial one would let a
 // forgotten dial from an earlier call survive a narrowing. Callers
 // building one must therefore restate every dial they mean to keep —
-// which is what the command's help says in the operator's words.
+// which is what the command's help says in the operator's words. It is
+// the DOMAIN type for the same reason the ceilings above are: a hand-copy
+// of the shape drifts silently, in the direction that loses data.
 type PoolPolicy struct {
-	Name     *string `json:"name,omitempty"`
-	Enabled  *bool   `json:"enabled,omitempty"`
-	Audience *struct {
-		Teams        []string `json:"teams,omitempty"`
-		Orgs         []string `json:"orgs,omitempty"`
-		Contributors bool     `json:"contributors,omitempty"`
-		AllTeams     bool     `json:"all_teams,omitempty"`
-	} `json:"audience,omitempty"`
+	Name     *string            `json:"name,omitempty"`
+	Enabled  *bool              `json:"enabled,omitempty"`
+	Audience *credpool.Audience `json:"audience,omitempty"`
 }
 
 // RemotePoolPolicy creates or updates the pool of the team's org. The
