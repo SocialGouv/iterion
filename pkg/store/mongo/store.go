@@ -331,18 +331,21 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		return fmt.Errorf("store/mongo: ensure runs indexes: %w", err)
 	}
 
-	// events collection: unique (run_id, seq) is the race safety net.
-	// (tenant_id, run_id, seq) accelerates change-stream filters
-	// without breaking the existing seq-only sort.
 	// One decision per (run, episode): the unique key IS the router's
 	// idempotence — a re-offered episode trips the duplicate and stops.
+	// Conflict-tolerant like every sibling: an existing deployment whose
+	// database already carries these indexes must not be refused a boot
+	// the day one of their options changes.
 	if _, err := s.routeDecisions.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "outcome_seq", Value: 1}}, Options: options.Index().SetName("run_episode_unique").SetUnique(true)},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "claimed_at", Value: -1}}, Options: options.Index().SetName("tenant_claimed_desc")},
-	}); err != nil {
+	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: route decision indexes: %w", err)
 	}
 
+	// events collection: unique (run_id, seq) is the race safety net.
+	// (tenant_id, run_id, seq) accelerates change-stream filters
+	// without breaking the existing seq-only sort.
 	eventIdx := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "type", Value: 1}}, Options: options.Index().SetName("run_type")},
