@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.86.0](https://github.com/SocialGouv/iterion/compare/v3.85.1...v3.86.0) (2026-09-01)
+
+### Features
+
+* **server:** the outcome router — a terminal run is decided by its contract, once per episode ([#599](https://github.com/SocialGouv/iterion/issues/599)) ([5436277](https://github.com/SocialGouv/iterion/commit/5436277408f2016d78e218eec1b4409659ce7a45)), references [#1](https://github.com/SocialGouv/iterion/issues/1) [#595](https://github.com/SocialGouv/iterion/issues/595) [#597](https://github.com/SocialGouv/iterion/issues/597) [#607](https://github.com/SocialGouv/iterion/issues/607)
+
+    <details><summary>why</summary>
+
+    The measured class, one campaign, 48h: a converged run waited 8h51 for a human; a run marked 'handled' by its external observer was redelivered, worked 6h, converged, and was never looked at again; a third landed while carrying an explicit blocker and reddened every downstream launch. The decision lived outside the authority that knows the state — an external script guessing from a stale copy.
+
+    </details>
+
 ## [3.85.1](https://github.com/SocialGouv/iterion/compare/v3.85.0...v3.85.1) (2026-09-01)
 
 ### Bug Fixes
