@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.80.0](https://github.com/SocialGouv/iterion/compare/v3.79.0...v3.80.0) (2026-09-01)
+
+### Features
+
+* **golden-master:** net extension by pure addition — request ledger + the net's own acting subbot ([#588](https://github.com/SocialGouv/iterion/issues/588)) ([64eb486](https://github.com/SocialGouv/iterion/commit/64eb486254b7a6797484246247c8256f2789d80e))
+
+    <details><summary>why</summary>
+
+    Selftest fixtures and run-note examples used a real target repo's directory name as a path literal; replace with neutral placeholders. No behavior change — harness selftest 70/70, sync test green.
+
+    </details>
+
 ## [3.79.0](https://github.com/SocialGouv/iterion/compare/v3.78.1...v3.79.0) (2026-09-01)
 
 ### Features
