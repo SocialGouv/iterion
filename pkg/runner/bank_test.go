@@ -1016,6 +1016,50 @@ func TestBankFinishedResumeSupersedesLongerDeadAttempt(t *testing.T) {
 	}
 }
 
+// The same loss on the OTHER arm. A death whose chain the count
+// comparison finds no poorer also force-pushes a diverging banked head
+// off the branch, and that head reached the forge — unlike the one a
+// refusal drops, which never did. "Later and not poorer wins" answers
+// who owns the storage branch, not whether the loser's commits may
+// vanish; archiving is what makes those two questions separate.
+func TestBankDeathSupersedingADivergedChainArchivesIt(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	// Attempt 1 dies holding two commits, and banks them.
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: one")
+	gitOut(t, work, "commit", "--allow-empty", "-m", "attempt 1: two")
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "failed")
+	firstHead := gitOut(t, work, "rev-parse", "HEAD")
+
+	// Attempt 2 re-clones at the base — as the redelivery does, since the
+	// republish carries the original RepoSHA — and dies with an equally
+	// long, entirely diverged chain.
+	work2 := filepath.Join(t.TempDir(), "attempt2")
+	gitOut(t, filepath.Dir(work2), "clone", work, work2)
+	gitOut(t, work2, "config", "user.email", "t@test.invalid")
+	gitOut(t, work2, "config", "user.name", "t")
+	gitOut(t, work2, "remote", "set-url", "origin", origin)
+	gitOut(t, work2, "checkout", "-q", "-B", "redo", base)
+	gitOut(t, work2, "commit", "--allow-empty", "-m", "attempt 2: one")
+	gitOut(t, work2, "commit", "--allow-empty", "-m", "attempt 2: two")
+	secondHead := gitOut(t, work2, "rev-parse", "HEAD")
+	r.bankRepoWorkspace(context.Background(), msg, work2, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
+
+	if got, ok := bankedBranch(t, origin, msg.RunID); !ok || got != secondHead {
+		t.Fatalf("branch = %q (present=%v), want the no-poorer later head %s", got, ok, secondHead)
+	}
+	archive := "refs/heads/iterion/run-" + msg.RunID + "-attempt-" + firstHead[:12]
+	if got, ok := refAt(t, origin, archive); !ok || got != firstHead {
+		t.Fatalf("archive ref = %q (present=%v), want attempt 1's forced-away head %s preserved at %s", got, ok, firstHead, archive)
+	}
+	ev := findEvent(t, r, msg.RunID, store.EventRunBankSuperseded)
+	if ev == nil {
+		t.Fatal("a diverged death supersede left no run_bank_superseded — the drop was silent")
+	}
+	if got := ev.Data["superseded_head"]; got != firstHead {
+		t.Errorf("superseded_head = %v, want %s", got, firstHead)
+	}
+}
+
 // A finished chain that CONTAINS the banked head loses nothing by
 // superseding it: no archive ref, no timeline event.
 func TestBankFinishedContainedChainLeavesNoArchive(t *testing.T) {

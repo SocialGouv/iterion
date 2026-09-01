@@ -939,38 +939,48 @@ func parseRevListCount(out string) (int, error) {
 	return 0, fmt.Errorf("no commit count in rev-list output %q", strings.TrimSpace(out))
 }
 
-// preserveSupersededChain archives the head a finished outcome is about
-// to force away, when (and only when) that head is not contained in the
-// finished chain. A finished run legitimately supersedes a dead
-// attempt's longer chain, but on the documented budget-cap→resume
-// recovery the resumed run re-clones at base and re-does the work — it
-// can converge without ever carrying the dead attempt's commits, and
-// the banked branch may hold their ONLY forge-side copy. The archive
-// ref keeps that work reachable at iterion/run-<id>-attempt-<head12>
-// without contesting the storage branch, which must point at the
-// finished product.
+// preserveSupersededChain archives the head this bank is about to force
+// away, when (and only when) that head is not contained in the chain
+// replacing it.
 //
-// A failure here never blocks the bank: the finished head is what every
+// Called on EVERY accepted supersede of a diverging head, whatever
+// decided it — a finished outcome taking the branch from a dead attempt,
+// or a death whose chain the count comparison found no poorer. The loss
+// is identical in both: unlike the head a refusal drops, the banked one
+// REACHED the forge, and a run that re-clones at base on every attempt
+// (loop.go:1329 wipes the clone, the republish carries the original
+// RepoSHA) can produce a replacement that never carries its commits — so
+// the branch may hold their only forge-side copy. Deciding which chain
+// owns the storage branch is not the same question as whether the loser
+// is worth keeping, and only the first of those two is what the outcome
+// or the counts answer.
+//
+// The archive ref keeps that work reachable at
+// iterion/run-<id>-attempt-<head12> without contesting the storage
+// branch, which must point at what the bank chose.
+//
+// A failure here never blocks the bank: the winning head is what every
 // downstream consumer (`runs merge`, the gate, the PR) reads off the
-// storage branch, and the dead chain stays recoverable from the run's
+// storage branch, and the dropped chain stays recoverable from the run's
 // git-meta snapshot — pricier, but not gone. It is never silent either:
 // the divergence always lands on the run's timeline as
 // run_bank_superseded, carrying either the archive ref or the error.
 func (r *Runner) preserveSupersededChain(ctx context.Context, msg *queue.RunMessage, workDir, tok, branch, oldHead, head string) {
-	// The banked head came from ls-remote; the finished clone has no
-	// reason to carry it. Fetch before any ancestry test or archive push
-	// — both need the object locally.
+	// The banked head came from ls-remote; this clone has no reason to
+	// carry it. Fetch before any ancestry test or archive push — both
+	// need the object locally. (A caller that already fetched it pays
+	// nothing: fetchBankedChain short-circuits on a local object.)
 	if err := r.fetchBankedChain(ctx, workDir, tok, branch, oldHead); err != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: cannot fetch superseded head %.12s to archive it — the finished push drops it from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, oldHead, branch, err)
+		r.cfg.Logger.Error("runner: run %s: bank: cannot fetch superseded head %.12s to archive it — this push drops it from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, oldHead, branch, err)
 		r.recordBankSuperseded(msg, branch, oldHead, head, "", "fetch superseded head: "+err.Error())
 		return
 	}
 	if r.runGit(ctx, workDir, "", "merge-base", "--is-ancestor", oldHead, head) == nil {
-		return // contained in the finished chain — nothing to lose
+		return // contained in the winning chain — nothing to lose
 	}
 	archive := branch + "-attempt-" + shortSHA(oldHead)
 	if err := r.runGit(ctx, workDir, tok, bankArchivePushArgs(archive, oldHead)...); err != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: archive push %s FAILED — the finished push drops %.12s from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, archive, oldHead, branch, err)
+		r.cfg.Logger.Error("runner: run %s: bank: archive push %s FAILED — this push drops %.12s from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, archive, oldHead, branch, err)
 		r.recordBankSuperseded(msg, branch, oldHead, head, "", "archive push: "+err.Error())
 		return
 	}
@@ -1016,7 +1026,12 @@ func (r *Runner) recordBankSuperseded(msg *queue.RunMessage, branch, oldHead, ne
 // branch an earlier attempt banked at oldHead. True when the new head
 // contains the old one (a resume that carried the work forward), or when
 // its chain is at least as long — later wins only when it is not
-// strictly poorer. On the refusal path it RECORDS the loss it prevented,
+// strictly poorer. When it wins over a DIVERGING head it archives that
+// head first (preserveSupersededChain), exactly as the finished path
+// does: winning the storage branch is not a verdict that the loser's
+// commits may vanish from the forge.
+//
+// On the refusal path it RECORDS the loss it prevented,
 // on the run's timeline as well as in the pod log; on unverifiable
 // ground (fetch failed, no common baseline) it lets the push through —
 // the chain comparison is skipped, but the push still carries
@@ -1040,6 +1055,15 @@ func (r *Runner) bankSupersedes(ctx context.Context, msg *queue.RunMessage, work
 		return true
 	}
 	if newCount >= oldCount {
+		// Not poorer, so it takes the branch — but the head it replaces
+		// diverges from it and is ON THE FORGE, which is exactly the loss
+		// the finished path archives against. "Later and not poorer wins"
+		// decides who owns the storage branch; it says nothing about
+		// whether the loser's commits are worth keeping, and dropping
+		// them without a trace is the silent no-op this file refuses
+		// everywhere else. The fetch above already put the object here,
+		// so this costs one local ancestry test plus the archive push.
+		r.preserveSupersededChain(ctx, msg, workDir, tok, branch, oldHead, head)
 		return true
 	}
 	r.cfg.Logger.Warn("runner: run %s: bank REFUSED: an earlier attempt banked a richer chain at %s (%.12s, %d exclusive commits) than this outcome carries (%.12s, %d) — keeping the richer branch",
