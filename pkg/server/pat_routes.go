@@ -174,6 +174,15 @@ func (s *Server) identityFromPAT(ctx context.Context, presented string) (auth.Id
 	if teamID == "" {
 		teamID = u.DefaultTeamID
 	}
+	// A PAT identity is FIXED — no session to switch teams on — so a
+	// token that resolves to no team can never do tenant-scoped work.
+	// Refuse it explicitly here rather than 403 it per-request (super-
+	// admins excepted: the /api/admin surfaces are tenant-free by
+	// design). This is the mint-side half of the requireAuth tenant
+	// choke (Sentry ITERION-13/-1W/-1Z).
+	if teamID == "" && !u.IsSuperAdmin {
+		return auth.Identity{}, errors.New("token carries no team scope (owner has no default team) — re-create it with an explicit team")
+	}
 	var role identity.Role
 	var orgID string
 	if teamID != "" {
