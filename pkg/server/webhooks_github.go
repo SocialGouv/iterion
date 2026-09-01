@@ -101,12 +101,28 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
+	// A review request explicitly targeting iterion's own forge identity —
+	// the "Re-request review" button (or first "Request review") on the bot
+	// reviewer — is the button form of `/revi`: a deliberate on-demand
+	// re-review. The forge itself gates who may edit a PR's reviewers (write
+	// access), so no extra replier authz applies — but only on an OPEN PR
+	// (reviewer edits arrive freely on closed/merged ones). Never when the
+	// actor IS the bot: its own reviewer-write echoing back must not launch
+	// a review of itself. The identity matched is iterionBotLogins — on
+	// GitHub/Forgejo that is the App bot login only (a PAT/OAuth account may
+	// be a HUMAN's), and a GitHub App cannot be a reviewer at all, so on
+	// GitHub this lane stays inert and `/revi` is the on-demand path.
+	reviewRequested := strings.EqualFold(p.State, "open") &&
+		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
+		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
+
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
 	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
 	// — the operator's escape hatch to pause automation on one PR. Placed before
 	// any launch decision so it covers all of them. A human can still trigger a
-	// bot manually via a `/command`.
-	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// bot manually via a `/command` — and a review re-request is the same
+	// deliberate gesture, so it is exempt too.
+	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
@@ -147,8 +163,11 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// The merge gate opts synchronize (a push to the head) back into review so
 	// the revi/review status re-evaluates on the new head SHA; otherwise only
 	// opened/reopened/ready_for_review review (on-demand re-review on push).
-	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
-	reviewable := p.IsReviewable() || gateResync
+	// Never on a closed/merged PR (a push to a dead PR's branch still
+	// delivers synchronize); fail-open on a payload without `state` — a
+	// filtered resync strands the required check.
+	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
+	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -177,7 +196,10 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// on the SAME pull request"). Filtering here left the fixer's self-verdict
 	// as the last word on a head no reviewer had read, and on a head where a
 	// bot pushed without gating at all, it left the required check absent.
-	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
+	// (A reviewRequested delivery is exempt: its own actor guard already
+	// excluded a bot sender, and a human's re-request on a bot-authored PR
+	// is deliberate, so it reviews.)
+	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"PR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
@@ -200,10 +222,22 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// Idempotency base: one launch per (tenant, webhook, repo, PR#, head sha)
 	// — per bot once the delivery fans out (see forgeIdemKey).
 	idemBase := fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)
+	extra := map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
+	// !gateResync mirrors the GitLab lane; here the two are already mutually
+	// exclusive by action (review_requested vs synchronize) — the guard pins
+	// the invariant against a forge overloading one action with both.
+	if reviewRequested && !gateResync {
+		// A deliberate re-request must relaunch even on a head the auto-review
+		// already claimed — and again on a second click. The PR's updated_at
+		// salts the key so each click is its own delivery; "rereq|" keeps it
+		// disjoint from the open/resync space. re_review marks the posted
+		// summary like the `/revi` comment path does.
+		idemBase = fmt.Sprintf("%srereq|%s|%s|%s|%d|%s|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA, p.UpdatedAt)
+		extra["re_review"] = "true"
+	}
 
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
-	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.Author(), "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
+	targets := forgePREventTargets(cfg, rules, idemBase, p.PRURL, p.TargetBranch, scopeNotes, p.CloneURL, p.SourceBranch, extra)
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }

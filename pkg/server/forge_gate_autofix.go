@@ -126,8 +126,9 @@ func (s *Server) autofixForRun(ctx context.Context, ev trigger.Event) error {
 	reviewed := runInputString(run, "head_sha")
 	// The same anchor the reconciler uses: holding a publish grant is not
 	// gating, and a repo that never pinned its gate context has no check for
-	// this lane to read.
-	if token == "" || prURL == "" || gateCtx == "" || reviewed == "" {
+	// this lane to read — and a run whose launch pinned the gate OFF owes no
+	// verdict this lane could fix (see runGateDisabled).
+	if token == "" || prURL == "" || gateCtx == "" || reviewed == "" || runGateDisabled(run) {
 		return nil
 	}
 	grant, ok := s.forgePublishTokens.lookup(token)

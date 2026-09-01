@@ -259,6 +259,12 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	if gateCtx == "" {
 		return nil
 	}
+	// A run whose launch pinned the gate off owes no verdict — painting a
+	// synthetic failure over its silence would manufacture the very deadlock
+	// the pin exists to avoid (see runGateDisabled).
+	if runGateDisabled(run) {
+		return nil
+	}
 
 	host, repo, number, err := forge.ParsePullURL(prURL)
 	if err != nil {
@@ -457,6 +463,33 @@ func gateRunURL(base, runID string) string {
 }
 
 // runInputString reads one launch input as a trimmed string.
+// runGateDisabled reports whether the run was launched with an EXPLICIT
+// gate_enabled pin that leaves the gating bot advisory-only (the value
+// classification is forge.GateValueDisables — one table shared with the
+// provisioning derivation). Every gate arm (the launch claim, this
+// reconciler, the auto-fix lane) must consult it: a repo that pinned the
+// gate off while still carrying a gate_context would otherwise get a
+// pending claim nothing ever resolves, then a synthetic "review died"
+// failure and a relaunch — a misconfiguration turned into a deadlock.
+// Absent key, or a non-string non-bool input shape → the gate stays armed
+// (the pre-pin behavior).
+func runGateDisabled(run *store.Run) bool {
+	if run == nil || run.Inputs == nil {
+		return false
+	}
+	v, ok := run.Inputs["gate_enabled"]
+	if !ok {
+		return false
+	}
+	switch t := v.(type) {
+	case string:
+		return forge.GateValueDisables(t)
+	case bool:
+		return !t
+	}
+	return false
+}
+
 func runInputString(run *store.Run, key string) string {
 	if run == nil || run.Inputs == nil {
 		return ""

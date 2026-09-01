@@ -150,6 +150,48 @@ func TestIsCrossRepo(t *testing.T) {
 	}
 }
 
+// The GitHub/Forgejo "Request review" / "Re-request review" gesture arrives
+// as a `review_requested` action carrying the targeted user. It is a manual
+// gesture, so unlike the auto-review actions a draft does not suppress it.
+func TestParsePullRequest_ReviewRequested(t *testing.T) {
+	payload := `{
+	  "action": "review_requested",
+	  "sender": {"login": "alice"},
+	  "requested_reviewer": {"login": "iterion-bot"},
+	  "repository": {"id": 1, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+	  "pull_request": {"number": 5, "title": "t", "html_url": "https://github.com/acme/widgets/pull/5",
+	    "state": "open", "draft": true, "updated_at": "2026-09-01T10:00:00Z",
+	    "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}
+	}`
+	p, err := ParsePullRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.RequestedReviewerLogin != "iterion-bot" || p.UpdatedAt != "2026-09-01T10:00:00Z" {
+		t.Fatalf("parsed: %+v", p)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") || !p.ReviewRequestedFrom("ITERION-BOT") {
+		t.Fatal("ReviewRequestedFrom must match the targeted reviewer (case-insensitively), draft included")
+	}
+	if p.ReviewRequestedFrom("alice") || p.ReviewRequestedFrom("") {
+		t.Fatal("only the targeted reviewer matches")
+	}
+	if p.IsReviewable() {
+		t.Fatal("review_requested is not an auto-review action")
+	}
+
+	// A team review request carries no requested_reviewer — never matches.
+	team := `{"action": "review_requested", "repository": {"full_name": "acme/widgets"},
+	  "pull_request": {"number": 5, "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}}`
+	p2, err := ParsePullRequest([]byte(team))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("team review request must not match a user login")
+	}
+}
+
 func TestParsePullRequest_MalformedFails(t *testing.T) {
 	if _, err := ParsePullRequest([]byte(`{bad`)); err == nil {
 		t.Fatal("malformed json should error")

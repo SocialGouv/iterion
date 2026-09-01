@@ -104,3 +104,62 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 	}
 	return res, nil
 }
+
+// AddSelfAsPullReviewer puts the token's own account on the MR's reviewer
+// set (forge.ReviewerAssigner). GitLab's `reviewer_ids` PUT REPLACES the
+// whole set, so this is a read-modify-write: fetch the current reviewers,
+// no-op when already present, else append and write the union back — never
+// dropping the humans already on it.
+func (c *AdminClient) AddSelfAsPullReviewer(ctx context.Context, repo string, number int) error {
+	me, err := c.WhoAmI(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve own account: %w", err)
+	}
+	// A 200 whose body lacks `id` (an SSO interstitial, an error envelope)
+	// decodes to 0 — and GitLab treats a 0 in reviewer_ids as "add nobody",
+	// so the PUT would be a silent no-op reported here as success. Refuse
+	// loudly instead (one branch: WhoAmI formats the id itself, so a
+	// non-numeric string is the same "not a usable id" failure).
+	myID, err := strconv.ParseInt(me.ID, 10, 64)
+	if err != nil || myID <= 0 {
+		return fmt.Errorf("own account id %q is not a usable GitLab user id", me.ID)
+	}
+
+	mrPath := "/projects/" + projectID(repo) + "/merge_requests/" + strconv.Itoa(number)
+	var mr struct {
+		Reviewers *[]struct {
+			ID int64 `json:"id"`
+		} `json:"reviewers"`
+	}
+	code, err := c.do(ctx, http.MethodGet, mrPath, nil, &mr)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return statusErr("get merge request reviewers", code)
+	}
+	if mr.Reviewers == nil {
+		// The PUT below REPLACES the reviewer set. A response that carries
+		// no `reviewers` field at all means the read half of the
+		// read-modify-write saw nothing — writing would replace reviewers we
+		// could not see. Refuse rather than risk a destructive write.
+		return fmt.Errorf("merge request response carries no reviewers field — refusing a replace-write that cannot prove itself additive")
+	}
+	ids := make([]int64, 0, len(*mr.Reviewers)+1)
+	for _, r := range *mr.Reviewers {
+		if r.ID == myID {
+			return nil // already a reviewer — the re-request button is up
+		}
+		ids = append(ids, r.ID)
+	}
+	ids = append(ids, myID)
+
+	code, err = c.do(ctx, http.MethodPut, mrPath, map[string]any{"reviewer_ids": ids}, &struct{}{})
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return statusErr("set merge request reviewers", code)
+	}
+	return nil
+}

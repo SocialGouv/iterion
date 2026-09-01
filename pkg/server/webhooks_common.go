@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -291,31 +292,103 @@ func (s *Server) isIterionForgeBotAuthor(ctx context.Context, cfg webhooks.Confi
 // that connection's bot identity. See isIterionForgeBotAuthor for the contract.
 func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, login string) bool {
 	login = strings.TrimSpace(login)
-	if login == "" || s.forgeConnections == nil {
+	if login == "" {
 		return false
+	}
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
+		return false
+	}
+	for _, botLogin := range iterionBotLogins(cfg, conn) {
+		if strings.EqualFold(login, botLogin) {
+			return true
+		}
+	}
+	return false
+}
+
+// iterionBotLogins is THE definition of "iterion's own identity on this
+// webhook's forge" — the single set both consumers read: the bot-author
+// skip (is this event's actor the bot?) and the re-request-review trigger
+// (is this reviewer the bot?). One set by construction, because the two
+// checks are the two halves of the same loop guard: an identity the
+// trigger recognises but the actor check doesn't would let the bot's own
+// reviewer-write echo launch a review of itself.
+//
+//   - GitHub/Forgejo App: the bot login is the app slug suffixed with
+//     [bot].
+//   - GitLab (non-App): iterion acts as the connection's own account.
+//     Gated to GitLab: on GitHub/Forgejo a PAT/OAuth connection may be a
+//     HUMAN's personal account — treating it as the bot would make that
+//     human's PRs unreviewable on one side and turn an ordinary
+//     human-to-human review request into an LLM launch on the other.
+func iterionBotLogins(cfg webhooks.Config, conn forge.Connection) []string {
+	var logins []string
+	if conn.AppSlug != "" {
+		logins = append(logins, conn.AppSlug+"[bot]")
+	}
+	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" {
+		logins = append(logins, conn.AccountLogin)
+	}
+	return logins
+}
+
+// webhookForgeConnection resolves the forge Connection an
+// orchestrator-provisioned webhook rides — the identity iterion acts as on
+// that forge. false for hand-created webhooks (no provisioning marker), a
+// missing store, or a resolution miss.
+func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config) (forge.Connection, bool) {
+	if s.forgeConnections == nil {
+		return forge.Connection{}, false
 	}
 	connID := strings.TrimPrefix(cfg.ProvisionedBy, "forge:")
 	if connID == "" || connID == cfg.ProvisionedBy {
-		// Not an orchestrator-provisioned webhook → no known iterion bot identity.
-		return false
+		return forge.Connection{}, false
 	}
 	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Debug("webhooks: iterion-bot-author check: connection %s: %v", connID, err)
+			s.logger.Debug("webhooks: forge connection %s for webhook %s: %v", connID, cfg.ID, err)
 		}
+		return forge.Connection{}, false
+	}
+	return conn, true
+}
+
+// isIterionBotReviewRequest reports whether a PR/MR event explicitly asks
+// iterion's OWN forge identity for a review — the forge-native "Re-request
+// review" button (or adding the bot to the reviewer set): the button form of
+// `/revi`, a deliberate on-demand re-review. `requested` is the parser's
+// per-provider "does this event request a review from <login>?" predicate,
+// probed with the SAME identity set the actor guard reads (iterionBotLogins
+// — see its comment for which login counts on which forge).
+// Fail-safe like the author check: any resolution miss returns false and the
+// delivery stays on the normal filtered path. Routed through the
+// webhookIterionBotReviewRequest seam so handler tests need no live
+// connection store.
+func (s *Server) isIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	fn := s.webhookIterionBotReviewRequest
+	if fn == nil {
+		fn = s.realIterionBotReviewRequest
+	}
+	return fn(ctx, cfg, requested)
+}
+
+// realIterionBotReviewRequest is the production isIterionBotReviewRequest:
+// it resolves the webhook's connection and probes the parser predicate with
+// the SAME identity set the bot-author actor guard reads (iterionBotLogins)
+// — never a wider one: an identity only this half recognised would launch
+// on the bot's own reviewer-write echo (the actor guard couldn't name it)
+// and would treat a human account's review requests as bot triggers.
+func (s *Server) realIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
 		return false
 	}
-	// GitHub/Forgejo App: the bot login is the app slug suffixed with [bot].
-	if conn.AppSlug != "" && strings.EqualFold(login, conn.AppSlug+"[bot]") {
-		return true
-	}
-	// GitLab (and other non-App forges): iterion authors MRs as the connection's
-	// own account. Gated to GitLab so a GitHub OAuth link to a human account
-	// can't render that human's PRs unreviewable.
-	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" &&
-		strings.EqualFold(login, conn.AccountLogin) {
-		return true
+	for _, botLogin := range iterionBotLogins(cfg, conn) {
+		if requested(botLogin) {
+			return true
+		}
 	}
 	return false
 }

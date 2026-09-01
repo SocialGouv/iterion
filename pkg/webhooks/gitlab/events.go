@@ -25,11 +25,28 @@ type MergeRequestEvent struct {
 }
 
 // Changes is the top-level `changes` object GitLab sends on `update`
-// events. We decode only the draft-transition fields. Pointers so a
-// missing key is distinguishable from a present {false,false}.
+// events. We decode only the draft-transition and reviewer-set fields.
+// Pointers so a missing key is distinguishable from a present zero value.
 type Changes struct {
-	Draft          *BoolChange `json:"draft"`
-	WorkInProgress *BoolChange `json:"work_in_progress"` // deprecated alias GitLab still emits
+	Draft          *BoolChange     `json:"draft"`
+	WorkInProgress *BoolChange     `json:"work_in_progress"` // deprecated alias GitLab still emits
+	Reviewers      *ReviewerChange `json:"reviewers"`
+}
+
+// ReviewerChange is the {previous,current} pair for the MR's reviewer set,
+// sent when reviewers are added/removed or a review is re-requested.
+type ReviewerChange struct {
+	Previous []Reviewer `json:"previous"`
+	Current  []Reviewer `json:"current"`
+}
+
+// Reviewer is one entry of changes.reviewers. ReRequested is stamped by
+// GitLab (gitlab-org/gitlab!205274) on the ONE reviewer a "Re-request
+// review" click targets, false on every other entry; older GitLab omits it.
+type Reviewer struct {
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	ReRequested bool   `json:"re_requested"`
 }
 
 // BoolChange is the {previous,current} pair GitLab uses for a boolean
@@ -50,12 +67,14 @@ type Project struct {
 type ObjectAttributes struct {
 	IID          int64  `json:"iid"`
 	Action       string `json:"action"`
+	State        string `json:"state"` // opened|closed|merged|locked
 	SourceBranch string `json:"source_branch"`
 	TargetBranch string `json:"target_branch"`
 	Title        string `json:"title"`
 	Description  string `json:"description"`
 	URL          string `json:"url"`
 	OldRev       string `json:"oldrev"`
+	UpdatedAt    string `json:"updated_at"`
 	LastCommit   Commit `json:"last_commit"`
 	// Draft is GitLab's work-in-progress flag (14.0+); WorkInProgress is the
 	// deprecated alias older GitLab still sends. Either set ⇒ the MR must not
