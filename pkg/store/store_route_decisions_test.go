@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -69,5 +71,89 @@ func TestRouteDecisionsFileFollowsStoreFileConventions(t *testing.T) {
 	}
 	if !wm2.Equal(wm1) {
 		t.Errorf("watermark moved: %v then %v — a later instant skips every terminal in between", wm1, wm2)
+	}
+}
+
+// ListRoutableRuns deliberately holds no lock: s.mu is the exclusive
+// mutex every run write serialises on, and taking it across a whole-
+// directory scan stalled every write in the process once a minute for
+// as long as the router was on. This is the proof that dropping it is
+// safe — the scan runs against a store being written concurrently, so
+// the race detector (CI's `race` job) fails on any unsafety the removal
+// would have introduced. It also fails plainly if a concurrent write
+// can make the scan error, which is what a torn read would look like.
+func TestListRoutableRunsScansConcurrentlyWithWrites(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	pol := &RoutingPolicy{Version: 1, SuccessWhen: "outputs.g.ok", AllowedActions: []string{"merge"}}
+	pol.Hash = pol.ComputeHash()
+
+	const n = 12
+	ids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("run-%02d", i)
+		ids = append(ids, id)
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+	}
+
+	// Writers: the exact calls that serialise on s.mu.
+	var writers, reader sync.WaitGroup
+	for _, id := range ids {
+		writers.Add(1)
+		go func(id string) {
+			defer writers.Done()
+			for i := 0; i < 8; i++ {
+				r, err := s.LoadRun(ctx, id)
+				if err != nil {
+					t.Errorf("LoadRun %s: %v", id, err)
+					return
+				}
+				r.RoutingPolicy = pol
+				r.Status = RunStatusFinished
+				if err := s.SaveRun(ctx, r); err != nil {
+					t.Errorf("SaveRun %s: %v", id, err)
+					return
+				}
+				if _, _, err := s.ClaimRouteDecision(ctx, RouteDecision{RunID: id, OutcomeSeq: 1, Decision: "merge"}, time.Now().Add(-RouteClaimLease)); err != nil {
+					t.Errorf("claim %s: %v", id, err)
+					return
+				}
+			}
+		}(id)
+	}
+	// Reader: the unlocked scan, on repeat until the writers are done.
+	stop := make(chan struct{})
+	reader.Add(1)
+	go func() {
+		defer reader.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := s.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50); err != nil {
+				t.Errorf("ListRoutableRuns during concurrent writes: %v", err)
+				return
+			}
+		}
+	}()
+	writers.Wait()
+	close(stop)
+	reader.Wait()
+
+	// Non-vacuous: the scan really did have candidates to read.
+	got, err := s.ListRoutableRuns(ctx, time.Now().Add(-time.Hour), 50)
+	if err != nil {
+		t.Fatalf("final ListRoutableRuns: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the scan found nothing — the concurrency proof ran over an empty candidate set")
 	}
 }

@@ -142,12 +142,21 @@ func (s *FilesystemRunStore) ListRouteDecisions(_ context.Context, runID string)
 // ListRoutableRuns — filesystem twin of the sweep query. Scans the run
 // directory (bounded by limit); acceptable for the local store's scale
 // and for tests.
+//
+// Deliberately takes NO lock. s.mu is the exclusive mutex every run
+// write serialises on (SaveRun / UpdateRunStatus / SaveCheckpoint /
+// writeRun), and holding it across a whole-directory scan stalled every
+// run write in the process for the length of a pass, once a minute, for
+// as long as the router was on — a store with 10k runs and 3 policy
+// runs still read all 10k run.json files under it. The lock also bought
+// nothing: loadRunRaw and loadRouteDecisions are pure reads, both files
+// are written through the atomic fsync+rename helper, so a reader sees
+// old-or-new and never a torn file, and the sibling scan
+// (filterRunsSorted) holds no lock either.
 func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	entries, err := os.ReadDir(filepath.Join(s.root, "runs"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -198,6 +207,7 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 // succeeded, requires_action, or failed at the attempt cap. Must mirror
 // the ClaimRouteDecision reclaim predicate exactly: a state that is not
 // re-claimable but reads unsettled clogs the sweep batch forever.
+// Pure read: safe with or without s.mu (see ListRoutableRuns).
 func (s *FilesystemRunStore) episodeSettled(runID string, outcomeSeq int64) (bool, error) {
 	ds, err := s.loadRouteDecisions(runID)
 	if err != nil {
