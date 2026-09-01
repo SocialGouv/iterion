@@ -187,6 +187,104 @@ func TestGitLabWebhook_Idempotent(t *testing.T) {
 	}
 }
 
+// glReRequestMR builds the "Re-request review" delivery: an `update` whose
+// changes.reviewers stamps re_requested on one reviewer. updatedAt salts the
+// idempotency key (one delivery per click).
+func glReRequestMR(actor, reviewer, updatedAt string, reRequested bool) string {
+	return `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "` + actor + `"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+	  "object_attributes": {"iid": 7, "action": "update", "source_branch": "feature/x", "target_branch": "main",
+	    "title": "Add X", "description": "desc", "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+	    "updated_at": "` + updatedAt + `", "last_commit": {"id": "sha1"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "` + reviewer + `", "re_requested": ` + map[bool]string{true: "true", false: "false"}[reRequested] + `}]}}
+	}`
+}
+
+// The forge-native re-review button: a reviewers change that (re-)requests a
+// review from iterion's own bot account launches the review bot — even on a
+// head the MR-open lane already claimed — and each click launches again.
+func TestGitLabWebhook_ReRequestReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotVars = vars
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	cfg := glConfig()
+
+	// The open already claimed this head under the "mr|" key space…
+	w0 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w0, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w0.Code != http.StatusAccepted || calls != 1 {
+		t.Fatalf("open: code=%d calls=%d", w0.Code, calls)
+	}
+
+	// …and the re-request still relaunches on that same head.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted || calls != 2 {
+		t.Fatalf("re-request: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+	if gotVars["re_review"] != "true" || gotVars["head_sha"] != "sha1" {
+		t.Fatalf("re-request vars: %v", gotVars)
+	}
+
+	// The forge redelivering the SAME click (same updated_at) is a replay…
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 10:00:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if calls != 2 {
+		t.Fatalf("redelivery must not double-launch: calls=%d", calls)
+	}
+	// …but a SECOND click (new updated_at) on the same head reviews again.
+	w3 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w3, glReq(gitlabCtx(cfg), glReRequestMR("alice", "iterion-bot", "2026-09-01 11:22:33 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w3.Code != http.StatusAccepted || calls != 3 {
+		t.Fatalf("second click: code=%d calls=%d", w3.Code, calls)
+	}
+}
+
+// The publish tail self-assigns the bot as reviewer after each review, and
+// GitLab echoes that PUT back as a reviewers change. The actor of that echo
+// is the bot itself — it must never trigger a review (the self-launch loop
+// this guard exists for). A change naming some OTHER reviewer is ordinary
+// MR housekeeping and stays filtered too.
+func TestGitLabWebhook_ReviewerChangeNotForBotFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-123", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookIterionBotAuthor = func(_ context.Context, _ webhooks.Config, login string) bool {
+		return login == "iterion-bot"
+	}
+	cfg := glConfig()
+
+	// Self-assign echo: the bot added ITSELF (actor = bot) → filtered.
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glReRequestMR("iterion-bot", "iterion-bot", "2026-09-01 10:00:00 UTC", false), gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("self-assign echo: code=%d calls=%d body=%s", w1.Code, calls, w1.Body.String())
+	}
+
+	// A human requesting a review from ANOTHER human → filtered.
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glReRequestMR("alice", "bob", "2026-09-01 10:05:00 UTC", true), gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK || calls != 0 {
+		t.Fatalf("other reviewer: code=%d calls=%d body=%s", w2.Code, calls, w2.Body.String())
+	}
+}
+
 // glNoteReq builds a request carrying the Note Hook event header.
 func glNoteReq(ctx context.Context, body string) *http.Request {
 	return glReq(ctx, body, gitlab.EventHeaderNote)

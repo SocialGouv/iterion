@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -291,19 +292,11 @@ func (s *Server) isIterionForgeBotAuthor(ctx context.Context, cfg webhooks.Confi
 // that connection's bot identity. See isIterionForgeBotAuthor for the contract.
 func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, login string) bool {
 	login = strings.TrimSpace(login)
-	if login == "" || s.forgeConnections == nil {
+	if login == "" {
 		return false
 	}
-	connID := strings.TrimPrefix(cfg.ProvisionedBy, "forge:")
-	if connID == "" || connID == cfg.ProvisionedBy {
-		// Not an orchestrator-provisioned webhook → no known iterion bot identity.
-		return false
-	}
-	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Debug("webhooks: iterion-bot-author check: connection %s: %v", connID, err)
-		}
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
 		return false
 	}
 	// GitHub/Forgejo App: the bot login is the app slug suffixed with [bot].
@@ -315,6 +308,67 @@ func (s *Server) realIterionBotAuthor(ctx context.Context, cfg webhooks.Config, 
 	// can't render that human's PRs unreviewable.
 	if cfg.Provider == webhooks.ProviderGitLab && conn.AccountLogin != "" &&
 		strings.EqualFold(login, conn.AccountLogin) {
+		return true
+	}
+	return false
+}
+
+// webhookForgeConnection resolves the forge Connection an
+// orchestrator-provisioned webhook rides — the identity iterion acts as on
+// that forge. false for hand-created webhooks (no provisioning marker), a
+// missing store, or a resolution miss.
+func (s *Server) webhookForgeConnection(ctx context.Context, cfg webhooks.Config) (forge.Connection, bool) {
+	if s.forgeConnections == nil {
+		return forge.Connection{}, false
+	}
+	connID := strings.TrimPrefix(cfg.ProvisionedBy, "forge:")
+	if connID == "" || connID == cfg.ProvisionedBy {
+		return forge.Connection{}, false
+	}
+	conn, err := s.forgeConnections.Get(store.WithTenant(ctx, cfg.TenantID), connID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Debug("webhooks: forge connection %s for webhook %s: %v", connID, cfg.ID, err)
+		}
+		return forge.Connection{}, false
+	}
+	return conn, true
+}
+
+// isIterionBotReviewRequest reports whether a PR/MR event explicitly asks
+// iterion's OWN forge identity for a review — the forge-native "Re-request
+// review" button (or adding the bot to the reviewer set): the button form of
+// `/revi`, a deliberate on-demand re-review. `requested` is the parser's
+// per-provider "does this event request a review from <login>?" predicate.
+//
+// The logins that can appear in a reviewer set: the connection's account
+// (GitLab bot user, GitHub/Forgejo PAT account) and the App bot login
+// (Forgejo; GitHub never lets an App be a reviewer, so that form simply
+// never matches there — the explicit refusal of the parity doctrine).
+// Fail-safe like the author check: any resolution miss returns false and the
+// delivery stays on the normal filtered path. Routed through the
+// webhookIterionBotReviewRequest seam so handler tests need no live
+// connection store.
+func (s *Server) isIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	fn := s.webhookIterionBotReviewRequest
+	if fn == nil {
+		fn = s.realIterionBotReviewRequest
+	}
+	return fn(ctx, cfg, requested)
+}
+
+// realIterionBotReviewRequest is the production isIterionBotReviewRequest:
+// it resolves the webhook's connection and probes the parser predicate with
+// each login the connection identity can carry in a reviewer set.
+func (s *Server) realIterionBotReviewRequest(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool {
+	conn, ok := s.webhookForgeConnection(ctx, cfg)
+	if !ok {
+		return false
+	}
+	if conn.AccountLogin != "" && requested(conn.AccountLogin) {
+		return true
+	}
+	if conn.AppSlug != "" && requested(conn.AppSlug+"[bot]") {
 		return true
 	}
 	return false

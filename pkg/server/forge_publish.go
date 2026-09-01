@@ -356,6 +356,15 @@ func (s *Server) handleForgePublishReview(w http.ResponseWriter, r *http.Request
 			conn.Provider, grant.Repo, number, res.CommentsPosted, res.Verified, res.Fallback)
 	}
 
+	// Self-assign the connection's identity as an MR reviewer — what makes
+	// the forge-native "Re-request review" button exist on the reviewed MR
+	// (clicking it on the bot reviewer relaunches the review through the
+	// inbound webhook's on-demand lane). Additive + best-effort: a miss is
+	// logged and never degrades the publish. Providers whose admin client
+	// doesn't carry the capability are a deliberate non-implementation —
+	// see forge.ReviewerAssigner.
+	s.selfAssignReviewer(r.Context(), conn, grant.Repo, number)
+
 	// Merge gate: post the deterministic revi/review commit status on the PR
 	// head SHA. Additive — a failure here never fails the publish (the review
 	// already landed), it is reported in the response + logged.
@@ -398,6 +407,44 @@ const defaultGateContext = "merge-gate"
 type forgeGateClient interface {
 	GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error)
 	SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error
+}
+
+// selfAssignReviewer adds the connection's own identity to the PR/MR
+// reviewer set through the forge.ReviewerAssigner capability, when the
+// provider's admin client carries it. Best-effort by contract: the review
+// already landed, so nothing here may fail the publish — a capability miss
+// is a Debug (deliberate non-implementation), a forge refusal a Warn.
+// The forgeReviewerAssignerFor field is a test seam; nil uses the real
+// admin client.
+func (s *Server) selfAssignReviewer(ctx context.Context, conn forge.Connection, repo string, number int) {
+	var ra forge.ReviewerAssigner
+	if s.forgeReviewerAssignerFor != nil {
+		ra = s.forgeReviewerAssignerFor(ctx, conn)
+	} else {
+		admin, err := s.forgeAdminFor(ctx, conn)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("forge publish: %s %s#%d: cannot resolve admin client for reviewer self-assign: %v", conn.Provider, repo, number, err)
+			}
+			return
+		}
+		ra, _ = admin.(forge.ReviewerAssigner)
+	}
+	if ra == nil {
+		if s.logger != nil {
+			s.logger.Debug("forge publish: %s carries no reviewer self-assign capability — the re-request-review button rides the forge's own reviewer handling (see forge.ReviewerAssigner)", conn.Provider)
+		}
+		return
+	}
+	if err := ra.AddSelfAsPullReviewer(ctx, repo, number); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("forge publish: %s %s#%d: reviewer self-assign failed (re-request button may be absent; /revi still re-reviews): %v", conn.Provider, repo, number, err)
+		}
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("forge publish: %s %s#%d: bot self-assigned as reviewer", conn.Provider, repo, number)
+	}
 }
 
 // gateClientFor resolves a connection's forgeGateClient. The forgeGateClientFor

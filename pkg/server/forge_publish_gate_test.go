@@ -178,3 +178,53 @@ func TestForgePublishReview_GateMissingHeadSHA(t *testing.T) {
 		t.Fatalf("missing head sha must skip status with an error: %+v (calls=%d)", resp, gc.setCalls)
 	}
 }
+
+// fakeReviewerAssigner records self-assign calls — the seam behind the
+// forge-native re-request-review button.
+type fakeReviewerAssigner struct {
+	calls int
+	repo  string
+	num   int
+	err   error
+}
+
+func (f *fakeReviewerAssigner) AddSelfAsPullReviewer(_ context.Context, repo string, number int) error {
+	f.calls++
+	f.repo, f.num = repo, number
+	return f.err
+}
+
+// A successful publish self-assigns the bot as reviewer (what makes the
+// re-request-review button exist on the PR), and a self-assign failure —
+// or an absent capability — never degrades the publish.
+func TestForgePublishReview_SelfAssignsReviewer(t *testing.T) {
+	s, _ := newForgePublishTestServer(t)
+	registerPublishToken(t, s, "tok1", ForgePublishGrant{TeamID: "team1", ConnectionID: "conn1", Repo: "o/r"})
+	fra := &fakeReviewerAssigner{}
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return fra }
+
+	w := httptest.NewRecorder()
+	s.handleForgePublishReview(w, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("publish: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if fra.calls != 1 || fra.repo != "o/r" || fra.num != 42 {
+		t.Fatalf("self-assign not called with the PR: %+v", fra)
+	}
+
+	// A forge refusal is best-effort — the publish already landed.
+	fra.err = context.DeadlineExceeded
+	w2 := httptest.NewRecorder()
+	s.handleForgePublishReview(w2, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("self-assign failure must not degrade the publish: code=%d", w2.Code)
+	}
+
+	// Capability absent (nil assigner) — publish untouched.
+	s.forgeReviewerAssignerFor = func(context.Context, forge.Connection) forge.ReviewerAssigner { return nil }
+	w3 := httptest.NewRecorder()
+	s.handleForgePublishReview(w3, publishReq("tok1", `{"pr_url":"https://github.com/o/r/pull/42","summary":"s","comments":[]}`))
+	if w3.Code != http.StatusOK {
+		t.Fatalf("absent capability must not degrade the publish: code=%d", w3.Code)
+	}
+}

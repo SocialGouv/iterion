@@ -27,6 +27,11 @@ type PullRequestEvent struct {
 	Repository  Repository  `json:"repository"`
 	PullRequest PullRequest `json:"pull_request"`
 	Sender      Sender      `json:"sender"`
+	// RequestedReviewer is set on a `review_requested` action (GitHub /
+	// Forgejo "Request review" / "Re-request review"): the user whose
+	// review this event asks for. Empty on every other action, and when a
+	// review is requested from a TEAM (requested_team) instead of a user.
+	RequestedReviewer Sender `json:"requested_reviewer"`
 }
 
 type Repository struct {
@@ -53,9 +58,10 @@ type PullRequest struct {
 	// Labels is the PR's current label set. GitHub/Gitea include it on the
 	// pull_request object; GitLab and minimal payloads omit it (empty → the
 	// hold-label suppression fail-opens). Read by the generic hold-label gate.
-	Labels []Label `json:"labels"`
-	Head   Ref     `json:"head"`
-	Base   Ref     `json:"base"`
+	Labels    []Label `json:"labels"`
+	Head      Ref     `json:"head"`
+	Base      Ref     `json:"base"`
+	UpdatedAt string  `json:"updated_at"`
 }
 
 type Ref struct {

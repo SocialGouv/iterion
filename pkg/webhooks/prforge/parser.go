@@ -47,6 +47,13 @@ type Parsed struct {
 	// Labels is the PR's current label set (names). Empty when the payload
 	// omits it (GitLab, minimal payloads) — the hold-label gate fail-opens.
 	Labels []string
+	// RequestedReviewerLogin is who a `review_requested` action asks a
+	// review from (the "Request review" / "Re-request review" gesture).
+	// Empty on other actions and on team review requests.
+	RequestedReviewerLogin string
+	// UpdatedAt distinguishes successive events on one head (idempotency
+	// salt for deliberate, repeatable gestures like a review re-request).
+	UpdatedAt string
 }
 
 // healableDequeueReasons are the merge-queue eject reasons that a
@@ -102,7 +109,19 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		DequeueReason:    e.Reason,
 		Draft:            pr.Draft,
 		Labels:           labelNames(pr.Labels),
+
+		RequestedReviewerLogin: e.RequestedReviewer.Login,
+		UpdatedAt:              pr.UpdatedAt,
 	}, nil
+}
+
+// ReviewRequestedFrom reports whether THIS event asks `login` for a review —
+// the forge-native "Request review" / "Re-request review" gesture. A draft is
+// deliberately NOT excluded: unlike the auto-review actions this is a manual
+// gesture, same posture as a `/revi` comment.
+func (p Parsed) ReviewRequestedFrom(login string) bool {
+	return p.Action == "review_requested" && login != "" &&
+		strings.EqualFold(p.RequestedReviewerLogin, login)
 }
 
 // Author returns the login author-based routing must use: the PR's own

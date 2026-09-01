@@ -257,6 +257,12 @@ type Server struct {
 	// Revi on another iterion bot's PR (test seam — the real impl resolves the
 	// provisioned forge Connection). nil → realIterionBotAuthor.
 	webhookIterionBotAuthor func(ctx context.Context, cfg webhooks.Config, login string) bool
+	// webhookIterionBotReviewRequest overrides the "does this event ask
+	// iterion's own forge identity for a review" check behind the
+	// forge-native re-request-review trigger (test seam — the real impl
+	// resolves the provisioned forge Connection and probes the parser
+	// predicate with its logins). nil → realIterionBotReviewRequest.
+	webhookIterionBotReviewRequest func(ctx context.Context, cfg webhooks.Config, requested func(login string) bool) bool
 	// webhookHandoff overrides the lookup of what an earlier run on the same
 	// PR produced (a review, or a fixer's reply to one), which seeds a launch var
 	// the launched bot declared it consumes (test seam). nil → realWebhookHandoff.
@@ -348,6 +354,12 @@ type Server struct {
 	// handler resolves a connection's merge-gate client (head-SHA lookup +
 	// commit-status write). Nil → real admin client via forgeAdminFor.
 	forgeGateClientFor func(ctx context.Context, conn forge.Connection) (forgeGateClient, error)
+
+	// forgeReviewerAssignerFor is a test seam overriding how the
+	// publish-review handler resolves a connection's reviewer self-assign
+	// capability (nil result = capability absent). Nil field → real admin
+	// client via forgeAdminFor.
+	forgeReviewerAssignerFor func(ctx context.Context, conn forge.Connection) forge.ReviewerAssigner
 
 	// marketplace is the hosted bot registry store. Mirrors
 	// Config.Marketplace; nil disables every /api/v1/marketplace/*

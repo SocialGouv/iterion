@@ -104,3 +104,50 @@ func (c *AdminClient) CreatePullReview(ctx context.Context, repo string, number 
 	}
 	return res, nil
 }
+
+// AddSelfAsPullReviewer puts the token's own account on the MR's reviewer
+// set (forge.ReviewerAssigner). GitLab's `reviewer_ids` PUT REPLACES the
+// whole set, so this is a read-modify-write: fetch the current reviewers,
+// no-op when already present, else append and write the union back — never
+// dropping the humans already on it.
+func (c *AdminClient) AddSelfAsPullReviewer(ctx context.Context, repo string, number int) error {
+	me, err := c.WhoAmI(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve own account: %w", err)
+	}
+	myID, err := strconv.ParseInt(me.ID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("own account id %q is not numeric: %w", me.ID, err)
+	}
+
+	mrPath := "/projects/" + projectID(repo) + "/merge_requests/" + strconv.Itoa(number)
+	var mr struct {
+		Reviewers []struct {
+			ID int64 `json:"id"`
+		} `json:"reviewers"`
+	}
+	code, err := c.do(ctx, http.MethodGet, mrPath, nil, &mr)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return statusErr("get merge request reviewers", code)
+	}
+	ids := make([]int64, 0, len(mr.Reviewers)+1)
+	for _, r := range mr.Reviewers {
+		if r.ID == myID {
+			return nil // already a reviewer — the re-request button is up
+		}
+		ids = append(ids, r.ID)
+	}
+	ids = append(ids, myID)
+
+	code, err = c.do(ctx, http.MethodPut, mrPath, map[string]any{"reviewer_ids": ids}, &struct{}{})
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return statusErr("set merge request reviewers", code)
+	}
+	return nil
+}

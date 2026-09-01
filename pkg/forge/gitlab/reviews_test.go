@@ -139,3 +139,49 @@ func TestGitLabCreatePullReview_TotalFailureSurfaces(t *testing.T) {
 		t.Fatal("nothing landed — must surface an error, never fake success")
 	}
 }
+
+var _ forge.ReviewerAssigner = (*AdminClient)(nil)
+
+// AddSelfAsPullReviewer is a read-modify-write: GitLab's reviewer_ids PUT
+// replaces the whole set, so the humans already on it must ride along —
+// and a bot already present must produce no write at all.
+func TestGitLabAddSelfAsPullReviewer(t *testing.T) {
+	reviewers := []map[string]any{{"id": float64(12), "username": "carol"}}
+	var puts []map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 575, "username": "iterion-bot"})
+	})
+	mux.HandleFunc("GET /api/v4/projects/grp%2Fproj/merge_requests/9", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"reviewers": reviewers})
+	})
+	mux.HandleFunc("PUT /api/v4/projects/grp%2Fproj/merge_requests/9", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		puts = append(puts, body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"iid": 9})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), BaseURL: srv.URL, Token: "t"}
+	if err := c.AddSelfAsPullReviewer(context.Background(), "grp/proj", 9); err != nil {
+		t.Fatal(err)
+	}
+	if len(puts) != 1 {
+		t.Fatalf("puts=%d", len(puts))
+	}
+	ids := puts[0]["reviewer_ids"].([]any)
+	if len(ids) != 2 || ids[0] != float64(12) || ids[1] != float64(575) {
+		t.Fatalf("reviewer union must keep carol and append the bot: %v", ids)
+	}
+
+	// Already a reviewer → idempotent no-op, no second PUT.
+	reviewers = append(reviewers, map[string]any{"id": float64(575), "username": "iterion-bot"})
+	if err := c.AddSelfAsPullReviewer(context.Background(), "grp/proj", 9); err != nil {
+		t.Fatal(err)
+	}
+	if len(puts) != 1 {
+		t.Fatalf("already-present must not write: puts=%d", len(puts))
+	}
+}

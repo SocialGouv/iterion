@@ -46,6 +46,70 @@ func TestParseMergeRequest(t *testing.T) {
 	}
 }
 
+// The "Re-request review" button arrives as an `update` whose
+// changes.reviewers.current stamps re_requested on the targeted reviewer
+// (gitlab-org/gitlab!205274); adding a reviewer shows as current − previous.
+// Both are the request-a-review gesture ReviewRequestedFrom answers for.
+func TestParseMergeRequest_ReviewerChanges(t *testing.T) {
+	payload := `{
+	  "object_kind": "merge_request",
+	  "user": {"username": "alice"},
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "updated_at": "2026-09-01 10:00:00 UTC",
+	    "url": "https://gitlab.com/acme/widgets/-/merge_requests/7", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {
+	    "previous": [{"id": 12, "username": "carol"}],
+	    "current": [{"id": 12, "username": "carol"}, {"id": 575, "username": "iterion-bot", "re_requested": true}]
+	  }}
+	}`
+	p, err := ParseMergeRequest([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.ReRequestedReviewers) != 1 || p.ReRequestedReviewers[0] != "iterion-bot" {
+		t.Fatalf("re-requested: %v", p.ReRequestedReviewers)
+	}
+	if len(p.AddedReviewers) != 1 || p.AddedReviewers[0] != "iterion-bot" {
+		t.Fatalf("added (current − previous): %v", p.AddedReviewers)
+	}
+	if p.UpdatedAt != "2026-09-01 10:00:00 UTC" {
+		t.Fatalf("updated_at: %q", p.UpdatedAt)
+	}
+	if !p.ReviewRequestedFrom("iterion-bot") || !p.ReviewRequestedFrom("ITERION-BOT") {
+		t.Fatal("ReviewRequestedFrom must match the targeted reviewer (case-insensitively)")
+	}
+	if p.ReviewRequestedFrom("carol") {
+		t.Fatal("an untouched pre-existing reviewer is not being asked for a review")
+	}
+
+	// Older GitLab without the re_requested attribute: adding the reviewer
+	// is the only expressible form of the gesture — it must still match.
+	older := `{
+	  "object_kind": "merge_request",
+	  "project": {"id": 42, "path_with_namespace": "acme/widgets"},
+	  "object_attributes": {"iid": 7, "action": "update", "last_commit": {"id": "abc123"}},
+	  "changes": {"reviewers": {"previous": [], "current": [{"id": 575, "username": "iterion-bot"}]}}
+	}`
+	p2, err := ParseMergeRequest([]byte(older))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2.ReRequestedReviewers) != 0 {
+		t.Fatalf("no re_requested attr → none: %v", p2.ReRequestedReviewers)
+	}
+	if !p2.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("adding the bot as reviewer is the same gesture on older GitLab")
+	}
+	// And an update with no reviewer change at all never matches.
+	p3, err := ParseMergeRequest([]byte(mrOpenPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p3.ReviewRequestedFrom("iterion-bot") {
+		t.Fatal("no changes.reviewers → no review request")
+	}
+}
+
 func TestParseMergeRequest_RejectsNonMR(t *testing.T) {
 	if _, err := ParseMergeRequest([]byte(`{"object_kind":"push"}`)); err == nil {
 		t.Fatal("non-merge_request should error")

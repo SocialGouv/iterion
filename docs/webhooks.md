@@ -92,6 +92,9 @@ Single URL, two event kinds dispatched on `X-Gitlab-Event`
   flag) deliberately do **not** re-trigger — auto-review on every push was
   found too noisy; cf.
   [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
+  An `update` whose `changes.reviewers` **(re-)requests a review from
+  iterion's own bot account** is the exception — the re-request-review
+  button; see <a href="#re-request-review">below</a>.
 - **`Note Hook`** — the generic slash-command and conversation surface.
   A note's first non-whitespace token is the command; quoting "please run
   /revi" mid-text never triggers (anti-oscillation guard;
@@ -236,6 +239,48 @@ recent findings under the **`prior_review`** var — so Billy starts from
 that review instead of re-deriving it (best-effort: with no prior review,
 Billy reviews the diff from scratch;
 [pkg/server/webhooks_handoff.go](../pkg/server/webhooks_handoff.go)).
+
+### <a name="re-request-review"></a>On-demand re-review: the "Re-request review" button
+
+Alongside `/revi`, the forge-native **"Re-request review" button** is a
+second on-demand re-review gesture — the one non-comment surface a product
+developer already knows. Clicking it on iterion's bot reviewer (or adding
+the bot to the reviewer set in the first place) relaunches the review bot on
+the MR/PR's current head:
+
+- **GitLab** — a `merge_request` `update` whose `changes.reviewers` carries
+  `re_requested: true` on the bot's account (GitLab ≥ 18.5,
+  [gitlab-org/gitlab!205274](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/205274)),
+  or simply shows the bot newly added (the only expressible form on older
+  GitLab). To make the button exist, the server's publish step
+  **self-assigns the bot as an MR reviewer** after each posted review
+  ([forge.ReviewerAssigner](../pkg/forge/reviews.go) — read-modify-write,
+  never dropping human reviewers; best-effort, a miss only costs the
+  button).
+- **GitHub / Forgejo** — a `pull_request` event with action
+  `review_requested` whose `requested_reviewer` is the connection's
+  account. No self-assign is needed on GitHub: the forge itself lists a
+  review's author as reviewer (PAT/OAuth-account connections). A GitHub
+  **App** cannot be a PR reviewer at all (forge restriction) — on App
+  connections this lane simply never lights up, and `/revi` remains the
+  on-demand path.
+
+Semantics, shared with `/revi` (deliberate manual gesture):
+
+- **exempt from the hold-label pause** — the label pauses *automation*;
+- **repeatable** — each click is its own delivery (the idempotency key is
+  salted with the MR/PR `updated_at`), so re-requesting twice on the same
+  head reviews twice; forge redeliveries of the same click stay deduped;
+- **authorized by the forge** — editing a PR's reviewers already requires
+  write access, so no extra replier gate applies;
+- **never self-triggering** — a reviewers change whose *actor* is the bot
+  itself (the self-assign echoing back) is filtered
+  ([pkg/server/webhooks_common.go:isIterionBotReviewRequest](../pkg/server/webhooks_common.go)).
+
+Pairs with the per-repo gate opt-out (`gate_enabled: "false"` pinned on the
+integration's launch vars): first review automatic on open, every re-review
+a button click or a `/revi` — see
+[merge-gate.md](merge-gate.md#disabling-the-gate-per-repo--first-review-only-re-review-on-demand).
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 

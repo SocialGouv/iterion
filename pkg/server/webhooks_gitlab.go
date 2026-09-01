@@ -72,7 +72,8 @@ func (s *Server) handleGitLabWebhook(w http.ResponseWriter, r *http.Request) {
 // handleGitLabMergeRequestEvent handles a verified MR open/reopen. The
 // merge-request path covers the auto-launch ("review on open") leg;
 // pushes do NOT re-trigger (see gitlab.IsReviewable) — re-review is
-// on-demand via the `/revi` Note hook below.
+// on-demand, via the `/revi` Note hook below or the forge-native
+// "Re-request review" button on iterion's bot reviewer (reviewRequested).
 func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP string) {
 	p, err := gitlab.ParseMergeRequest(body)
 	if err != nil {
@@ -88,7 +89,17 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// ReviewOnSync opts a push-to-MR ("update" with a new head) back into
 	// review so the merge-gate status re-evaluates on the new head SHA.
 	gateResync := cfg.ReviewOnSync && p.IsSynchronize()
-	reviewable := p.IsReviewable() || gateResync
+	// A review request explicitly targeting iterion's own bot account — the
+	// GitLab "Re-request review" sidebar button, or adding the bot to the
+	// reviewer set — is the button form of `/revi`: a deliberate on-demand
+	// re-review. GitLab itself gates who can edit an MR's reviewers, so no
+	// extra replier authz applies here. Never when the actor IS the bot:
+	// the publish tail self-assigns the bot as reviewer after each review,
+	// and that PUT echoes straight back to this handler.
+	reviewRequested := p.Action == "update" &&
+		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
+		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername)
+	reviewable := p.IsReviewable() || gateResync || reviewRequested
 	if !reviewable ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "merge_request", "merge_request", "note") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
@@ -99,8 +110,10 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	}
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the MR
-	// vetoes the auto-review. Same escape hatch as the GitHub PR path.
-	if s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+	// vetoes the auto-review. Same escape hatch as the GitHub PR path. A
+	// re-request is exempt like the `/command` lanes: the label pauses
+	// automation, not a deliberate manual trigger.
+	if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
 		return
 	}
 
@@ -109,8 +122,11 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// `/revi`). Mirror of the GitHub PR-open path, including its merge-gate
 	// resync exception: a fixer's push is by construction sent by our own bot,
 	// and the re-review it triggers is what re-posts the required check and
-	// supersedes the fixer's self-verdict.
-	if !gateResync && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
+	// supersedes the fixer's self-verdict. (A reviewRequested delivery never
+	// reaches this guard's condition with a bot sender — its own actor guard
+	// already excluded that — and a human's re-request on a bot-authored MR
+	// is deliberate, so it reviews.)
+	if !gateResync && !reviewRequested && s.isIterionForgeBotAuthor(ctx, cfg, p.SenderUsername) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP,
 			"MR authored by iterion's forge bot — auto-review skipped (self-produced; run /revi to force a review)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
@@ -137,10 +153,19 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// disjoint from the Note hook ("note|") so a /revi on the same MR can't
 	// collide with the open.
 	idemBase := fmt.Sprintf("mr|%s|%s|%d|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA)
+	extra := map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA}
+	if reviewRequested {
+		// A deliberate re-request must relaunch even on a head the auto-review
+		// already claimed — and again on a second click. The MR's updated_at
+		// salts the key so each click is its own delivery, and the "rereq|"
+		// prefix keeps it disjoint from the open/resync space. re_review marks
+		// the posted summary like the `/revi` note path does.
+		idemBase = fmt.Sprintf("rereq|%s|%s|%d|%d|%s|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.MRIID, p.HeadSHA, p.UpdatedAt)
+		extra["re_review"] = "true"
+	}
 
 	targets := forgePREventTargets(cfg, rules, idemBase, p.MRURL, p.TargetBranch,
-		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch,
-		map[string]string{"pr_author": p.SenderUsername, "source_branch": p.SourceBranch, "head_sha": p.HeadSHA})
+		strings.TrimSpace(p.Title+"\n\n"+p.Description), p.CloneURL, p.SourceBranch, extra)
 
 	s.insertAndLaunchWebhookMulti(ctx, w, r, cfg, meta, targets, payloadHash, srcIP)
 }
