@@ -208,11 +208,19 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 		return true, "dlq"
 	}
 	sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
-	if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
+	// failed_resumable is in the expected set because on the NOMINAL
+	// path the engine has already written it before this park runs —
+	// a CAS from [running, queued] alone could never land, and the
+	// DLQ_PARKED cause died silently (adversarial gate F4). The
+	// abstention is logged: a filter miss here means the document's
+	// story and the queue's diverged.
+	if changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — replay via /api/admin/dlq)", err),
 		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
-		[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil {
+		[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued, store.RunStatusFailedResumable}); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
+	} else if !changed {
+		logger.Warn("runner: DLQ status flip for %s declined (status drifted) — the document does not carry DLQ_PARKED", msg.RunID)
 	}
 	termTerminal(logger, delivery, "term-dlq-parked", msg.RunID)
 	return true, "dlq"

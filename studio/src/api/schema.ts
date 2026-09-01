@@ -5490,7 +5490,6 @@ export interface components {
             shard_label?: string;
             source?: components["schemas"]["RunSource"];
             status: string;
-            terminal_code?: string;
             /** Format: date-time */
             updated_at: string;
             watched_issue_ids?: string[];

@@ -712,6 +712,7 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 //     the writer states one (an untyped rewrite of an already-parked
 //     run must not erase a live retry_armed), and cleared on a genuine
 //     state change without a statement.
+//
 // Free-text values ride under $literal — in a pipeline stage a string
 // value is an EXPRESSION, and an operator-supplied error message
 // containing "$status" must be stored as data, not evaluated.
@@ -721,16 +722,31 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 	set := bson.M{
 		"status":     bson.M{"$literal": string(status)},
 		"updated_at": now,
-		"error":      bson.M{"$literal": runErr},
 		"version":    bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
+	}
+	// The error message: a transition always states its own (empty
+	// included); a same-status rewrite that states nothing keeps the
+	// transition's message — the runner's continuation promote must not
+	// blank the engine's failure text.
+	if runErr != "" {
+		set["error"] = bson.M{"$literal": runErr}
+	} else {
+		set["error"] = bson.M{"$cond": bson.A{statusChanged, "", bson.M{"$ifNull": bson.A{"$error", ""}}}}
 	}
 	// The FailureCode discipline: set on a failure status, removed by
 	// every transition to a non-failure one — $$REMOVE, not "", keeps
 	// the persisted shape identical to the FS twin's omitempty JSON
-	// (including an UNKNOWN empty code on a failure status).
-	if status.CarriesFailureCode() && meta.Code != "" {
+	// (including an UNKNOWN empty code on a failure status). An untyped
+	// SAME-STATUS rewrite preserves the cause the transition wrote
+	// (adversarial gate F1's second half: a drain-style rewrite must
+	// not erase the typed cause).
+	switch {
+	case status.CarriesFailureCode() && meta.Code != "":
 		set["failure_code"] = bson.M{"$literal": string(meta.Code)}
-	} else {
+	case status.CarriesFailureCode():
+		set["failure_code"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
+			bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}}
+	default:
 		set["failure_code"] = "$$REMOVE"
 	}
 	// The pause pointer is a consumable (store.CarriesPausePointer):
@@ -870,7 +886,6 @@ func (s *Store) FailQueuedRunIfAttempt(ctx context.Context, id, runErr string, p
 	}
 	return res.MatchedCount > 0, nil
 }
-
 
 var _ store.QueuedAttemptStore = (*Store)(nil)
 

@@ -1497,9 +1497,6 @@
           "status": {
             "type": "string"
           },
-          "terminal_code": {
-            "type": "string"
-          },
           "updated_at": {
             "format": "date-time",
             "type": "string"

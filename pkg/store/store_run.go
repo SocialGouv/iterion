@@ -186,7 +186,17 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 		}
 		return s.writeRun(&rr)
 	}
-	return s.writeRun(r)
+	// Create branch (no persisted document): mirror the Mongo upsert —
+	// the store owns the outcome bookkeeping even on first write, so a
+	// caller cannot seed a fabricated episode counter or continuation
+	// (adversarial gate F7: the FS branch used to trust the caller's
+	// bookkeeping verbatim). A run BORN terminal has episode 0: a
+	// creation is not a transition, and a reactor must not treat an
+	// imported/fixture document as a fresh outcome.
+	rr := *r
+	rr.OutcomeSeq = 0
+	rr.ContinuationState = ""
+	return s.writeRun(&rr)
 }
 
 // loadRunRaw is the pure-read variant of LoadRun: it parses run.json
@@ -524,13 +534,23 @@ func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStat
 	} else if transition {
 		r.ContinuationState = ""
 	}
-	code := meta.Code
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
-	r.Error = runErr
-	if status.CarriesFailureCode() {
-		r.FailureCode = code
-	} else {
+	// A transition always states its own message (empty included); a
+	// same-status rewrite that states nothing keeps the transition's —
+	// the runner's continuation promote must not blank the engine's
+	// failure text. Same rule for the typed cause below.
+	if runErr != "" || transition {
+		r.Error = runErr
+	}
+	switch {
+	case status.CarriesFailureCode() && meta.Code != "":
+		r.FailureCode = meta.Code
+	case status.CarriesFailureCode():
+		if transition {
+			r.FailureCode = ""
+		}
+	default:
 		r.FailureCode = ""
 	}
 	switch status {

@@ -400,3 +400,53 @@ func TestRunRetry_StoreCapabilityIsDetectable(t *testing.T) {
 		t.Error("the Mongo store must satisfy store.RunRetryStore")
 	}
 }
+
+// TestRunRetry_ContinuationFollowsTheRetryLifecycle pins the promote/
+// demote pair: arming a retry IS the promotion to retry_armed (the
+// document must not claim it earlier — three branches of the runner's
+// arming decision arm nothing), and abandoning it demotes to final.
+// Without this canary both writes were mutant-survivable: nothing in
+// the repo asserted the continuation ever reaches a run document
+// through the retry lanes (adversarial gate F5).
+func TestRunRetry_ContinuationFollowsTheRetryLifecycle(t *testing.T) {
+	s := retryTestStore(t)
+	ctx := retryCtx()
+	const runID = "run-retry-continuation"
+	seedFailedResumable(t, s, runID)
+
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		return r
+	}
+	if r := load(); r.ContinuationState != "" {
+		t.Fatalf("pre-arm continuation = %q, want unknown", r.ContinuationState)
+	}
+
+	armed, _, err := s.ScheduleRunRetry(ctx, runID, time.Now().Add(time.Hour), "usage_window", "USAGE_LIMIT_BLOCKED", 3)
+	if err != nil || !armed {
+		t.Fatalf("ScheduleRunRetry = (%t, %v), want (true, nil)", armed, err)
+	}
+	if r := load(); r.ContinuationState != store.ContinuationRetryArmed {
+		t.Fatalf("post-arm continuation = %q, want retry_armed", r.ContinuationState)
+	}
+	// The arm must not have erased the transition's cause or invented an
+	// episode: it is a same-status bookkeeping write.
+	if r := load(); r.OutcomeSeq != 1 {
+		t.Fatalf("post-arm seq = %d, want 1", r.OutcomeSeq)
+	}
+
+	if err := s.AbandonRunRetry(ctx, runID, "attempts exhausted"); err != nil {
+		t.Fatalf("AbandonRunRetry: %v", err)
+	}
+	r := load()
+	if r.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("post-abandon continuation = %q, want final — a consumer must know nobody owns this run's future", r.ContinuationState)
+	}
+	if r.OutcomeSeq != 1 {
+		t.Fatalf("post-abandon seq = %d, want 1", r.OutcomeSeq)
+	}
+}
