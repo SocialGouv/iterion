@@ -104,10 +104,6 @@ type Config struct {
 	// whose window is CLOSED, which is what lets the run fall through to
 	// the next credential tier instead of parking for a reset.
 	UsageCaps usagecap.Store
-	// UsageCapPolicy is the ceiling the skip is judged against — the same
-	// operator policy the runner enforces mid-run. Nil disables the skip
-	// (no policy, no opinion).
-	UsageCapPolicy usagecap.PolicySource
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -154,7 +150,6 @@ type Publisher struct {
 	sandboxImage   func(context.Context) string
 	credPool       *credpool.Broker
 	usageCaps      usagecap.Store
-	usageCapPolicy usagecap.PolicySource
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -248,7 +243,6 @@ func New(cfg Config) (*Publisher, error) {
 		sandboxImage:   cfg.SandboxImage,
 		credPool:       cfg.CredPool,
 		usageCaps:      cfg.UsageCaps,
-		usageCapPolicy: cfg.UsageCapPolicy,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -727,6 +721,16 @@ func (p *Publisher) fillFromPlatform(ctx context.Context, runID string, bundle *
 			if !fillable(string(rec.Kind)) {
 				continue
 			}
+			// The platform forfait obeys the same rule as the tenant tiers:
+			// a provider-refused window makes it unusable, and handing it
+			// over anyway costs one LLM call and a park until the reset.
+			// Skipping leaves the slot for the runner's env backstop — the
+			// documented tier below this one.
+			if until, why := p.forfaitWindowClosed(ctx, "", secrets.PlatformOwnerKey, rec); !until.IsZero() {
+				p.logger.Info("cloudpublisher: platform oauth-forfait SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); the env backstop remains",
+					runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+				continue
+			}
 			payload, err := secrets.OpenOAuthPayload(p.sealer, rec.UserID, rec.Kind, rec.SealedPayload)
 			if err != nil {
 				p.logger.Warn("cloudpublisher: unseal platform oauth %s: %v", rec.Kind, err)
@@ -765,23 +769,33 @@ var poolWantOrder = func() []credpool.Credential {
 	return out
 }()
 
+// usageCapLookupTimeout bounds the meter read on the launch path — the
+// same ceiling the runner puts on the identical call. The meter is an
+// optimisation; a slow store must not hold a launch.
+const usageCapLookupTimeout = 5 * time.Second
+
 // forfaitWindowClosed reports when a forfait's provider window is closed
-// (and why), or the zero time when it is usable. Deliberately
-// conservative — every uncertain answer means "usable", because a wrong
-// skip spends a donor's quota or falls to env for a subscription that
-// would have worked:
-//   - no store or no policy wired ⇒ usable (nothing to judge with);
+// (and why), or the zero time when it is usable.
+//
+// The ONLY evidence that closes a window is the provider's own refusal: a
+// fresh StatusRejected reading. The operator's percentage caps are
+// deliberately not consulted — a cap is a ceiling on THIS deployment's
+// spending, not evidence the provider would refuse, and skipping on it
+// would push work onto a donor (or the platform's own meter) to keep a
+// tenant under its own budget. A provider refusal, conversely, needs no
+// operator policy to be true — so the skip also works on a deployment
+// that never configured a cap.
+//
+// Everything uncertain means "usable", because a wrong skip spends
+// somebody else's quota for a subscription that would have worked:
+//   - no store wired, or no fingerprint ⇒ usable (nothing to judge with);
 //   - no reading for this credential ⇒ usable ("nothing learned yet"
 //     is the store's documented meaning for an unknown key);
-//   - a STALE reading ⇒ usable (Fresh already encodes "past its reset",
-//     so a window that has reopened stops blocking by itself);
-//   - blocked without a reset instant ⇒ usable, unless the provider
-//     itself said "rejected": an operator percentage cap is a ceiling on
-//     THIS deployment's spending, not evidence the credential would be
-//     refused, and skipping on it would push work onto a donor to keep a
-//     tenant under its own budget.
+//   - a STALE reading ⇒ usable (Fresh already encodes "past its own
+//     reset", so a window that reopened stops blocking by itself);
+//   - allowed/warning at ANY utilization, reset instant or not ⇒ usable.
 func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
-	if p.usageCaps == nil || p.usageCapPolicy == nil || rec.Fingerprint == "" {
+	if p.usageCaps == nil || rec.Fingerprint == "" {
 		return time.Time{}, ""
 	}
 	backend := usageBackendForKind(rec.Kind)
@@ -795,7 +809,9 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey 
 	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
 		scope = usagecap.TenantScope(tenantID)
 	}
-	readings, err := p.usageCaps.Latest(ctx, usagecap.Key(backend, scope, rec.Fingerprint))
+	lctx, cancel := context.WithTimeout(ctx, usageCapLookupTimeout)
+	defer cancel()
+	readings, err := p.usageCaps.Latest(lctx, usagecap.Key(backend, scope, rec.Fingerprint))
 	if err != nil {
 		// The meter is an optimisation; its failure must not change which
 		// credential a run gets.
@@ -803,27 +819,26 @@ func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey 
 		return time.Time{}, ""
 	}
 	now := time.Now()
-	// The SAME gate the runner arms a retry from: "may new work start
-	// against this credential", stale readings ignored, and when several
-	// windows block, the one that reopens last.
-	d := usagecap.Preflight(readings, p.usageCapPolicy.Effective(ctx), now, usagecap.DefaultMaxAge)
-	if !d.Blocked {
-		return time.Time{}, ""
-	}
-	if !d.ResetsAt.IsZero() {
-		return d.ResetsAt, d.Reason
-	}
-	// Blocked with no reset instant. An operator PERCENTAGE cap is a
-	// ceiling on this deployment's own spending, not evidence the
-	// provider would refuse — skipping on it would push work onto a
-	// donor to keep a tenant under its own budget. Only a real refusal
-	// justifies the skip, and the reading's staleness bound ends it.
+	// When several windows are refused, the one that reopens LAST rules:
+	// the credential stays unusable until every refusal has lapsed.
+	var until time.Time
+	var why string
 	for _, r := range readings {
-		if r.Status == usagecap.StatusRejected && r.Fresh(now, usagecap.DefaultMaxAge) {
-			return r.ObservedAt.Add(usagecap.DefaultMaxAge), d.Reason
+		if r.Status != usagecap.StatusRejected || !r.Fresh(now, usagecap.DefaultMaxAge) {
+			continue
+		}
+		reopen := r.ResetsAt
+		if reopen.IsZero() {
+			// A refusal with no reset instant is trusted only for the
+			// reading's own staleness bound.
+			reopen = r.ObservedAt.Add(usagecap.DefaultMaxAge)
+		}
+		if reopen.After(until) {
+			until = reopen
+			why = fmt.Sprintf("provider refused the %s window (%.0f%% used)", r.Window, r.Percent())
 		}
 	}
-	return time.Time{}, ""
+	return until, why
 }
 
 // usageBackendForKind maps a forfait kind to the meter backend the runner

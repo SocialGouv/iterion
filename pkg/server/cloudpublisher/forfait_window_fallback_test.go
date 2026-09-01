@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/credpool"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 )
@@ -27,7 +28,8 @@ func withTenantForfait(t *testing.T, f *poolFixture, token string) string {
 }
 
 // meterSays records one reading for the tenant's forfait, under the SAME
-// key the runner meters with.
+// key the runner meters with. No policy is involved: the skip's only
+// evidence is the provider's own refusal.
 func meterSays(t *testing.T, f *poolFixture, fp string, r usagecap.Reading) *usagecap.MemStore {
 	t.Helper()
 	st := usagecap.NewMemStore()
@@ -36,10 +38,6 @@ func meterSays(t *testing.T, f *poolFixture, fp string, r usagecap.Reading) *usa
 		t.Fatalf("record reading: %v", err)
 	}
 	f.pub.usageCaps = st
-	f.pub.usageCapPolicy = usagecap.StaticPolicy(usagecap.Policy{
-		FiveHour: usagecap.WindowPolicy{MaxPercent: 90, Mode: usagecap.ModeHard},
-		Week:     usagecap.WindowPolicy{MaxPercent: 90, Mode: usagecap.ModeHard},
-	})
 	return st
 }
 
@@ -57,7 +55,9 @@ func bundleToken(t *testing.T, f *poolFixture, runID string) string {
 // not be handed that forfait — one LLM call, a refusal, and a park until
 // the window resets (up to a week on the weekly one) while another tier
 // could have served immediately. Skipping it makes the tiers a fallback
-// CHAIN: the run falls through to the pool.
+// CHAIN: the run falls through to the pool. No operator policy is needed:
+// a provider refusal is objective evidence on its own, so the skip also
+// protects the shipped default deployment where no cap was ever set.
 func TestForfaitWindowClosed_fallsThroughToTheNextTier(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	fp := withTenantForfait(t, f, "sk-ant-tenant-own")
@@ -85,50 +85,48 @@ func TestForfaitWindowClosed_fallsThroughToTheNextTier(t *testing.T) {
 	}
 }
 
-// Conservative by construction: every uncertain answer means "usable". A
-// wrong skip spends a donor's quota (or drops to env) for a subscription
-// that would have worked.
+// Conservative by construction: every uncertain answer means "usable", and
+// only the provider's own refusal is evidence. A wrong skip spends a
+// donor's quota (or drops to env) for a subscription that would have
+// worked. The high-utilization cases carry a RESET INSTANT on purpose —
+// the production reading always does (the CLI's rate_limit_event names
+// resets_at on every window), so a guard that only defends the
+// no-reset-instant shape defends almost nothing.
 func TestForfaitWindowClosed_staysConservative(t *testing.T) {
 	cases := []struct {
 		name    string
 		reading usagecap.Reading
-		policy  bool
 	}{
 		{
-			name: "reading is stale (its window already reopened)",
+			name: "refusal is stale (its window already reopened)",
 			reading: usagecap.Reading{
 				Window: usagecap.WindowFiveHour, Status: usagecap.StatusRejected, Utilization: 1,
 				ResetsAt: time.Now().Add(-time.Minute), ObservedAt: time.Now().Add(-2 * time.Hour),
 			},
-			policy: true,
 		},
 		{
-			name: "under the operator's ceiling",
+			name: "plainly allowed",
 			reading: usagecap.Reading{
 				Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed, Utilization: 0.5,
 				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
 			},
-			policy: true,
 		},
 		{
-			// An operator PERCENTAGE cap is a ceiling on this deployment's
-			// own spending, not evidence the provider would refuse:
-			// skipping on it would push work onto a donor to keep a tenant
-			// under its own budget.
-			name: "over the operator's ceiling but the provider never refused, and no reset instant",
+			// The provider is still serving this credential; a deployment
+			// whose OPERATOR set a lower ceiling must cap its own runs, not
+			// push work onto a donor to keep a tenant under its own budget.
+			name: "nearly full but the provider never refused — with a reset instant, the production shape",
 			reading: usagecap.Reading{
 				Window: usagecap.WindowFiveHour, Status: usagecap.StatusAllowed, Utilization: 0.99,
-				ObservedAt: time.Now(),
+				ResetsAt: time.Now().Add(time.Hour), ObservedAt: time.Now(),
 			},
-			policy: true,
 		},
 		{
-			name: "no policy wired at all",
+			name: "provider warning is not a refusal",
 			reading: usagecap.Reading{
-				Window: usagecap.WindowFiveHour, Status: usagecap.StatusRejected, Utilization: 1,
-				ResetsAt: time.Now().Add(3 * time.Hour), ObservedAt: time.Now(),
+				Window: usagecap.WindowSevenDay, Status: usagecap.StatusWarning, Utilization: 0.97,
+				ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
 			},
-			policy: false,
 		},
 	}
 	for _, c := range cases {
@@ -136,11 +134,7 @@ func TestForfaitWindowClosed_staysConservative(t *testing.T) {
 			f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 			fp := withTenantForfait(t, f, "sk-ant-tenant-own")
 			meterSays(t, f, fp, c.reading)
-			if !c.policy {
-				f.pub.usageCapPolicy = nil
-			}
-			got := bundleToken(t, f, "run-conservative")
-			if !contains(got, "sk-ant-tenant-own") {
+			if got := bundleToken(t, f, "run-conservative"); !contains(got, "sk-ant-tenant-own") {
 				t.Fatalf("the tenant's own forfait must still be used, got %q", got)
 			}
 		})
@@ -153,9 +147,6 @@ func TestForfaitWindowClosed_meterFailureIsNeutral(t *testing.T) {
 	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
 	withTenantForfait(t, f, "sk-ant-tenant-own")
 	f.pub.usageCaps = failingUsageStore{}
-	f.pub.usageCapPolicy = usagecap.StaticPolicy(usagecap.Policy{
-		FiveHour: usagecap.WindowPolicy{MaxPercent: 90, Mode: usagecap.ModeHard},
-	})
 	if got := bundleToken(t, f, "run-meter-down"); !contains(got, "sk-ant-tenant-own") {
 		t.Fatalf("a meter failure must leave the tenant's forfait in place, got %q", got)
 	}
@@ -168,21 +159,49 @@ func (failingUsageStore) Latest(context.Context, string) ([]usagecap.Reading, er
 	return nil, context.DeadlineExceeded
 }
 
-// The platform's own forfait meters under ScopePlatform, not the tenant's
-// scope: a closed platform window must skip too (that is the deployment-
-// wide subscription every tenant without its own credential falls on).
+// The deployment's own forfait (tier 5, fillFromPlatform) obeys the same
+// rule. It meters under ScopePlatform and the reserved owner key, and it
+// is only reached when no tenant tier and no pool served — so the fixture
+// here deliberately has NO pool: a vacuous path would leave the platform
+// skip untested (measured: the previous version of this test never
+// reached fillFromPlatform at all, and passed with the skip deleted).
 func TestForfaitWindowClosed_platformScope(t *testing.T) {
-	f := newPoolFixture(t, credpool.Limits{MaxUSDPerDay: 5})
-	oauth := secrets.NewMemoryOAuthStore()
-	seedOAuth(t, oauth, f.sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
-	f.pub.oauthForfait = oauth
-	recs, _ := oauth.ListByUser(context.Background(), secrets.PlatformOwnerKey)
-	if len(recs) != 1 {
-		t.Fatalf("seeded platform forfait unreadable (%d records)", len(recs))
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	newPlatformPub := func(t *testing.T) (*poolFixture, string) {
+		t.Helper()
+		oauth := secrets.NewMemoryOAuthStore()
+		seedOAuth(t, oauth, sealer, secrets.PlatformOwnerKey, "sk-ant-platform")
+		recs, err := oauth.ListByUser(context.Background(), secrets.PlatformOwnerKey)
+		if err != nil || len(recs) != 1 {
+			t.Fatalf("seeded platform forfait unreadable: %v (%d records)", err, len(recs))
+		}
+		rs := secrets.NewMemoryRunSecretsStore()
+		f := &poolFixture{
+			pub: &Publisher{
+				runSecrets:   rs,
+				sealer:       sealer,
+				oauthForfait: oauth,
+				logger:       iterlog.New(iterlog.LevelError, nil),
+			},
+			rs: rs, sealer: sealer,
+		}
+		return f, recs[0].Fingerprint
 	}
 
+	// Baseline: the platform forfait serves a credential-less run.
+	f, _ := newPlatformPub(t)
+	if got := bundleToken(t, f, "run-platform-baseline"); !contains(got, "sk-ant-platform") {
+		t.Fatalf("baseline: the platform forfait must serve, got %q", got)
+	}
+
+	// Refused: the same run must NOT get the platform forfait — the slot
+	// stays empty for the runner's env backstop.
+	f, fp := newPlatformPub(t)
 	st := usagecap.NewMemStore()
-	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, recs[0].Fingerprint)
+	key := usagecap.Key(delegate.BackendClaudeCode, usagecap.ScopePlatform, fp)
 	if err := st.Record(context.Background(), key, usagecap.Reading{
 		Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
 		ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
@@ -190,18 +209,23 @@ func TestForfaitWindowClosed_platformScope(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	f.pub.usageCaps = st
-	f.pub.usageCapPolicy = usagecap.StaticPolicy(usagecap.Policy{
-		Week: usagecap.WindowPolicy{MaxPercent: 90, Mode: usagecap.ModeHard},
-	})
-
-	// The platform owner key is resolved with the platform scope, so this
-	// only skips when the scope is right — a tenant-scoped lookup would
-	// find nothing and hand the exhausted platform forfait over.
-	got := bundleToken(t, f, "run-platform-window")
-	if contains(got, "sk-ant-platform") {
-		t.Fatalf("the exhausted platform forfait was handed over: %q", got)
+	if got := bundleToken(t, f, "run-platform-window"); contains(got, "sk-ant-platform") {
+		t.Fatalf("the refused platform forfait was handed over: %q", got)
 	}
-	if !contains(got, "sk-ant-donated") {
-		t.Fatalf("expected the pool to serve instead, got %q", got)
+
+	// The scope must be the platform's: the same refusal recorded under a
+	// tenant scope describes a DIFFERENT meter and must not skip.
+	f, fp = newPlatformPub(t)
+	st = usagecap.NewMemStore()
+	wrongKey := usagecap.Key(delegate.BackendClaudeCode, usagecap.TenantScope(poolTeam), fp)
+	if err := st.Record(context.Background(), wrongKey, usagecap.Reading{
+		Window: usagecap.WindowSevenDay, Status: usagecap.StatusRejected, Utilization: 1,
+		ResetsAt: time.Now().Add(48 * time.Hour), ObservedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	f.pub.usageCaps = st
+	if got := bundleToken(t, f, "run-platform-wrong-scope"); !contains(got, "sk-ant-platform") {
+		t.Fatalf("a tenant-scoped refusal skipped the platform forfait, got %q", got)
 	}
 }
