@@ -662,6 +662,7 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
 	}
+	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
 	// An earlier attempt of this run may have banked a RICHER chain than
 	// this outcome carries: a redelivered failure re-clones from base,
 	// and its retry can legitimately end with fewer commits. "A later
@@ -671,7 +672,6 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// the new head, or at most as long; refuse loudly when this chain is
 	// strictly poorer and leave the branch (and the run doc that already
 	// points at it) alone.
-	oldHead := r.bankedBranchHead(ctx, workDir, tok, branch)
 	if oldHead != "" && oldHead != head {
 		// A FINISHED outcome is the run's converged final state and
 		// supersedes whatever an earlier dead attempt banked, however
@@ -803,9 +803,48 @@ func (r *Runner) persistBankResult(idCtx context.Context, runID, commit, branch,
 func bankPushArgs(branch, head, oldHead string) []string {
 	refspec := head + ":refs/heads/" + branch
 	if oldHead == "" {
-		return []string{"push", "--force", "origin", refspec}
+		return append(bankNetGitArgs(), "push", "--force", "origin", refspec)
 	}
-	return []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + oldHead, "origin", refspec}
+	return append(bankNetGitArgs(), "push", "--force-with-lease=refs/heads/"+branch+":"+oldHead, "origin", refspec)
+}
+
+// bankLsRemoteArgs reads the forge's advertised tip of the storage
+// branch — the branch, never a pattern, so nothing else is advertised
+// back into the parse.
+func bankLsRemoteArgs(branch string) []string {
+	return append(bankNetGitArgs(), "ls-remote", "origin", "refs/heads/"+branch)
+}
+
+// bankArchivePushArgs parks a superseded chain on its own ref. Not a
+// force push: the ref name embeds the head's own abbreviation, so it
+// either does not exist or already holds this exact chain.
+func bankArchivePushArgs(archiveRef, oldHead string) []string {
+	return append(bankNetGitArgs(), "push", "origin", oldHead+":refs/heads/"+archiveRef)
+}
+
+// bankNetGitArgs is the pre-subcommand config EVERY bank network op
+// carries. Route a new one through an args builder that starts here
+// rather than hand-rolling the argv — the point is that the set cannot
+// drift apart.
+//
+// http.followRedirects=false is the clone's own SSRF vector (b): a 302
+// from the validated host to an internal address must not be followed.
+// prepareRepoWorkspace passes it on the clone and the ref fetch, but its
+// two connect-time controls — the clone-guard CONNECT proxy and the
+// /etc/hosts pin — are torn down by defer when it returns, long before
+// the bank runs. This branch adds an ls-remote, a fetch and an archive
+// push to a path that previously made one push, so the flag the bank can
+// still set for itself, it sets.
+//
+// What this does NOT restore is the proxy: the bank's ops address
+// `origin`, whose URL the agent can rewrite in .git/config, and re-pinning
+// a host the remote may no longer name would be theatre. That the bank
+// trusts `origin` is a deliberate pre-existing choice (it is how the push
+// picks up the credential helper's LIVE token instead of a claim-time one
+// that expires mid-run — see pushBank), and it is the reviewers' open
+// question, not something to settle here.
+func bankNetGitArgs() []string {
+	return []string{"-c", "http.followRedirects=false"}
 }
 
 // bankFetchArgs brings the storage branch's advertised tip into the
@@ -822,7 +861,7 @@ func bankPushArgs(branch, head, oldHead string) []string {
 // no such restriction. refs/heads/<branch> is advertised on every
 // transport, and it is the same ref bankPushArgs leases.
 func bankFetchArgs(branch string) []string {
-	return []string{"fetch", "--no-tags", "origin", "refs/heads/" + branch}
+	return append(bankNetGitArgs(), "fetch", "--no-tags", "origin", "refs/heads/"+branch)
 }
 
 // fetchBankedChain makes the prior attempt's banked head a local object
@@ -853,7 +892,7 @@ func (r *Runner) fetchBankedChain(ctx context.Context, workDir, tok, branch, old
 // fails — an unreadable remote must not block the bank, it degrades to
 // the pre-check-less push).
 func (r *Runner) bankedBranchHead(ctx context.Context, workDir, tok, branch string) string {
-	out, err := r.runGitOutEnv(ctx, workDir, tok, nil, "ls-remote", "origin", "refs/heads/"+branch)
+	out, err := r.runGitOutEnv(ctx, workDir, tok, nil, bankLsRemoteArgs(branch)...)
 	if err != nil {
 		r.cfg.Logger.Warn("runner: bank: ls-remote %s: %v — pushing without the prior-attempt check", branch, err)
 		return ""
@@ -930,7 +969,7 @@ func (r *Runner) preserveSupersededChain(ctx context.Context, msg *queue.RunMess
 		return // contained in the finished chain — nothing to lose
 	}
 	archive := branch + "-attempt-" + shortSHA(oldHead)
-	if err := r.runGit(ctx, workDir, tok, "push", "origin", oldHead+":refs/heads/"+archive); err != nil {
+	if err := r.runGit(ctx, workDir, tok, bankArchivePushArgs(archive, oldHead)...); err != nil {
 		r.cfg.Logger.Error("runner: run %s: bank: archive push %s FAILED — the finished push drops %.12s from %s (still recoverable from the git-meta snapshot): %v", msg.RunID, archive, oldHead, branch, err)
 		r.recordBankSuperseded(msg, branch, oldHead, head, "", "archive push: "+err.Error())
 		return

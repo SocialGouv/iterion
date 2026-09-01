@@ -741,8 +741,34 @@ func TestBankKeepsTheRunDocCoherentAcrossAttempts(t *testing.T) {
 func TestBankFetchArgsUseTheRefNotASha(t *testing.T) {
 	const branch = "iterion/run-x"
 	got := strings.Join(bankFetchArgs(branch), " ")
-	if want := "fetch --no-tags origin refs/heads/" + branch; got != want {
+	if want := "-c http.followRedirects=false fetch --no-tags origin refs/heads/" + branch; got != want {
 		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+// prepareRepoWorkspace passes -c http.followRedirects=false on the clone
+// and the ref fetch, and its two connect-time controls (the clone-guard
+// CONNECT proxy, the /etc/hosts pin) are both torn down by defer when it
+// returns. This branch adds three more network ops on a path that used
+// to make a single push, all of them after that teardown — so the one
+// guard the bank can still set for itself belongs on every one of them,
+// and has to stay there when a fifth op is added.
+func TestBankNetworkOpsRefuseRedirects(t *testing.T) {
+	const branch, head, old = "iterion/run-x", "aaaa1111", "bbbb2222"
+	ops := map[string][]string{
+		"ls-remote":    bankLsRemoteArgs(branch),
+		"fetch":        bankFetchArgs(branch),
+		"archive push": bankArchivePushArgs(branch+"-attempt-"+old, old),
+		"leased push":  bankPushArgs(branch, head, old),
+		"first push":   bankPushArgs(branch, head, ""),
+	}
+	for name, args := range ops {
+		t.Run(name, func(t *testing.T) {
+			joined := strings.Join(args, " ")
+			if !strings.HasPrefix(joined, "-c http.followRedirects=false ") {
+				t.Fatalf("%s args = %q, want the redirect guard ahead of the subcommand", name, joined)
+			}
+		})
 	}
 }
 
@@ -840,7 +866,7 @@ func TestBankPushArgsLeaseTheComparedRefState(t *testing.T) {
 	const branch, head, old = "iterion/run-x", "aaaa1111", "bbbb2222"
 	t.Run("a known prior head is leased", func(t *testing.T) {
 		got := strings.Join(bankPushArgs(branch, head, old), " ")
-		want := "push --force-with-lease=refs/heads/" + branch + ":" + old + " origin " + head + ":refs/heads/" + branch
+		want := "-c http.followRedirects=false push --force-with-lease=refs/heads/" + branch + ":" + old + " origin " + head + ":refs/heads/" + branch
 		if got != want {
 			t.Fatalf("args = %q, want %q", got, want)
 		}
@@ -853,7 +879,7 @@ func TestBankPushArgsLeaseTheComparedRefState(t *testing.T) {
 		if strings.Contains(got, "force-with-lease") {
 			t.Fatalf("args = %q, want a plain force push when the prior head is unknown", got)
 		}
-		if want := "push --force origin " + head + ":refs/heads/" + branch; got != want {
+		if want := "-c http.followRedirects=false push --force origin " + head + ":refs/heads/" + branch; got != want {
 			t.Fatalf("args = %q, want %q", got, want)
 		}
 	})
