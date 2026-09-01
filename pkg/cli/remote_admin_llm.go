@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -57,12 +56,21 @@ var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1
 //
 // Stripping is a normalisation, not a rescue: anything that is still not
 // the expected object after it is refused, loudly.
+//
+// Removing the escapes is the ONLY rewrite. Surrounding whitespace is left
+// exactly as it arrived, even though trimming it would read tidier: the
+// server seals these bytes verbatim and fingerprints them, and for a Claude
+// Code credentials.json that fingerprint IS the subscription's usage-cap
+// identity (secrets.SubscriptionFingerprint falls back to hashing the whole
+// blob — there is no account id in the payload). Re-stamping a byte here
+// opens a second meter for one subscription. json.Unmarshal already
+// tolerates whitespace, so the trim bought nothing and cost that.
 func ReadCredentialBlob(fromEnv, fromFile, kind string) ([]byte, error) {
 	raw, err := ReadSecretBlob(fromEnv, fromFile)
 	if err != nil {
 		return nil, err
 	}
-	clean := bytes.TrimSpace(ansiEscape.ReplaceAll(raw, nil))
+	clean := ansiEscape.ReplaceAll(raw, nil)
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(clean, &probe); err != nil {
 		return nil, fmt.Errorf("%s: the payload is not a JSON object (%v)%s", credentialSourceLabel(fromEnv, fromFile), err, credentialShapeHint(kind))

@@ -113,3 +113,71 @@ func TestReadCredentialBlob_UnknownKindOnlyRequiresJSON(t *testing.T) {
 		t.Fatalf("unknown kind must not be pinned to a shape: %v", err)
 	}
 }
+
+// The bytes this returns are the bytes the server SEALS and FINGERPRINTS.
+// For a Claude Code credentials.json that fingerprint is the subscription's
+// usage-cap identity — secrets.SubscriptionFingerprint has no account id to
+// key on and hashes the whole blob — so any incidental rewrite here opens a
+// second meter for one subscription. Stripping escapes is the one rewrite
+// this function is allowed; surrounding whitespace must survive byte for
+// byte, on BOTH input paths (they normalise differently upstream, and this
+// must not paper over that either).
+func TestReadCredentialBlob_PreservesTheBytesTheServerFingerprints(t *testing.T) {
+	blob := `{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1}}`
+	cases := []struct {
+		name    string
+		payload string
+		// want is what the SOURCE hands over, minus escapes only.
+		wantFile  string // --from-file: ReadSecretValue already trims trailing \n
+		wantStdin string // stdin: ReadSecretBlob hands the raw bytes over
+	}{
+		{"leading whitespace", "  " + blob, "  " + blob, "  " + blob},
+		{"CRLF line ending", blob + "\r\n", blob + "\r", blob + "\r\n"},
+		{"trailing spaces", blob + "   ", blob + "   ", blob + "   "},
+		{"escapes around a padded blob", "\x1b[32m " + blob + " \x1b[0m", " " + blob + " ", " " + blob + " "},
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/file", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(path, []byte(c.payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadCredentialBlob("", path, "claude_code")
+			if err != nil {
+				t.Fatalf("ReadCredentialBlob: %v", err)
+			}
+			if string(got) != c.wantFile {
+				t.Errorf("blob = %q, want %q — a rewritten byte re-stamps the subscription", got, c.wantFile)
+			}
+		})
+		t.Run(c.name+"/stdin", func(t *testing.T) {
+			got, err := readCredentialBlobFromStdin(t, c.payload)
+			if err != nil {
+				t.Fatalf("ReadCredentialBlob: %v", err)
+			}
+			if string(got) != c.wantStdin {
+				t.Errorf("blob = %q, want %q — a rewritten byte re-stamps the subscription", got, c.wantStdin)
+			}
+		})
+	}
+}
+
+// readCredentialBlobFromStdin exercises the piped path
+// (`cat credentials.json | iterion remote admin llm oauth set …`), which
+// ReadSecretBlob reads whole from os.Stdin.
+func readCredentialBlobFromStdin(t *testing.T, payload string) ([]byte, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "piped")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	saved := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = saved }()
+	return ReadCredentialBlob("", "", "claude_code")
+}
