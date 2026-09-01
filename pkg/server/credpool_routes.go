@@ -576,7 +576,16 @@ func (s *Server) handlePutTeamPool(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusInternalServerError, "%s", err.Error())
 			return
 		}
-		pool = credpool.Pool{ID: orgID, OrgID: orgID}
+		// A pool the caller has to CREATE comes up OPEN. The zero value
+		// would be Enabled:false, and ListEnabled skips a disabled pool
+		// entirely — so `pool policy --all-teams` on a fresh org used to
+		// write a full policy nothing could ever draw on, with nothing
+		// reporting why. Standing a pool up means opening it; the
+		// req.Enabled assignment below still lets an explicit
+		// `"enabled":false` create one paused. On an EXISTING pool this
+		// branch is not taken, so an omitted `enabled` never re-opens a
+		// pool an operator deliberately paused.
+		pool = credpool.Pool{ID: orgID, OrgID: orgID, Enabled: true}
 	}
 	if req.Name != nil {
 		pool.Name = strings.TrimSpace(*req.Name)

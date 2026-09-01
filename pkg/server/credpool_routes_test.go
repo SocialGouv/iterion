@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,5 +161,95 @@ func TestPoolIDForUser_resolvesForACLIToken(t *testing.T) {
 	r = r.WithContext(auth.WithIdentity(ctx, id))
 	if got := s.poolIDForUser(r); got != "pool-1" {
 		t.Errorf("pool = %q, want pool-1 — a CLI contributor cannot reach their own org's pool", got)
+	}
+}
+
+// PUT /api/teams/{id}/pool is a PARTIAL update, so a client may legitimately
+// send only an audience. On a pool that does not exist yet the zero value of
+// Enabled is false, and ListEnabled — the broker's only entry point
+// (pkg/credpool/broker.go, resolvePools) — filters those out entirely. The
+// stand-up gesture therefore used to write a complete, correct policy that no
+// run could ever draw on, with nothing reporting why. A created pool comes up
+// OPEN; an explicit false still creates one paused; and an UPDATE must never
+// re-open a pool an operator deliberately paused.
+func TestPutTeamPool_masterSwitchOnCreateAndUpdate(t *testing.T) {
+	cases := []struct {
+		name    string
+		seed    *credpool.Pool // nil = the pool does not exist yet
+		body    string
+		want    bool
+		because string
+	}{
+		{
+			name:    "create with the switch omitted comes up open",
+			body:    `{"audience":{"all_teams":true}}`,
+			want:    true,
+			because: "a pool created disabled is invisible to the broker and nothing says why",
+		},
+		{
+			name:    "create with an explicit false stays paused",
+			body:    `{"enabled":false,"audience":{"all_teams":true}}`,
+			want:    false,
+			because: "writing policy while keeping the pool closed must stay possible",
+		},
+		{
+			name:    "update with the switch omitted does not re-open a paused pool",
+			seed:    &credpool.Pool{ID: "org-1", OrgID: "org-1", Enabled: false},
+			body:    `{"audience":{"contributors":true}}`,
+			want:    false,
+			because: "the create default must not leak onto an update — that would un-pause behind the operator's back",
+		},
+		{
+			name:    "update with the switch omitted leaves an open pool open",
+			seed:    &credpool.Pool{ID: "org-1", OrgID: "org-1", Enabled: true},
+			body:    `{"name":"acme"}`,
+			want:    true,
+			because: "a rename must not close the pool",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pools := credpool.NewMemoryPoolStore()
+			if tc.seed != nil {
+				if err := pools.Upsert(ctx, *tc.seed); err != nil {
+					t.Fatalf("seed pool: %v", err)
+				}
+			}
+			s := &Server{
+				credPoolPools:   pools,
+				credPoolPledges: credpool.NewMemoryPledgeStore(),
+				credPoolLedger:  credpool.NewMemoryLedger(),
+				logger:          iterlog.New(iterlog.LevelError, nil),
+			}
+			r := httptest.NewRequest("PUT", "/api/teams/team-1/pool", strings.NewReader(tc.body))
+			r.SetPathValue("id", "team-1")
+			r = r.WithContext(auth.WithIdentity(ctx, auth.Identity{
+				UserID: "root", OrgID: "org-1", TeamID: "team-1", IsSuperAdmin: true,
+			}))
+			w := httptest.NewRecorder()
+			s.handlePutTeamPool(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+			}
+			stored, err := pools.GetByOrg(ctx, "org-1")
+			if err != nil {
+				t.Fatalf("get stored pool: %v", err)
+			}
+			if stored.Enabled != tc.want {
+				t.Errorf("stored Enabled = %v, want %v — %s", stored.Enabled, tc.want, tc.because)
+			}
+			// The response must not disagree with what was stored: the
+			// operator reads the echoed pool to know where they stand.
+			var view struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if view.Enabled != stored.Enabled {
+				t.Errorf("echoed enabled = %v but stored %v", view.Enabled, stored.Enabled)
+			}
+		})
 	}
 }
