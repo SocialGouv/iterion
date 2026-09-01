@@ -800,19 +800,39 @@ func (s *Store) ClaimMerge(ctx context.Context, id string, staleBefore time.Time
 		bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": bson.M{"$exists": false}},
 	}}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id, "$and": bson.A{claimable}}))
-	update := bson.M{
-		"$set": bson.M{"merge_status": store.MergeStatusMerging, "merge_claimed_at": now, "updated_at": now},
-		"$inc": bson.M{"version": 1},
-	}
+	// Strictly monotonic vs the stamp being stolen (mirrors the FS
+	// twin): a steal landing in the SAME millisecond would mint an
+	// equal token and the loser's token-scoped exits would pass as the
+	// winner's. The pipeline computes max(now, old+1ms); the Go side
+	// derives the identical token from the pre-image below.
+	tokenExpr := bson.M{"$cond": bson.A{
+		bson.M{"$and": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$type": "$merge_claimed_at"}, "missing"}},
+			bson.M{"$gte": bson.A{"$merge_claimed_at", now}},
+		}},
+		bson.M{"$add": bson.A{"$merge_claimed_at", 1}},
+		now,
+	}}
+	update := mongo.Pipeline{{{Key: "$set", Value: bson.M{
+		"merge_status":     bson.M{"$literal": string(store.MergeStatusMerging)},
+		"merge_claimed_at": tokenExpr,
+		"updated_at":       now,
+		"version":          bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
+	}}}}
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
-		SetProjection(bson.M{"merge_status": 1})
+		SetProjection(bson.M{"merge_status": 1, "merge_claimed_at": 1})
 	var before struct {
-		MergeStatus store.MergeStatus `bson:"merge_status"`
+		MergeStatus    store.MergeStatus `bson:"merge_status"`
+		MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
 	}
 	err := s.runs.FindOneAndUpdate(ctx, filter, update, opts).Decode(&before)
 	if err == nil {
-		return true, before.MergeStatus, now, nil
+		token := now
+		if !before.MergeClaimedAt.IsZero() && !now.After(before.MergeClaimedAt) {
+			token = before.MergeClaimedAt.Add(time.Millisecond)
+		}
+		return true, before.MergeStatus, token, nil
 	}
 	if !errors.Is(err, mongo.ErrNoDocuments) {
 		return false, "", time.Time{}, fmt.Errorf("store/mongo: claim merge %s: %w", id, err)

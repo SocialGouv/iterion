@@ -458,6 +458,14 @@ func (s *FilesystemRunStore) ClaimMerge(_ context.Context, id string, staleBefor
 	// Millisecond precision: the token must survive a Mongo round-trip
 	// identically on both backends, and BSON stores times in ms.
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	// Strictly monotonic vs the stamp being stolen: a steal landing in
+	// the SAME millisecond as the claim it replaces would mint an equal
+	// token, and the loser's token-scoped exits would pass as the
+	// winner's — the fencing collapses exactly when two claimants are
+	// closest.
+	if !now.After(r.MergeClaimedAt) {
+		now = r.MergeClaimedAt.Add(time.Millisecond)
+	}
 	r.MergeStatus = MergeStatusMerging
 	r.MergeClaimedAt = now
 	r.UpdatedAt = now
