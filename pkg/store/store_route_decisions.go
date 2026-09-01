@@ -48,7 +48,7 @@ func (s *FilesystemRunStore) writeRouteDecisions(runID string, ds []RouteDecisio
 }
 
 // ClaimRouteDecision — see RouteDecisionStore.
-func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecision) (bool, *RouteDecision, error) {
+func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecision, staleBefore time.Time) (bool, *RouteDecision, error) {
 	if d.RunID == "" {
 		return false, nil, fmt.Errorf("store: claim route decision without run_id")
 	}
@@ -67,7 +67,7 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 			continue
 		}
 		cur := ds[i]
-		reclaimable := (cur.State == RouteDecisionClaimed && now.Sub(cur.ClaimedAt) > RouteClaimLease) ||
+		reclaimable := (cur.State == RouteDecisionClaimed && cur.ClaimedAt.Before(staleBefore) && cur.Attempts < MaxRouteDecisionAttempts) ||
 			(cur.State == RouteDecisionFailed && cur.Attempts < MaxRouteDecisionAttempts)
 		if !reclaimable {
 			existing := cur
@@ -157,8 +157,65 @@ func (s *FilesystemRunStore) ListRoutableRuns(_ context.Context, since time.Time
 		}
 		switch r.Status {
 		case RunStatusFinished, RunStatusFailed, RunStatusFailedResumable:
-			out = append(out, r.ID)
+		default:
+			continue
 		}
+		if settled, err := s.episodeSettled(r.ID, r.OutcomeSeq); err != nil || settled {
+			continue
+		}
+		out = append(out, r.ID)
 	}
 	return out, nil
+}
+
+// episodeSettled is the FS half of the sweep anti-join: the run's
+// CURRENT episode already has a decision no offer can act on again —
+// succeeded, or failed at the attempt cap. Caller holds s.mu.
+func (s *FilesystemRunStore) episodeSettled(runID string, outcomeSeq int64) (bool, error) {
+	ds, err := s.loadRouteDecisions(runID)
+	if err != nil {
+		return false, err
+	}
+	for i := range ds {
+		if ds[i].OutcomeSeq != outcomeSeq {
+			continue
+		}
+		if ds[i].State == RouteDecisionSucceeded ||
+			(ds[i].State == RouteDecisionFailed && ds[i].Attempts >= MaxRouteDecisionAttempts) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// EnsureRouterWatermark — see RouteDecisionStore. First-writer-wins on
+// a store-root file, so a restart (or a second replica sharing the
+// store) reads the instant the switch FIRST went live, not its own
+// boot time.
+func (s *FilesystemRunStore) EnsureRouterWatermark(_ context.Context) (time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.root, "router_watermark.json")
+	if data, err := os.ReadFile(path); err == nil {
+		var wm struct {
+			ActivatedAt time.Time `json:"activated_at"`
+		}
+		if err := json.Unmarshal(data, &wm); err != nil {
+			return time.Time{}, fmt.Errorf("store: parse router watermark: %w", err)
+		}
+		return wm.ActivatedAt, nil
+	} else if !os.IsNotExist(err) {
+		return time.Time{}, fmt.Errorf("store: read router watermark: %w", err)
+	}
+	now := time.Now().UTC()
+	data, err := json.MarshalIndent(struct {
+		ActivatedAt time.Time `json:"activated_at"`
+	}{now}, "", "  ")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("store: marshal router watermark: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return time.Time{}, fmt.Errorf("store: write router watermark: %w", err)
+	}
+	return now, nil
 }

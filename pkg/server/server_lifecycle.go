@@ -434,6 +434,7 @@ func (s *Server) startOperatorAlerts() {
 		BaseURL: s.cfg.PublicURL,
 		Logger:  s.logger,
 	}
+	s.opsAlerts = d
 	bus := s.cfg.EventsBus
 	if bus == nil && s.triggerCoord != nil {
 		bus = s.triggerCoord.Bus()

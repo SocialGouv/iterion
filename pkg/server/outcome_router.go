@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/routing"
@@ -76,9 +77,18 @@ func (s *Server) startOutcomeRouter() {
 	if !outcomeRouterEnabled() {
 		return
 	}
-	if store.AsRouteDecisionStore(s.cfg.Store) == nil {
+	rds := store.AsRouteDecisionStore(s.cfg.Store)
+	if rds == nil {
 		s.logWarn("server: outcome router requested but the store has no decision registry — router stays off")
 		return
+	}
+	// Establish the activation watermark at BOOT, not at the first tick:
+	// a run that terminates between the two must land above it. First
+	// writer wins, so a restart or a second replica reads the original
+	// instant. Failure is non-fatal — the sweep re-ensures every pass
+	// and refuses to sweep until it holds (fail closed).
+	if _, err := rds.EnsureRouterWatermark(store.WithoutTenantFilter(context.Background())); err != nil {
+		s.logWarn("server: outcome router: establish watermark: %v", err)
 	}
 	bus := s.eventsBus()
 	if bus != nil {
@@ -131,7 +141,20 @@ func (s *Server) outcomeRouterSweepPass(ctx context.Context) {
 	if rds == nil {
 		return
 	}
-	ids, err := rds.ListRoutableRuns(store.WithoutTenantFilter(ctx), time.Now().Add(-routerSweepLookback), routerSweepBatch)
+	// The activation watermark bounds the lookback: flipping the fleet
+	// switch on must not retro-route historical terminals (up to a full
+	// batch of merges pushed to the forge in the first minute). No
+	// watermark ⇒ no sweep — never guess how far back is safe.
+	watermark, err := rds.EnsureRouterWatermark(store.WithoutTenantFilter(ctx))
+	if err != nil {
+		s.logWarn("server: outcome router sweep: watermark: %v", err)
+		return
+	}
+	since := time.Now().Add(-routerSweepLookback)
+	if watermark.After(since) {
+		since = watermark
+	}
+	ids, err := rds.ListRoutableRuns(store.WithoutTenantFilter(ctx), since, routerSweepBatch)
 	if err != nil {
 		s.logWarn("server: outcome router sweep: %v", err)
 		return
@@ -160,7 +183,14 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		return
 	}
 	run, err := s.cfg.Store.LoadRun(store.WithoutTenantFilter(ctx), runID)
-	if err != nil || run == nil || run.RoutingPolicy == nil {
+	if err != nil {
+		// The only silent exit that would hide a STORE failure, not a
+		// non-candidate — every other refusal below is a judgment on a
+		// run this one never got to read.
+		s.logWarn("server: outcome router: load run %s: %v", runID, err)
+		return
+	}
+	if run == nil || run.RoutingPolicy == nil {
 		return
 	}
 	if !updatedBefore.IsZero() && run.UpdatedAt.After(updatedBefore) {
@@ -222,19 +252,29 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 
 	// --- One decision per episode: the registry claim. ---
 	tctx := store.WithIdentity(store.WithoutTenantFilter(ctx), run.TenantID, outcomeRouterName)
+	staleBefore := time.Now().Add(-store.RouteClaimLease)
 	claimed, existing, err := rds.ClaimRouteDecision(tctx, store.RouteDecision{
 		RunID:      run.ID,
 		OutcomeSeq: run.OutcomeSeq,
 		Decision:   string(decision),
 		Reason:     reason,
 		PolicyHash: run.RoutingPolicy.Hash,
-	})
+	}, staleBefore)
 	if err != nil {
 		s.logWarn("server: outcome router: claim %s:%d: %v", run.ID, run.OutcomeSeq, err)
 		return
 	}
 	if !claimed {
-		if existing != nil && s.logger != nil {
+		if existing != nil && existing.State == store.RouteDecisionClaimed &&
+			existing.Attempts >= store.MaxRouteDecisionAttempts && existing.ClaimedAt.Before(staleBefore) {
+			// Poison episode: every permitted claimant died mid-action and
+			// the steal cap now refuses re-arming. Nothing will ever finish
+			// this row — the operator is the only exit, so say so (the
+			// alert claim dedups the once-per-sweep re-offer).
+			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
+				fmt.Sprintf("routing decision %q exhausted its %d attempts without completing — operator action required", existing.Decision, existing.Attempts),
+				fmt.Sprintf("route:%s:%d:exhausted", run.ID, run.OutcomeSeq))
+		} else if existing != nil && s.logger != nil {
 			s.logger.Debug("server: outcome router: episode %s:%d already decided (%s/%s at %s)", run.ID, run.OutcomeSeq, existing.Decision, existing.State, existing.ClaimedAt.Format(time.RFC3339))
 		}
 		return
@@ -269,6 +309,11 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		if mergeErr != nil {
 			s.logWarn("server: outcome router: merge %s: %v", run.ID, mergeErr)
 			s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, mergeErr.Error())
+			// Best-effort: the failed row's bounded re-claim retries the
+			// MERGE; the alert claim keys per episode so retries don't spam.
+			s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
+				"contract-decided merge failed: "+mergeErr.Error(),
+				fmt.Sprintf("route:%s:%d:action_failed", run.ID, run.OutcomeSeq))
 			return
 		}
 		if s.logger != nil {
@@ -279,12 +324,57 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		// Execution of relaunches (fresh run anchored on the banked
 		// branch) is not wired yet: record the decision honestly and
 		// leave the act to an operator. The registry row IS the
-		// escalation surface.
+		// escalation record; the alert is what makes it heard.
 		s.logWarn("server: outcome router: run %s episode %d — contract permits relaunch, execution not enabled: operator action required (%s)", run.ID, run.OutcomeSeq, reason)
 		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, "relaunch execution not enabled — operator action required")
+		s.notifyRouteDecision(tctx, run, alert.KindRouteActionFailed,
+			"contract permits relaunch but execution is not enabled — operator action required ("+reason+")",
+			fmt.Sprintf("route:%s:%d:action_failed", run.ID, run.OutcomeSeq))
 	default: // escalate
 		s.logWarn("server: outcome router: run %s episode %d ESCALATED: %s", run.ID, run.OutcomeSeq, reason)
+		// The alert IS escalate's action: escalate is the DEFAULT
+		// decision and a registry row nobody reads is silence. When
+		// delivery fails on every channel, finish the row FAILED so the
+		// registry's own bounded re-claim re-delivers — the alert claim
+		// makes a retry after a half-delivered attempt a no-op.
+		if err := s.notifyRouteDecisionErr(tctx, run, alert.KindRouteEscalated, reason,
+			fmt.Sprintf("route:%s:%d:escalated", run.ID, run.OutcomeSeq)); err != nil {
+			s.finishRouteDecision(tctx, rds, run, store.RouteDecisionFailed, "operator alert delivery failed: "+err.Error())
+			return
+		}
 		s.finishRouteDecision(tctx, rds, run, store.RouteDecisionSucceeded, "")
+	}
+}
+
+// notifyRouteDecisionErr routes one router outcome to the platform
+// operator through the ops-alert dispatcher. A server without alerts
+// configured returns nil: the registry row and the Warn log are the
+// whole surface there (a local studio has no ops channel to fail on).
+func (s *Server) notifyRouteDecisionErr(ctx context.Context, run *store.Run, kind alert.Kind, reason, episodeKey string) error {
+	if s.opsAlerts == nil {
+		return nil
+	}
+	a := alert.Alert{
+		Kind:        kind,
+		RunID:       run.ID,
+		RunName:     run.Name,
+		Reason:      reason,
+		FailureCode: string(run.FailureCode),
+	}
+	if a.RunName == "" {
+		a.RunName = run.WorkflowName
+	}
+	if s.cfg.PublicURL != "" {
+		a.Link = strings.TrimRight(s.cfg.PublicURL, "/") + "/runs/" + run.ID
+	}
+	return s.opsAlerts.NotifyOperator(ctx, a, episodeKey)
+}
+
+// notifyRouteDecision is the best-effort form: delivery failure is
+// logged, the caller's own state machine handles redelivery.
+func (s *Server) notifyRouteDecision(ctx context.Context, run *store.Run, kind alert.Kind, reason, episodeKey string) {
+	if err := s.notifyRouteDecisionErr(ctx, run, kind, reason, episodeKey); err != nil {
+		s.logWarn("server: outcome router: operator alert %s: %v", episodeKey, err)
 	}
 }
 

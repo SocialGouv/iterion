@@ -51,15 +51,26 @@ const (
 type RouteDecisionStore interface {
 	// ClaimRouteDecision atomically claims the (run_id, outcome_seq)
 	// episode. Fresh episode ⇒ a "claimed" row is inserted. An existing
-	// row is RE-claimable in exactly two cases, both bounded:
-	//   - "claimed" older than RouteClaimLease — the claimant died
+	// row is RE-claimable in exactly two cases, BOTH bounded by the
+	// attempt cap (an episode that keeps killing its claimant is poison —
+	// unbounded steal re-arms it forever):
+	//   - "claimed" stamped before staleBefore — the claimant died
 	//     between claim and action; without the steal the row is
 	//     orphaned forever and a green run never lands (the router's
-	//     own worst case);
+	//     own worst case). The caller passes the threshold
+	//     (time.Now().Add(-RouteClaimLease) in production) — the
+	//     ClaimMerge precedent, which is what makes the steal testable;
 	//   - "failed" with fewer than MaxRouteDecisionAttempts — a
 	//     transient action error must not burn the episode permanently.
 	// Everything else returns claimed=false with the existing row.
-	ClaimRouteDecision(ctx context.Context, d RouteDecision) (claimed bool, existing *RouteDecision, err error)
+	ClaimRouteDecision(ctx context.Context, d RouteDecision, staleBefore time.Time) (claimed bool, existing *RouteDecision, err error)
+	// EnsureRouterWatermark returns the router's activation instant,
+	// establishing it first-writer-wins on the first call. The sweep
+	// never reaches behind it: flipping the fleet switch on must not
+	// retro-route a lookback's worth of historical terminals (up to a
+	// full sweep batch of merges pushed to the forge in the first
+	// minute). Pre-watermark terminals stay the operator's.
+	EnsureRouterWatermark(ctx context.Context) (time.Time, error)
 	// FinishRouteDecision moves the claimed row to succeeded/failed.
 	FinishRouteDecision(ctx context.Context, runID string, outcomeSeq int64, state, actionErr string) error
 	// ListRouteDecisions returns a run's decisions, newest episode
@@ -67,10 +78,14 @@ type RouteDecisionStore interface {
 	ListRouteDecisions(ctx context.Context, runID string) ([]RouteDecision, error)
 	// ListRoutableRuns is the sweep net's query: ids of runs that
 	// carry a routing policy and sit in a terminal status, updated
-	// since the given instant. The bus is the fast path; this list is
-	// the source of truth (six terminal paths never publish, and the
-	// bus is lossy by design — its own doc says the poll is the
-	// backstop).
+	// since the given instant, oldest first. Runs whose CURRENT episode
+	// is settled — a "succeeded" row, or a "failed" one at the attempt
+	// cap — are excluded (anti-join): without it, past one batch of
+	// decided terminals per lookback the head of the list is all
+	// already-decided runs and the very runs the net exists for become
+	// unreachable. The bus is the fast path; this list is the source of
+	// truth (six terminal paths never publish, and the bus is lossy by
+	// design — its own doc says the poll is the backstop).
 	ListRoutableRuns(ctx context.Context, since time.Time, limit int) ([]string, error)
 }
 

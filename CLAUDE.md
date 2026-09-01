@@ -265,6 +265,14 @@ the hours this one spent.
   image (`admin sandbox set --default-image …`, pinned per RunMessage).
   Read it when a bot tweak seems to need a deploy, when a push must be
   reverted, or when a run fails on "version drift".
+- [docs/outcome-router.md](docs/outcome-router.md) — the
+  `ITERION_OUTCOME_ROUTER` switch: how a policy-carrying terminal run is
+  decided by its launch-frozen contract (merge/relaunch/escalate), the
+  activation watermark that keeps a flip from retro-routing 24h of
+  history, the decision registry (lease, attempt cap,
+  `GET /api/runs/{id}/route-decisions`), the `route_escalated` /
+  `route_action_failed` ops alerts, and the rollout + emergency-stop
+  procedure. Read it before flipping the switch on a deployment.
 - [docs/sentry-feedback-loop.md](docs/sentry-feedback-loop.md) — reading
   production errors BACK from the platform Sentry (org `incubateur`, project
   `iterion`/62 on sentry2): the user-auth-token setup, the repo's `.mcp.json`

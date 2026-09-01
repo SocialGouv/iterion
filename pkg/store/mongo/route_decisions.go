@@ -17,7 +17,7 @@ import (
 // (see store.RouteDecisionStore). The unique index is the claim: a
 // duplicate key means the episode is already decided — the existing
 // row comes back so the caller can report WHO decided and how it went.
-func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision) (bool, *store.RouteDecision, error) {
+func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, staleBefore time.Time) (bool, *store.RouteDecision, error) {
 	if d.RunID == "" {
 		return false, nil, fmt.Errorf("store/mongo: claim route decision without run_id")
 	}
@@ -30,17 +30,18 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision) (
 		if !mongo.IsDuplicateKeyError(err) {
 			return false, nil, fmt.Errorf("store/mongo: claim route decision %s: %w", d.ID, err)
 		}
-		// The episode has a row. Two bounded re-claim arms (see the
-		// interface doc): a stale "claimed" (the claimant died between
-		// claim and action) and a "failed" under the attempt cap. The
-		// CAS is a conditional update, so replicas racing on the steal
-		// still elect exactly one winner.
+		// The episode has a row. Two re-claim arms (see the interface
+		// doc), BOTH bounded by the attempt cap: a stale "claimed" (the
+		// claimant died between claim and action) and a "failed" under
+		// the cap. The CAS is a conditional update, so replicas racing
+		// on the steal still elect exactly one winner.
 		res := s.routeDecisions.FindOneAndUpdate(ctx,
 			withTenantFilter(ctx, bson.M{
 				"run_id": d.RunID, "outcome_seq": d.OutcomeSeq,
+				"attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts},
 				"$or": bson.A{
-					bson.M{"state": store.RouteDecisionClaimed, "claimed_at": bson.M{"$lt": d.ClaimedAt.Add(-store.RouteClaimLease)}},
-					bson.M{"state": store.RouteDecisionFailed, "attempts": bson.M{"$lt": store.MaxRouteDecisionAttempts}},
+					bson.M{"state": store.RouteDecisionClaimed, "claimed_at": bson.M{"$lt": staleBefore}},
+					bson.M{"state": store.RouteDecisionFailed},
 				},
 			}),
 			bson.M{
@@ -113,19 +114,48 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 	if limit <= 0 {
 		limit = 200
 	}
-	cur, err := s.runs.Find(ctx, notDeleted(bson.M{
-		"routing_policy": bson.M{"$exists": true, "$ne": nil},
-		"status": bson.M{"$in": bson.A{
-			store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,
-		}},
-		"updated_at": bson.M{"$gte": since},
-	}), options.Find().
-		SetProjection(bson.M{"_id": 1}).
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: notDeleted(bson.M{
+			"routing_policy": bson.M{"$exists": true, "$ne": nil},
+			"status": bson.M{"$in": bson.A{
+				store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable,
+			}},
+			"updated_at": bson.M{"$gte": since},
+		})}},
 		// Ascending: a backlog sweeper must reach the OLDEST sleeping
 		// terminal first — newest-first plus a limit made the very runs
 		// this net exists for structurally unreachable past 200 rows.
-		SetSort(bson.D{{Key: "updated_at", Value: 1}}).
-		SetLimit(int64(limit)))
+		{{Key: "$sort", Value: bson.D{{Key: "updated_at", Value: 1}}}},
+		// Anti-join on the decision registry: a run whose CURRENT
+		// episode is settled (succeeded, or failed at the attempt cap)
+		// must not occupy the batch — past one batch of decided
+		// terminals per lookback the head of the ascending list is all
+		// settled runs and fresh terminals sit unreachable behind them.
+		// The $lookup rides the registry's (run_id, outcome_seq)
+		// unique index.
+		{{Key: "$lookup", Value: bson.M{
+			"from": colRouteDecisions,
+			"let":  bson.M{"rid": "$_id", "seq": bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$run_id", "$$rid"}},
+					bson.M{"$eq": bson.A{"$outcome_seq", "$$seq"}},
+					bson.M{"$or": bson.A{
+						bson.M{"$eq": bson.A{"$state", store.RouteDecisionSucceeded}},
+						bson.M{"$and": bson.A{
+							bson.M{"$eq": bson.A{"$state", store.RouteDecisionFailed}},
+							bson.M{"$gte": bson.A{bson.M{"$ifNull": bson.A{"$attempts", 0}}, store.MaxRouteDecisionAttempts}},
+						}},
+					}},
+				}}}},
+			},
+			"as": "settled",
+		}}},
+		{{Key: "$match", Value: bson.M{"settled": bson.M{"$size": 0}}}},
+		{{Key: "$limit", Value: int64(limit)}},
+		{{Key: "$project", Value: bson.M{"_id": 1}}},
+	}
+	cur, err := s.runs.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list routable runs: %w", err)
 	}
@@ -140,4 +170,34 @@ func (s *Store) ListRoutableRuns(ctx context.Context, since time.Time, limit int
 		out = append(out, r.ID)
 	}
 	return out, nil
+}
+
+// routerWatermarkID is the registry's single deployment-global sentinel
+// row (run_id/outcome_seq chosen to collide with no real episode under
+// the unique index). Its claimed_at IS the watermark.
+const routerWatermarkID = "router:watermark"
+
+// EnsureRouterWatermark — see store.RouteDecisionStore. First-writer-wins
+// across every replica: the winning insert's instant is the activation,
+// later replicas (and every restart) read it back. Deployment-global
+// state, deliberately outside the tenant filter.
+func (s *Store) EnsureRouterWatermark(ctx context.Context) (time.Time, error) {
+	now := time.Now().UTC()
+	_, err := s.routeDecisions.InsertOne(ctx, store.RouteDecision{
+		ID:        routerWatermarkID,
+		RunID:     "__router_watermark__",
+		State:     "watermark",
+		ClaimedAt: now,
+	})
+	if err == nil {
+		return now, nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return time.Time{}, fmt.Errorf("store/mongo: establish router watermark: %w", err)
+	}
+	var existing store.RouteDecision
+	if ferr := s.routeDecisions.FindOne(ctx, bson.M{"_id": routerWatermarkID}).Decode(&existing); ferr != nil {
+		return time.Time{}, fmt.Errorf("store/mongo: router watermark exists but is unreadable: %w", ferr)
+	}
+	return existing.ClaimedAt, nil
 }

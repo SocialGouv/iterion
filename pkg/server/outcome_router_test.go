@@ -40,6 +40,15 @@ func newRouterHarness(t *testing.T) *routerHarness {
 	s := newOrgTestServer(t)
 	s.cfg.Store = st
 	s.runs = svc
+	// A router active since well before the fixtures: the activation
+	// watermark bounds the sweep, and several tests age their runs into
+	// the past to clear the sweep grace — those instants must stay above
+	// it. Written directly (the ageRun pattern); EnsureRouterWatermark
+	// reads it back.
+	wm, _ := json.Marshal(map[string]time.Time{"activated_at": time.Now().Add(-48 * time.Hour).UTC()})
+	if err := os.WriteFile(filepath.Join(dir, "store", "router_watermark.json"), wm, 0o644); err != nil {
+		t.Fatalf("seed watermark: %v", err)
+	}
 	return &routerHarness{s: s, st: st, dir: filepath.Join(dir, "store")}
 }
 
@@ -411,7 +420,7 @@ func TestOutcomeRouter_OrphanClaimIsStolenAfterLease(t *testing.T) {
 		r.FinalBranch, r.FinalCommit = "iterion/run/oc", "abc"
 	})
 	// A replica claimed this episode and died before acting.
-	if claimed, _, err := h.st.ClaimRouteDecision(ctx, store.RouteDecision{RunID: r.ID, OutcomeSeq: r.OutcomeSeq, Decision: "merge"}); err != nil || !claimed {
+	if claimed, _, err := h.st.ClaimRouteDecision(ctx, store.RouteDecision{RunID: r.ID, OutcomeSeq: r.OutcomeSeq, Decision: "merge"}, time.Now().Add(-store.RouteClaimLease)); err != nil || !claimed {
 		t.Fatalf("seed claim: %v", err)
 	}
 	// Fresh claim holds: the offer must NOT steal it.

@@ -44,6 +44,16 @@ const (
 	// this closes: five digests parked on a usage cap over a whole morning
 	// with nobody told.
 	KindRunParked Kind = "run_parked"
+	// KindRouteEscalated fires when the outcome router decides a
+	// terminal run needs an operator — the contract said escalate, or
+	// said merge on a run whose state forbids it. Escalate is the
+	// router's DEFAULT decision; without this alert it is invisible.
+	KindRouteEscalated Kind = "route_escalated"
+	// KindRouteActionFailed fires when the router decided an action it
+	// could not perform (merge error, relaunch not wired, a claim whose
+	// holders kept dying) — the run's automation is stopped and only an
+	// operator restarts it.
+	KindRouteActionFailed Kind = "route_action_failed"
 )
 
 // Alert is the structured payload delivered to every sink. It carries
@@ -86,6 +96,10 @@ func (a Alert) Title() string {
 		return fmt.Sprintf("Run failed: %s", name)
 	case KindRunParked:
 		return fmt.Sprintf("Run parked: %s", name)
+	case KindRouteEscalated:
+		return fmt.Sprintf("Run escalated to operator: %s", name)
+	case KindRouteActionFailed:
+		return fmt.Sprintf("Run routing action failed: %s", name)
 	default:
 		return fmt.Sprintf("Run alert: %s", name)
 	}

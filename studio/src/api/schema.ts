@@ -2991,6 +2991,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/route-decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/route-decisions */
+        get: operations["getRunsByIdRouteDecisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/session-board": {
         parameters: {
             query?: never;
@@ -9761,6 +9780,26 @@ export interface operations {
         };
     };
     postRunsByIdRewind: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdRouteDecisions: {
         parameters: {
             query?: never;
             header?: never;

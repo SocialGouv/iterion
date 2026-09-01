@@ -112,13 +112,32 @@ func (d *OpsDispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 		}
 	}
 
-	// Fan out. Sinks that can report failure (ErrorReportingSink) decide
-	// the episode's fate: if EVERY one of them fails, the claim is
-	// RELEASED so the 2-minute sweep retries — a Mattermost rolling
-	// restart or an ingress 502 must not consume the one alert this
-	// component exists to deliver (usernotify.SentStore.Unmark documents
-	// exactly this contract). Fire-and-forget sinks (tracker breadcrumbs)
-	// never count as delivery.
+	if !d.fanOut(ctx, a) {
+		if d.Claims != nil {
+			if err := d.Claims.Unmark(ctx, epKey); err != nil && d.Logger != nil {
+				d.Logger.Warn("alert: release ops episode %s after failed delivery: %v", epKey, err)
+			}
+		}
+		if d.Logger != nil {
+			d.Logger.Warn("alert: operator alert %s for run %s failed on every channel — released for the sweep to retry", a.Kind, a.RunID)
+		}
+		return nil
+	}
+	d.markDelivered(ctx, epKey)
+	d.stampSeen(ctx, evKey)
+	if d.Logger != nil {
+		d.Logger.Info("alert: operator alert %s for run %s delivered (%s)", a.Kind, a.RunID, epKey)
+	}
+	return nil
+}
+
+// fanOut delivers one alert to every sink concurrently. Sinks that can
+// report failure (ErrorReportingSink) decide the outcome: false means
+// EVERY one of them failed — a Mattermost rolling restart or an ingress
+// 502 must not consume the one alert this component exists to deliver.
+// Fire-and-forget sinks (tracker breadcrumbs) never count as delivery,
+// and a dispatcher with no error-reporting sink reads as delivered.
+func (d *OpsDispatcher) fanOut(ctx context.Context, a Alert) bool {
 	var wg sync.WaitGroup
 	var attempted, failed int
 	errs := make([]error, len(d.Sinks))
@@ -144,19 +163,39 @@ func (d *OpsDispatcher) Handle(ctx context.Context, ev trigger.Event) error {
 			}
 		}
 	}
-	if attempted > 0 && failed == attempted {
+	return attempted == 0 || failed < attempted
+}
+
+// NotifyOperator delivers a caller-built alert through the ordinary sink
+// fan-out under a first-writer-wins claim on episodeKey (namespaced with
+// the same ops prefix as the run-outcome family). nil means the alert is
+// delivered — or an earlier delivery already claimed the episode, which
+// is the caller's idempotence. An error means every error-reporting sink
+// failed; the claim is released so the caller's own retry loop (the
+// outcome router's bounded re-claim, for one) re-delivers.
+func (d *OpsDispatcher) NotifyOperator(ctx context.Context, a Alert, episodeKey string) error {
+	if a.Timestamp.IsZero() {
+		a.Timestamp = d.now()
+	}
+	epKey := opsEpisodePrefix + episodeKey
+	if d.Claims != nil {
+		won, err := d.Claims.TryMark(ctx, epKey)
+		if err != nil {
+			return fmt.Errorf("alert: claim ops episode %s: %w", epKey, err)
+		}
+		if !won {
+			return nil
+		}
+	}
+	if !d.fanOut(ctx, a) {
 		if d.Claims != nil {
 			if err := d.Claims.Unmark(ctx, epKey); err != nil && d.Logger != nil {
 				d.Logger.Warn("alert: release ops episode %s after failed delivery: %v", epKey, err)
 			}
 		}
-		if d.Logger != nil {
-			d.Logger.Warn("alert: operator alert %s for run %s failed on every channel — released for the sweep to retry", a.Kind, a.RunID)
-		}
-		return nil
+		return fmt.Errorf("alert: operator alert %s (%s) failed on every channel", a.Kind, episodeKey)
 	}
 	d.markDelivered(ctx, epKey)
-	d.stampSeen(ctx, evKey)
 	if d.Logger != nil {
 		d.Logger.Info("alert: operator alert %s for run %s delivered (%s)", a.Kind, a.RunID, epKey)
 	}

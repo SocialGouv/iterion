@@ -6991,6 +6991,30 @@
         ]
       }
     },
+    "/api/runs/{id}/route-decisions": {
+      "get": {
+        "operationId": "getRunsByIdRouteDecisions",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/route-decisions",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/session-board": {
       "get": {
         "operationId": "getRunsByIdSessionBoard",
