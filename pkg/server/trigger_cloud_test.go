@@ -17,8 +17,9 @@ import (
 // per-issue Get faults.
 type stubCloudBoardStore struct {
 	*trigger.MemoryEffectOutbox
-	cursor    int64
-	events    []native.Event
+	cursor     int64
+	advanceErr error
+	events     []native.Event
 	issues    map[string]*native.Issue
 	getErr    map[string]error
 	log       []string
@@ -40,6 +41,9 @@ func (s *stubCloudBoardStore) EventsAfter(after int64, _ int) ([]native.Event, e
 }
 
 func (s *stubCloudBoardStore) AdvanceTriggerCursor(from, to int64) (bool, error) {
+	if s.advanceErr != nil {
+		return false, s.advanceErr
+	}
 	s.log = append(s.log, "advance")
 	s.advanced, s.advanceTo = true, to
 	s.cursor = to
@@ -207,5 +211,36 @@ func TestDrainTenant_TwoPoisonEventsBothClear(t *testing.T) {
 	}
 	if len(src.poisons) != 0 {
 		t.Fatalf("poison counters not pruned after the cursor passed them: %d entries", len(src.poisons))
+	}
+}
+
+
+// TestDrainTenant_FailedAdvanceKeepsTheAcquiredSkip pins the prune ordering:
+// an advance that ERRORS replays the batch next tick — pruning the poison
+// counters before it would make an acquired skip cost its 20 ticks again.
+func TestDrainTenant_FailedAdvanceKeepsTheAcquiredSkip(t *testing.T) {
+	src, st, _ := newDrainWorld(t)
+	st.getErr["card1"] = errors.New("decode: corrupt doc")
+	st.advanceErr = errors.New("mongo: write concern timeout")
+
+	// Acquire the skip (threshold ticks), with the advance failing.
+	for i := 0; i < boardTailPoisonTicks+2; i++ {
+		_, _ = src.drainTenant("t1", st)
+	}
+	key := "t1|1"
+	p := src.poisons[key]
+	if p == nil || p.fails < boardTailPoisonTicks {
+		t.Fatalf("setup: skip not acquired (%+v)", p)
+	}
+	// One more failed-advance tick must NOT reset the counter.
+	_, _ = src.drainTenant("t1", st)
+	if src.poisons[key] == nil || src.poisons[key].fails < boardTailPoisonTicks {
+		t.Fatal("a failed advance pruned the acquired skip — 20 ticks to re-pay, in a loop")
+	}
+	// The advance healing prunes it.
+	st.advanceErr = nil
+	_, _ = src.drainTenant("t1", st)
+	if src.poisons[key] != nil {
+		t.Fatal("successful advance did not prune the passed counter")
 	}
 }

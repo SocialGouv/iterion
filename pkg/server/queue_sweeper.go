@@ -188,33 +188,57 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 
 	// Edge-triggered episode summary. Per replica by design: there is no
 	// shared "definitive" instant on a lock-less sweeper, so each replica
-	// brackets its own episode and the aggregate lives in the counter.
+	// brackets its own episode and the aggregate lives in the counter
+	// (OrphanSweepErrors, incremented every tick — the log line is the
+	// comfort channel, the metric is the truth).
 	//
-	// The CLOSE needs positive evidence about the stage that failed, or
-	// the flag either flaps or latches: a SCAN episode closes on any pass
-	// whose scans returned (most minutes list zero candidates — that IS a
-	// healthy scan), while a LEASE/FLIP episode closes only on a pass that
-	// re-probed a candidate cleanly (an empty pass says nothing about a
-	// broken NATS-KV). A latched flag would make every later outage
-	// silent: the Warn only fires on the healthy→degraded edge.
+	// The CLOSE needs positive evidence PER FAILING STAGE, or the flag
+	// either flaps or latches (both halves were paid for separately): a
+	// SCAN episode closes on any pass whose scans returned — an empty
+	// healthy minute IS scan evidence — while a LEASE/FLIP episode wants a
+	// cleanly probed candidate. But a healthy fleet may never re-produce a
+	// stale candidate (a peer replica flips it during the blindness), so
+	// the probe half ALSO closes after a bounded run of clean passes: a
+	// latched flag makes every later outage's edge-Warn silent, an
+	// optimistic close merely re-warns on the next failure.
 	degraded := scanErrs+leaseErrs+flipErrs > 0
-	switch {
-	case degraded && !s.sweepDegraded:
-		if s.logger != nil {
-			s.logger.Warn("sweeper: orphan recovery degraded — %d scan failure(s), %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", scanErrs, leaseErrs, flipErrs, lastErr)
-		}
-		s.sweepDegraded = true
-		s.sweepDegradedByScan = scanErrs > 0
-	case !degraded && s.sweepDegraded:
-		recovered := probed > 0 || (s.sweepDegradedByScan && scanned > 0)
-		if recovered {
+	if degraded {
+		if !s.sweepDegraded {
 			if s.logger != nil {
-				s.logger.Info("sweeper: orphan recovery back to healthy")
+				s.logger.Warn("sweeper: orphan recovery degraded — %d scan failure(s), %d candidate(s) skipped on lease probes, %d flips failed this pass (last: %v); repeats stay quiet until it recovers", scanErrs, leaseErrs, flipErrs, lastErr)
 			}
-			s.sweepDegraded = false
+			s.sweepDegraded = true
 		}
+		if scanErrs > 0 {
+			s.sweepDegradedByScan = true
+		}
+		if leaseErrs+flipErrs > 0 {
+			s.sweepDegradedByProbe = true
+		}
+		s.sweepCleanPasses = 0
+		return
+	}
+	if !s.sweepDegraded {
+		return
+	}
+	s.sweepCleanPasses++
+	if s.sweepDegradedByScan && scanned > 0 {
+		s.sweepDegradedByScan = false
+	}
+	if s.sweepDegradedByProbe && (probed > 0 || s.sweepCleanPasses >= sweepProbeCloseAfter) {
+		s.sweepDegradedByProbe = false
+	}
+	if !s.sweepDegradedByScan && !s.sweepDegradedByProbe {
+		if s.logger != nil {
+			s.logger.Info("sweeper: orphan recovery back to healthy")
+		}
+		s.sweepDegraded = false
 	}
 }
+
+// sweepProbeCloseAfter bounds how many clean-but-unprobing passes close a
+// lease/flip episode (~30 minutes at the sweep interval).
+const sweepProbeCloseAfter = 30
 
 // ---- DLQ admin REST ----
 

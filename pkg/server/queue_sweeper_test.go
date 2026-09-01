@@ -187,3 +187,65 @@ func TestQueuedSweepCutoff(t *testing.T) {
 		t.Fatalf("fallback %v does not exceed the default MaxDeliver × AckWait envelope (%v)", sweepQueuedFallback, envelope)
 	}
 }
+
+
+// TestSweepOrphanRuns_LeaseEpisodeClosesOnBoundedCleanPasses pins the other
+// half of the latch class: a lease-opened episode whose candidate was flipped
+// by a peer replica during the blindness may NEVER see another probe — after
+// a bounded run of clean passes it must close (a latched flag silences every
+// later outage's edge Warn), and the very next failure must re-warn.
+func TestSweepOrphanRuns_LeaseEpisodeClosesOnBoundedCleanPasses(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("setup: lease episode did not open")
+	}
+	// Healthy empty passes (the peer flipped the candidate): bounded close.
+	for i := 0; i < sweepProbeCloseAfter+1; i++ {
+		s.sweepOrphanRuns(context.Background(), &fakeStaleLister{}, &fakeLeases{}, time.Now().UTC())
+	}
+	if s.sweepDegraded {
+		t.Fatalf("lease episode still open after %d clean passes — latched, every later outage is silent", sweepProbeCloseAfter+1)
+	}
+	// The next outage re-opens (the edge Warn can fire again).
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if !s.sweepDegraded {
+		t.Fatal("a later outage did not re-open the episode")
+	}
+}
+
+// TestSweepOrphanRuns_MixedCauseNeedsBothRecoveries: an episode that saw BOTH
+// a scan failure and a lease failure closes only when each stage has its own
+// evidence (or the probe bound passes) — a clean scan alone must not close a
+// still-broken lease.
+func TestSweepOrphanRuns_MixedCauseNeedsBothRecoveries(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.cfg.Store = &fakeSweepStore{}
+	s.cfg.Metrics = cloudmetrics.New()
+	lister := &fakeStaleLister{refs: map[string][]mongostore.StaleRunRef{
+		"running": {{ID: "r-crashed", TenantID: "t1", Status: "running"}},
+	}}
+	// Open by lease…
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	// …then the scan dies too.
+	s.sweepOrphanRuns(context.Background(), failingLister{}, &fakeLeases{}, time.Now().UTC())
+	if !s.sweepDegradedByScan || !s.sweepDegradedByProbe {
+		t.Fatalf("mixed episode flags: scan=%v probe=%v, want both", s.sweepDegradedByScan, s.sweepDegradedByProbe)
+	}
+	// Scan recovers, lease still broken WITH a candidate probing red:
+	// the episode must stay open (probe evidence is negative).
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{err: context.DeadlineExceeded}, time.Now().UTC())
+	if s.sweepDegraded != true {
+		t.Fatal("episode closed while the lease stage still fails")
+	}
+	// Both recover with a probed candidate: closes.
+	s.sweepOrphanRuns(context.Background(), lister, &fakeLeases{}, time.Now().UTC())
+	if s.sweepDegraded {
+		t.Fatal("episode still open after both stages recovered with evidence")
+	}
+}
