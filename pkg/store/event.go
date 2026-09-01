@@ -171,15 +171,25 @@ const (
 	//   - "push_failed": the forge refused this attempt's own push. Adds
 	//     `error` — git's message, token-redacted.
 	EventRunBankRefused EventType = "run_bank_refused"
-	// EventRunBankSuperseded marks a finished outcome force-taking the
-	// storage branch from an earlier dead attempt whose banked chain the
-	// finished chain does NOT contain. The takeover itself is correct —
-	// the storage branch must point at the finished product — but the
-	// dropped chain may be the only forge-side copy of that attempt's
-	// work, so the bank archives it first and this event says where (or
-	// why it could not). Emitted only on divergence: a banked head the
-	// finished chain contains is not a loss and stays silent. Data:
-	//   - branch: the storage branch the finished head took over
+	// EventRunBankSuperseded marks THIS attempt's head force-taking the
+	// storage branch from an earlier attempt whose banked chain the new
+	// one does NOT contain — either because this outcome FINISHED (the
+	// converged product outranks any death's chain, however long) or
+	// because the chain comparison found it no poorer.
+	//
+	// The takeover itself is correct in both cases, but it is a verdict
+	// about who owns the branch, not about whether the loser's commits
+	// may vanish: that chain reached the FORGE, and a run re-cloning at
+	// base on every attempt can produce a replacement that never carries
+	// it, so the branch may hold its only copy. The bank archives it
+	// first and this event says where (or why it could not).
+	//
+	// Emitted only on divergence: a banked head the winning chain
+	// contains is not a loss and stays silent. Distinct from
+	// EventRunBankRefused, which is the INVERSE — this attempt dropped,
+	// the earlier one keeping the branch — so `kept_head`/`dropped_head`
+	// there and the pair below never mean the same thing. Data:
+	//   - branch: the storage branch the new head took over
 	//   - superseded_head / new_head: the dropped and the winning heads
 	//   - archived_ref: the iterion/run-<id>-attempt-<sha12> ref now
 	//     holding the dropped chain — the success shape
