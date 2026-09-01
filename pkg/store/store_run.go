@@ -511,6 +511,21 @@ func (s *FilesystemRunStore) SaveCheckpoint(ctx context.Context, id string, cp *
 	if err != nil {
 		return err
 	}
+	// Same pointer discipline as the transition tail: a checkpoint
+	// carrying interaction evidence may only land while the run's
+	// status carries it (CarriesPausePointer) — otherwise a stale
+	// in-memory copy is being replayed (the rewind shape: SaveRun
+	// normalizes its own copy, then SaveCheckpoint re-persists the
+	// caller's original). On a paused run the write-through is
+	// legitimate (bookkeeping updates on a live pause keep the
+	// pointer). Strip on a copy — the caller's object stays whole.
+	if cp != nil && !r.Status.CarriesPausePointer() &&
+		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		c := *cp
+		c.InteractionID = ""
+		c.InteractionQuestions = nil
+		cp = &c
+	}
 	r.Checkpoint = cp
 	r.UpdatedAt = time.Now().UTC()
 	return s.writeRun(r)

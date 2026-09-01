@@ -566,3 +566,47 @@ func TestCancelledPausePointerDoesNotCrossTheGateOnCloudResume(t *testing.T) {
 		t.Errorf("status = %q, want paused_waiting_human — the resumed gate must re-ask, not silently pass", after.Status)
 	}
 }
+
+// The POSITIVE half of CarriesPausePointer — queued is in the predicate
+// so a cloud resume of a HUMAN pause still routes into the answers path
+// (the operator's answers ride the queue message). If the hop stopped
+// preserving the pointer, this resume would silently re-ask instead of
+// recording them. Twin of the negative canary above; the oracle is the
+// RECORDED ANSWER, not just the status.
+func TestQueuedHopRecordsTheOperatorsAnswers(t *testing.T) {
+	base := tmpStore(t)
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-queuedgate", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-queuedgate", cp); err != nil {
+		t.Fatal(err)
+	}
+	// SubmitResume: paused → queued before a runner claims the message.
+	if ok, err := base.UpdateRunStatusIf(ctx, "run-queuedgate", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	e := &Engine{store: base, workflow: &ir.Workflow{Name: "wf", Entry: "gate", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	// The runner's Resume with the message's answers.
+	if rerr := e.Resume(ctx, "run-queuedgate", map[string]any{"approve": "YES"}); rerr != nil {
+		t.Logf("Resume returned: %v", rerr)
+	}
+	after, err := base.LoadRun(ctx, "run-queuedgate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("status=%s outputs[gate]=%v", after.Status, after.Checkpoint.Outputs["gate"])
+	if after.Status == store.RunStatusPausedWaitingHuman {
+		t.Fatalf("the cloud resume of a human pause RE-ASKED instead of recording the answers: status=%s", after.Status)
+	}
+	if got := after.Checkpoint.Outputs["gate"]; got == nil || got["approve"] != "YES" {
+		t.Fatalf("the operator's answer was not recorded on the gate output: %v", got)
+	}
+}

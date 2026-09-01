@@ -785,6 +785,25 @@ var _ store.QueuedAttemptStore = (*Store)(nil)
 // §F T-33 layers an explicit version-conditional update on top; this
 // method is the simple "no contention" form used by the engine itself.
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
+	// Same pointer discipline as runStatusUpdate (mirrors the FS
+	// twin): a checkpoint carrying interaction evidence may only land
+	// while the run's status carries it — otherwise a stale in-memory
+	// copy is being replayed. The status read costs one projection and
+	// only fires when the checkpoint actually carries a pointer (the
+	// rare pause-adjacent writes; ordinary boundary writes skip it).
+	if cp != nil && (cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		var cur struct {
+			Status store.RunStatus `bson:"status"`
+		}
+		if ferr := s.runs.FindOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})),
+			options.FindOne().SetProjection(bson.M{"status": 1})).Decode(&cur); ferr == nil &&
+			!cur.Status.CarriesPausePointer() {
+			c := *cp
+			c.InteractionID = ""
+			c.InteractionQuestions = nil
+			cp = &c
+		}
+	}
 	update := bson.M{
 		"$set": bson.M{
 			"checkpoint": cp,

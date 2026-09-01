@@ -178,7 +178,9 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 			nodeLabel = "Paused at"
 		}
 		p.KV(nodeLabel, r.Checkpoint.NodeID)
-		// The interaction is a pause pointer: pending only while paused.
+		// Stricter than CarriesPausePointer (paused ∨ queued) on
+		// purpose: on a queued run the form is not actionable — the
+		// answers already travel in the queue message.
 		if r.Status.IsPaused() && r.Checkpoint.InteractionID != "" {
 			p.KV("Interaction", r.Checkpoint.InteractionID)
 			inter, err := s.LoadInteraction(context.Background(), opts.RunID, r.Checkpoint.InteractionID)

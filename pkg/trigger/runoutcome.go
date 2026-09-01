@@ -93,10 +93,12 @@ func BuildRunOutcome(ctx context.Context, rs store.RunStore, runID string, bodyE
 		// The checkpoint's NodeID is the outcome's anchor — the paused
 		// node on a pause, the failing node on a failure ("The run
 		// failed at node X" in usernotify) — valid on every status. The
-		// interaction id is different: a consumable pause pointer,
-		// status-gated because the checkpoint survives every transition
-		// now (ADR-095) — a terminal outcome must not deep-link to an
-		// answered form.
+		// interaction id is different: a consumable pause pointer.
+		// Stricter than CarriesPausePointer (paused ∨ queued) on
+		// purpose — an outcome event for a queued run must not
+		// deep-link an answer form that is already in flight; the
+		// store's transition normalization is the enforcing layer,
+		// this gate is belt-and-braces.
 		if r.Checkpoint != nil {
 			nodeID = r.Checkpoint.NodeID
 			if r.Status.IsPaused() {

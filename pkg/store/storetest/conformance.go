@@ -1719,4 +1719,44 @@ func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
 	if r.Checkpoint.InteractionID != "" {
 		t.Errorf("SaveRun resurrected a consumed pause pointer on a cancelled run: %q", r.Checkpoint.InteractionID)
 	}
+
+	// SaveCheckpoint must not resurrect it either: SaveRun normalizes
+	// its own COPY, so a caller that then re-persists its original
+	// checkpoint (the rewind shape: SaveRun(run) then SaveCheckpoint(cp))
+	// would replay the live pointer. Only PauseRun writes one.
+	if err := s.SaveCheckpoint(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("SaveCheckpoint resurrected the pause pointer (%q) — the rewind write shape replays it", r.Checkpoint.InteractionID)
+	}
+
+	// …but on a PAUSED run the write-through is legitimate: budget/
+	// bookkeeping updates on a live pause must keep the pointer, or the
+	// next resume cannot load its interaction.
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// pp-queued is queued (carries) — reuse it: bump a counter and re-save.
+	if ok, cerr := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusPausedWaitingHuman, "",
+		[]store.RunStatus{store.RunStatusQueued}); cerr != nil || !ok {
+		t.Fatalf("back to paused: ok=%v err=%v", ok, cerr)
+	}
+	pausedCp := cp()
+	pausedCp.BudgetCostUSD = 0.95
+	if err := s.SaveCheckpoint(ctx, "pp-queued", pausedCp); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
+	}
 }
