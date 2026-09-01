@@ -323,9 +323,15 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		// store ACTUALLY holds, never against a seq nobody passed: pruning
 		// at `last` here erased an acquired poison skip and re-froze the
 		// tenant's tail for another 20 ticks.
-		if cur, cerr := st.TriggerCursor(); cerr == nil {
-			s.prunePoisons(tenant, cur)
+		cur, cerr := st.TriggerCursor()
+		if cerr != nil {
+			// Name the fault instead of swallowing it (the counters keep
+			// until the next batch — harmless, but a silent decline is how
+			// this file's bugs were born). The batch is already durable and
+			// the peer holds the cursor; nothing else to unwind.
+			return len(rows) > 0, fmt.Errorf("re-read cursor after a lost election: %w — poison counters kept until the next batch", cerr)
 		}
+		s.prunePoisons(tenant, cur)
 		return len(rows) > 0, nil
 	}
 	s.prunePoisons(tenant, last)
