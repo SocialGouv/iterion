@@ -88,6 +88,14 @@ func (s *FilesystemRunStore) ClaimRouteDecision(_ context.Context, d RouteDecisi
 		ds[i].PolicyHash = d.PolicyHash
 		ds[i].ClaimedAt = now
 		ds[i].Attempts = cur.Attempts + 1
+		// A re-claimed row is in flight AGAIN: the previous attempt's
+		// error and finish stamp are not this attempt's. Leaving them
+		// makes a `claimed` row read as though it had already finished
+		// and failed — and the Mongo twin clears `error` on the same
+		// transition, so the two backends would disagree on the one
+		// contract the conformance suite exists to hold them to.
+		ds[i].Error = ""
+		ds[i].FinishedAt = nil
 		if err := s.writeRouteDecisions(d.RunID, ds); err != nil {
 			return false, nil, err
 		}

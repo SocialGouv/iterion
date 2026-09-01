@@ -47,7 +47,13 @@ func (s *Store) ClaimRouteDecision(ctx context.Context, d store.RouteDecision, s
 			bson.M{
 				"$set": bson.M{"state": store.RouteDecisionClaimed, "decision": d.Decision, "reason": d.Reason,
 					"policy_hash": d.PolicyHash, "claimed_at": d.ClaimedAt, "error": ""},
-				"$inc": bson.M{"attempts": 1},
+				// $unset, not $set-nil: FinishedAt is a *time.Time with
+				// omitempty, so a null would decode back as a zero stamp
+				// rather than an absent one. A re-claimed row is in flight
+				// again — carrying the previous attempt's finish instant
+				// makes a `claimed` row read as already finished.
+				"$unset": bson.M{"finished_at": ""},
+				"$inc":   bson.M{"attempts": 1},
 			})
 		if res.Err() == nil {
 			return true, nil, nil

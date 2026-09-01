@@ -660,7 +660,36 @@ func testRouteDecisionRegistry(t *testing.T, s RunStore) {
 	if claimed, _, err := rds.ClaimRouteDecision(ctx, RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever()); err != nil || !claimed {
 		t.Fatalf("claim ep2 = (%t, %v)", claimed, err)
 	}
-	for attempt := 1; ; attempt++ {
+	// A RE-claimed row is in flight again, so it must carry none of the
+	// previous attempt's outcome: a `claimed` row with an error string
+	// and a finish stamp in the past is self-contradictory audit, and
+	// the two backends diverged here precisely because the suite used to
+	// assert only states and attempt counts.
+	if err := rds.FinishRouteDecision(ctx, runID, 2, RouteDecisionFailed, "first attempt blew up"); err != nil {
+		t.Fatalf("fail ep2 before the re-claim check: %v", err)
+	}
+	if claimed, _, err := rds.ClaimRouteDecision(ctx, RouteDecision{RunID: runID, OutcomeSeq: 2, Decision: "merge"}, staleNever()); err != nil || !claimed {
+		t.Fatalf("re-claim ep2 = (%t, %v)", claimed, err)
+	}
+	reclaimed, err := rds.ListRouteDecisions(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListRouteDecisions after re-claim: %v", err)
+	}
+	for _, d := range reclaimed {
+		if d.OutcomeSeq != 2 {
+			continue
+		}
+		if d.State != RouteDecisionClaimed {
+			t.Fatalf("re-claimed ep2 state = %q, want claimed", d.State)
+		}
+		if d.Error != "" {
+			t.Errorf("re-claimed row carries the previous attempt's error %q", d.Error)
+		}
+		if d.FinishedAt != nil {
+			t.Errorf("re-claimed row carries the previous attempt's finished_at %v", *d.FinishedAt)
+		}
+	}
+	for attempt := 2; ; attempt++ {
 		if err := rds.FinishRouteDecision(ctx, runID, 2, RouteDecisionFailed, "transient"); err != nil {
 			t.Fatalf("fail ep2 (attempt %d): %v", attempt, err)
 		}
