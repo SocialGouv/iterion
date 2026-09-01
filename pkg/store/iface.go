@@ -124,6 +124,28 @@ type RunStore interface {
 	// firing concurrently with a Resume republish). Used by the
 	// cloud publisher to avoid stomping on raced state transitions.
 	UpdateRunStatusIf(ctx context.Context, id string, status RunStatus, runErr string, expectedFrom []RunStatus) (changed bool, err error)
+	// UpdateRunBankResult patches ONLY the three finalization fields
+	// (FinalCommit / FinalBranch / FinalBranchError) and refuses when the
+	// run's status is in forbiddenFrom. Returns changed=true when the
+	// write applied, false when the status was forbidden (or the run is
+	// gone).
+	//
+	// It exists because the alternative — LoadRun, mutate, SaveRun — is a
+	// read-modify-write of the WHOLE document, and the runner's repo bank
+	// runs at the one moment the document is most likely to be moving: a
+	// bankable death leaves the run failed_resumable, which is exactly
+	// what SubmitResume CASes to queued while the pod is still pushing.
+	// A full-document write-back then reverts that transition along with
+	// QueuedAt — the durable attempt marker a stale delivery is rejected
+	// by — so the resume sits on the queue against a document that denies
+	// it. Touching only the fields the bank owns makes the two writers
+	// independent whatever their order.
+	//
+	// The status predicate closes the same window on the other side: an
+	// operator cancel landing mid-push must not become merge-eligible
+	// through the bank's write, and checking the loaded copy cannot
+	// promise that.
+	UpdateRunBankResult(ctx context.Context, id, finalCommit, finalBranch, finalBranchError string, forbiddenFrom []RunStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
 	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string) error

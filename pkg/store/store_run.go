@@ -360,6 +360,34 @@ func (s *FilesystemRunStore) UpdateRunStatusIf(ctx context.Context, id string, s
 	return true, nil
 }
 
+// UpdateRunBankResult patches only FinalCommit / FinalBranch /
+// FinalBranchError under the store lock, leaving every other field of
+// the document exactly as the last writer left it — see the interface
+// doc for why the bank must never write the whole run back. Refuses
+// when the persisted status is in forbiddenFrom.
+func (s *FilesystemRunStore) UpdateRunBankResult(_ context.Context, id, finalCommit, finalBranch, finalBranchError string, forbiddenFrom []RunStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	for _, bad := range forbiddenFrom {
+		if r.Status == bad {
+			return false, nil
+		}
+	}
+	r.FinalCommit = finalCommit
+	r.FinalBranch = finalBranch
+	r.FinalBranchError = finalBranchError
+	r.UpdatedAt = time.Now().UTC()
+	if err := s.writeRun(r); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // FailQueuedRunIfAttempt atomically fails only the queue attempt represented
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running

@@ -710,12 +710,12 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 		r.cfg.Logger.Error("runner: run %s: bank: load run to record branch: %v", msg.RunID, lerr)
 		return
 	}
-	// Re-read just before the write: an operator cancel that landed while
-	// the push was in flight must not become merge-eligible through this
-	// SaveRun — the branch may exist on the forge, but the doc is what
-	// `runs merge` trusts, and a cancel is the operator refusing the
-	// work. (The remaining load→save window is the same one the success
-	// path has always had.)
+	// An operator cancel that landed while the push was in flight must not
+	// become merge-eligible through this write — the branch may exist on
+	// the forge, but the doc is what `runs merge` trusts, and a cancel is
+	// the operator refusing the work. The loaded copy only ROUTES the
+	// decision below; the refusal itself is a predicate on the write, so a
+	// cancel landing after this load still wins.
 	if run.Status == store.RunStatusCancelled {
 		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — leaving FinalBranch unset (branch %s pushed but not recorded)", msg.RunID, branch)
 		return
@@ -726,6 +726,7 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 	// (PerformDeferredMerge takes BranchToMerge + FinalSHA, and
 	// BuildSquashMessage resolves FinalCommit in a clone that only fetched
 	// the branch).
+	commit, finalBranch, branchErr := run.FinalCommit, run.FinalBranch, run.FinalBranchError
 	if pushErr != nil {
 		// This attempt's head is NOT on the forge. When an earlier attempt
 		// already banked a valid pair, this failure must not TOUCH it:
@@ -745,20 +746,41 @@ func (r *Runner) pushBank(ctx context.Context, msg *queue.RunMessage, workDir, h
 			})
 			return
 		}
-		run.FinalCommit = head
-		run.FinalBranchError = fmt.Sprintf("bank push %s: %v", branch, pushErr)
+		commit = head
+		branchErr = fmt.Sprintf("bank push %s: %v", branch, pushErr)
 		r.cfg.Logger.Error("runner: run %s: bank push %s FAILED — the work exists only in this pod's clone: %v", msg.RunID, branch, pushErr)
 	} else {
-		run.FinalCommit = head
-		run.FinalBranch = branch
+		commit, finalBranch = head, branch
 		// A later attempt that banks cleanly clears an earlier attempt's
 		// recorded failure: leaving it would make a perfectly banked run
 		// report a bank failure forever on the field `runs merge` surfaces.
-		run.FinalBranchError = ""
+		branchErr = ""
 		r.cfg.Logger.Info("runner: run %s banked: %s @ %.12s", msg.RunID, branch, head)
 	}
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", msg.RunID, serr)
+	r.persistBankResult(idCtx, msg.RunID, commit, finalBranch, branchErr)
+}
+
+// persistBankResult writes the bank's outcome through the store's
+// targeted finalization patch instead of a whole-document save.
+//
+// The bank runs at the one moment the run doc is most likely to be
+// moving under it: a bankable death leaves the run failed_resumable,
+// which is exactly the status SubmitResume CASes to queued — refreshing
+// QueuedAt, the marker a stale delivery is rejected by. A
+// load-mutate-SaveRun would revert that transition wholesale and leave
+// the resume sitting on the queue against a document that denies it.
+// Patching only the three fields the bank owns makes the two writers
+// order-independent, and moves the cancelled-run refusal onto the write
+// itself rather than a check against an already-stale copy.
+func (r *Runner) persistBankResult(idCtx context.Context, runID, commit, branch, branchErr string) {
+	changed, serr := r.cfg.Store.UpdateRunBankResult(idCtx, runID, commit, branch, branchErr,
+		[]store.RunStatus{store.RunStatusCancelled})
+	if serr != nil {
+		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranch: %v", runID, serr)
+		return
+	}
+	if !changed {
+		r.cfg.Logger.Warn("runner: run %s: bank: run was cancelled while banking — the branch was pushed but is not recorded on the run", runID)
 	}
 }
 
@@ -1035,8 +1057,5 @@ func (r *Runner) recordBankFailure(msg *queue.RunMessage, cause string) {
 		})
 		return
 	}
-	run.FinalBranchError = cause
-	if serr := r.cfg.Store.SaveRun(idCtx, run); serr != nil {
-		r.cfg.Logger.Error("runner: run %s: bank: persist FinalBranchError: %v", msg.RunID, serr)
-	}
+	r.persistBankResult(idCtx, msg.RunID, run.FinalCommit, run.FinalBranch, cause)
 }

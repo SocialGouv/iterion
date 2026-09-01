@@ -700,6 +700,42 @@ func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.R
 	return res.MatchedCount > 0, nil
 }
 
+// UpdateRunBankResult patches only the three finalization fields with a
+// targeted $set/$unset — never a ReplaceOne — so a concurrent status
+// transition (a resume's queued CAS, with the queued_at attempt marker
+// and the version bump it carries) survives the runner's repo bank
+// whatever the ordering. See the interface doc for the failure this
+// prevents. Empty values are $unset rather than stored blank, matching
+// the omitempty shape SaveRun's replacement would have produced.
+func (s *Store) UpdateRunBankResult(ctx context.Context, id, finalCommit, finalBranch, finalBranchError string, forbiddenFrom []store.RunStatus) (bool, error) {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	unset := bson.M{}
+	for field, val := range map[string]string{
+		"final_commit":       finalCommit,
+		"final_branch":       finalBranch,
+		"final_branch_error": finalBranchError,
+	} {
+		if val == "" {
+			unset[field] = ""
+		} else {
+			set[field] = val
+		}
+	}
+	update := bson.M{"$set": set}
+	if len(unset) > 0 {
+		update["$unset"] = unset
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": id}))
+	if len(forbiddenFrom) > 0 {
+		filter["status"] = bson.M{"$nin": forbiddenFrom}
+	}
+	res, err := s.runs.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: update bank result %s: %w", id, err)
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // FailQueuedRunIfAttempt is the queue-attempt-aware counterpart to the
 // status-only CAS above. queued_at and status are matched in the SAME Mongo
 // update so a concurrent resume cannot slip a newer queued attempt between a

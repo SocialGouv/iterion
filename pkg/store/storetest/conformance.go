@@ -55,6 +55,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("BankResultPatch", func(t *testing.T) { testBankResultPatch(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
@@ -75,6 +76,64 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("BackendSessionStore", func(t *testing.T) { testBackendSessionStore(t, factory(t)) })
 	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
 	t.Run("ParentedRunCreator", func(t *testing.T) { testParentedRunCreator(t, factory(t)) })
+}
+
+// testBankResultPatch holds every backend to the two promises the
+// runner's repo bank depends on: the write touches ONLY the three
+// finalization fields (so a lifecycle transition racing the bank
+// survives it), and it refuses outright on a forbidden status.
+func testBankResultPatch(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-bank-patch"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "budget"); err != nil {
+		t.Fatalf("mark resumable: %v", err)
+	}
+	if changed, err := s.UpdateRunBankResult(ctx, runID, "sha1", "iterion/run-x", "", nil); err != nil || !changed {
+		t.Fatalf("bank patch = (%t, %v), want (true, nil)", changed, err)
+	}
+
+	// The race this method exists for: a resume claims the run between
+	// the bank's read and its write. The patch must leave the newer
+	// status AND the queued_at attempt marker standing.
+	if changed, err := s.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusFailedResumable}); err != nil || !changed {
+		t.Fatalf("claim resume = (%t, %v), want (true, nil)", changed, err)
+	}
+	claimed, err := s.LoadRun(ctx, runID)
+	if err != nil || claimed.QueuedAt == nil {
+		t.Fatalf("LoadRun after claim = (%v, %v), want a queued marker", claimed, err)
+	}
+	if changed, err := s.UpdateRunBankResult(ctx, runID, "sha2", "iterion/run-x", "", []store.RunStatus{store.RunStatusCancelled}); err != nil || !changed {
+		t.Fatalf("bank patch over queued = (%t, %v), want (true, nil)", changed, err)
+	}
+	got, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if got.Status != store.RunStatusQueued {
+		t.Fatalf("bank patch reverted status to %s, want queued", got.Status)
+	}
+	if got.QueuedAt == nil || !got.QueuedAt.Equal(*claimed.QueuedAt) {
+		t.Fatalf("bank patch moved queued_at from %v to %v", claimed.QueuedAt, got.QueuedAt)
+	}
+	if got.FinalCommit != "sha2" || got.FinalBranch != "iterion/run-x" || got.FinalBranchError != "" {
+		t.Fatalf("bank fields = (%q, %q, %q), want (sha2, iterion/run-x, \"\")", got.FinalCommit, got.FinalBranch, got.FinalBranchError)
+	}
+
+	// A forbidden status refuses the write at the store, not at a
+	// caller's already-stale read.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusCancelled, "operator"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if changed, err := s.UpdateRunBankResult(ctx, runID, "sha3", "iterion/run-y", "", []store.RunStatus{store.RunStatusCancelled}); err != nil || changed {
+		t.Fatalf("bank patch over cancelled = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got == nil || got.FinalCommit != "sha2" || got.FinalBranch != "iterion/run-x" {
+		t.Fatalf("refused patch still wrote: %+v", got)
+	}
 }
 
 func testQueuedAttemptCAS(t *testing.T, s store.RunStore) {

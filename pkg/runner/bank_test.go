@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -480,6 +481,61 @@ func TestBankLeavesCancelledRunUnrecorded(t *testing.T) {
 	after := loadRun(t, r, msg.RunID)
 	if after.FinalBranch != "" || after.FinalCommit != "" {
 		t.Fatalf("cancelled run recorded FinalBranch=%q FinalCommit=%q, want both empty (not merge-eligible)", after.FinalBranch, after.FinalCommit)
+	}
+}
+
+// bankRaceStore fires a lifecycle transition inside the window the
+// bank's read opens, deterministically — a real resume only sometimes
+// lands there, and a test that waits for it to would be flaky.
+type bankRaceStore struct {
+	store.RunStore
+	once sync.Once
+	race func()
+}
+
+func (s *bankRaceStore) LoadRun(ctx context.Context, id string) (*store.Run, error) {
+	run, err := s.RunStore.LoadRun(ctx, id)
+	s.once.Do(s.race)
+	return run, err
+}
+
+// The bank is the one writer that runs while the run doc is most likely
+// to be moving: a bankable death leaves the run failed_resumable, which
+// is exactly the status SubmitResume CASes to queued — refreshing
+// QueuedAt, the durable attempt marker a stale delivery is rejected by.
+// A whole-document write-back would revert that claim and leave the
+// resume on the queue against a doc that denies it.
+func TestBankDoesNotRevertAResumeThatRacesIt(t *testing.T) {
+	r, msg, work, origin, base := bankFixture(t)
+	gitOut(t, work, "commit", "--allow-empty", "-m", "work the death banks")
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, "")
+	if err := r.cfg.Store.UpdateRunStatus(idCtx, msg.RunID, store.RunStatusFailedResumable, "budget"); err != nil {
+		t.Fatalf("mark resumable: %v", err)
+	}
+	inner := r.cfg.Store
+	r.cfg.Store = &bankRaceStore{RunStore: inner, race: func() {
+		// SubmitResume's claim, verbatim in shape: the CAS that
+		// refreshes QueuedAt and publishes the next attempt.
+		if changed, err := inner.UpdateRunStatusIf(idCtx, msg.RunID, store.RunStatusQueued, "",
+			[]store.RunStatus{store.RunStatusFailedResumable}); err != nil || !changed {
+			t.Errorf("seed racing resume = (%t, %v), want (true, nil)", changed, err)
+		}
+	}}
+
+	r.bankRepoWorkspace(context.Background(), msg, work, base, runtime.WorkspaceIntegrity{}, "budget_exceeded")
+
+	if _, present := bankedBranch(t, origin, msg.RunID); !present {
+		t.Fatalf("the death's work should still have reached the forge")
+	}
+	after := loadRun(t, r, msg.RunID)
+	if after.Status != store.RunStatusQueued {
+		t.Fatalf("the bank reverted the racing resume: status %s, want queued", after.Status)
+	}
+	if after.QueuedAt == nil {
+		t.Fatalf("the bank dropped queued_at — the resume's delivery would be rejected as stale")
+	}
+	if after.FinalBranch == "" || after.FinalCommit == "" {
+		t.Fatalf("the bank lost its own result: FinalBranch=%q FinalCommit=%q", after.FinalBranch, after.FinalCommit)
 	}
 }
 
