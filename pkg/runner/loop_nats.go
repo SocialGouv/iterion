@@ -208,8 +208,9 @@ func (r *Runner) parkOnDLQOnFinalDelivery(err error, delivery *natsq.Delivery, m
 		return true, "dlq"
 	}
 	sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
-	if _, serr := r.cfg.Store.UpdateRunStatusIf(sctx, msg.RunID, store.RunStatusFailedResumable,
+	if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable,
 		fmt.Sprintf("max deliveries exhausted: %v (parked on DLQ — replay via /api/admin/dlq)", err),
+		store.RunOutcomeMeta{Code: store.FailureDLQParked, Continuation: store.ContinuationFinal},
 		[]store.RunStatus{store.RunStatusRunning, store.RunStatusQueued}); serr != nil {
 		logger.Warn("runner: DLQ status flip for %s: %v", msg.RunID, serr)
 	}

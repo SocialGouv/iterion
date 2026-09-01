@@ -508,6 +508,23 @@ type Run struct {
 	// missing. The studio surfaces this so the operator can run
 	// `git branch <name> <FinalCommit>` before the reflog expires.
 	FinalBranchError string `json:"final_branch_error,omitempty" bson:"final_branch_error,omitempty"`
+	// OutcomeSeq counts this run's terminal arrivals: every transition
+	// INTO finished / failed / failed_resumable / cancelled increments
+	// it (a redelivered run that dies again is a NEW episode). It is
+	// the stable per-episode key an outcome consumer needs — the
+	// event-derived RunOutcomeEventID cannot serve: it truncates
+	// UpdatedAt to the second (two episodes in one second collide) and
+	// every SaveRun refreshes UpdatedAt (the same episode re-read
+	// yields a new key).
+	OutcomeSeq int64 `json:"outcome_seq,omitempty" bson:"outcome_seq,omitempty"`
+	// The typed cause of the last terminal transition lives in
+	// FailureCode (ADR-095) — one taxonomy, not two.
+	// ContinuationState says who still owns this run's future after a
+	// terminal transition: a platform continuation (queue redelivery in
+	// flight, quota retry armed) or nobody (final). An outcome consumer
+	// must not act — resume, relaunch, route — while a continuation is
+	// pending; until now it had to GUESS from the error prose.
+	ContinuationState ContinuationState `json:"continuation_state,omitempty" bson:"continuation_state,omitempty"`
 	// MergedInto is the branch the engine fast-forwarded to FinalCommit
 	// after the run, or empty when the FF was skipped (dirty main,
 	// non-FF, branch divergence, opt-out, or detached HEAD at start).
@@ -813,6 +830,38 @@ const (
 	MergeStrategySquash MergeStrategy = "squash"
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
+
+// ContinuationState enumerates who owns a run's future after a
+// terminal transition. Empty means the transition predates the typed
+// bookkeeping (or the writer did not know) — consumers must treat it
+// as unknown, never as final.
+type ContinuationState string
+
+const (
+	// ContinuationRedeliveryPending: the queue still holds the message
+	// (NAK'd); a runner will pick the run back up without anyone asking.
+	ContinuationRedeliveryPending ContinuationState = "redelivery_pending"
+	// ContinuationRetryArmed: a scheduled retry (quota window parking)
+	// will resume the run at RetryState.RetryAfter.
+	ContinuationRetryArmed ContinuationState = "retry_armed"
+	// ContinuationFinal: no platform continuation exists — acting on
+	// this run is now the consumer's decision.
+	ContinuationFinal ContinuationState = "final"
+)
+
+// RunOutcomeMeta is the typed WHY of a status transition, persisted
+// with it: the failure classification (ADR-095's Run.FailureCode — one
+// taxonomy, not a parallel terminal_code) and the continuation
+// ownership. Writers that know pass it; the store clears both fields
+// on transitions that cannot carry them, so stale metadata can never
+// describe a newer outcome. Continuation is a RUNNER-side statement —
+// the engine does not know the queue topology, so engine failure paths
+// persist code only (continuation stays unknown until the runner
+// promotes it at the actual NAK / retry-arm / park).
+type RunOutcomeMeta struct {
+	Code         FailureCode
+	Continuation ContinuationState
+}
 
 // MergeStatus enumerates the lifecycle of the merge step independently
 // from the overall RunStatus — a finished run may still have a pending

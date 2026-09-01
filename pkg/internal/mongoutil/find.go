@@ -115,7 +115,9 @@ func ReplaceOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.
 // notFoundErr. It is the shared shape behind the many "update field(s)
 // of X" methods that reject an update to a missing document, as
 // opposed to ReplaceOneChecked's whole-document replace.
-func UpdateOneChecked(ctx context.Context, coll *mongo.Collection, filter, update bson.M, notFoundErr error, errMsg string) error {
+// update accepts a bson.M operator document or a mongo.Pipeline
+// (aggregation-pipeline update) — UpdateOne takes either.
+func UpdateOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.M, update any, notFoundErr error, errMsg string) error {
 	res, err := coll.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("%s: %w", errMsg, err)

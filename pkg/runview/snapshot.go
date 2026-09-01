@@ -129,14 +129,20 @@ type RunHeader struct {
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
-	FinalCommit      string              `json:"final_commit,omitempty"`
-	FinalBranch      string              `json:"final_branch,omitempty"`
-	FinalBranchError string              `json:"final_branch_error,omitempty"`
-	MergedInto       string              `json:"merged_into,omitempty"`
-	MergedCommit     string              `json:"merged_commit,omitempty"`
-	MergeStrategy    store.MergeStrategy `json:"merge_strategy,omitempty"`
-	MergeStatus      store.MergeStatus   `json:"merge_status,omitempty"`
-	AutoMerge        bool                `json:"auto_merge,omitempty"`
+	FinalCommit      string `json:"final_commit,omitempty"`
+	FinalBranch      string `json:"final_branch,omitempty"`
+	FinalBranchError string `json:"final_branch_error,omitempty"`
+	// Outcome bookkeeping (see store.Run): the episode counter, the
+	// typed cause of the last terminal transition, and who owns the
+	// continuation. This is what lets an outcome consumer act on the
+	// DOCUMENT instead of parsing error prose or replaying events.
+	OutcomeSeq        int64                   `json:"outcome_seq,omitempty"`
+	ContinuationState store.ContinuationState `json:"continuation_state,omitempty"`
+	MergedInto        string                  `json:"merged_into,omitempty"`
+	MergedCommit      string                  `json:"merged_commit,omitempty"`
+	MergeStrategy     store.MergeStrategy     `json:"merge_strategy,omitempty"`
+	MergeStatus       store.MergeStatus       `json:"merge_status,omitempty"`
+	AutoMerge         bool                    `json:"auto_merge,omitempty"`
 	// LocAdded / LocDeleted aggregate the three-dot numstat of the
 	// run's commits against its fork point (merge-base of the merge
 	// target and FinalCommit), computed server-side with a cache.
@@ -1430,6 +1436,8 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
+		OutcomeSeq:        r.OutcomeSeq,
+		ContinuationState: r.ContinuationState,
 		MergedInto:        r.MergedInto,
 		MergedCommit:      r.MergedCommit,
 		MergeStrategy:     r.MergeStrategy,

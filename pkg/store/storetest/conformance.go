@@ -54,6 +54,7 @@ type Opts struct {
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CreateLoadRoundTrip", func(t *testing.T) { testCreateLoad(t, factory(t), opts) })
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
+	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
@@ -1754,5 +1755,131 @@ func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
 	}
 	if r.Checkpoint.InteractionID != "I1" {
 		t.Errorf("SaveCheckpoint on a PAUSED run stripped the live pointer (%q) — the next resume cannot load its interaction", r.Checkpoint.InteractionID)
+	}
+}
+
+// testOutcomeSeqAndTypedCauses drives the outcome bookkeeping: every
+// terminal arrival is a new episode, typed metadata travels with the
+// transition that carries it (and ONLY that one), and full-document
+// savers can neither rewind the counter nor resurrect stale metadata.
+func testOutcomeSeqAndTypedCauses(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-outcome-seq"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	load := func() *store.Run {
+		t.Helper()
+		r, err := s.LoadRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		return r
+	}
+
+	// Non-terminal transitions don't count episodes.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	if r := load(); r.OutcomeSeq != 0 {
+		t.Fatalf("seq after running = %d, want 0", r.OutcomeSeq)
+	}
+
+	// First terminal arrival: episode 1, untyped ⇒ empty metadata.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusFailedResumable, "boom"); err != nil {
+		t.Fatalf("failed_resumable: %v", err)
+	}
+	r := load()
+	if r.OutcomeSeq != 1 || r.FailureCode != "" || r.ContinuationState != "" {
+		t.Fatalf("episode 1 = (seq %d, code %q, cont %q), want (1, \"\", \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// Typed transition: episode 2 carries its cause (ADR-095's
+	// failure_code — ONE taxonomy) and continuation.
+	changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusCancelled, "stopped",
+		store.RunOutcomeMeta{Code: store.FailureCancelled, Continuation: store.ContinuationFinal},
+		[]store.RunStatus{store.RunStatusFailedResumable})
+	if err != nil || !changed {
+		t.Fatalf("typed cancel = (%t, %v), want (true, nil)", changed, err)
+	}
+	r = load()
+	if r.OutcomeSeq != 2 || r.FailureCode != store.FailureCancelled || r.ContinuationState != store.ContinuationFinal {
+		t.Fatalf("episode 2 = (seq %d, code %q, cont %q)", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+	// The CAS arm still works.
+	if changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailed, "no",
+		store.RunOutcomeMeta{Code: store.FailureExecutionFailed}, []store.RunStatus{store.RunStatusRunning}); err != nil || changed {
+		t.Fatalf("outcome CAS mismatch = (%t, %v), want (false, nil)", changed, err)
+	}
+
+	// Leaving the terminal state clears the metadata: stale metadata
+	// must never describe a newer outcome.
+	if err := s.UpdateRunStatus(ctx, runID, store.RunStatusRunning, ""); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 2 || r.FailureCode != "" || r.ContinuationState != "" {
+		t.Fatalf("post-resume = (seq %d, code %q, cont %q), want (2, \"\", \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// The checkpoint-aware ENGINE writer types its episode — code only:
+	// the engine does not know the queue topology, so it never states a
+	// continuation (the runner promotes it below).
+	if err := s.FailRunResumable(ctx, runID, &store.Checkpoint{NodeID: "n"}, "drained",
+		store.FailureInterrupted); err != nil {
+		t.Fatalf("FailRunResumable: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.FailureCode != store.FailureInterrupted || r.ContinuationState != "" {
+		t.Fatalf("episode 3 = (seq %d, code %q, cont %q), want (3, INTERRUPTED, \"\")", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// The RUNNER promotes the continuation at the actual NAK — a
+	// same-status write that states ownership WITHOUT inventing an
+	// episode (the transition-gated increment).
+	if changed, err := s.UpdateRunOutcome(ctx, runID, store.RunStatusFailedResumable, "drained",
+		store.RunOutcomeMeta{Code: store.FailureInterrupted, Continuation: store.ContinuationRedeliveryPending},
+		[]store.RunStatus{store.RunStatusFailedResumable}); err != nil || !changed {
+		t.Fatalf("continuation promote = (%t, %v), want (true, nil)", changed, err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("promoted = (seq %d, cont %q), want (3, redelivery_pending) — a same-status promote must not invent an episode", r.OutcomeSeq, r.ContinuationState)
+	}
+
+	// A full-document save with a STALE in-memory run (same status)
+	// keeps the persisted bookkeeping — it can neither rewind the
+	// counter nor clear the cause/continuation a transition wrote
+	// meanwhile.
+	stale := *r
+	stale.OutcomeSeq = 0
+	stale.FailureCode = ""
+	stale.ContinuationState = ""
+	if err := s.SaveRun(ctx, &stale); err != nil {
+		t.Fatalf("stale SaveRun: %v", err)
+	}
+	r = load()
+	if r.OutcomeSeq != 3 || r.FailureCode != store.FailureInterrupted || r.ContinuationState != store.ContinuationRedeliveryPending {
+		t.Fatalf("after stale save = (seq %d, code %q, cont %q), want preserved (3, INTERRUPTED, redelivery_pending)", r.OutcomeSeq, r.FailureCode, r.ContinuationState)
+	}
+
+	// A status CHANGE through SaveRun is a transition: metadata clears,
+	// and a terminal arrival counts an episode.
+	moved := *r
+	moved.Status = store.RunStatusRunning
+	if err := s.SaveRun(ctx, &moved); err != nil {
+		t.Fatalf("SaveRun to running: %v", err)
+	}
+	if r = load(); r.OutcomeSeq != 3 || r.FailureCode != "" {
+		t.Fatalf("save-to-running = (seq %d, code %q), want (3, \"\")", r.OutcomeSeq, r.FailureCode)
+	}
+	moved = *r
+	moved.Status = store.RunStatusFinished
+	if err := s.SaveRun(ctx, &moved); err != nil {
+		t.Fatalf("SaveRun to finished: %v", err)
+	}
+	if r = load(); r.OutcomeSeq != 4 {
+		t.Fatalf("save-to-finished seq = %d, want 4", r.OutcomeSeq)
 	}
 }

@@ -91,6 +91,9 @@ const (
 	// because its message schema version is outside the runner's
 	// accepted range. Declared for the schema-park writer (follow-up).
 	FailureQueueSchemaMismatch FailureCode = "QUEUE_SCHEMA_MISMATCH"
+	// FailureDLQParked: the queue exhausted its deliveries for this run
+	// and parked it on the DLQ — replay via /api/admin/dlq.
+	FailureDLQParked FailureCode = "DLQ_PARKED"
 )
 
 // AllRunStatuses is the exhaustive status vocabulary, for callers that

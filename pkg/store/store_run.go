@@ -161,6 +161,27 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Outcome bookkeeping does not belong to full-document savers: a
+	// caller replaying a stale in-memory Run must not rewind the
+	// episode counter or resurrect metadata a status transition wrote
+	// meanwhile. Same status ⇒ keep the persisted values; a status
+	// change through SaveRun IS a transition ⇒ stamp it (untyped).
+	if persisted, err := s.loadRunRaw(r.ID); err == nil {
+		if persisted.Status == r.Status {
+			r.OutcomeSeq = persisted.OutcomeSeq
+			r.ContinuationState = persisted.ContinuationState
+			// The typed cause too: transitions own it, and a stale
+			// same-status copy clearing it would erase what a park
+			// wrote meanwhile.
+			r.FailureCode = persisted.FailureCode
+		} else {
+			r.OutcomeSeq = persisted.OutcomeSeq
+			if r.Status.IsFinalSuccess() || r.Status.IsFinalFailure() || r.Status.IsTerminalResumable() {
+				r.OutcomeSeq++
+			}
+			r.ContinuationState = ""
+		}
+	}
 	return s.writeRun(r)
 }
 
@@ -408,6 +429,34 @@ func (s *FilesystemRunStore) UpdateRunStatusIfCoded(ctx context.Context, id stri
 	return true, nil
 }
 
+// UpdateRunOutcome is the typed status transition (see store.RunStore):
+// UpdateRunStatusIf plus the outcome metadata persisted atomically.
+func (s *FilesystemRunStore) UpdateRunOutcome(_ context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return false, err
+	}
+	if len(expectedFrom) > 0 {
+		matched := false
+		for _, want := range expectedFrom {
+			if r.Status == want {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	if err := s.applyStatusTransitionOutcome(r, status, runErr, meta); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // FailQueuedRunIfAttempt atomically fails only the queue attempt represented
 // by publishedAt. A later resume refreshes QueuedAt before publishing, so an
 // older delivery cannot clobber that new attempt during its queued→running
@@ -442,6 +491,36 @@ func (s *FilesystemRunStore) FailQueuedRunIfAttempt(_ context.Context, id, runEr
 // failure status, cleared by every transition to a non-failure one —
 // which is what makes a stale code after a resume impossible.
 func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, runErr string, code FailureCode) error {
+	return s.applyStatusTransitionOutcome(r, status, runErr, RunOutcomeMeta{Code: code})
+}
+
+// applyStatusTransitionOutcome adds the outcome bookkeeping to the
+// shared transition tail:
+//   - OutcomeSeq increments on a TRANSITION into a terminal status,
+//     never on a same-status rewrite (a drain's markInterrupted or a
+//     repeated flip must not invent an episode — adversarial gate F1);
+//   - ContinuationState is a RUNNER-side statement: it is written when
+//     the meta states one, cleared when the run genuinely changes
+//     state without a statement (unknown, honest), and PRESERVED on a
+//     same-status rewrite (an untyped rewrite of an already-parked run
+//     must not erase a live retry_armed).
+//
+// The publisher's resume rollback (queued back to the prior resumable
+// status) is the one caller for which a transition is NOT a new
+// episode — it restores OutcomeSeq/ContinuationState by hand, the same
+// way it restores FailureCode.
+func (s *FilesystemRunStore) applyStatusTransitionOutcome(r *Run, status RunStatus, runErr string, meta RunOutcomeMeta) error {
+	terminal := status.IsFinalSuccess() || status.IsFinalFailure() || status.IsTerminalResumable()
+	transition := r.Status != status
+	if terminal && transition {
+		r.OutcomeSeq++
+	}
+	if meta.Continuation != "" {
+		r.ContinuationState = meta.Continuation
+	} else if transition {
+		r.ContinuationState = ""
+	}
+	code := meta.Code
 	r.Status = status
 	r.UpdatedAt = time.Now().UTC()
 	r.Error = runErr
@@ -544,6 +623,9 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	}
 	r.Checkpoint = cp
 	r.Status = RunStatusPausedWaitingHuman
+	// A paused run has no platform continuation statement — same
+	// discipline as FailureCode below.
+	r.ContinuationState = ""
 	// A paused run carries no failure classification — same discipline
 	// as the transition choke point, which this checkpoint-coupled
 	// write bypasses. FinishedAt likewise: a paused run is not over,
@@ -557,11 +639,12 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 
 // failRunCheckpointed is the shared body of FailRunResumable and
 // FailRunTerminal: the atomic cancelled-wins guard, the checkpoint, and
-// the ordinary transition tail (which owns the failure-code
-// discipline). An operator cancel is terminal and outranks a failure
-// racing in behind it — the two race whenever an interruption and a
-// cancel arrive together, and the failure would win simply by writing
-// last, auto-resuming a run somebody deliberately stopped.
+// the ordinary transition tail (which owns the failure-code and
+// outcome-bookkeeping discipline). An operator cancel is terminal and
+// outranks a failure racing in behind it — the two race whenever an
+// interruption and a cancel arrive together, and the failure would win
+// simply by writing last, auto-resuming a run somebody deliberately
+// stopped.
 func (s *FilesystemRunStore) failRunCheckpointed(id string, status RunStatus, cp *Checkpoint, runErr string, code FailureCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
