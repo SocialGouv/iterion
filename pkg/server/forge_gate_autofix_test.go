@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -266,6 +267,92 @@ func TestAutofixRefusesWhatItMust(t *testing.T) {
 		}
 	})
 
+	// The ceiling is a whole-audit count, not a recent-window scan: 300
+	// unrelated deliveries on the same busy webhook must not push the spent
+	// attempts out of a page and silently re-arm the bound.
+	t.Run("the ceiling survives a busy audit", func(t *testing.T) {
+		w := build(t, nil)
+		for i := 0; i < maxAutofixAttemptsPerPR; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: "spent-busy-" + string(rune('a'+i)), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: "kb" + string(rune('a'+i)), Status: webhooks.StatusLaunched,
+				EventKind: autofixEventKind, ProjectPath: repo, SubjectID: "pr:7", RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < 300; i++ {
+			if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+				ID: fmt.Sprintf("noise-%d", i), TenantID: team, WebhookID: "w1",
+				IdempotencyKey: fmt.Sprintf("noise-%d", i), Status: webhooks.StatusLaunched,
+				EventKind: "merge_request", ProjectPath: repo, RunID: "r",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		_ = w.s.autofixForRun(context.Background(), trigger.Event{
+			Source: trigger.SourceRun, Kind: trigger.KindRunFinished,
+			Subject: trigger.Subject{ID: runID},
+		})
+		if *w.launched != 0 {
+			t.Error("noise deliveries re-armed the per-PR ceiling — the count must be exact over the whole audit")
+		}
+	})
+
+	// The sweep net offers EVERY run in the notifiable window, cancelled rows
+	// included — the event path never carried them (kind filter), so the
+	// status gate is what keeps an operator's stop from becoming a code push.
+	t.Run("a cancelled run never fixes", func(t *testing.T) {
+		w := build(t, nil)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), id, "reviewer-bot", gatingInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = "reviewer-bot"
+		run.Status = store.RunStatusCancelled
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		w.s.autofixOffer(context.Background(), run.ID)
+		if *w.launched != 0 {
+			t.Error("the sweep offer launched a fixer off a cancelled run — an operator's stop is not a verdict")
+		}
+	})
+
+	// A settled head must cost ZERO forge round-trips on re-offer: the sweep
+	// net re-offers every gating run ~once a minute for an hour on every
+	// replica, against the same App quota the merge-gate reconciler lives
+	// on — without the early claim probe the net starves the gate it backs.
+	t.Run("a settled head costs no forge traffic", func(t *testing.T) {
+		w := build(t, nil)
+		counter := &countingGateClient{inner: stubGateClient{head: head, state: forge.CommitStateFailure, ctxName: gateNm}}
+		w.s.forgeGateClientFor = func(context.Context, forge.Connection) (forgeGateClient, error) {
+			return counter, nil
+		}
+		if err := w.s.webhookDeliveries.Insert(context.Background(), webhooks.Delivery{
+			ID: "settled", TenantID: team, WebhookID: "w1",
+			IdempotencyKey: autofixIdemKey(team, repo, 7, head),
+			Status:         webhooks.StatusLaunched, RunID: "r-done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		runID := seedRun(t, w.s, "reviewer-bot", gatingInputs)
+		for i := 0; i < 5; i++ {
+			w.s.autofixOffer(context.Background(), runID)
+		}
+		if *w.launched != 0 {
+			t.Fatal("a settled head launched again")
+		}
+		if counter.calls != 0 {
+			t.Fatalf("%d forge calls for a settled head, want 0 — the sweep amplifies this ~57× per hour per replica", counter.calls)
+		}
+	})
+
 	// The per-head claim is what bounds the loop: the fixer pushes, the head
 	// moves, and only then is another attempt available. Without it a red gate
 	// that nobody fixes relaunches on every re-review, forever, on real money.
@@ -393,6 +480,26 @@ func TestAutofixLaunchesTheFixerOnARedGate(t *testing.T) {
 }
 
 // stubGateClient answers with one commit status on one head.
+// countingGateClient counts forge round-trips (the early-claim probe's
+// whole point is that a settled head makes none).
+type countingGateClient struct {
+	inner stubGateClient
+	calls int
+}
+
+func (c *countingGateClient) GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error) {
+	c.calls++
+	return c.inner.GetPullRequest(ctx, repo, number)
+}
+func (c *countingGateClient) SetCommitStatus(ctx context.Context, repo, sha string, st forge.CommitStatus) error {
+	c.calls++
+	return c.inner.SetCommitStatus(ctx, repo, sha, st)
+}
+func (c *countingGateClient) ListCommitStatuses(ctx context.Context, repo, sha string) ([]forge.CommitStatus, error) {
+	c.calls++
+	return c.inner.ListCommitStatuses(ctx, repo, sha)
+}
+
 type stubGateClient struct {
 	head    string
 	state   forge.CommitState

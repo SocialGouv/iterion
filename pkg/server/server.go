@@ -78,6 +78,9 @@ type Server struct {
 	userNotify       *usernotify.Dispatcher
 	pushSink         *webpush.Sink
 	userNotifyCancel func()
+	// opsAlertsCancel detaches the operator-alert dispatcher's bus
+	// subscription on Close.
+	opsAlertsCancel func()
 	// statsCache memoizes the per-run events.jsonl cost scan behind
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
@@ -213,6 +216,19 @@ type Server struct {
 	// lookback window by (test seam — a test cannot wait an hour to reach the
 	// last pass over a run). nil → time.Now().UTC().
 	gateClock func() time.Time
+	// sweepDegraded brackets the orphan sweeper's degradation episode
+	// (edge-triggered Warn on entry, Info on recovery). The two failing
+	// stages are tracked as INDEPENDENT flags because they recover on
+	// different evidence — a clean scan vs a cleanly probed candidate —
+	// and a probe episode additionally closes after a bounded run of
+	// clean passes (a healthy fleet may never re-produce a stale
+	// candidate: a latched flag lies more than an optimistic close,
+	// which simply re-warns on the next failure). Owned by the single
+	// sweeper goroutine; no lock.
+	sweepDegraded        bool
+	sweepDegradedByScan  bool
+	sweepDegradedByProbe bool
+	sweepCleanPasses     int
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →

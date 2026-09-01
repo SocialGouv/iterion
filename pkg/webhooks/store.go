@@ -34,6 +34,12 @@ type DeliveryStore interface {
 	GetByIdempotencyKey(ctx context.Context, key string) (Delivery, error)
 	Update(ctx context.Context, d Delivery) error
 	ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error)
+	// CountLaunched counts the deliveries of one event kind on one subject
+	// that actually launched a run (RunID set). This is a CEILING query —
+	// the gate-autofix per-PR bound reads it — so it must be exact over the
+	// whole audit, never a recent-window scan a busy webhook can push the
+	// rows out of.
+	CountLaunched(ctx context.Context, tenantID, webhookID, eventKind, projectPath, subjectID string) (int, error)
 }
 
 // Limits are the monthly call caps applied to a delivery. Zero means

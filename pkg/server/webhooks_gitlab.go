@@ -799,9 +799,49 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 		Policy: sb.RetryPolicy(),
 	})
 	spec := buildScheduledLaunchSpec(sb, lb.Path, lb.Source, retry)
+	overrides, err := s.scheduledForgeOverrides(ctx, sb)
+	if err != nil {
+		return err
+	}
+	spec.SecretOverrides = overrides
 	lb.Stamp(&spec)
 	_, err = s.runs.Launch(ctx, spec)
 	return err
+}
+
+// scheduledForgeOverrides resolves a repo-bound schedule's forge connection
+// AT THE TICK — the same managed-token mint every studio/API launch performs.
+// Without it the clone leans on a hand-set `forge_token` team secret, which
+// expires eventually and then kills every tick at clone with "Invalid
+// username or token" while manual launches (which mint fresh) keep working —
+// exactly the masked failure docs/scheduling.md warns about. Explicit error,
+// never a silent fall-through: a schedule that PINNED an integration wants
+// its token; letting the tick limp on to a doomed clone would just move the
+// failure three minutes later and strip its cause. A schedule with no pinned
+// integration keeps the legacy bot-secret-binding resolution (nil overrides).
+func (s *Server) scheduledForgeOverrides(ctx context.Context, sb cloudsched.ScheduledBot) (map[string]string, error) {
+	if sb.RepoIntegrationID == "" {
+		return nil, nil
+	}
+	if s.forgeIntegrations == nil || s.forgeConnections == nil || s.forgeOrchestrator == nil {
+		return nil, fmt.Errorf("schedule %s pins repo integration %s but the forge layer is not wired", sb.ID, sb.RepoIntegrationID)
+	}
+	integ, err := s.forgeIntegrations.Get(store.WithoutTenantFilter(ctx), sb.RepoIntegrationID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: resolve repo integration %s: %w", sb.ID, sb.RepoIntegrationID, err)
+	}
+	if integ.TenantID != sb.TenantID {
+		return nil, fmt.Errorf("schedule %s: repo integration %s belongs to another tenant", sb.ID, sb.RepoIntegrationID)
+	}
+	conn, err := s.forgeConnections.Get(store.WithoutTenantFilter(ctx), integ.ConnectionID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: resolve forge connection %s: %w", sb.ID, integ.ConnectionID, err)
+	}
+	secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(ctx, conn.TenantID), &conn, "scheduler:"+sb.BotID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule %s: forge token for the clone: %w", sb.ID, err)
+	}
+	return map[string]string{"forge_token": secID}, nil
 }
 
 // buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,

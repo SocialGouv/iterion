@@ -22,14 +22,17 @@ import (
 //     consume = boardmongo.ConsumeLabels, a single atomic UpdateOne so
 //     concurrent replicas cannot double-launch a consume_labels trigger).
 //   - cloudBoardSource: a poll-tailer over the board_events collection.
-//     Every replica polls; the per-tenant CAS cursor
-//     (AdvanceTriggerCursor) elects the batch's publisher, so each board
-//     event enters the NATS bus exactly once. The tailed tenant set is
-//     the tenants holding enabled board-kind subscriptions.
+//     Every replica polls; matched (event, subscription) pairs are
+//     materialized into the durable effect outbox BEFORE the per-tenant
+//     CAS cursor advances, and executed by the EffectWorker under leased
+//     claims (ADR-094 — board events no longer ride the lossy bus). The
+//     tailed tenant set is the tenants holding enabled board-kind
+//     subscriptions.
 //   - StartCloudTriggerCoordinator: evaluator subscription on the shared
-//     bus + the source. The cloud board DISPATCHER (boarddispatch.go, 5s
-//     poll) remains the promote path's launch authority and safety net —
-//     no nudger exists (or is needed) on cloud.
+//     bus (run-outcome and other non-board sources) + the source. The
+//     cloud board DISPATCHER (boarddispatch.go, 5s poll) remains the
+//     promote path's launch authority and safety net — no nudger exists
+//     (or is needed) on cloud.
 
 // defaultCloudBoardTickInterval paces the board_events poll. Override with
 // ITERION_CLOUD_BOARD_TICK (a Go duration).
@@ -105,14 +108,47 @@ type cloudTenantLister interface {
 	DistinctBoardTenants(ctx context.Context) ([]string, error)
 }
 
-// cloudBoardSource poll-tails each subscribed tenant's board_events and
-// publishes the card transitions onto the bus.
+// cloudBoardStore is the slice of the per-tenant Mongo store the tail reads
+// and writes — an interface so drainTenant's loss-ordering contract is unit-
+// testable with a stub (satisfied by *boardmongo.Store).
+type cloudBoardStore interface {
+	TriggerCursor() (int64, error)
+	EventsAfter(afterSeq int64, limit int) ([]native.Event, error)
+	AdvanceTriggerCursor(from, to int64) (bool, error)
+	Get(id string) (*native.Issue, error)
+	trigger.EffectOutbox
+}
+
+// cloudBoardSource poll-tails each subscribed tenant's board_events,
+// materializes matched (event, subscription) pairs into the durable effect
+// outbox (ADR-094), and drains that outbox through the EffectWorker. Board
+// events no longer ride the lossy bus at all on cloud: the outbox IS the
+// delivery, with a leased claim and bounded retries where the bus had
+// at-most-once and warn-only losses.
 type cloudBoardSource struct {
 	coord   *boardmongo.Coordinator
 	tenants cloudTenantLister
-	bus     eventbus.Bus
+	subs    trigger.SubscriptionStore
+	eval    *trigger.Evaluator
 	logger  *iterlog.Logger
 	tick    time.Duration
+	// ticks counts tickOnce passes (single goroutine) for the slow-cadence
+	// outbox drain.
+	ticks int
+	// holes tracks, per tenant, the first seq gap the tail is currently
+	// refusing to advance past (emit allocates the seq BEFORE inserting, so
+	// a younger gap is usually an insert still in flight — skipping it
+	// would lose the event forever). Older than boardTailHoleGrace = a dead
+	// allocation (failed insert), franchissable. Single goroutine.
+	holes map[string]tailHole
+	// poisons tracks, per (tenant, seq), how often an event's normalize/
+	// match failed; past boardTailPoisonTicks the tail logs once at Error
+	// and skips it — a head-of-line poison event must not freeze the
+	// tenant's triggers forever. Keyed per SEQ (not per tenant): two
+	// adjacent poison events would otherwise reset each other's counter on
+	// every pass and freeze the tenant for good. Entries at or below the
+	// advanced cursor are pruned. Single goroutine.
+	poisons map[string]*tailPoison
 	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
@@ -132,49 +168,241 @@ func (s *cloudBoardSource) run() {
 	}
 }
 
-// tickOnce drains every subscribed tenant's new events. Per tenant: read the
-// cursor, fetch the batch, CAS-advance; only the winning replica publishes.
+// tickOnce, per subscribed tenant: materialize new board events into the
+// effect outbox, then drain due effect rows. Every replica ticks; the cursor
+// CAS dedups materialization work and the outbox's atomic claim dedups
+// execution — a lost race on either is idle, never a double effect.
 func (s *cloudBoardSource) tickOnce() {
 	tenants, err := s.tenants.DistinctBoardTenants(s.ctx)
 	if err != nil {
 		s.warn("trigger: cloud board source: list tenants: %v", err)
 		return
 	}
+	// The drain pass runs every tick (it is two indexed reads when idle);
+	// the effect worker's claim query only runs when this tick materialized
+	// rows (the latency-sensitive case) or on the slow cadence — retries
+	// and lease reclaims have a ≥15s backoff, so polling the outbox with a
+	// primary-routed FindOneAndUpdate every 3s per tenant per replica would
+	// buy nothing but load.
+	s.ticks++
+	slowTick := s.ticks%effectDrainEveryNTicks == 0
+	if slowTick {
+		// Union with the tenants holding live effect rows: disabling a
+		// tenant's last board subscription must not hibernate its already-
+		// materialized rows (they would fire all at once on re-enable,
+		// days late) — they still execute, retry or park on the slow
+		// cadence.
+		if extra, err := s.coord.DistinctEffectTenants(s.ctx); err != nil {
+			s.warn("trigger: cloud board source: list effect tenants: %v", err)
+		} else {
+			seen := make(map[string]bool, len(tenants))
+			for _, t := range tenants {
+				seen[t] = true
+			}
+			for _, t := range extra {
+				if !seen[t] {
+					tenants = append(tenants, t)
+				}
+			}
+		}
+	}
 	for _, tenant := range tenants {
-		if err := s.drainTenant(tenant); err != nil && s.ctx.Err() == nil {
+		st := s.coord.StoreFor(tenant)
+		materialized, err := s.drainTenant(tenant, st)
+		if err != nil && s.ctx.Err() == nil {
 			s.warn("trigger: cloud board source: tenant %s: %v", tenant, err)
+		}
+		if materialized || slowTick {
+			w := &trigger.EffectWorker{Outbox: st, Subs: s.subs, Evaluator: s.eval, Logger: s.logger}
+			w.Tick(s.ctx, 20)
 		}
 	}
 }
 
-func (s *cloudBoardSource) drainTenant(tenant string) error {
-	st := s.coord.StoreFor(tenant)
+// effectDrainEveryNTicks paces the outbox claim poll when nothing was just
+// materialized: every 5th board tick (~15s at the default 3s interval),
+// matching the smallest retry backoff.
+const effectDrainEveryNTicks = 5
+
+// boardTailHoleGrace bounds how long the tail waits on a seq gap before
+// treating it as a dead allocation. Must exceed boardmongo's per-op timeout
+// (10s) so a slow-but-live insert always lands inside the grace.
+const boardTailHoleGrace = 30 * time.Second
+
+// boardTailPoisonTicks is how many consecutive failed reads of ONE event the
+// tail tolerates before skipping it (with a single Error log).
+const boardTailPoisonTicks = 20
+
+type tailHole struct {
+	seq       int64
+	firstSeen time.Time
+}
+
+type tailPoison struct {
+	tenant string
+	seq    int64
+	fails  int
+	said   bool
+}
+
+// drainTenant materializes one tenant's new board events. The ORDER is the
+// whole point (the pre-outbox shape lost events forever on a crash or a
+// publish error after the cursor had advanced):
+//
+//  1. normalize + match EVERY event of the batch — a transient store error
+//     aborts the batch with the cursor untouched (retry next tick); only a
+//     definitively deleted card is skipped;
+//  2. write the matched pairs to the durable outbox (idempotent upserts —
+//     a racing replica's duplicates collapse on the row key);
+//  3. only then CAS-advance the cursor. A crash before 3 re-materializes
+//     idempotently; after 3 the rows are already durable.
+func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool, error) {
 	cursor, err := st.TriggerCursor()
 	if err != nil {
-		return err
+		return false, err
 	}
 	events, err := st.EventsAfter(cursor, 200)
 	if err != nil || len(events) == 0 {
-		return err
+		return false, err
 	}
-	last := events[len(events)-1].Seq
-	won, err := st.AdvanceTriggerCursor(cursor, last)
-	if err != nil || !won {
-		return err // another replica owns this batch
+	now := time.Now().UTC()
+	// Contiguous-prefix guard: emit allocates the seq BEFORE inserting, so
+	// a concurrent emitter can make seq N visible while N-1's insert is
+	// still in flight — advancing over that gap would lose N-1 forever.
+	// Truncate the batch at the first YOUNG gap (watched < grace); a gap
+	// older than the grace is a dead allocation (failed insert) the tail
+	// steps over.
+	events = s.trimAtYoungGap(tenant, cursor, events, now)
+	if len(events) == 0 {
+		return false, nil
 	}
+	var rows []trigger.EffectRow
 	for _, evt := range events {
 		if !trigger.IsCardEvent(evt.Type) || evt.IssueID == "" {
 			continue
 		}
-		te, ok := trigger.NormalizeBoardEvent(st.Get, evt, tenant, "", "cloud")
-		if !ok {
-			continue
+		te, ok, nerr := trigger.NormalizeBoardEvent(st.Get, evt, tenant, "", "cloud")
+		if nerr != nil {
+			if s.poisoned(tenant, evt.Seq) {
+				continue // logged once at Error inside poisoned — step over
+			}
+			return false, fmt.Errorf("normalize event seq %d (issue %s): %w — batch aborted before the cursor, will retry", evt.Seq, evt.IssueID, nerr)
 		}
-		if err := s.bus.Publish(s.ctx, te); err != nil {
-			s.warn("trigger: cloud board source: publish %s: %v", te.ID, err)
+		if !ok {
+			continue // card deleted between the transition and the read — definitive
+		}
+		evRows, merr := trigger.MaterializeEffects(s.ctx, s.subs, te, now)
+		if merr != nil {
+			if s.poisoned(tenant, evt.Seq) {
+				continue
+			}
+			return false, fmt.Errorf("match subscriptions for event seq %d: %w — batch aborted before the cursor, will retry", evt.Seq, merr)
+		}
+		rows = append(rows, evRows...)
+	}
+	if len(rows) > 0 {
+		if err := st.UpsertPending(s.ctx, rows); err != nil {
+			return false, fmt.Errorf("materialize %d effect(s): %w — batch aborted before the cursor, will retry", len(rows), err)
 		}
 	}
-	return nil
+	last := events[len(events)-1].Seq
+	won, aerr := st.AdvanceTriggerCursor(cursor, last)
+	if aerr != nil {
+		// The rows are durable; a failed advance only means re-materializing
+		// the same batch next tick, which the upsert collapses. Poison
+		// counters are deliberately NOT pruned here: the local cursor has
+		// not moved, so the batch replays — pruning would make an acquired
+		// skip cost its 20 ticks all over again.
+		return len(rows) > 0, aerr
+	}
+	if !won {
+		// A peer replica advanced instead — the NOMINAL multi-replica case
+		// (N−1 replicas lose every election), and the peer may have stopped
+		// SHORT of our batch's last (it read a shorter batch before a
+		// concurrent insert became visible). Prune against the cursor the
+		// store ACTUALLY holds, never against a seq nobody passed: pruning
+		// at `last` here erased an acquired poison skip and re-froze the
+		// tenant's tail for another 20 ticks.
+		cur, cerr := st.TriggerCursor()
+		if cerr != nil {
+			// Name the fault instead of swallowing it (the counters keep
+			// until the next batch — harmless, but a silent decline is how
+			// this file's bugs were born). The batch is already durable and
+			// the peer holds the cursor; nothing else to unwind.
+			return len(rows) > 0, fmt.Errorf("re-read cursor after a lost election: %w — poison counters kept until the next batch", cerr)
+		}
+		s.prunePoisons(tenant, cur)
+		return len(rows) > 0, nil
+	}
+	s.prunePoisons(tenant, last)
+	return len(rows) > 0, nil
+}
+
+// trimAtYoungGap cuts the batch before the first seq gap the tail has not
+// yet watched past the grace. Only the FIRST gap per tick is examined; the
+// remainder is re-read next tick once the gap resolves or expires.
+func (s *cloudBoardSource) trimAtYoungGap(tenant string, cursor int64, events []native.Event, now time.Time) []native.Event {
+	if s.holes == nil {
+		s.holes = map[string]tailHole{}
+	}
+	expected := cursor + 1
+	for i, evt := range events {
+		if evt.Seq == expected {
+			expected = evt.Seq + 1
+			continue
+		}
+		// Gap at [expected, evt.Seq-1].
+		h, watching := s.holes[tenant]
+		if !watching || h.seq != expected {
+			s.holes[tenant] = tailHole{seq: expected, firstSeen: now}
+			return events[:i]
+		}
+		if now.Sub(h.firstSeen) < boardTailHoleGrace {
+			return events[:i]
+		}
+		// Dead allocation — a failed insert holds no event. Step over.
+		s.warn("trigger: cloud board source: tenant %s: seq gap at %d unfilled for %s — treating as a dead allocation and advancing", tenant, expected, now.Sub(h.firstSeen))
+		delete(s.holes, tenant)
+		expected = evt.Seq + 1
+	}
+	delete(s.holes, tenant)
+	return events
+}
+
+// poisoned counts failures per (tenant, seq); past the threshold it logs
+// ONCE at Error and answers true (skip) — and KEEPS answering true, so a
+// second poison event counting up cannot resurrect the first (that reset
+// froze a tenant with two adjacent poisons permanently). Head-of-line
+// poison must not freeze every trigger behind it forever — but a skip is a
+// deliberate, loud loss, never a silent one.
+func (s *cloudBoardSource) poisoned(tenant string, seq int64) bool {
+	if s.poisons == nil {
+		s.poisons = map[string]*tailPoison{}
+	}
+	key := fmt.Sprintf("%s|%d", tenant, seq)
+	p := s.poisons[key]
+	if p == nil {
+		p = &tailPoison{tenant: tenant, seq: seq}
+		s.poisons[key] = p
+	}
+	p.fails++
+	if p.fails < boardTailPoisonTicks {
+		return false
+	}
+	if !p.said && s.logger != nil {
+		s.logger.Error("trigger: cloud board source: tenant %s: event seq %d unreadable after %d ticks — SKIPPING it; the triggers behind it resume, this one is lost (inspect board_events seq %d)", tenant, seq, p.fails, seq)
+		p.said = true
+	}
+	return true
+}
+
+// prunePoisons drops counters the advanced cursor has passed.
+func (s *cloudBoardSource) prunePoisons(tenant string, cursor int64) {
+	for key, p := range s.poisons {
+		if p.tenant == tenant && p.seq <= cursor {
+			delete(s.poisons, key)
+		}
+	}
 }
 
 func (s *cloudBoardSource) warn(format string, args ...any) {
@@ -228,7 +456,8 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	src := &cloudBoardSource{
 		coord:   coord,
 		tenants: lister,
-		bus:     bus,
+		subs:    subs,
+		eval:    eval,
 		logger:  logger,
 		tick:    cloudBoardTickInterval(),
 		ctx:     ctx,
@@ -237,7 +466,7 @@ func StartCloudTriggerCoordinator(coord *boardmongo.Coordinator, subs trigger.Su
 	}
 	go src.run()
 	if logger != nil {
-		logger.Info("server: cloud trigger spine active (board_events poll every %s)", src.tick)
+		logger.Info("server: cloud trigger spine active (board_events poll every %s, durable effect outbox)", src.tick)
 	}
 	return &CloudTriggerCoordinator{source: src, cancelSub: cancelSub}
 }

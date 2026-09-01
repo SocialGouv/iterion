@@ -132,6 +132,18 @@ func (s *MongoSentStore) MarkDelivered(ctx context.Context, key string) error {
 	return nil
 }
 
+func (s *MongoSentStore) WasDelivered(ctx context.Context, key string) (bool, error) {
+	var rec SentRecord
+	err := s.coll.FindOne(ctx, bson.M{"_id": key, "delivered": true}).Decode(&rec)
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("usernotify: read delivered episode: %w", err)
+	}
+	return true, nil
+}
+
 func (s *MongoSentStore) IsMarked(ctx context.Context, key string) (bool, error) {
 	var rec SentRecord
 	err := s.coll.FindOne(ctx, bson.M{"_id": key}).Decode(&rec)

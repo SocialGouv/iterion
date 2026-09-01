@@ -540,6 +540,11 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 	p.Line("▶ schedule %q: iterion run %s", e.Name, e.Bot)
 	runErr := runRunFn(ctx, runOpts, p)
 
+	// Deliberately NOT schedgate.LaunchDecision: on this surface runRunFn
+	// executes the WHOLE workflow, so a non-nil error is usually a run that
+	// launched and then failed (FailNode, budget, provider) — labelling it
+	// launch_failed would tell the audit the bot never started. The other
+	// two surfaces hand off to a launcher and keep the distinction.
 	rec := newHostCronTickRecord(*e, schedgate.TickFired)
 	rec.RunID = runID
 	if runErr != nil {

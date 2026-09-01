@@ -25,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -470,8 +471,10 @@ func (c *Dispatcher) shutdown() {
 	// budget — same pattern as finishRun's release path).
 	currentTarget := c.cfg.Load().Agent.RunningState
 	for _, r := range c.state.running {
+		// Shutdown is an internal interruption (the local twin of the cloud
+		// runner drain): failed_resumable, auto-resumed on the next start.
 		if r.Cancel != nil {
-			r.Cancel()
+			r.Cancel(runtime.ErrRunInterrupted)
 		}
 		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		c.releaseClaim(relCtx, r.IssueID, r.Identifier)

@@ -16,6 +16,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -78,7 +79,7 @@ type Manager struct {
 	state     ManagerState
 	cur       *Dispatcher
 	runner    ManagedRunner
-	cancel    context.CancelFunc
+	cancel    context.CancelCauseFunc
 	lastErr   error
 	startedAt time.Time
 }
@@ -306,7 +307,13 @@ func (m *Manager) start(paused bool) error {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// WithCancelCause: teardown cancels with ErrRunInterrupted so in-flight
+	// runs persist failed_resumable even when this parent dies BEFORE the
+	// per-run Cancel fires — a context records only its FIRST cause, so a
+	// late r.Cancel(ErrRunInterrupted) on an already-cancelled parent would
+	// be a no-op and the engine would write `cancelled` (operator-owned,
+	// never auto-resumed) for a stop no operator asked.
+	ctx, cancel := context.WithCancelCause(context.Background())
 	if paused {
 		c.paused.Store(true)
 	}
@@ -370,7 +377,10 @@ func (m *Manager) teardown() {
 		cur.Stop()
 	}
 	if cancel != nil {
-		cancel()
+		// Internal stop — the interrupt cause makes any run this parent
+		// tears down persist failed_resumable, whatever the ordering with
+		// the per-run Cancel.
+		cancel(runtime.ErrRunInterrupted)
 	}
 	if runner != nil {
 		if err := runner.Close(); err != nil {

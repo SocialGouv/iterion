@@ -119,6 +119,14 @@ func (s *Server) sweepGates(ctx context.Context, lister gateSweepLister, now tim
 			// Runs that gate nothing — the vast majority of any window — exit
 			// on a local field read with no forge traffic.
 			_ = s.reconcileGateForRunID(ctx, ref.ID, gateTriggerSweep)
+			// Same net for the auto-fix lane: it consumes the same lossy bus
+			// with the same miss modes, and until now had NO second path — a
+			// dropped outcome event silently meant no fix pass for a repo
+			// that opted in. The offer is idempotent (per-head claim + idem
+			// key) and the lane's own guards exclude cancelled/paused/armed
+			// runs the reconciler-oriented window also contains. Recovery
+			// horizon = gateSweepLookback, same as the gate's.
+			s.autofixOffer(ctx, ref.ID)
 			if !ref.UpdatedAt.IsZero() && ref.UpdatedAt.Before(oldest) {
 				oldest = ref.UpdatedAt
 			}

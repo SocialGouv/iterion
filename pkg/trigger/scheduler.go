@@ -324,7 +324,7 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 		},
 	}
 	runID, err := s.launcher.Launch(ctx, plan)
-	rec := s.tickRecord(sub, schedgate.TickFired)
+	rec := s.tickRecord(sub, schedgate.LaunchDecision(err))
 	rec.RunID = runID
 	if err != nil {
 		rec.Error = err.Error()

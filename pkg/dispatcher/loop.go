@@ -226,8 +226,10 @@ func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 			atomicLag := now.Sub(r.lastEventTime())
 			actorLag := now.Sub(r.LastEventAt)
 			c.logger.Warn("dispatcher: %s stalled (atomic_lag=%s actor_lag=%s timeout=%s) — cancelling", r.Identifier, atomicLag, actorLag, timeout)
+			// Internal stop: the run did nothing wrong an operator decided —
+			// interrupt (→ failed_resumable, auto-resumed) rather than cancel.
 			if r.Cancel != nil {
-				r.Cancel()
+				r.Cancel(runtime.ErrRunInterrupted)
 			}
 			r.CancelIssuedAt = now
 			continue
@@ -238,7 +240,7 @@ func (c *Dispatcher) reconcileStalled(ctx context.Context, cfg *Config) {
 		}
 		c.logger.Warn("dispatcher: %s worker not exiting %s after cancel — force-reaping slot", r.Identifier, now.Sub(r.CancelIssuedAt))
 		if r.Cancel != nil {
-			r.Cancel()
+			r.Cancel(runtime.ErrRunInterrupted)
 		}
 		c.state.tombstones[id] = struct{}{}
 		c.finishRun(ctx, id, context.Canceled)
@@ -277,7 +279,7 @@ func (c *Dispatcher) refreshRunningStates(ctx context.Context) {
 		if !ok {
 			c.logger.Info("dispatcher: %s disappeared from tracker — cancelling", r.Identifier)
 			if r.Cancel != nil {
-				r.Cancel()
+				r.Cancel(runtime.ErrRunInterrupted)
 			}
 			// Reap the slot immediately. A worker that swallows ctx
 			// cancellation (some claude_code subprocesses ignore
@@ -310,8 +312,10 @@ func (c *Dispatcher) refreshRunningStates(ctx context.Context) {
 		}
 		if newState != expected {
 			c.logger.Info("dispatcher: %s moved %s → %s externally — cancelling", r.Identifier, expected, newState)
+			// Interrupt, not cancel: if the card comes back to an eligible
+			// state the ticket resumes from its checkpoint.
 			if r.Cancel != nil {
-				r.Cancel()
+				r.Cancel(runtime.ErrRunInterrupted)
 			}
 		}
 	}
@@ -426,7 +430,7 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// fall back to the stale persisted last_run pointer.
 	delete(c.state.retries, iss.ID)
 
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancelCause(ctx)
 	entry := c.buildRunningEntry(
 		iss,
 		runID,
@@ -472,11 +476,20 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 	}
 	rs, err := c.openRunStore()
 	if err != nil {
-		return false
+		// A pointer we cannot check must HOLD: fail-open here is what turns
+		// a held operator cancel into a fresh sibling the moment the store
+		// blips (the mint guard downstream is bypassed once a retry entry
+		// exists).
+		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but the run store cannot be opened — holding", prev))
+		return true
 	}
-	r, err := rs.LoadRun(context.Background(), prev)
+	r, err := c.loadRunForDecision(rs, prev, "pre-claim hold check")
+	if errors.Is(err, store.ErrRunNotFound) {
+		return false // pruned run — the legitimate fresh start
+	}
 	if err != nil {
-		return false
+		c.recordLastRunHold(iss, fmt.Sprintf("last run %s exists but cannot be read — holding", prev))
+		return true
 	}
 	status := r.Status
 	if status == store.RunStatusRunning {
@@ -503,12 +516,27 @@ func (c *Dispatcher) lastRunHoldBeforeClaim(iss tracker.Issue) bool {
 		reason := fmt.Sprintf("last run %s is %s — refusing a fresh sibling", prev, status)
 		c.recordLastRunHold(iss, reason)
 		return true
+	case store.RunStatusCancelled:
+		// Operator cancel is terminal for the retry policy: hold BEFORE the
+		// claim (no Claim→Release churn), drop any stale retry entry, and
+		// name the way out. Internal stops never produce this status any
+		// more (they interrupt → failed_resumable), so this is always a
+		// human's decision.
+		if cur, ok := c.state.retries[iss.ID]; ok {
+			if cur.Timer != nil {
+				cur.Timer.Stop()
+			}
+			delete(c.state.retries, iss.ID)
+		}
+		reason := fmt.Sprintf("last run %s was cancelled by the operator — resume it explicitly, or `iterion issue update --clear-last-run` to free the ticket", prev)
+		c.recordLastRunHold(iss, reason)
+		return true
 	}
 
 	resumeID := ""
 	if retry, ok := c.state.retries[iss.ID]; ok && retry.PrevRunID != "" {
 		resumeID = retry.PrevRunID
-	} else if status == store.RunStatusFailedResumable || status == store.RunStatusCancelled {
+	} else if status == store.RunStatusFailedResumable {
 		resumeID = prev
 	}
 	if resumeID == "" {
@@ -783,14 +811,24 @@ func (c *Dispatcher) resolveRunID(ctx context.Context, iss tracker.Issue) (runID
 	// the card: dragging it back to an eligible column is the
 	// operator's re-queue gesture (see lastRunForbidsFresh).
 	if prev := c.lastRunID(iss.ID); prev != "" && !missingResumeWorkspace {
-		if status := c.runStatusOnDisk(prev); lastRunForbidsFresh(status) {
+		status, known := c.runStatusOnDisk(prev)
+		if !known {
+			// The pointer exists but its record is unreadable (store fault,
+			// truncated run.json). Minting here would fail OPEN — the run
+			// might be an operator cancel, a pause, anything the guards
+			// below exist to hold. Hold until it reads again.
+			reason := fmt.Sprintf("last run %s exists but cannot be read — holding rather than minting a sibling blind", prev)
+			c.recordLastRunHold(iss, reason)
+			c.releaseClaim(ctx, iss.ID, iss.Identifier)
+			return "", "", attempt, false
+		}
+		if lastRunForbidsFresh(status) {
 			// An empty retry target was authoritative when the retry was
 			// scheduled, but the durable run can become resumable later (for
 			// example after orphan promotion). Adopt that now-current target
 			// so the next tick resumes with the same attempt count instead of
 			// repeating Claim -> Release forever.
 			if hadRetryEntry && (status == store.RunStatusFailedResumable ||
-				status == store.RunStatusCancelled ||
 				status == store.RunStatusPausedOperator) {
 				if retry := c.state.retries[iss.ID]; retry != nil && retry.PrevRunID == "" {
 					retry.PrevRunID = prev
@@ -832,7 +870,7 @@ func (c *Dispatcher) buildRunningEntry(
 	runID, workspaceGeneration string,
 	cleanupWorkspaceOnSuccess bool,
 	attempt int,
-	cancel context.CancelFunc,
+	cancel context.CancelCauseFunc,
 ) *runningEntry {
 	// The path is deterministic from the issue + logical generation
 	// (PathForRun == the directory CreateForRun materialises), so it is known

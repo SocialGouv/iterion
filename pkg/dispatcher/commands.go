@@ -416,8 +416,8 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// sibling from entry would replay the prefix (agents, tools,
 		// already-paid artefacts). Park: keep the claim, keep last_run,
 		// do not retry. The operator resumes THIS run with --force; cancel
-		// is not an escape because cancelled last_runs remain resumable and
-		// still forbid a fresh sibling. Same operator
+		// is not an escape because a cancelled last_run still forbids a
+		// fresh sibling (the way out is --clear-last-run). Same operator
 		// visibility as the pause arm below — badge, awaiting-input
 		// column, and a dashboard skip entry — otherwise the ticket
 		// strands invisibly: claimed, no live worker, no badge, and
@@ -426,8 +426,8 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		c.setAwaitingInput(issueID, true)
 		c.moveToAwaitingInput(issueID, r.Identifier)
 		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
-			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket because a cancelled last_run is resumed from its checkpoint")
-		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch because a cancelled last_run is resumed from its checkpoint.", r.Identifier, r.RunID)
+			"bot source changed since the last run started — resume with --force; cancelling does not free the ticket (a cancelled last_run still holds it; use --clear-last-run)")
+		c.logger.Warn("dispatcher: %s bot source changed (run=%s) — refusing a fresh sibling. Resume with --force from the run console; cancelling does not unblock a fresh dispatch (a cancelled last_run still holds the ticket; use --clear-last-run).", r.Identifier, r.RunID)
 		c.fireSnapshot()
 		return
 	}
@@ -524,13 +524,29 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 		// before postFinished — so a shell hook can't block the actor and
 		// the directory is gone before the claim is released. See
 		// cleanupWorkspace + runWorker.
+	case errors.Is(err, runtime.ErrRunCancelled):
+		// OPERATOR cancel — terminal for the retry policy on EVERY tracker.
+		// This choke point is what makes the invariant tracker-agnostic:
+		// the last_run guards below only exist on the native tracker, so
+		// without this arm a github/forgejo card would schedule a retry
+		// whose empty PrevRunID minted a FRESH run from the workflow entry
+		// — replaying the operator's cancelled work. Keep the claim + a
+		// visible skip (the source-changed arm's shape); the way out is an
+		// explicit resume (or, on native, --clear-last-run).
+		c.stampLastRun(issueID, r)
+		c.recordDispatchSkip(tracker.Issue{ID: issueID, Identifier: r.Identifier},
+			"run cancelled by the operator — resume it explicitly to continue; the ticket stays held")
+		c.logger.Info("dispatcher: %s cancelled by the operator (run=%s) — NOT retried; the ticket stays held until an explicit resume", r.Identifier, r.RunID)
+		c.fireSnapshot()
+		return
 	case errors.Is(err, context.Canceled):
-		// Cancellation is a soft stop. Keep the workspace and any
-		// pending retry entry so the next tick can re-pick the issue.
-		// Revert the in-progress transition so the next dispatch sees
-		// the issue back in its source state (typically "ready"). The
-		// safety check inside revertTransition skips when the workflow
-		// or operator already moved the state elsewhere.
+		// Only the force-reap paths pass a literal context.Canceled
+		// (finishRun(ctx, id, context.Canceled) after a worker refused to
+		// exit): soft-stop bookkeeping — keep the workspace and any pending
+		// retry entry so the next tick can re-pick the issue, revert the
+		// in-progress transition. Engine outcomes never land here: an
+		// operator cancel arrives as ErrRunCancelled (above), an internal
+		// stop as ErrRunInterrupted (default arm → retry).
 		c.logger.Info("dispatcher: %s cancelled (run=%s)", r.Identifier, r.RunID)
 		plan.kind = finishRevert
 	default:
@@ -1108,8 +1124,10 @@ func (m cmdCancel) apply(c *Dispatcher, _ context.Context) {
 	if !ok {
 		return
 	}
+	// Operator cancel: nil cause → the engine persists terminal `cancelled`,
+	// which the dispatcher never auto-resumes (resume is an explicit gesture).
 	if r.Cancel != nil {
-		r.Cancel()
+		r.Cancel(nil)
 	}
 	c.logger.Info("dispatcher: %s cancel requested", r.Identifier)
 	// Belt-and-braces: after a short grace period for the engine's
@@ -1136,7 +1154,7 @@ func (m cmdCancelByRunID) apply(c *Dispatcher, _ context.Context) {
 			continue
 		}
 		if r.Cancel != nil {
-			r.Cancel()
+			r.Cancel(nil) // operator cancel — terminal, never auto-resumed
 		}
 		c.logger.Info("dispatcher: %s cancel requested (run %s)", r.Identifier, m.runID)
 		scheduleForceRemoveSandboxContainer(c.logger, r.RunID)
