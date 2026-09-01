@@ -167,20 +167,24 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	// meanwhile. Same status ⇒ keep the persisted values; a status
 	// change through SaveRun IS a transition ⇒ stamp it (untyped).
 	if persisted, err := s.loadRunRaw(r.ID); err == nil {
+		// Work on a copy: the caller's struct must not observe the
+		// bookkeeping (the Mongo implementation doesn't mutate either).
+		rr := *r
 		if persisted.Status == r.Status {
-			r.OutcomeSeq = persisted.OutcomeSeq
-			r.ContinuationState = persisted.ContinuationState
+			rr.OutcomeSeq = persisted.OutcomeSeq
+			rr.ContinuationState = persisted.ContinuationState
 			// The typed cause too: transitions own it, and a stale
 			// same-status copy clearing it would erase what a park
 			// wrote meanwhile.
-			r.FailureCode = persisted.FailureCode
+			rr.FailureCode = persisted.FailureCode
 		} else {
-			r.OutcomeSeq = persisted.OutcomeSeq
-			if r.Status.IsFinalSuccess() || r.Status.IsFinalFailure() || r.Status.IsTerminalResumable() {
-				r.OutcomeSeq++
+			rr.OutcomeSeq = persisted.OutcomeSeq
+			if rr.Status.IsFinalSuccess() || rr.Status.IsFinalFailure() || rr.Status.IsTerminalResumable() {
+				rr.OutcomeSeq++
 			}
-			r.ContinuationState = ""
+			rr.ContinuationState = ""
 		}
+		return s.writeRun(&rr)
 	}
 	return s.writeRun(r)
 }

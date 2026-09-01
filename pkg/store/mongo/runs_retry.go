@@ -65,7 +65,11 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at time.Time
 			retryPath("retry_after"): at.UTC(),
 			retryPath("reason"):      reason,
 			retryPath("code"):        code,
-			"updated_at":             now,
+			// Arming IS the promotion: continuation_state must only say
+			// retry_armed once a retry actually exists (the block point
+			// stamps unknown), and this write is the one that creates it.
+			"continuation_state": store.ContinuationRetryArmed,
+			"updated_at":         now,
 		},
 		"$unset": bson.M{
 			// A fresh arming supersedes the previous failure note and claim.
@@ -155,7 +159,12 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string) error
 	update := bson.M{
 		"$set": bson.M{
 			retryPath("last_error"): reason,
-			"updated_at":            now,
+			// Nothing is armed any more — the run's future belongs to a
+			// human/consumer decision. Leaving retry_armed here would
+			// make an outcome consumer wait forever on a retry that
+			// will never fire.
+			"continuation_state": store.ContinuationFinal,
+			"updated_at":         now,
 		},
 		"$unset": bson.M{retryPath("retry_after"): ""},
 		"$inc":   bson.M{"version": 1},

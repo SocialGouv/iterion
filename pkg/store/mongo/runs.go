@@ -269,7 +269,10 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		terminalInc = 1
 	}
-	statusChanged := bson.M{"$ne": bson.A{"$status", r.Status}}
+	// $ifNull: an upsert-create has no $status; without the default a
+	// brand-new document written directly in a terminal status would
+	// count an episode on Mongo and none on FS.
+	statusChanged := bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$status", r.Status}}, r.Status}}
 	seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
 	// The document's own (normalized) failure code lands on a status
 	// CHANGE — a transition through SaveRun owns its cause (the
@@ -285,8 +288,16 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
 	}
+	// $literal shields the document from aggregation-expression
+	// evaluation: without it, any string VALUE starting with "$" is
+	// parsed as a field path (silently dropped or substituted by
+	// another field's value) and any map key containing "." rejects
+	// the write — an agent output like "$ ./gradlew build" or an input
+	// keyed "config.path" is enough. The computed fields stay outside
+	// the literal: they must resolve $status/$outcome_seq against the
+	// stored pre-image.
 	pipeline := mongo.Pipeline{
-		{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{computed, doc}}}},
+		{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{computed, bson.M{"$literal": doc}}}}},
 	}
 	_, err = s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), pipeline, options.UpdateOne().SetUpsert(true))
 	if err != nil {
