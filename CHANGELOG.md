@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.85.1](https://github.com/SocialGouv/iterion/compare/v3.85.0...v3.85.1) (2026-09-01)
+
+### Bug Fixes
+
+* **routing:** the single trusted reading enforces its own preconditions ([#607](https://github.com/SocialGouv/iterion/issues/607)) ([d7716eb](https://github.com/SocialGouv/iterion/commit/d7716ebee58ed2900f8f1c35a77a60afcefc8f95))
+
+    <details><summary>why</summary>
+
+    Revi's pass on the contract, 5/5 adopted:
+
+    </details>
+
 ## [3.85.0](https://github.com/SocialGouv/iterion/compare/v3.84.1...v3.85.0) (2026-09-01)
 
 ### Features
