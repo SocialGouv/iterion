@@ -1259,6 +1259,407 @@ tool oracle_run:
                 for r in requests if not closed(r["id"])]
 
 
+    # ─── Net extension — additions applied by the net's own subbot ──────────────
+    #
+    # The additive counterpart of the re-baseline ledger, with the opposite
+    # authority: a re-baseline MOVES a reference and only a human act closes it;
+    # an extension ADDS an observation point and the net's own subbot may act it,
+    # because an addition is checkable — it cannot mask an existing divergence,
+    # it can only add a constraint. The line that keeps that true is drawn here,
+    # mechanically: a delete or a rewrite wearing an addition's name is refused
+    # (removing the inconvenient reference and re-adding a "fresh" one that
+    # matches the broken behaviour IS the masking vector), and so is an addition
+    # whose observation tuple collides with an existing entry (two references for
+    # one observation resolve later by a "cleanup" that picks the masking
+    # direction).
+
+    def _extension_ledger_text(gm_dir):
+        path = os.path.join(gm_dir, "EXTENSIONS.md")
+        if not os.path.isfile(path):
+            return ""
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+
+    def _extension_blocks(text, kind):
+        """Same block idiom as the re-baseline ledger: HTML comment, one JSON
+        object. An unreadable block is an escalation, never a guess."""
+        out = []
+        for body in re.findall(r"<!-- iterion:extension-%s\n(.*?)\n-->" % kind,
+                               text, re.S):
+            try:
+                obj = json.loads(body)
+            except ValueError:
+                obj = None
+            if not isinstance(obj, dict) or \
+                    not (isinstance(obj.get("id"), str) and obj.get("id")):
+                obj = {"id": "UNPARSEABLE", "raw": body[:120]}
+            else:
+                # The list-shaped fields are iterated by every judgement below. A
+                # scalar here raised TypeError inside the verdict, and a verdict
+                # that cannot answer was read as "nothing to refuse" by the lot
+                # gate — the ledger disabling its own guard (adversarial finding,
+                # executed). Normalising at the single parse point makes such a
+                # block refusable instead of fatal.
+                for field in ("recorded_paths", "paths", "corpus_entries"):
+                    if field in obj and not isinstance(obj[field], list):
+                        obj[field] = []
+            out.append(obj)
+        return out
+
+
+    def _records_extension_surface(paths):
+        """An act closes a request only by recording the SURFACE an extension can
+        reach: a reference, or the corpus. An act naming only the ledger records
+        the paperwork of its own filing — it closed the conjunction term while the
+        reference it declared did not exist (adversarial finding, executed)."""
+        if not isinstance(paths, list):
+            return False
+        for p in paths:
+            if not isinstance(p, str) or not p:
+                continue
+            rel = p.split("/", 1)[1] if p.startswith(".golden-master/") else p
+            if rel.startswith("refs/") or rel == "corpus.json":
+                return True
+        return False
+
+
+    def pending_extensions(gm_dir, text=None):
+        """Extension requests no act has answered — a conjunction term, like
+        pending re-baselines, for the mirrored reason: a pending request names an
+        observation the net was ASKED to gain and does not have, so a green built
+        while it waits reports coverage its own intent knows is missing. There is
+        no `replaces` chain here: an extension that no longer applies is acted or
+        withdrawn by its requester, not superseded."""
+        if text is None:
+            text = _extension_ledger_text(gm_dir)
+        if not text:
+            return []
+        requests = _extension_blocks(text, "request")
+        acts = _extension_blocks(text, "act")
+        if any(b.get("id") == "UNPARSEABLE" for b in requests + acts):
+            return [{"id": "UNPARSEABLE",
+                     "why": "a ledger block does not parse as JSON — escalate, do not guess"}]
+        # Only a WELL-FORMED act closes a request: an act with no recorded path
+        # acted nothing, and letting it close the term would let the constrained
+        # party silence the conjunction with four lines of JSON — the
+        # additions-only verdict never runs at gate time, so this shape check is
+        # the whole defence here (adversarial finding, executed).
+        acted = {b["id"] for b in acts
+                 if _records_extension_surface(b.get("recorded_paths"))}
+        return [{"id": r["id"], "lot": r.get("lot", "?")}
+                for r in requests if r["id"] not in acted]
+
+
+    ## The fields that DECIDE what an entry observes. An allowlist, not
+    ## "everything but id": a stripped-everything key is defeated by one cosmetic
+    ## key (`note`, `comment`) that makes two identical observations compare
+    ## different (adversarial finding, executed). Fields outside this list do not
+    ## discriminate; if the harness later grows a discriminating field, the
+    ## failure mode is a FALSE collision — refused, escalated to the requester —
+    ## never a masked duplicate.
+    OBSERVATION_FIELDS = ("method", "path", "persona", "surface", "fields",
+                          "steps", "readback", "no_redirect", "csrf_field",
+                          "static_prefix", "template_prefix", "probes")
+
+
+    def _entry_observation_key(entry):
+        """What an entry OBSERVES: two entries equal under this key are two
+        references for one observation — a collision, not an addition. Absent
+        and empty collapse together — a twin carrying `"query": ""` must not
+        split the key on mere PRESENCE (consolidation finding, executed)."""
+        return json.dumps({k: (entry.get(k) or None) for k in OBSERVATION_FIELDS},
+                          sort_keys=True, ensure_ascii=False)
+
+
+    def extension_verdict(ws, gm_rel, base):
+        """Judge every ACTED extension against `base`, in git — never against the
+        acting party's word.
+
+        Per acted request, every recorded path must be a pure addition:
+          - under refs/: absent at base, present at HEAD. A path that existed at
+            base is a rewrite wearing an addition's name; one absent at HEAD is a
+            delete — both are the masking vector and both refuse. A rename is a
+            delete plus a fresh file, judged separately, and the delete side
+            loses.
+          - corpus.json: every base entry survives equal, non-entry keys
+            untouched, every added entry is claimed by an acted request's
+            `corpus_entries`, and no addition collides — with the base corpus or
+            with a sibling addition — on its observation tuple.
+        The ledger itself must be append-only (base text is a prefix of HEAD
+        text): history in the ledger is the audit trail, and an edited trail
+        audits nothing.
+        """
+        def git(*args):
+            p = subprocess.run(["git", "-C", ws] + list(args),
+                               capture_output=True, text=True, timeout=120)
+            return p.returncode, p.stdout, p.stderr
+
+        def at(ref, path):
+            code, out, _ = git("show", "%s:%s" % (ref, path))
+            return out if code == 0 else None
+
+        def blob_mode(ref, path):
+            code, out, _ = git("ls-tree", ref, "--", path)
+            return out.split()[0] if code == 0 and out.strip() else ""
+
+        ledger_rel = gm_rel.rstrip("/") + "/EXTENSIONS.md"
+        corpus_rel = gm_rel.rstrip("/") + "/corpus.json"
+        refs_prefix = gm_rel.rstrip("/") + "/refs/"
+
+        def introducing_commits():
+            """First commit in which each ledger block id appears, oldest first.
+
+            Separation of powers is a claim about WHO wrote what, and the
+            ledger's own history is the only record of it neither party writes
+            twice. A request and its act sharing an introducing commit means the
+            constrained party filed and answered in one gesture, so the net's
+            subbot never ran — production cannot produce that shape, because the
+            parent commits its lot before the subbot starts (adversarial finding,
+            executed)."""
+            code, out, _ = git("log", "--format=%H", "--reverse", "--", ledger_rel)
+            if code != 0:
+                return None
+            first = {}
+            for sha in out.split():
+                text = at(sha, ledger_rel)
+                if text is None:
+                    continue
+                for kind in ("request", "act"):
+                    for b in _extension_blocks(text, kind):
+                        bid = b.get("id")
+                        if isinstance(bid, str) and bid:
+                            first.setdefault((kind, bid), sha)
+            return first
+
+        # An unresolvable base and an honest "absent at base" both read as None
+        # below, so a bad sha would certify everything as an addition — a guard
+        # whose failure mode is a full pass (adversarial finding, executed).
+        # Refuse it the way an empty base is refused.
+        code, _, err = git("rev-parse", "--verify", "--quiet", base + "^{commit}")
+        if code != 0:
+            return {"error": "GM_BASE %r does not resolve to a commit (%s) — "
+                             "judging additions against nothing would pass by "
+                             "construction" % (base, err.strip() or "unknown ref")}
+
+        verdict = {"acted": [], "ok_paths": [], "ledger_append_only": True,
+                   "requests_added": 0, "problems": []}
+
+        head_txt = at("HEAD", ledger_rel) or ""
+        base_txt = at(base, ledger_rel) or ""
+        if base_txt and not head_txt.startswith(base_txt):
+            verdict["ledger_append_only"] = False
+            verdict["problems"].append(
+                "EXTENSIONS.md was REWRITTEN, not appended — history in the "
+                "ledger is the audit trail, and an edited trail audits nothing")
+
+        all_blocks = (_extension_blocks(head_txt, "request") +
+                      _extension_blocks(head_txt, "act"))
+        if any(b.get("id") == "UNPARSEABLE" for b in all_blocks):
+            verdict["problems"].append(
+                "a ledger block does not parse as JSON — escalate, do not guess")
+        requests = {b["id"]: b for b in _extension_blocks(head_txt, "request")
+                    if b.get("id") != "UNPARSEABLE"}
+        acts = [b for b in _extension_blocks(head_txt, "act")
+                if b.get("id") != "UNPARSEABLE"]
+        base_req_ids = {b.get("id") for b in _extension_blocks(base_txt, "request")}
+        verdict["requests_added"] = len(set(requests) - base_req_ids)
+
+        # The corpus is judged ONCE, globally: additions-only, every base entry
+        # intact, every addition claimed by an acted request, no collision.
+        corpus_ok, corpus_problems, added_ids = True, [], set()
+        head_corpus_txt = at("HEAD", corpus_rel)
+        base_corpus_txt = at(base, corpus_rel)
+        corpus_changed = head_corpus_txt != base_corpus_txt
+        if corpus_changed:
+            head_c = base_c = None
+            try:
+                head_c = json.loads(head_corpus_txt or "{}")
+                base_c = json.loads(base_corpus_txt or "{}")
+            except ValueError as e:
+                corpus_problems.append("corpus.json does not parse: %s" % e)
+            if head_c is not None and base_c is not None and \
+                    not isinstance(head_c, dict):
+                corpus_problems.append("corpus.json is not an object")
+                head_c = base_c = None
+            if head_c is not None and base_c is not None and (
+                    not isinstance(head_c.get("entries", []), list)
+                    or not all(isinstance(e, dict)
+                               for e in head_c.get("entries", []))):
+                corpus_problems.append(
+                    "corpus.json `entries` is not a list of objects — refused, "
+                    "not crashed")
+                head_c = base_c = None
+            if head_c is not None and base_c is not None:
+                if {k: v for k, v in head_c.items() if k != "entries"} != \
+                        {k: v for k, v in base_c.items() if k != "entries"}:
+                    corpus_problems.append(
+                        "corpus.json keys outside `entries` changed — an "
+                        "extension adds entries and touches nothing else")
+                # An id names ONE observation. Duplicated ids collapse in every
+                # by-id index (this one, the capture map, the refs map), so the
+                # equality check would read the surviving twin while the capture
+                # hands the reference to the other — an existing observation
+                # hijacked through the channel (adversarial finding, executed).
+                head_ids = [e.get("id") for e in head_c.get("entries", [])]
+                dupes = sorted({i for i in head_ids if head_ids.count(i) > 1})
+                if dupes:
+                    corpus_problems.append(
+                        "duplicate entry id(s) %s — an id is one observation, "
+                        "and a twin id hands the capture to whichever entry "
+                        "wins an ordering nobody audits" % ", ".join(map(repr, dupes)))
+                base_by_id = {e.get("id"): e for e in base_c.get("entries", [])
+                              if isinstance(e, dict)}
+                head_by_id = {e.get("id"): e for e in head_c.get("entries", [])}
+                for bid, be in base_by_id.items():
+                    if bid not in head_by_id:
+                        corpus_problems.append(
+                            "entry %r was REMOVED — a delete is the masking "
+                            "vector, not an extension" % bid)
+                    elif head_by_id[bid] != be:
+                        corpus_problems.append(
+                            "entry %r was MODIFIED — a rewrite is the masking "
+                            "vector, not an extension" % bid)
+                added_ids = set(head_by_id) - set(base_by_id)
+                # An entry id DERIVES a reference path (refs/<id>.txt) in the
+                # record and gate paths, unvalidated there — so an added id
+                # carrying a separator is a write to an EXISTING reference
+                # wearing an addition's name, the corpus-surface twin of the
+                # refs/ symlink (consolidation finding, executed with
+                # id "../refs/1").
+                for aid in sorted(added_ids):
+                    if not isinstance(aid, str) or not aid or aid in (".", "..") \
+                            or any(c in aid for c in "/\\") \
+                            or aid != os.path.basename(aid):
+                        corpus_problems.append(
+                            "added entry id %r derives a reference path outside "
+                            "refs/ — a write to an existing reference wearing an "
+                            "addition's name" % (aid,))
+                claimed = set()
+                for act in acts:
+                    req = requests.get(act.get("id"))
+                    for e in (req or {}).get("corpus_entries") or []:
+                        if isinstance(e, dict) and e.get("id"):
+                            claimed.add(e["id"])
+                unclaimed = added_ids - claimed
+                if unclaimed:
+                    corpus_problems.append(
+                        "%d added entr%s no acted request claims: %s — an "
+                        "addition smuggled beside an acted one is still smuggled"
+                        % (len(unclaimed), "y" if len(unclaimed) == 1 else "ies",
+                           ", ".join(sorted(unclaimed))))
+                base_keys = {_entry_observation_key(e)
+                             for e in base_by_id.values()}
+                seen_new = {}
+                for aid in sorted(added_ids):
+                    key = _entry_observation_key(head_by_id[aid])
+                    if key in base_keys or key in seen_new:
+                        other = seen_new.get(key, "an existing entry")
+                        corpus_problems.append(
+                            "added entry %r observes the same tuple as %s — two "
+                            "references for one observation resolve later by a "
+                            "cleanup that picks the masking direction"
+                            % (aid, other))
+                    seen_new[key] = "added entry %r" % aid
+            corpus_ok = not corpus_problems
+
+        intro = introducing_commits()
+        for act in acts:
+            row = {"id": act.get("id"), "paths": [], "ok": False, "problems": []}
+            req = requests.get(act.get("id"))
+            if req is None:
+                row["problems"].append("an act without a request acts nothing")
+            elif intro is None:
+                row["problems"].append(
+                    "cannot read the ledger's history — provenance unproven, and "
+                    "an unprovable act is refused, not assumed")
+            elif intro.get(("act", act.get("id"))) is not None \
+                    and intro.get(("act", act.get("id"))) == intro.get(("request", act.get("id"))):
+                row["problems"].append(
+                    "the requester acted its own request: %s introduced both the "
+                    "request and the act, so the net's subbot never judged it — "
+                    "filing and answering are different powers"
+                    % intro[("act", act.get("id"))][:12])
+            paths = [p for p in (act.get("recorded_paths") or [])
+                     if isinstance(p, str) and p]
+            row["paths"] = paths
+            if req is not None and not paths:
+                row["problems"].append(
+                    "the act records no path — an extension that touched "
+                    "nothing extended nothing")
+            for p in paths:
+                if p == ledger_rel:
+                    continue
+                if p == corpus_rel:
+                    if not corpus_changed:
+                        row["problems"].append(
+                            "corpus.json is recorded but did not change")
+                    elif not corpus_ok:
+                        row["problems"].extend(corpus_problems)
+                elif p.startswith(refs_prefix):
+                    if at(base, p) is not None:
+                        row["problems"].append(
+                            "%s existed at base — a rewrite wearing an "
+                            "addition's name" % p)
+                    elif at("HEAD", p) is None:
+                        row["problems"].append(
+                            "%s is recorded but absent at HEAD — a recorded "
+                            "delete, and a delete is the masking vector" % p)
+                    elif blob_mode("HEAD", p) not in ("100644", "100755"):
+                        # A symlink's content is its target string, so it passes
+                        # every text check while the next record pass writes
+                        # THROUGH it onto an existing reference — an addition
+                        # that masks (adversarial finding, executed).
+                        row["problems"].append(
+                            "%s is not a regular file (mode %s) — a link is a "
+                            "write to somewhere else wearing an addition's name"
+                            % (p, blob_mode("HEAD", p) or "?"))
+                    elif req is not None and p not in (req.get("paths") or []) \
+                            and p not in {refs_prefix + e["id"] + ".txt"
+                                          for e in (req.get("corpus_entries") or [])
+                                          if isinstance(e, dict)
+                                          and isinstance(e.get("id"), str)
+                                          and e["id"] == os.path.basename(e["id"])}:
+                        # Added refs are claimed against the request — explicitly
+                        # in `paths` (add-file), or implicitly as the reference an
+                        # add-entry's claimed entry DERIVES (the gate demands
+                        # refs/<id>.txt for every entry, so a claimed entry claims
+                        # its reference; ids carrying separators derive nothing —
+                        # they are refused above). Anything else is smuggling.
+                        row["problems"].append(
+                            "%s is neither declared in the request's `paths` nor "
+                            "derived from a claimed corpus entry — acting more "
+                            "than was asked is smuggling" % p)
+                else:
+                    row["problems"].append(
+                        "%s is outside the extension surface (refs/ and "
+                        "corpus.json) — the canon, the mutants, the harness and "
+                        "the configuration are the judge's territory" % p)
+            if req is not None and not _records_extension_surface(paths):
+                # The ledger is the paperwork of the filing, not the extension:
+                # an act recording only it certified paths the net never gained
+                # (adversarial finding, executed).
+                row["problems"].append(
+                    "the act records no path on the extension surface (refs/ or "
+                    "corpus.json) — filing paperwork is not an extension")
+            row["ok"] = (req is not None and not row["problems"]
+                         and verdict["ledger_append_only"])
+            if row["ok"]:
+                verdict["ok_paths"].extend(row["paths"])
+            verdict["acted"].append(row)
+
+        # Corpus damage must surface even when NO act recorded corpus.json —
+        # otherwise a hand-run of this mode shows every row ok and an empty
+        # problems list while the corpus sits amputated, and the reader walks
+        # away reassured by the very command meant to warn them (review note).
+        if corpus_changed and corpus_problems and \
+                not any(corpus_rel in (a.get("recorded_paths") or []) for a in acts):
+            verdict["problems"].extend(corpus_problems)
+
+        verdict["ok_paths"] = sorted(set(verdict["ok_paths"]))
+        return verdict
+
+
     # ─── Route coverage — the corpus states its own perimeter ───────────────────
 
     def route_regex(pattern):
@@ -2452,6 +2853,351 @@ tool oracle_run:
             check("bloc objet SANS id -> escalade nommee, pas un KeyError",
                   pending_rebaselines(ldir)[0]["id"], "UNPARSEABLE")
 
+            # 8e. Extensions : le verdict additions-only, falsifie dans les deux
+            #     sens — une extension legitime DOIT passer, et chaque deguisement
+            #     du vecteur de masquage (reecriture, suppression, retouche,
+            #     collision, entree passee en fraude, registre reecrit) DOIT
+            #     rougir. Un fixture git reel, parce que le verdict se lit en git.
+            xroot = tempfile.mkdtemp(prefix="gm-selftest-ext-")
+            xgm = os.path.join(xroot, ".golden-master")
+            os.makedirs(os.path.join(xgm, "refs"))
+            base_entry = {"id": "1", "method": "GET", "path": "/a", "persona": "p"}
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry]}, f)
+            with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-1\n")
+            for cmd in ("git init -q", "git add -A",
+                        "git -c user.email=t@t -c user.name=t commit -qm seed"):
+                run(cmd, xroot, timeout=60)
+            xbase = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+
+            def xledger(*blks):
+                with open(os.path.join(xgm, "EXTENSIONS.md"), "w", encoding="utf-8") as f:
+                    f.write("\n".join("<!-- iterion:extension-%s\n%s\n-->" % b
+                                      for b in blks))
+
+            def xcommit():
+                run("git add -A", xroot, timeout=60)
+                run("git -c user.email=t@t -c user.name=t commit -qm x",
+                    xroot, timeout=60)
+
+            def xrequest(req):
+                """The lot files its request and commits. A fixture that stages a
+                request and its act in ONE commit models a sequence production
+                cannot produce (the parent commits its lot before the subbot
+                starts) — and hides the provenance the verdict checks."""
+                xledger(("request", req))
+                xcommit()
+
+            def xreset():
+                run("git reset -q --hard %s" % xbase, xroot, timeout=60)
+                run("git clean -qfd", xroot, timeout=60)
+
+            req2 = ('{"id": "E-1", "lot": "L", "type": "add-file",'
+                    ' "paths": [".golden-master/refs/2.txt"]}')
+            act2 = ('{"id": "E-1", "lot": "L",'
+                    ' "recorded_paths": [".golden-master/refs/2.txt"]}')
+
+            check("pas de registre -> aucune extension pendante",
+                  pending_extensions(xgm), [])
+            xledger(("request", req2))
+            check("demande sans acte -> pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+            xledger(("request", req2), ("act", act2))
+            check("demande actee -> rien", pending_extensions(xgm), [])
+            xledger(("request", 'pas du json'))
+            check("bloc extension illisible -> escalade nommee",
+                  pending_extensions(xgm)[0]["id"], "UNPARSEABLE")
+
+            # Extension legitime : un fichier de ref NEUF, acte, registre commite.
+            xreset()
+            xrequest(req2)
+            xledger(("request", req2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            v = extension_verdict(xroot, ".golden-master", xbase)
+            check("add-file legitime -> ok, chemin exempte",
+                  [v["acted"][0]["ok"], v["ok_paths"]],
+                  [True, [".golden-master/refs/2.txt"]])
+
+            # Reecriture deguisee : la ref existait a la base.
+            xreset()
+            xledger(("request", '{"id": "E-1", "lot": "L", "paths": [".golden-master/refs/1.txt"]}'),
+                    ("act", '{"id": "E-1", "lot": "L", "recorded_paths": [".golden-master/refs/1.txt"]}'))
+            with open(os.path.join(xgm, "refs", "1.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-1-reecrite\n")
+            xcommit()
+            check("reecriture deguisee en ajout -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Suppression enregistree : le chemin manque a HEAD (le cote delete
+            # d'un renommage perd exactement ici).
+            xreset()
+            xledger(("request", req2), ("act", act2))
+            xcommit()
+            check("chemin enregistre absent a HEAD (delete/rename) -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Entree de corpus legitime, revendiquee par la demande.
+            xreset()
+            new_entry = {"id": "2", "method": "GET", "path": "/b", "persona": "p"}
+            xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                     ' "corpus_entries": [{"id": "2"}]}')
+            xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
+                                ' "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, new_entry]}, f)
+            xcommit()
+            check("add-entry legitime et revendiquee -> ok",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], True)
+
+            # Retouche d'une entree existante sous couvert d'ajout.
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            touched = dict(base_entry, path="/a-bougee")
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [touched, new_entry]}, f)
+            xcommit()
+            check("entree existante retouchee -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Collision : la « nouvelle » entree observe le meme tuple qu'une
+            # existante — deux references pour une observation.
+            xreset()
+            collider = dict(base_entry, id="9")
+            xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                    ("act", '{"id": "E-3", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, collider]}, f)
+            xcommit()
+            check("collision de tuple d'observation -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Entree passee en fraude : ajoutee au corpus, revendiquee par
+            # personne.
+            xreset()
+            smuggled = {"id": "8", "method": "GET", "path": "/c", "persona": "p"}
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, new_entry, smuggled]}, f)
+            xcommit()
+            check("entree non revendiquee a cote d'une actee -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Chemin hors surface : le canon est le territoire du juge.
+            xreset()
+            xledger(("request", '{"id": "E-4", "lot": "L", "paths": [".golden-master/canon/x.py"]}'),
+                    ("act", '{"id": "E-4", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/canon/x.py"]}'))
+            os.makedirs(os.path.join(xgm, "canon"), exist_ok=True)
+            with open(os.path.join(xgm, "canon", "x.py"), "w", encoding="utf-8") as f:
+                f.write("# neuf\n")
+            xcommit()
+            check("chemin hors refs/+corpus (canon) -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Registre reecrit : un registre COMMITTE a la base n'est plus un
+            # prefixe de HEAD. (Un registre ne EXISTANT PAS a la base rend ce
+            # check vacueux par construction — la, c'est « acte sans demande »
+            # qui tient la ligne, teste plus bas.)
+            xreset()
+            xledger(("request", req2))
+            xcommit()
+            xbase2 = run("git rev-parse HEAD", xroot, timeout=60)[1].strip()
+            xledger(("act", act2))  # la demande a disparu : trail edite
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            v = extension_verdict(xroot, ".golden-master", xbase2)
+            check("registre committe puis reecrit -> append_only faux et acte refuse",
+                  [v["ledger_append_only"], v["acted"][0]["ok"]],
+                  [False, False])
+
+            # Acte sans demande : il n'acte rien.
+            xreset()
+            xledger(("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            # Un acte introduit par le commit qui depose sa propre demande : le
+            # lot a filed and answered, le subbot du filet n'a jamais juge.
+            xreset()
+            xledger(("request", req2), ("act", act2))
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            v_self = extension_verdict(xroot, ".golden-master", xbase)
+            check("demande et acte dans UN commit (le lot s'auto-sert) -> refuse",
+                  [v_self["acted"][0]["ok"], v_self["ok_paths"]], [False, []])
+
+            # Un acte qui n'enregistre que le registre : il ne laisse pas la
+            # demande pendante, et il n'est pas certifie.
+            xreset()
+            ledger_only = ('{"id": "E-1", "lot": "L", "recorded_paths":'
+                           ' [".golden-master/EXTENSIONS.md"]}')
+            xrequest(req2)
+            xledger(("request", req2), ("act", ledger_only))
+            xcommit()
+            check("acte n'enregistrant QUE le registre -> la demande RESTE pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+            check("acte n'enregistrant QUE le registre -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"],
+                  False)
+
+            # Un scalaire la ou le juge itere : le bloc devient refusable, il ne
+            # fait plus tomber le verdict (qui etait lu comme "rien a refuser").
+            xreset()
+            scalar_act = '{"id": "E-1", "lot": "L", "recorded_paths": 1}'
+            xrequest(req2)
+            xledger(("request", req2), ("act", scalar_act))
+            xcommit()
+            check("recorded_paths scalaire -> la demande RESTE pendante, pas de crash",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+            v_scalar = extension_verdict(xroot, ".golden-master", xbase)
+            check("recorded_paths scalaire -> verdict rendu et acte refuse",
+                  ["error" not in v_scalar, v_scalar["acted"][0]["ok"]], [True, False])
+
+            # Deux entrees d'assets aux prefixes DISTINCTS observent deux choses
+            # differentes : refuser l'ajout serait un faux positif bloquant.
+            a1 = {"id": "a1", "surface": "asset", "persona": "p",
+                  "static_prefix": "s/", "template_prefix": "t/"}
+            a2 = {"id": "a2", "surface": "asset", "persona": "p",
+                  "static_prefix": "admin-s/", "template_prefix": "admin-t/"}
+            check("deux entrees asset a prefixes distincts -> pas de collision",
+                  _entry_observation_key(a1) == _entry_observation_key(a2), False)
+
+            check("acte sans demande -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # 8f. Les refus arraches par la revue adversariale — chaque
+            #     deguisement executee contre le verdict doit rester rouge.
+
+            # Un acte VIDE ne ferme pas le terme de conjonction : quatre lignes
+            # de JSON suffiraient a la partie contrainte pour eteindre la porte.
+            xledger(("request", req2), ("act", '{"id": "E-1", "lot": "L"}'))
+            check("acte sans recorded_paths -> la demande RESTE pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L", "recorded_paths": []}'))
+            check("acte a recorded_paths vide -> la demande RESTE pendante",
+                  [p["id"] for p in pending_extensions(xgm)], ["E-1"])
+
+            # Un symlink sous refs/ : son contenu est sa cible, la prochaine
+            # passe record ecrit A TRAVERS lui sur une reference existante.
+            xreset()
+            xledger(("request", req2), ("act", act2))
+            os.symlink("1.txt", os.path.join(xgm, "refs", "2.txt"))
+            xcommit()
+            check("symlink sous refs/ -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Un chemin refs/ enregistre mais non declare par la demande.
+            xreset()
+            xledger(("request", req2),
+                    ("act", '{"id": "E-1", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/refs/3.txt"]}'))
+            with open(os.path.join(xgm, "refs", "3.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-3\n")
+            xcommit()
+            check("ref ajoutee non declaree par la demande -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Un id duplique : l'egalite lit un jumeau, la capture sert l'autre.
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "1"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            twin = dict(base_entry, path="/detournee")
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [twin, base_entry]}, f)
+            xcommit()
+            check("id duplique dans le corpus -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Une cle cosmetique ne neutralise pas la collision d'observation.
+            xreset()
+            cosmetic = dict(base_entry, id="9", note="differente en apparence")
+            xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                    ("act", '{"id": "E-3", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, cosmetic]}, f)
+            xcommit()
+            check("collision masquee par une cle cosmetique -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Une base irresoluble ne tamponne rien : elle refuse.
+            check("GM_BASE irresoluble -> erreur, pas un laissez-passer",
+                  "error" in extension_verdict(xroot, ".golden-master", "d" * 40), True)
+
+            # Un corpus malforme refuse, il ne crashe pas.
+            xreset()
+            xledger(("request", '{"id": "E-2", "lot": "L", "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                f.write('{"entries": {"E1": {}}}')
+            xcommit()
+            check("corpus malforme -> refuse, pas une traceback",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # 8g. Les refus du tour de CONSOLIDATION — la classe id-derive-un-
+            #     chemin et la cle sensible a la presence, plus le flux add-entry
+            #     legitime que le durcissement du tour 1 avait ferme.
+
+            # Un id ajoute portant un separateur derive refs/<id>.txt HORS de
+            # refs/ — le jumeau corpus du symlink.
+            xreset()
+            traversal = {"id": "../refs/1", "method": "GET", "path": "/t", "persona": "p"}
+            xledger(("request", '{"id": "E-5", "lot": "L", "corpus_entries": [{"id": "../refs/1"}]}'),
+                    ("act", '{"id": "E-5", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, traversal]}, f)
+            xcommit()
+            check("id en traversee (../refs/1) -> refuse",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # La PRESENCE d'un champ allowliste vide ne scinde pas la cle.
+            xreset()
+            present_twin = dict(base_entry, id="9", query="")
+            xledger(("request", '{"id": "E-3", "lot": "L", "corpus_entries": [{"id": "9"}]}'),
+                    ("act", '{"id": "E-3", "lot": "L",'
+                            ' "recorded_paths": [".golden-master/corpus.json"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, present_twin]}, f)
+            xcommit()
+            check("collision masquee par un champ allowliste VIDE -> refusee",
+                  extension_verdict(xroot, ".golden-master", xbase)["acted"][0]["ok"], False)
+
+            # Le flux add-entry LEGITIME : l'entree revendiquee revendique sa
+            # reference derivee — corpus.json ET refs/2.txt exemptes, sans
+            # `paths` dans la demande (la forme que la doctrine prescrit).
+            xreset()
+            xrequest('{"id": "E-2", "lot": "L", "type": "add-entry",'
+                     ' "corpus_entries": [{"id": "2"}]}')
+            xledger(("request", '{"id": "E-2", "lot": "L", "type": "add-entry",'
+                                ' "corpus_entries": [{"id": "2"}]}'),
+                    ("act", '{"id": "E-2", "lot": "L", "recorded_paths":'
+                            ' [".golden-master/corpus.json", ".golden-master/refs/2.txt"]}'))
+            with open(os.path.join(xgm, "corpus.json"), "w", encoding="utf-8") as f:
+                json.dump({"entries": [base_entry, new_entry]}, f)
+            with open(os.path.join(xgm, "refs", "2.txt"), "w", encoding="utf-8") as f:
+                f.write("ref-2\n")
+            xcommit()
+            v = extension_verdict(xroot, ".golden-master", xbase)
+            check("add-entry avec sa ref derivee, sans `paths` -> ok, les deux exemptes",
+                  [v["acted"][0]["ok"], v["ok_paths"]],
+                  [True, [".golden-master/corpus.json", ".golden-master/refs/2.txt"]])
+
             # 9. Scellement : derivable partout, jamais dans le parent du worktree
             #    (lecture seule en sandbox), et sans collision entre worktrees
             #    freres qui partagent le meme basename.
@@ -2495,12 +3241,30 @@ tool oracle_run:
         # set somewhere the gate will not look, and two runs cannot share a pile.
         sealed_dir = sealed_dir_for(ws)
         floor = int(os.environ.get("GM_MUTATION_FLOOR", "90"))
-        mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate | selftest
+        mode = os.environ.get("GM_MODE", "gate")   # gate | record | selfcheck | validate | selftest | extensions | extend-verify
 
         # Les tests du harnais d'abord, et hors de tout le reste : ils ne touchent
         # ni au depot, ni a l'application, ni a la configuration.
         if mode == "selftest":
             raise SystemExit(_selftest())
+
+        # Ledger listings and the additions-only verdict are pure git/file reads:
+        # no boot, no capture, callable from a verifier that must not pay for
+        # either — and BY the party whose own work they judge, because the code
+        # deciding is this file's, not theirs.
+        if mode == "extensions":
+            print(json.dumps({"pending": pending_extensions(gm_dir)}))
+            raise SystemExit(0)
+        if mode == "extend-verify":
+            base = os.environ.get("GM_BASE", "")
+            if not base:
+                print(json.dumps({"error": "GM_BASE is required — judging "
+                                  "additions against nothing would pass by "
+                                  "construction"}))
+                raise SystemExit(1)
+            print(json.dumps(extension_verdict(
+                ws, os.environ.get("GM_DIR", ".golden-master"), base)))
+            raise SystemExit(0)
 
         report = {"mode": mode, "total": 0, "valid": 0, "detected": 0, "score_pct": 0,
                   "noop_silent": False, "revert_clean": True, "collateral": 0,
@@ -2512,6 +3276,7 @@ tool oracle_run:
                   "features_total": 0, "features_excluded": 0,
                   "holdout_awaiting_gate": False,
                   "pending_rebaselines": [],
+                  "pending_extensions": [],
                   "holdout_detected": 0, "holdout_total": 0, "stable": False,
                   "holdout_detected_on_surface": 0, "score_on_surface_pct": 0,
                   "corpus_total": 0, "corpus_distinct": 0, "duplicate_refs": [],
@@ -2762,6 +3527,17 @@ tool oracle_run:
                      "a green counter-test), or refuse them in writing."
                      % (len(pending), json.dumps(pending, ensure_ascii=False)))
 
+            pending_ext = pending_extensions(gm_dir)
+            if pending_ext:
+                report["pending_extensions"] = pending_ext
+                bail("the ledger carries %d pending extension request(s): %s. Each one "
+                     "names an observation the net was asked to gain and does not "
+                     "have — a green built while they wait reports coverage the "
+                     "intent already knows is missing. The net's extension subbot "
+                     "acts them; what it cannot apply additively goes back to its "
+                     "requester in writing."
+                     % (len(pending_ext), json.dumps(pending_ext, ensure_ascii=False)))
+
         try:
             app_up(config, ws)
         except SystemExit as e:
@@ -2803,7 +3579,22 @@ tool oracle_run:
 
         try:
             if mode == "record":
-                snap = capture(config, corpus, canon)
+                # GM_RECORD_IDS scopes the record to named entries — the extension
+                # subbot needs to capture EXACTLY the entries it added: a full
+                # re-record inside a lot where behaviour legitimately moved would
+                # rewrite every reference and be refused wholesale as smuggling.
+                only = [i for i in os.environ.get("GM_RECORD_IDS", "").split(",")
+                        if i.strip()]
+                if only:
+                    known = {e["id"] for e in corpus["entries"]}
+                    missing = [i for i in only if i not in known]
+                    if missing:
+                        bail("GM_RECORD_IDS names %d entr%s absent from the "
+                             "corpus: %s — recording an unknown id writes a "
+                             "reference nothing will ever compare"
+                             % (len(missing), "y" if len(missing) == 1 else "ies",
+                                ", ".join(missing)))
+                snap = capture(config, corpus, canon, ids=only or None)
                 for k, v in snap.items():
                     with open(os.path.join(refs_dir, k + ".txt"), "w", encoding="utf-8", newline="") as f:
                         f.write(v)

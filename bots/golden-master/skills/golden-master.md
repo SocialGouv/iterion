@@ -211,6 +211,50 @@ under pressure learns a file's convention from the file, and a ledger whose visi
 all prose teaches prose — measured: a model announcement, complete in every way except the block,
 that nothing could act on until an operator transcribed it by hand.
 
+### The extension ledger — additions, the one change a bot may grant
+
+`EXTENSIONS.md`, beside `REBASELINE.md`, carries the ADDITIVE counterpart with the opposite
+authority. A re-baseline MOVES a reference, so only a human act closes it. An extension ADDS an
+observation point — a new route, a state only modernised code reaches — and the net's own subbot
+(`extend.bot`) may act it, because an addition is checkable: it cannot mask an existing
+divergence, it can only add a constraint. Same block idiom:
+
+```
+<!-- iterion:extension-request
+{"id": "E-<lot>-<n>", "lot": "<lot-id>", "type": "add-file|add-entry",
+ "paths": ["new reference paths under refs/, if add-file"],
+ "corpus_entries": [{"id": "<new-entry-id>", "...": "the full entry, tuple included"}],
+ "justification": "one line: the observation the intent requires and the net lacks"}
+-->
+<!-- iterion:extension-act
+{"id": "E-<lot>-<n>", "lot": "<lot-id>", "recorded_paths": ["…"], "ts": "…"}
+-->
+```
+
+An `add-entry` implies its reference: the gate demands `refs/<id>.txt` for
+every corpus entry, so the acting bot captures it (`GM_MODE=record` scoped
+with `GM_RECORD_IDS=<id,…>` — never a full re-record) and records it in the
+act; a claimed entry claims its derived reference, no `paths` line needed.
+Entry ids are file-name-safe by construction — an id carrying a path
+separator would derive a reference OUTSIDE refs/ and is refused.
+
+**A pending extension request is a conjunction term too** (`pending_extensions` in the verdict),
+for the mirrored reason: it names coverage the intent already knows is missing, and a green built
+while it waits reports that coverage anyway. No `replaces` chain here — a request that no longer
+applies is acted or withdrawn by its requester, never superseded.
+
+What the acting side is held to, mechanically (`GM_MODE=extend-verify`, judged in git against the
+run's base): every recorded path is a PURE addition — a refs/ file absent at base, or corpus
+entries where every base entry survives equal. A rewrite, a delete, or a rename (its delete side
+loses) is the masking vector wearing an addition's name → refused, re-baseline ledger, human. An
+added entry no acted request claims is smuggling → refused. An added entry whose observation
+tuple equals an existing one is a COLLISION — the tuple is the `OBSERVATION_FIELDS` allowlist
+(`method`, `path`, `persona`, `surface`, `fields`, `steps`, `params`, `query`, `body`,
+`readback`, `no_redirect`, `csrf_field`), NOT "the entry minus its id": a distinguishing field
+outside the allowlist does not disambiguate, and absent and empty compare equal. Two references
+for one observation resolve later by a cleanup that picks the masking direction → refused. The
+ledger is append-only: an edited trail audits nothing.
+
 ## The `write` surface — the only one a read-only capture cannot reach
 
 Every other surface watches a response **served**. A corruption that happens

@@ -244,7 +244,10 @@ tool reanchor_verify:
     #    configuration, the harness or any product file appearing here means the
     #    lot has just moved what judges it, through this bot.
     mutants_prefix = os.path.join(gm, "mutants") + "/"
-    code, out, err = git("diff", "--name-only", base, "HEAD")
+    # quotePath=false: a non-ASCII path comes back quoted and stops matching
+    # the prefix — the scope check would accuse a correct repair.
+    code, out, err = git("-c", "core.quotePath=false",
+                         "diff", "--name-only", base, "HEAD")
     if code != 0:
         problems.append("cannot diff against %s: %s" % (base, err.strip()))
     else:

@@ -981,7 +981,7 @@ redefine what judges it, because a golden master dies by re-baselining. The
   there. Do NOT use it to decide WHAT to modernise: the programme is a human
   decision recorded in the contract, and the lot DAG in particular encodes
   compatibility knowledge that cannot be re-derived from the tree.
-- **Vars**: `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `extend` (bool), `max_passes` (int), `only_lot` (string), `plan_path` (string), `reanchor` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/modernize/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo

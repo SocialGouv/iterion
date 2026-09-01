@@ -158,6 +158,18 @@ A red the ledger never heard about is a dead end: the supervising process can
 only execute what was announced. Every re-baseline need, however obvious it
 feels in the moment, goes to the ledger.
 
+The same channel exists for the opposite need. When the intent requires the
+net to OBSERVE something it does not cover yet — a new route, a state only
+the modernised code reaches — you do not write under the net to get it. You
+write an extension request in `EXTENSIONS.md` (same block discipline, blocks
+`iterion:extension-request`; canonical format in the golden-master doctrine
+skill) and the net's own bot acts it by pure addition, mechanically checked.
+The distinction that decides which ledger: MOVING a reference is a
+re-baseline and needs a human; ADDING an observation point is an extension
+and the net's bot may grant it. A rename is a move. If your request cannot be
+satisfied without touching an existing reference or entry, it is a
+re-baseline request wearing the wrong block.
+
 ## The third place a fix can cheat: the environment the judge looks through
 
 Two forms of cheating are obvious enough that any net guards against them:
