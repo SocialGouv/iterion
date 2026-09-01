@@ -898,6 +898,10 @@ func (p *RoutingPolicy) ComputeHash() string {
 	}
 	c := *p
 	c.Hash = ""
+	// Canonical: the action SET is order-insensitive — sort a copy so
+	// [merge relaunch] and [relaunch merge] are the same contract.
+	c.AllowedActions = append([]string(nil), p.AllowedActions...)
+	slices.Sort(c.AllowedActions)
 	b, err := json.Marshal(&c)
 	if err != nil {
 		// Marshalling a plain struct of strings/ints cannot fail;

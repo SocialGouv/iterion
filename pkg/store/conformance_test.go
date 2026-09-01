@@ -43,6 +43,7 @@ func conformanceSuiteWithOpts(t *testing.T, factory runStoreFactory, opts confor
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
+	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("ArtifactVersionsMonotone", func(t *testing.T) { testArtifactVersions(t, factory(t)) })
@@ -564,5 +565,51 @@ func testRoutingPolicyImmutable(t *testing.T, s RunStore) {
 	got, _ = s.LoadRun(ctx, runID)
 	if got.RoutingPolicy == nil || got.RoutingPolicy.Hash != launch.Hash {
 		t.Fatalf("policy swapped by a save: %+v", got.RoutingPolicy)
+	}
+	// The first-write window closes at the terminal: a run that
+	// finished WITHOUT a contract cannot be given one after the fact —
+	// that would decide already-produced work retroactively.
+	const lateID = "run-routing-policy-late"
+	if _, err := s.CreateRun(ctx, lateID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, lateID, RunStatusFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	late, _ := s.LoadRun(ctx, lateID)
+	late.RoutingPolicy = launch
+	if err := s.SaveRun(ctx, late); err != nil {
+		t.Fatalf("SaveRun late: %v", err)
+	}
+	if got, _ := s.LoadRun(ctx, lateID); got.RoutingPolicy != nil {
+		t.Fatalf("a contract was fixed onto already-terminal work: %+v", got.RoutingPolicy)
+	}
+}
+
+// testOutputsSurviveTerminal: the checkpoint's outputs are the run's
+// terminal evidence — the values a routing contract evaluates. They
+// must survive the transition INTO finished on every backend (the FS
+// store used to clear them there while Mongo kept them: the two
+// backends diverged on the very field a decision reads).
+func testOutputsSurviveTerminal(t *testing.T, s RunStore) {
+	t.Helper()
+	ctx := context.Background()
+	const runID = "run-outputs-survive"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	cp := &Checkpoint{Outputs: map[string]map[string]any{"gate": {"converged": true}}}
+	if err := s.SaveCheckpoint(ctx, runID, cp); err != nil {
+		t.Fatalf("SaveCheckpoint: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, runID, RunStatusFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.Outputs["gate"]["converged"] != true {
+		t.Fatalf("terminal outputs destroyed by the finish transition: %+v", r.Checkpoint)
 	}
 }

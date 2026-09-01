@@ -292,6 +292,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
+	if req.RoutingPolicy != nil {
+		// Refuse a malformed contract BEFORE any work happens — a bad
+		// expression discovered at the terminal would strand a finished
+		// run behind an unreadable policy.
+		if perr := routing.Validate(req.RoutingPolicy); perr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", perr)
+			return
+		}
+		req.RoutingPolicy.Hash = req.RoutingPolicy.ComputeHash()
+	}
 	// Cloud mode has no operator filesystem, so a bare workspace file_path
 	// can't be read. Resolve the bot through the tiered authority instead
 	// (bot_resolver.go): the caller's TEAM-AUTHORED bot first, then a
@@ -331,16 +341,6 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
-	if req.RoutingPolicy != nil {
-		// Refuse a malformed contract BEFORE any work happens — a bad
-		// expression discovered at the terminal would strand a finished
-		// run behind an unreadable policy.
-		if perr := routing.Validate(req.RoutingPolicy); perr != nil {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", perr)
-			return
-		}
-		req.RoutingPolicy.Hash = req.RoutingPolicy.ComputeHash()
-	}
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid timeout: %v", err)
 		span.SetStatus(codes.Error, "invalid timeout")

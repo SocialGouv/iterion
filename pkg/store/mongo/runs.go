@@ -310,8 +310,19 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// The launch-frozen contract is IMMUTABLE: once persisted it
 		// wins over whatever the saver carries (a stale full-document
 		// save, or a binary too old to know the field, must not drop
-		// it). First write (the launch) lands via the fallback.
-		"routing_policy": bson.M{"$ifNull": bson.A{"$routing_policy", bson.M{"$literal": r.RoutingPolicy}}},
+		// it). The first-write fallback only stays open while the run
+		// has not started producing (absent/queued/running status):
+		// fixing a contract onto ALREADY-TERMINAL work would decide
+		// retroactively — the exact attack the snapshot exists to stop.
+		"routing_policy": bson.M{"$cond": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
+			"$routing_policy",
+			bson.M{"$cond": bson.A{
+				bson.M{"$in": bson.A{bson.M{"$ifNull": bson.A{"$status", string(store.RunStatusQueued)}}, bson.A{store.RunStatusQueued, store.RunStatusRunning}}},
+				bson.M{"$literal": r.RoutingPolicy},
+				nil,
+			}},
+		}},
 	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is

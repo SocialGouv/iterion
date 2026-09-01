@@ -93,14 +93,47 @@ func TestEvaluate_StrictAndFailClosed(t *testing.T) {
 			want: DecisionEscalate, reasonHas: "relaunch is not an allowed action",
 		},
 		{
-			name: "run namespace resolves the typed outcome",
-			run:  runWith(gateTrue, policy(`outputs.gate.converged && run.terminal_code == ""`, nil, "merge")),
-			want: DecisionMerge, reasonHas: "success_when held",
+			// C1 regression: "!" coerces via truthiness inside the DSL —
+			// an absent field under negation must escalate, never read
+			// as true and merge.
+			name: "negated absent field escalates",
+			run:  runWith(map[string]map[string]any{"gate": {"converged": true}}, policy("outputs.gate.converged && !outputs.oracle.blind", nil, "merge")),
+			want: DecisionEscalate, reasonHas: "path absent",
 		},
 		{
+			// C1 regression, the block_when arm: a disjunction of two
+			// absent blockers must not silently disarm.
+			name: "blocker disjunction over absent fields escalates",
+			run: runWith(gateTrue, policy("outputs.gate.converged",
+				[]string{"outputs.gate.rebaseline || outputs.gate.reanchor"}, "merge")),
+			want: DecisionEscalate, reasonHas: "block_when[0] unreadable",
+		},
+		{
+			// C1 regression: a truthy non-bool inside a conjunction must
+			// not coerce into a verdict.
+			name: "non-bool operand inside && escalates",
+			run: runWith(map[string]map[string]any{"gate": {"converged": true, "ok": "partial"}},
+				policy("outputs.gate.converged && outputs.gate.ok", nil, "merge")),
+			want: DecisionEscalate, reasonHas: "not a bool",
+		},
+		{
+			// M6: a contract newer than this reader is never executed.
+			name: "newer contract version escalates",
+			run: func() *store.Run {
+				p := policy("outputs.gate.converged", nil, "merge")
+				p.Version = CurrentPolicyVersion + 1
+				p.Hash = p.ComputeHash()
+				return runWith(gateTrue, p)
+			}(),
+			want: DecisionEscalate, reasonHas: "newer than this reader",
+		},
+		{
+			// C2 defence in depth: no terminal outputs (a store that
+			// destroyed the checkpoint, a run that never produced) —
+			// nothing to read a verdict from.
 			name: "nil checkpoint escalates",
 			run:  &store.Run{ID: "r2", RoutingPolicy: policy("outputs.gate.converged", nil, "merge")},
-			want: DecisionEscalate, reasonHas: "unreadable",
+			want: DecisionEscalate, reasonHas: "no terminal outputs",
 		},
 	}
 	for _, c := range cases {
@@ -129,11 +162,24 @@ func TestValidate(t *testing.T) {
 		p    *store.RoutingPolicy
 		want string
 	}{
-		{"empty success_when", &store.RoutingPolicy{}, "success_when is required"},
-		{"malformed success_when", &store.RoutingPolicy{SuccessWhen: "outputs.gate.converged &&"}, "success_when"},
-		{"malformed blocker", &store.RoutingPolicy{SuccessWhen: "outputs.a.b", BlockWhen: []string{"(("}}, "block_when[0]"},
-		{"unknown action", &store.RoutingPolicy{SuccessWhen: "outputs.a.b", AllowedActions: []string{"deploy"}}, "unknown action"},
-		{"negative cap", &store.RoutingPolicy{SuccessWhen: "outputs.a.b", MaxRelaunches: -1}, "max_relaunches"},
+		{"missing version", &store.RoutingPolicy{SuccessWhen: "outputs.a.b"}, "version"},
+		{"future version", &store.RoutingPolicy{Version: CurrentPolicyVersion + 1, SuccessWhen: "outputs.a.b"}, "version"},
+		{"empty success_when", &store.RoutingPolicy{Version: 1}, "success_when is required"},
+		{"malformed success_when", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate.converged &&"}, "success_when"},
+		{"malformed blocker", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.a.b", BlockWhen: []string{"(("}}, "block_when[0]"},
+		// H3: a namespace the routing context cannot resolve is refused
+		// at launch — accepted, it would escalate (or worse) forever.
+		{"foreign namespace", &store.RoutingPolicy{Version: 1, SuccessWhen: "!input.dry_run"}, "outside the contract's vocabulary"},
+		{"vars namespace", &store.RoutingPolicy{Version: 1, SuccessWhen: "vars.x && outputs.a.b"}, "outside the contract's vocabulary"},
+		{"shallow ref", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate"}, "outside the contract's vocabulary"},
+		// C1 at launch: comparisons/literals leave the strict grammar.
+		{"comparison refused", &store.RoutingPolicy{Version: 1, SuccessWhen: `outputs.a.b == "x"`}, "grammar"},
+		{"literal refused", &store.RoutingPolicy{Version: 1, SuccessWhen: "true"}, "grammar"},
+		{"unknown action", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.a.b", AllowedActions: []string{"deploy"}}, "unknown action"},
+		{"negative cap", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.a.b", MaxRelaunches: -1}, "max_relaunches"},
+		// B8: the landing target feeds a git operation.
+		{"hostile strategy", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.a.b", MergeStrategy: "rm -rf"}, "merge_strategy"},
+		{"hostile branch", &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.a.b", MergeInto: "-evil"}, "merge_into"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -157,6 +203,12 @@ func TestComputeHash_CanonicalAndSelfExcluding(t *testing.T) {
 	c := policy("outputs.g.ok2", nil, "merge")
 	if c.Hash == a.Hash {
 		t.Fatal("different contracts must hash differently")
+	}
+	// B7: the action SET is order-insensitive.
+	d1 := policy("outputs.g.ok", nil, "merge", "relaunch")
+	d2 := policy("outputs.g.ok", nil, "relaunch", "merge")
+	if d1.Hash != d2.Hash {
+		t.Fatalf("action order changed the hash: %q vs %q", d1.Hash, d2.Hash)
 	}
 	// Hash excludes itself: recomputing over a hashed policy is stable.
 	if got := a.ComputeHash(); got != a.Hash {

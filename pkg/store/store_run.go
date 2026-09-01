@@ -181,9 +181,14 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 			rr.MergeClaimedAt = persisted.MergeClaimedAt
 		}
 		// The launch-frozen contract is immutable: the persisted value
-		// wins over whatever the saver carries.
+		// wins over whatever the saver carries, and the first-write
+		// window only stays open while the run has not produced yet —
+		// adding a contract to already-terminal work would decide
+		// retroactively.
 		if persisted.RoutingPolicy != nil {
 			rr.RoutingPolicy = persisted.RoutingPolicy
+		} else if persisted.Status != RunStatusQueued && persisted.Status != RunStatusRunning {
+			rr.RoutingPolicy = nil
 		}
 		if persisted.Status == rr.Status {
 			rr.OutcomeSeq = persisted.OutcomeSeq
