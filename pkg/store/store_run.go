@@ -140,9 +140,12 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	if err := s.guardNotDeleted(r.ID); err != nil {
 		return err
 	}
-	// A full-document write must not resurrect a failure code a copy
-	// loaded before a status change still carries (the rewind claim
-	// learned this the hard way) — normalize at the choke point.
+	// Best-effort guard: a copy whose STATUS is already non-failure
+	// must not resurrect its failure code through this full-document
+	// write. A copy stale on the status itself still rewrites
+	// status+code together (the inherent SaveRun read-modify-write
+	// hazard — a version CAS is the real fix, follow-up); callers on
+	// that path re-stamp the fields by hand (see rewind.go).
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 	}
@@ -459,15 +462,17 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 			r.Error = ""
 		}
 	}
-	// Clear checkpoint when leaving paused state (preserved for
-	// failed_resumable, cancelled, and failed). `failed` keeps its
-	// checkpoint on purpose: a run that reached the DSL fail node is
-	// terminal (no auto-resume) but stays rewindable on an explicit
-	// operator action — its on-disk state is coherent, there is no
-	// technical reason to destroy the recovery point.
-	if status == RunStatusRunning || status == RunStatusFinished {
-		r.Checkpoint = nil
-	}
+	// A status transition NEVER destroys the checkpoint. The running
+	// claim used to clear it here — which, on a cloud pod, destroyed
+	// the resume point the moment a resumed run was claimed: every
+	// park writer that follows (drain, usage-cap, orphan sweeps,
+	// --force-stale) flips running→failed_resumable WITHOUT a
+	// checkpoint of its own, and the next resume restarted from the
+	// workflow entry. A fresh launch has no checkpoint to keep, a
+	// resumed run has everything to lose, and the engine overwrites it
+	// at its first node boundary anyway. Finished likewise keeps it:
+	// `iterion fork` reads a terminal parent's checkpoint for its
+	// outputs. Only DeleteRun and the rewind machinery may remove one.
 	return s.writeRun(r)
 }
 

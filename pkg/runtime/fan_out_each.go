@@ -46,7 +46,7 @@ import (
 func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID string) (string, error) {
 	node, ok := e.workflow.Nodes[routerNodeID]
 	if !ok {
-		return "", fmt.Errorf("fan_out_each router %q not found", routerNodeID)
+		return "", &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: routerNodeID, Message: fmt.Sprintf("fan_out_each router %q not found", routerNodeID)}
 	}
 	rn, ok := node.(*ir.RouterNode)
 	if !ok || rn.RouterMode != ir.RouterFanOutEach {

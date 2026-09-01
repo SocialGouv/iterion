@@ -341,3 +341,35 @@ func TestOpsDispatcher_NewFailureCodeIsANewEpisode(t *testing.T) {
 		t.Fatalf("repeat of the same code: %d alerts, want still 2", got)
 	}
 }
+
+// Unclassified parks (the declared-deferred writers persist an empty
+// code) still discriminate episodes: a fingerprint of the error text
+// stands in for the class, so two DIFFERENT unclassified parks are two
+// incidents while a bookkeeping bump of the same one stays deduped.
+func TestOpsDispatcher_EmptyCodeParksDiscriminateByError(t *testing.T) {
+	d, rs, sink := opsWorld(t)
+	run := seedOpsRun(t, rs, store.RunStatusFailedResumable, func(r *store.Run) {
+		r.Error = "sandbox start failed: image pull backoff"
+		r.RetryState = &store.RunRetryState{Attempts: 1}
+	})
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	// Bookkeeping bump, same error: still one episode.
+	r2, _ := rs.LoadRun(context.Background(), run.ID)
+	r2.UpdatedAt = r2.UpdatedAt.Add(time.Minute)
+	_ = rs.SaveRun(context.Background(), r2)
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 1 {
+		t.Fatalf("same unclassified park re-alerted: %d, want 1", got)
+	}
+	// A DIFFERENT unclassified failure, attempts unchanged: new incident.
+	r3, _ := rs.LoadRun(context.Background(), run.ID)
+	r3.Error = "queue schema mismatch: message v12 outside accepted range"
+	r3.UpdatedAt = r3.UpdatedAt.Add(time.Minute)
+	if err := rs.SaveRun(context.Background(), r3); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Handle(context.Background(), trigger.BuildRunOutcome(context.Background(), rs, run.ID, nil))
+	if got := len(sink.alerts()); got != 2 {
+		t.Fatalf("a NEW unclassified failure was silenced: %d alerts, want 2", got)
+	}
+}

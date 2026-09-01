@@ -376,8 +376,8 @@ func TestRestampWorkflowSource_PreservesTheResumeClaim(t *testing.T) {
 			"letting a second concurrent resume claim the same run",
 			got.Status, store.RunStatusRunning)
 	}
-	if got.Checkpoint != nil {
-		t.Errorf("checkpoint resurrected (%+v) — the running transition clears it", got.Checkpoint)
+	if got.Checkpoint == nil || got.Checkpoint.NodeID != "implement" {
+		t.Errorf("checkpoint lost across the restamp (%+v) — the running claim PRESERVES the resume point, and the restamp must not drop it either", got.Checkpoint)
 	}
 	if got.FinishedAt != nil {
 		t.Errorf("finished_at resurrected (%v) — the studio duration ticker freezes on it", got.FinishedAt)

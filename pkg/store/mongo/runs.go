@@ -226,9 +226,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// DeleteRun racing between the check above and this write leaves a
 	// tombstoned doc the filter no longer matches, and the upsert then
 	// trips the duplicate-_id error instead of resurrecting the run.
-	// A full-document write must not resurrect a failure code a copy
-	// loaded before a status change still carries (the rewind claim
-	// learned this the hard way) — normalize at the choke point.
+	// Best-effort guard: a copy whose STATUS is already non-failure
+	// must not resurrect its failure code through this full-document
+	// write. A copy stale on the status itself still rewrites
+	// status+code together (the inherent SaveRun read-modify-write
+	// hazard — a version CAS is the real fix, follow-up); callers on
+	// that path re-stamp the fields by hand (see rewind.go).
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 	}
@@ -654,9 +657,6 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 	switch status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		set["finished_at"] = now
-		if status == store.RunStatusFinished {
-			unset["checkpoint"] = ""
-		}
 	case store.RunStatusQueued:
 		set["queued_at"] = now
 		unset["finished_at"] = ""
@@ -665,11 +665,6 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 		// freezes mid-run (mirrors FilesystemRunStore).
 		set["error"] = ""
 		unset["finished_at"] = ""
-		// And the checkpoint, like the FS twin's applyStatusTransition:
-		// a pod claiming queued→running must not keep a previous
-		// attempt's checkpoint, or a crash before its first own
-		// checkpoint resumes from a stale node.
-		unset["checkpoint"] = ""
 	case store.RunStatusPausedWaitingHuman:
 		// Mirror the FS store: a generic UpdateRunStatus that crosses
 		// from a previously-terminal (failed_resumable) state into
@@ -819,12 +814,14 @@ func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store
 		return fmt.Errorf("store/mongo: %s %s: %w", opName, id, err)
 	}
 	if res.MatchedCount == 0 {
-		// Either the run is gone, or it is already cancelled and stays so.
-		// Distinguish, since a genuine miss must still surface.
+		// Either the run is gone (absent or tombstoned — LoadRun's
+		// typed error says which), or it is already cancelled and
+		// stays so.
 		if _, gerr := s.LoadRun(ctx, id); gerr == nil {
 			return nil
+		} else {
+			return fmt.Errorf("store/mongo: %s %s: %w", opName, id, gerr)
 		}
-		return fmt.Errorf("store/mongo: run %s not found", id)
 	}
 	return nil
 }

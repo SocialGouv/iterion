@@ -290,7 +290,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	if cp.BackendName != "" {
 		node, ok := e.workflow.Nodes[humanNodeID]
 		if !ok {
-			return fmt.Errorf("runtime: paused node %q not found in workflow", humanNodeID)
+			return &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: paused node %q not found in workflow", humanNodeID)}
 		}
 		ni := &model.ErrNeedsInteraction{
 			NodeID:           humanNodeID,
@@ -387,7 +387,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
-		return nil, fmt.Errorf("runtime: human node %q not found in workflow", humanNodeID)
+		return nil, &RuntimeError{Code: ErrCodeNodeNotFound, NodeID: humanNodeID, Message: fmt.Sprintf("runtime: human node %q not found in workflow", humanNodeID)}
 	}
 	if artifactVersions == nil {
 		artifactVersions = make(map[string]int)

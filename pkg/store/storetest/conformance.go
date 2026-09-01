@@ -1204,9 +1204,13 @@ func testTransitionSideEffects(t *testing.T, s store.RunStore) {
 	if err := s.FailRunResumable(ctx, "run_tse", cp, "boom", store.FailureInterrupted); err != nil {
 		t.Fatal(err)
 	}
-	// The running claim drops the previous attempt's checkpoint on both
-	// twins — a pod crashing before its first own checkpoint must not
-	// resume from a stale node on one backend and the entry on the other.
+	// The running claim PRESERVES the previous attempt's checkpoint on
+	// both twins: the park writers that follow (drain, usage-cap,
+	// orphan sweeps) flip running→failed_resumable without a
+	// checkpoint of their own, and the resume point must survive that
+	// round trip — a pod dying between its claim and its first own
+	// checkpoint resumes from the previous attempt's node, never from
+	// the workflow entry.
 	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, "should not persist"); err != nil {
 		t.Fatal(err)
 	}
@@ -1214,8 +1218,8 @@ func testTransitionSideEffects(t *testing.T, s store.RunStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Checkpoint != nil {
-		t.Errorf("running claim must clear the checkpoint, got node %q", r.Checkpoint.NodeID)
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "n1" {
+		t.Errorf("running claim destroyed the resume point (checkpoint %v)", r.Checkpoint)
 	}
 	if r.Error != "" {
 		t.Errorf("running run must carry no failure message, got %q", r.Error)
@@ -1245,6 +1249,19 @@ func testTransitionSideEffects(t *testing.T, s store.RunStore) {
 	if r.FailureCode != "" {
 		t.Errorf("SaveRun resurrected a stale code %q on a running run", r.FailureCode)
 	}
+	// Finished keeps the checkpoint too: `iterion fork` reads a
+	// terminal parent's checkpoint for its upstream outputs.
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusFinished, ""); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.LoadRun(ctx, "run_tse")
+	if r.Checkpoint == nil {
+		t.Error("finished transition destroyed the checkpoint a fork would read")
+	}
+	if err := s.UpdateRunStatus(ctx, "run_tse", store.RunStatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+
 	// Empty expectedFrom: a loud error on both twins (FS used to no-op
 	// silently while Mongo wrote unconditionally).
 	if _, err := s.UpdateRunStatusIf(ctx, "run_tse", store.RunStatusCancelled, "x", nil); err == nil {
