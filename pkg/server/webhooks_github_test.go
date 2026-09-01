@@ -786,6 +786,42 @@ func TestGitHubWebhook_ReviewRequestedUnauthorizedFiltered(t *testing.T) {
 	}
 }
 
+// R0c3aab: the replier gate runs AFTER the event/project/author scope filter
+// — an out-of-scope delivery must never cost a forge API call nor be able to
+// 502 the endpoint. And when the gate demotes the gesture, the hold label it
+// had provisionally waived is re-applied.
+func TestGitHubWebhook_ReviewRequestScopeFilterBeforeGate(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var launches, gateCalls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launches++
+		return "run1", nil
+	}
+	s.webhookIterionBotReviewRequest = func(_ context.Context, _ webhooks.Config, requested func(string) bool) bool {
+		return requested("iterion-bot")
+	}
+	s.webhookPRForgeReviewRequestGate = func(context.Context, webhooks.Config, prforge.Parsed, string) (bool, string, error) {
+		gateCalls++
+		return false, "", context.DeadlineExceeded // would 502 if ever reached
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.ProjectAllowlist = []string{"other/repo"} // acme/widgets is out of scope
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReviewRequested("alice", "iterion-bot", "2026-09-01T12:00:00Z"), prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK || launches != 0 {
+		t.Fatalf("out-of-scope must filter: code=%d launches=%d body=%s", w.Code, launches, w.Body.String())
+	}
+	if gateCalls != 0 {
+		t.Fatalf("out-of-scope delivery reached the forge authz gate (%d calls) — scope filters must run first", gateCalls)
+	}
+	// (The demote+hold-label re-apply branch is defensive here: on prforge
+	// the review_requested / synchronize / opened actions are mutually
+	// exclusive, so a demoted gesture never co-rides an admissible lane.
+	// The reachable version of that path is the GitLab lane's, covered by
+	// TestGitLabWebhook_ReRequestUnauthorizedReplierFiltered.)
+}
+
 // The gate-resync lane shares the closed-PR rule with the re-request lane
 // (its sibling term): a push to a closed/merged PR's branch still delivers
 // `synchronize` and must not burn a review. A payload WITHOUT a state stays

@@ -104,14 +104,14 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// A review request explicitly targeting iterion's own forge identity —
 	// the "Re-request review" button (or first "Request review") on the bot
 	// reviewer — is the button form of `/revi`: a deliberate on-demand
-	// re-review. The forge itself gates who may edit a PR's reviewers (write
-	// access), so no extra replier authz applies — but only on an OPEN PR
-	// (reviewer edits arrive freely on closed/merged ones). Never when the
-	// actor IS the bot: its own reviewer-write echoing back must not launch
-	// a review of itself. The identity matched is iterionBotLogins — on
-	// GitHub/Forgejo that is the App bot login only (a PAT/OAuth account may
-	// be a HUMAN's), and a GitHub App cannot be a reviewer at all, so on
-	// GitHub this lane stays inert and `/revi` is the on-demand path.
+	// re-review, only on an OPEN PR (reviewer edits arrive freely on
+	// closed/merged ones). Never when the actor IS the bot: its own
+	// reviewer-write echoing back must not launch a review of itself. The
+	// identity matched is iterionBotLogins — on GitHub/Forgejo that is the
+	// App bot login only (a PAT/OAuth account may be a HUMAN's), and a
+	// GitHub App cannot be a reviewer at all, so on GitHub this lane stays
+	// inert and `/revi` is the on-demand path. The gesture is PROVISIONAL
+	// until the replier gate below the scope filter confirms it (R6a15fe).
 	reviewRequested := strings.EqualFold(p.State, "open") &&
 		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
 		!s.isIterionForgeBotAuthor(ctx, cfg, p.SenderLogin)
@@ -120,49 +120,8 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	// so the revi/review status re-evaluates on the new head SHA. Never on a
 	// closed/merged PR (a push to a dead PR's branch still delivers
 	// synchronize); fail-open on a payload without `state` — a filtered
-	// resync strands the required check. Computed here (not at the review
-	// filter below) because the replier gate's error policy reads it.
+	// resync strands the required check.
 	gateResync := cfg.ReviewOnSync && p.IsSynchronize() && p.StateOpenOrUnknown()
-
-	// Replier authorization (R6a15fe — the GitLab twin's R7e050f gate,
-	// applied to this lane too): a manual gesture rides the same
-	// AuthorizedRepliers/MinReplierRole controls as every `/command`. An
-	// unauthorized click DEMOTES the gesture (the delivery then rides
-	// whatever automatic lane still admits it, hold label honoured, or is
-	// filtered). An authz ERROR demotes too when an automatic lane co-rides
-	// the event (R34eb8c — a transient members-API failure must not strand
-	// a merge-gate resync), and 502s only when the click was the delivery's
-	// sole reason (so the forge redelivers it).
-	if reviewRequested {
-		botID := ""
-		if rr := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author()); len(rr) > 0 {
-			botID = rr[0].BotID
-		}
-		gate := s.webhookPRForgeReviewRequestGate
-		if gate == nil {
-			gate = s.realWebhookPRForgeReviewRequestGate
-		}
-		authorized, reason, gerr := gate(ctx, cfg, p, botID)
-		if gerr != nil {
-			if p.IsReviewable() || gateResync {
-				if s.logger != nil {
-					s.logger.Warn("webhooks: %s re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", cfg.Provider, gerr)
-				}
-				reviewRequested = false
-			} else {
-				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
-				httpError(w, http.StatusBadGateway, "authorization check failed")
-				return
-			}
-		} else if !authorized {
-			reviewRequested = false
-			if !p.IsReviewable() && !gateResync && !p.NeedsAutoHeal() {
-				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
-				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
-				return
-			}
-		}
-	}
 
 	// Hold-label gate (bot-agnostic, opt-in): a configured hold label on the PR
 	// vetoes EVERY auto-launch this handler can do (auto-heal and review alike)
@@ -221,6 +180,52 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
+	}
+
+	// Replier authorization (R6a15fe — the GitLab twin's R7e050f gate,
+	// applied to this lane too): a manual gesture rides the same
+	// AuthorizedRepliers/MinReplierRole controls as every `/command`.
+	// Deliberately AFTER the event/project/author scope filter (R0c3aab):
+	// an out-of-scope delivery must never cost a forge API call, nor be
+	// able to 502 the endpoint. An unauthorized click DEMOTES the gesture —
+	// the delivery then rides whatever automatic lane still admits it, with
+	// the hold label RE-APPLIED (it was provisionally waived under the
+	// gesture's authority) — or is filtered. An authz ERROR demotes too
+	// when an automatic lane co-rides the event (R34eb8c — a transient
+	// members-API failure must not strand a merge-gate resync), and 502s
+	// only when the click was the delivery's sole reason (so the forge
+	// redelivers it).
+	if reviewRequested {
+		botID := ""
+		if rr := s.resolveForgeEventBots(cfg, bundle.ForgeEventPullRequest, p.Author()); len(rr) > 0 {
+			botID = rr[0].BotID
+		}
+		gate := s.webhookPRForgeReviewRequestGate
+		if gate == nil {
+			gate = s.realWebhookPRForgeReviewRequestGate
+		}
+		authorized, reason, gerr := gate(ctx, cfg, p, botID)
+		switch {
+		case gerr != nil && (p.IsReviewable() || gateResync):
+			if s.logger != nil {
+				s.logger.Warn("webhooks: %s re-request authz errored (%v) — gesture demoted, the automatic lane proceeds", cfg.Provider, gerr)
+			}
+			reviewRequested = false
+		case gerr != nil:
+			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "re-request authz check: "+gerr.Error())
+			httpError(w, http.StatusBadGateway, "authorization check failed")
+			return
+		case !authorized:
+			reviewRequested = false
+			if !p.IsReviewable() && !gateResync {
+				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, reason)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+				return
+			}
+		}
+		if !reviewRequested && s.suppressedByHoldLabel(ctx, w, cfg, meta, p.Labels, payloadHash, srcIP) {
+			return
+		}
 	}
 
 	// Iterion-bot guard: a PR opened by iterion's OWN forge bot (Doki/Willy/

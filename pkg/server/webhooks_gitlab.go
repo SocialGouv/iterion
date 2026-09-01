@@ -95,12 +95,13 @@ func (s *Server) handleGitLabMergeRequestEvent(ctx context.Context, w http.Respo
 	// A review request explicitly targeting iterion's own bot account — the
 	// GitLab "Re-request review" sidebar button, or adding the bot to the
 	// reviewer set — is the button form of `/revi`: a deliberate on-demand
-	// re-review. GitLab itself gates who can edit an MR's reviewers, so no
-	// extra replier authz applies here. Only on an OPEN MR (reviewer edits
-	// arrive freely on closed/merged ones — mirroring the Note lane's
-	// closed-MR filter). Never when the actor IS the bot: the publish tail
-	// self-assigns the bot as reviewer after each review, and that PUT
-	// echoes straight back to this handler.
+	// re-review, PROVISIONAL until the replier gate below confirms the
+	// clicker (GitLab lets an MR author edit reviewers without a project
+	// role — "the forge gates it" is not an authorization story). Only on
+	// an OPEN MR (reviewer edits arrive freely on closed/merged ones —
+	// mirroring the Note lane's closed-MR filter). Never when the actor IS
+	// the bot: the publish tail self-assigns the bot as reviewer after each
+	// review, and that PUT echoes straight back to this handler.
 	reviewRequested := p.Action == "update" &&
 		strings.EqualFold(p.State, "opened") &&
 		s.isIterionBotReviewRequest(ctx, cfg, p.ReviewRequestedFrom) &&
