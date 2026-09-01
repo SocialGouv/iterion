@@ -168,30 +168,65 @@ to keep on each call.`,
 		if err != nil {
 			return err
 		}
-		var pol cli.PoolPolicy
-		if cmd.Flags().Changed("name") {
-			pol.Name = &remotePoolName
-		}
-		if cmd.Flags().Changed("enabled") {
-			pol.Enabled = &remotePoolEnabled
-		}
-		// The audience is sent WHOLE or not at all: it is a set, and
-		// merging a partial one server-side would let `--teams x` silently
-		// keep a forgotten --all-teams from a previous call.
-		if cmd.Flags().Changed("all-teams") || cmd.Flags().Changed("orgs") ||
-			cmd.Flags().Changed("teams") || cmd.Flags().Changed("contributors") {
-			pol.Audience = &credpool.Audience{
-				Teams:        remotePoolAudTeams,
-				Orgs:         remotePoolAudOrgs,
-				Contributors: remotePoolAudContributors,
-				AllTeams:     remotePoolAudAllTeams,
-			}
-		}
-		if pol.Name == nil && pol.Enabled == nil && pol.Audience == nil {
-			return fmt.Errorf("nothing to change — set --name, --enabled, or an audience flag (--all-teams/--orgs/--teams/--contributors)")
+		pol, err := poolPolicyFromFlags(cmd)
+		if err != nil {
+			return err
 		}
 		return cli.RemotePoolPolicy(cmd.Context(), c, p, team, pol)
 	}),
+}
+
+// poolPolicyFromFlags builds the PUT body out of what the operator
+// ACTUALLY typed. The Changed() gate is the whole design of this command,
+// not an implementation detail: a field nobody named is absent from the
+// body, so `pool policy --enabled=false` pauses a pool without restating
+// its audience — and a partial update can never resurrect a forgotten
+// --all-teams. Extracted from the RunE so that gate is reachable by a
+// test; the RunE itself needs a live client and cannot be.
+func poolPolicyFromFlags(cmd *cobra.Command) (cli.PoolPolicy, error) {
+	var pol cli.PoolPolicy
+	if cmd.Flags().Changed("name") {
+		pol.Name = &remotePoolName
+	}
+	if cmd.Flags().Changed("enabled") {
+		pol.Enabled = &remotePoolEnabled
+	}
+	// The audience is sent WHOLE or not at all: it is a set, and
+	// merging a partial one server-side would let `--teams x` silently
+	// keep a forgotten --all-teams from a previous call.
+	if cmd.Flags().Changed("all-teams") || cmd.Flags().Changed("orgs") ||
+		cmd.Flags().Changed("teams") || cmd.Flags().Changed("contributors") {
+		pol.Audience = &credpool.Audience{
+			Teams:        remotePoolAudTeams,
+			Orgs:         remotePoolAudOrgs,
+			Contributors: remotePoolAudContributors,
+			AllTeams:     remotePoolAudAllTeams,
+		}
+	}
+	if pol.Name == nil && pol.Enabled == nil && pol.Audience == nil {
+		return pol, fmt.Errorf("nothing to change — set --name, --enabled, or an audience flag (--all-teams/--orgs/--teams/--contributors)")
+	}
+	return pol, nil
+}
+
+// addPoolPolicyFlags registers the policy flags. Re-registering on a
+// fresh command resets every bound variable to its default (pflag assigns
+// it at bind time), which is what lets a test drive one case per command
+// without leaking the previous case's values.
+func addPoolPolicyFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
+	cmd.Flags().StringVar(&remotePoolName, "name", "", "Pool name")
+	// Default FALSE, though omitting the flag means "leave unchanged"
+	// rather than "disable": cobra renders a bool flag's default in
+	// --help, and `(default true)` would promise a create that enables
+	// the pool — which is exactly what RemotePoolPolicy refuses. Bare
+	// `--enabled` still sends true (cobra's NoOptDefVal), so only the
+	// misleading help line goes away.
+	cmd.Flags().BoolVar(&remotePoolEnabled, "enabled", false, "Master switch: off skips the pool tier entirely (omit = leave unchanged)")
+	cmd.Flags().BoolVar(&remotePoolAudAllTeams, "all-teams", false, "Audience: every team on the instance")
+	cmd.Flags().StringSliceVar(&remotePoolAudOrgs, "orgs", nil, "Audience: every team under these org ids")
+	cmd.Flags().StringSliceVar(&remotePoolAudTeams, "teams", nil, "Audience: exactly these team ids")
+	cmd.Flags().BoolVar(&remotePoolAudContributors, "contributors", false, "Audience: anyone who is themselves an active donor")
 }
 
 func init() {
@@ -212,13 +247,7 @@ func init() {
 	remotePoolShareCmd.Flags().StringSliceVar(&remotePoolBots, "bots", nil, "Only these bot ids may use it (default: any)")
 	remotePoolDonorsCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
 
-	remotePoolPolicyCmd.Flags().StringVar(&remoteTeamFlag, "team", "", "Team id (default: switched/active team)")
-	remotePoolPolicyCmd.Flags().StringVar(&remotePoolName, "name", "", "Pool name")
-	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolEnabled, "enabled", true, "Master switch: off skips the pool tier entirely")
-	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolAudAllTeams, "all-teams", false, "Audience: every team on the instance")
-	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudOrgs, "orgs", nil, "Audience: every team under these org ids")
-	remotePoolPolicyCmd.Flags().StringSliceVar(&remotePoolAudTeams, "teams", nil, "Audience: exactly these team ids")
-	remotePoolPolicyCmd.Flags().BoolVar(&remotePoolAudContributors, "contributors", false, "Audience: anyone who is themselves an active donor")
+	addPoolPolicyFlags(remotePoolPolicyCmd)
 
 	remotePoolCmd.AddCommand(
 		remotePoolStatusCmd, remotePoolHistoryCmd, remotePoolShareCmd,
