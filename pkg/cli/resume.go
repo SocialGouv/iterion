@@ -331,10 +331,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	if err != nil {
 		return fmt.Errorf("cannot reload run: %w", err)
 	}
-	if r.Status != store.RunStatusPausedWaitingHuman &&
-		r.Status != store.RunStatusFailedResumable &&
-		r.Status != store.RunStatusCancelled &&
-		r.Status != store.RunStatusPausedOperator {
+	if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q can no longer be resumed (status: %s)", opts.RunID, r.Status)
 	}
 

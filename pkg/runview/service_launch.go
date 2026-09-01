@@ -519,17 +519,13 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 // validateResumable returns nil if r is in a state from which Resume
 // can proceed; otherwise it returns a descriptive error.
 func validateResumable(r *store.Run, answers map[string]any) error {
-	switch r.Status {
-	case store.RunStatusPausedWaitingHuman:
-		if len(answers) == 0 {
-			return fmt.Errorf("no answers provided; resume of paused run requires answers")
-		}
-		return nil
-	case store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		return nil
-	default:
+	if !r.Status.CanOperatorResume() {
 		return fmt.Errorf("run %q cannot be resumed (status: %s)", r.ID, r.Status)
 	}
+	if r.Status.RequiresResumeAnswers() && len(answers) == 0 {
+		return fmt.Errorf("no answers provided; resume of paused run requires answers")
+	}
+	return nil
 }
 
 // spawnRun owns the lock + register + goroutine + defer-cleanup

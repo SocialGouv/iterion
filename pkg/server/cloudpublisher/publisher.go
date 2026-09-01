@@ -1095,10 +1095,15 @@ func (p *Publisher) CancelRunWithReason(ctx context.Context, runID, reason strin
 	// silently overwrite the in-flight resume back to cancelled with
 	// no visible warning. The expectedFrom set lists every status we
 	// consider cancellable here.
+	// paused_operator included like its peers (the runtime cancel CAS in
+	// pkg/runtime/run_failure.go and runview's CancelInactiveCtx): an
+	// operator-paused run must stay cancellable, or it can only ever be
+	// resumed.
 	cancellable := []store.RunStatus{
 		store.RunStatusQueued,
 		store.RunStatusRunning,
 		store.RunStatusPausedWaitingHuman,
+		store.RunStatusPausedOperator,
 		store.RunStatusFailedResumable,
 	}
 	if strings.TrimSpace(reason) == "" {
@@ -1160,12 +1165,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	switch priorStatus {
-	case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		// Valid resume source states. The runview layer validates first, but
-		// SubmitResume repeats the boundary check because another request may
-		// have changed the row since that read.
-	default:
+	// The runview layer validates first, but SubmitResume repeats the
+	// boundary check because another request may have changed the row
+	// since that read.
+	if !priorStatus.CanOperatorResume() {
 		return fmt.Errorf("cloudpublisher: run %s is not resumable from status %s", spec.RunID, priorStatus)
 	}
 

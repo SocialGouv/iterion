@@ -123,3 +123,38 @@ func TestCancelRunWithReason(t *testing.T) {
 		}
 	})
 }
+
+// A paused_operator run is cancellable everywhere else (the runtime CAS
+// and runview's CancelInactive both list it, explicitly "so an orphaned
+// operator-paused run can still be cancelled") — the cloud publisher's
+// CAS was the one set missing it, leaving a cloud run parked
+// paused_operator impossible to cancel: the terminal fast-path does not
+// return, the CAS misses, and every retry reports "cancel raced".
+func TestCancelRun_PausedOperatorIsCancellable(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Publisher{store: st, cancelRun: func(string) error { return nil }}
+	run, err := st.CreateRun(context.Background(), "run-po", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = store.RunStatusPausedOperator
+	if err := st.SaveRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.CancelRun(context.Background(), "run-po"); err != nil {
+		t.Fatalf("cancelling a paused_operator run must succeed, got: %v", err)
+	}
+	got, err := st.LoadRun(context.Background(), "run-po")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunStatusCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+	if got.FailureCode != store.FailureCancelled {
+		t.Errorf("failure code = %q, want CANCELLED", got.FailureCode)
+	}
+}

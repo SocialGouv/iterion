@@ -141,19 +141,11 @@ func (n *Notifier) FireForRun(ctx context.Context, st store.RunStore, runID stri
 	n.deliver(ctx, run.CallbackURL, payload)
 }
 
-// shouldNotify reports whether a status warrants a completion callback.
-// Running and the two paused states are excluded — they are not
-// terminal-for-notification.
+// shouldNotify reports whether a status warrants a completion callback:
+// exactly the canonical terminal set (failed_resumable counts as final
+// for delivery; the paused states do not).
 func shouldNotify(s store.RunStatus) bool {
-	switch s {
-	case store.RunStatusFinished,
-		store.RunStatusFailed,
-		store.RunStatusFailedResumable,
-		store.RunStatusCancelled:
-		return true
-	default:
-		return false
-	}
+	return s.IsTerminal()
 }
 
 // resolveFinalAnswer extracts the run's user-facing answer string.
