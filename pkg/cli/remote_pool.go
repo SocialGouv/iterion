@@ -125,6 +125,33 @@ func RemotePoolDonors(ctx context.Context, c *RemoteClient, p *Printer, teamID s
 	return RemoteGetPrint(ctx, c, p, "/api/teams/"+teamID+"/pool")
 }
 
+// PoolPolicy is the operator-side settings of a pool: its name, its
+// master switch, and who may draw on it. Every field is optional — only
+// the ones the caller sets are sent, so `pool policy --enabled=false`
+// pauses a pool without restating its audience.
+type PoolPolicy struct {
+	Name     *string `json:"name,omitempty"`
+	Enabled  *bool   `json:"enabled,omitempty"`
+	Audience *struct {
+		Teams        []string `json:"teams,omitempty"`
+		Orgs         []string `json:"orgs,omitempty"`
+		Contributors bool     `json:"contributors,omitempty"`
+		AllTeams     bool     `json:"all_teams,omitempty"`
+	} `json:"audience,omitempty"`
+}
+
+// RemotePoolPolicy creates or updates the pool of the team's org. The
+// pool document is keyed by ORG, so this is an org-level decision — the
+// server enforces that; the CLI says so in its help rather than letting
+// an admin discover it through a 403.
+func RemotePoolPolicy(ctx context.Context, c *RemoteClient, p *Printer, teamID string, pol PoolPolicy) error {
+	body, err := json.Marshal(pol)
+	if err != nil {
+		return fmt.Errorf("encode pool policy: %w", err)
+	}
+	return RemoteSendPrint(ctx, c, p, "PUT", "/api/teams/"+teamID+"/pool", body)
+}
+
 // LocalTimezone returns the host's IANA zone name so a donor's sharing
 // hours mean what they read on their own clock. Falls back to UTC when the
 // host cannot name its zone (a bare container), which is honest: an
