@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.84.1](https://github.com/SocialGouv/iterion/compare/v3.84.0...v3.84.1) (2026-09-01)
+
+### Bug Fixes
+
+* **server:** refuse team-less identities at the auth choke — no more empty-tenant panics on /api/runs* (Sentry ITERION-13/-1W/-1Z) ([#606](https://github.com/SocialGouv/iterion/issues/606)) ([097de77](https://github.com/SocialGouv/iterion/commit/097de77f2a103d187ac4258ea5eb393b7ccadc2c))
+
+    <details><summary>why</summary>
+
+    An authenticated identity whose TeamID resolved empty (a PAT minted with no team whose owner has no default team, a GitHub-gated user before any grant) sailed through requireAuth and reached the Mongo store with an EMPTY tenant in ctx — the store's fail-closed guard then panicked on every request: a recovered 500 for the caller, steady-state Sentry noise burying real crashes (ITERION-13/-1W/-1Z, 1800+ events since 2026-08-24 on GET /api/runs, GET /api/runs/{id} and the run WebSocket).
+
+    </details>
+
 ## [3.84.0](https://github.com/SocialGouv/iterion/compare/v3.83.1...v3.84.0) (2026-09-01)
 
 ### Features
