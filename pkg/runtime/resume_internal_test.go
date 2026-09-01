@@ -430,12 +430,18 @@ func TestResumeFromPauseConsumesThePausePointer(t *testing.T) {
 	if rerr := e.resumeFromPause(ctx, run, map[string]any{"approve": "YES"}); rerr != nil {
 		t.Logf("resumeFromPause returned: %v", rerr)
 	}
+	if len(spy.ops) < 2 || spy.ops[0] != "claim:running" {
+		t.Fatalf("op sequence %v — the resume must CLAIM (CAS to running) before anything else, or a second concurrent resume spawns a duplicate engine", spy.ops)
+	}
 	if len(spy.writes) == 0 {
 		t.Fatal("no checkpoint write at all")
 	}
 	w := spy.writes[0]
 	if w.NodeID != "gate" || w.InteractionID != "" || len(w.InteractionQuestions) != 0 {
 		t.Fatalf("first checkpoint write after the claim is %+v; want the gate checkpoint with the pause pointer cleared — a park before the consumption would replay interaction I1 and overwrite the operator's answers", w)
+	}
+	if spy.ops[1] != "checkpoint:gate:interaction=" {
+		t.Fatalf("op sequence %v — the consumption must be the claim's immediate successor", spy.ops)
 	}
 }
 
@@ -471,6 +477,9 @@ func TestReviewGateConsumesThePausePointer(t *testing.T) {
 	}); rerr != nil {
 		t.Logf("resumeFromPause returned: %v", rerr)
 	}
+	if len(spy.ops) < 2 || spy.ops[0] != "claim:running" {
+		t.Fatalf("op sequence %v — the review-gate resume must CLAIM before anything else", spy.ops)
+	}
 	if len(spy.writes) == 0 {
 		t.Fatal("no checkpoint write at all")
 	}
@@ -480,15 +489,80 @@ func TestReviewGateConsumesThePausePointer(t *testing.T) {
 	}
 }
 
-// checkpointSpyStore records every SaveCheckpoint payload.
+// checkpointSpyStore records every SaveCheckpoint payload and every
+// running-claim CAS, in one ordered op log — the consumption canaries
+// assert the SEQUENCE (claim first, consumption second), guarding the
+// choke point on both its promises: no second engine on the run, and
+// no live pointer left behind it.
 type checkpointSpyStore struct {
 	store.RunStore
 	writes []store.Checkpoint
+	ops    []string
 }
 
 func (s *checkpointSpyStore) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
 	if cp != nil {
 		s.writes = append(s.writes, *cp)
+		s.ops = append(s.ops, "checkpoint:"+cp.NodeID+":interaction="+cp.InteractionID)
 	}
 	return s.RunStore.SaveCheckpoint(ctx, id, cp)
+}
+
+func (s *checkpointSpyStore) UpdateRunStatusIf(ctx context.Context, id string, status store.RunStatus, runErr string, expectedFrom []store.RunStatus) (bool, error) {
+	if status == store.RunStatusRunning {
+		s.ops = append(s.ops, "claim:running")
+	}
+	return s.RunStore.UpdateRunStatusIf(ctx, id, status, runErr, expectedFrom)
+}
+
+// The pause pointer that NO resume consumes: cancelling a run parked on
+// a human gate is a status-only flip, and since a transition preserves
+// the checkpoint (ADR-095 §5) the pointer used to survive onto the
+// cancelled run. On cloud, SubmitResume CASes cancelled → queued with no
+// answers (RequiresResumeAnswers is false for cancelled, so the UI shows
+// no form), and Resume's queued router — which arbitrates on pointer
+// presence alone — sent it into resumeFromPause: the gate was crossed
+// with an empty answer, silently. The store's transition normalization
+// (CarriesPausePointer) now consumes the pointer at the cancel, so the
+// queued router routes to resumeFromFailure and the gate re-asks.
+func TestCancelledPausePointerDoesNotCrossTheGateOnCloudResume(t *testing.T) {
+	base := tmpStore(t)
+	ctx := context.Background()
+	if _, err := base.CreateRun(ctx, "run-cloudgate", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	cp := &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+		InteractionQuestions: map[string]any{"approve": "yes?"}}
+	if err := base.PauseRun(ctx, "run-cloudgate", cp); err != nil {
+		t.Fatal(err)
+	}
+	// Operator cancel: exactly the status-only flip CancelInactive performs.
+	if err := base.UpdateRunStatus(ctx, "run-cloudgate", store.RunStatusCancelled, "cancelled by operator"); err != nil {
+		t.Fatal(err)
+	}
+	// Cloud resume: the publisher CASes cancelled → queued BEFORE a runner
+	// claims the message (SubmitResume), and the runner calls Resume with
+	// the message's answers — empty for a cancelled run.
+	if ok, err := base.UpdateRunStatusIf(ctx, "run-cloudgate", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusCancelled}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	e := &Engine{store: base, workflow: &ir.Workflow{Name: "wf", Entry: "gate", Nodes: map[string]ir.Node{
+		"gate": &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}},
+		"calc": &ir.ComputeNode{BaseNode: ir.BaseNode{ID: "calc"}},
+		"end":  &ir.DoneNode{BaseNode: ir.BaseNode{ID: "end"}},
+	}, Edges: []*ir.Edge{{From: "gate", To: "calc"}, {From: "calc", To: "end"}}}}
+	if rerr := e.Resume(ctx, "run-cloudgate", nil); rerr != nil {
+		t.Logf("Resume returned: %v", rerr)
+	}
+	after, err := base.LoadRun(ctx, "run-cloudgate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status == store.RunStatusFinished {
+		t.Fatalf("the human gate was CROSSED with an empty answer: cancelled run resumed on cloud went straight to finished (outputs gate=%v)", after.Checkpoint.Outputs["gate"])
+	}
+	if after.Status != store.RunStatusPausedWaitingHuman {
+		t.Errorf("status = %q, want paused_waiting_human — the resumed gate must re-ask, not silently pass", after.Status)
+	}
 }

@@ -59,6 +59,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
 	t.Run("TombstoneRefusesWriters", func(t *testing.T) { testTombstoneRefusesWriters(t, factory(t)) })
+	t.Run("PausePointerLifecycle", func(t *testing.T) { testPausePointerLifecycle(t, factory(t)) })
 	t.Run("EventSeqMonotone", func(t *testing.T) { testEventSeqMonotone(t, factory(t)) })
 	t.Run("EventSeqUnderConcurrency", func(t *testing.T) { testEventSeqConcurrent(t, factory(t)) })
 	t.Run("EventDataDecodeShape", func(t *testing.T) { testEventDataDecodeShape(t, factory(t)) })
@@ -1639,5 +1640,83 @@ func testUserMessagesInbox(t *testing.T, s store.RunStore) {
 	// Updating an unknown ID returns ErrQueuedMessageNotFound.
 	if err := s.UpdateQueuedMessageStatus(ctx, "run_um", "nonexistent", store.QueuedMessageStatusDelivered); err == nil {
 		t.Fatalf("Update nonexistent: expected error")
+	}
+}
+
+// testPausePointerLifecycle holds both backends to the pause-pointer
+// consumption contract (store.CarriesPausePointer): the checkpoint
+// survives every transition (ADR-095 §5), but its interaction evidence
+// is a consumable — cleared by any transition into a status that
+// cannot truthfully carry it, and PRESERVED on the paused → queued
+// cloud-resume hop, which the runner's queued router reads to route a
+// human-answers resume. Without the consumption, a status-only cancel
+// of a paused run left the pointer live and a cloud resume crossed the
+// human gate with an empty answer.
+func testPausePointerLifecycle(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	cp := func() *store.Checkpoint {
+		return &store.Checkpoint{NodeID: "gate", InteractionID: "I1",
+			InteractionQuestions: map[string]any{"approve": "yes?"}}
+	}
+
+	// Cancel consumes: pause → cancelled clears the pointer, keeps the node.
+	if _, err := s.CreateRun(ctx, "pp-cancel", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-cancel", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatus(ctx, "pp-cancel", store.RunStatusCancelled, "operator cancel"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.NodeID != "gate" {
+		t.Fatalf("cancel must preserve the checkpoint anchor, got %+v", r.Checkpoint)
+	}
+	if r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0 {
+		t.Errorf("cancel left the pause pointer live (%q, %d questions) — a cloud resume would cross the human gate with an empty answer",
+			r.Checkpoint.InteractionID, len(r.Checkpoint.InteractionQuestions))
+	}
+
+	// The queued hop preserves: pause → queued (SubmitResume with answers)
+	// must keep the pointer — it is what routes the runner's Resume into
+	// the pause path where the answers are recorded.
+	if _, err := s.CreateRun(ctx, "pp-queued", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PauseRun(ctx, "pp-queued", cp()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.UpdateRunStatusIf(ctx, "pp-queued", store.RunStatusQueued, "",
+		[]store.RunStatus{store.RunStatusPausedWaitingHuman}); err != nil || !ok {
+		t.Fatalf("queued CAS: ok=%v err=%v", ok, err)
+	}
+	r, err = s.LoadRun(ctx, "pp-queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint == nil || r.Checkpoint.InteractionID != "I1" {
+		t.Errorf("the paused → queued hop must PRESERVE the pause pointer (the runner routes the answers resume on it), got %+v", r.Checkpoint)
+	}
+
+	// SaveRun on a non-carrying status must not resurrect a consumed
+	// pointer through a full-document write.
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Checkpoint.InteractionID = "I-resurrected"
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r, err = s.LoadRun(ctx, "pp-cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Checkpoint.InteractionID != "" {
+		t.Errorf("SaveRun resurrected a consumed pause pointer on a cancelled run: %q", r.Checkpoint.InteractionID)
 	}
 }

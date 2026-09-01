@@ -22,8 +22,17 @@ func TestRunOutcomeKeepsFailureNodeAndDropsInteraction(t *testing.T) {
 	if _, err := s.CreateRun(ctx, "r-fail", "wf", nil); err != nil {
 		t.Fatal(err)
 	}
-	cp := &store.Checkpoint{NodeID: "implement", InteractionID: "I-stale"}
-	if err := s.FailRunResumable(ctx, "r-fail", cp, "boom at implement", store.FailureExecutionFailed); err != nil {
+	// Real genealogy for a failed run that once held a pointer: a pause,
+	// then a status-only park — the transition normalization
+	// (store.CarriesPausePointer) consumes the pointer on the way, so
+	// the outcome's interaction gate below is belt-and-braces.
+	cp := &store.Checkpoint{NodeID: "implement", InteractionID: "I-stale",
+		InteractionQuestions: map[string]any{"q": "?"}}
+	if err := s.PauseRun(ctx, "r-fail", cp); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRunStatusCoded(ctx, "r-fail", store.RunStatusFailedResumable,
+		"boom at implement", store.FailureExecutionFailed); err != nil {
 		t.Fatal(err)
 	}
 

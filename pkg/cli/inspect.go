@@ -165,10 +165,12 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	}
 
 	// Checkpoint info. The checkpoint survives every status transition
-	// (ADR-095), so gate on the statuses where it is a live recovery
-	// point — on a running or terminal run it is history, and rendering
-	// "Paused at" there would misreport the run.
-	if r.Checkpoint != nil && r.Status.CanOperatorResume() {
+	// (ADR-095), so it is shown whenever it carries an anchor — on a
+	// queued run it is where a cloud resume will restart, on a failed
+	// run it is where the post-mortem starts, on a running run it is
+	// the last boundary. Only the WORDING is status-gated: "Paused at"
+	// would misreport a non-paused run.
+	if r.Checkpoint != nil && r.Checkpoint.NodeID != "" {
 		p.Blank()
 		p.Header("Checkpoint")
 		nodeLabel := "Node"

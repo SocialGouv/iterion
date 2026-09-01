@@ -149,6 +149,16 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 	}
+	// Same discipline for the pause pointer: a full-document write on a
+	// non-carrying status must not resurrect consumed interaction
+	// evidence.
+	if !r.Status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeRun(r)
@@ -461,6 +471,21 @@ func (s *FilesystemRunStore) applyStatusTransition(r *Run, status RunStatus, run
 			// message, whatever the caller passed.
 			r.Error = ""
 		}
+	}
+	// The pause pointer is a consumable: a transition into a status
+	// that cannot truthfully carry it (CarriesPausePointer) clears the
+	// interaction evidence — the checkpoint itself survives (below).
+	// Without this, a status-only cancel of a paused run kept the
+	// pointer, and a cloud resume (cancelled → queued, no answers)
+	// routed back into the pause path and crossed the human gate with
+	// an empty answer. Copy-on-write: failRunCheckpointed aliases the
+	// caller's checkpoint into r just before this tail.
+	if !status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
 	}
 	// A status transition NEVER destroys the checkpoint. The running
 	// claim used to clear it here — which, on a cloud pod, destroyed

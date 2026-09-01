@@ -110,6 +110,21 @@ func (s RunStatus) CarriesFailureCode() bool {
 	return s == RunStatusFailed || s == RunStatusFailedResumable || s == RunStatusCancelled
 }
 
+// CarriesPausePointer reports whether a run in this status may
+// truthfully carry a pending-interaction pointer on its checkpoint
+// (Checkpoint.InteractionID / InteractionQuestions). True for the
+// paused statuses (the pointer IS the pause) and for queued — the
+// in-flight cloud resume hop: SubmitResume flips paused → queued
+// before a runner claims the message, and the runner's queued router
+// reads the pointer to route a human-answers resume. Every other
+// transition consumes it: the checkpoint itself survives (ADR-095 §5),
+// but a pointer on a cancelled/terminal/running run is a replayable
+// lie — a later resume would route back into the pause path and cross
+// the human gate with empty answers.
+func (s RunStatus) CarriesPausePointer() bool {
+	return s.IsPaused() || s == RunStatusQueued
+}
+
 // ---------------------------------------------------------------------------
 // Policy predicates — one named question each
 // ---------------------------------------------------------------------------

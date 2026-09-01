@@ -235,6 +235,16 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	if !r.Status.CarriesFailureCode() {
 		r.FailureCode = ""
 	}
+	// Same discipline for the pause pointer: a full-document write on a
+	// non-carrying status must not resurrect consumed interaction
+	// evidence (mirrors the FS twin).
+	if !r.Status.CarriesPausePointer() && r.Checkpoint != nil &&
+		(r.Checkpoint.InteractionID != "" || len(r.Checkpoint.InteractionQuestions) > 0) {
+		cp := *r.Checkpoint
+		cp.InteractionID = ""
+		cp.InteractionQuestions = nil
+		r.Checkpoint = &cp
+	}
 	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -645,6 +655,17 @@ func runStatusUpdate(status store.RunStatus, runErr string, code store.FailureCo
 		"error":      runErr,
 	}
 	unset := bson.M{}
+	// The pause pointer is a consumable (see store.CarriesPausePointer):
+	// a transition into a status that cannot truthfully carry it clears
+	// the interaction evidence off the surviving checkpoint. Dotted
+	// $unset is a no-op when the checkpoint (or field) is absent.
+	// Callers that $set the whole checkpoint document in the same
+	// update (failRunCheckpointed) must DROP these two keys and strip
+	// the value instead — Mongo rejects conflicting paths.
+	if !status.CarriesPausePointer() {
+		unset["checkpoint.interaction_id"] = ""
+		unset["checkpoint.interaction_questions"] = ""
+	}
 	if status.CarriesFailureCode() && code != "" {
 		set["failure_code"] = code
 	} else {
@@ -803,6 +824,19 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // writing last, auto-resuming a run somebody deliberately stopped.
 func (s *Store) failRunCheckpointed(ctx context.Context, id string, status store.RunStatus, cp *store.Checkpoint, runErr string, code store.FailureCode, opName string) error {
 	set, unset := runStatusUpdate(status, runErr, code, time.Now().UTC())
+	// The whole-checkpoint $set below conflicts with the dotted pointer
+	// $unset — apply the same consumption to the VALUE instead. (Engine
+	// failure boundaries never set a pointer; this guards the preserved-
+	// checkpoint callers.)
+	delete(unset, "checkpoint.interaction_id")
+	delete(unset, "checkpoint.interaction_questions")
+	if cp != nil && !status.CarriesPausePointer() &&
+		(cp.InteractionID != "" || len(cp.InteractionQuestions) > 0) {
+		consumed := *cp
+		consumed.InteractionID = ""
+		consumed.InteractionQuestions = nil
+		cp = &consumed
+	}
 	set["checkpoint"] = cp
 	update := bson.M{"$set": set, "$inc": bson.M{"version": 1}}
 	if len(unset) > 0 {
