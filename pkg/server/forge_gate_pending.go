@@ -61,6 +61,13 @@ func (s *Server) markGateInFlight(ctx context.Context, teamID, botID string, var
 	if gateCtx == "" || prURL == "" {
 		return
 	}
+	// An explicit gate_enabled pin that leaves the bot advisory-only means
+	// no verdict will ever replace a claim — posting one would park a
+	// pending status on the head forever. Same classification as the
+	// provisioning derivation and the reconciler (forge.GateValueDisables).
+	if v, ok := vars["gate_enabled"]; ok && forge.GateValueDisables(v) {
+		return
+	}
 	// The revision, not the PR. A status is posted on a sha, and the head can
 	// move between this launch and the verdict; claiming the head the run was
 	// handed keeps the marker and the verdict on the same commit.

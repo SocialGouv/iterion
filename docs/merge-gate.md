@@ -164,8 +164,11 @@ What the pin disarms, end to end:
 - the bot's publish step skips the commit status — no verdict context ever
   lands on a head;
 - the server-side gate machinery never arms: the in-flight `pending` claim
-  at launch, the reconciler, the sweeper and the auto-fix lane all key on a
-  `gate_context` launch var, which a no-gate repo simply does not pin;
+  at launch, the reconciler, the sweeper and the auto-fix lane all read the
+  SAME pin (`forge.GateValueDisables`) — so even the half-configured shape
+  (gate disabled while a stale `gate_context` pin remains) claims nothing
+  and paints no synthetic failure; dropping the `gate_context` pin as well
+  is still the clean form;
 - provisioning **stops forcing `review_on_sync`** — and releases one it had
   forced earlier ([`pkg/forge/orchestrator.go`](../pkg/forge/orchestrator.go),
   `operatorGateDisabled`). The forced sync exists solely to keep a REQUIRED

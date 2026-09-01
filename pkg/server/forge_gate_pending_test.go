@@ -110,6 +110,32 @@ func TestMarkGateInFlight_ReplacesAnInterruptionAndItsOwnStaleClaim(t *testing.T
 // A launch that gates nothing must cost no forge traffic: most runs carry no
 // gate_context, and a claim on a head we were not given is a status on the
 // wrong commit.
+// A repo can pin gate_enabled=false while still carrying a gate_context
+// (the half-configured shape). The bot will never post a verdict, so a
+// claim would park a pending status on the head forever — the whole gate
+// machinery must read the pin, not just the bot.
+func TestMarkGateInFlight_GateDisabledPinClaimsNothing(t *testing.T) {
+	for _, v := range []string{"false", "0", "off", ""} {
+		gc := &listingGateClient{}
+		s := inFlightFixture(t, gc)
+		vars := inFlightVars()
+		vars["gate_enabled"] = v
+		s.markGateInFlight(context.Background(), "team1", "review-pr", vars, "run-42")
+		if gc.setCalls != 0 {
+			t.Fatalf("gate_enabled=%q: posted %d statuses, want 0 — nothing will ever replace that claim", v, gc.setCalls)
+		}
+	}
+	// And an affirmative pin still claims.
+	gc := &listingGateClient{}
+	s := inFlightFixture(t, gc)
+	vars := inFlightVars()
+	vars["gate_enabled"] = "true"
+	s.markGateInFlight(context.Background(), "team1", "review-pr", vars, "run-42")
+	if gc.setCalls != 1 {
+		t.Fatalf("gate_enabled=true must keep claiming, got %d", gc.setCalls)
+	}
+}
+
 func TestMarkGateInFlight_NoOpsWithoutAGateOrARevision(t *testing.T) {
 	cases := map[string]func(map[string]string){
 		"no gate context": func(v map[string]string) { delete(v, "gate_context") },

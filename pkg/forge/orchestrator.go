@@ -1167,6 +1167,38 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 	return nil
 }
 
+// GateValueDisables classifies one EXPLICIT `gate_enabled` pin: true when
+// the value leaves the gating bot silent. It deliberately mirrors the
+// gating bots' own truthy test (`'1','true','yes','on'` — bots/review-pr
+// publish step): the classification must track "will the bot post a
+// status?" EXACTLY. Any value that does not affirmatively enable the gate
+// counts as disabling — including the empty string (the runtime coerces ""
+// to false) and unparsable values (passed through raw, failing the bot's
+// truthy test). Shared with pkg/server's gate arms (claim, reconciler,
+// auto-fix), so "the bot won't answer" and "the machinery must not arm"
+// can never diverge.
+func GateValueDisables(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return false
+	}
+	return true
+}
+
+// operatorGateDisabled reports whether the repo's operator launch vars pin
+// the merge gate off. The pin is what turns the review bot advisory-only —
+// the publish step skips the commit status and the server-side gate
+// machinery never arms — so the anyBotGatesMerges derivation must not force
+// re-review-on-sync for such a repo: the forced sync exists solely to keep
+// a REQUIRED check alive across pushes, and a silent bot with a
+// still-forced re-review is the deadlock-at-full-cost shape (every push
+// reviewed, the required check never answered). An ABSENT key keeps the
+// gate derivation untouched.
+func operatorGateDisabled(vars map[string]string) bool {
+	v, ok := vars["gate_enabled"]
+	return ok && GateValueDisables(v)
+}
+
 // anyBotGatesMerges reports whether any of these bots declares the `statuses`
 // scope — i.e. posts a commit status, i.e. can be a REQUIRED check.
 //
@@ -1177,34 +1209,6 @@ func (o *Orchestrator) backfillBotRules(ctx context.Context, webhookID string, b
 // re-review on sync is not an operator preference on such a repo, it is what
 // makes the gate survivable. Derived from the DECLARED capability, never from
 // a bot id.
-// operatorGateDisabled reports whether the repo's operator launch vars pin the
-// merge gate off. The pin is what turns the review bot advisory-only — the
-// publish step skips the commit status and the server-side gate machinery
-// never arms — so the anyBotGatesMerges derivation below must not force
-// re-review-on-sync for such a repo: the forced sync exists solely to keep a
-// REQUIRED check alive across pushes.
-//
-// The predicate deliberately mirrors the gating bots' own truthy test
-// (`'1','true','yes','on'` — bots/review-pr publish step): the release must
-// track "will the bot post a status?" EXACTLY. Any explicit pin that does not
-// affirmatively enable the gate leaves the bot silent — including the empty
-// string (the runtime coerces "" to false) and unparsable values (passed
-// through raw, failing the bot's truthy test) — and a silent bot with a
-// still-forced re-review is the deadlock-at-full-cost shape: every push
-// reviewed, the required check never answered. An ABSENT key keeps the gate
-// derivation untouched.
-func operatorGateDisabled(vars map[string]string) bool {
-	v, ok := vars["gate_enabled"]
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "true", "1", "yes", "on":
-		return false
-	}
-	return true
-}
-
 func anyBotGatesMerges(bots []string, frByBot map[string]*bundle.ForgeRequirements) bool {
 	for _, b := range bots {
 		if fr := frByBot[b]; fr != nil && fr.TokenScopes[bundle.ForgeScopeStatuses] != "" {
