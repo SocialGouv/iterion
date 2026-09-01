@@ -136,6 +136,7 @@ type RunHeader struct {
 	// typed cause of the last terminal transition, and who owns the
 	// continuation. This is what lets an outcome consumer act on the
 	// DOCUMENT instead of parsing error prose or replaying events.
+	RoutingPolicy     *store.RoutingPolicy    `json:"routing_policy,omitempty"`
 	OutcomeSeq        int64                   `json:"outcome_seq,omitempty"`
 	ContinuationState store.ContinuationState `json:"continuation_state,omitempty"`
 	MergedInto        string                  `json:"merged_into,omitempty"`
@@ -1436,6 +1437,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
+		RoutingPolicy:     r.RoutingPolicy,
 		OutcomeSeq:        r.OutcomeSeq,
 		ContinuationState: r.ContinuationState,
 		MergedInto:        r.MergedInto,

@@ -266,7 +266,8 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
+	if e.workflowHash != "" || e.workflowSource != "" || e.filePath != "" || e.parentRunID != "" || e.parentNodeID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil ||
+		e.routingPolicy != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -302,6 +303,11 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// clobbering it with nil.
 		if len(e.modelOverrides) > 0 {
 			run.ModelOverrides = e.modelOverrides
+		}
+		// Same resume-preserving guard: the contract is immutable after
+		// launch, a resume never re-supplies it.
+		if e.routingPolicy != nil {
+			run.RoutingPolicy = e.routingPolicy
 		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget

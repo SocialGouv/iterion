@@ -283,6 +283,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
+	delete(doc, "routing_policy")
 	terminalInc := 0
 	switch r.Status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
@@ -306,6 +307,22 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
+		// The launch-frozen contract is IMMUTABLE: once persisted it
+		// wins over whatever the saver carries (a stale full-document
+		// save, or a binary too old to know the field, must not drop
+		// it). The first-write fallback only stays open while the run
+		// has not started producing (absent/queued/running status):
+		// fixing a contract onto ALREADY-TERMINAL work would decide
+		// retroactively — the exact attack the snapshot exists to stop.
+		"routing_policy": bson.M{"$cond": bson.A{
+			bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$routing_policy", nil}}, nil}},
+			"$routing_policy",
+			bson.M{"$cond": bson.A{
+				bson.M{"$in": bson.A{bson.M{"$ifNull": bson.A{"$status", string(store.RunStatusQueued)}}, bson.A{store.RunStatusQueued, store.RunStatusRunning}}},
+				bson.M{"$literal": r.RoutingPolicy},
+				nil,
+			}},
+		}},
 	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is

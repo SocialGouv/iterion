@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -508,6 +510,15 @@ type Run struct {
 	// missing. The studio surfaces this so the operator can run
 	// `git branch <name> <FinalCommit>` before the reflog expires.
 	FinalBranchError string `json:"final_branch_error,omitempty" bson:"final_branch_error,omitempty"`
+	// RoutingPolicy is the launch-frozen outcome contract (nil = none):
+	// what "success" and "blocked" mean for THIS run, where a success
+	// lands, and which actions a consumer may take automatically. It is
+	// resolved, validated and hashed at launch and never re-read from a
+	// mutable source afterwards — re-reading a team/repo setting at the
+	// terminal would let the contract of already-produced work change
+	// retroactively. Replayed from the run doc on resume, like
+	// ModelOverrides.
+	RoutingPolicy *RoutingPolicy `json:"routing_policy,omitempty" bson:"routing_policy,omitempty"`
 	// OutcomeSeq counts this run's terminal arrivals: every transition
 	// INTO finished / failed / failed_resumable / cancelled increments
 	// it (a redelivered run that dies again is a NEW episode). It is
@@ -836,6 +847,70 @@ const (
 	MergeStrategySquash MergeStrategy = "squash"
 	MergeStrategyMerge  MergeStrategy = "merge"
 )
+
+// RoutingPolicy is a run's launch-frozen outcome contract. The
+// expressions speak the SAME language as the bot DSL's edge conditions
+// (pkg/dsl/expr), resolved against the terminal checkpoint's outputs —
+// the contract quotes the gates the bot already publishes instead of
+// inventing a parallel vocabulary.
+//
+// The consumer-side rule is strict: an expression whose path is absent
+// or whose value is not a bool NEVER yields an automatic action — it
+// escalates. "converged + nothing blocking" has no generic
+// representation across bots; only the contract knows the fields, so a
+// missing field is a contract violation, not a false.
+type RoutingPolicy struct {
+	// Version of the policy SCHEMA (this struct), for consumers that
+	// must refuse contracts newer than they understand.
+	Version int `json:"version" bson:"version"`
+	// SuccessWhen must evaluate to boolean true on the terminal
+	// checkpoint for the run to be an auto-merge candidate.
+	SuccessWhen string `json:"success_when" bson:"success_when"`
+	// BlockWhen: if ANY evaluates to boolean true — or fails to
+	// evaluate — the run never auto-merges, whatever SuccessWhen says.
+	// This is where a bot's explicit blockers (a pending re-baseline
+	// request, a re-anchor demand) are quoted.
+	BlockWhen []string `json:"block_when,omitempty" bson:"block_when,omitempty"`
+	// MergeInto is the branch a success lands on ("" = the run's
+	// RepoRef default).
+	MergeInto string `json:"merge_into,omitempty" bson:"merge_into,omitempty"`
+	// MergeStrategy for the landing ("" = squash default).
+	MergeStrategy MergeStrategy `json:"merge_strategy,omitempty" bson:"merge_strategy,omitempty"`
+	// AllowedActions bounds what a consumer may do automatically:
+	// "merge", "relaunch", "resume". Anything not listed escalates.
+	AllowedActions []string `json:"allowed_actions,omitempty" bson:"allowed_actions,omitempty"`
+	// MaxRelaunches caps automatic fresh relaunches across the run's
+	// lineage (0 = never relaunch automatically). Mirrors the explicit
+	// cap the forge-gate autofix reactor carries.
+	MaxRelaunches int `json:"max_relaunches,omitempty" bson:"max_relaunches,omitempty"`
+	// Hash pins the resolved contract: sha256 over the canonical JSON
+	// of every field above, computed at launch. A consumer records it
+	// with each decision so an audit can prove WHICH contract decided.
+	Hash string `json:"hash,omitempty" bson:"hash,omitempty"`
+}
+
+// ComputeHash returns the canonical content hash of the policy (all
+// fields except Hash itself, JSON-marshalled — struct field order is
+// fixed, so the encoding is canonical).
+func (p *RoutingPolicy) ComputeHash() string {
+	if p == nil {
+		return ""
+	}
+	c := *p
+	c.Hash = ""
+	// Canonical: the action SET is order-insensitive — sort a copy so
+	// [merge relaunch] and [relaunch merge] are the same contract.
+	c.AllowedActions = append([]string(nil), p.AllowedActions...)
+	slices.Sort(c.AllowedActions)
+	b, err := json.Marshal(&c)
+	if err != nil {
+		// Marshalling a plain struct of strings/ints cannot fail;
+		// guard anyway rather than hash garbage.
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 // ContinuationState enumerates who owns a run's future after a
 // terminal transition. Empty means the transition predates the typed

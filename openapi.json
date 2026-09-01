@@ -1327,6 +1327,45 @@
         ],
         "type": "object"
       },
+      "RoutingPolicy": {
+        "properties": {
+          "allowed_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "block_when": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "max_relaunches": {
+            "type": "integer"
+          },
+          "merge_into": {
+            "type": "string"
+          },
+          "merge_strategy": {
+            "type": "string"
+          },
+          "success_when": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "success_when"
+        ],
+        "type": "object"
+      },
       "RunBudget": {
         "properties": {
           "max_cost_usd": {
@@ -1481,6 +1520,9 @@
           },
           "queue_position": {
             "type": "integer"
+          },
+          "routing_policy": {
+            "$ref": "#/components/schemas/RoutingPolicy"
           },
           "shard_count": {
             "type": "integer"

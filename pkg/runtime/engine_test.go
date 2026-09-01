@@ -1021,7 +1021,8 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 	// The checkpoint SURVIVES the finish (a status transition never
 	// destroys it — `iterion fork` reads a terminal parent's
-	// checkpoint); resumability is gated on Status alone.
+	// checkpoint, and a routing contract evaluates its outputs);
+	// resumability is gated on Status alone.
 	if r.Checkpoint == nil {
 		t.Error("finished run lost its checkpoint — fork of a finished run would start empty")
 	}

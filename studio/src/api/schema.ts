@@ -5430,6 +5430,16 @@ export interface components {
             private: boolean;
             web_url?: string;
         };
+        RoutingPolicy: {
+            allowed_actions?: string[];
+            block_when?: string[];
+            hash?: string;
+            max_relaunches?: number;
+            merge_into?: string;
+            merge_strategy?: string;
+            success_when: string;
+            version: number;
+        };
         RunBudget: {
             max_cost_usd?: number;
             max_duration?: string;
@@ -5485,6 +5495,7 @@ export interface components {
             permission_mode?: string;
             project_path?: string;
             queue_position?: number;
+            routing_policy?: components["schemas"]["RoutingPolicy"];
             shard_count?: number;
             shard_index?: number;
             shard_label?: string;

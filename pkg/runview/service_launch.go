@@ -14,6 +14,7 @@ import (
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
@@ -63,6 +64,52 @@ type LaunchPublisher interface {
 // The caller is expected to have already validated spec.FilePath
 // against any sandbox / origin policy. The service does not double-
 // check origins — its job is lifecycle, not authentication.
+// validateRoutingPolicyForLaunch is the ONE choke point freezing the
+// outcome contract (adversarial gate F2/F3): every launch surface that
+// reaches an engine — HTTP handler, MCP, a future reactor relaunch —
+// funnels through Service.Launch, so grammar, hash and workflow-ref
+// resolution happen here, not per-handler. A blocker on a field the
+// bot never publishes must be refused BEFORE any work happens: at the
+// terminal it would read "unreadable → escalate, forever" and silently
+// disable the automation the contract exists to allow.
+func validateRoutingPolicyForLaunch(p *store.RoutingPolicy, wf *ir.Workflow) error {
+	if p == nil {
+		return nil
+	}
+	if err := routing.Validate(p); err != nil {
+		return err
+	}
+	hasNode := func(node string) bool {
+		_, ok := wf.Nodes[node]
+		return ok
+	}
+	hasField := func(node, field string) bool {
+		n, ok := wf.Nodes[node]
+		if !ok {
+			return false
+		}
+		schemaName := ir.NodeOutputSchema(n)
+		if schemaName == "" {
+			return true // dynamic output shape — not statically checkable
+		}
+		schema, ok := wf.Schemas[schemaName]
+		if !ok || schema == nil {
+			return true
+		}
+		for _, f := range schema.Fields {
+			if f.Name == field {
+				return true
+			}
+		}
+		return false
+	}
+	if err := routing.ValidateRefs(p, hasNode, hasField); err != nil {
+		return err
+	}
+	p.Hash = p.ComputeHash()
+	return nil
+}
+
 func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult, error) {
 	if s.draining.Load() {
 		return nil, runtime.ErrServerDraining
@@ -112,6 +159,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		// multitenant cloud ceiling.
 		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 		if err != nil {
+			return nil, err
+		}
+		if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 			return nil, err
 		}
 		pos, err := s.publisher.SubmitLaunch(parent, runID, spec, wf, hash)
@@ -187,6 +237,9 @@ func (s *Service) hookEventObservers(extra []func(store.Event)) []func(store.Eve
 func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRoutingPolicyForLaunch(spec.RoutingPolicy, wf); err != nil {
 		return nil, err
 	}
 
@@ -304,7 +357,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -638,6 +691,9 @@ func (s *Service) spawnRun(
 	if len(modelOverrides) > 0 {
 		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
 	}
+	if ex.routingPolicy != nil {
+		opts = append(opts, runtime.WithRoutingPolicy(ex.routingPolicy))
+	}
 	if cb.url != "" {
 		opts = append(opts, runtime.WithCallback(cb.url, cb.token, cb.answerNode))
 	}
@@ -797,6 +853,9 @@ type launchExtras struct {
 	workDir  string
 	dailyCap *runtime.DailyCapGuard
 	source   *store.RunSource
+	// routingPolicy mirrors LaunchSpec.RoutingPolicy: the launch-frozen
+	// outcome contract, handed to the engine for doc persistence.
+	routingPolicy *store.RoutingPolicy
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.

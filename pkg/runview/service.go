@@ -120,6 +120,10 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
+	// RoutingPolicy is the launch-frozen outcome contract (validated
+	// and hashed by the HTTP layer); persisted on the run doc and
+	// replayed from it on resume.
+	RoutingPolicy *store.RoutingPolicy
 	// Fallback is the operator's ordered run-level fallback chain (the
 	// studio Launch row; a single CLI --fallback becomes a one-stage chain).
 	// It applies to agent nodes that declare no `fallbacks:` of their own,
