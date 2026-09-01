@@ -135,7 +135,11 @@ export type MergeStatus =
   // currently in the conflicted state (markers on disk, UU paths in
   // the index). The studio renders MergeConflictView until the
   // operator resolves every file + finalizes or aborts.
-  | "conflicted";
+  | "conflicted"
+  // A worker holds the merge claim (ClaimMerge CAS) and is squashing/
+  // pushing right now; a second merge request is refused server-side
+  // until the claim resolves or goes stale.
+  | "merging";
 
 // Mirror of sessionboard.Widget / sessionboard.Spec (Go). The LLM
 // curation layer (Phase 2) emits these; the studio renders one card per

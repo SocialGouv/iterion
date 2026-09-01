@@ -382,7 +382,10 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 	// is a deliberate branch-only outcome, and failed/conflicted have their
 	// own UX.
 	if r, err := s.store.LoadRun(ctx, runID); err == nil && r.MergeStatus == store.MergeStatusPending {
-		_, _ = s.reconcileOutOfBandMerge(ctx, r, mergeRepoRoot(r), "")
+		// The guard above admits only merge_status=pending, so that is
+		// the only state this CAS can exit from.
+		_, _ = s.reconcileOutOfBandMerge(ctx, r, mergeRepoRoot(r), "",
+			[]store.MergeStatus{store.MergeStatusPending})
 	}
 	return BuildSnapshot(ctx, s.store, runID)
 }

@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.82.0](https://github.com/SocialGouv/iterion/compare/v3.81.0...v3.82.0) (2026-09-01)
+
+### Features
+
+* **store:** canonical terminal-state contract + persisted failure taxonomy (ADR-095) ([#603](https://github.com/SocialGouv/iterion/issues/603)) ([daa6c8a](https://github.com/SocialGouv/iterion/commit/daa6c8a22d9882500b4fd1aaf656f9c45f33bc15))
+
+    <details><summary>why</summary>
+
+    One place answers every lifecycle-classification question: policy-named predicates on RunStatus (IsFinalSuccess/IsFinalFailure/IsTerminalResumable/ CanOperatorResume/RequiresResumeAnswers/CanAutoResume/ CountsAgainstLaunchLimit) and the FailureCode vocabulary — runtime's ErrorCode values plus INTERRUPTED/FAIL_NODE/PROCESS_ORPHANED/ QUEUE_SCHEMA_MISMATCH — persisted as an open-world, zero-means-unknown field on Run. Truth-table + relation tests pin every set; the negative-space test forbids new…
+
+    </details>
+
 ## [3.81.0](https://github.com/SocialGouv/iterion/compare/v3.80.1...v3.81.0) (2026-09-01)
 
 ### Features

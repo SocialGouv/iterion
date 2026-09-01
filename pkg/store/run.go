@@ -540,10 +540,16 @@ type Run struct {
 	AutoMerge bool `json:"auto_merge,omitempty" bson:"auto_merge,omitempty"`
 	// MergeStatus tracks whether the merge has happened yet:
 	//   "pending"  — storage branch created, merge awaiting user action
+	//   "merging"  — a merge claim is held (one worker is performing it)
 	//   "merged"   — merge succeeded; MergedInto + MergedCommit are set
 	//   "skipped"  — explicit opt-out (merge_into="none") or no commits
 	//   "failed"   — auto-merge attempted but failed; user can retry
 	MergeStatus MergeStatus `json:"merge_status,omitempty" bson:"merge_status,omitempty"`
+	// MergeClaimedAt is stamped when a worker claims the merge
+	// (MergeStatus="merging"). A claim older than the staleness bound a
+	// caller passes to ClaimMerge is up for grabs again — the previous
+	// claimant crashed mid-merge and must not wedge the run forever.
+	MergeClaimedAt time.Time `json:"merge_claimed_at,omitempty" bson:"merge_claimed_at,omitempty"`
 	// MergedCommit is the SHA on the target branch after the merge.
 	// Equal to FinalCommit for "merge" (FF) strategy; a fresh squash
 	// commit SHA for "squash". Empty when not yet merged.
@@ -873,6 +879,13 @@ const (
 	MergeStatusMerged  MergeStatus = "merged"
 	MergeStatusSkipped MergeStatus = "skipped"
 	MergeStatusFailed  MergeStatus = "failed"
+	// MergeStatusMerging is the claim state: exactly one worker holds
+	// the right to perform the merge (ClaimMerge is a compare-and-set,
+	// so two server replicas cannot both build a squash for the same
+	// run). Every persisted exit from this state goes through
+	// UpdateRunMergeIf, so a claimant that lost its claim (staleness
+	// steal) cannot overwrite the outcome of the worker that took over.
+	MergeStatusMerging MergeStatus = "merging"
 	// MergeStatusConflicted means `git merge --squash` produced
 	// content conflicts and the worktree is currently in the
 	// conflicted state (UU paths, markers on disk). The operator
@@ -881,6 +894,31 @@ const (
 	// status flips to "merged".
 	MergeStatusConflicted MergeStatus = "conflicted"
 )
+
+// RunMergeUpdate is the full merge bookkeeping written by one merge
+// transition. UpdateRunMergeIf persists it atomically, conditioned on
+// the current MergeStatus — the single choke point every merge-side
+// writer goes through, so a racing writer cannot clobber a state
+// another worker already landed (in particular: nobody can overwrite
+// "merged"). Empty string fields are cleared on the run, mirroring the
+// omitempty semantics a full SaveRun would have.
+type RunMergeUpdate struct {
+	Status              MergeStatus
+	MergedCommit        string
+	MergedInto          string
+	MergeStrategy       MergeStrategy
+	PendingMergeMessage string
+	PendingMergeInto    string
+	// ExpectClaimedAt scopes an exit from "merging" to ONE claim: when
+	// non-zero, the CAS additionally requires the persisted
+	// MergeClaimedAt to equal it (the token ClaimMerge returned). A
+	// claimant whose claim was stolen for staleness then matches
+	// nothing — it cannot consume the live claimant's claim, so a late
+	// failure write can never overwrite the state of the worker that
+	// took over. Zero skips the check (exits from non-merging states,
+	// which carry no claim).
+	ExpectClaimedAt time.Time
+}
 
 // NodeSessionSlot is the durable persist slot for one LLM node (ADR-089).
 // StateRef names a blob in BackendSessionStore. Empty StateRef means the

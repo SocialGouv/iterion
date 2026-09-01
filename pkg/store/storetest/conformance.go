@@ -57,6 +57,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
+	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
+	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
 	t.Run("FailRunTerminal", func(t *testing.T) { testFailRunTerminal(t, factory(t)) })
 	t.Run("FailureCodeLifecycle", func(t *testing.T) { testFailureCodeLifecycle(t, factory(t)) })
 	t.Run("TransitionSideEffects", func(t *testing.T) { testTransitionSideEffects(t, factory(t)) })
@@ -1930,5 +1932,195 @@ func testSaveRunHostileValues(t *testing.T, s store.RunStore) {
 	}
 	if b, err := s.LoadRun(ctx, "run-born-terminal"); err != nil || b.OutcomeSeq != 0 {
 		t.Fatalf("born-terminal = (seq %d, %v), want (0, nil)", b.OutcomeSeq, err)
+	}
+}
+
+// testMergeClaimCAS drives the merge state machine at the store level:
+// the claim CAS (entry), the conditional persist (exit), the stale
+// steal with claim-token isolation, and the no-clobber-merged
+// invariant that closes the double-squash TOCTOU.
+func testMergeClaimCAS(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-merge-claim"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	notStale := time.Now().Add(-15 * time.Minute)
+
+	// Entry: an unset merge_status is claimable, prior comes back "".
+	claimed, prior, tokenA, err := s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || !claimed || prior != "" {
+		t.Fatalf("first claim = (%t, %q, %v), want (true, \"\", nil)", claimed, prior, err)
+	}
+	if tokenA.IsZero() {
+		t.Fatal("claim must return its token")
+	}
+	// A held (fresh) claim refuses the second claimant.
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("second claim = (%t, %q, %v), want (false, merging, nil)", claimed, prior, err)
+	}
+
+	// Exit: the holder persists the outcome conditioned on "merging"
+	// AND its own token.
+	changed, err := s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{
+		Status:          store.MergeStatusMerged,
+		MergedCommit:    "abc123",
+		MergedInto:      "main",
+		MergeStrategy:   store.MergeStrategySquash,
+		ExpectClaimedAt: tokenA,
+	}, []store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || !changed {
+		t.Fatalf("persist merged = (%t, %v), want (true, nil)", changed, err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil || r.MergeStatus != store.MergeStatusMerged || r.MergedCommit != "abc123" || r.MergedInto != "main" {
+		t.Fatalf("merged bookkeeping = %+v (%v)", r, err)
+	}
+	if !r.MergeClaimedAt.IsZero() {
+		t.Errorf("MergeClaimedAt should be cleared by the exit write, got %v", r.MergeClaimedAt)
+	}
+
+	// No-clobber: a late writer still expecting "merging" (the loser of
+	// a race, or a stolen-claim holder) cannot overwrite "merged".
+	changed, err = s.UpdateRunMergeIf(ctx, runID, store.RunMergeUpdate{Status: store.MergeStatusFailed},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || changed {
+		t.Fatalf("clobber attempt = (%t, %v), want (false, nil)", changed, err)
+	}
+	if got, _ := s.LoadRun(ctx, runID); got.MergeStatus != store.MergeStatusMerged || got.MergedCommit != "abc123" {
+		t.Fatalf("merged record damaged: %+v", got)
+	}
+	// And "merged" is terminal for the claim too.
+	claimed, prior, _, err = s.ClaimMerge(ctx, runID, notStale)
+	if err != nil || claimed || prior != store.MergeStatusMerged {
+		t.Fatalf("claim on merged = (%t, %q, %v), want (false, merged, nil)", claimed, prior, err)
+	}
+
+	// Stale steal: a claim whose stamp predates staleBefore is up for
+	// grabs — AND the stolen-from claimant's token consumes nothing
+	// afterwards (the claim names an owner, not just a state; without
+	// the token check the crashed claimant's late failure write would
+	// overwrite the live claimant's outcome).
+	const runID2 = "run-merge-claim-stale"
+	if _, err := s.CreateRun(ctx, runID2, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	_, _, tokenOld, err := s.ClaimMerge(ctx, runID2, notStale)
+	if err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+	if claimed, _, _, err := s.ClaimMerge(ctx, runID2, notStale); err != nil || claimed {
+		t.Fatalf("fresh claim must hold, got steal (%t, %v)", claimed, err)
+	}
+	claimed, prior, tokenNew, err := s.ClaimMerge(ctx, runID2, time.Now().Add(time.Second))
+	if err != nil || !claimed || prior != store.MergeStatusMerging {
+		t.Fatalf("stale steal = (%t, %q, %v), want (true, merging, nil)", claimed, prior, err)
+	}
+	if tokenNew.Equal(tokenOld) {
+		t.Fatal("steal must issue a fresh token")
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID2, store.RunMergeUpdate{Status: store.MergeStatusFailed, ExpectClaimedAt: tokenOld},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || changed {
+		t.Fatalf("stolen-from claimant's write = (%t, %v), want (false, nil)", changed, err)
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID2, store.RunMergeUpdate{Status: store.MergeStatusMerged, MergedCommit: "def456", MergedInto: "main", ExpectClaimedAt: tokenNew},
+		[]store.MergeStatus{store.MergeStatusMerging})
+	if err != nil || !changed {
+		t.Fatalf("live claimant's write = (%t, %v), want (true, nil)", changed, err)
+	}
+
+	// A "merging" whose stamp is missing entirely (a full-document
+	// writer dropped it) is claimable — it must not wedge the run.
+	const runID3 = "run-merge-claim-nostamp"
+	if _, err := s.CreateRun(ctx, runID3, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if changed, err := s.UpdateRunMergeIf(ctx, runID3, store.RunMergeUpdate{Status: store.MergeStatusMerging},
+		[]store.MergeStatus{""}); err != nil || !changed {
+		t.Fatalf("seed stampless merging = (%t, %v)", changed, err)
+	}
+	claimed, _, _, err = s.ClaimMerge(ctx, runID3, notStale)
+	if err != nil || !claimed {
+		t.Fatalf("stampless merging must be claimable = (%t, %v)", claimed, err)
+	}
+
+	// skipped and conflicted stay claimable (/merge is the only path
+	// that re-materialises a lost merge clone; a recovered run lands
+	// "skipped" and must stay mergeable).
+	for _, st := range []store.MergeStatus{store.MergeStatusSkipped, store.MergeStatusConflicted} {
+		id := "run-merge-claim-" + string(st)
+		if _, err := s.CreateRun(ctx, id, "wf", nil); err != nil {
+			t.Fatalf("CreateRun: %v", err)
+		}
+		if changed, err := s.UpdateRunMergeIf(ctx, id, store.RunMergeUpdate{Status: st}, []store.MergeStatus{""}); err != nil || !changed {
+			t.Fatalf("seed %s = (%t, %v)", st, changed, err)
+		}
+		claimed, prior, _, err := s.ClaimMerge(ctx, id, notStale)
+		if err != nil || !claimed || prior != st {
+			t.Fatalf("claim on %s = (%t, %q, %v), want (true, %s, nil)", st, claimed, prior, err, st)
+		}
+	}
+
+	// Exit CAS with the empty status in expectedFrom matches an unset
+	// field (a run that never entered the machine).
+	const runID4 = "run-merge-claim-virgin"
+	if _, err := s.CreateRun(ctx, runID4, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	changed, err = s.UpdateRunMergeIf(ctx, runID4, store.RunMergeUpdate{Status: store.MergeStatusPending},
+		[]store.MergeStatus{""})
+	if err != nil || !changed {
+		t.Fatalf("empty-status CAS = (%t, %v), want (true, nil)", changed, err)
+	}
+
+	// A missing run is an ERROR, not a silent (false, nil) — a caller
+	// must be able to tell a lost race from a deleted run.
+	if _, err := s.UpdateRunMergeIf(ctx, "run-merge-claim-ghost", store.RunMergeUpdate{Status: store.MergeStatusPending},
+		[]store.MergeStatus{""}); err == nil {
+		t.Fatal("UpdateRunMergeIf on a missing run must error")
+	}
+}
+
+// testSaveRunPreservesLiveMergeClaim: the merge claim is owned by the
+// merge choke points (ClaimMerge / UpdateRunMergeIf); a full-document
+// SaveRun from a writer that loaded the run BEFORE the claim (operator
+// rename, rewind bookkeeping, cloud publisher stamps) must not disavow
+// a live claim — clobbering merge_status+merge_claimed_at re-opens the
+// double-squash the claim exists to prevent (the next claimant passes
+// immediately while the first is mid-merge).
+func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
+	ctx := testCtx()
+	if _, err := s.CreateRun(ctx, "mc-save", "wf", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The stale copy, loaded before the claim.
+	stale, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, token, err := s.ClaimMerge(ctx, "mc-save", time.Now().UTC())
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	// The stale writer saves (e.g. a rename): the claim must survive.
+	stale.Name = "renamed"
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.LoadRun(ctx, "mc-save")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Name != "renamed" {
+		t.Errorf("the save's own payload was lost: name=%q", r.Name)
+	}
+	if r.MergeStatus != store.MergeStatusMerging {
+		t.Errorf("SaveRun disavowed a live merge claim: merge_status=%q, want %q — the next claimant would double-squash", r.MergeStatus, store.MergeStatusMerging)
+	}
+	if !r.MergeClaimedAt.Equal(token) {
+		t.Errorf("SaveRun dropped the claim stamp: %v, want %v", r.MergeClaimedAt, token)
 	}
 }

@@ -142,6 +142,26 @@ type RunStore interface {
 	// topology, so it never states a continuation — F3 of the
 	// adversarial gate).
 	UpdateRunOutcome(ctx context.Context, id string, status RunStatus, runErr string, meta RunOutcomeMeta, expectedFrom []RunStatus) (changed bool, err error)
+	// ClaimMerge is the compare-and-set entry to the merge state
+	// machine: it flips MergeStatus to "merging" and stamps
+	// MergeClaimedAt, iff the current status is claimable — "",
+	// "pending", "failed", "skipped" or "conflicted", or a "merging"
+	// whose MergeClaimedAt is before staleBefore or unset (the previous
+	// claimant crashed; a wedged claim must not block the run forever).
+	// Returns the status the run held before the claim so an aborted
+	// attempt can restore it, plus the claim token (the exact
+	// MergeClaimedAt stamp written — pass it as ExpectClaimedAt on
+	// every exit so a stolen claim cannot consume its successor's), and
+	// claimed=false (with the current status) when someone else holds a
+	// fresh claim or the run is already merged.
+	ClaimMerge(ctx context.Context, id string, staleBefore time.Time) (claimed bool, prior MergeStatus, claimToken time.Time, err error)
+	// UpdateRunMergeIf is the compare-and-set exit from the merge state
+	// machine: it persists upd's merge fields iff the current
+	// MergeStatus is in expectedFrom (empty string matches an unset
+	// field). Returns changed=false when the state drifted — the caller
+	// lost its claim or raced another writer — in which case nothing
+	// was written.
+	UpdateRunMergeIf(ctx context.Context, id string, upd RunMergeUpdate, expectedFrom []MergeStatus) (changed bool, err error)
 	SaveCheckpoint(ctx context.Context, id string, cp *Checkpoint) error
 	PauseRun(ctx context.Context, id string, cp *Checkpoint) error
 	FailRunResumable(ctx context.Context, id string, cp *Checkpoint, runErr string, code FailureCode) error
