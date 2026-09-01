@@ -131,7 +131,7 @@ func TestOutcomeRouter_IncidentFixtures(t *testing.T) {
 	})
 	// Stamp the continuation the way the engine's interruption path does.
 	if _, err := h.st.UpdateRunOutcome(ctx, r.ID, store.RunStatusFailedResumable, "interrupted",
-		store.RunOutcomeMeta{TerminalCode: "INTERRUPTED", Continuation: store.ContinuationRedeliveryPending}, nil); err != nil {
+		store.RunOutcomeMeta{Code: store.FailureInterrupted, Continuation: store.ContinuationRedeliveryPending}, nil); err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
 	h.s.routeOutcomeOffer(ctx, r.ID)
@@ -196,7 +196,7 @@ func TestOutcomeRouter_IncidentFixtures(t *testing.T) {
 		r.ContinuationState = store.ContinuationFinal
 	})
 	if _, err := h.st.UpdateRunOutcome(ctx, r.ID, store.RunStatusFailedResumable, "orphaned",
-		store.RunOutcomeMeta{TerminalCode: "ORPHANED", Continuation: store.ContinuationFinal}, nil); err != nil {
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationFinal}, nil); err != nil {
 		t.Fatalf("stamp: %v", err)
 	}
 	h.s.routeOutcomeOffer(ctx, r.ID)
