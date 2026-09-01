@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cli"
+	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -509,12 +510,7 @@ func TestRemotePoolPolicy_AudienceTravelsWhole(t *testing.T) {
 
 	name := "devthejo"
 	pol := cli.PoolPolicy{Name: &name}
-	pol.Audience = &struct {
-		Teams        []string `json:"teams,omitempty"`
-		Orgs         []string `json:"orgs,omitempty"`
-		Contributors bool     `json:"contributors,omitempty"`
-		AllTeams     bool     `json:"all_teams,omitempty"`
-	}{AllTeams: true}
+	pol.Audience = &credpool.Audience{AllTeams: true}
 	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
 		t.Fatalf("RemotePoolPolicy: %v", err)
 	}
@@ -530,5 +526,46 @@ func TestRemotePoolPolicy_AudienceTravelsWhole(t *testing.T) {
 	}
 	if _, ok := gotBody["enabled"]; ok {
 		t.Fatal("enabled was not set by the caller and must not be sent")
+	}
+}
+
+// Standing a NEW pool up without stating the master switch would create
+// it Enabled:false — invisible to the broker's ListEnabled, every pledge
+// under it dead, and nothing says why. The CLI probes first and refuses.
+func TestRemotePoolPolicy_RefusesSilentDisabledCreate(t *testing.T) {
+	var puts int
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			// The server describes "the pool that WOULD be created":
+			// empty id = no pool exists yet.
+			_, _ = w.Write([]byte(`{"id":"","org_id":"org1","donors":[]}`))
+			return
+		}
+		puts++
+		_, _ = w.Write([]byte(`{"id":"org1"}`))
+	}))
+	p, _ := remotePrinter(cli.OutputJSON)
+
+	pol := cli.PoolPolicy{Audience: &credpool.Audience{AllTeams: true}}
+	err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol)
+	if err == nil {
+		t.Fatal("want a refusal: creating a pool without --enabled stands it up disabled and dead")
+	}
+	if !strings.Contains(err.Error(), "--enabled") {
+		t.Fatalf("the refusal must name the missing flag, got: %v", err)
+	}
+	if puts != 0 {
+		t.Fatalf("the PUT must not be sent on refusal (got %d)", puts)
+	}
+
+	// Stating the switch skips the probe entirely and goes through.
+	enabled := true
+	pol.Enabled = &enabled
+	if err := cli.RemotePoolPolicy(context.Background(), c, p, "team-1", pol); err != nil {
+		t.Fatalf("explicit --enabled must pass: %v", err)
+	}
+	if puts != 1 {
+		t.Fatalf("PUT count = %d, want 1", puts)
 	}
 }
