@@ -241,6 +241,11 @@ func TestOutcomeRouter_MergesAndCountsEpisodes(t *testing.T) {
 		}
 	}
 	git("init", "-q", "-b", "main")
+	// Repo-local identity: PerformMergeCtx's squash commit runs without
+	// the helper's env, and CI has no global git identity.
+	git("config", "user.email", "t@t.t")
+	git("config", "user.name", "t")
+	git("config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
