@@ -119,7 +119,10 @@ type TeamResolver interface {
 type Publisher struct {
 	nats       *natsq.Conn
 	publishRun func(context.Context, *queue.RunMessage) error
-	cancelRun  func(string) error
+	// publishRetryDelays is nil in production (the bounded default below).
+	// Tests replace it with zero delays while exercising the same choke point.
+	publishRetryDelays []time.Duration
+	cancelRun          func(string) error
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
@@ -1296,6 +1299,75 @@ func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
 	if err := p.offloadOversizedIR(ctx, msg); err != nil {
 		return err
 	}
+	return p.publishWithRetry(ctx, msg)
+}
+
+const publishRetryWindow = 10 * time.Second
+
+var defaultPublishRetryDelays = []time.Duration{
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	750 * time.Millisecond,
+}
+
+// publishWithRetry is the single retry choke point for cloud launches and
+// resumes. RunMessage's Nats-Msg-Id stays stable across attempts, so a publish
+// whose acknowledgement was lost is absorbed by JetStream deduplication.
+func (p *Publisher) publishWithRetry(ctx context.Context, msg *queue.RunMessage) error {
+	retryCtx, cancel := context.WithTimeout(ctx, publishRetryWindow)
+	defer cancel()
+
+	delays := p.publishRetryDelays
+	if delays == nil {
+		delays = defaultPublishRetryDelays
+	}
+	attempts := len(delays) + 1
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		// PublishRun owns its 5s acknowledgement deadline. Do not impose a
+		// shorter outer attempt timeout: cancelling only the ack wait after the
+		// broker accepted the message can turn a successful publish into retries
+		// and finally a false QUEUE_UNAVAILABLE response.
+		lastErr = p.publishOnce(retryCtx, msg)
+		if lastErr == nil {
+			return nil
+		}
+		// A caller cancellation is not a queue outage and must retain its
+		// cancellation semantics. PublishRun's own deadline, on the other
+		// hand, is a transient NATS timeout and is retried below.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !natsq.IsTransientPublishError(lastErr) {
+			return lastErr
+		}
+		if attempt == attempts || retryCtx.Err() != nil {
+			break
+		}
+		delay := delays[attempt-1]
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: queue publish attempt %d/%d failed transiently: %v — retrying in %s", attempt, attempts, lastErr, delay)
+		}
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-retryCtx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return &runview.QueueUnavailableError{Cause: lastErr}
+		}
+	}
+	return &runview.QueueUnavailableError{Cause: lastErr}
+}
+
+func (p *Publisher) publishOnce(ctx context.Context, msg *queue.RunMessage) error {
 	if p.publishRun != nil {
 		return p.publishRun(ctx, msg)
 	}

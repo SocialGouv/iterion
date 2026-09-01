@@ -631,6 +631,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	if err := e.claimForFailureResume(ctx, runID, cp, restartNodeID); err != nil {
 		return err
 	}
+	if err := e.failSpentBudgetBeforeResume(ctx, r); err != nil {
+		return err
+	}
 
 	if err := e.restoreResumeWorkspace(r); err != nil {
 		return err
