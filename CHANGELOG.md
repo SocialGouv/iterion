@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [3.82.1](https://github.com/SocialGouv/iterion/compare/v3.82.0...v3.82.1) (2026-09-01)
+
+### Bug Fixes
+
+* **runview:** merge is an owned, claimed state machine — no more double-squash between replicas ([#595](https://github.com/SocialGouv/iterion/issues/595)) ([b9f8ec4](https://github.com/SocialGouv/iterion/commit/b9f8ec4374dd9d3666ec3047cb2b333dd5933e93))
+
+    <details><summary>why</summary>
+
+    PerformMergeCtx checked merge_status==merged then went to work: on a multi-replica server (prod runs 3) two concurrent calls both passed the check, both built a squash (different commits under the default squash strategy), and the loser — non-FF push refused — then persisted merge_status=failed over the winner's merged via a full-document ReplaceOne. Found by adversarial plan review, verified in code; the merge path is live on every repo-targeted campaign landing.
+
+    </details>
+
 ## [3.82.0](https://github.com/SocialGouv/iterion/compare/v3.81.0...v3.82.0) (2026-09-01)
 
 ### Features
