@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/spf13/cobra"
