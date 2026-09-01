@@ -259,7 +259,6 @@ func TestOpsDispatcher_SweepPaginatesPastAFullPage(t *testing.T) {
 	}
 }
 
-
 // TestOpsDispatcher_LoserNeverCertifiesAPendingClaim pins the round-2 race:
 // replica A wins the episode claim and is mid-fan-out when replica B's offer
 // loses — B must NOT stamp the transition marker off A's PENDING claim,
@@ -282,7 +281,7 @@ func TestOpsDispatcher_LoserNeverCertifiesAPendingClaim(t *testing.T) {
 	if !epWon {
 		t.Fatal("setup: could not pre-claim the episode")
 	}
-	_ = d.Handle(context.Background(), ev) // B: loses, must not stamp evKey
+	_ = d.Handle(context.Background(), ev)                                   // B: loses, must not stamp evKey
 	_ = d.Claims.Unmark(context.Background(), "ops|run:"+run.ID+":parked:0") // A fails → releases
 
 	// The sweep replays with a healthy channel: the alert MUST go out.

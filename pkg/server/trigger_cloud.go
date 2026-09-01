@@ -306,13 +306,27 @@ func (s *cloudBoardSource) drainTenant(tenant string, st cloudBoardStore) (bool,
 		}
 	}
 	last := events[len(events)-1].Seq
-	if _, err := st.AdvanceTriggerCursor(cursor, last); err != nil {
+	won, aerr := st.AdvanceTriggerCursor(cursor, last)
+	if aerr != nil {
 		// The rows are durable; a failed advance only means re-materializing
 		// the same batch next tick, which the upsert collapses. Poison
 		// counters are deliberately NOT pruned here: the local cursor has
 		// not moved, so the batch replays — pruning would make an acquired
 		// skip cost its 20 ticks all over again.
-		return len(rows) > 0, err
+		return len(rows) > 0, aerr
+	}
+	if !won {
+		// A peer replica advanced instead — the NOMINAL multi-replica case
+		// (N−1 replicas lose every election), and the peer may have stopped
+		// SHORT of our batch's last (it read a shorter batch before a
+		// concurrent insert became visible). Prune against the cursor the
+		// store ACTUALLY holds, never against a seq nobody passed: pruning
+		// at `last` here erased an acquired poison skip and re-froze the
+		// tenant's tail for another 20 ticks.
+		if cur, cerr := st.TriggerCursor(); cerr == nil {
+			s.prunePoisons(tenant, cur)
+		}
+		return len(rows) > 0, nil
 	}
 	s.prunePoisons(tenant, last)
 	return len(rows) > 0, nil

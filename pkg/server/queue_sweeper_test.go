@@ -188,7 +188,6 @@ func TestQueuedSweepCutoff(t *testing.T) {
 	}
 }
 
-
 // TestSweepOrphanRuns_LeaseEpisodeClosesOnBoundedCleanPasses pins the other
 // half of the latch class: a lease-opened episode whose candidate was flipped
 // by a peer replica during the blindness may NEVER see another probe — after

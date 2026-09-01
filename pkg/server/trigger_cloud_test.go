@@ -19,13 +19,18 @@ type stubCloudBoardStore struct {
 	*trigger.MemoryEffectOutbox
 	cursor     int64
 	advanceErr error
-	events     []native.Event
-	issues    map[string]*native.Issue
-	getErr    map[string]error
-	log       []string
-	upserted  int
-	advanced  bool
-	advanceTo int64
+	// advanceLost simulates a peer replica winning the CAS: the stub's
+	// cursor is set to peerCursor and (false, nil) is returned — the
+	// boardmongo shape a losing replica sees on every tick.
+	advanceLost bool
+	peerCursor  int64
+	events      []native.Event
+	issues      map[string]*native.Issue
+	getErr      map[string]error
+	log         []string
+	upserted    int
+	advanced    bool
+	advanceTo   int64
 }
 
 func (s *stubCloudBoardStore) TriggerCursor() (int64, error) { return s.cursor, nil }
@@ -43,6 +48,10 @@ func (s *stubCloudBoardStore) EventsAfter(after int64, _ int) ([]native.Event, e
 func (s *stubCloudBoardStore) AdvanceTriggerCursor(from, to int64) (bool, error) {
 	if s.advanceErr != nil {
 		return false, s.advanceErr
+	}
+	if s.advanceLost {
+		s.cursor = s.peerCursor
+		return false, nil
 	}
 	s.log = append(s.log, "advance")
 	s.advanced, s.advanceTo = true, to
@@ -189,7 +198,6 @@ func TestTrimAtYoungGap(t *testing.T) {
 	}
 }
 
-
 // TestDrainTenant_TwoPoisonEventsBothClear pins the per-seq poison counter:
 // two adjacent unreadable events must not reset each other's count (the
 // per-tenant single-slot version froze the tenant forever with an Error
@@ -213,7 +221,6 @@ func TestDrainTenant_TwoPoisonEventsBothClear(t *testing.T) {
 		t.Fatalf("poison counters not pruned after the cursor passed them: %d entries", len(src.poisons))
 	}
 }
-
 
 // TestDrainTenant_FailedAdvanceKeepsTheAcquiredSkip pins the prune ordering:
 // an advance that ERRORS replays the batch next tick — pruning the poison
@@ -242,5 +249,40 @@ func TestDrainTenant_FailedAdvanceKeepsTheAcquiredSkip(t *testing.T) {
 	_, _ = src.drainTenant("t1", st)
 	if src.poisons[key] != nil {
 		t.Fatal("successful advance did not prune the passed counter")
+	}
+}
+
+// TestDrainTenant_LostCASPrunesOnlyWhatTheStorePassed pins the round-4 HIGH:
+// a LOST cursor election — the nominal case on every multi-replica tick —
+// must prune poison counters against the cursor the store actually holds
+// (the peer may have stopped short of our batch's last), never against a
+// seq nobody passed: over-pruning erased an acquired skip and re-froze the
+// tenant's tail for another 20 ticks.
+func TestDrainTenant_LostCASPrunesOnlyWhatTheStorePassed(t *testing.T) {
+	src, st, _ := newDrainWorld(t)
+	st.events = append(st.events, native.Event{Type: native.EvtIssueState, IssueID: "card3", Seq: 3, Timestamp: time.Now()})
+	st.issues["card3"] = &native.Issue{ID: "card3", Title: "v", State: native.StateInbox, Labels: []string{"triage:auto"}}
+	st.getErr["card3"] = errors.New("decode: corrupt doc")
+
+	// Acquire seq-3's skip (advance keeps failing on the CAS: peer stops at 2).
+	st.advanceLost, st.peerCursor = true, 2
+	for i := 0; i < boardTailPoisonTicks+2; i++ {
+		_, _ = src.drainTenant("t1", st)
+	}
+	p := src.poisons["t1|3"]
+	if p == nil || p.fails < boardTailPoisonTicks {
+		t.Fatalf("setup: seq-3 skip not acquired (%+v) — the lost CAS pruned it every tick", p)
+	}
+	// Seqs the peer DID pass are pruned (no leak).
+	if src.poisons["t1|1"] != nil || src.poisons["t1|2"] != nil {
+		t.Fatal("counters at or below the peer's cursor were not pruned")
+	}
+	// Winning the election prunes seq 3 once passed.
+	st.advanceLost = false
+	if _, err := src.drainTenant("t1", st); err != nil {
+		t.Fatalf("drain after winning: %v", err)
+	}
+	if src.poisons["t1|3"] != nil {
+		t.Fatal("won advance did not prune the passed counter")
 	}
 }
