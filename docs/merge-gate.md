@@ -148,6 +148,17 @@ operator pin buys the whole posture. On the integration's launch vars
 { "gate_enabled": "false" }
 ```
 
+Two properties of the pin worth knowing before setting it:
+
+- it is **repo-wide**: the operator var layer applies to every co-enabled
+  bot, so pinning it to quiet one gating bot also releases head-tracking
+  for the others on that repo;
+- the release is **logged at Warn** at the moment it becomes definitive
+  (a provision that drops a previously-forced `review_on_sync`), and any
+  later launch-vars update that replaces the map WITHOUT the pin silently
+  restores the gating posture (fail-safe direction — the gate follows the
+  head again).
+
 What the pin disarms, end to end:
 
 - the bot's publish step skips the commit status — no verdict context ever

@@ -258,12 +258,15 @@ the MR/PR's current head:
   never dropping human reviewers; best-effort, a miss only costs the
   button).
 - **GitHub / Forgejo** — a `pull_request` event with action
-  `review_requested` whose `requested_reviewer` is the connection's
-  account. No self-assign is needed on GitHub: the forge itself lists a
-  review's author as reviewer (PAT/OAuth-account connections). A GitHub
-  **App** cannot be a PR reviewer at all (forge restriction) — on App
-  connections this lane simply never lights up, and `/revi` remains the
-  on-demand path.
+  `review_requested` whose `requested_reviewer` is iterion's identity.
+  That identity is the **App bot login only** (`<app_slug>[bot]`): a
+  PAT/OAuth connection's account may be a HUMAN's, and treating it as the
+  bot would turn an ordinary human-to-human review request into an LLM
+  launch (and disarm the anti-loop actor guard). Since a GitHub **App**
+  cannot be a PR reviewer at all (forge restriction), on GitHub this lane
+  is inert by construction and `/revi` remains the on-demand path; on
+  Forgejo an App-connection reviewer works (self-assign not wired — add
+  the bot as reviewer by hand once).
 
 Semantics, shared with `/revi` (deliberate manual gesture):
 
@@ -271,6 +274,8 @@ Semantics, shared with `/revi` (deliberate manual gesture):
 - **repeatable** — each click is its own delivery (the idempotency key is
   salted with the MR/PR `updated_at`), so re-requesting twice on the same
   head reviews twice; forge redeliveries of the same click stay deduped;
+- **open PRs/MRs only** — reviewer edits arrive freely on closed/merged
+  ones and never burn a run;
 - **authorized by the forge** — editing a PR's reviewers already requires
   write access, so no extra replier gate applies;
 - **never self-triggering** — a reviewers change whose *actor* is the bot
