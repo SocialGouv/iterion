@@ -24,9 +24,11 @@ import (
 
 	"os"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/reviewtopology"
+	"github.com/SocialGouv/iterion/pkg/usagecap"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -96,6 +98,16 @@ type Config struct {
 	// default) at publish time so the pinned value rides the RunMessage.
 	// Nil → the runner keeps its own env/built-in resolution.
 	SandboxImage func(context.Context) string
+	// UsageCaps, when non-nil, is the shared record of what the fleet has
+	// learned about each subscription's own quota windows (pkg/usagecap,
+	// written by every runner). The launch consults it to skip a forfait
+	// whose window is CLOSED, which is what lets the run fall through to
+	// the next credential tier instead of parking for a reset.
+	UsageCaps usagecap.Store
+	// UsageCapPolicy is the ceiling the skip is judged against — the same
+	// operator policy the runner enforces mid-run. Nil disables the skip
+	// (no policy, no opinion).
+	UsageCapPolicy usagecap.PolicySource
 	// CredPool, when non-nil, lets a run with no credential of its own
 	// draw on a contributor's lent subscription (pkg/credpool). Nil — the
 	// default — simply means no pool tier.
@@ -141,6 +153,8 @@ type Publisher struct {
 	pluginSources  *pluginsource.Resolver
 	sandboxImage   func(context.Context) string
 	credPool       *credpool.Broker
+	usageCaps      usagecap.Store
+	usageCapPolicy usagecap.PolicySource
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -233,6 +247,8 @@ func New(cfg Config) (*Publisher, error) {
 		pluginSources:  cfg.PluginSources,
 		sandboxImage:   cfg.SandboxImage,
 		credPool:       cfg.CredPool,
+		usageCaps:      cfg.UsageCaps,
+		usageCapPolicy: cfg.UsageCapPolicy,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -488,6 +504,18 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 					p.logger.Warn("cloudpublisher: unseal oauth %s/%s: %v", rec.UserID, rec.Kind, err)
 					continue
 				}
+				// A forfait whose provider window is CLOSED is not a
+				// usable credential: handing it to the run means one LLM
+				// call, a rate-limit refusal, and a park until the window
+				// resets — up to a week on the weekly one — while another
+				// tier (a second forfait, the pool) could have served it
+				// immediately. Skipping it here is what makes the tiers a
+				// FALLBACK CHAIN rather than a fixed first choice.
+				if until, why := p.forfaitWindowClosed(ctx, tenantID, ownerKey, rec); !until.IsZero() {
+					p.logger.Info("cloudpublisher: oauth-forfait(%s) SKIPPED for run=%s kind=%s fp=%s — %s (reopens %s); falling through to the next credential tier",
+						label, runID, rec.Kind, rec.Fingerprint, why, until.UTC().Format(time.RFC3339))
+					continue
+				}
 				bundle.OAuthCredentials[string(rec.Kind)] = payload
 				setOAuthFingerprint(&bundle, string(rec.Kind), rec.Fingerprint)
 				p.logger.Info("cloudpublisher: oauth-forfait(%s) used run=%s owner=%s kind=%s fp=%s", label, runID, ownerKey, rec.Kind, rec.Fingerprint)
@@ -736,6 +764,76 @@ var poolWantOrder = func() []credpool.Credential {
 	}
 	return out
 }()
+
+// forfaitWindowClosed reports when a forfait's provider window is closed
+// (and why), or the zero time when it is usable. Deliberately
+// conservative — every uncertain answer means "usable", because a wrong
+// skip spends a donor's quota or falls to env for a subscription that
+// would have worked:
+//   - no store or no policy wired ⇒ usable (nothing to judge with);
+//   - no reading for this credential ⇒ usable ("nothing learned yet"
+//     is the store's documented meaning for an unknown key);
+//   - a STALE reading ⇒ usable (Fresh already encodes "past its reset",
+//     so a window that has reopened stops blocking by itself);
+//   - blocked without a reset instant ⇒ usable, unless the provider
+//     itself said "rejected": an operator percentage cap is a ceiling on
+//     THIS deployment's spending, not evidence the credential would be
+//     refused, and skipping on it would push work onto a donor to keep a
+//     tenant under its own budget.
+func (p *Publisher) forfaitWindowClosed(ctx context.Context, tenantID, ownerKey string, rec secrets.OAuthRecord) (time.Time, string) {
+	if p.usageCaps == nil || p.usageCapPolicy == nil || rec.Fingerprint == "" {
+		return time.Time{}, ""
+	}
+	backend := usageBackendForKind(rec.Kind)
+	if backend == "" {
+		return time.Time{}, ""
+	}
+	// Same key the runner meters under: the credential's own fingerprint,
+	// in the scope that credential belongs to (a tenant's own forfait
+	// never merges with the platform's).
+	scope := usagecap.ScopePlatform
+	if ownerKey != secrets.PlatformOwnerKey && tenantID != "" {
+		scope = usagecap.TenantScope(tenantID)
+	}
+	readings, err := p.usageCaps.Latest(ctx, usagecap.Key(backend, scope, rec.Fingerprint))
+	if err != nil {
+		// The meter is an optimisation; its failure must not change which
+		// credential a run gets.
+		p.logger.Warn("cloudpublisher: usage-cap lookup for %s/%s: %v", rec.Kind, rec.Fingerprint, err)
+		return time.Time{}, ""
+	}
+	now := time.Now()
+	// The SAME gate the runner arms a retry from: "may new work start
+	// against this credential", stale readings ignored, and when several
+	// windows block, the one that reopens last.
+	d := usagecap.Preflight(readings, p.usageCapPolicy.Effective(ctx), now, usagecap.DefaultMaxAge)
+	if !d.Blocked {
+		return time.Time{}, ""
+	}
+	if !d.ResetsAt.IsZero() {
+		return d.ResetsAt, d.Reason
+	}
+	// Blocked with no reset instant. An operator PERCENTAGE cap is a
+	// ceiling on this deployment's own spending, not evidence the
+	// provider would refuse — skipping on it would push work onto a
+	// donor to keep a tenant under its own budget. Only a real refusal
+	// justifies the skip, and the reading's staleness bound ends it.
+	for _, r := range readings {
+		if r.Status == usagecap.StatusRejected && r.Fresh(now, usagecap.DefaultMaxAge) {
+			return r.ObservedAt.Add(usagecap.DefaultMaxAge), d.Reason
+		}
+	}
+	return time.Time{}, ""
+}
+
+// usageBackendForKind maps a forfait kind to the meter backend the runner
+// records under. "" for a kind whose windows are not metered.
+func usageBackendForKind(kind secrets.OAuthKind) string {
+	if kind == secrets.OAuthKindClaudeCode {
+		return delegate.BackendClaudeCode
+	}
+	return ""
+}
 
 // providerOfWant maps a want back to the LLM provider it authenticates
 // against, so a run that pinned its models can be matched to donations it

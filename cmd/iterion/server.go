@@ -357,6 +357,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Identity:         authStack.identityStore,
 		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 		CredPool:         credBroker,
+		// The fleet's shared meter, and the SAME policy the runner
+		// enforces mid-run: a forfait whose window is closed is skipped
+		// at launch so the run falls through to the next credential tier
+		// instead of parking for a reset it could have avoided.
+		UsageCaps:      usagecap.NewMongoStore(st.DB()),
+		UsageCapPolicy: publisherUsageCapPolicy(stores, logger),
 		// The SAME resolver instance the server's admin PUT invalidates —
 		// publish-time pinning sees a mutation immediately on this replica.
 		SandboxImage: func(ctx context.Context) string {
@@ -750,6 +756,21 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 // The read credential is used strictly BY REFERENCE — the secret id travels on
 // the source record, the value is unsealed here and handed to the fetcher,
 // which passes it to git via an askpass helper (never argv, never a log line).
+// publisherUsageCapPolicy resolves the operator's window ceilings the same
+// way the runner does — the DB-backed settings record over the env policy —
+// so a launch-time skip and a mid-run park judge a subscription by ONE
+// policy. A malformed env policy disables the skip rather than guessing:
+// the launch keeps its previous behaviour (hand the forfait over) instead
+// of routing work on a policy nobody could read.
+func publisherUsageCapPolicy(stores *cloudStores, logger *iterlog.Logger) usagecap.PolicySource {
+	env, err := usagecap.FromEnv()
+	if err != nil {
+		logger.Warn("server: usage-cap env policy unreadable (%v) — launch will not skip window-closed forfaits", err)
+		return nil
+	}
+	return usagecap.NewResolver(stores.usageCapSettings, env)
+}
+
 func newPluginSourceResolver(stores *cloudStores, sealer secrets.Sealer, logger *iterlog.Logger) *pluginsource.Resolver {
 	if stores == nil || stores.pluginSources == nil || sealer == nil {
 		return nil
