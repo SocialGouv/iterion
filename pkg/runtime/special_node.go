@@ -228,7 +228,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		Vars:        vars,
 		ParentRunID: rs.runID,
 		NodeID:      nodeID,
-		ReattachKey: e.subbotReattachKey(nodeID, rs.loopCounters, branchID),
+		ReattachKey: e.subbotReattachKey(nodeID, runStateIterationCounters(rs), branchID),
 		WorkDir:     e.workDir,
 	})
 	if err != nil {
@@ -248,7 +248,12 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 // subbotReattachKey builds the stable, unique key identifying one execution of
 // a subbot node: node id, plus the loop-iteration path (disambiguates loop
 // iterations across resume) and the fan-out branch id (disambiguates
-// concurrent branches of the same node). The result is sanitized to a
+// concurrent branches of the same node). Callers pass the COMPOSED counters
+// (runStateIterationCounters): inside a fan-out branch the enclosing trunk
+// loop lives in enclosingLoopCounters, and reading the branch-private map
+// alone would render every trunk iteration as "<loop>=0" — collapsing them
+// onto one key so iteration N+1 re-attaches to iteration N's child run.
+// The result is sanitized to a
 // Mongo-safe field name ('.' and '$' → '_') because it becomes a map key on
 // the parent run doc. Empty node id (never expected) yields "" → re-attach
 // disabled for that call.

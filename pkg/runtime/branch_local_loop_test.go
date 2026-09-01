@@ -1456,3 +1456,74 @@ func TestBranchDailyCapLedgerKeyStableAcrossSiblingResume(t *testing.T) {
 		t.Fatalf("spend after resume = %v, want 7 (completed sibling 2 + paused 2 + judge 3, not a swapped-seq double count)", st.SpentUSD)
 	}
 }
+
+// TestSubbotInBranchInsideTrunkLoopGetsDistinctReattachKeys is the third
+// enclosing-namespace site: a subbot node inside a fan-out branch that is
+// itself inside a trunk loop. subbotReattachKey stamps the loop-iteration
+// path so ADR-084 re-attach binds a child run to ONE iteration; reading the
+// branch-private loopCounters (empty for a trunk loop) collapses every
+// iteration onto the same key, and iteration N+1 silently re-attaches to
+// iteration N's child instead of launching a fresh one.
+func TestSubbotInBranchInsideTrunkLoopGetsDistinctReattachKeys(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "subbot_branch_enclosing_loop",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"plan":     &ir.AgentNode{BaseNode: ir.BaseNode{ID: "plan"}},
+			"dispatch": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "dispatch"}, RouterMode: ir.RouterFanOutEach, Over: "{{outputs.entry.items}}", OverRefs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"entry", "items"}}}, ItemBinding: "item"},
+			"run_child": &ir.SubbotNode{
+				BaseNode: ir.BaseNode{ID: "run_child"},
+				Source:   "child.bot",
+				Isolated: true,
+			},
+			"collect": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "collect"}, AwaitMode: ir.AwaitWaitAll},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":    &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "plan"},
+			{From: "plan", To: "dispatch"},
+			{From: "dispatch", To: "run_child"},
+			{From: "run_child", To: "collect"},
+			{From: "collect", To: "plan", LoopName: "outer", Condition: "again"},
+			{From: "collect", To: "done", IsElse: true},
+		},
+		Loops: map[string]*ir.Loop{
+			"outer": {Name: "outer", MaxIterations: 5, Entries: map[string]bool{"plan": true}, Body: map[string]bool{"plan": true, "dispatch": true, "run_child": true, "collect": true}},
+		},
+		Foreaches: map[string]*ir.Foreach{},
+		Schemas:   map[string]*ir.Schema{}, Prompts: map[string]*ir.Prompt{}, Vars: map[string]*ir.Var{},
+	}
+
+	var keys []string
+	runner := func(_ context.Context, req SubbotRequest) (map[string]any, error) {
+		keys = append(keys, req.ReattachKey)
+		return map[string]any{"ok": true}, nil
+	}
+	exec := newStubExecutor()
+	exec.on("entry", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{map[string]any{"id": "only"}}}, nil
+	})
+	exec.on("plan", func(map[string]any) (map[string]any, error) { return map[string]any{}, nil })
+	n := 0
+	exec.on("collect", func(map[string]any) (map[string]any, error) {
+		n++
+		return map[string]any{"again": n < 2}, nil
+	})
+
+	if err := New(wf, tmpStore(t), exec, WithSubbotRunner(runner)).Run(context.Background(), "subbot-branch-enclosing-loop", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("subbot runner invoked %d times (%q), want 2 (one per trunk iteration)", len(keys), keys)
+	}
+	if keys[0] == keys[1] {
+		t.Fatalf("both trunk iterations produced re-attach key %q — iteration 2 would re-attach to iteration 1's child run (enclosing loop counters dropped inside the branch)", keys[0])
+	}
+	for i, want := range []string{"run_child@outer=0#branch_dispatch_0", "run_child@outer=1#branch_dispatch_0"} {
+		if keys[i] != want {
+			t.Fatalf("re-attach key[%d] = %q, want %q", i, keys[i], want)
+		}
+	}
+}
