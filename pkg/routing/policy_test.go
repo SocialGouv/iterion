@@ -16,6 +16,17 @@ func runWith(outputs map[string]map[string]any, p *store.RoutingPolicy) *store.R
 	}
 }
 
+func withCap(p *store.RoutingPolicy, n int) *store.RoutingPolicy {
+	p.MaxRelaunches = n
+	p.Hash = p.ComputeHash()
+	return p
+}
+
+func withStatus(r *store.Run, st store.RunStatus) *store.Run {
+	r.Status = st
+	return r
+}
+
 func policy(success string, block []string, actions ...string) *store.RoutingPolicy {
 	p := &store.RoutingPolicy{
 		Version:        1,
@@ -81,10 +92,19 @@ func TestEvaluate_StrictAndFailClosed(t *testing.T) {
 			want: DecisionEscalate, reasonHas: "not an allowed action",
 		},
 		{
-			name: "failure with relaunch allowed",
+			name: "failure with relaunch allowed and a granted cap",
+			run: runWith(map[string]map[string]any{"gate": {"converged": false}},
+				withCap(policy("outputs.gate.converged", nil, "merge", "relaunch"), 1)),
+			want: DecisionRelaunch, reasonHas: "did not hold",
+		},
+		{
+			// R6976c3: the omitempty default IS "never relaunch
+			// automatically" — listing the action grants nothing while
+			// the cap is 0.
+			name: "relaunch listed but max_relaunches 0 escalates",
 			run: runWith(map[string]map[string]any{"gate": {"converged": false}},
 				policy("outputs.gate.converged", nil, "merge", "relaunch")),
-			want: DecisionRelaunch, reasonHas: "did not hold",
+			want: DecisionEscalate, reasonHas: "max_relaunches is 0",
 		},
 		{
 			name: "failure without relaunch escalates",
@@ -132,8 +152,25 @@ func TestEvaluate_StrictAndFailClosed(t *testing.T) {
 			// destroyed the checkpoint, a run that never produced) —
 			// nothing to read a verdict from.
 			name: "nil checkpoint escalates",
-			run:  &store.Run{ID: "r2", RoutingPolicy: policy("outputs.gate.converged", nil, "merge")},
+			run:  &store.Run{ID: "r2", Status: store.RunStatusFinished, RoutingPolicy: policy("outputs.gate.converged", nil, "merge")},
 			want: DecisionEscalate, reasonHas: "no terminal outputs",
+		},
+		{
+			// R84df21: the contract describes a TERMINAL run — a run
+			// still moving must never decide, whatever its checkpoint
+			// already says.
+			name: "running run escalates even with a satisfied gate",
+			run: withStatus(runWith(map[string]map[string]any{"gate": {"converged": true}},
+				policy("outputs.gate.converged", nil, "merge")), store.RunStatusRunning),
+			want: DecisionEscalate, reasonHas: "not terminal",
+		},
+		{
+			// R84df21: a cancelled run's checkpoint shows an EARLIER
+			// pass; only a finished run may land its work.
+			name: "cancelled run with satisfied gate escalates",
+			run: withStatus(runWith(map[string]map[string]any{"gate": {"converged": true}},
+				policy("outputs.gate.converged", nil, "merge")), store.RunStatusCancelled),
+			want: DecisionEscalate, reasonHas: "not finished",
 		},
 	}
 	for _, c := range cases {

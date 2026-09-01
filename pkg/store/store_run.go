@@ -187,7 +187,7 @@ func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
 		// retroactively.
 		if persisted.RoutingPolicy != nil {
 			rr.RoutingPolicy = persisted.RoutingPolicy
-		} else if persisted.Status != RunStatusQueued && persisted.Status != RunStatusRunning {
+		} else if !persisted.Status.CountsAgainstLaunchLimit() {
 			rr.RoutingPolicy = nil
 		}
 		if persisted.Status == rr.Status {
