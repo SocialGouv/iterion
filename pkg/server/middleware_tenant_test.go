@@ -77,3 +77,29 @@ func TestRequireAuthRefusesTeamlessOnTenantScopedRoutes(t *testing.T) {
 		t.Fatalf("teamful request tenant = (%q, %v), want (team-9, true)", sawTenant, sawTenantOK)
 	}
 }
+
+// The allowlist is segment-exact: "/api/me/" must not admit
+// "/api/memory/…" (tenant-scoped workspace memory) — a bare prefix
+// match would silently reopen the empty-tenant hole there.
+func TestTenantFreePathIsSegmentExact(t *testing.T) {
+	t.Parallel()
+	cases := map[string]bool{
+		"/api/me":              true,
+		"/api/me/oauth/claude": true,
+		"/api/memory/usage":    false,
+		"/api/memory":          false,
+		"/api/orgs":            true,
+		"/api/orgsomething":    false,
+		"/api/teams/t1/audit":  true,
+		"/api/teamsync":        false,
+		"/api/auth/me":         true,
+		"/api/admin/llm":       true,
+		"/api/administrivia":   false,
+		"/api/runs":            false,
+	}
+	for p, want := range cases {
+		if got := tenantFreePath(p); got != want {
+			t.Errorf("tenantFreePath(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

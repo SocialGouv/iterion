@@ -133,11 +133,14 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 //     irrelevant there by design
 //   - /api/admin/ : super-admin surfaces (WithoutTenantFilter by design;
 //     non-admins are 403'd by requireSuperAdmin)
-var tenantFreePrefixes = []string{"/api/auth/", "/api/me", "/api/orgs", "/api/teams/", "/api/admin/"}
+// Prefixes end with "/" and are matched segment-exactly below —
+// "/api/me/" must NOT admit "/api/memory/..." (tenant-scoped workspace
+// memory), which a bare HasPrefix("/api/me") would.
+var tenantFreePrefixes = []string{"/api/auth/", "/api/me/", "/api/orgs/", "/api/teams/", "/api/admin/"}
 
 func tenantFreePath(p string) bool {
 	for _, pre := range tenantFreePrefixes {
-		if strings.HasPrefix(p, pre) {
+		if strings.HasPrefix(p, pre) || p == strings.TrimSuffix(pre, "/") {
 			return true
 		}
 	}
