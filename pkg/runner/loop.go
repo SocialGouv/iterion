@@ -1668,9 +1668,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		// A cancel is the operator saying the work is not wanted. Paused runs do
 		// not bank either — NOT because the work is safe (a cloud resume
 		// re-clones at the base, so a paused run's committed work is as
-		// stranded as a death's until it ends) but because FinalBranch on
-		// a half-done run would make it merge-eligible mid-flight; that
-		// trade-off is a product decision deferred, not an oversight.
+		// stranded as a death's until it ends) but because the pair this
+		// writes is exactly what PerformMergeCtx gates on, and it applies
+		// no status check: banking a parked run would make it mergeable
+		// mid-flight over the HTTP API and `iterion remote`. The studio
+		// would not offer the button (CommitsPanel gates on
+		// finished/cancelled), but a client-side gate is not the
+		// guarantee. That trade-off is a product decision deferred, not an
+		// oversight.
 		r.bankIfBankable(ctx, msg, workDir, gitBase, integ, runErr)
 	}
 

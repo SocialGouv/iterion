@@ -277,10 +277,23 @@ func TestBankPushesThroughOriginNotClaimTimeURL(t *testing.T) {
 // do the deaths whose successor would otherwise restart from the base
 // commit (budget_exceeded, failed) — measured as nine manual
 // store-snapshot recoveries in three days of one campaign before this.
-// Pauses resume in place, an interrupted delivery re-clones and banks on
-// its next attempt, a cancel is the operator refusing the work: none of
-// those bank. Keyed on classifyExecResult's output so the
-// budget-beats-interrupted precedence transfers verbatim.
+// The three that do not bank each have their OWN reason, and none of
+// them is "the work is safe" — on this path it never is, since a resume
+// re-clones at RepoSHA (loop.go's bank comment carries the full
+// argument):
+//   - paused: the run is half-done, and FinalCommit+FinalBranch is what
+//     PerformMergeCtx gates on — no status check — so banking would make
+//     a parked run merge-eligible over the HTTP API and `iterion remote`.
+//     (The studio would not offer it; CommitsPanel gates merge on
+//     finished/cancelled. A client-side gate is not the guarantee.)
+//   - interrupted: the lease may already belong to another pod, so a
+//     push from here could race the new owner's. Its work strands in the
+//     git-meta snapshot exactly like a death's would — the redelivery
+//     banks only its own later commits.
+//   - cancelled: the operator refused the work.
+//
+// Keyed on classifyExecResult's output so the budget-beats-interrupted
+// precedence transfers verbatim.
 func TestBankableStatusFollowsClassification(t *testing.T) {
 	cases := []struct {
 		name string
