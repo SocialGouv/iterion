@@ -459,8 +459,16 @@ type Run struct {
 	UpdatedAt         time.Time      `json:"updated_at" bson:"updated_at"`
 	FinishedAt        *time.Time     `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
 	Error             string         `json:"error,omitempty" bson:"error,omitempty"`
-	Checkpoint        *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
-	ArtifactIndex     map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
+	// FailureCode is the machine-readable classification of Error —
+	// the cause of the CURRENT failure status (failed /
+	// failed_resumable / cancelled), cleared by every transition to a
+	// non-failure status. Empty for legacy runs and for writers not
+	// yet classified: empty means UNKNOWN, never "no failure". See
+	// lifecycle.go (ADR-095) for the vocabulary and the open-world
+	// contract.
+	FailureCode   FailureCode    `json:"failure_code,omitempty" bson:"failure_code,omitempty"`
+	Checkpoint    *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
+	ArtifactIndex map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
 	// WorkDir is the absolute filesystem path the run executes in
 	// (the per-run git worktree when Worktree is true, otherwise the
 	// engine's resolved cwd at start). Persisted so studio surfaces
