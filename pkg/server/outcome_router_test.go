@@ -76,6 +76,29 @@ func (h *routerHarness) ageRun(t *testing.T, id string, to time.Time) {
 	}
 }
 
+// ageTerminal backdates BOTH stamps that say how long ago a run reached
+// its terminal: updated_at (what the sweep window filters on) and
+// finished_at (what the bank deadline measures from). Same raw rewrite
+// as ageRun, and for the same reason — no API moves them backwards.
+func (h *routerHarness) ageTerminal(t *testing.T, id string, to time.Time) {
+	t.Helper()
+	h.ageRun(t, id, to)
+	p := filepath.Join(h.dir, "runs", id, "run.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read run.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse run.json: %v", err)
+	}
+	doc["finished_at"] = to.UTC().Format(time.RFC3339Nano)
+	out, _ := json.Marshal(doc)
+	if err := os.WriteFile(p, out, 0o644); err != nil {
+		t.Fatalf("write run.json: %v", err)
+	}
+}
+
 // seedRun creates a terminal run with the given shape. outputs nil ⇒ no
 // checkpoint.
 func (h *routerHarness) seedRun(t *testing.T, id string, mut func(r *store.Run)) *store.Run {
@@ -519,6 +542,62 @@ func TestOutcomeRouter_EmptyBankWaitsForThePush(t *testing.T) {
 	ds := h.decisions(t, r.ID)
 	if len(ds) != 1 || ds[0].OutcomeSeq != seq {
 		t.Fatalf("the same episode must be decided once the bank lands: %+v", ds)
+	}
+}
+
+// The other half of the empty-bank contract: waiting is right while the
+// push may still land, but a bank that never arrives must not be refused
+// SILENTLY FOREVER. A run that committed nothing (finalizeWorktree no-ops
+// on an unchanged HEAD) has an empty FinalCommit for good, so before this
+// it was re-offered every 60s with no row and no line, then aged out of
+// the lookback with nothing ever revisiting it — the router's own
+// motivating incident, recreated by the router. Past the bank deadline it
+// escalates, which also frees the sweep-batch slot it would otherwise
+// hold for a whole lookback.
+func TestOutcomeRouter_BanklessRunEscalatesPastTheDeadline(t *testing.T) {
+	h := newRouterHarness(t)
+	ctx := context.Background()
+	sink := &advSink{}
+	h.s.opsAlerts = &alert.OpsDispatcher{Sinks: []alert.Sink{sink}, Logger: iterlog.Nop()}
+	r := h.seedRun(t, "no-commits-ever", func(r *store.Run) {
+		r.Status = store.RunStatusFinished
+		r.RoutingPolicy = mergePolicy("merge")
+		r.Checkpoint = outputs(true, false)
+		// No FinalBranch/FinalCommit — and none is coming.
+	})
+
+	// Inside the deadline: still silent, the push may yet land.
+	h.s.routeOutcomeOffer(ctx, r.ID)
+	if ds := h.decisions(t, r.ID); len(ds) != 0 {
+		t.Fatalf("inside the bank deadline the router must wait: %+v", ds)
+	}
+
+	// Past it, through the REAL sweep (the only path that ever revisits
+	// such a run): one escalate row naming the missing bank.
+	h.ageTerminal(t, r.ID, time.Now().Add(-routerBankGrace-time.Minute))
+	h.s.outcomeRouterSweepPass(ctx)
+	ds := h.decisions(t, r.ID)
+	if len(ds) != 1 || ds[0].Decision != "escalate" {
+		t.Fatalf("a bank that never lands must be escalated, got %+v", ds)
+	}
+	if !strings.Contains(ds[0].Reason, "no storage branch was banked") {
+		t.Fatalf("the row must name the missing bank: %+v", ds[0])
+	}
+	if got, _ := h.st.LoadRun(ctx, r.ID); got.MergeStatus == store.MergeStatusMerged {
+		t.Fatal("the bankless run was merged")
+	}
+	// The operator hears it, and the settled episode leaves the sweep.
+	if kinds := sink.kinds(); len(kinds) == 0 || kinds[0] != alert.KindRouteEscalated {
+		t.Fatalf("want a route_escalated alert, got %v", kinds)
+	}
+	ids, err := h.st.ListRoutableRuns(ctx, time.Now().Add(-24*time.Hour), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == r.ID {
+			t.Fatalf("a decided bankless run still clogs the sweep batch: %v", ids)
+		}
 	}
 }
 

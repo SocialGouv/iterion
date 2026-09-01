@@ -61,7 +61,32 @@ const (
 
 	// routerSweepBatch bounds one pass's candidate list.
 	routerSweepBatch = 200
+
+	// routerBankGrace is how long after a terminal the router keeps
+	// treating an empty bank as "the push is still in flight" rather
+	// than as the answer. Generous against the measured worst case (10+
+	// minutes on large repos) because the cost of being early is burning
+	// a legitimate episode, while the cost of being late is one extra
+	// interval before an operator hears about it.
+	routerBankGrace = 30 * time.Minute
 )
+
+// terminalAge is how long ago the run reached its terminal status.
+// FinishedAt is the stamp the transition writes; UpdatedAt is the
+// fallback for a document that predates it (and moves on later writes,
+// which is why it is not the first choice). A run carrying neither
+// reads as infinitely old rather than infinitely young: an unknown age
+// must not be able to silence a decision forever.
+func terminalAge(run *store.Run) time.Duration {
+	at := run.UpdatedAt
+	if run.FinishedAt != nil && !run.FinishedAt.IsZero() {
+		at = *run.FinishedAt
+	}
+	if at.IsZero() {
+		return routerBankGrace
+	}
+	return time.Since(at)
+}
 
 // outcomeRouterEnabled reads the fleet switch.
 func outcomeRouterEnabled() bool {
@@ -240,14 +265,30 @@ func (s *Server) routeOutcomeOfferBefore(ctx context.Context, runID string, upda
 		reason = fmt.Sprintf("contract says merge but the bank recorded an error: %s", run.FinalBranchError)
 	}
 	if decision == routing.DecisionMerge && (run.FinalBranch == "" || run.FinalCommit == "") {
-		// NOT a decision: the terminal status lands BEFORE the bank
-		// push (measured up to 10+ minutes on large repos, and the run
-		// doc's updated_at does not move in between). Claiming
-		// "escalate" here would burn the episode while the branch is
-		// still on its way — the bank write does not open a new one.
-		// Refuse silently; the bank's SaveRun refreshes updated_at and
-		// the sweep re-offers.
-		return
+		// While the push may still be in flight this is NOT a decision:
+		// the terminal status lands BEFORE the bank push (measured up to
+		// 10+ minutes on large repos, and the run doc's updated_at does
+		// not move in between). Claiming "escalate" there would burn the
+		// episode while the branch is still on its way — the bank write
+		// does not open a new one. Refuse silently; the bank's SaveRun
+		// refreshes updated_at and the sweep re-offers.
+		//
+		// Past the deadline it is no longer in flight, and refusing
+		// silently forever is the router's own motivating incident in
+		// miniature: a run that made no commits (finalizeWorktree no-ops
+		// on an unchanged HEAD, so FinalCommit stays empty for good) or a
+		// bot with no `worktree: auto` at all would be re-offered every
+		// 60s with zero rows and zero lines, until it left the lookback
+		// and nothing ever revisited it — indistinguishable, to the
+		// operator, from the router never having seen it. It also never
+		// settled, so it sat at the head of the ascending sweep batch
+		// for a whole lookback. Decide it: escalate is exactly what the
+		// sibling FinalBranchError guard above does with the same shape.
+		if since := terminalAge(run); since < routerBankGrace {
+			return
+		}
+		decision = routing.DecisionEscalate
+		reason = fmt.Sprintf("contract says merge but no storage branch was banked within %s of the terminal — the run committed nothing, or its bank push never landed", routerBankGrace)
 	}
 
 	// --- One decision per episode: the registry claim. ---
