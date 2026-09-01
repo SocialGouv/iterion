@@ -68,6 +68,13 @@ The complete shape is [`store.Run`](../pkg/store/run.go). `omitempty` fields
 from local/cloud, worktree, webhook, secret, attachment, budget, and Studio
 features can legitimately be absent.
 
+`failure_code` (ADR-095) is the machine-readable classification of `error`
+on a failure status (`failed` / `failed_resumable` / `cancelled`), written
+atomically with the status and cleared by every transition to a non-failure
+status. Absent/empty means UNKNOWN (legacy rows, unclassified writers) —
+never "no failure". The vocabulary is open-world: readers must accept codes
+they do not know (see [`store.FailureCode`](../pkg/store/lifecycle.go)).
+
 `nodes_served` maps each LLM node's id to the last `(backend, model)` that
 served it (`model` is the provider-reported effective model; `declared_model`
 is what the node asked for). It is the run-record half of making a finished

@@ -91,7 +91,7 @@ func TestLifecyclePredicateRelations(t *testing.T) {
 			t.Errorf("CountsAgainstLaunchLimit(%s) overlaps terminal/paused", st)
 		}
 		// A failure code may only persist on terminal failure shapes.
-		if st.CarriesFailureCode() && !(st.IsFinalFailure() || st.IsTerminalResumable()) {
+		if st.CarriesFailureCode() && !st.IsFinalFailure() && !st.IsTerminalResumable() {
 			t.Errorf("CarriesFailureCode(%s) outside failure statuses", st)
 		}
 	}
