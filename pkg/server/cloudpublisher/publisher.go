@@ -873,6 +873,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// studio Overview reads the pins from the run doc, and the resume
 		// path replays them onto its RunMessage from here.
 		ModelOverrides: runModelOverrides(spec.ModelOverrides),
+		// The launch-frozen outcome contract, same replay-from-the-doc
+		// doctrine: consumers read it from the run, never from a
+		// mutable setting.
+		RoutingPolicy: spec.RoutingPolicy,
 		// The run-level fallback chain, same doctrine: stamped raw so the
 		// resume path replays it, and mirrored onto the RunMessage below
 		// so the claiming runner applies it.

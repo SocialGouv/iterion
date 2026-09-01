@@ -303,6 +303,11 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		if len(e.modelOverrides) > 0 {
 			run.ModelOverrides = e.modelOverrides
 		}
+		// Same resume-preserving guard: the contract is immutable after
+		// launch, a resume never re-supplies it.
+		if e.routingPolicy != nil {
+			run.RoutingPolicy = e.routingPolicy
+		}
 		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
 		// in cloud, the platform ceiling clamp — both mutate wf.Budget
 		// before the engine runs) so the studio Overview draws budget meters

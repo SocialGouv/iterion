@@ -304,7 +304,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, routingPolicy: spec.RoutingPolicy, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers, loopBudgetGuard: spec.LoopBudgetGuard, supervisors: spec.Supervisors},
 		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -638,6 +638,9 @@ func (s *Service) spawnRun(
 	if len(modelOverrides) > 0 {
 		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
 	}
+	if ex.routingPolicy != nil {
+		opts = append(opts, runtime.WithRoutingPolicy(ex.routingPolicy))
+	}
 	if cb.url != "" {
 		opts = append(opts, runtime.WithCallback(cb.url, cb.token, cb.answerNode))
 	}
@@ -797,6 +800,9 @@ type launchExtras struct {
 	workDir  string
 	dailyCap *runtime.DailyCapGuard
 	source   *store.RunSource
+	// routingPolicy mirrors LaunchSpec.RoutingPolicy: the launch-frozen
+	// outcome contract, handed to the engine for doc persistence.
+	routingPolicy *store.RoutingPolicy
 	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.

@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/routing"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -109,6 +110,12 @@ type launchRunRequest struct {
 	// See runview.ModelOverrideEntry. The current queue contract carries them
 	// to cloud runners as well, where the executor applies them (issue #513).
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
+	// RoutingPolicy is the launch-frozen outcome contract: what
+	// "success" and "blocked" mean for this run (bot-DSL expressions
+	// over the terminal outputs), where a success lands, and which
+	// actions a consumer may take automatically. Validated and hashed
+	// here; immutable afterwards.
+	RoutingPolicy *store.RoutingPolicy `json:"routing_policy,omitempty"`
 	// Fallback is the operator's ordered run-level fallback chain, taken
 	// when an agent node's primary or preceding stage fails. It applies only
 	// to agent nodes that declare no `fallbacks:` of their own and never to judges.
@@ -324,6 +331,16 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout, err := parseTimeout(req.Timeout)
+	if req.RoutingPolicy != nil {
+		// Refuse a malformed contract BEFORE any work happens — a bad
+		// expression discovered at the terminal would strand a finished
+		// run behind an unreadable policy.
+		if perr := routing.Validate(req.RoutingPolicy); perr != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", perr)
+			return
+		}
+		req.RoutingPolicy.Hash = req.RoutingPolicy.ComputeHash()
+	}
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid timeout: %v", err)
 		span.SetStatus(codes.Error, "invalid timeout")
@@ -456,6 +473,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		// the one path where the author is watching.
 		RetryPolicy:        s.resolveRunRetryPolicy(botID),
 		ModelOverrides:     req.ModelOverrides,
+		RoutingPolicy:      req.RoutingPolicy,
 		Fallback:           req.Fallback,
 		Budget:             budget,
 		ParentRunID:        req.ParentRunID,

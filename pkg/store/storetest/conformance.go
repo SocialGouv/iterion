@@ -56,6 +56,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("StatusTransitions", func(t *testing.T) { testStatusTransitions(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
+	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("QueuedAttemptCAS", func(t *testing.T) { testQueuedAttemptCAS(t, factory(t)) })
 	t.Run("MergeClaimCAS", func(t *testing.T) { testMergeClaimCAS(t, factory(t)) })
 	t.Run("SaveRunPreservesLiveMergeClaim", func(t *testing.T) { testSaveRunPreservesLiveMergeClaim(t, factory(t)) })
@@ -2122,5 +2123,52 @@ func testSaveRunPreservesLiveMergeClaim(t *testing.T, s store.RunStore) {
 	}
 	if !r.MergeClaimedAt.Equal(token) {
 		t.Errorf("SaveRun dropped the claim stamp: %v, want %v", r.MergeClaimedAt, token)
+	}
+}
+
+// testRoutingPolicyImmutable: once the launch persisted the contract,
+// no full-document saver — however stale — can drop or replace it.
+// Retroactively changing the contract of already-produced work is the
+// exact attack the launch-frozen snapshot exists to prevent.
+func testRoutingPolicyImmutable(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	const runID = "run-routing-policy"
+	if _, err := s.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	r, err := s.LoadRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	launch := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate.ok", AllowedActions: []string{"merge"}}
+	launch.Hash = launch.ComputeHash()
+	r.RoutingPolicy = launch
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun launch: %v", err)
+	}
+
+	// A stale saver without the field cannot drop it…
+	stale, _ := s.LoadRun(ctx, runID)
+	stale.RoutingPolicy = nil
+	if err := s.SaveRun(ctx, stale); err != nil {
+		t.Fatalf("SaveRun stale: %v", err)
+	}
+	got, _ := s.LoadRun(ctx, runID)
+	if got.RoutingPolicy == nil || got.RoutingPolicy.Hash != launch.Hash {
+		t.Fatalf("policy dropped by a stale save: %+v", got.RoutingPolicy)
+	}
+
+	// …and a saver carrying a DIFFERENT contract cannot swap it.
+	evil, _ := s.LoadRun(ctx, runID)
+	swapped := &store.RoutingPolicy{Version: 1, SuccessWhen: "outputs.gate.other"}
+	swapped.Hash = swapped.ComputeHash()
+	evil.RoutingPolicy = swapped
+	if err := s.SaveRun(ctx, evil); err != nil {
+		t.Fatalf("SaveRun swap: %v", err)
+	}
+	got, _ = s.LoadRun(ctx, runID)
+	if got.RoutingPolicy == nil || got.RoutingPolicy.Hash != launch.Hash {
+		t.Fatalf("policy swapped by a save: %+v", got.RoutingPolicy)
 	}
 }

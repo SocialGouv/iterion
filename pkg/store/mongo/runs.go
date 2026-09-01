@@ -283,6 +283,7 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")
 	delete(doc, "failure_code")
+	delete(doc, "routing_policy")
 	terminalInc := 0
 	switch r.Status {
 	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
@@ -306,6 +307,11 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
+		// The launch-frozen contract is IMMUTABLE: once persisted it
+		// wins over whatever the saver carries (a stale full-document
+		// save, or a binary too old to know the field, must not drop
+		// it). First write (the launch) lands via the fallback.
+		"routing_policy": bson.M{"$ifNull": bson.A{"$routing_policy", bson.M{"$literal": r.RoutingPolicy}}},
 	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is
